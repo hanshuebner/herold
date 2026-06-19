@@ -302,35 +302,22 @@ func TestSubmitTransientThenSuccess(t *testing.T) {
 		Recipients: []string{"bob@dest.test"},
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 	})
-	// Wait for transient outcome to be observed. The generous margin is
-	// the goroutine-scheduling tolerance for the heavily-parallel -race
-	// arm64 CI runner (see the sibling barrier-test comment).
-	if !waitFor(t, 30*time.Second, func() bool {
+	// Wait for the deferred state to be written to the DB. This proves
+	// the worker has already called clk.Now() to compute NextAttemptAt,
+	// so the Advance below cannot race it.
+	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateDeferred && rows[0].Attempts == 1
 	}) {
 		t.Fatalf("never observed deferred state")
 	}
 
-	// Barrier: the worker's reschedule (proven by the deferred state
-	// above) runs independently of the SCHEDULER goroutine, which has a
-	// window between its previous select exit and the next clk.After
-	// call. An Advance landing in that window arms the just-registered
-	// waiter for now+pollInterval (post-advance) and wakes nothing
-	// (RescheduleQueueItem does not signal wakeCh), so the row stays
-	// deferred and the test times out. Wait for the scheduler to be
-	// parked on clk.After before advancing. See clock.go NumWaiters doc;
-	// without this barrier this test flaked on CI run #75 (queue_test.go:295
-	// "never re-delivered after clock advance").
-	if !waitFor(t, 5*time.Second, func() bool {
-		return f.clk.NumWaiters() >= 1
-	}) {
-		t.Fatalf("scheduler never re-armed clk.After")
-	}
-
-	// Advance the clock past the next-attempt window.
+	// Advance the clock past the next-attempt window. The scheduler arms
+	// its poll timer for the earliest NextAttemptAt, so if the advance
+	// fires between select exits the deferred row is already due and
+	// FakeClock.After fires immediately on the next iteration.
 	f.clk.Advance(45 * time.Second)
-	if !waitFor(t, 30*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateDone
 	}) {
@@ -523,32 +510,25 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 		DSNNotify:  store.DSNNotifyFailure,
 	})
-	// Initial attempt + 3 reschedules = 4 total. Per-attempt timeout
-	// 15s for headroom on slow / contended CI runners (the self-hosted
-	// arm64 runner has tipped over 5s on heavily-loaded runs even after
-	// the scheduler-clock race fix). We wait for two signals before
-	// advancing the clock: the deliv hook ran (callCount) AND the
-	// worker committed the attempt to the DB. The second signal closes
-	// a race where the test would otherwise advance the clock between
-	// the hook returning and the worker writing NextAttemptAt -- the
-	// worker reads clk.Now() when computing the next schedule, so
-	// racing it makes NextAttemptAt land at (advanced_now + 1min), a
-	// minute past the clock, and the scheduler then never picks the
-	// row up.
+	// Initial attempt + 3 reschedules = 4 total. We wait for two signals
+	// before advancing the clock: the deliv hook ran (callCount) AND the
+	// worker committed the attempt to the DB. The DB signal closes the
+	// race where the test advances the clock between the hook returning
+	// and the worker writing NextAttemptAt -- the worker reads clk.Now()
+	// when computing the next schedule, so advancing before that write
+	// makes NextAttemptAt land at (advanced_now + 1min), in the future.
 	//
 	// The DB signal differs by iteration: a transient outcome calls
-	// RescheduleQueueItem (which increments attempts), and the terminal
-	// outcome on iteration 3 calls CompleteQueueItem (which sets
-	// state=Failed but leaves attempts unchanged). Tolerate either.
+	// RescheduleQueueItem (which increments Attempts), and the terminal
+	// outcome on iteration 3 calls CompleteQueueItem (state=Failed).
+	// Tolerate either.
+	//
+	// The NumWaiters barrier that previously accompanied this loop is
+	// no longer needed: the scheduler now arms its poll timer for the
+	// earliest NextAttemptAt (queue.go), so a missed Advance leaves
+	// wait<=0 and FakeClock.After fires immediately on the next loop.
 	for i := 0; i < 4; i++ {
-		// 30 s per attempt: under -race plus heavy cross-package
-		// parallelism on the self-hosted arm64 runner the scheduler
-		// goroutine has been observed starved well past 15 s (CI run
-		// 26329115049 surfaced attempt 2 never observed at exactly
-		// 15 s). The NumWaiters barrier below addresses the FakeClock
-		// re-arm race documented in f10160e; this larger margin is the
-		// separate goroutine-scheduling tolerance.
-		if !waitFor(t, 30*time.Second, func() bool {
+		if !waitFor(t, 5*time.Second, func() bool {
 			if f.deliv.callCount() < i+1 {
 				return false
 			}
@@ -559,24 +539,6 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 			return rows[0].Attempts >= int32(i+1) || rows[0].State == store.QueueStateFailed
 		}) {
 			t.Fatalf("attempt %d never observed", i+1)
-		}
-		// Barrier: wait for the scheduler to be parked on clk.After
-		// again before advancing. The hook + DB barrier above proves
-		// the worker goroutine completed its reschedule, but the
-		// SCHEDULER goroutine runs independently and has a window
-		// between its previous select exit and the next clk.After
-		// call (loop iteration: claim -> dispatch -> select). An
-		// Advance landing in that window leaves the just-registered
-		// clk.After waiter armed for now+pollInterval (post-advance)
-		// and fires nothing, since RescheduleQueueItem does not signal
-		// wakeCh (only Submit / emitDSN do, queue.go:392 + 1111). The
-		// row stays deferred and the test times out at i+1. Polling
-		// NumWaiters before advancing closes that window. See clock.go
-		// NumWaiters doc for the canonical pattern.
-		if !waitFor(t, 5*time.Second, func() bool {
-			return f.clk.NumWaiters() >= 1
-		}) {
-			t.Fatalf("scheduler never re-armed clk.After after attempt %d", i+1)
 		}
 		f.clk.Advance(2 * time.Minute)
 	}
@@ -1271,18 +1233,16 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	})
 	// waitDeferred blocks until the original envelope's row has been
 	// rescheduled to QueueStateDeferred with Attempts==want. This is the
-	// only safe synchronisation point before f.clk.Advance: callCount
+	// correct synchronisation point before f.clk.Advance: callCount
 	// merely indicates the deliverer hook ran, not that the worker has
-	// reached RescheduleQueueItem. If the test advances the fake clock
-	// while the worker is still mid-Deliver, the row's next_attempt_at
-	// is computed off the post-advance clock (e.g. now+1m past the
-	// 2m-advance landing point), and the scheduler's fake-clock After
-	// waiter never fires again — wedging the queue. Observing the
-	// Deferred state proves the worker has finalised the prior attempt
-	// and the scheduler has returned to its select with a pollInterval
-	// After waiter that the next Advance can fire.
+	// reached RescheduleQueueItem. Advancing while the worker is still
+	// mid-Deliver can race clk.Now() causing NextAttemptAt to land in
+	// the future. The scheduler arms its poll timer for the earliest
+	// NextAttemptAt, so even a missed Advance is self-healing: when the
+	// deferred row is already due, wait<=0 and FakeClock.After fires
+	// immediately on the next scheduler loop.
 	waitDeferred := func(want int32) bool {
-		return waitFor(t, 15*time.Second, func() bool {
+		return waitFor(t, 5*time.Second, func() bool {
 			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
 				store.QueueFilter{EnvelopeID: envID})
 			return len(rows) == 1 &&
@@ -1354,7 +1314,7 @@ func TestDelayDSN_EmittedAfterThreshold(t *testing.T) {
 	}
 	// Final advance: schedule exhausts and the row should reach Failed.
 	f.clk.Advance(2 * time.Minute)
-	if !waitFor(t, 15*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx,
 			store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateFailed
@@ -1403,10 +1363,10 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 	// callCount: the latter increments at the START of Deliver, before
 	// the worker has reached RescheduleQueueItem, so a fake-clock
 	// Advance triggered off callCount can race the worker's mid-flight
-	// reschedule and wedge the queue. Same fix pattern as
-	// TestDelayDSN_EmittedAfterThreshold (commit c1929e2).
+	// reschedule. The scheduler arms for the earliest NextAttemptAt, so
+	// even a missed Advance self-heals when the row is already due.
 	waitDeferred := func(want int32) bool {
-		return waitFor(t, 15*time.Second, func() bool {
+		return waitFor(t, 5*time.Second, func() bool {
 			rows, _ := f.store.Meta().ListQueueItems(f.ctx,
 				store.QueueFilter{EnvelopeID: envID})
 			return len(rows) == 1 &&

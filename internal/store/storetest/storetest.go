@@ -114,6 +114,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueueHoldRelease", testQueueHoldRelease},
 		{"QueueDeleteCascadeOnPrincipalDelete", testQueueDeleteCascadeOnPrincipalDelete},
 		{"QueueCountByState", testQueueCountByState},
+		{"QueueEarliestNextAttempt", testQueueEarliestNextAttempt},
 		{"DKIMUpsertAndList", testDKIMUpsertAndList},
 		{"DKIMRotateOneTx", testDKIMRotateOneTx},
 		{"DKIMActiveLookup", testDKIMActiveLookup},
@@ -3811,6 +3812,36 @@ func testQueueCountByState(t *testing.T, s store.Store) {
 		t.Fatalf("held count = %d, want 1", counts[store.QueueStateHeld])
 	}
 	_ = id1
+}
+
+func testQueueEarliestNextAttempt(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	// Empty queue: ok must be false.
+	_, ok, err := s.Meta().EarliestNextAttempt(ctx)
+	if err != nil {
+		t.Fatalf("EarliestNextAttempt (empty): %v", err)
+	}
+	if ok {
+		t.Fatal("EarliestNextAttempt (empty): ok=true, want false")
+	}
+
+	p := mustInsertPrincipal(t, s, "earliest@example.com")
+	t1 := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(5 * time.Minute)
+	mustEnqueue(t, s, store.QueueItem{PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "1@d.test", EnvelopeID: "ea1", NextAttemptAt: t2})
+	mustEnqueue(t, s, store.QueueItem{PrincipalID: p.ID, MailFrom: "a@example.com", RcptTo: "2@d.test", EnvelopeID: "ea2", NextAttemptAt: t1})
+
+	got, ok, err := s.Meta().EarliestNextAttempt(ctx)
+	if err != nil {
+		t.Fatalf("EarliestNextAttempt: %v", err)
+	}
+	if !ok {
+		t.Fatal("EarliestNextAttempt: ok=false, want true")
+	}
+	// Stored as microseconds; compare at that resolution.
+	if !got.Equal(t1) {
+		t.Fatalf("EarliestNextAttempt = %v, want %v", got, t1)
+	}
 }
 
 func testDKIMUpsertAndList(t *testing.T, s store.Store) {

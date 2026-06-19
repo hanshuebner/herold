@@ -601,8 +601,24 @@ func (q *Queue) Run(ctx context.Context) error {
 			}
 		}
 
-		// Wait until either ctx is cancelled, a wake fires (Submit /
-		// reschedule), or PollInterval elapses.
+		// Compute how long to sleep before the next poll. We ask the
+		// store for the earliest NextAttemptAt among queued/deferred rows
+		// and sleep until that instant rather than a fixed pollInterval.
+		// This closes a lost-wakeup race with FakeClock: when a test
+		// Advance fires between the scheduler's select-exit and the next
+		// clk.After registration, the newly registered waiter would be
+		// armed for (post-advance now)+pollInterval — a future deadline
+		// that nothing wakes. With next-due arming, the deferred row is
+		// already due at that point (earliestNextAttempt <= now), so wait
+		// <= 0 and FakeClock.After fires immediately. pollInterval is the
+		// upper bound so an idle or empty queue still ticks for
+		// crash-recovery and stale-inflight detection.
+		wait := q.pollInterval
+		if earliest, ok, err := q.opts.Store.Meta().EarliestNextAttempt(ctx); err == nil && ok {
+			if d := earliest.Sub(q.clk.Now()); d < wait {
+				wait = d
+			}
+		}
 		select {
 		case <-ctx.Done():
 			// Drain in-flight workers within ShutdownGrace.
@@ -624,7 +640,7 @@ func (q *Queue) Run(ctx context.Context) error {
 			return nil
 		case <-q.wakeCh:
 			// New work or reschedule; loop immediately.
-		case <-q.clk.After(q.pollInterval):
+		case <-q.clk.After(wait):
 			q.opts.Logger.DebugContext(ctx, "queue: poll tick",
 				slog.String("activity", observe.ActivityPoll))
 		}

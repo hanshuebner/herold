@@ -828,6 +828,13 @@ type Metadata interface {
 	// in the map with value 0.
 	CountQueueByState(ctx context.Context) (map[QueueState]int, error)
 
+	// EarliestNextAttempt returns the minimum NextAttemptAt among rows
+	// in QueueStateQueued or QueueStateDeferred, and ok=true. When no
+	// such rows exist it returns the zero time and ok=false. The
+	// scheduler uses this to arm its poll timer for exactly when the
+	// next retry is due rather than sleeping a fixed pollInterval.
+	EarliestNextAttempt(ctx context.Context) (t time.Time, ok bool, err error)
+
 	// -- Phase 2 DKIM keys --------------------------------------------
 
 	// UpsertDKIMKey inserts or updates a (Domain, Selector) row. On

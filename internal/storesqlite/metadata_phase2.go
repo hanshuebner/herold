@@ -391,6 +391,22 @@ func (m *metadata) CountQueueByState(ctx context.Context) (map[store.QueueState]
 	return out, rows.Err()
 }
 
+func (m *metadata) EarliestNextAttempt(ctx context.Context) (time.Time, bool, error) {
+	var us sql.NullInt64
+	err := m.s.db.QueryRowContext(ctx, `
+		SELECT MIN(next_attempt_at_us)
+		  FROM queue
+		 WHERE state IN (?, ?)`,
+		int64(store.QueueStateQueued), int64(store.QueueStateDeferred)).Scan(&us)
+	if err != nil {
+		return time.Time{}, false, mapErr(err)
+	}
+	if !us.Valid {
+		return time.Time{}, false, nil
+	}
+	return fromMicros(us.Int64), true, nil
+}
+
 // -- DKIM keys --------------------------------------------------------
 
 func (m *metadata) UpsertDKIMKey(ctx context.Context, key store.DKIMKey) error {
