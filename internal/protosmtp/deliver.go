@@ -39,12 +39,11 @@ func (sess *session) finishMessage(spill *os.File) {
 	authResults, _ := sess.runMailAuth(ctx, spill)
 
 	// Read a bounded slice from the spill for the stages that still need a
-	// []byte: mailparse, extimg, attpol, and the final blob assembly.
-	// The verify path above is done; we seek back to 0 for a clean read.
-	//
-	// TODO(REQ-STORE-19, Phase 2c): once mailparse and extimg are
-	// reader-based this io.ReadAll is removed; the verify path already
-	// does not need it after Phase 2b.
+	// []byte: mailparse.Parse, attpol, spam classification, and the non-extimg
+	// final blob assembly. The verify path above is done; seek back to 0.
+	// (REQ-STORE-19 Phase 2b eliminated the full-body read for auth; Phase 2c
+	// eliminated the enmime round-trip for extimg. mailparse.Parse still
+	// buffers internally, so this ReadAll remains until Phase 3.)
 	if _, err := spill.Seek(0, io.SeekStart); err != nil {
 		sess.log.ErrorContext(ctx, "smtp data: spill seek",
 			slog.String("activity", observe.ActivitySystem),
