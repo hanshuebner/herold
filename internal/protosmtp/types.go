@@ -2,6 +2,7 @@ package protosmtp
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -56,9 +57,11 @@ type DeliveryRequest struct {
 	MailFrom string
 	// RcptTo is the single envelope recipient for this attempt.
 	RcptTo string
-	// Message is the full RFC 5322 message bytes the Client transmits in
-	// DATA / BDAT. Lines are CRLF-terminated; the Client dot-stuffs as needed.
-	Message []byte
+	// Message is the full RFC 5322 message the Client streams into DATA.
+	// Lines are CRLF-terminated; the Client dot-stuffs as needed.  The
+	// reader is consumed exactly once per delivery attempt; callers must
+	// not retain or re-read it (REQ-STORE-17, REQ-STORE-19).
+	Message io.Reader
 	// MessageID is the RFC 5322 Message-ID for log correlation. Empty
 	// when unavailable.
 	MessageID string

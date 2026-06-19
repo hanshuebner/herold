@@ -7,3 +7,8 @@ package protosmtp
 // #16 regression tests) without inflating the package's public API.
 
 var SeedFromAddressForTest = seedFromAddress
+
+// WriteDotStuffedForTest exposes the unexported writeDotStuffed so
+// the outbound_session_test package can verify byte-exact streaming
+// dot-stuffing against reference inputs.
+var WriteDotStuffedForTest = writeDotStuffed

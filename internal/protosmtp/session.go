@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -86,7 +87,13 @@ type envelope struct {
 	mailFrom       string
 	mailFromParams mailFromParams
 	rcpts          []rcptEntry
-	bdatBuf        []byte
+	// spill is the per-message spill file used by both the DATA and BDAT
+	// receive paths (REQ-STORE-17/18). The body streams here as it arrives
+	// and is never accumulated whole in RAM. spillSize tracks the running
+	// byte count for the incremental MaxMessageSize check. Both fields are
+	// nil/0 when no message body has been started; resetEnvelope cleans up.
+	spill     *os.File
+	spillSize int64
 }
 
 // mailFromParams records the typed parameters attached to MAIL FROM.
@@ -936,24 +943,51 @@ func (sess *session) cmdDATA() bool {
 	if err := sess.writer.Flush(); err != nil {
 		return true
 	}
-	_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
-	body, err := readDotStream(sess.reader, sess.srv.opts.MaxMessageSize)
-	_ = sess.conn.SetReadDeadline(time.Time{})
+	// Open a spill file to stream the body into (REQ-STORE-17/18). The
+	// file is created in os.TempDir (acceptable for Phase 1). The spill
+	// is owned by the envelope and cleaned up by resetEnvelope on every
+	// exit path (rejection, error, successful delivery, RSET).
+	spill, err := os.CreateTemp("", "herold-smtp-spill-*")
 	if err != nil {
-		if errors.Is(err, errMessageTooLarge) {
+		sess.log.ErrorContext(sess.ctx, "smtp data: create spill file",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return false
+	}
+	sess.envelope.spill = spill
+
+	_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
+	spillSize, rerr := readDotStream(sess.reader, spill, sess.srv.opts.MaxMessageSize)
+	_ = sess.conn.SetReadDeadline(time.Time{})
+	if rerr != nil {
+		if errors.Is(rerr, errMessageTooLarge) {
 			observe.SMTPMessagesRejectedTotal.WithLabelValues(sess.mode.String(), "size").Inc()
 			sess.writeReply("552 5.3.4 message too large")
 			sess.resetEnvelope()
 			return false
 		}
-		if errors.Is(err, io.EOF) {
+		if errors.Is(rerr, io.EOF) {
+			sess.resetEnvelope()
 			return true
 		}
 		sess.writeReply("451 4.3.0 I/O error reading DATA")
 		sess.resetEnvelope()
 		return false
 	}
-	sess.finishMessage(body)
+	sess.envelope.spillSize = spillSize
+	// fsync the spill before processing (REQ-FLOW-03 / REQ-STORE-100:
+	// the body must survive kill -9 before we accept it).
+	if err := spill.Sync(); err != nil {
+		sess.log.ErrorContext(sess.ctx, "smtp data: fsync spill",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return false
+	}
+	sess.finishMessage(spill)
 	return false
 }
 
@@ -979,12 +1013,26 @@ func (sess *session) cmdBDAT(rest string) bool {
 	if len(fields) >= 2 && strings.EqualFold(fields[1], "LAST") {
 		last = true
 	}
-	// Existing accumulator lives on session; initialise lazily.
-	if sess.envelope.bdatBuf == nil {
-		sess.envelope.bdatBuf = make([]byte, 0, n)
+	// Lazily create the spill file on the first BDAT chunk (REQ-STORE-17/18).
+	if sess.envelope.spill == nil {
+		spill, serr := os.CreateTemp("", "herold-smtp-spill-*")
+		if serr != nil {
+			sess.log.ErrorContext(sess.ctx, "smtp bdat: create spill file",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("err", serr.Error()))
+			// Consume the chunk first so framing stays valid.
+			_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
+			_, _ = io.CopyN(io.Discard, sess.reader, n)
+			_ = sess.conn.SetReadDeadline(time.Time{})
+			sess.writeReply("451 4.3.0 temporary storage failure")
+			sess.resetEnvelope()
+			return false
+		}
+		sess.envelope.spill = spill
 	}
-	// Per-session size cap.
-	if int64(len(sess.envelope.bdatBuf))+n > sess.srv.opts.MaxMessageSize {
+	// Per-session cumulative size cap (REQ-STORE-18): check before
+	// writing so an over-limit message is rejected without storing data.
+	if sess.envelope.spillSize+n > sess.srv.opts.MaxMessageSize {
 		// Consume n bytes before rejecting so the framing remains valid.
 		_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
 		_, _ = io.CopyN(io.Discard, sess.reader, n)
@@ -994,27 +1042,44 @@ func (sess *session) cmdBDAT(rest string) bool {
 		sess.resetEnvelope()
 		return false
 	}
-	chunk := make([]byte, n)
+	// Stream the chunk directly into the spill file.
 	_ = sess.conn.SetReadDeadline(time.Now().Add(sess.srv.opts.DataTimeout))
-	_, rerr := io.ReadFull(sess.reader, chunk)
+	written, rerr := io.CopyN(sess.envelope.spill, sess.reader, n)
 	_ = sess.conn.SetReadDeadline(time.Time{})
+	sess.envelope.spillSize += written
 	if rerr != nil {
+		sess.resetEnvelope()
 		return true
 	}
-	sess.envelope.bdatBuf = append(sess.envelope.bdatBuf, chunk...)
 	if !last {
 		sess.writeReply(fmt.Sprintf("250 2.0.0 %d bytes received", n))
 		return false
 	}
-	body := sess.envelope.bdatBuf
-	sess.envelope.bdatBuf = nil
-	sess.finishMessage(body)
+	// LAST: fsync the spill before processing (REQ-FLOW-03 / REQ-STORE-100).
+	if err := sess.envelope.spill.Sync(); err != nil {
+		sess.log.ErrorContext(sess.ctx, "smtp bdat: fsync spill",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return false
+	}
+	spill := sess.envelope.spill
+	sess.finishMessage(spill)
 	return false
 }
 
 // --- session helpers --------------------------------------------------
 
 func (sess *session) resetEnvelope() {
+	// Clean up any in-flight spill file before zeroing the struct so
+	// the handle and the path are both closed/removed on every path
+	// (RSET, rejection, error, successful delivery).
+	if sess.envelope.spill != nil {
+		name := sess.envelope.spill.Name()
+		_ = sess.envelope.spill.Close()
+		_ = os.Remove(name)
+	}
 	sess.envelope = envelope{}
 	if sess.st == stateEnvelope || sess.st == stateRecipients {
 		sess.st = stateGreeted
@@ -1236,20 +1301,25 @@ func splitParams(s string) []string {
 	return strings.Fields(strings.TrimSpace(s))
 }
 
-// readDotStream reads SMTP DATA body bytes (RFC 5321 §4.1.1.4): lines
-// are CRLF-terminated, leading '.' on a data line is unescaped, and the
-// body terminates on a bare ".\r\n". Returns errMessageTooLarge when
-// the accumulated body exceeds maxSize. The returned body uses CRLF
-// line endings.
-func readDotStream(r *bufio.Reader, maxSize int64) ([]byte, error) {
-	buf := make([]byte, 0, 8192)
+// readDotStream reads SMTP DATA body bytes (RFC 5321 §4.1.1.4) and
+// streams the dot-unstuffed, CRLF-normalised content into spill (REQ-STORE-17/18).
+// Lines are CRLF-terminated, a leading '.' on a data line is unescaped,
+// and the body terminates on the bare ".\r\n" terminator sequence.
+// Returns errMessageTooLarge when the running byte count would exceed
+// maxSize (the check is incremental — no full buffer accumulation).
+// On success spill is positioned at EOF and spillSize holds the written
+// byte count. The caller owns the spill file; this function does not
+// close it. Use os.TempDir for the spill — acceptable for Phase 1 since
+// the content is also written to the blob store in finishMessage.
+func readDotStream(r *bufio.Reader, spill *os.File, maxSize int64) (spillSize int64, err error) {
+	var written int64
+	crlf := [2]byte{'\r', '\n'}
 	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil {
-			return nil, err
+		line, rerr := r.ReadBytes('\n')
+		if rerr != nil {
+			return 0, rerr
 		}
-		// Strip trailing CRLF/LF for inspection; we re-append CRLF
-		// canonically.
+		// Strip trailing CRLF/LF for inspection; we re-append CRLF canonically.
 		stripped := line
 		if n := len(stripped); n >= 2 && stripped[n-2] == '\r' && stripped[n-1] == '\n' {
 			stripped = stripped[:n-2]
@@ -1258,31 +1328,41 @@ func readDotStream(r *bufio.Reader, maxSize int64) ([]byte, error) {
 		}
 		// End-of-data marker.
 		if len(stripped) == 1 && stripped[0] == '.' {
-			return buf, nil
+			return written, nil
 		}
 		// Dot un-escape.
 		if len(stripped) > 0 && stripped[0] == '.' {
 			stripped = stripped[1:]
 		}
-		if int64(len(buf))+int64(len(stripped))+2 > maxSize {
+		// Incremental size check before writing (REQ-STORE-18).
+		if written+int64(len(stripped))+2 > maxSize {
 			// Drain to the real terminator so framing stays intact.
 			for {
-				nx, err := r.ReadBytes('\n')
-				if err != nil {
-					return nil, errMessageTooLarge
+				nx, nerr := r.ReadBytes('\n')
+				if nerr != nil {
+					return 0, errMessageTooLarge
 				}
 				if len(nx) >= 3 && nx[0] == '.' && (nx[1] == '\r' || nx[1] == '\n') {
 					break
 				}
-				// Cheap bail: after N drain rounds treat as closed.
 				if len(nx) > 0 && nx[len(nx)-1] == '\n' && string(nx[:len(nx)-1]) == "." {
 					break
 				}
 			}
-			return nil, errMessageTooLarge
+			return 0, errMessageTooLarge
 		}
-		buf = append(buf, stripped...)
-		buf = append(buf, '\r', '\n')
+		if len(stripped) > 0 {
+			n, werr := spill.Write(stripped)
+			if werr != nil {
+				return 0, werr
+			}
+			written += int64(n)
+		}
+		n, werr := spill.Write(crlf[:])
+		if werr != nil {
+			return 0, werr
+		}
+		written += int64(n)
 	}
 }
 

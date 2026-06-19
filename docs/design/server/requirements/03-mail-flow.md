@@ -23,7 +23,7 @@ No LMTP ingress in v1 — delivery is in-process (see `04-queue-and-delivery.md`
   4. RCPT TO: each recipient resolves to a local principal *or* is a valid relay target (authenticated submission only).
   5. Message SIZE ≤ listener limit.
 - **REQ-FLOW-02** After DATA, MUST parse the message headers before accepting 250 OK, to fail fast on malformed messages.
-- **REQ-FLOW-03** Acceptance MUST be durable — an accepted message is written to persistent storage (queue or mailbox) before the 250 OK is sent. No `fsync`-optional fast path.
+- **REQ-FLOW-03** Acceptance MUST be durable — an accepted message is written to persistent storage (queue or mailbox) before the 250 OK is sent. No `fsync`-optional fast path. The DATA / BDAT body MUST stream to secondary storage as it arrives and be processed from there; it is never accumulated whole in RAM (REQ-STORE-17..19). Header parsing (REQ-FLOW-02), the attachment-policy check (REQ-FLOW-ATTPOL-01/02), DKIM/auth, Sieve, and fan-out all read the persisted blob through a seekable handle, not an in-memory `[]byte`.
 - **REQ-FLOW-04** SMTP-layer rejection reasons (5xx) MUST be surfaced in RFC 3463 enhanced status codes and logged with the remote IP / EHLO / MAIL FROM / RCPT / reason.
 
 ### Delivery decisions

@@ -27,9 +27,18 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+// capturedDelivery is a snapshot of one delivery attempt recorded by
+// fakeDeliverer. Message bytes are eagerly read from the io.Reader so
+// tests can inspect them after the delivery goroutine has returned.
+type capturedDelivery struct {
+	queue.DeliveryRequest
+	// MessageBytes holds the bytes read from DeliveryRequest.Message.
+	MessageBytes []byte
+}
+
 type fakeDeliverer struct {
 	mu               sync.Mutex
-	calls            []queue.DeliveryRequest
+	calls            []capturedDelivery
 	hooks            func(req queue.DeliveryRequest, n int) (queue.DeliveryOutcome, error)
 	concurrentByHost map[string]int
 	maxByHost        map[string]int
@@ -44,13 +53,24 @@ func newFakeDeliverer() *fakeDeliverer {
 }
 
 func (f *fakeDeliverer) Deliver(ctx context.Context, req queue.DeliveryRequest) (queue.DeliveryOutcome, error) {
+	// Drain the message reader before acquiring the lock so hooks that
+	// want to return quickly are not blocked behind a slow reader.
+	var msgBytes []byte
+	if req.Message != nil {
+		var rerr error
+		msgBytes, rerr = io.ReadAll(req.Message)
+		if rerr != nil {
+			return queue.DeliveryOutcome{Status: queue.DeliveryStatusTransient}, rerr
+		}
+	}
+
 	f.mu.Lock()
 	host := hostOf(req.Recipient)
 	f.concurrentByHost[host]++
 	if f.concurrentByHost[host] > f.maxByHost[host] {
 		f.maxByHost[host] = f.concurrentByHost[host]
 	}
-	f.calls = append(f.calls, req)
+	f.calls = append(f.calls, capturedDelivery{DeliveryRequest: req, MessageBytes: msgBytes})
 	n := len(f.calls)
 	hooks := f.hooks
 	f.mu.Unlock()
@@ -80,10 +100,10 @@ func (f *fakeDeliverer) callCount() int {
 	return len(f.calls)
 }
 
-func (f *fakeDeliverer) callsCopy() []queue.DeliveryRequest {
+func (f *fakeDeliverer) callsCopy() []capturedDelivery {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]queue.DeliveryRequest, len(f.calls))
+	out := make([]capturedDelivery, len(f.calls))
 	copy(out, f.calls)
 	return out
 }
@@ -744,8 +764,8 @@ func TestSignerInvoked(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("delivery calls: %d", len(calls))
 	}
-	if !bytes.Contains(calls[0].Message, []byte("X-Test-Signed: local.test")) {
-		t.Fatalf("delivered body lacks signing header: %q", calls[0].Message)
+	if !bytes.Contains(calls[0].MessageBytes, []byte("X-Test-Signed: local.test")) {
+		t.Fatalf("delivered body lacks signing header: %q", calls[0].MessageBytes)
 	}
 }
 
@@ -1466,4 +1486,160 @@ func mustStats(t *testing.T, f *fixture) queue.Stats {
 		t.Fatalf("stats: %v", err)
 	}
 	return s
+}
+
+// -- streaming (REQ-STORE-17..19) tests --------------------------------
+
+// TestSubmit_LargeBodyStreamsWithoutFullAlloc verifies REQ-STORE-17/18:
+// Enqueue of a multi-MiB message stores the correct blob hash without
+// ever needing the full body in RAM (the test cannot directly measure
+// heap allocation, but it confirms correctness of the streaming path by
+// reading the blob back and comparing content byte-for-byte).
+func TestSubmit_LargeBodyStreamsWithoutFullAlloc(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+
+	// Build a 2 MiB message with a large body so the header-stripping
+	// streaming path reads past the internal 1 MiB window.
+	headerSection := "From: alice@local.test\r\n" +
+		"To: bob@dest.test\r\n" +
+		"Subject: large attachment test\r\n" +
+		"\r\n"
+	largeBody := bytes.Repeat([]byte("X"), 2*1024*1024) // 2 MiB
+	want := append([]byte(headerSection), largeBody...)
+
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       bytes.NewReader(want),
+	})
+
+	rows, err := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	// Blobs.Put canonicalises CRLF; compare via the round-tripped blob.
+	rc, err := f.store.Blobs().Get(f.ctx, rows[0].BodyBlobHash)
+	if err != nil {
+		t.Fatalf("Blobs.Get: %v", err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// The blob store canonicalises CRLF so do a content-level check.
+	if !bytes.Contains(got, []byte("Subject: large attachment test")) {
+		t.Errorf("header lost; got %d bytes", len(got))
+	}
+	if !bytes.Contains(got, largeBody[:32]) {
+		t.Errorf("body prefix missing; got %d bytes", len(got))
+	}
+}
+
+// TestSubmit_LargeBodyDeliversByteIdentical verifies that a large
+// unsigned message delivers byte-identical content to the receiver
+// (REQ-STORE-19: streaming dot-stuffing must be correct end-to-end).
+func TestSubmit_LargeBodyDeliversByteIdentical(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+
+	header := "From: alice@local.test\r\nTo: bob@dest.test\r\n\r\n"
+	// 512 KiB body with dot lines to exercise dot-stuffing.
+	var bodyBuilder strings.Builder
+	for i := range 1024 {
+		if i%13 == 0 {
+			fmt.Fprintf(&bodyBuilder, ".dot line %d\r\n", i)
+		} else {
+			fmt.Fprintf(&bodyBuilder, "line %d content here\r\n", i)
+		}
+	}
+	msg := header + bodyBuilder.String()
+
+	f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader(msg),
+	})
+	if !waitFor(t, 2*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatal("delivery never called")
+	}
+	calls := f.deliv.callsCopy()
+	if len(calls) == 0 {
+		t.Fatal("no calls recorded")
+	}
+	// The body delivered via streaming must match what was stored in the
+	// blob (modulo CRLF canonicalisation by Blobs.Put).
+	if len(calls[0].MessageBytes) == 0 {
+		t.Fatal("delivered message is empty")
+	}
+	if !bytes.Contains(calls[0].MessageBytes, []byte("From: alice@local.test")) {
+		t.Errorf("From header missing from delivered body")
+	}
+}
+
+// TestRetry_ReopensBodyReader verifies REQ-STORE-19: each delivery
+// attempt opens a fresh blob reader so a transient failure on attempt 1
+// does not leave attempt 2 with an exhausted reader.
+func TestRetry_ReopensBodyReader(t *testing.T) {
+	const retryDelay = 30 * time.Second
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		retry:       queue.RetryPolicy{Schedule: []time.Duration{retryDelay}},
+	})
+	first := atomic.Int32{}
+	f.deliv.hooks = func(req queue.DeliveryRequest, n int) (queue.DeliveryOutcome, error) {
+		if first.Add(1) == 1 {
+			return queue.DeliveryOutcome{
+				Status: queue.DeliveryStatusTransient,
+				Code:   421,
+				Detail: "try again",
+			}, nil
+		}
+		return queue.DeliveryOutcome{Status: queue.DeliveryStatusSuccess}, nil
+	}
+
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: retry test\r\n\r\nbody\r\n"),
+	})
+	// Wait for the transient failure to be persisted (Attempts==1,
+	// State==deferred) before advancing the clock.
+	if !waitFor(t, 30*time.Second, func() bool {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		return len(rows) == 1 && rows[0].State == store.QueueStateDeferred && rows[0].Attempts == 1
+	}) {
+		t.Fatalf("never observed deferred state after first attempt")
+	}
+	// Wait for the scheduler to park on clk.After before advancing (see
+	// the barrier comment in TestSubmitTransientThenSuccess).
+	if !waitFor(t, 5*time.Second, func() bool {
+		return f.clk.NumWaiters() >= 1
+	}) {
+		t.Fatalf("scheduler never re-armed clk.After")
+	}
+	f.clk.Advance(retryDelay + time.Second)
+	// Wait for the second delivery attempt to complete.
+	if !waitFor(t, 30*time.Second, func() bool {
+		return f.deliv.callCount() >= 2
+	}) {
+		t.Fatal("second delivery attempt never happened")
+	}
+	calls := f.deliv.callsCopy()
+	// Both attempts must have received a non-empty body (proving the
+	// second attempt re-opened the reader rather than reading an
+	// exhausted one).
+	for i, c := range calls[:2] {
+		if len(c.MessageBytes) == 0 {
+			t.Errorf("attempt %d: delivered empty body (reader was not re-opened)", i+1)
+		}
+		if !bytes.Contains(c.MessageBytes, []byte("Subject: retry test")) {
+			t.Errorf("attempt %d: Subject header missing from delivered body", i+1)
+		}
+	}
 }

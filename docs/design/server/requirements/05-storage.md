@@ -54,11 +54,19 @@ Both supported in CI; same test suite runs against both.
 - **REQ-STORE-11** Dedup: one blob, multiple mailbox references on fanout.
 - **REQ-STORE-12** Blob lifecycle: reference-counted. Deleted when refcount → 0 AND grace period elapsed (24h default).
 - **REQ-STORE-13** Blob writes atomic: write temp, fsync, rename.
-- **REQ-STORE-14** Blob reads streamable; no requirement to hold in RAM.
+- **REQ-STORE-14** Blob reads MUST be streamable and seekable/range-capable: the read API exposes a handle that supports sequential streaming and random access (`io.ReadSeeker` / `ReadAt` / range read) so a consumer can read headers, a bounded excerpt, or one part at a time without buffering the blob. Readers MUST NOT hold a blob whole in RAM (REQ-STORE-17).
 - **REQ-STORE-15** Blobs MAY be compressed at rest (zstd, off by default).
 - **REQ-STORE-16** **No application-level encryption at rest.** Operators run on encrypted volumes (LUKS / ZFS native / FileVault) if they need disk-level protection.
 
 Blob hash: **BLAKE3**, 32-byte output hex-encoded. 2-level (256×256) hex fan-out directory layout (`blobs/ab/cd/abcd...`).
+
+## Message residency — no full message or attachment in RAM
+
+Attachments routinely reach multiple gigabytes. The server processes mail with a working set bounded independently of message size: the raw message lives in secondary storage (the blob store, or a spill file before it is blobbed), and every stage reads it back from there. This invariant is server-wide and overrides any convenience of operating on an in-memory `[]byte`.
+
+- **REQ-STORE-17** No code path holds a complete message body — nor a complete attachment / MIME-part body — resident in RAM. Per-operation memory is a fixed streaming buffer, not a function of message size. The rule applies to every surface that handles a message or attachment: SMTP inbound (DATA and BDAT) and outbound-to-MX, the SES / relay ingest API, IMAP APPEND (including MULTIAPPEND), JMAP blob upload/download and `Email/get`/`set`/`import`/`EmailSubmission`, the HTTP send API, webhook raw-message delivery, attachment-share download, and FTS / attachment-text extraction.
+- **REQ-STORE-18** Inbound messages stream to secondary storage as the bytes arrive. The size limit (`MaxMessageSize`, and per-surface caps) is enforced incrementally during the stream, so an over-limit message is rejected without ever having been fully buffered. The content-addressed blob hash (REQ-STORE-10) is computed in the same streaming pass — no second full read to hash, and no full-message `[]byte` between receipt and persistence.
+- **REQ-STORE-19** Every post-receipt stage — MIME parse, DKIM/SPF/DMARC/ARC verify and sign, Sieve evaluation and mutation, spam classification, external-image internalization, threading, indexing, and per-recipient delivery — reads the persisted message through the seekable blob handle (REQ-STORE-14), materializing only bounded slices: headers, a body excerpt, or one streamed part at a time. Parsing for routing/threading/indexing MUST NOT decode whole attachment bodies into memory. Rewriting stages (Sieve editheader/MIME, extimg internalization) stream their output to a new blob; they do not return a full in-memory message. Egress is the mirror image: outbound delivery to a remote MX, webhook raw-message delivery, and client downloads (IMAP `FETCH BODY[...]`, JMAP download / `Email/get` with body) copy blob → connection through a bounded buffer, never loading the body whole into RAM to send it. (Download *rate* limiting is REQ-STORE-20..25 below; this rule is about *residency*.)
 
 ## Download rate limiting
 

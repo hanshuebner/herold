@@ -6,8 +6,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/mail"
+	"os"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/categorise"
@@ -22,12 +24,39 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// finishMessage is called by DATA / BDAT LAST. body is the CRLF-
-// normalised message content without the dot-stuffing. It runs the
-// delivery pipeline and emits the final 250 or transient/perm error
-// reply. On return the caller flushes and the command loop continues.
-func (sess *session) finishMessage(body []byte) {
+// finishMessage is called by DATA / BDAT LAST. spill is the open spill
+// file whose contents are the CRLF-normalised message body (no
+// dot-stuffing). It runs the delivery pipeline and emits the final 250
+// or transient/perm error reply. The spill file is NOT closed here; the
+// envelope's resetEnvelope handles cleanup on every exit path.
+func (sess *session) finishMessage(spill *os.File) {
 	ctx := sess.ctx
+
+	// Read a bounded slice from the spill for the stages that still
+	// need a []byte in Phase 1. The slice is bounded by MaxMessageSize
+	// so RAM residency stays bounded.
+	//
+	// TODO(REQ-STORE-19, Phase 2): read from the seekable blob handle
+	// once mailparse/maildkim/extimg are reader-based; bounded by
+	// MaxMessageSize until then.
+	if _, err := spill.Seek(0, io.SeekStart); err != nil {
+		sess.log.ErrorContext(ctx, "smtp data: spill seek",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(spill, sess.srv.opts.MaxMessageSize+1))
+	if err != nil {
+		sess.log.ErrorContext(ctx, "smtp data: spill read",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return
+	}
+
 	// Build the full stored message: prepend Received + (for relay-in)
 	// Authentication-Results. We delay AR computation until after the
 	// verifiers run below so it lands on the stored blob and is visible
@@ -82,29 +111,65 @@ func (sess *session) finishMessage(body []byte) {
 		authStr = renderAuthResults(sess.srv.opts.AuthservID, authResults)
 		authResults.Raw = authStr
 	}
-	// Assemble the raw message bytes we will store (prepend Received
-	// and Authentication-Results headers).
-	finalBytes := sess.assembleStoredBytes(body, authStr)
 
 	// REQ-EXTIMG-02: external-image internalization. Inbound only —
 	// outbound submission keeps body-fidelity to the recipient's MX.
 	// On any rewrite failure we keep the original bytes (REQ-EXTIMG-61).
+	//
+	// TODO(REQ-STORE-19, Phase 2): extimg.Internalize should accept a
+	// seekable reader rather than []byte; bounded by MaxMessageSize
+	// until then.
+	//
+	// Note: finalBytes starts as the raw body but may be replaced by the
+	// internalized version below before blob assembly.
+	finalBytes := body
 	if sess.mode == RelayIn && sess.srv.extImg.Mode == extimg.ModeInternalize {
+		// assembleStoredBytes is still used here because extimg.Internalize
+		// operates on the full assembled bytes (Received + AR + body). The
+		// streaming blob Put below avoids the second full copy by using the
+		// already-assembled finalBytes directly.
+		assembled := sess.assembleStoredBytes(body, authStr)
 		verdict := dkimVerdictFromAuth(authResults.DKIM)
-		rewritten, sum, ierr := extimg.Internalize(ctx, finalBytes, sess.srv.extImg, verdict)
+		rewritten, sum, ierr := extimg.Internalize(ctx, assembled, sess.srv.extImg, verdict)
 		if ierr == nil && sum.Modified {
-			finalBytes = rewritten
 			// Re-parse so deliverOne / Sieve see the rewritten body.
-			if msg2, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions()); perr == nil {
+			if msg2, perr2 := mailparse.Parse(bytes.NewReader(rewritten), mailparse.NewParseOptions()); perr2 == nil {
 				msg = msg2
 			}
+			// Persist the internalized blob directly (it's already assembled).
+			blobRef, err := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(rewritten))
+			if err != nil {
+				sess.log.ErrorContext(ctx, "smtp data: blob put (extimg) failed",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("err", err.Error()))
+				sess.writeReply("451 4.3.0 temporary storage failure")
+				sess.resetEnvelope()
+				return
+			}
+			finalBytes = rewritten
+			sess.logExtImgOutcome(ctx, sum, ierr)
+			sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
+			return
 		}
 		sess.logExtImgOutcome(ctx, sum, ierr)
 	}
 
-	// Persist the blob once; every recipient × mailbox refers to the
-	// same BlobRef.
-	blobRef, err := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(finalBytes))
+	// Persist the blob by streaming: write the Received +
+	// Authentication-Results header prefix, then stream the spill body,
+	// into Blobs().Put via an io.MultiReader. This eliminates the
+	// assembleStoredBytes full second copy (REQ-STORE-18). The blob
+	// hash is computed in-pass during this single streaming write.
+	headerPrefix := buildHeaderPrefix(sess.renderReceived(), authStr)
+	if _, err := spill.Seek(0, io.SeekStart); err != nil {
+		sess.log.ErrorContext(ctx, "smtp data: spill seek for put",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 temporary storage failure")
+		sess.resetEnvelope()
+		return
+	}
+	blobReader := io.MultiReader(bytes.NewReader(headerPrefix), spill)
+	blobRef, err := sess.srv.store.Blobs().Put(ctx, blobReader)
 	if err != nil {
 		sess.log.ErrorContext(ctx, "smtp data: blob put failed",
 			slog.String("activity", observe.ActivitySystem),
@@ -113,6 +178,42 @@ func (sess *session) finishMessage(body []byte) {
 		sess.resetEnvelope()
 		return
 	}
+	// Reconstruct finalBytes for the pipeline stages that still need
+	// a []byte in Phase 1.
+	finalBytes = append(headerPrefix, body...)
+	sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
+}
+
+// buildHeaderPrefix assembles the Received: (and optional
+// Authentication-Results:) header bytes that are prepended to the raw
+// body before the blob is stored. Separated from assembleStoredBytes so
+// the streaming Put path can feed it through an io.MultiReader without
+// copying the body a second time.
+func buildHeaderPrefix(received, authResults string) []byte {
+	var b bytes.Buffer
+	b.Grow(len(received) + len(authResults) + 40)
+	b.WriteString(received)
+	b.WriteString("\r\n")
+	if authResults != "" {
+		b.WriteString("Authentication-Results: ")
+		b.WriteString(authResults)
+		b.WriteString("\r\n")
+	}
+	return b.Bytes()
+}
+
+// finishMessageWithBlob runs the per-recipient delivery pipeline after
+// the blob has been persisted. Split out from finishMessage so the
+// extimg-rewrite path and the normal streaming path share one
+// implementation.
+func (sess *session) finishMessageWithBlob(
+	ctx context.Context,
+	finalBytes []byte,
+	blobRef store.BlobRef,
+	msg mailparse.Message,
+	authResults mailauth.AuthResults,
+	classification spam.Classification,
+) {
 
 	// Deliver per recipient.
 	var anyOK bool
@@ -237,7 +338,7 @@ func (sess *session) finishMessage(body []byte) {
 	if messageID != "" {
 		reply = fmt.Sprintf("250 2.6.0 %s accepted", messageID)
 	}
-	observe.SMTPMessagesAcceptedTotal.WithLabelValues(listenerLabel).Inc()
+	observe.SMTPMessagesAcceptedTotal.WithLabelValues(sess.mode.String()).Inc()
 	// Per REQ-OPS-86d: DATA accepted on submission → user/info;
 	// relay/inbound → system/info.
 	dataActivity := observe.ActivitySystem

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 
@@ -114,26 +115,25 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	authResults.Raw = authStr
 
 	// Prepend a Received: header in the same style as the SMTP session
-	// path to maintain pipeline uniformity.
+	// path to maintain pipeline uniformity. Build the header prefix as a
+	// separate []byte so we can stream it together with req.Body via an
+	// io.MultiReader — eliminating the full finalBuf copy for the blob Put
+	// (REQ-STORE-18). IngestBytes.Body is a []byte from the caller (SES
+	// path) so we cannot eliminate that allocation in Phase 1; the benefit
+	// here is removing the extra buffer that concatenated prefix + body.
 	received := fmt.Sprintf("Received: from %s via %s; %s",
 		sanitizeHeaderValue(req.SourceIP),
 		sanitizeHeaderValue(source),
 		s.clk.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	headerPrefix := buildHeaderPrefix(received, authStr)
 
-	var finalBuf bytes.Buffer
-	finalBuf.Grow(len(req.Body) + len(received) + 512)
-	finalBuf.WriteString(received)
-	finalBuf.WriteString("\r\n")
-	if authStr != "" {
-		finalBuf.WriteString("Authentication-Results: ")
-		finalBuf.WriteString(authStr)
-		finalBuf.WriteString("\r\n")
-	}
-	finalBuf.Write(req.Body)
-	finalBytes := finalBuf.Bytes()
-
-	// Parse message once.
-	msg, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions())
+	// TODO(REQ-STORE-19, Phase 2): read from the seekable blob handle once
+	// mailparse/maildkim/extimg are reader-based; bounded by MaxMessageSize
+	// until then.
+	// Parse message once (operate on the raw body, not the assembled bytes;
+	// parsing from headerPrefix+body avoids the double copy).
+	assembledBytes := append(headerPrefix, req.Body...)
+	msg, perr := mailparse.Parse(bytes.NewReader(assembledBytes), mailparse.NewParseOptions())
 	if perr != nil {
 		s.log.InfoContext(ctx, "ingest: parse failed",
 			slog.String("activity", observe.ActivitySystem),
@@ -164,13 +164,22 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		}
 	}
 
+	// finalBytes holds the assembled message used by downstream pipeline
+	// stages and for the blob Put. Initially it is the combined header
+	// prefix + body; extimg may replace it with a rewritten copy.
+	finalBytes := assembledBytes
+	extimgRewritten := false
+
 	// REQ-EXTIMG-02: external-image internalization. Same hook as the
 	// SMTP DATA path; ingest is always inbound so no mode check.
+	// TODO(REQ-STORE-19, Phase 2): extimg.Internalize should accept a
+	// seekable reader; bounded by MaxMessageSize until then.
 	if s.extImg.Mode == extimg.ModeInternalize {
 		verdict := dkimVerdictFromAuth(authResults.DKIM)
 		rewritten, sum, ierr := extimg.Internalize(ctx, finalBytes, s.extImg, verdict)
 		if ierr == nil && sum.Modified {
 			finalBytes = rewritten
+			extimgRewritten = true
 			if msg2, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions()); perr == nil {
 				msg = msg2
 			}
@@ -192,14 +201,30 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			slog.Int("failed", sum.Failed))
 	}
 
-	// Persist the blob once; every recipient references the same BlobRef.
-	blobRef, err := s.store.Blobs().Put(ctx, bytes.NewReader(finalBytes))
-	if err != nil {
+	// Persist the blob. When extimg did not rewrite the message, stream
+	// the header prefix and the body through an io.MultiReader to avoid
+	// holding assembled finalBytes in RAM twice (REQ-STORE-18). The
+	// headerPrefix is a separate allocation that shares no backing array
+	// with req.Body, so the MultiReader is effectively zero-copy for the
+	// Put path. IngestBytes.Body arrives as a []byte from the caller (SES
+	// path, Phase 1) so we cannot eliminate that caller-side allocation;
+	// the benefit here is not building a second concatenated copy.
+	var blobRef store.BlobRef
+	var blobErr error
+	if !extimgRewritten {
+		// No rewrite: stream header prefix + body via MultiReader.
+		blobRef, blobErr = s.store.Blobs().Put(ctx,
+			io.MultiReader(bytes.NewReader(headerPrefix), bytes.NewReader(req.Body)))
+	} else {
+		// extimg rewrote: finalBytes is a fresh allocation; put directly.
+		blobRef, blobErr = s.store.Blobs().Put(ctx, bytes.NewReader(finalBytes))
+	}
+	if blobErr != nil {
 		s.log.ErrorContext(ctx, "ingest: blob put failed",
 			slog.String("activity", observe.ActivitySystem),
 			slog.String("subsystem", "protosmtp"),
-			slog.String("err", err.Error()))
-		return fmt.Errorf("protosmtp.IngestBytes: blob put: %w", err)
+			slog.String("err", blobErr.Error()))
+		return fmt.Errorf("protosmtp.IngestBytes: blob put: %w", blobErr)
 	}
 
 	// Deliver per recipient.

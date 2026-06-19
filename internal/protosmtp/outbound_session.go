@@ -18,6 +18,12 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// dotStuffBufSize is the fixed read-buffer size used by writeDotStuffed.
+// 32 KiB is large enough to amortise syscall overhead on typical messages
+// while keeping the per-delivery stack footprint constant regardless of
+// message size (REQ-STORE-17).
+const dotStuffBufSize = 32 * 1024
+
 // outboundSession is the per-MX SMTP exchange. One session is built per
 // dial attempt; the underlying conn is owned exclusively by the session
 // for its lifetime and closed in deliverToMX's defer.
@@ -605,31 +611,64 @@ func buildRcptToLine(req DeliveryRequest, sess *outboundSession) string {
 }
 
 // writeDotStuffed copies body to w with RFC 5321 §4.5.2 transparency: a
-// line beginning with '.' is escaped to "..". Lines are CRLF-terminated;
-// callers ensure the input already has CRLF endings.
-func writeDotStuffed(w *bufio.Writer, body []byte) error {
-	// Split into lines on "\r\n" (or bare "\n" defensively). For each
-	// line, prepend an extra "." when the line itself begins with '.'.
-	for len(body) > 0 {
-		idx := bytes.IndexByte(body, '\n')
-		var line []byte
-		if idx < 0 {
-			line = body
-			body = nil
-		} else {
-			line = body[:idx+1]
-			body = body[idx+1:]
-		}
-		if len(line) > 0 && line[0] == '.' {
-			if err := w.WriteByte('.'); err != nil {
-				return err
+// line beginning with '.' is escaped to "..". The input is consumed as a
+// stream through a fixed dotStuffBufSize buffer — the working set is
+// constant regardless of message size (REQ-STORE-17, REQ-STORE-19).
+//
+// The function is binary-safe (8BITMIME/BINARYMIME bodies pass through
+// unchanged) and handles both CRLF and bare-LF line endings; both forms
+// advance the "at line start" cursor. Arbitrarily long lines are handled
+// correctly because we never buffer a whole line — we only track whether
+// the next byte will be the first on a new line.
+//
+// The caller is responsible for writing the ".\r\n" DATA terminator after
+// this function returns.
+func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
+	buf := make([]byte, dotStuffBufSize)
+	// The DATA body starts immediately after the 354 reply; by RFC 5321
+	// §4.5.2 transparency applies from the first byte of the body, which
+	// is implicitly at the start of a line.
+	atLineStart := true
+	for {
+		n, readErr := body.Read(buf)
+		chunk := buf[:n]
+		i := 0
+		for i < len(chunk) {
+			// Dot-stuff: if we are at the start of a line and the next
+			// byte is '.', emit an extra '.' before it.
+			if atLineStart && chunk[i] == '.' {
+				if err := w.WriteByte('.'); err != nil {
+					return err
+				}
+			}
+			// Advance to the next '\n' (which marks the end of the
+			// current line — both '\r\n' and bare '\n' are covered).
+			j := bytes.IndexByte(chunk[i:], '\n')
+			if j < 0 {
+				// No newline in the remaining slice: write it all out;
+				// we are still mid-line after this chunk.
+				if _, err := w.Write(chunk[i:]); err != nil {
+					return err
+				}
+				atLineStart = false
+				i = len(chunk)
+			} else {
+				// Write up to and including the '\n'; the byte after it
+				// is the start of the next line.
+				if _, err := w.Write(chunk[i : i+j+1]); err != nil {
+					return err
+				}
+				atLineStart = true
+				i += j + 1
 			}
 		}
-		if _, err := w.Write(line); err != nil {
-			return err
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
 		}
 	}
-	return nil
 }
 
 // _ keeps the store import alive on builds that elide unused imports;

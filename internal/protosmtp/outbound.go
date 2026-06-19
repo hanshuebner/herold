@@ -194,7 +194,7 @@ func (c *Client) Deliver(ctx context.Context, req DeliveryRequest) (DeliveryOutc
 	if req.RcptTo == "" {
 		return DeliveryOutcome{}, errors.New("protosmtp: DeliveryRequest.RcptTo required")
 	}
-	if len(req.Message) == 0 {
+	if req.Message == nil {
 		return DeliveryOutcome{}, errors.New("protosmtp: DeliveryRequest.Message required")
 	}
 	startedAt := c.clk.Now()

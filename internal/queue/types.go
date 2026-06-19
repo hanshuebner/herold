@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -80,7 +81,7 @@ type PolicyHints struct {
 
 // DeliveryRequest is the orchestrator's call to the wire-side
 // Deliverer. The orchestrator decides MailFrom, Recipient, and the
-// fully-built message bytes; the deliverer chooses MX, dials, and
+// fully-built message stream; the deliverer chooses MX, dials, and
 // reports per-recipient outcome.
 type DeliveryRequest struct {
 	// MailFrom is the SMTP MAIL FROM (reverse-path). Empty string
@@ -90,9 +91,12 @@ type DeliveryRequest struct {
 	// delivery. The orchestrator never batches multiple recipients into
 	// one DeliveryRequest; one queue row is one DeliveryRequest.
 	Recipient string
-	// Message is the fully-rendered message bytes (post-signing if the
-	// caller asked for signing). Includes headers + CRLF + body.
-	Message []byte
+	// Message is the fully-rendered message stream (post-signing if the
+	// caller asked for signing). Includes headers + CRLF + body. The
+	// deliverer must consume the reader exactly once; the orchestrator
+	// opens a fresh blob handle per attempt so retries are correct
+	// (REQ-STORE-17, REQ-STORE-19).
+	Message io.Reader
 	// REQUIRETLS mirrors RFC 8689: when true the deliverer must not
 	// fall back to plaintext.
 	REQUIRETLS bool

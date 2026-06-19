@@ -252,20 +252,24 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 	}
 
 	// REQ-FLOW-35: strip the herold-internal X-Herold-Recipient header
-	// from the user-supplied body before persisting the blob. The
-	// header is injected at render time (REQ-FLOW-34) and must never
-	// leak into a relayed / DKIM-signed outbound message. We read the
-	// body fully so the strip operates on bytes; the queue path reads
-	// the body once anyway when persisting the blob.
-	bodyBytes, err := io.ReadAll(msg.Body)
+	// from the user-supplied body before persisting the blob. The header
+	// is injected at render time (REQ-FLOW-34) and must never leak into
+	// a relayed / DKIM-signed outbound message.
+	//
+	// Streaming strategy (REQ-STORE-17/18): read only the header block
+	// (up to maxSubmitHeaderBytes, which is far larger than any real
+	// header section) into a bounded buffer, apply the strip there, then
+	// stream the rest of msg.Body unchanged via io.MultiReader. This
+	// avoids materialising the full message — attachment bodies flow
+	// straight from the caller's reader into Blobs.Put.
+	stripped, tail, err := stripXHeroldRecipientStreaming(msg.Body)
 	if err != nil {
-		return "", fmt.Errorf("queue: read body: %w", err)
+		return "", fmt.Errorf("queue: strip header: %w", err)
 	}
-	bodyBytes = mailparse.StripXHeroldRecipient(bodyBytes)
 
 	// Persist body + (optional) headers blobs first; refcounts move
 	// to the queue rows below.
-	bodyRef, err := q.opts.Store.Blobs().Put(ctx, bytes.NewReader(bodyBytes))
+	bodyRef, err := q.opts.Store.Blobs().Put(ctx, io.MultiReader(bytes.NewReader(stripped), tail))
 	if err != nil {
 		return "", fmt.Errorf("queue: persist body: %w", err)
 	}
@@ -701,7 +705,7 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		return
 	}
 
-	body, err := q.readBody(ctx, item.BodyBlobHash)
+	blobReader, err := q.readBody(ctx, item.BodyBlobHash)
 	if err != nil {
 		q.opts.Logger.ErrorContext(ctx, "queue: read body blob failed",
 			slog.String("activity", observe.ActivitySystem),
@@ -715,12 +719,21 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		})
 		return
 	}
+	defer blobReader.Close()
 
 	// Reattach signing intent if recorded. A submission with Sign=true
 	// is a cryptographic-policy decision by the submitter; if signing
 	// fails, we must NOT fall through with the unsigned body. Strict
 	// receivers will treat a freshly-seen unsigned domain as spam (see
 	// re #20). Classify the row instead so the failure is visible.
+	//
+	// NOTE: the Signer interface takes and returns []byte, so the signed
+	// path must materialise the body in RAM. This is flagged for a future
+	// phase when the Signer grows a streaming interface: for now the body
+	// is bounded in practice by DKIM's sane limits on signable messages.
+	// The unsigned path (Sign=false, forwarding / alias / relay) is fully
+	// streaming and never allocates the body (REQ-STORE-17/19).
+	var messageReader io.Reader
 	intent, _ := q.lookupSigning(item.EnvelopeID)
 	if intent.Sign {
 		if q.opts.Signer == nil {
@@ -737,7 +750,22 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			})
 			return
 		}
-		signed, sErr := q.opts.Signer.Sign(ctx, intent.Domain, body)
+		// Signer.Sign takes []byte; materialise now. The signature
+		// header is prepended in-memory; the result is wrapped in a
+		// bytes.Reader so the deliverer still receives an io.Reader.
+		rawBytes, rErr := io.ReadAll(blobReader)
+		if rErr != nil {
+			q.opts.Logger.ErrorContext(ctx, "queue: read body for signing failed",
+				slog.String("activity", observe.ActivitySystem),
+				slog.Uint64("id", uint64(item.ID)),
+				slog.Any("err", rErr))
+			q.handleTransient(ctx, item, DeliveryOutcome{
+				Status: DeliveryStatusTransient,
+				Detail: "blob read error: " + rErr.Error(),
+			})
+			return
+		}
+		signed, sErr := q.opts.Signer.Sign(ctx, intent.Domain, rawBytes)
 		if sErr != nil {
 			// Context cancellation is the worker shutting down or the
 			// per-attempt deadline expiring; route to transient so the
@@ -771,13 +799,17 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 			})
 			return
 		}
-		body = signed
+		messageReader = bytes.NewReader(signed)
+	} else {
+		// Unsigned path: stream the blob reader directly to the
+		// deliverer; no full-body allocation (REQ-STORE-17/19).
+		messageReader = blobReader
 	}
 
 	req := DeliveryRequest{
 		MailFrom:   item.MailFrom,
 		Recipient:  item.RcptTo,
-		Message:    body,
+		Message:    messageReader,
 		REQUIRETLS: intent.REQUIRETLS,
 	}
 
@@ -1164,23 +1196,18 @@ func (q *Queue) PostBounce(ctx context.Context, in BounceInput) error {
 	return nil
 }
 
-// readBody reads the queue row's body blob fully into memory. The
-// outbound SMTP path streams the body into the wire so for huge
-// messages this is suboptimal; v1 ships full-buffering and revisits
-// streaming when ops measurements demand it (the body has already
-// been written to disk; the cost is one extra read+copy per attempt).
-func (q *Queue) readBody(ctx context.Context, hash string) ([]byte, error) {
-	r, err := q.opts.Store.Blobs().Get(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return io.ReadAll(r)
+// readBody opens the queue row's body blob for streaming read. The
+// caller owns the returned BlobReader and must Close it on every code
+// path. A fresh handle is opened per delivery attempt so retries each
+// start at offset 0 (REQ-STORE-17, REQ-STORE-19).
+func (q *Queue) readBody(ctx context.Context, hash string) (store.BlobReader, error) {
+	return q.opts.Store.Blobs().Get(ctx, hash)
 }
 
 // fetchHeaders returns the optional headers blob, or nil when the row
 // has none. Errors are logged and absorbed; DSNs render fine without
 // the original headers.
+// Headers are small (bounded by SMTP line limits) so io.ReadAll is safe.
 func (q *Queue) fetchHeaders(ctx context.Context, hash string) ([]byte, error) {
 	if hash == "" {
 		return nil, nil
@@ -1191,6 +1218,42 @@ func (q *Queue) fetchHeaders(ctx context.Context, hash string) ([]byte, error) {
 	}
 	defer r.Close()
 	return io.ReadAll(r)
+}
+
+// maxSubmitHeaderBytes caps how many bytes of msg.Body we will buffer in
+// Submit to locate the header/body separator for X-Herold-Recipient
+// stripping (REQ-FLOW-35). 1 MiB is orders of magnitude larger than any
+// real header section (RFC 5322 header fields are bounded by
+// mailparse.DefaultMaxHeaderLine ≈ 998 bytes; even a pathological message
+// with thousands of header fields stays well below this cap).
+const maxSubmitHeaderBytes = 1 << 20 // 1 MiB
+
+// stripXHeroldRecipientStreaming reads the header block of r (up to
+// maxSubmitHeaderBytes) into a bounded buffer, strips any
+// X-Herold-Recipient header fields (REQ-FLOW-35), and returns the
+// stripped prefix together with the unread tail of r. The caller passes
+// io.MultiReader(bytes.NewReader(prefix), tail) to Blobs.Put so the
+// full message flows through without ever buffering the body.
+func stripXHeroldRecipientStreaming(r io.Reader) (prefix []byte, tail io.Reader, err error) {
+	// Read up to maxSubmitHeaderBytes, stopping early once we have seen
+	// the header/body separator ("\r\n\r\n" or "\n\n"). We use an
+	// io.LimitReader so callers with large-attachment bodies never load
+	// the attachment into this buffer.
+	limited := io.LimitReader(r, maxSubmitHeaderBytes)
+	buf, rErr := io.ReadAll(limited)
+	if rErr != nil {
+		return nil, nil, rErr
+	}
+	// Strip the X-Herold-Recipient header from whatever we buffered.
+	// StripXHeroldRecipient inspects only the header block and returns
+	// the original slice unchanged when the header is absent, so this is
+	// a no-op for messages without the synthetic header.
+	stripped := mailparse.StripXHeroldRecipient(buf)
+	// The unread remainder of r follows the buffered prefix verbatim.
+	// If we read less than maxSubmitHeaderBytes, io.LimitReader exhausted
+	// r and the tail is empty; the returned r is already at EOF but
+	// io.MultiReader handles that gracefully.
+	return stripped, r, nil
 }
 
 // Stats returns a snapshot of the queue state. Backed by

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 
@@ -157,8 +158,19 @@ func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 			slog.String("recipient", req.Recipient),
 			slog.String("mail_from", req.MailFrom))
 	}
+	// IngestRequest.Body is []byte; materialise the streamed message here.
+	// The loopback path delivers to a local principal over an in-process
+	// call, so the body is always bounded by the server's inbound message
+	// size limit. A future phase may give IngestBytes a streaming API.
+	msgBytes, rerr := io.ReadAll(req.Message)
+	if rerr != nil {
+		return queue.DeliveryOutcome{
+			Status: queue.DeliveryStatusTransient,
+			Detail: "loopback: read message: " + rerr.Error(),
+		}, rerr
+	}
 	if err := d.smtp.IngestBytes(ctx, protosmtp.IngestRequest{
-		Body:         req.Message,
+		Body:         msgBytes,
 		MailFrom:     req.MailFrom,
 		SourceIP:     "127.0.0.1",
 		IngestSource: "loopback",

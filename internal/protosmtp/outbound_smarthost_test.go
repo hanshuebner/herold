@@ -451,7 +451,7 @@ func TestSmartHost_PLAIN_HappyPath_STARTTLS(t *testing.T) {
 	out, err := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "noreply@client.test",
 		RcptTo:   "bob@example.com",
-		Message:  []byte("Subject: test\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: test\r\n\r\nbody\r\n")),
 	})
 	if err != nil {
 		t.Fatalf("Deliver: %v", err)
@@ -500,7 +500,7 @@ func TestSmartHost_LOGIN(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("LOGIN: status %v diag=%q", out.Status, out.Diagnostic)
@@ -542,7 +542,7 @@ func TestSmartHost_XOAUTH2(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("XOAUTH2: status %v diag=%q", out.Status, out.Diagnostic)
@@ -584,7 +584,7 @@ func TestSmartHost_SCRAM(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("SCRAM: status %v diag=%q", out.Status, out.Diagnostic)
@@ -626,7 +626,7 @@ func TestSmartHost_ImplicitTLS(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("implicit-TLS: status %v diag=%q", out.Status, out.Diagnostic)
@@ -663,7 +663,7 @@ func TestSmartHost_NoAuth_NoTLS(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("no-auth: status %v diag=%q", out.Status, out.Diagnostic)
@@ -707,7 +707,7 @@ func TestSmartHost_5xxFinal_Permanent(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliveryPermanent {
 		t.Fatalf("status: %v diag=%q", out.Status, out.Diagnostic)
@@ -751,7 +751,7 @@ func TestSmartHost_4xxFinal_Transient(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliveryTransient {
 		t.Fatalf("status: %v diag=%q", out.Status, out.Diagnostic)
@@ -794,7 +794,7 @@ func TestSmartHost_AuthFailure_Permanent(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliveryPermanent {
 		t.Fatalf("status: %v diag=%q", out.Status, out.Diagnostic)
@@ -853,7 +853,7 @@ func TestSmartHost_PerDomainOverride(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "user@corp.example.com",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliverySuccess {
 		t.Fatalf("override: status %v diag=%q", out.Status, out.Diagnostic)
@@ -880,7 +880,7 @@ func TestSmartHost_Netguard_Refuses_Loopback(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliveryPermanent {
 		t.Fatalf("expected permanent, got %v diag=%q", out.Status, out.Diagnostic)
@@ -915,7 +915,7 @@ func TestSmartHost_ConnectionRefused_OnlyPolicy_Permanent(t *testing.T) {
 	out, _ := c.Deliver(context.Background(), protosmtp.DeliveryRequest{
 		MailFrom: "n@a.test",
 		RcptTo:   "b@b.test",
-		Message:  []byte("Subject: x\r\n\r\nbody\r\n"),
+		Message:  bytes.NewReader([]byte("Subject: x\r\n\r\nbody\r\n")),
 	})
 	if out.Status != protosmtp.DeliveryTransient {
 		t.Fatalf("expected transient on connection refused, got %v diag=%q", out.Status, out.Diagnostic)

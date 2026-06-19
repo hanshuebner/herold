@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestLoopback_LocalRecipient_RoutesToIngest(t *testing.T) {
 	out, err := d.Deliver(context.Background(), queue.DeliveryRequest{
 		MailFrom:  "alice@example.local",
 		Recipient: "alice@example.local",
-		Message:   []byte("body"),
+		Message:   strings.NewReader("body"),
 	})
 	if err != nil {
 		t.Fatalf("Deliver: %v", err)
@@ -118,7 +119,7 @@ func TestLoopback_NonLocalRecipient_FallsThrough(t *testing.T) {
 		inner: inner, smtp: ing, meta: fs.Meta(), dir: dir, log: discardLog(),
 	}
 	if _, err := d.Deliver(context.Background(), queue.DeliveryRequest{
-		MailFrom: "alice@example.local", Recipient: "bob@example.com", Message: []byte("body"),
+		MailFrom: "alice@example.local", Recipient: "bob@example.com", Message: strings.NewReader("body"),
 	}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestLoopback_LocalDomain_UnknownRecipient_PermanentFail(t *testing.T) {
 		inner: inner, smtp: ing, meta: fs.Meta(), dir: dir, log: discardLog(),
 	}
 	out, err := d.Deliver(context.Background(), queue.DeliveryRequest{
-		MailFrom: "alice@example.local", Recipient: "ghost@example.local", Message: []byte("body"),
+		MailFrom: "alice@example.local", Recipient: "ghost@example.local", Message: strings.NewReader("body"),
 	})
 	if err != nil {
 		t.Fatalf("Deliver: %v", err)
@@ -168,7 +169,7 @@ func TestLoopback_IngestError_Transient(t *testing.T) {
 		inner: inner, smtp: ing, meta: fs.Meta(), dir: dir, log: discardLog(),
 	}
 	out, _ := d.Deliver(context.Background(), queue.DeliveryRequest{
-		MailFrom: "alice@example.local", Recipient: "alice@example.local", Message: []byte("body"),
+		MailFrom: "alice@example.local", Recipient: "alice@example.local", Message: strings.NewReader("body"),
 	})
 	if out.Status != queue.DeliveryStatusTransient {
 		t.Fatalf("status = %v, want Transient", out.Status)
