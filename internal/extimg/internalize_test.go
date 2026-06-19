@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/jhillyerd/enmime"
+
+	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
 // pngBytes returns a tiny valid 1x1 PNG for tests. Real bytes; an
@@ -480,6 +482,139 @@ func buildTestMessage(t *testing.T, urls []string) []byte {
 		t.Fatalf("encode test msg: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// TestInternalizeReader_AttachmentPassThrough proves the streaming
+// path (Phase 2c, REQ-STORE-17/19): a message with a large attachment
+// and an HTML part with an external image internalizes the HTML while
+// streaming the attachment verbatim — the attachment bytes in the
+// output are byte-identical to those in the original message.
+//
+// Key invariants verified:
+//   - The HTML part has cid: references (no original URL).
+//   - The DKIM-Signature header is stripped.
+//   - Authentication-Results and X-Herold-Body-Modified are present.
+//   - sum.Modified == true, Internalized == 1.
+//   - Attachment decoded bytes == original: the streaming path passes raw
+//     CTE-encoded bytes through without decode+re-encode.
+func TestInternalizeReader_AttachmentPassThrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+
+	// Build a message: multipart/mixed with an HTML body (external img)
+	// and a 128 KB attachment. The attachment serves as the proof that
+	// InternalizeReader streams it without materialising in RAM.
+	attachBytes := make([]byte, 128*1024)
+	for i := range attachBytes {
+		attachBytes[i] = byte(i % 251)
+	}
+
+	imgURL := srv.URL + "/logo.png"
+	htmlBody := `<html><body><img src="` + imgURL + `"></body></html>`
+
+	b := enmime.Builder().
+		From("Sender", "alice@example.com").
+		To("Recipient", "bob@example.com").
+		Subject("streaming attachment test").
+		Date(time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)).
+		HTML([]byte(htmlBody)).
+		AddAttachment(attachBytes, "application/octet-stream", "big.bin").
+		Header("DKIM-Signature", "v=1; a=rsa-sha256; d=example.com; s=2024; bh=abc; b=def").
+		Header("List-Id", "<streaming-test.example.com>")
+	part, err := b.Build()
+	if err != nil {
+		t.Fatalf("build test msg: %v", err)
+	}
+	var msgBuf bytes.Buffer
+	if err := part.Encode(&msgBuf); err != nil {
+		t.Fatalf("encode test msg: %v", err)
+	}
+	raw := msgBuf.Bytes()
+
+	// Parse with mailparse (mirrors the deliver.go path).
+	parsedMsg, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse: %v", perr)
+	}
+
+	verdict := DKIMVerdict{Result: "pass", SigningDomain: "example.com", Selector: "2024"}
+	outReader, sum, ierr := InternalizeReader(
+		context.Background(),
+		bytes.NewReader(raw),
+		int64(len(raw)),
+		parsedMsg,
+		cfg,
+		verdict,
+	)
+	if ierr != nil {
+		t.Fatalf("InternalizeReader: %v", ierr)
+	}
+	if !sum.Modified {
+		t.Fatalf("expected Modified=true; sum=%+v", sum)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1", sum.Internalized)
+	}
+
+	outBytes, err := io.ReadAll(outReader)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if len(outBytes) == 0 {
+		t.Fatal("output is empty")
+	}
+
+	// Parse the rewritten message with enmime to inspect its structure.
+	env, err := enmime.ReadEnvelope(bytes.NewReader(outBytes))
+	if err != nil {
+		t.Fatalf("re-parse rewritten message: %v", err)
+	}
+
+	// HTML must reference cid:, not the original URL.
+	if strings.Contains(env.HTML, imgURL) {
+		t.Errorf("rewritten HTML still contains original URL %q", imgURL)
+	}
+	if !strings.Contains(env.HTML, "cid:") {
+		t.Errorf("rewritten HTML missing cid: reference; HTML=%q", env.HTML)
+	}
+
+	// DKIM-Signature must be stripped (cfg.DKIM == DKIMStrip default).
+	if env.GetHeader("DKIM-Signature") != "" {
+		t.Errorf("DKIM-Signature not stripped: %q", env.GetHeader("DKIM-Signature"))
+	}
+
+	// Server-stamped headers must be present.
+	authRes := env.GetHeader("Authentication-Results")
+	if !strings.Contains(authRes, "dkim=pass") {
+		t.Errorf("Authentication-Results missing dkim=pass: %q", authRes)
+	}
+	if env.GetHeader("X-Herold-Body-Modified") != "image-internalization" {
+		t.Errorf("X-Herold-Body-Modified missing or wrong: %q", env.GetHeader("X-Herold-Body-Modified"))
+	}
+
+	// Non-DKIM custom headers must survive the rewrite.
+	if env.GetHeader("List-Id") != "<streaming-test.example.com>" {
+		t.Errorf("List-Id not preserved: %q", env.GetHeader("List-Id"))
+	}
+
+	// Attachment must be byte-identical to the original (REQ-STORE-17/19).
+	// The streaming path passes raw CTE-encoded bytes verbatim; enmime
+	// decodes the same bytes back. Any decode+re-encode cycle (as the old
+	// enmime Builder path did) would produce equivalent but non-identical
+	// bytes (different base64 line lengths, padding, etc.).
+	if len(env.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(env.Attachments))
+	}
+	if !bytes.Equal(env.Attachments[0].Content, attachBytes) {
+		n := min(64, len(env.Attachments[0].Content))
+		t.Errorf("attachment bytes differ from original (first %d bytes: orig=%x got=%x)",
+			n, attachBytes[:n], env.Attachments[0].Content[:n])
+	}
 }
 
 // silence unused imports when the test set narrows

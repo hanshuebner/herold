@@ -5,35 +5,72 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 )
 
-// ApplyMutations rewrites raw per the body- and header-edit actions in
-// outcome and returns the new bytes. RFC 5293 (editheader) and RFC 5703
-// (replace, enclose) are both honoured. Mutations are applied in source
-// order so a script that adds a header then encloses gets the header
-// inside the inner part of the enclosure, matching script intent.
-//
-// changed is true exactly when the function rewrote raw — i.e. when
-// outcome carries at least one header- or body-edit action. Callers
-// gate the re-blob and re-parse work on this flag rather than doing a
-// memcmp against the original raw bytes; the memcmp is O(message size)
-// and the SMTP delivery path runs the gate per recipient.
-//
-// err is non-nil only when raw cannot be split into a header section
-// + body — i.e. when the input is not a well-formed RFC 5322 message.
-func ApplyMutations(raw []byte, outcome Outcome) (out []byte, changed bool, err error) {
-	if !HasMutations(outcome) {
-		return raw, false, nil
-	}
-	headerEnd := findHeaderEnd(raw)
-	if headerEnd < 0 {
-		return nil, false, fmt.Errorf("sieve: ApplyMutations: no header/body separator")
-	}
-	headerSection := raw[:headerEnd]
-	body := raw[headerEnd:]
+// maxHeaderReadSize is the upper bound on the header block we buffer when
+// reading from a seekable source. Matches maildkim.maxHeaderSize (256 KiB);
+// any well-formed RFC 5322 header section fits comfortably within this limit.
+const maxHeaderReadSize = 256 * 1024
 
-	headers := headerSection
+// ApplyMutations streams the message from src (size bytes total) through
+// the body- and header-edit actions in outcome, writing the result to dst.
+// src must implement io.ReaderAt so the body can be copied via an
+// io.SectionReader without loading it into RAM (REQ-STORE-17/19).
+//
+// For AddHeader/DeleteHeader (the common editheader case): only the header
+// block is buffered (bounded by maxHeaderReadSize = 256 KiB). The unmodified
+// body is copied from src to dst via io.SectionReader, never held in RAM.
+//
+// For Replace (top-level): the header block is buffered, the new body comes
+// from a.ReplaceBody (a small script-supplied []byte). The original body is
+// not read.
+//
+// For Replace (per-leaf, inside foreverypart): the body is read into memory
+// so the existing multipart splitter/assembler can locate and swap the
+// targeted leaf. The header remains bounded.
+//
+// For Enclose: the header block is buffered to extract Subject/From/To for
+// the outer wrapper. The original message is then streamed verbatim into the
+// embedded message/rfc822 MIME part via io.NewSectionReader — no full-message
+// copy in RAM.
+//
+// changed is false exactly when HasMutations(outcome) is false: in that case
+// dst is not written to and src is not read from.
+//
+// RFC 5293 (editheader) and RFC 5703 (replace, enclose) are both honoured.
+// Mutations are applied in source order so a script that adds a header then
+// encloses gets the header inside the inner part of the enclosure, matching
+// script intent.
+func ApplyMutations(src io.ReaderAt, size int64, outcome Outcome, dst io.Writer) (changed bool, err error) {
+	if !HasMutations(outcome) {
+		return false, nil
+	}
+
+	// Read the bounded header block from src.
+	headerBytes, headerEnd, err := readHeaderBlock(src, size)
+	if err != nil {
+		return false, err
+	}
+
+	// Classify the mutations: does the outcome contain any body-replacement
+	// action (Replace or Enclose)? If yes, use the body-replacement path
+	// which routes Replace/Enclose separately. Header-only edits always go
+	// through the streaming path.
+	hasReplace := false
+	hasEnclose := false
+	for _, a := range outcome.Actions {
+		switch a.Kind {
+		case ActionReplace:
+			hasReplace = true
+		case ActionEnclose:
+			hasEnclose = true
+		}
+	}
+
+	// Phase 1: apply all AddHeader/DeleteHeader mutations to the header block.
+	headers := headerBytes
 	for _, a := range outcome.Actions {
 		switch a.Kind {
 		case ActionAddHeader:
@@ -42,18 +79,118 @@ func ApplyMutations(raw []byte, outcome Outcome) (out []byte, changed bool, err 
 			headers = applyDeleteHeader(headers, a.HeaderName)
 		}
 	}
-	combined := append([]byte{}, headers...)
-	combined = append(combined, body...)
 
+	// If there are no body mutations, use the fully streaming path:
+	// write the modified header block, then copy the body via SectionReader.
+	// (REQ-STORE-17: body is never loaded into RAM for header-only edits.)
+	if !hasReplace && !hasEnclose {
+		if _, werr := dst.Write(headers); werr != nil {
+			return false, fmt.Errorf("sieve: write headers: %w", werr)
+		}
+		bodyStart := int64(headerEnd)
+		bodyLen := size - bodyStart
+		if bodyLen > 0 {
+			sr := io.NewSectionReader(src, bodyStart, bodyLen)
+			if _, cerr := io.Copy(dst, sr); cerr != nil {
+				return false, fmt.Errorf("sieve: stream body: %w", cerr)
+			}
+		}
+		return true, nil
+	}
+
+	// Enclose-only path (no Replace): stream the embedded message without
+	// loading the body into RAM (REQ-STORE-17).
+	//
+	// The outer multipart wrapper uses Subject/From/To extracted from the
+	// possibly-edited header block (`headers`, post AddHeader/DeleteHeader).
+	// The embedded message/rfc822 part is the current message state after
+	// header edits: edited headers concatenated with the body streamed from
+	// src. This matches the bytes-path behaviour where `combined` = edited
+	// headers + body and `applyEnclose` uses `combined` as the inner message.
+	if hasEnclose && !hasReplace {
+		bodyStart := int64(headerEnd)
+		bodyLen := size - bodyStart
+		for _, a := range outcome.Actions {
+			if a.Kind == ActionEnclose {
+				// innerMsg is the edited-headers + body stream. The edited
+				// headers are small; the body is streamed from src.
+				innerMsg := io.MultiReader(
+					bytes.NewReader(headers),
+					io.NewSectionReader(src, bodyStart, bodyLen),
+				)
+				// For the CRLF tail check, read the last 2 bytes from src.
+				var innerHasCRLF bool
+				if bodyLen >= 2 {
+					var tail [2]byte
+					if _, rerr := src.ReadAt(tail[:], bodyStart+bodyLen-2); rerr == nil {
+						innerHasCRLF = tail[0] == '\r' && tail[1] == '\n'
+					}
+				} else if bodyLen == 0 && len(headers) >= 2 {
+					innerHasCRLF = headers[len(headers)-2] == '\r' && headers[len(headers)-1] == '\n'
+				}
+				if werr := applyEncloseStreaming(headers, innerMsg, innerHasCRLF, a, dst); werr != nil {
+					return false, fmt.Errorf("sieve: enclose stream: %w", werr)
+				}
+			}
+		}
+		return true, nil
+	}
+
+	// Body mutation path (Replace involved): read the body from src into memory
+	// so the multipart splitter/assembler can locate and swap the targeted leaf.
+	// The header block is already buffered; only the body bytes are read here.
+	// (For per-leaf Replace, this is bounded by the message body size, which is
+	// enforced upstream by MaxMessageSize.)
+	bodyStart := int64(headerEnd)
+	bodyLen := size - bodyStart
+	combined := make([]byte, 0, int64(len(headers))+bodyLen)
+	combined = append(combined, headers...)
+	if bodyLen > 0 {
+		body := make([]byte, bodyLen)
+		if _, rerr := src.ReadAt(body, bodyStart); rerr != nil && rerr != io.EOF {
+			return false, fmt.Errorf("sieve: read body for replace: %w", rerr)
+		}
+		combined = append(combined, body...)
+	}
+
+	// Apply Replace actions.
 	for _, a := range outcome.Actions {
-		switch a.Kind {
-		case ActionReplace:
+		if a.Kind == ActionReplace {
 			combined = applyReplace(combined, a)
-		case ActionEnclose:
+		}
+	}
+
+	// Apply Enclose actions after Replace (combined holds the replaced message).
+	for _, a := range outcome.Actions {
+		if a.Kind == ActionEnclose {
 			combined = applyEnclose(combined, a)
 		}
 	}
-	return combined, true, nil
+
+	if _, werr := dst.Write(combined); werr != nil {
+		return false, fmt.Errorf("sieve: write mutated: %w", werr)
+	}
+	return true, nil
+}
+
+// ApplyMutationsBytes is a convenience wrapper around ApplyMutations that
+// accepts and returns []byte slices. It is used by tests and by callers that
+// already hold the complete message in RAM.
+//
+// When outcome carries no mutation actions, raw is returned unchanged and
+// changed is false (no allocation). On a malformed input (no header/body
+// separator) err is non-nil.
+func ApplyMutationsBytes(raw []byte, outcome Outcome) (out []byte, changed bool, err error) {
+	if !HasMutations(outcome) {
+		return raw, false, nil
+	}
+	var buf bytes.Buffer
+	buf.Grow(len(raw) + 512)
+	changed, err = ApplyMutations(bytes.NewReader(raw), int64(len(raw)), outcome, &buf)
+	if err != nil {
+		return nil, false, err
+	}
+	return buf.Bytes(), changed, nil
 }
 
 // HasMutations reports whether outcome carries any header- or
@@ -68,6 +205,29 @@ func HasMutations(outcome Outcome) bool {
 		}
 	}
 	return false
+}
+
+// readHeaderBlock reads the header section from src (up to maxHeaderReadSize
+// bytes) using ReadAt, locating the CRLF CRLF (or LF LF) separator.
+// Returns the header block bytes (including the blank-line separator) and the
+// byte offset within src where the body starts. Returns an error if no
+// separator is found or the read fails.
+func readHeaderBlock(src io.ReaderAt, size int64) (header []byte, headerEnd int, err error) {
+	limit := size
+	if limit > maxHeaderReadSize {
+		limit = maxHeaderReadSize
+	}
+	buf := make([]byte, limit)
+	n, rerr := src.ReadAt(buf, 0)
+	buf = buf[:n]
+	if rerr != nil && rerr != io.EOF {
+		return nil, -1, fmt.Errorf("sieve: read header block: %w", rerr)
+	}
+	end := findHeaderEnd(buf)
+	if end < 0 {
+		return nil, -1, fmt.Errorf("sieve: ApplyMutations: no header/body separator")
+	}
+	return buf[:end], end, nil
 }
 
 // findHeaderEnd returns the byte index just past the CRLF CRLF (or LF
@@ -430,6 +590,73 @@ func applyEnclose(raw []byte, a Action) []byte {
 	}
 	fmt.Fprintf(&out, "--%s--\r\n", boundary)
 	return out.Bytes()
+}
+
+// applyEncloseStreaming writes the enclose-wrapped message to dst without
+// holding the entire inner message in RAM (REQ-STORE-17).
+//
+// innerHeaders is the (possibly header-edited) header block; it is used
+// only to extract Subject/From/To for the outer multipart/mixed wrapper.
+// innerMsg is an io.Reader that supplies the full embedded message (edited
+// headers + body); it is streamed into the message/rfc822 MIME part.
+// innerHasCRLF reports whether the last two bytes of innerMsg are CRLF so
+// the caller does not need to re-read them after copying.
+func applyEncloseStreaming(innerHeaders []byte, innerMsg io.Reader, innerHasCRLF bool, a Action, dst io.Writer) error {
+	boundary := newEncloseBoundary()
+	innerBody := a.EncloseBody
+	if !bytes.HasSuffix(innerBody, []byte("\r\n")) {
+		innerBody = append(append([]byte{}, innerBody...), '\r', '\n')
+	}
+
+	// Build the outer header block in memory (small, bounded).
+	var outerHdr bytes.Buffer
+	if a.EncloseSubject != "" {
+		fmt.Fprintf(&outerHdr, "Subject: %s\r\n", a.EncloseSubject)
+	} else {
+		if subj := readHeader(innerHeaders, "Subject"); subj != "" {
+			fmt.Fprintf(&outerHdr, "Subject: %s\r\n", subj)
+		}
+	}
+	if from := readHeader(innerHeaders, "From"); from != "" {
+		fmt.Fprintf(&outerHdr, "From: %s\r\n", from)
+	}
+	if to := readHeader(innerHeaders, "To"); to != "" {
+		fmt.Fprintf(&outerHdr, "To: %s\r\n", to)
+	}
+	for _, h := range a.EncloseHeaders {
+		h = strings.TrimRight(h, "\r\n")
+		if h != "" {
+			outerHdr.WriteString(h)
+			outerHdr.WriteString("\r\n")
+		}
+	}
+	fmt.Fprintf(&outerHdr, "MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&outerHdr, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n", boundary)
+	outerHdr.WriteString("\r\n")
+
+	if _, err := dst.Write(outerHdr.Bytes()); err != nil {
+		return err
+	}
+
+	// First MIME part: text/plain preamble.
+	fmt.Fprintf(dst, "--%s\r\n", boundary)
+	io.WriteString(dst, "Content-Type: text/plain; charset=utf-8\r\n\r\n")
+	dst.Write(innerBody)
+
+	// Second MIME part: the inner message streamed from innerMsg.
+	fmt.Fprintf(dst, "--%s\r\n", boundary)
+	io.WriteString(dst, "Content-Type: message/rfc822\r\n\r\n")
+	if _, err := io.Copy(dst, innerMsg); err != nil {
+		return err
+	}
+	// Ensure the embedded part ends with CRLF so the closing boundary is
+	// on its own line (RFC 2046 §5.1.1).
+	if !innerHasCRLF {
+		io.WriteString(dst, "\r\n")
+	}
+
+	fmt.Fprintf(dst, "--%s--\r\n", boundary)
+	return nil
 }
 
 // setOrReplaceHeader replaces the value of the named header (if

@@ -116,42 +116,50 @@ func (sess *session) finishMessage(spill *os.File) {
 	// outbound submission keeps body-fidelity to the recipient's MX.
 	// On any rewrite failure we keep the original bytes (REQ-EXTIMG-61).
 	//
-	// TODO(REQ-STORE-19, Phase 2): extimg.Internalize should accept a
-	// seekable reader rather than []byte; bounded by MaxMessageSize
-	// until then.
-	//
-	// Note: finalBytes starts as the raw body but may be replaced by the
-	// internalized version below before blob assembly.
+	// Phase 2c (REQ-STORE-17/19): InternalizeReader replaces the old
+	// enmime ReadEnvelope+Builder round-trip. The assembled message is
+	// built once (headerPfx + body) and passed to InternalizeReader as
+	// an io.ReaderAt. The streaming output is piped into Blobs().Put via
+	// a TeeReader so finalBytes is captured without a second blob read.
+	// This eliminates the assembleStoredBytes full copy and the enmime
+	// decode+re-encode cycle for attachments (REQ-STORE-17/19).
 	finalBytes := body
 	if sess.mode == RelayIn && sess.srv.extImg.Mode == extimg.ModeInternalize {
-		// assembleStoredBytes is still used here because extimg.Internalize
-		// operates on the full assembled bytes (Received + AR + body). The
-		// streaming blob Put below avoids the second full copy by using the
-		// already-assembled finalBytes directly.
-		assembled := sess.assembleStoredBytes(body, authStr)
-		verdict := dkimVerdictFromAuth(authResults.DKIM)
-		rewritten, sum, ierr := extimg.Internalize(ctx, assembled, sess.srv.extImg, verdict)
-		if ierr == nil && sum.Modified {
-			// Re-parse so deliverOne / Sieve see the rewritten body.
-			if msg2, perr2 := mailparse.Parse(bytes.NewReader(rewritten), mailparse.NewParseOptions()); perr2 == nil {
-				msg = msg2
-			}
-			// Persist the internalized blob directly (it's already assembled).
-			blobRef, err := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(rewritten))
-			if err != nil {
-				sess.log.ErrorContext(ctx, "smtp data: blob put (extimg) failed",
-					slog.String("activity", observe.ActivitySystem),
-					slog.String("err", err.Error()))
-				sess.writeReply("451 4.3.0 temporary storage failure")
-				sess.resetEnvelope()
+		headerPfx := buildHeaderPrefix(sess.renderReceived(), authStr)
+		assembled := append(headerPfx, body...) // one alloc; replaces assembleStoredBytes
+		assembledRA := bytes.NewReader(assembled)
+		msg2, perr2 := mailparse.Parse(assembledRA, mailparse.NewParseOptions())
+		if perr2 == nil {
+			verdict := dkimVerdictFromAuth(authResults.DKIM)
+			outReader, sum, ierr := extimg.InternalizeReader(
+				ctx, assembledRA, int64(len(assembled)), msg2, sess.srv.extImg, verdict)
+			if ierr == nil && sum.Modified {
+				// Pipe the streaming rewrite into the blob store while
+				// capturing the output bytes via TeeReader so finalBytes
+				// is available for downstream stages without a second read.
+				var rewrittenBuf bytes.Buffer
+				blobRef, err := sess.srv.store.Blobs().Put(ctx, io.TeeReader(outReader, &rewrittenBuf))
+				if err != nil {
+					sess.log.ErrorContext(ctx, "smtp data: blob put (extimg) failed",
+						slog.String("activity", observe.ActivitySystem),
+						slog.String("err", err.Error()))
+					sess.writeReply("451 4.3.0 temporary storage failure")
+					sess.resetEnvelope()
+					return
+				}
+				rewritten := rewrittenBuf.Bytes()
+				// Re-parse from the rewritten bytes so deliverOne / Sieve
+				// see the updated message structure (new blob is the source).
+				if msg3, perr3 := mailparse.Parse(bytes.NewReader(rewritten), mailparse.NewParseOptions()); perr3 == nil {
+					msg = msg3
+				}
+				finalBytes = rewritten
+				sess.logExtImgOutcome(ctx, sum, ierr)
+				sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
 				return
 			}
-			finalBytes = rewritten
 			sess.logExtImgOutcome(ctx, sum, ierr)
-			sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
-			return
 		}
-		sess.logExtImgOutcome(ctx, sum, ierr)
 	}
 
 	// Persist the blob by streaming: write the Received +
@@ -426,37 +434,75 @@ func (sess *session) deliverOne(
 		targets = []string{"INBOX"}
 	}
 
-	// REQ-PROTO-60..68: apply Sieve editheader (RFC 5293) and mime
-	// (RFC 5703 replace / enclose) body mutations before persistence.
-	// HasMutations gates the rewrite so a recipient whose Sieve script
-	// has no editheader/mime actions skips ApplyMutations + the
-	// per-recipient re-blob and re-parse entirely. The mutator is
-	// pure; when it does fire the rewritten bytes are re-blobbed and
-	// re-parsed so the FTS indexer, IMAP FETCH, and JMAP Email/get
-	// all see the rewritten message.
+	// REQ-PROTO-60..68, REQ-STORE-17/19: apply Sieve editheader (RFC 5293)
+	// and mime (RFC 5703 replace / enclose) body mutations before persistence.
+	// HasMutations gates the rewrite so a recipient whose Sieve script has no
+	// editheader/mime actions skips the per-recipient re-blob and re-parse
+	// entirely.
+	//
+	// The mutation is streaming: ApplyMutations reads from the stored blob
+	// (via BlobReader) and writes to a pipe that feeds Blobs().Put directly,
+	// so the message body is never held in RAM (REQ-STORE-17/19). For
+	// header-only edits (the common editheader case) only the bounded header
+	// block is materialised; the body is streamed verbatim from the blob.
 	if sieve.HasMutations(outcome) {
-		mutated, changed, err := sieve.ApplyMutations(finalBytes, outcome)
-		if err != nil {
-			sess.log.WarnContext(ctx, "sieve mutation: apply failed; storing pre-mutation bytes",
+		blobSrc, blobOpenErr := sess.srv.store.Blobs().Get(ctx, blobRef.Hash)
+		if blobOpenErr != nil {
+			sess.log.WarnContext(ctx, "sieve mutation: open blob failed; storing pre-mutation bytes",
 				slog.String("activity", observe.ActivitySystem),
 				slog.String("recipient", rc.addr),
-				slog.String("err", err.Error()))
-		} else if changed {
-			newRef, blobErr := sess.srv.store.Blobs().Put(ctx, bytes.NewReader(mutated))
-			if blobErr != nil {
+				slog.String("err", blobOpenErr.Error()))
+		} else {
+			pr, pw := io.Pipe()
+			mutErrCh := make(chan error, 1)
+			go func() {
+				changed, merr := sieve.ApplyMutations(blobSrc, blobRef.Size, outcome, pw)
+				blobSrc.Close()
+				if merr != nil {
+					pw.CloseWithError(merr)
+				} else if !changed {
+					// HasMutations was true but ApplyMutations said no change:
+					// should not happen, but close cleanly to avoid blocking Put.
+					pw.Close()
+				} else {
+					pw.Close()
+				}
+				mutErrCh <- merr
+			}()
+
+			newRef, blobErr := sess.srv.store.Blobs().Put(ctx, pr)
+			pr.Close() // unblocks goroutine if Put returned early
+			mutationErr := <-mutErrCh
+			if mutationErr != nil {
+				sess.log.WarnContext(ctx, "sieve mutation: apply failed; storing pre-mutation bytes",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("recipient", rc.addr),
+					slog.String("err", mutationErr.Error()))
+			} else if blobErr != nil {
 				sess.log.WarnContext(ctx, "sieve mutation: re-blob failed; storing pre-mutation bytes",
 					slog.String("activity", observe.ActivitySystem),
 					slog.String("recipient", rc.addr),
 					slog.String("err", blobErr.Error()))
-			} else if newMsg, perr := mailparse.Parse(bytes.NewReader(mutated), mailparse.NewParseOptions()); perr != nil {
-				sess.log.WarnContext(ctx, "sieve mutation: re-parse failed; storing pre-mutation bytes",
-					slog.String("activity", observe.ActivitySystem),
-					slog.String("recipient", rc.addr),
-					slog.String("err", perr.Error()))
 			} else {
-				finalBytes = mutated
-				blobRef = newRef
-				msg = newMsg
+				newBlobReader, rerr := sess.srv.store.Blobs().Get(ctx, newRef.Hash)
+				if rerr != nil {
+					sess.log.WarnContext(ctx, "sieve mutation: open mutated blob failed; storing pre-mutation bytes",
+						slog.String("activity", observe.ActivitySystem),
+						slog.String("recipient", rc.addr),
+						slog.String("err", rerr.Error()))
+				} else {
+					newMsg, perr := mailparse.Parse(newBlobReader, mailparse.NewParseOptions())
+					newBlobReader.Close()
+					if perr != nil {
+						sess.log.WarnContext(ctx, "sieve mutation: re-parse failed; storing pre-mutation bytes",
+							slog.String("activity", observe.ActivitySystem),
+							slog.String("recipient", rc.addr),
+							slog.String("err", perr.Error()))
+					} else {
+						blobRef = newRef
+						msg = newMsg
+					}
+				}
 			}
 		}
 	}
@@ -480,7 +526,7 @@ func (sess *session) deliverOne(
 		}
 		storeMsg := store.Message{
 			PrincipalID:  rc.principalID,
-			Size:         int64(len(finalBytes)),
+			Size:         blobRef.Size,
 			Blob:         blobRef,
 			ReceivedAt:   sess.srv.clk.Now(),
 			InternalDate: sess.srv.clk.Now(),

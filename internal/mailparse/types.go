@@ -223,6 +223,28 @@ func (p Part) OpenBody(src io.ReaderAt) (io.ReadCloser, error) {
 	return openBodyDecoder(rawSection, p.ContentTransferEncoding, p.Charset, p.IsText())
 }
 
+// RawBody returns a streaming reader over the raw (CTE-encoded, as-received)
+// bytes of this leaf part's body. src must be the same io.ReaderAt that was
+// used to produce the bytes passed to Parse. The returned reader never
+// materializes the full body: it is an io.SectionReader over src positioned
+// at the part's raw byte range.
+//
+// Unlike OpenBody, which CTE-decodes the body, RawBody returns the original
+// encoded bytes verbatim. This is useful for streaming pass-through of
+// unchanged parts (attachments, non-HTML body parts) where fidelity to the
+// wire encoding is preferred over re-encoding (REQ-STORE-17/19 Phase 2c).
+//
+// Returns an error when the part is a container (Children present) or src is nil.
+func (p Part) RawBody(src io.ReaderAt) (io.Reader, error) {
+	if src == nil {
+		return nil, fmt.Errorf("mailparse: RawBody: src is nil")
+	}
+	if len(p.Children) > 0 {
+		return nil, fmt.Errorf("mailparse: RawBody: part is a multipart container")
+	}
+	return io.NewSectionReader(src, p.rawOffset, p.rawLen), nil
+}
+
 // Message is the parsed, decoded form of an RFC 5322 message.
 type Message struct {
 	Headers        Headers
