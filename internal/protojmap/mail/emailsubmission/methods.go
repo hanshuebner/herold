@@ -1,7 +1,6 @@
 package emailsubmission
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -937,18 +936,16 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 			}
 		}
 	}
-	// Read the body blob for handing to the queue.
+	// REQ-STORE-17/18 (Phase 1): open a seekable BlobReader and stream it
+	// straight into the queue without materialising the full body in RAM.
+	// queue.Submit accepts io.Reader and pipes it directly into Blobs.Put,
+	// so no full-body allocation occurs here.
 	rc, err := s.h.store.Blobs().Get(ctx, msg.Blob.Hash)
 	if err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",
 			Description: fmt.Sprintf("blob read: %s", err)}
 	}
-	body, err := io.ReadAll(rc)
-	_ = rc.Close()
-	if err != nil {
-		return jmapEmailSubmission{}, &setError{Type: "serverFail",
-			Description: fmt.Sprintf("blob read: %s", err)}
-	}
+	defer rc.Close()
 	signingDomain := domainOf(identityEmail)
 	threadID := strconv.FormatUint(msg.ThreadID, 10)
 	now := s.h.clk.Now().UTC()
@@ -966,7 +963,7 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	// the local queue entirely.
 	if s.h.externalRouter != nil && s.h.externalSubmit != nil &&
 		s.h.externalRouter.HasExternalSubmission(ctx, p.ID, in.IdentityID) {
-		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, body, threadID, now, sendAtUs)
+		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, rc, threadID, now, sendAtUs)
 	}
 
 	pid := p.ID
@@ -974,7 +971,7 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		PrincipalID:   &pid,
 		MailFrom:      mailFrom,
 		Recipients:    recipients,
-		Body:          bytes.NewReader(body),
+		Body:          rc,
 		Sign:          true,
 		SigningDomain: signingDomain,
 		SendAt:        sendAt,
@@ -1032,7 +1029,7 @@ func (h *handlerSet) processCreateExternal(
 	emailWireID jmapID,
 	mailFrom string,
 	recipients []string,
-	body []byte,
+	body io.Reader,
 	threadID string,
 	now time.Time,
 	sendAtUs int64,
@@ -1056,7 +1053,7 @@ func (h *handlerSet) processCreateExternal(
 	env := extsubmit.Envelope{
 		MailFrom:      mailFrom,
 		RcptTo:        recipients,
-		Body:          bytes.NewReader(body),
+		Body:          body,
 		CorrelationID: renderSubmissionID(envID),
 	}
 	outcome := h.externalSubmit.Submit(ctx, cfg, env)

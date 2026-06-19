@@ -30,6 +30,9 @@ import (
 //
 // The returned []byte is a fully-formed RFC 5322 message ready to be
 // stored in the blob store.
+// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
+// streaming parser instead of assembling into a bytes.Buffer; bounded at
+// 64MiB (via readBlobBytes below) until then.
 func buildEmailFromProperties(ctx context.Context, blobs store.Blobs, in emailCreateInput, now time.Time, hostname string) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -648,6 +651,8 @@ func generateBoundary() string {
 }
 
 // readBlobBytes fetches a blob by ID and returns its raw bytes.
+// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
+// streaming parser; bounded at 64MiB until then.
 func readBlobBytes(ctx context.Context, blobs store.Blobs, blobID string) ([]byte, error) {
 	rc, err := blobs.Get(ctx, blobID)
 	if err != nil {

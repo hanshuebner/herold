@@ -392,6 +392,8 @@ func (h *handlerSet) createEmail(
 			return 0, jmapEmail{}, nil, err
 		}
 		defer rc.Close()
+		// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
+		// streaming parser; bounded at 64MiB until then.
 		body, err = io.ReadAll(io.LimitReader(rc, 64<<20))
 		if err != nil {
 			return 0, jmapEmail{}, nil, fmt.Errorf("email: read blob: %w", err)

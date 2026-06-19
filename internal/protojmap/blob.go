@@ -210,6 +210,8 @@ func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, par
 		return nil, err
 	}
 	defer rc.Close()
+	// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
+	// streaming parser; bounded at 64MiB until then.
 	raw, err := io.ReadAll(io.LimitReader(rc, 64<<20))
 	if err != nil {
 		return nil, fmt.Errorf("resolvePartBlob: read: %w", err)
@@ -438,51 +440,27 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		"size_bytes", size,
 		"content_type", contentType,
 	)
+	// REQ-STORE-17/18 (Phase 1): stream the blob body without buffering.
+	// InjectXHeroldRecipient(nil, value) returns just the header-line bytes
+	// (no body), so we can prepend them via io.MultiReader and compute the
+	// adjusted Content-Length without reading the blob into RAM.
+	var bodyReader io.Reader = rc
+	var totalSize int64 = size
 	if injectHeader != "" {
-		// Buffer the body so we can prepend the header and adjust
-		// Content-Length. The 64MiB ceiling matches renderFull's
-		// inbound parse budget; larger blobs fall back to streaming
-		// without injection (the principal's MUA still sees the
-		// message correctly — the synthetic header is informational
-		// per REQ-FLOW-34).
-		const injectCeiling = int64(64 << 20)
-		if size <= injectCeiling {
-			buf := make([]byte, 0, int(size))
-			body, rerr := io.ReadAll(io.LimitReader(rc, injectCeiling))
-			if rerr != nil {
-				s.log.Warn("download.read_for_inject_failed", "err", rerr, "blob", blobID)
-				w.Header().Set("Content-Type", contentType)
-				w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-				if name != "" {
-					w.Header().Set("Content-Disposition",
-						fmt.Sprintf(`%s; filename=%q`, disposition, name))
-				}
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			_ = buf
-			body = mailparse.InjectXHeroldRecipient(body, injectHeader)
-			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-			if name != "" {
-				w.Header().Set("Content-Disposition",
-					fmt.Sprintf(`%s; filename=%q`, disposition, name))
-			}
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write(body); err != nil {
-				s.log.Warn("download.copy_failed", "err", err, "blob", blobID)
-			}
-			return
+		prefix := mailparse.InjectXHeroldRecipient(nil, injectHeader)
+		if len(prefix) > 0 {
+			totalSize = size + int64(len(prefix))
+			bodyReader = io.MultiReader(bytes.NewReader(prefix), rc)
 		}
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Content-Length", strconv.FormatInt(totalSize, 10))
 	if name != "" {
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf(`%s; filename=%q`, disposition, name))
 	}
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, rc); err != nil {
+	if _, err := io.Copy(w, bodyReader); err != nil {
 		s.log.Warn("download.copy_failed", "err", err, "blob", blobID)
 	}
 }

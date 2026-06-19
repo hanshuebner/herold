@@ -325,6 +325,8 @@ func renderFullWithProperties(
 	}
 	defer rc.Close()
 
+	// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
+	// streaming parser; bounded at 64MiB until then.
 	rawBody, err := io.ReadAll(io.LimitReader(rc, 64<<20))
 	if err != nil {
 		return jmapEmail{}, fmt.Errorf("email: read blob: %w", err)
