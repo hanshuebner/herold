@@ -709,7 +709,7 @@ func TestSignerInvoked(t *testing.T) {
 		Sign:          true,
 		SigningDomain: "local.test",
 	})
-	if !waitFor(t, 30*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		return f.deliv.callCount() >= 1
 	}) {
 		t.Fatal("deliver never called")
@@ -1415,18 +1415,18 @@ func TestDelayDSN_SuppressedByNotifyNever(t *testing.T) {
 
 // -- helpers ----------------------------------------------------------
 
-// waitForMinTimeout is a floor applied to every waitFor deadline. The
-// callers pass timeouts (1-30s) sized for an unloaded machine, but the
-// CI "test (arm64 / sqlite)" lane runs the concurrency-heavy packages
-// under -race on a shared self-hosted runner, where goroutine scheduling
-// for a state transition can stall far past those nominal values. Two
-// margin flakes surfaced this way (TestDelayDSN_EmittedAfterThreshold at
-// a 15s waitDeferred, and the protochat shutdown drain). Because waitFor
-// short-circuits the instant the predicate holds, raising the floor only
-// buys patience under contention -- it never slows the happy path, which
-// still returns in milliseconds. 45s is well above the observed stalls
-// yet small against the job-level timeout.
-const waitForMinTimeout = 45 * time.Second
+// waitForMinTimeout is a floor applied to every waitFor deadline so a
+// ms-scale async assertion is not made flaky by genuine goroutine
+// scheduling jitter on the shared -race CI runner. It is NOT a
+// compensation for a logic bug: the scheduler lost-wakeup that used to
+// stall these waits for tens of seconds is fixed at its root -- the poll
+// timer is armed for the next due time, so a missed FakeClock advance
+// fires immediately instead of parking on a future deadline (see
+// queue.go). 5s is generous for scheduling jitter yet tight enough that
+// a reintroduced stall fails fast rather than passing slowly. waitFor
+// short-circuits the instant the predicate holds, so the floor never
+// slows the happy path, which returns in milliseconds.
+const waitForMinTimeout = 5 * time.Second
 
 func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
 	t.Helper()
@@ -1574,22 +1574,19 @@ func TestRetry_ReopensBodyReader(t *testing.T) {
 	})
 	// Wait for the transient failure to be persisted (Attempts==1,
 	// State==deferred) before advancing the clock.
-	if !waitFor(t, 30*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 		return len(rows) == 1 && rows[0].State == store.QueueStateDeferred && rows[0].Attempts == 1
 	}) {
 		t.Fatalf("never observed deferred state after first attempt")
 	}
-	// Wait for the scheduler to park on clk.After before advancing (see
-	// the barrier comment in TestSubmitTransientThenSuccess).
-	if !waitFor(t, 5*time.Second, func() bool {
-		return f.clk.NumWaiters() >= 1
-	}) {
-		t.Fatalf("scheduler never re-armed clk.After")
-	}
+	// No NumWaiters barrier: the scheduler arms clk.After for the next due
+	// time, so advancing past it fires immediately even if the scheduler
+	// re-arms after the advance (the lost-wakeup the barrier compensated
+	// for is fixed at its root in queue.go).
 	f.clk.Advance(retryDelay + time.Second)
 	// Wait for the second delivery attempt to complete.
-	if !waitFor(t, 30*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		return f.deliv.callCount() >= 2
 	}) {
 		t.Fatal("second delivery attempt never happened")
