@@ -61,24 +61,22 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       # make fuzz-short runs EVERY registered fuzz target sequentially
-      # for FUZZTIME each. There are ~39 targets, so the per-target
-      # budget must fit timeout-minutes above: 39 * 8m = 312m leaves
-      # headroom under the 360m (6h) cap. The old FUZZTIME=45m meant
-      # ~29h of work and the job failed by timeout every night. If the
-      # target count grows, lower FUZZTIME or shard across a job matrix.
-      #
-      # Memory envelope: Go's fuzzing engine spawns one worker per
-      # GOMAXPROCS and grows the per-target input corpus over the
-      # 8m budget. On the 8 vCPU / 16 GiB cpx42 runner the default
-      # 8 workers x growing per-worker heaps OOM-killed the VM mid-run
-      # (run #118 died abruptly during FuzzReversePath after the exec
-      # rate collapsed from memory pressure). Halving the worker count
-      # and forcing aggressive GC caps peak RSS well under 16 GiB at a
-      # modest throughput cost that the 8m/target budget absorbs.
+      # for FUZZTIME each. There are ~39 targets, so 39 * 8m = ~312m of
+      # work. That budget must fit under THREE independent ceilings, the
+      # smallest of which wins:
+      #   - this job's timeout-minutes (360m / 6h, below);
+      #   - the runner's act_runner per-job timeout (6h, set in the
+      #     orchestrator cloud-init);
+      #   - Forgejo's server-side ENDLESS_TASK_TIMEOUT, which DEFAULTS TO
+      #     3h and silently force-stops any longer task regardless of the
+      #     two above. That default killed this job at ~3h every single
+      #     night (runs #118, #135, and every prior fuzz-long task) -- it
+      #     never once finished. Raised to 7h in the Forgejo app.ini
+      #     (netzhansa-infra roles/forgejo) so the 6h caps are the real
+      #     limit and the ~312m run completes.
+      # If the target count grows past the 6h budget, lower FUZZTIME or
+      # shard targets across a job matrix.
       - name: run long fuzz on every registered fuzz target
-        env:
-          GOMAXPROCS: "4"
-          GOGC: "25"
         run: make fuzz-short FUZZTIME=8m
 
   load:
