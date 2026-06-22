@@ -26,6 +26,16 @@ func FuzzParse(f *testing.F) {
 	// A minimal hand-written seed in case the glob ever fails to pick files up.
 	f.Add([]byte("From: a@b\r\nTo: c@d\r\nSubject: s\r\n\r\nhi\r\n"))
 
+	// Regression seed for the multipart-no-boundary + base64 CTE crash:
+	// a "multipart/X" part with no boundary parameter and a base64 CTE was treated
+	// as an opaque leaf with p.Size = rawBodyLen (the raw byte count).  OpenBody
+	// CTE-decoded the same raw bytes, producing a different count and triggering
+	// the checkOpenBody invariant.  Fixed by routing this case through
+	// countDecodedSize so Part.Size is computed via the same streaming decoder.
+	// Confirmed: fails on the pre-fix code (crasher corpus 17c18b4c3ad44374),
+	// passes after.
+	f.Add([]byte("Content-TYpe:multipArt/0\nContent-TrAnsfer-EnCoding:BAse64\n\n0000"))
+
 	opts := NewParseOptions()
 	opts.MaxSize = 1 << 20
 	opts.MaxDepth = 8

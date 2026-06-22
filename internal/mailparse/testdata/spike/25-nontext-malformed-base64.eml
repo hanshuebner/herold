@@ -1,0 +1,15 @@
+From: sender@example.com
+To: recipient@example.com
+Subject: Non-text attachment with malformed base64 (109 chars, not mod-4 aligned)
+Date: Mon, 22 Jun 2026 00:00:00 +0000
+Message-ID: <25-nontext-malformed-b64@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: application/octet-stream; name="data.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="data.bin"
+
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+--b--

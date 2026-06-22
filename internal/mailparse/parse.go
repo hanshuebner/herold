@@ -235,15 +235,26 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 	if strings.HasPrefix(ctLower, "multipart/") {
 		boundary := ctParams["boundary"]
 		if boundary == "" {
-			// No boundary parameter: treat as an opaque leaf. Guard against a
+			// No boundary parameter: treat as an opaque leaf.  Guard against a
 			// negative rawBodyLen produced by malformed scanner output.
 			if rawBodyLen < 0 || rawBodyOff < 0 || rawBodyOff+rawBodyLen > int64(len(w.raw)) {
 				p.rawOffset = 0
 				p.rawLen = 0
 				p.Size = 0
-			} else {
-				p.Size = rawBodyLen
+				return p, nil
 			}
+			// The part may still carry a Content-Transfer-Encoding, so compute
+			// the decoded size via the same streaming decoder as OpenBody.
+			// Using rawBodyLen directly (the raw byte count) would diverge from
+			// what OpenBody yields when a CTE is present, triggering the
+			// checkOpenBody invariant (crasher corpus 17c18b4c3ad44374).
+			rawBody := w.raw[rawBodyOff : rawBodyOff+rawBodyLen]
+			size, decErrs, perr := w.countDecodedSize(rawBody, cteLower, idx)
+			if perr != nil {
+				return Part{}, perr
+			}
+			p.Size = size
+			p.DecodeErrors = decErrs
 			return p, nil
 		}
 		// Bounds check.
@@ -568,23 +579,53 @@ func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset string, idx in
 	return utf8Text, size, false, decErrs, nil
 }
 
-// countDecodedSize decodes raw through the CTE decoder to count bytes without
-// materializing them in RAM for non-text parts. For identity CTEs, returns
-// the raw length directly. Returns the decoded size, any non-fatal warnings, and
-// any fatal parse error.
+// countDecodedSize counts the decoded byte length of raw for a non-text leaf by
+// streaming raw through the same decoder that OpenBody uses. This guarantees
+// Part.Size == the number of bytes a caller reading OpenBody would obtain,
+// which is the invariant checked by FuzzParse/checkOpenBody.
+//
+// The previous implementation called decodeCTEBytes (a batch decoder) whose
+// lenient base64 path returned raw bytes on total failure while OpenBody's
+// streaming base64.NewDecoder decoded the valid prefix — two divergent paths on
+// malformed input that triggered the FuzzParse crasher.
+//
+// For identity CTEs the raw length is returned directly (no re-encoding).
+// In strict mode the batch decoder is consulted first so malformed input still
+// produces a fatal ParseError rather than a silent size mismatch.
 func (w *mimeWalker) countDecodedSize(raw []byte, cteLower string, idx int) (size int64, decErrs []string, parseErr error) {
 	switch cteLower {
 	case "", "7bit", "8bit", "binary":
 		return int64(len(raw)), nil, nil
 	}
-	decoded, warn, perr := decodeCTEBytes(raw, cteLower, w.opts.StrictBase64, w.opts.StrictQP, idx)
-	if perr != nil {
-		return 0, nil, perr
+
+	// Strict-mode pre-check: propagate a ParseError for malformed encoding so
+	// callers that set StrictBase64/StrictQP still get a fatal error.  For valid
+	// input this path also runs, but the subsequent streaming count will agree
+	// (both decoders are identical on well-formed data).
+	if (cteLower == "base64" && w.opts.StrictBase64) || (cteLower == "quoted-printable" && w.opts.StrictQP) {
+		_, warn, perr := decodeCTEBytes(raw, cteLower, w.opts.StrictBase64, w.opts.StrictQP, idx)
+		if perr != nil {
+			return 0, nil, perr
+		}
+		if warn != "" {
+			decErrs = append(decErrs, warn)
+		}
 	}
-	if warn != "" {
-		decErrs = append(decErrs, warn)
+
+	// Count bytes via the streaming OpenBody decoder so Part.Size is by
+	// construction equal to what OpenBody yields.  openBodyDecoder with
+	// isText=false never returns a non-nil error for any CTE, so the error
+	// return is not checked here.
+	r, _ := openBodyDecoder(bytes.NewReader(raw), cteLower, "", false)
+	n, copyErr := io.Copy(io.Discard, r)
+	r.Close()
+	if copyErr != nil {
+		// Non-fatal: record the decode warning; Size is the bytes decoded so far,
+		// exactly matching what a caller of OpenBody + io.Copy would see before
+		// the error causes them to stop reading.
+		decErrs = append(decErrs, fmt.Sprintf("decode error (partial read): %v", copyErr))
 	}
-	return int64(len(decoded)), decErrs, nil
+	return n, decErrs, nil
 }
 
 // decodeCTEBytes decodes b according to its Content-Transfer-Encoding.

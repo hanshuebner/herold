@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Content-TYpe:multipArt/0\nContent-TrAnsfer-EnCoding:BAse64\n\n0000")
