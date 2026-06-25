@@ -576,6 +576,54 @@ describe('IdentityList', () => {
     expect(onedit).not.toHaveBeenCalled();
   });
 
+  it('shows the Delete item for an unverified identity with mayDelete=true (re #22)', async () => {
+    seedIdentities(UNVERIFIED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="4"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    expect(
+      container.querySelector('[data-testid="identity-row-menu-delete"]'),
+    ).not.toBeNull();
+  });
+
+  it('shows the Delete item for a verification-pending identity with mayDelete=true (re #22)', async () => {
+    seedIdentities(PENDING);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="3"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    expect(
+      container.querySelector('[data-testid="identity-row-menu-delete"]'),
+    ).not.toBeNull();
+  });
+
+  it('calls deleteIdentity for an unverified identity after confirmation (re #22)', async () => {
+    vi.mocked(confirm.ask).mockResolvedValueOnce(true);
+    seedIdentities(UNVERIFIED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="4"] [data-testid="identity-row-menu-trigger"]',
+      ) as HTMLButtonElement,
+    );
+    await fireEvent.click(
+      container.querySelector(
+        '[data-identity-id="4"] [data-testid="identity-row-menu-delete"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(mail.deleteIdentity)).toHaveBeenCalledWith('4');
+    });
+    expect(vi.mocked(toast.show)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('deleted') }),
+    );
+  });
+
   it('renders a static Standard badge on the default row only', () => {
     seedIdentities(VERIFIED_DEFAULT, VERIFIED_SECOND);
     const { container } = render(IdentityList, { props: { onedit: vi.fn() } });

@@ -332,15 +332,48 @@ function collapseQuotedRegions(fragment: DocumentFragment): void {
   details.appendChild(summary);
   candidate.parentNode?.insertBefore(details, candidate);
   details.appendChild(candidate);
-  // Move every subsequent sibling of the original blockquote into
-  // <details> too — quoted history typically continues with the
-  // attribution/signature blob outside the <blockquote> tag.
+  // Move sibling nodes that are themselves quoted regions (or empty
+  // separators) into <details> too — quoted history sometimes continues
+  // outside the <blockquote> with an attribution div or a <hr>. Stop at
+  // the first sibling that contains non-empty, non-quoted text so that a
+  // bottom-posted fresh reply (a sibling div after the blockquote, as
+  // Apple Mail emits) stays visible outside the collapsed region (re #32).
   let next = details.nextSibling;
   while (next) {
+    if (!isQuoteOrEmptyNode(next)) break;
     const after = next.nextSibling;
     details.appendChild(next);
     next = after;
   }
+}
+
+/**
+ * Returns true for nodes that should be swept into the collapsed
+ * <details> region alongside the first quoted block:
+ *  - whitespace-only text nodes
+ *  - <br> and <hr> elements (separators with no text content)
+ *  - additional quoted blocks (<blockquote>, gmail_quote-class divs)
+ *  - structurally empty elements (no visible text content)
+ *
+ * Returns false for elements with substantive non-quoted text so
+ * that fresh reply content (e.g. a bottom-posted reply after a
+ * blockquote as Apple Mail emits) remains visible outside the
+ * collapsed region.
+ */
+function isQuoteOrEmptyNode(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return !(node.nodeValue?.trim());
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = node as Element;
+  if (el.tagName === 'BR' || el.tagName === 'HR') return true;
+  if (el.tagName === 'BLOCKQUOTE') return true;
+  if (el.tagName === 'DIV') {
+    const cls = el.getAttribute('class') ?? '';
+    if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
+  }
+  // An element whose visible text is entirely whitespace is empty.
+  return !(el.textContent?.trim());
 }
 
 function findFirstQuotedRegion(root: ParentNode): Element | null {
