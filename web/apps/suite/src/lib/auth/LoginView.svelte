@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { auth } from './auth.svelte';
   import { t } from '../i18n/i18n.svelte';
 
@@ -15,6 +16,10 @@
     if (submitting) return;
     submitting = true;
     errorMessage = null;
+    // Flag set in catch so the refocus runs after finally clears submitting.
+    // We cannot call focus() inside catch because the input is disabled while
+    // submitting is true; a disabled element cannot receive focus (re #29).
+    let refocusTotp = false;
     try {
       await auth.login({
         email,
@@ -23,19 +28,25 @@
       });
       // On success auth.bootstrap() ran inside auth.login(); status is 'ready'.
     } catch (err) {
-      // auth.login() sets auth.errorMessage; mirror it locally for display.
-      errorMessage = auth.errorMessage ?? (err instanceof Error ? err.message : t('login.signInFailed'));
-      // On a wrong TOTP code the server leaves needsStepUp true. Clear the
-      // field and return focus so the user can try again without clicking
-      // (re #29). A microtask yield lets Svelte flush reactive updates so
-      // totpInputEl resolves to the DOM node if the field just appeared.
       if (auth.needsStepUp) {
+        // Wrong TOTP code: use a distinct message so it reads differently from
+        // the initial step-up prompt (re #29).
+        errorMessage = t('login.totpWrongCode');
         totpCode = '';
-        await Promise.resolve();
-        totpInputEl?.focus();
+        refocusTotp = true;
+      } else {
+        // auth.login() sets auth.errorMessage; mirror it locally for display.
+        errorMessage = auth.errorMessage ?? (err instanceof Error ? err.message : t('login.signInFailed'));
       }
     } finally {
       submitting = false;
+    }
+    // Refocus AFTER finally so the input is enabled when focus() is called.
+    // tick() waits for Svelte to flush the submitting=false update and
+    // re-enable the input before we attempt to focus it (re #29).
+    if (refocusTotp && auth.needsStepUp) {
+      await tick();
+      totpInputEl?.focus();
     }
   }
 

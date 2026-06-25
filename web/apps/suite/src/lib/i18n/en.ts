@@ -966,6 +966,7 @@ export const en = {
   'login.password': 'Password',
   'login.totpCode': 'Authenticator code',
   'login.totpPlaceholder': '6-digit code',
+  'login.totpWrongCode': 'Invalid code. Please try again.',
   'login.signingIn': 'Signing in...',
   'login.signIn': 'Sign in',
   'login.signInFailed': 'Sign-in failed.',
