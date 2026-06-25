@@ -290,6 +290,60 @@ describe('sanitizeHtml — quoted-history collapse', () => {
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
     expect(body).not.toContain('<details');
   });
+
+  it('bottom-posted fresh reply stays outside the collapsed region (re #32)', () => {
+    // Apple Mail bottom-posting: the user types their reply after the
+    // quoted block. The fresh reply div is a sibling of the blockquote.
+    // Without the fix, this sibling is swept into <details> and hidden.
+    const html =
+      '<blockquote>' +
+        '<p>On Mon Alice wrote: original message text</p>' +
+      '</blockquote>' +
+      '<div>' +
+        '<p>My bottom-posted reply that must remain visible</p>' +
+      '</div>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    // The blockquote must be collapsed.
+    expect(body).toContain('<details class="herold-quoted">');
+    // The fresh reply text must appear AFTER </details>, not inside it.
+    const detailsEnd = body.indexOf('</details>');
+    const replyPos = body.indexOf('My bottom-posted reply');
+    expect(detailsEnd).not.toBe(-1);
+    expect(replyPos).not.toBe(-1);
+    expect(replyPos).toBeGreaterThan(detailsEnd);
+  });
+
+  it('gmail attribution + quoted div are both swept into details (sweep not broken by re #32 fix)', () => {
+    // Gmail: attribution div (class matching gmail_quote*) comes before the
+    // gmail_quote div. Both must end up inside <details>; the fix must not
+    // break this existing sweep behaviour.
+    const html =
+      '<p>My reply.</p>' +
+      '<div class="gmail_quote_attribution">On Mon, Alice wrote:</div>' +
+      '<div class="gmail_quote">Original quoted text</div>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    const detailsStart = body.indexOf('<details class="herold-quoted">');
+    const detailsEnd = body.indexOf('</details>');
+    expect(detailsStart).not.toBe(-1);
+    // Attribution and quote content must both be inside <details>.
+    const attrPos = body.indexOf('On Mon, Alice wrote:');
+    const quotePos = body.indexOf('Original quoted text');
+    expect(attrPos).toBeGreaterThan(detailsStart);
+    expect(attrPos).toBeLessThan(detailsEnd);
+    expect(quotePos).toBeGreaterThan(detailsStart);
+    expect(quotePos).toBeLessThan(detailsEnd);
+    // The fresh reply precedes <details>.
+    expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+  });
+
+  it('empty br-only siblings of the blockquote are swept into details', () => {
+    // A trailing <br> after the blockquote is a separator, not fresh content.
+    const html = '<blockquote><p>Quoted</p></blockquote><br>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    const detailsEnd = body.indexOf('</details>');
+    // The <br> must appear before </details>.
+    expect(body.indexOf('<br')).toBeLessThan(detailsEnd);
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {
