@@ -56,6 +56,18 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		s.writeDirectoryError(w, r, err)
 		return
 	}
+	// Consume any one-shot keys owned by this principal.  The bootstrap and
+	// recovery paths mint one-shot keys so the operator can reach this
+	// endpoint exactly once; after a successful confirm the key must not be
+	// reusable (REQ-AUTH-44, re #21).  Failures are logged but do not fail
+	// the request: TOTP is already enrolled, so the key's one-shot purpose
+	// is fulfilled regardless of whether the cleanup succeeds.
+	if _, err := s.store.Meta().DeleteOneShotAPIKeysByPrincipal(r.Context(), pid); err != nil {
+		s.loggerFrom(r.Context()).Warn("protoadmin.totp.consume_oneshot_keys",
+			"activity", "audit",
+			"principal_id", pid,
+			"err", err)
+	}
 	s.appendAudit(r.Context(), "principal.totp.confirm",
 		fmt.Sprintf("principal:%d", pid),
 		store.OutcomeSuccess, "", nil)

@@ -804,11 +804,9 @@ func TestSessionAuth_AdminWithTOTP_LoginSucceeds(t *testing.T) {
 //     and Bearer apiKey → 204.
 //  5. Password+TOTP login → 200, admin-scoped session cookie set.
 //
-// A follow-up issue tracks the optional narrowing of the bootstrap
-// API key to a one-shot ticket scoped to /totp/* and auto-revoked
-// after the first successful confirm. The flow above remains
-// usable in either model; this test pins the user-visible
-// happy-path behaviour.
+// Step 6 asserts interpretation 2 (re #21): the bootstrap API key is
+// one-shot and is consumed on the first successful TOTP confirm so it
+// cannot be reused for any subsequent request.
 func TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
@@ -896,6 +894,18 @@ func TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey(t *testing.T) {
 	}
 	if !sh.sessionCookiePresent() {
 		t.Errorf("session cookie missing after bootstrap-superadmin enrollment + login")
+	}
+
+	// 6. The bootstrap API key is one-shot: it must be rejected on any
+	// subsequent use after the successful confirm in step 4 (re #21,
+	// REQ-AUTH-44 interpretation 2). Assert that Bearer with the initial
+	// key now returns 401.
+	postConfirmRes, _ := sh.doRequest("GET",
+		fmt.Sprintf("/api/v1/principals/%d", bootResp.PrincipalID),
+		bootResp.InitialAPIKey, nil)
+	if postConfirmRes.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bootstrap key reuse after confirm: status=%d, want 401",
+			postConfirmRes.StatusCode)
 	}
 }
 
