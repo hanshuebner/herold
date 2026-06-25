@@ -867,6 +867,12 @@ type APIKey struct {
 	// domains (REQ-SEND-30).  When non-empty the from address must
 	// belong to one of these domains.  Applied after AllowedFromAddresses.
 	AllowedFromDomains []string
+	// OneShot marks a key that is automatically deleted after its first
+	// successful use as the Bearer credential for POST
+	// /api/v1/principals/{pid}/totp/confirm (migration 0060, re #21).
+	// Bootstrap and recovery keys carry this flag so they cannot be
+	// reused after TOTP enrollment is complete (REQ-AUTH-44).
+	OneShot bool
 }
 
 // ActorKind classifies the source of an audited action. The vocabulary

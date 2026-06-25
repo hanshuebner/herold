@@ -87,6 +87,10 @@ type APIKeyRow struct {
 	// equivalent to '[]' (no constraint).
 	AllowedFromAddressesJSON string `json:"allowed_from_addresses_json,omitempty" default:"[]"`
 	AllowedFromDomainsJSON   string `json:"allowed_from_domains_json,omitempty" default:"[]"`
+	// OneShot is the migration-0060 flag that causes the key to be
+	// automatically deleted after the first successful TOTP confirm
+	// (re #21, REQ-AUTH-44). False (0) for all pre-migration rows.
+	OneShot bool `json:"one_shot"`
 }
 
 type AliasRow struct {

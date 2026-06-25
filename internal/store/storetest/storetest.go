@@ -104,6 +104,7 @@ func Run(t *testing.T, f Factory) {
 		{"DeleteDomain_NotFoundWhenAbsent", testDeleteDomainNotFound},
 		{"ListAPIKeysByPrincipal", testListAPIKeysByPrincipal},
 		{"DeleteAPIKey_NotFoundWhenAbsent", testDeleteAPIKeyNotFound},
+		{"DeleteOneShotAPIKeysByPrincipal", testDeleteOneShotAPIKeysByPrincipal},
 		{"ListOIDCLinksByPrincipal", testListOIDCLinksByPrincipal},
 		// -- Phase 2 Wave 2.0 --------------------------------------
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
@@ -3499,6 +3500,54 @@ func testDeleteAPIKeyNotFound(t *testing.T, s store.Store) {
 	}
 	if _, err := s.Meta().GetAPIKeyByHash(ctx, "zz1"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetAPIKeyByHash after delete = %v", err)
+	}
+}
+
+func testDeleteOneShotAPIKeysByPrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "oneshot@example.com")
+	// Insert one permanent and two one-shot keys.
+	permanent, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "ph1", Name: "permanent",
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey permanent: %v", err)
+	}
+	if _, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "sh1", Name: "oneshot1", OneShot: true,
+	}); err != nil {
+		t.Fatalf("InsertAPIKey oneshot1: %v", err)
+	}
+	if _, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "sh2", Name: "oneshot2", OneShot: true,
+	}); err != nil {
+		t.Fatalf("InsertAPIKey oneshot2: %v", err)
+	}
+	n, err := s.Meta().DeleteOneShotAPIKeysByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("DeleteOneShotAPIKeysByPrincipal: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("deleted = %d, want 2", n)
+	}
+	// Permanent key must survive.
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, permanent.Hash); err != nil {
+		t.Fatalf("permanent key missing after one-shot delete: %v", err)
+	}
+	// One-shot keys must be gone.
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "sh1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("oneshot1 still present: %v", err)
+	}
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "sh2"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("oneshot2 still present: %v", err)
+	}
+	// Calling again on principal with no one-shot keys returns zero, no error.
+	n2, err := s.Meta().DeleteOneShotAPIKeysByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("DeleteOneShotAPIKeysByPrincipal (second call): %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second call deleted = %d, want 0", n2)
 	}
 }
 

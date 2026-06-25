@@ -586,6 +586,13 @@ type Metadata interface {
 	// the key was already revoked.
 	DeleteAPIKey(ctx context.Context, id APIKeyID) error
 
+	// DeleteOneShotAPIKeysByPrincipal deletes every API key owned by pid
+	// whose one_shot flag is set (migration 0060).  Called by the TOTP
+	// confirm handler after a successful enrollment so the bootstrap /
+	// recovery key is automatically consumed (REQ-AUTH-44, re #21).
+	// Returns the number of rows deleted; zero is not an error.
+	DeleteOneShotAPIKeysByPrincipal(ctx context.Context, pid PrincipalID) (int64, error)
+
 	// ListOIDCLinksByPrincipal returns every OIDC link owned by pid, in
 	// ascending ProviderName order. The returned slice is empty (nil)
 	// when the principal has no linked identities.
