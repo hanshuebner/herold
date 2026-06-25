@@ -474,9 +474,9 @@ jobs:
           echo "smoke-test: using local image ${first_tag}"
           ./scripts/smoke-docker.sh "${first_tag}"
       # Step 2a (push path): build both platforms and push the multi-arch
-      # manifest list to the registry. Buildx reuses cached layers from
-      # the arm64 build above. Runs only after smoke passes and only when
-      # the REGISTRY_TOKEN secret is available.
+      # manifest list to the registry. Buildx reuses the cached amd64
+      # layers from the native build above (Step 1). Runs only after
+      # smoke passes and only when the REGISTRY_TOKEN secret is available.
       - name: build + push multi-arch image (linux/amd64 + linux/arm64)
         if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
         env:
