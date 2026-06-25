@@ -1130,6 +1130,107 @@ func TestMultiMailboxPlacementThreeFolders(t *testing.T) {
 	}
 }
 
+// TestCategoriserCalledForLabelBeforeINBOX reproduces the Gmail multi-label
+// ordering bug (re #27): a message carrying both a user label and the inbox
+// label appears in two IMAP folders. If the label folder syncs before INBOX
+// the message is created in the label folder (isNew=true, not INBOX ->
+// categorise skipped), then INBOX sync is a dedup hit (isNew=false ->
+// categorise also skipped without the fix). The message would never receive a
+// $category-* keyword.
+//
+// The fix: ingestMessage now returns isNewMember=true when AddMessageToMailbox
+// places the message into a mailbox for the first time (dedup path). The
+// categoriser condition uses isNewMember instead of isNew, so it fires for the
+// INBOX membership regardless of which folder was synced first.
+func TestCategoriserCalledForLabelBeforeINBOX(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("lblinbox1", "pw")
+	// Create a label folder that will be synced before INBOX.
+	if err := u.Create("WorkLabel", nil); err != nil {
+		t.Fatalf("Create WorkLabel: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 10, 1, 12, 0, 0, 0, time.UTC)
+	// Same Message-ID in both folders: the inbox label and a user label.
+	raw := buildRFC822("label-before-inbox@test", "Label Before INBOX", d)
+	appendToServer(t, ts, "lblinbox1", "pw", "WorkLabel", raw, nil, d)
+	appendToServer(t, ts, "lblinbox1", "pw", "INBOX", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "lblinbox1@example.test",
+		username:            "lblinbox1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	cat := &countingCategoriser{}
+
+	// Dial once and control the sync order directly: WorkLabel before INBOX.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	w := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		cfg:         sysconfig.IMAPImportConfig{},
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		dialer:      &fakeDialer{ts: ts},
+		categoriser: cat,
+	})
+
+	credPlaintext, err := w.openCredential(ctx, acc)
+	if err != nil {
+		t.Fatalf("openCredential: %v", err)
+	}
+	conn, err := w.opts.dialer.Dial(ctx, dialParams{
+		AccountID:           acc.ID,
+		Host:                acc.Host,
+		Port:                acc.Port,
+		TLSMode:             string(acc.TLSMode),
+		Username:            acc.Username,
+		AuthMethod:          string(acc.AuthMethod),
+		CredentialPlaintext: credPlaintext,
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() {
+		conn.Logout()
+		conn.Close()
+	}()
+
+	// Sync WorkLabel FIRST: the message is inserted into herold "WorkLabel".
+	// The categoriser must NOT fire because WorkLabel != INBOX.
+	if err := w.syncFolder(ctx, conn, "WorkLabel", "WorkLabel"); err != nil {
+		t.Fatalf("syncFolder WorkLabel: %v", err)
+	}
+	if cat.calls.Load() != 0 {
+		t.Errorf("categoriser called %d times after WorkLabel sync; want 0", cat.calls.Load())
+	}
+
+	// Sync INBOX second: the message already exists in herold (dedup hit).
+	// AddMessageToMailbox places it in INBOX — the categoriser MUST fire.
+	if err := w.syncFolder(ctx, conn, "INBOX", "INBOX"); err != nil {
+		t.Fatalf("syncFolder INBOX: %v", err)
+	}
+	if cat.calls.Load() != 1 {
+		t.Errorf("categoriser calls after INBOX sync = %d; want 1 (label-before-INBOX ordering, re #27)", cat.calls.Load())
+	}
+
+	// Verify the message is a member of both herold mailboxes.
+	inWorkLabel := countMailboxMessages(t, ha.Store, acc.PrincipalID, "WorkLabel")
+	inINBOX := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX")
+	if inWorkLabel != 1 {
+		t.Errorf("WorkLabel has %d messages; want 1", inWorkLabel)
+	}
+	if inINBOX != 1 {
+		t.Errorf("INBOX has %d messages; want 1", inINBOX)
+	}
+}
+
 // TestSyncFakeClock verifies that the FakeClock passed to the worker is
 // used for metrics timing (smoke test to ensure clock injection works
 // in sync tests; the FakeClock does not drift unless explicitly advanced).

@@ -325,7 +325,7 @@ func (w *accountWorker) fetchAndIngest(
 		if lowestUID == 0 || uid < lowestUID {
 			lowestUID = uid
 		}
-		isNew, msgID, mbID, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox)
+		isNew, isNewMember, msgID, mbID, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox)
 		if ingestErr != nil {
 			w.opts.log.Warn("imapimport: ingest failed",
 				slog.String("account_id", account.ID),
@@ -357,9 +357,18 @@ func (w *accountWorker) fetchAndIngest(
 			)
 		}
 
-		// Categoriser seam: only for new forward-sync INBOX mail
-		// (REQ-IMAP-IMP-31). Not called during backfill.
-		if isNew && isForward && strings.EqualFold(heroldMailbox, "INBOX") {
+		// Categoriser seam: for new INBOX-mapped messages on the forward-sync
+		// pass (REQ-IMAP-IMP-31). Not called during backfill.
+		//
+		// isNewMember is true for both fresh inserts and for dedup hits where
+		// AddMessageToMailbox just placed the message into this mailbox for the
+		// first time. The latter handles the Gmail label-before-INBOX ordering:
+		// when a user-label folder syncs before INBOX the message is created
+		// there (isNew=true, but mailbox != INBOX so no categorise), then INBOX
+		// is synced and the dedup path adds the membership (isNew=false but
+		// isNewMember=true, mailbox == INBOX so categorise fires). Without this
+		// check the message would never receive a $category-* keyword (re #27).
+		if isNewMember && isForward && strings.EqualFold(heroldMailbox, "INBOX") {
 			if catErr := w.opts.categoriser.Categorise(ctx, fmt.Sprint(account.PrincipalID), fmt.Sprint(msgID), heroldMailbox); catErr != nil {
 				w.opts.log.Warn("imapimport: categorise failed (non-fatal)",
 					slog.String("account_id", account.ID),
@@ -373,10 +382,18 @@ func (w *accountWorker) fetchAndIngest(
 }
 
 // ingestMessage inserts fm into the herold store. Returns (isNew,
-// heroldMessageID, heroldMailboxID, error). isNew is false when the
-// message already existed (dedup hit). On a dedup hit msgID and mbID
-// are still populated (mbID is the current heroldMailbox's ID) so the
-// caller can record the import state.
+// isNewMember, heroldMessageID, heroldMailboxID, error). isNew is false when
+// the message already existed (dedup hit). isNewMember is true when the
+// message was just placed into heroldMailbox for the first time — either as a
+// fresh insert (isNew=true) or as a dedup hit where AddMessageToMailbox
+// created the membership now (isNew=false). isNewMember is false when the
+// message was already a member of heroldMailbox before this call (e.g. a
+// second sync pass of the same folder). Callers use isNewMember, not isNew,
+// to decide whether to run the categoriser so that categorisation happens
+// regardless of which upstream folder is synced first (re #27).
+//
+// On any error, msgID and mbID are still populated where known so the caller
+// can record the import state.
 //
 // Multi-mailbox dedup (the foundation of Gmail label placement and any
 // multi-folder IMAP account): if the message already exists in herold
@@ -389,14 +406,14 @@ func (w *accountWorker) ingestMessage(
 	ctx context.Context,
 	fm fetchedMessage,
 	upstreamFolder, heroldMailbox string,
-) (isNew bool, msgID store.MessageID, mbID store.MailboxID, retErr error) {
+) (isNew bool, isNewMember bool, msgID store.MessageID, mbID store.MailboxID, retErr error) {
 	account := w.opts.account
 	principalID := store.PrincipalID(account.PrincipalID)
 
 	// Parse the message for the envelope.
 	msg, parseErr := mailparse.Parse(bytes.NewReader(fm.RFC822), mailparse.NewParseOptions())
 	if parseErr != nil {
-		return false, 0, 0, fmt.Errorf("mailparse.Parse: %w", parseErr)
+		return false, false, 0, 0, fmt.Errorf("mailparse.Parse: %w", parseErr)
 	}
 
 	// Dedup by Message-ID (primary).
@@ -409,7 +426,7 @@ func (w *accountWorker) ingestMessage(
 			// the current target mailbox (multi-mailbox dedup path).
 			targetMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
 			if mbErr != nil {
-				return false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
+				return false, false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
 			}
 			// Check whether the message is already in this mailbox.
 			alreadyMember := false
@@ -425,15 +442,19 @@ func (w *accountWorker) ingestMessage(
 				// into the same mailbox loses the race harmlessly.
 				if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
 					if !errors.Is(addErr, store.ErrConflict) {
-						return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+						return false, false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
 					}
 					// ErrConflict means a concurrent path already added it; harmless.
+					// Treat as not-new-member so the caller does not double-categorise.
+					return false, false, existing.ID, targetMB.ID, nil
 				}
+				// Membership created now: the caller should categorise if INBOX.
+				return false, true, existing.ID, targetMB.ID, nil
 			}
-			return false, existing.ID, targetMB.ID, nil
+			return false, false, existing.ID, targetMB.ID, nil
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
-			return false, 0, 0, fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)
+			return false, false, 0, 0, fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)
 		}
 		// ErrNotFound -> proceed with insert.
 	}
@@ -444,13 +465,13 @@ func (w *accountWorker) ingestMessage(
 	// Store blob (idempotent).
 	blobRef, putErr := w.opts.store.Blobs().Put(ctx, bytes.NewReader(fm.RFC822))
 	if putErr != nil {
-		return false, 0, 0, fmt.Errorf("imapimport: Blobs.Put: %w", putErr)
+		return false, false, 0, 0, fmt.Errorf("imapimport: Blobs.Put: %w", putErr)
 	}
 
 	// Ensure the target herold mailbox exists.
 	mb, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
 	if mbErr != nil {
-		return false, 0, 0, fmt.Errorf("imapimport: ensureMailbox %q: %w", heroldMailbox, mbErr)
+		return false, false, 0, 0, fmt.Errorf("imapimport: ensureMailbox %q: %w", heroldMailbox, mbErr)
 	}
 
 	// Build the store.Message. InternalDate and ReceivedAt are both set
@@ -474,7 +495,7 @@ func (w *accountWorker) ingestMessage(
 
 	_, _, insertErr := w.opts.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
 	if insertErr != nil {
-		return false, 0, 0, fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
+		return false, false, 0, 0, fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
 	}
 
 	// Retrieve the assigned MessageID for state recording.
@@ -490,7 +511,8 @@ func (w *accountWorker) ingestMessage(
 		// On lookup failure we still return isNew=true; mbID is known.
 	}
 
-	return true, assignedMsgID, mb.ID, nil
+	// Fresh insert: the message is a new member of heroldMailbox.
+	return true, true, assignedMsgID, mb.ID, nil
 }
 
 // ensureMailbox returns the herold mailbox named mbName owned by pid,
