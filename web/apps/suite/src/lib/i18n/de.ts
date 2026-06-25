@@ -957,6 +957,7 @@ export const de = {
   'login.password': 'Passwort',
   'login.totpCode': 'Authenticator-Code',
   'login.totpPlaceholder': '6-stelliger Code',
+  'login.totpWrongCode': 'Ungültiger Code. Bitte erneut versuchen.',
   'login.signingIn': 'Anmeldung läuft...',
   'login.signIn': 'Anmelden',
   'login.signInFailed': 'Anmeldung fehlgeschlagen.',
