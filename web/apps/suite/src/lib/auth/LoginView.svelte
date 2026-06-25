@@ -7,25 +7,53 @@
   let totpCode = $state('');
   let submitting = $state(false);
   let errorMessage = $state<string | null>(null);
+  /** Ref to the TOTP input so we can refocus it after a wrong code (re #29). */
+  let totpInputEl = $state<HTMLInputElement | null>(null);
 
-  async function handleSubmit(e: SubmitEvent): Promise<void> {
-    e.preventDefault();
+  /** Core login action shared by the form submit and the auto-submit path. */
+  async function doLogin(): Promise<void> {
     if (submitting) return;
     submitting = true;
     errorMessage = null;
-
     try {
       await auth.login({
         email,
         password,
         totpCode: auth.needsStepUp && totpCode ? totpCode : undefined,
       });
-      // On success auth.bootstrap() ran inside auth.login(); status is now 'ready'.
+      // On success auth.bootstrap() ran inside auth.login(); status is 'ready'.
     } catch (err) {
       // auth.login() sets auth.errorMessage; mirror it locally for display.
       errorMessage = auth.errorMessage ?? (err instanceof Error ? err.message : t('login.signInFailed'));
+      // On a wrong TOTP code the server leaves needsStepUp true. Clear the
+      // field and return focus so the user can try again without clicking
+      // (re #29). A microtask yield lets Svelte flush reactive updates so
+      // totpInputEl resolves to the DOM node if the field just appeared.
+      if (auth.needsStepUp) {
+        totpCode = '';
+        await Promise.resolve();
+        totpInputEl?.focus();
+      }
     } finally {
       submitting = false;
+    }
+  }
+
+  async function handleSubmit(e: SubmitEvent): Promise<void> {
+    e.preventDefault();
+    await doLogin();
+  }
+
+  /**
+   * Auto-submit when the user enters all six TOTP digits (re #29).
+   * Non-digit characters are stripped so the user can paste
+   * space-separated codes from some authenticator apps.
+   */
+  function onTotpInput(): void {
+    const digits = totpCode.replace(/\D/g, '');
+    if (digits.length === 6 && !submitting) {
+      totpCode = digits;
+      void doLogin();
     }
   }
 </script>
@@ -66,6 +94,7 @@
       {#if auth.needsStepUp}
         <div class="field">
           <label for="totp-code" class="label">{t('login.totpCode')}</label>
+          <!-- svelte-ignore a11y_autofocus -->
           <input
             id="totp-code"
             type="text"
@@ -75,7 +104,10 @@
             autocomplete="one-time-code"
             pattern="[0-9]*"
             placeholder={t('login.totpPlaceholder')}
+            autofocus
             bind:value={totpCode}
+            bind:this={totpInputEl}
+            oninput={onTotpInput}
             disabled={submitting}
           />
         </div>
