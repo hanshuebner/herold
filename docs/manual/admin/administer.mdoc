@@ -341,10 +341,71 @@ curl -X POST http://admin.example.com/api/v1/principals/1/totp/confirm \
 # Response: 204
 
 # 4. From now on, password+TOTP sign-in works through the SPA / JSON
-#    login endpoint. The bootstrap key remains a permanent admin
-#    Bearer token under the current contract; narrowing it to a
-#    one-shot enrollment ticket is tracked in a follow-up issue.
+#    login endpoint. The bootstrap key is one-shot: step 3's confirm
+#    consumes it, and any further use returns 401 (re #21).
 ```
+
+#### Admin access recovery (re #24)
+
+If the only admin has lost TOTP access (device lost, authenticator app
+wiped) or all admin API keys are gone, use `herold recover` to regain
+access without editing database rows.
+
+`herold recover` is an offline command: it opens the store directly
+from the path in `--system-config` without a running server. Stop
+the server first, or run on a replica that shares the same on-disk
+database.
+
+Flags:
+
+- `--email <addr>` — the email address of the principal to recover
+  (required).
+- `--reset-totp` — clear the TOTP secret and disable
+  `PrincipalFlagTOTPEnabled`. The principal can re-enroll via the TOTP
+  endpoints after the server restarts.
+- `--mint-api-key` — mint a fresh one-shot Bearer key for the named
+  principal. The key is printed once and saved to
+  `~/.herold/credentials.toml` (pass `--save-credentials=false` to
+  skip the save). The key is one-shot: it is consumed automatically
+  on the first successful `POST /api/v1/principals/{pid}/totp/confirm`,
+  exactly like the bootstrap key (re #21).
+- `--server-url <url>` — record this URL in the saved credentials
+  file.
+- `--save-credentials` — default `true`; set to `false` to suppress
+  the `~/.herold/credentials.toml` write.
+
+At least one of `--reset-totp` or `--mint-api-key` is required.
+Both can be combined in one invocation.
+
+```bash
+# Scenario: admin lost their TOTP device; mint a new key so they can
+# re-enroll after restart.
+herold --system-config /etc/herold/system.toml recover \
+     --email admin@example.com \
+     --reset-totp \
+     --mint-api-key
+
+# Output:
+# recover: TOTP enrollment cleared for admin@example.com
+# recover: one-shot recovery API key minted
+#   email:   admin@example.com
+#   api_key: hk_...
+# the key is consumed after the first successful TOTP confirm.
+# credentials saved to /home/operator/.herold/credentials.toml
+```
+
+After running `herold recover`:
+
+1. Restart the server (if it was stopped).
+2. Use the printed `api_key` as a Bearer token to call
+   `POST /api/v1/principals/{pid}/totp/enroll`.
+3. Configure the authenticator app and call
+   `POST /api/v1/principals/{pid}/totp/confirm` with the first code.
+4. The recovery key is consumed at step 3. Normal password+TOTP
+   sign-in is now available.
+
+Every mutation performed by `herold recover` is written to the
+store's audit log.
 
 ## Mailboxes
 

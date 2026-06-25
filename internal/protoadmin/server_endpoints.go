@@ -124,7 +124,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	// Mint the initial API key.
+	// Mint the initial API key.  The key is one-shot: it is automatically
+	// deleted on the first successful TOTP confirm call so it cannot be
+	// reused beyond its single intended purpose of enrolling TOTP
+	// (REQ-AUTH-44, re #21).
 	plaintext, hash, err := generateAPIKey()
 	if err != nil {
 		s.loggerFrom(r.Context()).Error("protoadmin.bootstrap.apikey_gen", "err", err)
@@ -136,6 +139,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		PrincipalID: pid,
 		Hash:        hash,
 		Name:        "bootstrap",
+		OneShot:     true,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)

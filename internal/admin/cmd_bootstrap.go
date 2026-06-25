@@ -101,6 +101,7 @@ Exits 10 if a principal already exists.`,
 				PrincipalID: pid,
 				Hash:        keyHash,
 				Name:        "bootstrap",
+				OneShot:     true,
 			}); err != nil {
 				return fmt.Errorf("bootstrap: insert api key: %w", err)
 			}

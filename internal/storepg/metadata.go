@@ -444,9 +444,10 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us,
-			                      scope_json, allowed_from_addresses_json, allowed_from_domains_json)
-			VALUES ($1, $2, $3, $4, 0, $5, $6, $7) RETURNING id`,
-			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON).Scan(&id); err != nil {
+			                      scope_json, allowed_from_addresses_json, allowed_from_domains_json,
+			                      one_shot)
+			VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8) RETURNING id`,
+			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON, k.OneShot).Scan(&id); err != nil {
 			return fmt.Errorf("API key %q: %w", k.Name, mapErr(err))
 		}
 		return nil
@@ -463,14 +464,15 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIKey, error) {
 	row := m.s.pool.QueryRow(ctx, `
 		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
-		       scope_json, allowed_from_addresses_json, allowed_from_domains_json
+		       scope_json, allowed_from_addresses_json, allowed_from_domains_json,
+		       one_shot
 		  FROM api_keys WHERE hash = $1`, hash)
 	var k store.APIKey
 	var id, pid int64
 	var createdUs, lastUs int64
 	var addrJSON, domJSON string
 	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs,
-		&k.ScopeJSON, &addrJSON, &domJSON)
+		&k.ScopeJSON, &addrJSON, &domJSON, &k.OneShot)
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
 	}
@@ -501,7 +503,8 @@ func (m *metadata) TouchAPIKey(ctx context.Context, id store.APIKeyID, at time.T
 func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.APIKey, error) {
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
-		       scope_json, allowed_from_addresses_json, allowed_from_domains_json
+		       scope_json, allowed_from_addresses_json, allowed_from_domains_json,
+		       one_shot
 		  FROM api_keys WHERE principal_id = $1 ORDER BY id`, int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
@@ -514,7 +517,7 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		var createdUs, lastUs int64
 		var addrJSON, domJSON string
 		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs,
-			&k.ScopeJSON, &addrJSON, &domJSON); err != nil {
+			&k.ScopeJSON, &addrJSON, &domJSON, &k.OneShot); err != nil {
 			return nil, mapErr(err)
 		}
 		k.ID = store.APIKeyID(id)
@@ -526,6 +529,20 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+func (m *metadata) DeleteOneShotAPIKeysByPrincipal(ctx context.Context, pid store.PrincipalID) (int64, error) {
+	var n int64
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		res, err := tx.Exec(ctx,
+			`DELETE FROM api_keys WHERE principal_id = $1 AND one_shot = TRUE`, int64(pid))
+		if err != nil {
+			return mapErr(err)
+		}
+		n = res.RowsAffected()
+		return nil
+	})
+	return n, err
 }
 
 func (m *metadata) DeleteAPIKey(ctx context.Context, id store.APIKeyID) error {

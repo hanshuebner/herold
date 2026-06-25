@@ -117,6 +117,7 @@ func NewRootCmd() *cobra.Command {
 	// Subcommand groups.
 	root.AddCommand(newServerCmd())
 	root.AddCommand(newBootstrapCmd())
+	root.AddCommand(newRecoverCmd())
 	root.AddCommand(newPrincipalCmd())
 	root.AddCommand(newMailboxCmd())
 	root.AddCommand(newDomainCmd())

@@ -386,7 +386,15 @@ const CurrentBackupVersion = 1
 //	Partial index idx_messages_body_meta_pending on id WHERE
 //	body_meta_computed = 0 (SQLite) / NOT body_meta_computed (Postgres)
 //	makes the background sweep worker's paged scan cheap.
-const CurrentSchemaVersion = 59
+//
+// 60 — 0060_apikey_oneshot.sql. Adds one_shot column to api_keys
+//
+//	(INTEGER NOT NULL DEFAULT 0 / BOOLEAN NOT NULL DEFAULT FALSE).
+//	Keys with one_shot set are automatically deleted after the first
+//	successful POST /api/v1/principals/{pid}/totp/confirm call so the
+//	bootstrap / recovery API key cannot be reused beyond its single
+//	intended purpose (REQ-AUTH-44, re #21, re #24).
+const CurrentSchemaVersion = 60
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
