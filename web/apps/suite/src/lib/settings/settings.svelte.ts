@@ -22,6 +22,7 @@ import { i18n, detectLocale, LOCALES, type Locale } from '../i18n/i18n.svelte';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
 export type ImageLoadDefault = 'never' | 'per-sender' | 'always';
+export type ComposerEnterMode = 'paragraph' | 'linebreak';
 export type SwipeAction =
   | 'archive'
   | 'snooze'
@@ -40,6 +41,7 @@ const KEYS = {
   swipeLeft: 'swipeLeft',
   swipeRight: 'swipeRight',
   desktopNotifEnabled: 'desktopNotifEnabled',
+  composerEnterMode: 'composerEnterMode',
 } as const;
 
 const DEFAULTS = {
@@ -51,6 +53,7 @@ const DEFAULTS = {
   swipeLeft: 'archive' as SwipeAction,
   swipeRight: 'snooze' as SwipeAction,
   desktopNotifEnabled: false,
+  composerEnterMode: 'paragraph' as ComposerEnterMode,
 };
 
 const UNDO_WINDOW_MIN = 0;
@@ -94,6 +97,7 @@ class Settings {
   #swipeLeft = $state<SwipeAction>(DEFAULTS.swipeLeft);
   #swipeRight = $state<SwipeAction>(DEFAULTS.swipeRight);
   #desktopNotifEnabled = $state<boolean>(DEFAULTS.desktopNotifEnabled);
+  #composerEnterMode = $state<ComposerEnterMode>(DEFAULTS.composerEnterMode);
 
   /** Read every setting from localStorage. Idempotent. */
   hydrate(): void {
@@ -127,6 +131,10 @@ class Settings {
     this.#desktopNotifEnabled = readJson<boolean>(
       KEYS.desktopNotifEnabled,
       DEFAULTS.desktopNotifEnabled,
+    );
+    this.#composerEnterMode = readJson<ComposerEnterMode>(
+      KEYS.composerEnterMode,
+      DEFAULTS.composerEnterMode,
     );
   }
 
@@ -243,6 +251,15 @@ class Settings {
   setDesktopNotifEnabled(value: boolean): void {
     this.#desktopNotifEnabled = value;
     writeJson(KEYS.desktopNotifEnabled, value);
+  }
+
+  // ── Composer Enter mode ───────────────────────────────────────────────
+  get composerEnterMode(): ComposerEnterMode {
+    return this.#composerEnterMode;
+  }
+  setComposerEnterMode(value: ComposerEnterMode): void {
+    this.#composerEnterMode = value;
+    writeJson(KEYS.composerEnterMode, value);
   }
 }
 

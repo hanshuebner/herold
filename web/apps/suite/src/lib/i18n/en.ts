@@ -244,6 +244,9 @@ export const en = {
   'msg.rawSource.error': 'Failed to load raw source',
 
   // ── Compose ─────────────────────────────────────────────────────────
+  // ── Recipient field warnings (re #37) ───────────────────────────────
+  'compose.recipient.invalid': 'Not a valid email address: {token}',
+
   'compose.title.new': 'New message',
   'compose.title.reply': 'Reply',
   'compose.title.forward': 'Forward',
@@ -784,6 +787,11 @@ export const en = {
   'settings.mail.spamNoPrompt': 'No spam prompt configured.',
   'settings.mail.coachHeading': 'Shortcut coach',
   'settings.mail.coachLabel': 'Show coach hints',
+  'settings.mail.composerEnterMode': 'Enter key behavior',
+  'settings.mail.composerEnterMode.paragraph': 'Paragraph',
+  'settings.mail.composerEnterMode.linebreak': 'Line break',
+  'settings.mail.composerEnterMode.hint':
+    'In paragraph mode, Enter creates a new paragraph and Shift+Enter inserts a line break. In line-break mode the keys are swapped.',
 
   // ── Settings: notifications section (re #97) ─────────────────────────
   'settings.notifications.soundsLabel': 'Notification sounds',

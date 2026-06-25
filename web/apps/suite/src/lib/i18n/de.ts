@@ -242,6 +242,9 @@ export const de = {
   'msg.rawSource.error': 'Quelltext konnte nicht geladen werden',
 
   // ── Compose ─────────────────────────────────────────────────────────
+  // ── Empfänger-Warnungen (re #37) ────────────────────────────────────
+  'compose.recipient.invalid': 'Keine gültige E-Mail-Adresse: {token}',
+
   'compose.title.new': 'Neue Nachricht',
   'compose.title.reply': 'Antwort',
   'compose.title.forward': 'Weiterleitung',
@@ -797,6 +800,11 @@ export const de = {
   'settings.mail.spamNoPrompt': 'Kein Spam-Prompt konfiguriert.',
   'settings.mail.coachHeading': 'Tastaturkürzel-Hilfe',
   'settings.mail.coachLabel': 'Hinweise einblenden',
+  'settings.mail.composerEnterMode': 'Enter-Taste im Verfassen',
+  'settings.mail.composerEnterMode.paragraph': 'Absatz',
+  'settings.mail.composerEnterMode.linebreak': 'Zeilenumbruch',
+  'settings.mail.composerEnterMode.hint':
+    'Im Absatz-Modus erstellt Enter einen neuen Absatz und Shift+Enter einen Zeilenumbruch. Im Zeilenumbruch-Modus sind die Tasten vertauscht.',
 
   // ── Einstellungen: Benachrichtigungen (re #97) ───────────────────────
   'settings.notifications.soundsLabel': 'Benachrichtigungstöne',
