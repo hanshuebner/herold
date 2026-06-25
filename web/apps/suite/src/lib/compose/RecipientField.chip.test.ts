@@ -139,8 +139,9 @@ describe('RecipientField blur commits a complete address (REQ-MAIL-11t)', () => 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(onChipsChange).not.toHaveBeenCalled();
-    // The latest onWarning call must surface the unrecognised text.
+    // The latest onWarning call must surface the unrecognised text (re #37:
+    // the message is now "Not a valid email address: <token>").
     const lastCall = onWarning.mock.calls.at(-1);
-    expect(lastCall?.[0]).toMatch(/Couldn't recognize/);
+    expect(lastCall?.[0]).toMatch(/not-an-email/);
   });
 });

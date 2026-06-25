@@ -27,6 +27,7 @@
     recipientToString,
     type Recipient,
   } from './recipient-parse';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     label: string;
@@ -166,7 +167,7 @@
     if (parsed.length > 0 && !rest.trim()) {
       onWarning(null);
     } else {
-      onWarning(`Couldn't recognize: ${trimmed}`);
+      onWarning(t('compose.recipient.invalid', { token: trimmed }));
     }
   }
 
@@ -305,7 +306,7 @@
     }
     buffer = rest;
     if (rest.trim()) {
-      onWarning(`Couldn't recognize: ${rest.trim()}`);
+      onWarning(t('compose.recipient.invalid', { token: rest.trim() }));
     } else {
       onWarning(null);
     }
