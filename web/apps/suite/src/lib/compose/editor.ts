@@ -27,6 +27,8 @@ import {
 import { keymap } from 'prosemirror-keymap';
 import {
   baseKeymap,
+  chainCommands,
+  splitBlock,
   toggleMark,
   wrapIn,
   setBlockType,
@@ -40,6 +42,7 @@ import {
 } from 'prosemirror-schema-list';
 
 import { composeSchema } from './schema';
+import { settings, type ComposerEnterMode } from '../settings/settings.svelte';
 
 export interface ActiveState {
   strong: boolean;
@@ -131,12 +134,46 @@ export function computeActive(state: EditorStateType): ActiveState {
 }
 
 /**
+ * Insert a hard_break node at the cursor (re #33).
+ * Replaces the selection with a hard_break node from the compose schema.
+ */
+function insertHardBreak(
+  state: EditorStateType,
+  dispatch?: (tr: Transaction) => void,
+): boolean {
+  const br = composeSchema.nodes.hard_break;
+  if (!br) return false;
+  if (dispatch) dispatch(state.tr.replaceSelectionWith(br.create()).scrollIntoView());
+  return true;
+}
+
+/**
  * Build the editor's keymap. Mod = Cmd on macOS, Ctrl elsewhere
  * (prosemirror-keymap handles the platform check internally).
+ *
+ * Mode 'paragraph' (default): Enter = new paragraph (falls through to
+ * baseKeymap splitBlock when not in a list), Shift-Enter = hard_break.
+ * Mode 'linebreak': Enter = hard_break (after splitListItem), Shift-Enter
+ * = new paragraph via splitBlock.
+ * In both modes splitListItem takes priority when the caret is inside a
+ * list item (re #33).
  */
-function composeKeymap() {
+function composeKeymap(mode: ComposerEnterMode) {
   const m = composeSchema.marks;
   const n = composeSchema.nodes;
+
+  const inListEnter = splitListItem(n.list_item!);
+
+  // In linebreak mode Enter inserts a hard_break even outside lists.
+  // In paragraph mode the splitListItem falls through to baseKeymap's
+  // Enter chain (splitBlock etc.) when the caret is not in a list.
+  const enterCmd =
+    mode === 'linebreak'
+      ? chainCommands(inListEnter, insertHardBreak)
+      : inListEnter;
+
+  const shiftEnterCmd = mode === 'linebreak' ? splitBlock : insertHardBreak;
+
   return keymap({
     'Mod-z': undo,
     'Mod-y': redo,
@@ -145,7 +182,8 @@ function composeKeymap() {
     'Mod-i': toggleMark(m.em!),
     'Mod-u': toggleMark(m.underline!),
     'Mod-`': toggleMark(m.code!),
-    Enter: splitListItem(n.list_item!),
+    Enter: enterCmd,
+    'Shift-Enter': shiftEnterCmd,
     'Mod-[': liftListItem(n.list_item!),
     'Mod-]': sinkListItem(n.list_item!),
   });
@@ -176,10 +214,13 @@ export function createComposeEditor(
   },
 ): EditorView {
   const doc = htmlToDoc(options.initialHtml);
+  // Read the enter-mode preference at construction time so the keymap
+  // reflects whatever the user had set when the compose window opened.
+  // Changing the setting while the window is open takes effect on next open.
   const state = EditorState.create({
     schema: composeSchema,
     doc,
-    plugins: [history(), composeKeymap(), keymap(baseKeymap)],
+    plugins: [history(), composeKeymap(settings.composerEnterMode), keymap(baseKeymap)],
   });
   const view = new EditorView(target, {
     state,

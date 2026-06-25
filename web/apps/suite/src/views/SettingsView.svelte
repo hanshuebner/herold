@@ -548,6 +548,26 @@
         </label>
       </div>
 
+      <div class="row vertical">
+        <span class="label">{t('settings.mail.composerEnterMode')}</span>
+        <div class="segmented" role="radiogroup" aria-label={t('settings.mail.composerEnterMode')}>
+          {#each ['paragraph', 'linebreak'] as const as mode}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={settings.composerEnterMode === mode}
+              class:on={settings.composerEnterMode === mode}
+              onclick={() => settings.setComposerEnterMode(mode)}
+            >
+              {t(`settings.mail.composerEnterMode.${mode}`)}
+            </button>
+          {/each}
+        </div>
+        <p class="hint">
+          {t('settings.mail.composerEnterMode.hint')}
+        </p>
+      </div>
+
     {:else if activeSection === 'categories'}
       <h2>{t('settings.categories.heading')}</h2>
       <CategoriesForm />

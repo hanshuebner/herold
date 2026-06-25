@@ -22,6 +22,7 @@ import { i18n, detectLocale, LOCALES, type Locale } from '../i18n/i18n.svelte';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
 export type ImageLoadDefault = 'never' | 'per-sender' | 'always';
+export type ComposerEnterMode = 'paragraph' | 'linebreak';
 export type SwipeAction =
   | 'archive'
   | 'snooze'
@@ -39,6 +40,7 @@ const KEYS = {
   coachEnabled: 'coachEnabled',
   swipeLeft: 'swipeLeft',
   swipeRight: 'swipeRight',
+  composerEnterMode: 'composerEnterMode',
 } as const;
 
 const DEFAULTS = {
@@ -49,6 +51,7 @@ const DEFAULTS = {
   coachEnabled: true,
   swipeLeft: 'archive' as SwipeAction,
   swipeRight: 'snooze' as SwipeAction,
+  composerEnterMode: 'paragraph' as ComposerEnterMode,
 };
 
 const UNDO_WINDOW_MIN = 0;
@@ -91,6 +94,7 @@ class Settings {
   #coachEnabled = $state<boolean>(DEFAULTS.coachEnabled);
   #swipeLeft = $state<SwipeAction>(DEFAULTS.swipeLeft);
   #swipeRight = $state<SwipeAction>(DEFAULTS.swipeRight);
+  #composerEnterMode = $state<ComposerEnterMode>(DEFAULTS.composerEnterMode);
 
   /** Read every setting from localStorage. Idempotent. */
   hydrate(): void {
@@ -120,6 +124,10 @@ class Settings {
     this.#swipeRight = readJson<SwipeAction>(
       KEYS.swipeRight,
       DEFAULTS.swipeRight,
+    );
+    this.#composerEnterMode = readJson<ComposerEnterMode>(
+      KEYS.composerEnterMode,
+      DEFAULTS.composerEnterMode,
     );
   }
 
@@ -226,6 +234,15 @@ class Settings {
   setSwipeRight(value: SwipeAction): void {
     this.#swipeRight = value;
     writeJson(KEYS.swipeRight, value);
+  }
+
+  // ── Composer Enter mode ───────────────────────────────────────────────
+  get composerEnterMode(): ComposerEnterMode {
+    return this.#composerEnterMode;
+  }
+  setComposerEnterMode(value: ComposerEnterMode): void {
+    this.#composerEnterMode = value;
+    writeJson(KEYS.composerEnterMode, value);
   }
 }
 
