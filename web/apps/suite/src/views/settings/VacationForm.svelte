@@ -264,7 +264,7 @@
   .switch .track {
     width: 100%;
     height: 100%;
-    background: var(--layer-02);
+    background: var(--border-strong-01);
     border-radius: var(--radius-pill);
     position: relative;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
