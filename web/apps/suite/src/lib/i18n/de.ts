@@ -38,11 +38,16 @@ export const de = {
   'list.refresh': 'Aktualisieren',
   'list.emptyTrash': 'Papierkorb leeren',
   'list.loading': 'Laden...',
+  // Langsam-Lade-Hinweis nach 1 s (re #30).
+  'list.loadSlow': 'Entschuldigung für die Wartezeit. Möglicherweise liegt ein Systemproblem vor.',
   'list.retry': 'Erneut versuchen',
   'list.empty.inbox': 'Posteingang ist leer.',
   'list.empty.allMail': 'Keine Nachrichten.',
   'list.empty.folder': '{name} ist leer.',
   'list.couldNotLoad': '{name} konnte nicht geladen werden.',
+  // Ergänzender Hinweis im Fehlerzustand (re #30).
+  'list.couldNotLoad.systemHint':
+    'Das könnte an einem Kapazitäts- oder Systemproblem liegen. Bitte erneut versuchen.',
   'list.dragMessageCount': '{count} Nachrichten verschieben',
   // Hinweis "Bilder werden verarbeitet" (REQ-EXTIMG-BG-30).
   'mail.list.internalizePending.tooltip':
@@ -798,6 +803,11 @@ export const de = {
   'settings.notifications.soundsHint':
     'Einen Ton abspielen, wenn eine neue Nachricht oder ein Anruf eingeht und dieser Tab geöffnet ist.',
   'settings.notifications.soundsAria': 'Benachrichtigungstöne',
+  // Desktop-Benachrichtigungs-Toggle (re #23).
+  'settings.notifications.desktopLabel': 'Desktop-Benachrichtigungen',
+  'settings.notifications.desktopHint':
+    'Zeigt eine Desktop-Benachrichtigung für neue Posteingangs-Nachrichten an, wenn dieser Tab geöffnet ist und die Berechtigung erteilt wurde.',
+  'settings.notifications.desktopAria': 'Desktop-Benachrichtigungen',
   'settings.notifications.pushLabel': 'Push-Benachrichtigungen',
   'settings.notifications.pushDeniedHint':
     'Benachrichtigungen sind aus. Sie können sie in den Browser-Einstellungen wieder aktivieren.',
@@ -807,6 +817,9 @@ export const de = {
   'settings.notifications.pushDisable': 'Benachrichtigungen deaktivieren',
   'settings.notifications.pushOffHint':
     'Erhalten Sie Benachrichtigungen über neue Nachrichten und Anrufe, auch wenn dieser Tab geschlossen ist.',
+  // Erläuterung des "Push-Abonnement"-Konzepts (re #23c).
+  'settings.notifications.pushSubscriptionHint':
+    'Push-Benachrichtigungen werden vom Browser zugestellt, auch wenn dieser Tab geschlossen ist.',
   'settings.notifications.pushEnabling': 'Wird aktiviert…',
   'settings.notifications.pushEnable': 'Benachrichtigungen aktivieren',
   'settings.notifications.forgetAllLabel': 'Alle Abonnements verwerfen',

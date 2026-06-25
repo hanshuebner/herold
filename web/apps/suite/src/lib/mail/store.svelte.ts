@@ -27,6 +27,7 @@ import {
 import { parseQuery, type FilterCondition, type FilterOperator } from './search-query';
 import { sounds } from '../notifications/sounds.svelte';
 import { shouldPlayMailCue } from '../notifications/cue-gates';
+import { settings } from '../settings/settings.svelte';
 import { router } from '../router/router.svelte';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 
@@ -315,13 +316,32 @@ class MailStore {
     if (knownEmailIds.size > 0) {
       // Only trigger cues on state-change refreshes (not the initial load
       // where knownEmailIds would be empty).
+      let notifEmail: Email | null = null;
       for (const [id, email] of this.emails) {
         if (knownEmailIds.has(id)) continue;
         if (this.#shouldMailCue(email)) {
           sounds.play('mail');
+          notifEmail = email;
           break; // one cue per event
         }
       }
+      // Desktop notification for new inbox mail when the tab is open (re #23a).
+      if (notifEmail !== null && settings.desktopNotifEnabled) {
+        this.#fireDesktopNotification(notifEmail);
+      }
+    }
+
+    // Refresh mailbox counters so favicon badge and title update on new
+    // mail arrival (re #36). Coalesced via #refreshMailboxesSoon so rapid
+    // state-change bursts collapse into a single loadMailboxes call.
+    if (
+      knownEmailIds.size > 0 &&
+      (delta === null ||
+        delta.created.size > 0 ||
+        delta.updated.size > 0 ||
+        delta.destroyed.size > 0)
+    ) {
+      this.#refreshMailboxesSoon();
     }
 
     // Record fresh arrivals in the currently-open thread so ThreadReader
@@ -329,14 +349,14 @@ class MailStore {
     // user sent themselves (replying to your own thread shouldn't ping
     // you about your own reply).
     if (knownEmailIds.size > 0 && this.openThreadId !== null) {
-      this.#recordPendingArrivals(knownEmailIds, delta);
+      await this.#recordPendingArrivals(knownEmailIds, delta);
     }
   }
 
-  #recordPendingArrivals(
+  async #recordPendingArrivals(
     knownEmailIds: Set<string>,
     delta: { created: Set<string>; updated: Set<string>; destroyed: Set<string> } | null,
-  ): void {
+  ): Promise<void> {
     const open = this.openThreadId;
     if (open === null) return;
     const candidates = new Set<string>();
@@ -358,6 +378,48 @@ class MailStore {
       arrivals.push(id);
     }
     if (arrivals.length === 0) return;
+
+    // Ensure body values are present before surfacing the arrival in the
+    // thread reader so it does not render "(no body)" until reload (re #31).
+    // refreshFolder (list-props only) and refreshThread (body-props) run
+    // concurrently; if refreshFolder wins it overwrites the email object
+    // with one that has no bodyValues. An explicit Email/get here with
+    // body properties wins that race by writing after both tasks settle.
+    const accountId = this.mailAccountId;
+    if (accountId) {
+      const needsBody = arrivals.filter((id) => {
+        const e = this.emails.get(id);
+        return e !== undefined && !e.bodyValues;
+      });
+      if (needsBody.length > 0) {
+        try {
+          const { responses } = await jmap.batch((b) => {
+            b.call(
+              'Email/get',
+              {
+                accountId,
+                ids: needsBody,
+                properties: EMAIL_BODY_PROPERTIES,
+                fetchHTMLBodyValues: true,
+                fetchTextBodyValues: true,
+                maxBodyValueBytes: 256 * 1024,
+              },
+              [Capability.Mail],
+            );
+          });
+          strict(responses);
+          const result = invocationArgs<{ list: Email[] }>(responses[0]);
+          const updated = new Map(this.emails);
+          for (const e of result.list) updated.set(e.id, e);
+          this.emails = updated;
+        } catch (err) {
+          // Body pre-fetch failure is non-fatal: the arrival still appears
+          // in the banner; the user can reload to see the full content.
+          console.warn('body pre-fetch for pending arrival failed', err);
+        }
+      }
+    }
+
     const next = new Map(this.pendingArrivals);
     const merged = new Set(next.get(open) ?? []);
     for (const id of arrivals) merged.add(id);
@@ -2885,6 +2947,57 @@ class MailStore {
       inboxFocused,
     });
   }
+
+  /**
+   * Register a visibilitychange listener that re-syncs mailbox counters
+   * when the tab comes back into focus, keeping the favicon badge and
+   * title accurate after the tab was hidden (re #36).
+   *
+   * Returns the unmount function; call it to remove the listener.
+   * Idempotent: a second call returns the existing unmount without
+   * registering a duplicate listener.
+   */
+  #visibilityUnmount: (() => void) | null = null;
+  installVisibilitySync(): () => void {
+    if (this.#visibilityUnmount !== null) return this.#visibilityUnmount;
+    if (typeof document === 'undefined') return () => {};
+    const onVisible = (): void => {
+      if (document.visibilityState !== 'visible') return;
+      this.#refreshMailboxesSoon();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    this.#visibilityUnmount = (): void => {
+      document.removeEventListener('visibilitychange', onVisible);
+      this.#visibilityUnmount = null;
+    };
+    return this.#visibilityUnmount;
+  }
+
+  /**
+   * Fire an OS-level desktop notification for a newly-arrived email
+   * while this tab is open. Called only when the user has enabled
+   * `settings.desktopNotifEnabled` and the browser has granted
+   * `Notification.permission === 'granted'` (re #23a).
+   */
+  #fireDesktopNotification(email: Email): void {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    const sender =
+      email.from?.[0]?.name?.trim() ||
+      email.from?.[0]?.email ||
+      '';
+    const subject = email.subject || i18n.t('thread.subject.none');
+    const title = sender ? `${sender}: ${subject}` : subject;
+    try {
+      new Notification(title, {
+        body: email.preview ?? undefined,
+        tag: `mail-${email.id}`,
+      });
+    } catch {
+      // Browser policy (e.g. secure-context check) may reject; swallow
+      // silently so the sound cue path is unaffected.
+    }
+  }
 }
 
 function invocationArgs<T>(inv: Invocation | undefined): T {
@@ -3130,4 +3243,5 @@ export const _internals_forTest = {
   allVisibleSelected,
   resolveThreadEmails,
   expandToThreadIds,
+  setErrorToUserMessage,
 };

@@ -526,6 +526,20 @@
     row?.scrollIntoView({ block: 'nearest' });
   });
 
+  // Show a "sorry we're slow" hint after the list has been loading for
+  // more than 1 s so the user knows something is being worked on (re #30).
+  let loadingSlowly = $state(false);
+  $effect(() => {
+    if (mail.listLoadStatus !== 'loading') {
+      untrack(() => { loadingSlowly = false; });
+      return;
+    }
+    const timer = setTimeout(() => {
+      untrack(() => { loadingSlowly = true; });
+    }, 1000);
+    return () => clearTimeout(timer);
+  });
+
   // Load categorySettings when transitioning to inbox and capability available.
   $effect(() => {
     if (isInboxRoute && categorySettings.available && categorySettings.loadStatus === 'idle') {
@@ -1026,10 +1040,16 @@
     {/if}
 
     {#if mail.listLoadStatus === 'idle' || mail.listLoadStatus === 'loading'}
-      <div class="state">{t('list.loading')}</div>
+      <div class="state">
+        {t('list.loading')}
+        {#if loadingSlowly}
+          <p class="slow-hint">{t('list.loadSlow')}</p>
+        {/if}
+      </div>
     {:else if mail.listLoadStatus === 'error'}
       <div class="state error">
         <p>{t('list.couldNotLoad', { name: folderLabel.toLowerCase() })}</p>
+        <p class="detail">{t('list.couldNotLoad.systemHint')}</p>
         {#if mail.listError}<p class="detail">{mail.listError}</p>{/if}
         <button type="button" onclick={() => mail.refreshFolder()}>{t('list.retry')}</button>
       </div>
@@ -1376,6 +1396,11 @@
   }
   .state.error {
     color: var(--support-error);
+  }
+  .state .slow-hint {
+    margin-top: var(--spacing-04);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--support-warning);
   }
   .state .detail {
     font-family: var(--font-mono);
