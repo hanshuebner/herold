@@ -284,6 +284,9 @@ export const en = {
   'compose.from.sendDisabled.verifying': 'This identity is awaiting verification — cannot send yet.',
   'compose.from.sendDisabled.external': 'External SMTP submission is not configured for this identity.',
   'compose.from.sendDisabled.noIdentity': 'No identity available to send from.',
+  // Inline composer actions (re #38, re #34).
+  'compose.sendAndArchive': 'Send + Archive',
+  'compose.popOut': 'Pop out',
 
   // ── Compose formatting toolbar (re #97) ─────────────────────────────
   'composeToolbar.aria': 'Formatting',

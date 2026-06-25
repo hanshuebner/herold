@@ -282,6 +282,9 @@ export const de = {
   'compose.from.sendDisabled.verifying': 'Diese Identität wartet auf Bestätigung — Senden noch nicht möglich.',
   'compose.from.sendDisabled.external': 'Externe SMTP-Übermittlung ist für diese Identität nicht eingerichtet.',
   'compose.from.sendDisabled.noIdentity': 'Keine Identität zum Senden verfügbar.',
+  // Inline-Verfassen-Aktionen (re #38, re #34).
+  'compose.sendAndArchive': 'Senden + Archivieren',
+  'compose.popOut': 'Ausklappen',
 
   // ── Formatierungsleiste im Editor (re #97) ──────────────────────────
   'composeToolbar.aria': 'Formatierung',

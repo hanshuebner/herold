@@ -47,7 +47,17 @@
 
   let inboxId = $derived(mail.inbox?.id);
   let trashId = $derived(mail.trash?.id);
-  let isInInbox = $derived(Boolean(inboxId && latest.mailboxIds[inboxId]));
+  // Derive all emails in the thread so isInInbox reflects the full
+  // conversation. A thread where the latest message is the user's own reply
+  // (in Sent) should still show Archive when earlier messages are in the
+  // Inbox. re #35.
+  let threadEmails = $derived(mail.threadEmails(threadId));
+  let inboxEmailIds = $derived(
+    inboxId
+      ? threadEmails.filter((e) => Boolean(e.mailboxIds[inboxId])).map((e) => e.id)
+      : [],
+  );
+  let isInInbox = $derived(inboxEmailIds.length > 0);
   let isInTrash = $derived(Boolean(trashId && latest.mailboxIds[trashId]));
 
   // Mute state for the thread — used by the mute/unmute action.
@@ -72,7 +82,11 @@
   }
 
   function archive(): void {
-    void mail.bulkArchive([latest.id]);
+    // Archive every inbox-member email in the thread, not only latest.id,
+    // so threads whose newest message is a self-sent reply (in Sent) are
+    // fully removed from the Inbox. re #35.
+    const ids = inboxEmailIds.length > 0 ? inboxEmailIds : [latest.id];
+    void mail.bulkArchive(ids);
     back();
   }
 

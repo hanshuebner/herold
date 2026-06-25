@@ -174,6 +174,13 @@ const EMPTY_REPLY: ReplyContext = {
 
 class ComposeStore {
   status = $state<ComposeStatus>('idle');
+  /**
+   * True when the compose is rendered inline inside ThreadReader rather
+   * than as a floating modal. Set by ThreadReplyBar before opening a
+   * reply; reset by close() so subsequent opens default to floating.
+   * re #38.
+   */
+  inlineMode = $state(false);
   to = $state('');
   cc = $state('');
   bcc = $state('');
@@ -949,6 +956,7 @@ class ComposeStore {
   /** Close and clear. */
   close(): void {
     this.status = 'idle';
+    this.inlineMode = false;
     this.to = '';
     this.cc = '';
     this.bcc = '';
