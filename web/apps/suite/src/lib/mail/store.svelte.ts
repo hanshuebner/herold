@@ -611,7 +611,7 @@ class MailStore {
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, e);
+      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
 
       const nextThreads = new Map(this.threads);
@@ -1382,7 +1382,7 @@ class MailStore {
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
 
       const next = new Map(this.emails);
-      for (const e of getResult.list) next.set(e.id, e);
+      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
       this.listEmailIds = queryResult.ids;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
@@ -3098,6 +3098,51 @@ function formatSnoozeTarget(d: Date): string {
   })}, ${time}`;
 }
 
+/**
+ * Merge a list-properties email update into the cache without discarding
+ * already-loaded body content (re #31, residual path).
+ *
+ * When `refreshFolder` or a search fetch writes EMAIL_LIST_PROPERTIES
+ * entries into the cache, it blindly overwrites the existing `Email`
+ * object, stripping `bodyValues`, `htmlBody`, `textBody`, and the other
+ * body-only fields that an earlier `loadThread` / `refreshThread` loaded.
+ * The open thread reader then re-renders with "(no body)" until the user
+ * reloads.
+ *
+ * The merge rule:
+ *  - Incoming has `bodyValues` → it came from a body-complete fetch;
+ *    replace the cached entry outright.
+ *  - Incoming has no `bodyValues` but existing does → incoming is a
+ *    list-only update; spread incoming (fresh metadata) then restore
+ *    all body-only fields from the existing entry.
+ *  - Neither has `bodyValues` → plain list-to-list update; use incoming.
+ */
+export function mergeEmailListFetch(existing: Email | undefined, incoming: Email): Email {
+  if (incoming.bodyValues !== undefined) return incoming;
+  if (existing?.bodyValues === undefined) return incoming;
+  return {
+    ...incoming,
+    cc: existing.cc,
+    bcc: existing.bcc,
+    replyTo: existing.replyTo,
+    sender: existing.sender,
+    sentAt: existing.sentAt,
+    bodyValues: existing.bodyValues,
+    htmlBody: existing.htmlBody,
+    textBody: existing.textBody,
+    attachments: existing.attachments,
+    messageId: existing.messageId,
+    inReplyTo: existing.inReplyTo,
+    references: existing.references,
+    reactions: existing.reactions,
+    blobId: existing.blobId,
+    'header:List-ID:asText': existing['header:List-ID:asText'],
+    'header:Face:asText': existing['header:Face:asText'],
+    'header:X-Face:asText': existing['header:X-Face:asText'],
+    'header:X-Herold-Recipient:asText': existing['header:X-Herold-Recipient:asText'],
+  };
+}
+
 function errMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message || fallback;
   return fallback;
@@ -3244,4 +3289,5 @@ export const _internals_forTest = {
   resolveThreadEmails,
   expandToThreadIds,
   setErrorToUserMessage,
+  mergeEmailListFetch,
 };
