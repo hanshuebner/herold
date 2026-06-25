@@ -32,8 +32,10 @@
   // Per-compose keyboard layer: Mod+Enter sends, Escape closes.
   // Both pass through input-focus carve-outs (see keyboard engine
   // shouldSkipForFocus: Escape and Mod+Enter always pass through).
+  // Guard on !compose.inlineMode so the floating layer is inactive when
+  // the inline composer owns the keyboard (re #38).
   $effect(() => {
-    if (!compose.isOpen) return;
+    if (!compose.isOpen || compose.inlineMode) return;
     const pop = keyboard.pushLayer([
       {
         key: 'Mod+Enter',
@@ -456,17 +458,22 @@
   // transitions, capturing compose.body as a one-time snapshot.
   let initialHtml = $state('');
   $effect(() => {
-    if (compose.status === 'editing') {
-      // Read compose.body via untrack so this effect only re-runs when
-      // compose.status changes, not on every keystroke. compose.body is
-      // written by onEditorUpdate on every character; tracking it here would
-      // recompute initialHtml on each keystroke, which would cause
-      // RichEditor's $effect to recreate the ProseMirror view, resetting the
-      // cursor to position 0 and producing reversed text.
-      initialHtml = untrack(() => compose.body);
-    } else {
+    if (compose.status !== 'editing') {
       initialHtml = '';
+    } else if (!compose.inlineMode) {
+      // Floating mode: refresh snapshot on open or pop-out.
+      // untrack() prevents compose.body writes (every keystroke) from re-running
+      // this effect and destroying/recreating the ProseMirror view.
+      // The inlineMode dependency covers pop-out (re #38): when the user
+      // switches from the inline composer to the floating window, inlineMode
+      // goes false while status stays 'editing'. This effect re-fires and
+      // captures the current compose.body (which may include inline edits).
+      // ComposeWindow's RichEditor mounts fresh (the {#if} block was hidden
+      // while inlineMode was true) and receives the up-to-date snapshot.
+      initialHtml = untrack(() => compose.body);
     }
+    // status='editing' + inlineMode=true: inline composer owns the editor;
+    // leave initialHtml unchanged — ComposeWindow's RichEditor is not mounted.
   });
 
   // ── G15: Dual drop targets ─────────────────────────────────────────────
@@ -693,7 +700,7 @@
   />
 {/if}
 
-{#if compose.isOpen}
+{#if compose.isOpen && !compose.inlineMode}
   <div class="backdrop" onclick={closeWithConfirm} aria-hidden="true"></div>
   <div
     class="modal"

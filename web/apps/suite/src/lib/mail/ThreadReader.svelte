@@ -4,6 +4,7 @@
   import MessageAccordion from './MessageAccordion.svelte';
   import ThreadToolbar from './ThreadToolbar.svelte';
   import ThreadReplyBar from './ThreadReplyBar.svelte';
+  import ThreadInlineComposer from './ThreadInlineComposer.svelte';
   import TaggedAddressBanner from './TaggedAddressBanner.svelte';
   import ThreadNewReplyBanner from './ThreadNewReplyBanner.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
@@ -161,13 +162,43 @@
   let expanded = $state(new Set<string>());
   let initialised = $state(false);
 
+  // Plain (non-reactive) set that tracks which email IDs were present when
+  // the initial expansion ran. Used by the new-message auto-expand effect
+  // below to detect arrivals (e.g. a self-sent reply) without tracking
+  // prevEmailIds as $state — which would loop through the write-from-effect
+  // anti-pattern described in web/CLAUDE.md.
+  let prevEmailIds = new Set<string>();
+
   $effect(() => {
     if (!initialised && emails.length > 0) {
       const initial = pickInitialExpanded(emails);
       if (initial) {
         expanded = new Set([initial]);
       }
+      // Capture the baseline ID set so the new-message effect can diff
+      // against it on the very first tick (prevents it from marking all
+      // initial emails as "new" on the same render).
+      prevEmailIds = new Set(emails.map((e) => e.id));
       initialised = true;
+    }
+  });
+
+  // Auto-expand messages that arrive AFTER the initial expansion (re #34).
+  // The primary use-case is the just-sent reply appearing in the thread
+  // while the thread is still open. Uses untrack() around the expanded
+  // write to avoid the read-write loop described in web/CLAUDE.md.
+  $effect(() => {
+    if (!initialised) return;
+    const currentIds = new Set(emails.map((e) => e.id));
+    const newIds: string[] = [];
+    for (const id of currentIds) {
+      if (!prevEmailIds.has(id)) newIds.push(id);
+    }
+    prevEmailIds = currentIds;
+    if (newIds.length > 0) {
+      untrack(() => {
+        expanded = new Set([...expanded, ...newIds]);
+      });
     }
   });
 
@@ -249,6 +280,11 @@
           </div>
         {/each}
       </div>
+      <!-- Inline reply / forward composer (re #38): mounted below the
+           messages so the user can see the conversation while composing.
+           Rendered only when compose.inlineMode is true; the ThreadReplyBar
+           hides itself while this is visible. -->
+      <ThreadInlineComposer {threadId} />
     </div>
     <ThreadReplyBar target={latest} />
   {/if}
