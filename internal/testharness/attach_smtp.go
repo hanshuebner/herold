@@ -86,6 +86,52 @@ func (s *Server) AttachSMTP(name string, srv *protosmtp.Server, mode protosmtp.L
 	}()
 }
 
+// AttachSMTPWithOptions is like AttachSMTP but accepts the full
+// ListenerOptions so callers can set per-listener fields such as
+// AllowPlainAuth.
+func (s *Server) AttachSMTPWithOptions(name string, srv *protosmtp.Server, opts protosmtp.ListenerOptions) {
+	if srv == nil {
+		panic("testharness: AttachSMTPWithOptions nil server")
+	}
+	s.mu.Lock()
+	st, ok := s.listeners[name]
+	if !ok {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("testharness: AttachSMTPWithOptions: no listener %q", name))
+	}
+	if st.managed != nil {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("testharness: AttachSMTPWithOptions: listener %q already attached", name))
+	}
+	st.managed = make(chan struct{})
+	stopCh := st.stopDefault
+	doneCh := st.defaultDone
+	handoffCh := st.handoff
+	s.mu.Unlock()
+	close(stopCh)
+	<-doneCh
+
+	s.mu.Lock()
+	ln := st.ln
+	s.mu.Unlock()
+	if tcp, ok := ln.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(time.Time{})
+	}
+
+	select {
+	case pre := <-handoffCh:
+		srv.HandleConn(pre, opts)
+	default:
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer close(st.managed)
+		_ = srv.Serve(s.ctx, st.ln, opts)
+	}()
+}
+
 // DialSMTPByName connects to a named SMTP listener. When the listener
 // has been attached via AttachSMTP this returns a live net.Conn on top
 // of the server. For implicit-TLS listeners use DialSMTPSByName.

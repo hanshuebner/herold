@@ -407,6 +407,60 @@ func TestSTARTTLS_RequiredBeforeAUTHENTICATE(t *testing.T) {
 	}
 }
 
+// newFixtureAllowPlainAuth creates a ManageSieve fixture in the
+// loopback-plaintext posture: AllowPlainAuth=true in ListenerOptions,
+// mirroring the allow_plain_auth=true / tls="none" system.toml shape
+// (issue #8).
+func newFixtureAllowPlainAuth(t *testing.T) *fixture {
+	t.Helper()
+	name := "managesieve"
+	ha, _ := testharness.Start(t, testharness.Options{
+		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: "managesieve"}},
+	})
+	ctx := context.Background()
+	if err := ha.Store.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	dir := directory.New(ha.Store.Meta(), ha.Logger, ha.Clock, rand.Reader)
+	password := "correct-horse-staple-battery"
+	pid, err := dir.CreatePrincipal(ctx, "alice@example.test", password)
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	tlsStore, clientCfg := newTestTLSStore(t)
+	srv := protomanagesieve.NewServer(
+		ha.Store, dir, tlsStore, ha.Clock, ha.Logger, nil, nil,
+		protomanagesieve.Options{
+			ServerName:  "herold",
+			IdleTimeout: time.Minute,
+		},
+	)
+	ha.AttachManageSieveWithOptions(name, srv, protomanagesieve.ListenerOptions{AllowPlainAuth: true})
+	t.Cleanup(func() { _ = srv.Close() })
+	return &fixture{
+		ha: ha, srv: srv, name: name,
+		pid: pid, password: password,
+		dir: dir, tlsCfg: clientCfg,
+	}
+}
+
+// TestAUTHENTICATE_PLAIN_AllowedWithoutTLS_WhenConfigured verifies that
+// AUTHENTICATE PLAIN succeeds over a cleartext connection when the
+// listener has AllowPlainAuth set (loopback quickstart posture, re #8).
+func TestAUTHENTICATE_PLAIN_AllowedWithoutTLS_WhenConfigured(t *testing.T) {
+	f := newFixtureAllowPlainAuth(t)
+	c := f.dial(t)
+	defer c.conn.Close()
+	// Authenticate directly without STARTTLS.
+	ir := "\x00alice@example.test\x00" + f.password
+	encoded := base64.StdEncoding.EncodeToString([]byte(ir))
+	c.write(fmt.Sprintf("AUTHENTICATE \"PLAIN\" \"%s\"\r\n", encoded))
+	resp := c.readLine()
+	if !strings.HasPrefix(strings.ToUpper(resp), "OK") {
+		t.Fatalf("expected OK with allow_plain_auth, got %q", resp)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // PUTSCRIPT / CHECKSCRIPT / GETSCRIPT / DELETESCRIPT
 // -----------------------------------------------------------------------------

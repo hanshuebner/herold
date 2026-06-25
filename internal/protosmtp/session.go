@@ -482,7 +482,11 @@ func (sess *session) cmdAUTH(rest string) bool {
 		sess.writeReply("504 5.5.4 mechanism not supported")
 		return false
 	}
-	ctx := sasl.WithTLS(sess.ctx, sess.tlsEstablished)
+	// Allow plain-text mechanisms when TLS is established or when the
+	// listener has opted into the loopback plaintext posture via
+	// allow_plain_auth (issue #8). The SASL mechanisms gate on
+	// tlsPresent(ctx), so we mark the context TLS-present in both cases.
+	ctx := sasl.WithTLS(sess.ctx, sess.tlsEstablished || sess.allowPlainAuth)
 	if len(sess.serverEndpoint) > 0 {
 		ctx = sasl.WithTLSServerEndpoint(ctx, sess.serverEndpoint)
 	}

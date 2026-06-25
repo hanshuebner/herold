@@ -3045,6 +3045,18 @@ func Validate(c *Config) error {
 			if l.TLS != "none" {
 				return fmt.Errorf("sysconfig: [[listener]] %q: allow_plain_auth requires tls = \"none\"", l.Name)
 			}
+			// allow_plain_auth is a loopback-only safety valve: a non-loopback
+			// cleartext listener with plain auth enabled exposes credentials in
+			// transit. Operators intending a trusted-network posture should bind
+			// to 127.0.0.1 or ::1.
+			host, _, splitErr := net.SplitHostPort(l.Address)
+			if splitErr != nil {
+				host = ""
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || !ip.IsLoopback() {
+				return fmt.Errorf("sysconfig: [[listener]] %q: allow_plain_auth requires a loopback bind address (127.x.x.x or ::1)", l.Name)
+			}
 		}
 		// REQ-OPS-ADMIN-LISTENER-01: HTTP listeners (Protocol=="http")
 		// carry a Kind in {public, admin}. Non-HTTP listeners must

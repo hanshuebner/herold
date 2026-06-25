@@ -246,8 +246,12 @@ func (ses *session) requireAuth() error {
 // the strict case — PLAIN / LOGIN over cleartext are not advertised,
 // and even SCRAM (which can run cleartext) is refused here so the
 // post-AUTH command surface is uniformly TLS-protected.
+//
+// Exception: when the operator has opted into the loopback plaintext
+// posture via allow_plain_auth (issue #8) the session is on a trusted
+// network; the TLS requirement is waived for the whole session.
 func (ses *session) requireTLS() error {
-	if ses.tlsActive {
+	if ses.tlsActive || ses.allowPlainAuth {
 		return nil
 	}
 	if ses.s.tlsStore == nil {

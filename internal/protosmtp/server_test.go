@@ -59,7 +59,8 @@ type fixture struct {
 }
 
 type fixtureOpts struct {
-	mode protosmtp.ListenerMode
+	mode           protosmtp.ListenerMode
+	allowPlainAuth bool
 }
 
 func newFixture(t *testing.T, fo fixtureOpts) *fixture {
@@ -129,7 +130,8 @@ func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 		t.Fatalf("New server: %v", err)
 	}
 	t.Cleanup(func() { _ = srv.Close(context.Background()) })
-	ha.AttachSMTP(name, srv, fo.mode)
+	lopts := protosmtp.ListenerOptions{Mode: fo.mode, AllowPlainAuth: fo.allowPlainAuth}
+	ha.AttachSMTPWithOptions(name, srv, lopts)
 	return &fixture{
 		ha:        ha,
 		srv:       srv,
@@ -570,6 +572,49 @@ func TestAuth_PLAIN_RejectedWithoutTLS(t *testing.T) {
 	code, _ := cli.readReply(t)
 	if code == 235 {
 		t.Fatalf("PLAIN without TLS must not succeed")
+	}
+}
+
+func TestAuth_PLAIN_AllowedWithoutTLS_WhenConfigured(t *testing.T) {
+	// allow_plain_auth=true on a loopback submission listener must permit
+	// AUTH PLAIN over cleartext (re #8 loopback quickstart posture).
+	f := newFixture(t, fixtureOpts{mode: protosmtp.SubmissionSTARTTLS, allowPlainAuth: true})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	ir := base64.StdEncoding.EncodeToString([]byte("\x00alice@example.test\x00" + f.password))
+	cli.send(t, "AUTH PLAIN "+ir)
+	code, msg := cli.readReply(t)
+	if code != 235 {
+		t.Fatalf("expected 235 with allow_plain_auth, got %d %s", code, msg)
+	}
+}
+
+func TestAuth_LOGIN_AllowedWithoutTLS_WhenConfigured(t *testing.T) {
+	// AUTH LOGIN is the second plain-text mechanism; it must also succeed
+	// when allow_plain_auth=true on a loopback listener (re #8).
+	f := newFixture(t, fixtureOpts{mode: protosmtp.SubmissionSTARTTLS, allowPlainAuth: true})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "AUTH LOGIN")
+	code, _ := cli.readReply(t)
+	if code != 334 {
+		t.Fatalf("expected 334 challenge for AUTH LOGIN, got %d", code)
+	}
+	cli.send(t, base64.StdEncoding.EncodeToString([]byte("alice@example.test")))
+	code, _ = cli.readReply(t)
+	if code != 334 {
+		t.Fatalf("expected second 334 challenge, got %d", code)
+	}
+	cli.send(t, base64.StdEncoding.EncodeToString([]byte(f.password)))
+	code, msg := cli.readReply(t)
+	if code != 235 {
+		t.Fatalf("expected 235 with allow_plain_auth LOGIN, got %d %s", code, msg)
 	}
 }
 
