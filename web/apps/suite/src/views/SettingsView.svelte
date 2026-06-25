@@ -963,7 +963,10 @@
   .switch .track {
     width: 100%;
     height: 100%;
-    background: var(--layer-02);
+    /* --layer-02 is #ffffff in light mode, invisible on a white page.
+       --border-strong-01 (#8d8d8d light / #6f6f6f dark) gives a
+       clearly visible grey track when the toggle is off (C12). */
+    background: var(--border-strong-01);
     border-radius: var(--radius-pill);
     position: relative;
     transition: background var(--duration-fast-02) var(--easing-productive-enter);
