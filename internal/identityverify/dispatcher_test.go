@@ -115,13 +115,13 @@ func newDispatcherWithStore(t *testing.T) (*Dispatcher, *fakeSubmitter, *fakeAud
 	sub := &fakeSubmitter{}
 	aud := &fakeAuditor{}
 	d := New(Options{
-		Store:        st,
-		Submitter:    sub,
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:        clk,
-		Hostname:     "mail.example.com",
-		VerifierFrom: "postmaster@example.com",
-		Auditor:      aud,
+		Store:         st,
+		Submitter:     sub,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		VerifierFrom:  "postmaster@example.com",
+		Auditor:       aud,
 	})
 	return d, sub, aud, st, clk
 }
@@ -132,12 +132,12 @@ func TestDispatcher_Validate_RejectsMissingFields(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"no store", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), Hostname: "h", VerifierFrom: "p@h"}},
-		{"no submitter", Options{Logger: logger, Clock: clock.NewFake(time.Now()), Hostname: "h", VerifierFrom: "p@h"}},
-		{"no logger", Options{Submitter: &fakeSubmitter{}, Clock: clock.NewFake(time.Now()), Hostname: "h", VerifierFrom: "p@h"}},
-		{"no clock", Options{Submitter: &fakeSubmitter{}, Logger: logger, Hostname: "h", VerifierFrom: "p@h"}},
-		{"no hostname", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), VerifierFrom: "p@h"}},
-		{"no verifier from", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), Hostname: "h"}},
+		{"no store", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
+		{"no submitter", Options{Logger: logger, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
+		{"no logger", Options{Submitter: &fakeSubmitter{}, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
+		{"no clock", Options{Submitter: &fakeSubmitter{}, Logger: logger, PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
+		{"no public base url", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), VerifierFrom: "p@h"}},
+		{"no verifier from", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h"}},
 	}
 	for _, c := range cases {
 		c := c
@@ -298,7 +298,7 @@ func TestDispatcher_Trigger_AuditOnQueueFailure(t *testing.T) {
 	d := New(Options{
 		Store: st, Submitter: sub,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:  clk, Hostname: "mail.example.com",
+		Clock:  clk, PublicBaseURL: "https://mail.example.com",
 		VerifierFrom: "postmaster@example.com", Auditor: aud,
 	})
 
@@ -365,7 +365,7 @@ func TestDispatcher_Trigger_TokenLookupRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDispatcher_Trigger_HostnameAppearsInLink(t *testing.T) {
+func TestDispatcher_Trigger_PublicBaseURLAppearsInLink(t *testing.T) {
 	d, sub, _, st, _ := newDispatcherWithStore(t)
 	ctx := context.Background()
 	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil {
@@ -456,7 +456,7 @@ func newDispatcherWithResendLimits(t *testing.T, cooldown time.Duration, dailyCa
 		Submitter:      sub,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:          clk,
-		Hostname:       "mail.example.com",
+		PublicBaseURL:  "https://mail.example.com",
 		VerifierFrom:   "postmaster@example.com",
 		Auditor:        aud,
 		ResendCooldown: cooldown,
@@ -585,6 +585,74 @@ func TestDispatcher_Resend_DailyCapGate(t *testing.T) {
 	// fourth was rejected before the queue submit.
 	if len(sub.calls) != 3 {
 		t.Fatalf("submissions: got %d, want 3", len(sub.calls))
+	}
+}
+
+// TestDispatcher_Trigger_PublicBaseURLDistinctFromMTAHostname asserts
+// that when public_base_url differs from the MTA hostname (the common
+// split-hostname deployment: mx.host for SMTP, mail.host for the SPA),
+// the verification link and Message-ID in the rendered email use the
+// public-facing host, not the MTA host (re #19).
+func TestDispatcher_Trigger_PublicBaseURLDistinctFromMTAHostname(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.com", DisplayName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	row := store.JMAPIdentity{
+		ID: "iv-splithost", PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	sub := &fakeSubmitter{}
+	// Simulate the split-hostname deployment: MTA hostname is
+	// "mx.example.com"; SPA is served from "https://mail.example.com".
+	// Only PublicBaseURL should appear in the email.
+	d := New(Options{
+		Store:         st,
+		Submitter:     sub,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		VerifierFrom:  "postmaster@example.com",
+	})
+
+	tokens, err := d.Trigger(ctx, row)
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	body := string(sub.calls[0].body)
+
+	wantLink := "https://mail.example.com/verify-identity?token=" + tokens.Token
+	if !strings.Contains(body, wantLink) {
+		t.Errorf("body missing link %q", wantLink)
+	}
+	// MTA-only host must not leak into the rendered email.
+	if strings.Contains(body, "mx.example.com") {
+		t.Errorf("body contains MTA hostname mx.example.com; public host should be mail.example.com")
+	}
+	// Message-ID must also carry the public host.
+	msgIDStart := strings.Index(body, "Message-ID:")
+	if msgIDStart < 0 {
+		t.Fatalf("body missing Message-ID header")
+	}
+	msgIDLine := body[msgIDStart : msgIDStart+80]
+	if !strings.Contains(msgIDLine, "mail.example.com") {
+		t.Errorf("Message-ID line %q missing public host mail.example.com", msgIDLine)
 	}
 }
 

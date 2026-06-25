@@ -84,13 +84,13 @@ func TestIntegration_DispatchAndRedeem(t *testing.T) {
 	cap := &captureSubmitter{}
 	aud := &fakeAuditor{}
 	d := New(Options{
-		Store:        st,
-		Submitter:    cap,
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:        clk,
-		Hostname:     "mail.example.com",
-		VerifierFrom: "postmaster@example.com",
-		Auditor:      aud,
+		Store:         st,
+		Submitter:     cap,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		VerifierFrom:  "postmaster@example.com",
+		Auditor:       aud,
 	})
 	if _, err := d.Trigger(ctx, row); err != nil {
 		t.Fatalf("Trigger: %v", err)
@@ -196,7 +196,7 @@ func TestIntegration_TokenExpiryHonoured(t *testing.T) {
 	d := New(Options{
 		Store: st, Submitter: &captureSubmitter{},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:  clk, Hostname: "mail.example.com",
+		Clock:  clk, PublicBaseURL: "https://mail.example.com",
 		VerifierFrom: "postmaster@example.com",
 	})
 	if _, err := d.Trigger(ctx, row); err != nil {
@@ -243,7 +243,7 @@ func TestIntegration_BodyUsesCRLF(t *testing.T) {
 	d := New(Options{
 		Store: st, Submitter: cap,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Clock:  clk, Hostname: "mail.example.com",
+		Clock:  clk, PublicBaseURL: "https://mail.example.com",
 		VerifierFrom: "postmaster@example.com",
 	})
 	if _, err := d.Trigger(ctx, row); err != nil {

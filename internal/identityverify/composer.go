@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"mime/multipart"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -93,9 +94,13 @@ type ComposeInput struct {
 	// Code is the 6-digit ASCII code (REQ-IDENT-32). Rendered on its
 	// own line in both the plain-text and HTML bodies.
 	Code string
-	// Hostname is the public-listener hostname used to build the
-	// click-link URL (https://<host>/verify-identity?token=<token>).
-	Hostname string
+	// PublicBaseURL is the externally-reachable base URL of the public
+	// listener (e.g. "https://mail.example.com"). Used to build the
+	// click-link URL (PublicBaseURL + "/verify-identity?token=<token>")
+	// and the host portion of the Message-ID. Must match
+	// [server].public_base_url so the link points at the SPA, not at
+	// the MTA hostname (re #19).
+	PublicBaseURL string
 	// InitiatorEmail is the requesting principal's canonical email,
 	// rendered in the body so the recipient can detect an unsolicited
 	// verification (REQ-IDENT-33).
@@ -138,13 +143,21 @@ func Compose(in ComposeInput) (ComposeOutput, error) {
 	if strings.TrimSpace(in.Code) == "" {
 		return ComposeOutput{}, fmt.Errorf("identityverify.Compose: Code is empty")
 	}
-	if strings.TrimSpace(in.Hostname) == "" {
-		return ComposeOutput{}, fmt.Errorf("identityverify.Compose: Hostname is empty")
+	if strings.TrimSpace(in.PublicBaseURL) == "" {
+		return ComposeOutput{}, fmt.Errorf("identityverify.Compose: PublicBaseURL is empty")
 	}
 
-	link := "https://" + in.Hostname + "/verify-identity?token=" + in.Token
+	// Strip any trailing slash so the concatenation is always clean.
+	base := strings.TrimRight(in.PublicBaseURL, "/")
+	link := base + "/verify-identity?token=" + in.Token
 	subject := "Verify your email address"
-	msgID := fmt.Sprintf("<%d.identity-verify@%s>", in.Now.UnixNano(), in.Hostname)
+
+	// The Message-ID host is the public-facing domain, not the MTA
+	// hostname, so that it stays consistent with the click-link domain
+	// and avoids leaking internal infrastructure naming (re #19).
+	msgIDHost := hostFromURL(base)
+	msgID := fmt.Sprintf("<%d.identity-verify@%s>", in.Now.UnixNano(), msgIDHost)
+
 	initiator := in.InitiatorEmail
 	if strings.TrimSpace(initiator) == "" {
 		// Defensive fallback: if the caller did not supply an initiator
@@ -200,6 +213,17 @@ func Compose(in ComposeInput) (ComposeOutput, error) {
 		return ComposeOutput{}, fmt.Errorf("identityverify.Compose: copy body: %w", err)
 	}
 	return ComposeOutput{Bytes: out.Bytes(), MessageID: msgID, Subject: subject}, nil
+}
+
+// hostFromURL extracts the host portion (without scheme or path) from a
+// URL string. Returns the input unchanged when url.Parse fails or the
+// host is empty — the Message-ID is still valid, just less clean.
+func hostFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
 }
 
 // writePlainBody renders the plain-text alternative. Lines are wrapped

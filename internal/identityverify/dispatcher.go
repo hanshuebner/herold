@@ -65,9 +65,11 @@ type Options struct {
 	// Clock is the time source for token expiry and Date: headers.
 	// Required; production wires the real clock.
 	Clock clock.Clock
-	// Hostname is the public-listener hostname used in the
-	// verification URL and Message-ID (REQ-IDENT-30). Required.
-	Hostname string
+	// PublicBaseURL is the externally-reachable base URL of the public
+	// listener (e.g. "https://mail.example.com"). Used to build the
+	// verification link and the Message-ID host so both reflect the SPA
+	// origin, not the MTA hostname (re #19). Required.
+	PublicBaseURL string
 	// VerifierFrom is the envelope MAIL FROM + header From: address
 	// for verification messages (REQ-IDENT-30; default
 	// postmaster@<canonical hosted domain>). Required: when empty,
@@ -119,8 +121,8 @@ func (d *Dispatcher) Validate() error {
 	if d.opts.Clock == nil {
 		return fmt.Errorf("identityverify: Clock is required")
 	}
-	if strings.TrimSpace(d.opts.Hostname) == "" {
-		return fmt.Errorf("identityverify: Hostname is required")
+	if strings.TrimSpace(d.opts.PublicBaseURL) == "" {
+		return fmt.Errorf("identityverify: PublicBaseURL is required")
 	}
 	if strings.TrimSpace(d.opts.VerifierFrom) == "" {
 		return fmt.Errorf("identityverify: VerifierFrom is required")
@@ -239,7 +241,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 		To:             row.Email,
 		Token:          token,
 		Code:           code,
-		Hostname:       d.opts.Hostname,
+		PublicBaseURL:  d.opts.PublicBaseURL,
 		InitiatorEmail: initiator,
 		Now:            now,
 	})

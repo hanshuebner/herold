@@ -143,7 +143,7 @@ func TestCompose_RequiredFieldValidation(t *testing.T) {
 		To:             "alice@external.test",
 		Token:          "abc123",
 		Code:           "654321",
-		Hostname:       "mail.example.com",
+		PublicBaseURL:  "https://mail.example.com",
 		InitiatorEmail: "alice@example.com",
 		Now:            time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC),
 	}
@@ -155,7 +155,7 @@ func TestCompose_RequiredFieldValidation(t *testing.T) {
 		{"empty To", func(in *ComposeInput) { in.To = "" }},
 		{"empty Token", func(in *ComposeInput) { in.Token = "" }},
 		{"empty Code", func(in *ComposeInput) { in.Code = "" }},
-		{"empty Hostname", func(in *ComposeInput) { in.Hostname = "" }},
+		{"empty PublicBaseURL", func(in *ComposeInput) { in.PublicBaseURL = "" }},
 	}
 	for _, c := range cases {
 		c := c
@@ -176,7 +176,7 @@ func TestCompose_RendersHeadersAndBody(t *testing.T) {
 		To:             "alice@external.test",
 		Token:          "tok-abc",
 		Code:           "012345",
-		Hostname:       "mail.example.com",
+		PublicBaseURL:  "https://mail.example.com",
 		InitiatorEmail: "alice@example.com",
 		Now:            time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC),
 	}
@@ -243,6 +243,66 @@ func TestCompose_RendersHeadersAndBody(t *testing.T) {
 	}
 }
 
+// TestCompose_LinkAndMessageIDUsePublicBaseURL asserts that when
+// public_base_url differs from the MTA hostname, the generated link and
+// Message-ID carry the public-facing host, not the MTA host (re #19).
+func TestCompose_LinkAndMessageIDUsePublicBaseURL(t *testing.T) {
+	in := ComposeInput{
+		From:          "postmaster@example.local",
+		To:            "alice@external.test",
+		Token:         "tok-xyz",
+		Code:          "999888",
+		PublicBaseURL: "https://mail.netzhansa.com",
+		Now:           time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC),
+	}
+	out, err := Compose(in)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+
+	// The click link must use the public_base_url origin.
+	wantLink := "https://mail.netzhansa.com/verify-identity?token=tok-xyz"
+	if !strings.Contains(string(out.Bytes), wantLink) {
+		t.Errorf("body missing expected link %q\nbytes=%s", wantLink, out.Bytes)
+	}
+
+	// The MTA hostname (mx.netzhansa.com) must not appear in the
+	// rendered output — only the public-facing host should show up.
+	if strings.Contains(string(out.Bytes), "mx.netzhansa.com") {
+		t.Errorf("body contains MTA hostname mx.netzhansa.com; should only contain public host")
+	}
+
+	// The Message-ID host must be the public-facing host, not the MTA.
+	if !strings.Contains(out.MessageID, "mail.netzhansa.com") {
+		t.Errorf("MessageID %q missing public host mail.netzhansa.com", out.MessageID)
+	}
+	if strings.Contains(out.MessageID, "mx.netzhansa.com") {
+		t.Errorf("MessageID %q contains MTA hostname mx.netzhansa.com", out.MessageID)
+	}
+}
+
+// TestCompose_PublicBaseURLWithTrailingSlash asserts that a
+// public_base_url with a trailing slash does not produce a double-slash
+// in the generated link.
+func TestCompose_PublicBaseURLWithTrailingSlash(t *testing.T) {
+	in := ComposeInput{
+		From:          "postmaster@example.com",
+		To:            "alice@external.test",
+		Token:         "tok-slash",
+		Code:          "111222",
+		PublicBaseURL: "https://mail.example.com/",
+		Now:           time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC),
+	}
+	out, err := Compose(in)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	wantLink := "https://mail.example.com/verify-identity?token=tok-slash"
+	if !strings.Contains(string(out.Bytes), wantLink) {
+		t.Errorf("trailing slash produced unexpected link; want %q\nbytes=%s", wantLink, out.Bytes)
+	}
+}
+
 func TestCompose_FallsBackOnEmptyInitiator(t *testing.T) {
 	// REQ-IDENT-33 requires the initiator marker; when the resolver
 	// could not fetch the principal row the composer falls back to a
@@ -252,7 +312,7 @@ func TestCompose_FallsBackOnEmptyInitiator(t *testing.T) {
 		To:             "alice@external.test",
 		Token:          "tok-abc",
 		Code:           "012345",
-		Hostname:       "mail.example.com",
+		PublicBaseURL:  "https://mail.example.com",
 		InitiatorEmail: "",
 		Now:            time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC),
 	}
@@ -278,7 +338,7 @@ func TestCompose_HTMLEscapesUserInput(t *testing.T) {
 		To:             "<bad>@external.test",
 		Token:          "tok-abc",
 		Code:           "012345",
-		Hostname:       "mail.example.com",
+		PublicBaseURL:  "https://mail.example.com",
 		InitiatorEmail: "<script>alert(1)</script>@evil",
 		Now:            time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC),
 	}
