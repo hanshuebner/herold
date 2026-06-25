@@ -77,16 +77,16 @@
 
   function toggleMic(): void {
     if (!localStream) return;
-    for (const t of localStream.getAudioTracks()) {
-      t.enabled = micMuted;
+    for (const track of localStream.getAudioTracks()) {
+      track.enabled = micMuted;
     }
     micMuted = !micMuted;
   }
 
   function toggleCamera(): void {
     if (!localStream) return;
-    for (const t of localStream.getVideoTracks()) {
-      t.enabled = cameraMuted;
+    for (const track of localStream.getVideoTracks()) {
+      track.enabled = cameraMuted;
     }
     cameraMuted = !cameraMuted;
   }
@@ -114,7 +114,7 @@
   function teardown(): void {
     if (durationTimer) clearInterval(durationTimer);
     if (disconnectTimer) clearTimeout(disconnectTimer);
-    localStream?.getTracks().forEach((t) => t.stop());
+    localStream?.getTracks().forEach((track) => track.stop());
     localStream = null;
     pc?.close();
     pc = null;
@@ -146,7 +146,7 @@
       turn = await fetchTurnCredentials();
     } catch {
       toast.show({
-        message: 'Could not get TURN credentials — trying without relay',
+        message: t('chat.call.toast.turnFailed'),
         kind: 'error',
         timeoutMs: 5000,
       });
@@ -195,7 +195,7 @@
         // Auto-hangup after 10s of disconnected state (REQ-CALL-23).
         disconnectTimer = setTimeout(() => {
           toast.show({
-            message: 'Call dropped due to connection loss',
+            message: t('chat.call.toast.dropped'),
             kind: 'error',
           });
           teardown();
@@ -228,7 +228,7 @@
       });
     } catch {
       toast.show({
-        message: 'Camera/microphone access required for video calls',
+        message: t('chat.call.toast.mediaRequired'),
         kind: 'error',
         timeoutMs: 0,
       });
@@ -316,7 +316,7 @@
       case 'busy': {
         // Server-emitted: remote peer is in another call.
         console.warn('call.signal busy received for call', callId);
-        toast.show({ message: 'User is busy', kind: 'error', timeoutMs: 4000 });
+        toast.show({ message: t('chat.call.toast.busy'), kind: 'error', timeoutMs: 4000 });
         teardown();
         onHangup();
         break;
@@ -324,7 +324,7 @@
       case 'timeout': {
         // Server-emitted: ring window expired with no answer.
         console.warn('call.signal timeout received for call', callId);
-        toast.show({ message: 'No answer', kind: 'error', timeoutMs: 4000 });
+        toast.show({ message: t('chat.call.toast.noAnswer'), kind: 'error', timeoutMs: 4000 });
         teardown();
         onHangup();
         break;
@@ -388,13 +388,13 @@
   <!-- Status bar -->
   <div class="status-bar">
     {#if connectionState === 'connecting' || connectionState === 'new'}
-      <span>Connecting…</span>
+      <span>{t('chat.call.connecting')}</span>
     {:else if connectionState === 'connected'}
       <span>{formatDuration(callDuration)}</span>
     {:else if connectionState === 'disconnected'}
-      <span>Connection lost — reconnecting…</span>
+      <span>{t('chat.call.reconnecting')}</span>
     {:else if connectionState === 'failed'}
-      <span>Connection failed</span>
+      <span>{t('chat.call.failed')}</span>
     {/if}
   </div>
 
@@ -405,13 +405,13 @@
       class="ctrl-btn"
       class:active={micMuted}
       aria-pressed={micMuted}
-      aria-label={micMuted ? 'Unmute microphone (m)' : 'Mute microphone (m)'}
+      aria-label={micMuted ? t('chat.call.unmuteMic') : t('chat.call.muteMic')}
       onclick={toggleMic}
     >
       {#if micMuted}
-        Mic Off
+        {t('chat.call.micOff')}
       {:else}
-        Mic
+        {t('chat.call.mic')}
       {/if}
     </button>
 
@@ -420,13 +420,13 @@
       class="ctrl-btn"
       class:active={cameraMuted}
       aria-pressed={cameraMuted}
-      aria-label={cameraMuted ? 'Turn camera on (v)' : 'Turn camera off (v)'}
+      aria-label={cameraMuted ? t('chat.call.cameraOn') : t('chat.call.cameraOff')}
       onclick={toggleCamera}
     >
       {#if cameraMuted}
-        Cam Off
+        {t('chat.call.camOff')}
       {:else}
-        Cam
+        {t('chat.call.cam')}
       {/if}
     </button>
 
@@ -436,17 +436,17 @@
       aria-label={`${t('chat.hangUp')} (h)`}
       onclick={() => void hangup()}
     >
-      Hang Up
+      {t('chat.hangUp')}
     </button>
 
     <button
       type="button"
       class="ctrl-btn"
       aria-pressed={isFullscreen}
-      aria-label={isFullscreen ? 'Exit fullscreen (f)' : 'Fullscreen (f)'}
+      aria-label={isFullscreen ? t('chat.call.exitFullscreen') : t('chat.call.enterFullscreen')}
       onclick={() => void toggleFullscreen()}
     >
-      {isFullscreen ? 'Exit FS' : 'Fullscreen'}
+      {isFullscreen ? t('chat.call.exitFs') : t('chat.call.fullscreen')}
     </button>
   </div>
 </div>

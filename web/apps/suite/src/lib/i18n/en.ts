@@ -91,6 +91,15 @@ export const en = {
   'mail.taggedBanner.toast.filterFailed': 'Could not create rule',
   'mail.taggedBanner.toast.dismissFailed': 'Could not save dismissal',
 
+  // ── Global bar ───────────────────────────────────────────────────────
+  'globalBar.searchPlaceholder': 'Search mail',
+  'globalBar.advancedSearch': 'Advanced search',
+  'globalBar.help': 'Help',
+  'globalBar.shortcuts': 'Keyboard shortcuts',
+  'globalBar.brand': 'Herold home',
+  'globalBar.disconnected': 'Disconnected',
+  'globalBar.reconnecting': 'Reconnecting…',
+
   // ── MailView surfaces (re #97) ──────────────────────────────────────
   // Search route: heading + empty-query echo, back link, ARIA labels for
   // the chip-recogniser strip / history strip / results listbox, and the
@@ -121,6 +130,19 @@ export const en = {
   // Label-route placeholder (label-view querying lands after inbox).
   'mail.label.heading': 'Label: {name}',
   'mail.label.lead': 'Label-view querying arrives after inbox.',
+  // Destructive-action confirmation dialogs (MailView).
+  'mail.emptyTrash.title': 'Empty Trash?',
+  'mail.emptyTrash.messageOne': 'Permanently delete {n} message from Trash. This cannot be undone.',
+  'mail.emptyTrash.messageMany': 'Permanently delete {n} messages from Trash. This cannot be undone.',
+  'mail.emptyTrash.confirm': 'Empty Trash',
+  'mail.deleteMsg.title': 'Delete this message permanently?',
+  'mail.deleteMsg.message': "Permanently delete this message? It can't be recovered.",
+  'mail.deleteMsg.confirm': 'Delete permanently',
+  'mail.deleteMsgs.titleOne': 'Permanently delete {n} message?',
+  'mail.deleteMsgs.titleMany': 'Permanently delete {n} messages?',
+  'mail.deleteMsgs.messageOne': "Permanently delete {n} message? It can't be recovered.",
+  'mail.deleteMsgs.messageMany': "Permanently delete {n} messages? They can't be recovered.",
+  'mail.deleteMsgs.confirm': 'Delete permanently',
 
   // ── Search (re #97) ──────────────────────────────────────────────────
   'search.history.label': 'Recent:',
@@ -1097,4 +1119,285 @@ export const en = {
     'Suffix may not contain control bytes or @.',
   'settings.taggedAddresses.error.labelEmpty': 'Label name must not be empty.',
   'settings.taggedAddresses.error.labelTooLong': 'Label name must be 255 bytes or fewer.',
+
+  // auth (AuthGate.svelte)
+  'auth.error.unreachable': 'Could not reach the server.',
+  'auth.retry': 'Retry',
+  'auth.connecting': 'Connecting...',
+
+  // app banners (App.svelte)
+  'app.push.text': 'Get notified about new mail and messages.',
+  'app.push.enable': 'Enable',
+  'app.swUpdate.text': 'A new version is available.',
+  'app.swUpdate.reload': 'Reload',
+
+  // chat conversations (ConversationList.svelte)
+  'chat.conversations.loading': 'Loading conversations…',
+  'chat.conversations.failed': 'Failed to load conversations',
+  'chat.conversations.directMessages': 'Direct messages',
+  'chat.conversations.spaces': 'Spaces',
+  'chat.conversations.empty': 'No conversations yet',
+  'chat.conversations.ariaLabel': 'Conversations',
+  'chat.conversations.unreadCount': '{count} unread',
+  'chat.conversations.presence': 'Presence: {status}',
+
+  // chat messages (MessageList.svelte)
+  'chat.messages.loading': 'Loading messages…',
+  'chat.messages.failed': 'Failed to load messages',
+  'chat.messages.loadEarlier': 'Load earlier messages',
+  'chat.messages.deleted': 'message deleted',
+  'chat.messages.unreadDivider': 'New',
+  'chat.messages.readReceipt': 'Read',
+  'chat.messages.edited': '(edited)',
+  'chat.messages.today': 'Today',
+  'chat.messages.yesterday': 'Yesterday',
+  'chat.messages.you': 'You',
+  'chat.messages.member': 'Member',
+  'chat.messages.typingOne': '{name} is typing…',
+  'chat.messages.typingSomeone': 'Someone is typing…',
+  'chat.messages.typingMany': '{n} people are typing…',
+
+  // new chat picker (NewChatPicker.svelte)
+  'chat.new.title': 'Chat',
+  'chat.new.close': 'Close',
+  'chat.new.tabDm': 'Direct message',
+  'chat.new.tabSpace': 'Create Space',
+  'chat.new.convType': 'Conversation type',
+  'chat.new.spaceNameLabel': 'Space name',
+  'chat.new.spaceNamePlaceholder': 'e.g. Project Hermes',
+  'chat.new.descriptionLabel': 'Description (optional)',
+  'chat.new.descriptionPlaceholder': 'What is this space for?',
+  'chat.new.toLabel': 'To',
+  'chat.new.membersLabel': 'Members',
+  'chat.new.recipientSearchLabel': 'Search for a person',
+  'chat.new.recipientPlaceholder': 'Name or email',
+  'chat.new.recipientAddAnother': 'Add another',
+  'chat.new.removeRecipient': 'Remove {name}',
+  'chat.new.peopleSuggestions': 'People suggestions',
+  'chat.new.searching': 'Searching...',
+  'chat.new.cancel': 'Cancel',
+  'chat.new.starting': 'Starting...',
+  'chat.new.startChat': 'Start chat',
+  'chat.new.creating': 'Creating...',
+  'chat.new.createSpace': 'Create Space',
+  'chat.new.error.notUser': '{address} is not a Herold user on this server',
+  'chat.new.error.startFailed': 'Failed to start conversation',
+  'chat.new.error.createFailed': 'Failed to create space',
+
+  // video call (VideoCall.svelte)
+  'chat.call.connecting': 'Connecting…',
+  'chat.call.reconnecting': 'Connection lost — reconnecting…',
+  'chat.call.failed': 'Connection failed',
+  'chat.call.mic': 'Mic',
+  'chat.call.micOff': 'Mic Off',
+  'chat.call.unmuteMic': 'Unmute microphone (m)',
+  'chat.call.muteMic': 'Mute microphone (m)',
+  'chat.call.cam': 'Cam',
+  'chat.call.camOff': 'Cam Off',
+  'chat.call.cameraOn': 'Turn camera on (v)',
+  'chat.call.cameraOff': 'Turn camera off (v)',
+  'chat.call.exitFs': 'Exit FS',
+  'chat.call.fullscreen': 'Fullscreen',
+  'chat.call.exitFullscreen': 'Exit fullscreen (f)',
+  'chat.call.enterFullscreen': 'Fullscreen (f)',
+  'chat.call.toast.turnFailed':
+    'Could not get TURN credentials — trying without relay',
+  'chat.call.toast.dropped': 'Call dropped due to connection loss',
+  'chat.call.toast.mediaRequired':
+    'Camera/microphone access required for video calls',
+  'chat.call.toast.busy': 'User is busy',
+  'chat.call.toast.noAnswer': 'No answer',
+
+  // LLM inspect modal (LLMInspectModal.svelte)
+  'mail.llm.title': 'Message classification',
+  'mail.llm.loading': 'Loading…',
+  'mail.llm.notClassified':
+    'This message was not classified. It may have been delivered before the ' +
+    'classifier was configured, or classification may have failed.',
+  'mail.llm.category': 'Category',
+  'mail.llm.spamClassification': 'Spam classification',
+  'mail.llm.verdict': 'Verdict',
+  'mail.llm.assigned': 'Assigned',
+  'mail.llm.confidence': 'Confidence',
+  'mail.llm.reason': 'Reason',
+  'mail.llm.model': 'Model',
+  'mail.llm.classifiedAt': 'Classified at',
+  'mail.llm.prompt': 'Prompt used for this message',
+  'mail.llm.close': 'Close',
+
+  // advanced search panel (AdvancedSearchPanel.svelte)
+  'search.advanced.label.from': 'From',
+  'search.advanced.label.to': 'To',
+  'search.advanced.label.subject': 'Subject',
+  'search.advanced.label.body': 'Body',
+  'search.advanced.label.after': 'After',
+  'search.advanced.label.before': 'Before',
+  'search.advanced.label.mailbox': 'Mailbox',
+  'search.advanced.label.shortcuts': 'Shortcuts',
+  'search.advanced.label.hasAttachment': 'Has attachment',
+  'search.advanced.label.anyMailbox': 'Any mailbox',
+  'search.advanced.ariaLabel': 'Advanced search',
+  'search.advanced.clear': 'Clear',
+  'search.advanced.search': 'Search',
+
+  // snooze picker (SnoozePicker.svelte + snooze-picker.svelte.ts)
+  'mail.snooze.heading': 'Snooze until…',
+  'mail.snooze.custom': 'Custom',
+  'mail.snooze.button': 'Snooze',
+  'mail.snooze.quickOptions': 'Quick options',
+  'mail.snooze.close': 'Close',
+  'mail.snooze.tomorrow': 'tomorrow',
+  'mail.snooze.option.laterToday': 'Later today',
+  'mail.snooze.option.tomorrowMorning': 'Tomorrow morning',
+  'mail.snooze.option.thisWeekend': 'This weekend',
+  'mail.snooze.option.nextWeek': 'Next week',
+
+  // help overlay (HelpOverlay.svelte)
+  'help.title': 'Keyboard shortcuts',
+  'help.closeAriaLabel': 'Close help',
+  'help.empty': 'No bindings active.',
+
+  // reaction confirm modal (ReactionConfirmModal.svelte)
+  'mail.reaction.confirmTitle': 'Send reaction to {count} people?',
+  'mail.reaction.confirmBody':
+    'This message was sent to a mailing list. Reacting will send a reaction ' +
+    'email to all {count} recipients.',
+  'mail.reaction.dontAsk': "Don't ask again for this list",
+  'mail.reaction.cancel': 'Cancel',
+  'mail.reaction.send': 'Send reaction',
+
+  // category picker (CategoryPicker.svelte)
+  'mail.categoryPicker.ariaLabel': 'Move to category',
+  'mail.categoryPicker.heading': 'Move to category',
+  'mail.categoryPicker.empty': 'No categories available yet.',
+  'mail.categoryPicker.cancel': 'Cancel',
+
+  // not found view (NotFoundView.svelte)
+  'notFound.heading': 'Not found',
+  'notFound.lead': 'No view registered for',
+  'notFound.goToInbox': 'Go to inbox',
+
+  // label dialog (LabelDialog.svelte)
+  'label.dialog.nameLabel': 'Name',
+  'label.dialog.colorLabel': 'Color',
+  'label.dialog.colorAriaLabel': 'Label color',
+  'label.dialog.random': 'Random',
+
+  // identity submission section (IdentitySubmissionSection.svelte)
+  'settings.submission.title': 'External SMTP submission',
+  'settings.submission.hint':
+    "By default, mail sent as this identity goes through herold's outbound " +
+    'queue. You can instead route it through an external SMTP server (e.g. ' +
+    'Gmail, Microsoft 365, or a corporate relay).',
+  'settings.submission.loadingAriaLabel': 'Loading submission config',
+  'settings.submission.radioGroup': 'Submission routing',
+  'settings.submission.useThisServer': 'Use this server',
+  'settings.submission.recommended': '(recommended)',
+  'settings.submission.useExternal': 'Use an external SMTP server',
+  'settings.submission.oauthHint':
+    'For Gmail or Microsoft 365, sign in with one click to configure ' +
+    'submission automatically:',
+  'settings.submission.signinGoogle': 'Sign in with Google',
+  'settings.submission.signinMicrosoft': 'Sign in with Microsoft',
+  'settings.submission.starting': 'Starting...',
+  'settings.submission.orManual': 'or enter server details manually:',
+  'settings.submission.fieldHost': 'Host',
+  'settings.submission.fieldPort': 'Port',
+  'settings.submission.fieldSecurity': 'Security',
+  'settings.submission.securityImplicitTls': 'Implicit TLS (port 465)',
+  'settings.submission.securityStarttls': 'STARTTLS (port 587)',
+  'settings.submission.securityNone': 'None (plaintext)',
+  'settings.submission.fieldAuthMethod': 'Authentication method',
+  'settings.submission.authPassword': 'Password / app-specific password',
+  'settings.submission.authOauth2': 'OAuth 2.0 token',
+  'settings.submission.fieldPassword': 'Password',
+  'settings.submission.passwordKeepExisting': '(leave blank to keep existing)',
+  'settings.submission.oauth2Hint':
+    'OAuth 2.0 token-based auth requires the access and refresh tokens from a ' +
+    'completed OAuth flow. Use the "Sign in with Google" or "Sign in with ' +
+    'Microsoft" buttons above for a guided flow.',
+  'settings.submission.saveAndTest': 'Save and test connection',
+  'settings.submission.saving': 'Saving and testing...',
+  'settings.submission.removeConfig': 'Remove external configuration',
+  'settings.submission.removing': 'Removing...',
+  'settings.submission.oauth2Title':
+    'Use the OAuth buttons above to configure OAuth 2.0',
+  'settings.submission.revertHint':
+    'External submission is currently configured. To remove it and revert to ' +
+    "herold's outbound queue, expand the external option and click " +
+    '"Remove external configuration".',
+  'settings.submission.toast.saved': 'External submission saved.',
+  'settings.submission.toast.removed': 'External submission removed.',
+  'settings.submission.hostRequired': 'Host is required.',
+  'settings.submission.confirmRemoveTitle': 'Remove external submission config?',
+  'settings.submission.confirmRemoveMessage':
+    "This identity will revert to sending through herold's outbound queue.",
+  'settings.submission.confirmRemoveConfirm': 'Remove',
+  'settings.submission.confirmRemoveCancel': 'Cancel',
+  'settings.submission.probe.authFailed': 'Authentication failed',
+  'settings.submission.probe.unreachable': 'Server unreachable',
+  'settings.submission.probe.permanent': 'Rejected by external server',
+  'settings.submission.probe.transient': 'Temporary failure',
+  'settings.submission.probe.default': 'Probe failed',
+  'settings.submission.oauthError.notConfigured':
+    'The {provider} provider is not configured on this server. Use manual ' +
+    'entry instead.',
+
+  // shared files form (SharedFilesForm.svelte)
+  'settings.sharedFiles.quotaLabel': 'Share storage',
+  'settings.sharedFiles.quotaUsed': '{used} of {max} used',
+  'settings.sharedFiles.filterLabel': 'Filter',
+  'settings.sharedFiles.filterAll': 'All',
+  'settings.sharedFiles.filterActive': 'Active',
+  'settings.sharedFiles.filterPending': 'Pending',
+  'settings.sharedFiles.filterRevoked': 'Revoked',
+  'settings.sharedFiles.sortLabel': 'Sort by',
+  'settings.sharedFiles.sortCreated': 'Created (newest first)',
+  'settings.sharedFiles.sortExpiry': 'Expiry (soonest first)',
+  'settings.sharedFiles.refresh': 'Refresh',
+  'settings.sharedFiles.refreshAriaLabel': 'Refresh shared files',
+  'settings.sharedFiles.loading': 'Loading...',
+  'settings.sharedFiles.loadingFiles': 'Loading shared files...',
+  'settings.sharedFiles.emptyAll': 'No shared files.',
+  'settings.sharedFiles.emptyFilter': 'No {filter} shares.',
+  'settings.sharedFiles.listAriaLabel': 'Shared files',
+  'settings.sharedFiles.sharedIn': 'Shared in',
+  'settings.sharedFiles.to': ' — to ',
+  'settings.sharedFiles.openMessage': 'Open originating message: {subject}',
+  'settings.sharedFiles.noSubject': '(no subject)',
+  'settings.sharedFiles.created': 'Created {date}',
+  'settings.sharedFiles.passwordProtected': 'Password protected',
+  'settings.sharedFiles.lockBadge': 'lock',
+  'settings.sharedFiles.copyLink': 'Copy link',
+  'settings.sharedFiles.copyLinkAria': 'Copy link for {name}',
+  'settings.sharedFiles.copied': 'Copied!',
+  'settings.sharedFiles.revoke': 'Revoke',
+  'settings.sharedFiles.revokeAria': 'Revoke {name}',
+  'settings.sharedFiles.revoking': 'Revoking...',
+  'settings.sharedFiles.pendingNote': 'Waiting for message to be sent',
+  'settings.sharedFiles.retry': 'Retry',
+  'settings.sharedFiles.toast.revoked': '"{name}" revoked.',
+  'settings.sharedFiles.toast.couldNotLoad': 'Could not load shared files',
+  'settings.sharedFiles.toast.couldNotCopy': 'Could not copy link',
+  'settings.sharedFiles.toast.couldNotRevoke': 'Could not revoke share',
+  'settings.sharedFiles.toast.couldNotOpen': 'Could not open message',
+  'settings.sharedFiles.toast.noAccount': 'No mail account available',
+  'settings.sharedFiles.toast.messageGone': 'That message no longer exists',
+  'settings.sharedFiles.expiry.expired': 'Expired',
+  'settings.sharedFiles.expiry.lessThanHour': 'Expires in less than an hour',
+  'settings.sharedFiles.expiry.hour': 'Expires in {n} hour',
+  'settings.sharedFiles.expiry.hours': 'Expires in {n} hours',
+  'settings.sharedFiles.expiry.tomorrow': 'Expires tomorrow',
+  'settings.sharedFiles.expiry.days': 'Expires in {n} days',
+  'settings.sharedFiles.expiry.on': 'Expires {date}',
+  'settings.sharedFiles.stateTitle': 'State: {state}',
+  'settings.sharedFiles.downloads.one': '{count} download',
+  'settings.sharedFiles.downloads.other': '{count} downloads',
+  'settings.sharedFiles.ofMax': 'of {max} max',
+  'settings.sharedFiles.lastAt': 'last {date}',
+  'settings.sharedFiles.confirmRevoke.title': 'Revoke this shared link?',
+  'settings.sharedFiles.confirmRevoke.message':
+    '"{name}" — any already-sent message linking this share will show a dead link.',
+  'settings.sharedFiles.confirmRevoke.confirm': 'Revoke',
+  'settings.sharedFiles.confirmRevoke.cancel': 'Cancel',
 } as const;

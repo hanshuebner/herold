@@ -353,9 +353,9 @@
 <!-- Non-modal push-enable banner (REQ-PUSH-30): shown after 60s in-app. -->
 {#if showPushBanner}
   <div class="push-banner" role="status" aria-live="polite">
-    <span>Get notified about new mail and messages.</span>
+    <span>{t('app.push.text')}</span>
     <button type="button" class="push-banner-enable" onclick={() => void enablePushFromBanner()}>
-      Enable
+      {t('app.push.enable')}
     </button>
     <button type="button" class="push-banner-dismiss" aria-label="Dismiss" onclick={dismissPushBanner}>
       &#10005;
@@ -365,8 +365,8 @@
 <!-- SW update banner (REQ-PUSH-72 / REQ-MOB-75). -->
 {#if showSwUpdateBanner}
   <div class="sw-update-banner" role="status" aria-live="polite">
-    <span>A new version is available.</span>
-    <button type="button" onclick={() => location.reload()}>Reload</button>
+    <span>{t('app.swUpdate.text')}</span>
+    <button type="button" onclick={() => location.reload()}>{t('app.swUpdate.reload')}</button>
     <button type="button" aria-label="Dismiss" onclick={() => (showSwUpdateBanner = false)}>
       &#10005;
     </button>

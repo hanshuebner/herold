@@ -88,6 +88,15 @@ export const de = {
   'mail.taggedBanner.toast.filterFailed': 'Regel konnte nicht angelegt werden',
   'mail.taggedBanner.toast.dismissFailed': 'Ignorier-Markierung konnte nicht gespeichert werden',
 
+  // ── Globale Leiste ───────────────────────────────────────────────────
+  'globalBar.searchPlaceholder': 'Nachrichten suchen',
+  'globalBar.advancedSearch': 'Erweiterte Suche',
+  'globalBar.help': 'Hilfe',
+  'globalBar.shortcuts': 'Tastaturkürzel',
+  'globalBar.brand': 'Herold Startseite',
+  'globalBar.disconnected': 'Getrennt',
+  'globalBar.reconnecting': 'Verbindung wird hergestellt…',
+
   // ── MailView-Oberflächen (re #97) ────────────────────────────────────
   // Suchroute: Überschrift + Echo der leeren Anfrage, Zurück-Link,
   // ARIA-Bezeichnungen für Erkennungs-Strip / Verlaufs-Strip /
@@ -120,6 +129,19 @@ export const de = {
   // Posteingang).
   'mail.label.heading': 'Label: {name}',
   'mail.label.lead': 'Die Label-Ansicht folgt nach dem Posteingang.',
+  // Bestätigungsdialoge für destruktive E-Mail-Aktionen (MailView).
+  'mail.emptyTrash.title': 'Papierkorb leeren?',
+  'mail.emptyTrash.messageOne': '{n} Nachricht dauerhaft aus dem Papierkorb löschen. Das kann nicht rückgängig gemacht werden.',
+  'mail.emptyTrash.messageMany': '{n} Nachrichten dauerhaft aus dem Papierkorb löschen. Das kann nicht rückgängig gemacht werden.',
+  'mail.emptyTrash.confirm': 'Papierkorb leeren',
+  'mail.deleteMsg.title': 'Diese Nachricht dauerhaft löschen?',
+  'mail.deleteMsg.message': 'Diese Nachricht dauerhaft löschen? Sie kann nicht wiederhergestellt werden.',
+  'mail.deleteMsg.confirm': 'Dauerhaft löschen',
+  'mail.deleteMsgs.titleOne': '{n} Nachricht dauerhaft löschen?',
+  'mail.deleteMsgs.titleMany': '{n} Nachrichten dauerhaft löschen?',
+  'mail.deleteMsgs.messageOne': '{n} Nachricht dauerhaft löschen? Sie kann nicht wiederhergestellt werden.',
+  'mail.deleteMsgs.messageMany': '{n} Nachrichten dauerhaft löschen? Sie können nicht wiederhergestellt werden.',
+  'mail.deleteMsgs.confirm': 'Dauerhaft löschen',
 
   // ── Suche (re #97) ───────────────────────────────────────────────────
   'search.history.label': 'Zuletzt:',
@@ -1116,4 +1138,288 @@ export const de = {
   'settings.taggedAddresses.error.labelEmpty': 'Der Label-Name darf nicht leer sein.',
   'settings.taggedAddresses.error.labelTooLong':
     'Der Label-Name darf höchstens 255 Bytes lang sein.',
+
+  // auth (AuthGate.svelte)
+  'auth.error.unreachable': 'Server nicht erreichbar.',
+  'auth.retry': 'Wiederholen',
+  'auth.connecting': 'Verbinde…',
+
+  // app banners (App.svelte)
+  'app.push.text': 'Benachrichtigungen über neue Mails und Nachrichten aktivieren.',
+  'app.push.enable': 'Aktivieren',
+  'app.swUpdate.text': 'Eine neue Version ist verfügbar.',
+  'app.swUpdate.reload': 'Neu laden',
+
+  // chat conversations (ConversationList.svelte)
+  'chat.conversations.loading': 'Unterhaltungen werden geladen…',
+  'chat.conversations.failed': 'Unterhaltungen konnten nicht geladen werden',
+  'chat.conversations.directMessages': 'Direktnachrichten',
+  'chat.conversations.spaces': 'Spaces',
+  'chat.conversations.empty': 'Noch keine Unterhaltungen',
+  'chat.conversations.ariaLabel': 'Unterhaltungen',
+  'chat.conversations.unreadCount': '{count} ungelesen',
+  'chat.conversations.presence': 'Präsenz: {status}',
+
+  // chat messages (MessageList.svelte)
+  'chat.messages.loading': 'Nachrichten werden geladen…',
+  'chat.messages.failed': 'Nachrichten konnten nicht geladen werden',
+  'chat.messages.loadEarlier': 'Ältere Nachrichten laden',
+  'chat.messages.deleted': 'Nachricht gelöscht',
+  'chat.messages.unreadDivider': 'Neu',
+  'chat.messages.readReceipt': 'Gelesen',
+  'chat.messages.edited': '(bearbeitet)',
+  'chat.messages.today': 'Heute',
+  'chat.messages.yesterday': 'Gestern',
+  'chat.messages.you': 'Sie',
+  'chat.messages.member': 'Mitglied',
+  'chat.messages.typingOne': '{name} tippt…',
+  'chat.messages.typingSomeone': 'Jemand tippt…',
+  'chat.messages.typingMany': '{n} Personen tippen…',
+
+  // new chat picker (NewChatPicker.svelte)
+  'chat.new.title': 'Chat',
+  'chat.new.close': 'Schließen',
+  'chat.new.tabDm': 'Direktnachricht',
+  'chat.new.tabSpace': 'Space anlegen',
+  'chat.new.convType': 'Unterhaltungstyp',
+  'chat.new.spaceNameLabel': 'Space-Name',
+  'chat.new.spaceNamePlaceholder': 'z.B. Projekt Hermes',
+  'chat.new.descriptionLabel': 'Beschreibung (optional)',
+  'chat.new.descriptionPlaceholder': 'Wofür ist dieser Space?',
+  'chat.new.toLabel': 'An',
+  'chat.new.membersLabel': 'Mitglieder',
+  'chat.new.recipientSearchLabel': 'Person suchen',
+  'chat.new.recipientPlaceholder': 'Name oder E-Mail',
+  'chat.new.recipientAddAnother': 'Weitere hinzufügen',
+  'chat.new.removeRecipient': '{name} entfernen',
+  'chat.new.peopleSuggestions': 'Vorschläge',
+  'chat.new.searching': 'Wird gesucht…',
+  'chat.new.cancel': 'Abbrechen',
+  'chat.new.starting': 'Wird gestartet…',
+  'chat.new.startChat': 'Chat starten',
+  'chat.new.creating': 'Wird erstellt…',
+  'chat.new.createSpace': 'Space anlegen',
+  'chat.new.error.notUser': '{address} ist kein Herold-Benutzer auf diesem Server',
+  'chat.new.error.startFailed': 'Unterhaltung konnte nicht gestartet werden',
+  'chat.new.error.createFailed': 'Space konnte nicht erstellt werden',
+
+  // video call (VideoCall.svelte)
+  'chat.call.connecting': 'Verbinde…',
+  'chat.call.reconnecting': 'Verbindung unterbrochen — Verbinde neu…',
+  'chat.call.failed': 'Verbindung fehlgeschlagen',
+  'chat.call.mic': 'Mikrofon',
+  'chat.call.micOff': 'Mikrofon aus',
+  'chat.call.unmuteMic': 'Mikrofon einschalten (m)',
+  'chat.call.muteMic': 'Mikrofon stumm (m)',
+  'chat.call.cam': 'Kamera',
+  'chat.call.camOff': 'Kamera aus',
+  'chat.call.cameraOn': 'Kamera einschalten (v)',
+  'chat.call.cameraOff': 'Kamera ausschalten (v)',
+  'chat.call.exitFs': 'Vollbild beenden',
+  'chat.call.fullscreen': 'Vollbild',
+  'chat.call.exitFullscreen': 'Vollbild beenden (f)',
+  'chat.call.enterFullscreen': 'Vollbild (f)',
+  'chat.call.toast.turnFailed':
+    'TURN-Zugangsdaten konnten nicht abgerufen werden — Verbindungsversuch ohne Relay',
+  'chat.call.toast.dropped': 'Anruf wegen Verbindungsabbruchs beendet',
+  'chat.call.toast.mediaRequired':
+    'Für Videoanrufe wird Kamera- und Mikrofon-Zugriff benötigt',
+  'chat.call.toast.busy': 'Benutzer ist beschäftigt',
+  'chat.call.toast.noAnswer': 'Keine Antwort',
+
+  // LLM inspect modal (LLMInspectModal.svelte)
+  'mail.llm.title': 'Nachrichtenklassifizierung',
+  'mail.llm.loading': 'Wird geladen…',
+  'mail.llm.notClassified':
+    'Diese Nachricht wurde nicht klassifiziert. Sie wurde möglicherweise vor ' +
+    'der Konfiguration des Klassifizierers zugestellt oder die ' +
+    'Klassifizierung ist fehlgeschlagen.',
+  'mail.llm.category': 'Kategorie',
+  'mail.llm.spamClassification': 'Spam-Klassifizierung',
+  'mail.llm.verdict': 'Urteil',
+  'mail.llm.assigned': 'Zugewiesen',
+  'mail.llm.confidence': 'Konfidenz',
+  'mail.llm.reason': 'Begründung',
+  'mail.llm.model': 'Modell',
+  'mail.llm.classifiedAt': 'Klassifiziert am',
+  'mail.llm.prompt': 'Für diese Nachricht verwendeter Prompt',
+  'mail.llm.close': 'Schließen',
+
+  // advanced search panel (AdvancedSearchPanel.svelte)
+  'search.advanced.label.from': 'Von',
+  'search.advanced.label.to': 'An',
+  'search.advanced.label.subject': 'Betreff',
+  'search.advanced.label.body': 'Text',
+  'search.advanced.label.after': 'Nach',
+  'search.advanced.label.before': 'Vor',
+  'search.advanced.label.mailbox': 'Postfach',
+  'search.advanced.label.shortcuts': 'Schnellauswahl',
+  'search.advanced.label.hasAttachment': 'Hat Anhang',
+  'search.advanced.label.anyMailbox': 'Alle Postfächer',
+  'search.advanced.ariaLabel': 'Erweiterte Suche',
+  'search.advanced.clear': 'Löschen',
+  'search.advanced.search': 'Suchen',
+
+  // snooze picker (SnoozePicker.svelte + snooze-picker.svelte.ts)
+  'mail.snooze.heading': 'Erinnern ab…',
+  'mail.snooze.custom': 'Benutzerdefiniert',
+  'mail.snooze.button': 'Erinnern',
+  'mail.snooze.quickOptions': 'Schnelloptionen',
+  'mail.snooze.close': 'Schließen',
+  'mail.snooze.tomorrow': 'morgen',
+  'mail.snooze.option.laterToday': 'Später heute',
+  'mail.snooze.option.tomorrowMorning': 'Morgen früh',
+  'mail.snooze.option.thisWeekend': 'Dieses Wochenende',
+  'mail.snooze.option.nextWeek': 'Nächste Woche',
+
+  // help overlay (HelpOverlay.svelte)
+  'help.title': 'Tastenkürzel',
+  'help.closeAriaLabel': 'Hilfe schließen',
+  'help.empty': 'Keine aktiven Tastenkürzel.',
+
+  // reaction confirm modal (ReactionConfirmModal.svelte)
+  'mail.reaction.confirmTitle': 'Reaktion an {count} Personen senden?',
+  'mail.reaction.confirmBody':
+    'Diese Nachricht wurde an eine Mailingliste gesendet. Eine Reaktion ' +
+    'sendet eine Reaktions-E-Mail an alle {count} Empfänger.',
+  'mail.reaction.dontAsk': 'Für diese Liste nicht mehr fragen',
+  'mail.reaction.cancel': 'Abbrechen',
+  'mail.reaction.send': 'Reaktion senden',
+
+  // category picker (CategoryPicker.svelte)
+  'mail.categoryPicker.ariaLabel': 'In Kategorie verschieben',
+  'mail.categoryPicker.heading': 'In Kategorie verschieben',
+  'mail.categoryPicker.empty': 'Noch keine Kategorien vorhanden.',
+  'mail.categoryPicker.cancel': 'Abbrechen',
+
+  // not found view (NotFoundView.svelte)
+  'notFound.heading': 'Nicht gefunden',
+  'notFound.lead': 'Keine Ansicht für',
+  'notFound.goToInbox': 'Zum Posteingang',
+
+  // label dialog (LabelDialog.svelte)
+  'label.dialog.nameLabel': 'Name',
+  'label.dialog.colorLabel': 'Farbe',
+  'label.dialog.colorAriaLabel': 'Label-Farbe',
+  'label.dialog.random': 'Zufällig',
+
+  // identity submission section (IdentitySubmissionSection.svelte)
+  'settings.submission.title': 'Externer SMTP-Versand',
+  'settings.submission.hint':
+    'Standardmäßig werden Mails dieser Identität über die Sendewarteschlange ' +
+    'von herold verschickt. Sie können den Versand stattdessen über einen ' +
+    'externen SMTP-Server (z.B. Gmail, Microsoft 365 oder ein Unternehmens-' +
+    'Relay) leiten.',
+  'settings.submission.loadingAriaLabel': 'Übermittlungskonfiguration wird geladen',
+  'settings.submission.radioGroup': 'Versandrouting',
+  'settings.submission.useThisServer': 'Diesen Server verwenden',
+  'settings.submission.recommended': '(empfohlen)',
+  'settings.submission.useExternal': 'Externen SMTP-Server verwenden',
+  'settings.submission.oauthHint':
+    'Für Gmail oder Microsoft 365 können Sie sich mit einem Klick anmelden, ' +
+    'um den Versand automatisch zu konfigurieren:',
+  'settings.submission.signinGoogle': 'Mit Google anmelden',
+  'settings.submission.signinMicrosoft': 'Mit Microsoft anmelden',
+  'settings.submission.starting': 'Wird gestartet…',
+  'settings.submission.orManual': 'oder Serverdetails manuell eingeben:',
+  'settings.submission.fieldHost': 'Host',
+  'settings.submission.fieldPort': 'Port',
+  'settings.submission.fieldSecurity': 'Sicherheit',
+  'settings.submission.securityImplicitTls': 'Implizites TLS (Port 465)',
+  'settings.submission.securityStarttls': 'STARTTLS (Port 587)',
+  'settings.submission.securityNone': 'Keine (Klartext)',
+  'settings.submission.fieldAuthMethod': 'Authentifizierungsmethode',
+  'settings.submission.authPassword': 'Passwort / App-spezifisches Passwort',
+  'settings.submission.authOauth2': 'OAuth-2.0-Token',
+  'settings.submission.fieldPassword': 'Passwort',
+  'settings.submission.passwordKeepExisting': '(leer lassen, um bestehendes Passwort zu behalten)',
+  'settings.submission.oauth2Hint':
+    'Die tokenbasierte OAuth-2.0-Authentifizierung erfordert Access- und ' +
+    'Refresh-Token aus einem abgeschlossenen OAuth-Flow. Nutzen Sie die ' +
+    'Schaltflächen „Mit Google anmelden" oder „Mit Microsoft anmelden" für ' +
+    'einen geführten Flow.',
+  'settings.submission.saveAndTest': 'Speichern und Verbindung testen',
+  'settings.submission.saving': 'Wird gespeichert und getestet…',
+  'settings.submission.removeConfig': 'Externe Konfiguration entfernen',
+  'settings.submission.removing': 'Wird entfernt…',
+  'settings.submission.oauth2Title':
+    'Verwenden Sie die OAuth-Schaltflächen oben, um OAuth 2.0 zu konfigurieren',
+  'settings.submission.revertHint':
+    'Externer Versand ist derzeit konfiguriert. Um ihn zu entfernen und zur ' +
+    'Sendewarteschlange von herold zurückzukehren, erweitern Sie die externe ' +
+    'Option und klicken Sie auf „Externe Konfiguration entfernen".',
+  'settings.submission.toast.saved': 'Externer Versand gespeichert.',
+  'settings.submission.toast.removed': 'Externer Versand entfernt.',
+  'settings.submission.hostRequired': 'Host ist erforderlich.',
+  'settings.submission.confirmRemoveTitle': 'Externe Sendekonfiguration entfernen?',
+  'settings.submission.confirmRemoveMessage':
+    'Diese Identität wird wieder über die Sendewarteschlange von herold versenden.',
+  'settings.submission.confirmRemoveConfirm': 'Entfernen',
+  'settings.submission.confirmRemoveCancel': 'Abbrechen',
+  'settings.submission.probe.authFailed': 'Authentifizierung fehlgeschlagen',
+  'settings.submission.probe.unreachable': 'Server nicht erreichbar',
+  'settings.submission.probe.permanent': 'Vom externen Server abgelehnt',
+  'settings.submission.probe.transient': 'Vorübergehender Fehler',
+  'settings.submission.probe.default': 'Verbindungstest fehlgeschlagen',
+  'settings.submission.oauthError.notConfigured':
+    'Der Anbieter {provider} ist auf diesem Server nicht konfiguriert. ' +
+    'Verwenden Sie stattdessen die manuelle Eingabe.',
+
+  // shared files form (SharedFilesForm.svelte)
+  'settings.sharedFiles.quotaLabel': 'Freigegebener Speicher',
+  'settings.sharedFiles.quotaUsed': '{used} von {max} verwendet',
+  'settings.sharedFiles.filterLabel': 'Filter',
+  'settings.sharedFiles.filterAll': 'Alle',
+  'settings.sharedFiles.filterActive': 'Aktiv',
+  'settings.sharedFiles.filterPending': 'Ausstehend',
+  'settings.sharedFiles.filterRevoked': 'Widerrufen',
+  'settings.sharedFiles.sortLabel': 'Sortieren nach',
+  'settings.sharedFiles.sortCreated': 'Erstellt (neueste zuerst)',
+  'settings.sharedFiles.sortExpiry': 'Ablauf (früheste zuerst)',
+  'settings.sharedFiles.refresh': 'Aktualisieren',
+  'settings.sharedFiles.refreshAriaLabel': 'Freigegebene Dateien aktualisieren',
+  'settings.sharedFiles.loading': 'Wird geladen…',
+  'settings.sharedFiles.loadingFiles': 'Freigegebene Dateien werden geladen…',
+  'settings.sharedFiles.emptyAll': 'Keine freigegebenen Dateien.',
+  'settings.sharedFiles.emptyFilter': 'Keine {filter} Freigaben.',
+  'settings.sharedFiles.listAriaLabel': 'Freigegebene Dateien',
+  'settings.sharedFiles.sharedIn': 'Geteilt in',
+  'settings.sharedFiles.to': ' — an ',
+  'settings.sharedFiles.openMessage': 'Ursprungsnachricht öffnen: {subject}',
+  'settings.sharedFiles.noSubject': '(kein Betreff)',
+  'settings.sharedFiles.created': 'Erstellt {date}',
+  'settings.sharedFiles.passwordProtected': 'Passwortgeschützt',
+  'settings.sharedFiles.lockBadge': 'Schloss',
+  'settings.sharedFiles.copyLink': 'Link kopieren',
+  'settings.sharedFiles.copyLinkAria': 'Link für {name} kopieren',
+  'settings.sharedFiles.copied': 'Kopiert!',
+  'settings.sharedFiles.revoke': 'Widerrufen',
+  'settings.sharedFiles.revokeAria': '{name} widerrufen',
+  'settings.sharedFiles.revoking': 'Wird widerrufen…',
+  'settings.sharedFiles.pendingNote': 'Warte auf Versand der Nachricht',
+  'settings.sharedFiles.retry': 'Wiederholen',
+  'settings.sharedFiles.toast.revoked': '"{name}" widerrufen.',
+  'settings.sharedFiles.toast.couldNotLoad': 'Geteilte Dateien konnten nicht geladen werden',
+  'settings.sharedFiles.toast.couldNotCopy': 'Link konnte nicht kopiert werden',
+  'settings.sharedFiles.toast.couldNotRevoke': 'Freigabe konnte nicht widerrufen werden',
+  'settings.sharedFiles.toast.couldNotOpen': 'Nachricht konnte nicht geöffnet werden',
+  'settings.sharedFiles.toast.noAccount': 'Kein E-Mail-Konto verfügbar',
+  'settings.sharedFiles.toast.messageGone': 'Diese Nachricht existiert nicht mehr',
+  'settings.sharedFiles.expiry.expired': 'Abgelaufen',
+  'settings.sharedFiles.expiry.lessThanHour': 'Läuft in weniger als einer Stunde ab',
+  'settings.sharedFiles.expiry.hour': 'Läuft in {n} Stunde ab',
+  'settings.sharedFiles.expiry.hours': 'Läuft in {n} Stunden ab',
+  'settings.sharedFiles.expiry.tomorrow': 'Läuft morgen ab',
+  'settings.sharedFiles.expiry.days': 'Läuft in {n} Tagen ab',
+  'settings.sharedFiles.expiry.on': 'Läuft am {date} ab',
+  'settings.sharedFiles.stateTitle': 'Status: {state}',
+  'settings.sharedFiles.downloads.one': '{count} Download',
+  'settings.sharedFiles.downloads.other': '{count} Downloads',
+  'settings.sharedFiles.ofMax': 'von {max} max.',
+  'settings.sharedFiles.lastAt': 'zuletzt {date}',
+  'settings.sharedFiles.confirmRevoke.title': 'Diesen freigegebenen Link widerrufen?',
+  'settings.sharedFiles.confirmRevoke.message':
+    '"{name}" — bereits gesendete Nachrichten mit diesem Link zeigen dann einen toten Link.',
+  'settings.sharedFiles.confirmRevoke.confirm': 'Widerrufen',
+  'settings.sharedFiles.confirmRevoke.cancel': 'Abbrechen',
 } as const;

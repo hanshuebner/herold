@@ -12,6 +12,7 @@
   import { categoryPicker } from './category-picker.svelte';
   import { categorySettings, categoryKeyword } from '../settings/category-settings.svelte';
   import { mail } from './store.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   function handleBackdrop(e: MouseEvent): void {
     if (e.target === e.currentTarget) categoryPicker.close();
@@ -36,13 +37,13 @@
     class="picker-backdrop"
     role="dialog"
     aria-modal="true"
-    aria-label="Move to category"
+    aria-label={t('mail.categoryPicker.ariaLabel')}
     tabindex="-1"
     onclick={handleBackdrop}
     onkeydown={handleKeydown}
   >
     <div class="picker-panel">
-      <h2>Move to category</h2>
+      <h2>{t('mail.categoryPicker.heading')}</h2>
       <ul class="cat-list">
         {#each categorySettings.derivedCategories as name (name)}
           <li>
@@ -52,12 +53,12 @@
           </li>
         {/each}
         {#if categorySettings.derivedCategories.length === 0}
-          <li class="empty-hint">No categories available yet.</li>
+          <li class="empty-hint">{t('mail.categoryPicker.empty')}</li>
         {/if}
       </ul>
       <div class="picker-footer">
         <button type="button" class="cancel" onclick={() => categoryPicker.close()}>
-          Cancel
+          {t('mail.categoryPicker.cancel')}
         </button>
       </div>
     </div>

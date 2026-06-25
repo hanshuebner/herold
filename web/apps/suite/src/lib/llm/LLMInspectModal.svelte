@@ -10,6 +10,7 @@
   import { llmTransparency } from './transparency.svelte';
   import type { MessageLLMInspect } from './transparency.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     emailId: string;
@@ -62,54 +63,51 @@
   class="backdrop"
   role="dialog"
   aria-modal="true"
-  aria-label="Message classification"
+  aria-label={t('mail.llm.title')}
   tabindex="-1"
   onkeydown={handleKeydown}
 >
   <div class="modal">
     <div class="modal-header">
-      <h2>Message classification</h2>
-      <button type="button" class="close-btn" aria-label="Close" onclick={onClose}>
+      <h2>{t('mail.llm.title')}</h2>
+      <button type="button" class="close-btn" aria-label={t('mail.llm.close')} onclick={onClose}>
         &#10005;
       </button>
     </div>
 
     <div class="modal-body">
       {#if status === 'loading'}
-        <p class="hint">Loading…</p>
+        <p class="hint">{t('mail.llm.loading')}</p>
       {:else if status === 'error'}
         <p class="error" role="alert">{errorMsg}</p>
       {:else if result === null || (!result?.spam && !result?.category)}
-        <p class="empty-state">
-          This message was not classified. It may have been delivered before the
-          classifier was configured, or classification may have failed.
-        </p>
+        <p class="empty-state">{t('mail.llm.notClassified')}</p>
       {:else}
         {#if result.category}
           <section class="inspect-section">
-            <h3>Category</h3>
+            <h3>{t('mail.llm.category')}</h3>
             <div class="row">
-              <span class="label">Assigned</span>
+              <span class="label">{t('mail.llm.assigned')}</span>
               <span class="value">{result.category.assigned}</span>
             </div>
             <div class="row">
-              <span class="label">Confidence</span>
+              <span class="label">{t('mail.llm.confidence')}</span>
               <span class="value">{confidencePct(result.category.confidence)}</span>
             </div>
             <div class="row">
-              <span class="label">Reason</span>
+              <span class="label">{t('mail.llm.reason')}</span>
               <span class="value">{result.category.reason}</span>
             </div>
             <div class="row">
-              <span class="label">Model</span>
+              <span class="label">{t('mail.llm.model')}</span>
               <span class="value mono">{result.category.model}</span>
             </div>
             <div class="row">
-              <span class="label">Classified at</span>
+              <span class="label">{t('mail.llm.classifiedAt')}</span>
               <span class="value">{new Date(result.category.classifiedAt).toLocaleString()}</span>
             </div>
             <div class="prompt-block">
-              <p class="prompt-header">Prompt used for this message</p>
+              <p class="prompt-header">{t('mail.llm.prompt')}</p>
               <pre class="prompt-text">{result.category.promptApplied}</pre>
             </div>
           </section>
@@ -117,29 +115,29 @@
 
         {#if result.spam}
           <section class="inspect-section">
-            <h3>Spam classification</h3>
+            <h3>{t('mail.llm.spamClassification')}</h3>
             <div class="row">
-              <span class="label">Verdict</span>
+              <span class="label">{t('mail.llm.verdict')}</span>
               <span class="value verdict-{result.spam.verdict}">{result.spam.verdict}</span>
             </div>
             <div class="row">
-              <span class="label">Confidence</span>
+              <span class="label">{t('mail.llm.confidence')}</span>
               <span class="value">{confidencePct(result.spam.confidence)}</span>
             </div>
             <div class="row">
-              <span class="label">Reason</span>
+              <span class="label">{t('mail.llm.reason')}</span>
               <span class="value">{result.spam.reason}</span>
             </div>
             <div class="row">
-              <span class="label">Model</span>
+              <span class="label">{t('mail.llm.model')}</span>
               <span class="value mono">{result.spam.model}</span>
             </div>
             <div class="row">
-              <span class="label">Classified at</span>
+              <span class="label">{t('mail.llm.classifiedAt')}</span>
               <span class="value">{new Date(result.spam.classifiedAt).toLocaleString()}</span>
             </div>
             <div class="prompt-block">
-              <p class="prompt-header">Prompt used for this message</p>
+              <p class="prompt-header">{t('mail.llm.prompt')}</p>
               <pre class="prompt-text">{result.spam.promptApplied}</pre>
             </div>
           </section>
@@ -154,7 +152,7 @@
     </div>
 
     <div class="modal-footer">
-      <Button variant="primary" onclick={onClose}>Close</Button>
+      <Button variant="primary" onclick={onClose}>{t('mail.llm.close')}</Button>
     </div>
   </div>
 </div>

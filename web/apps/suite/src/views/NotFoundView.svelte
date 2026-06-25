@@ -1,11 +1,12 @@
 <script lang="ts">
   import { router } from '../lib/router/router.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
 </script>
 
 <div class="not-found">
-  <h1>Not found</h1>
-  <p class="lead">No view registered for <code>{router.current}</code>.</p>
-  <button type="button" onclick={() => router.navigate('/mail')}>Go to inbox</button>
+  <h1>{t('notFound.heading')}</h1>
+  <p class="lead">{t('notFound.lead')} <code>{router.current}</code>.</p>
+  <button type="button" onclick={() => router.navigate('/mail')}>{t('notFound.goToInbox')}</button>
 </div>
 
 <style>

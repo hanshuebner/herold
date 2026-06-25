@@ -10,6 +10,7 @@
   import { auth } from '../auth/auth.svelte';
   import Avatar from '../avatar/Avatar.svelte';
   import type { Conversation } from './types';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     onSelect: (id: string) => void;
@@ -53,14 +54,14 @@
   }
 </script>
 
-<nav class="conv-list" aria-label="Conversations">
+<nav class="conv-list" aria-label={t('chat.conversations.ariaLabel')}>
   {#if chat.conversationsStatus === 'loading'}
-    <p class="loading">Loading conversations…</p>
+    <p class="loading">{t('chat.conversations.loading')}</p>
   {:else if chat.conversationsStatus === 'error'}
-    <p class="error">Failed to load conversations</p>
+    <p class="error">{t('chat.conversations.failed')}</p>
   {:else}
     {#if dms.length > 0}
-      <h3 class="group-label">Direct messages</h3>
+      <h3 class="group-label">{t('chat.conversations.directMessages')}</h3>
       <ul class="list">
         {#each dms as conv (conv.id)}
           {@const otherId = dmPrincipalId(conv)}
@@ -81,7 +82,7 @@
                 {#if otherId}
                   <span
                     class="presence-dot {presenceClass(otherId)}"
-                    aria-label="Presence: {presenceClass(otherId)}"
+                    aria-label={t('chat.conversations.presence', { status: presenceClass(otherId) })}
                   ></span>
                 {/if}
               </span>
@@ -92,7 +93,7 @@
                 {/if}
               </span>
               {#if conv.unreadCount > 0 && !conv.muted}
-                <span class="badge" aria-label="{conv.unreadCount} unread">
+                <span class="badge" aria-label={t('chat.conversations.unreadCount', { count: String(conv.unreadCount) })}>
                   {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
                 </span>
               {/if}
@@ -103,7 +104,7 @@
     {/if}
 
     {#if spaces.length > 0}
-      <h3 class="group-label">Spaces</h3>
+      <h3 class="group-label">{t('chat.conversations.spaces')}</h3>
       <ul class="list">
         {#each spaces as conv (conv.id)}
           <li>
@@ -124,7 +125,7 @@
                 {/if}
               </span>
               {#if conv.unreadCount > 0 && !conv.muted}
-                <span class="badge" aria-label="{conv.unreadCount} unread">
+                <span class="badge" aria-label={t('chat.conversations.unreadCount', { count: String(conv.unreadCount) })}>
                   {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
                 </span>
               {/if}
@@ -135,7 +136,7 @@
     {/if}
 
     {#if dms.length === 0 && spaces.length === 0 && chat.conversationsStatus === 'ready'}
-      <p class="empty">No conversations yet</p>
+      <p class="empty">{t('chat.conversations.empty')}</p>
     {/if}
   {/if}
 </nav>

@@ -8,6 +8,7 @@
    */
   import { reactionConfirm } from './reaction-confirm.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   let dontAskAgain = $state(false);
   let ctx = $derived(reactionConfirm.pending);
@@ -24,21 +25,18 @@
       tabindex="-1"
       onkeydown={(e) => { if (e.key === 'Escape') ctx?.onCancel(); }}
     >
-      <h2 id="rcm-title" class="title">Send reaction to {ctx.totalRecipients} people?</h2>
-      <p class="body">
-        This message was sent to a mailing list. Reacting will send a reaction
-        email to all {ctx.totalRecipients} recipients.
-      </p>
+      <h2 id="rcm-title" class="title">{t('mail.reaction.confirmTitle', { count: String(ctx.totalRecipients) })}</h2>
+      <p class="body">{t('mail.reaction.confirmBody', { count: String(ctx.totalRecipients) })}</p>
       <label class="check-label">
         <input type="checkbox" bind:checked={dontAskAgain} />
-        Don't ask again for this list
+        {t('mail.reaction.dontAsk')}
       </label>
       <div class="actions">
         <Button variant="secondary" onclick={() => ctx?.onCancel()}>
-          Cancel
+          {t('mail.reaction.cancel')}
         </Button>
         <Button variant="primary" onclick={() => ctx?.onConfirm(dontAskAgain)}>
-          Send reaction
+          {t('mail.reaction.send')}
         </Button>
       </div>
     </div>

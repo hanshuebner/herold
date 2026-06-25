@@ -74,13 +74,13 @@
 <div
   class="panel"
   role="region"
-  aria-label="Advanced search"
+  aria-label={t('search.advanced.ariaLabel')}
   onkeydown={handleKeydown}
 >
   <form class="panel-form" onsubmit={handleSubmit}>
     <div class="row">
       <label class="field">
-        <span class="label">From</span>
+        <span class="label">{t('search.advanced.label.from')}</span>
         <input
           type="text"
           class="input"
@@ -92,7 +92,7 @@
       </label>
 
       <label class="field">
-        <span class="label">To</span>
+        <span class="label">{t('search.advanced.label.to')}</span>
         <input
           type="text"
           class="input"
@@ -106,7 +106,7 @@
 
     <div class="row">
       <label class="field">
-        <span class="label">Subject</span>
+        <span class="label">{t('search.advanced.label.subject')}</span>
         <input
           type="text"
           class="input"
@@ -118,7 +118,7 @@
       </label>
 
       <label class="field">
-        <span class="label">Body</span>
+        <span class="label">{t('search.advanced.label.body')}</span>
         <input
           type="text"
           class="input"
@@ -132,7 +132,7 @@
 
     <div class="row">
       <label class="field date-field">
-        <span class="label">After</span>
+        <span class="label">{t('search.advanced.label.after')}</span>
         <input
           type="date"
           class="input"
@@ -141,7 +141,7 @@
       </label>
 
       <label class="field date-field">
-        <span class="label">Before</span>
+        <span class="label">{t('search.advanced.label.before')}</span>
         <input
           type="date"
           class="input"
@@ -152,9 +152,9 @@
 
     <div class="row">
       <label class="field mailbox-field">
-        <span class="label">Mailbox</span>
+        <span class="label">{t('search.advanced.label.mailbox')}</span>
         <select class="input select" bind:value={fields.mailboxId}>
-          <option value="">Any mailbox</option>
+          <option value="">{t('search.advanced.label.anyMailbox')}</option>
           {#each sortedMailboxes as mb (mb.id)}
             <option value={mb.id}>{mb.name}</option>
           {/each}
@@ -162,7 +162,7 @@
       </label>
 
       <div class="field shortcuts-field">
-        <span class="label">Shortcuts</span>
+        <span class="label">{t('search.advanced.label.shortcuts')}</span>
         <div class="shortcuts">
           <button
             type="button"
@@ -182,12 +182,12 @@
           type="checkbox"
           bind:checked={fields.hasAttachment}
         />
-        <span>Has attachment</span>
+        <span>{t('search.advanced.label.hasAttachment')}</span>
       </label>
 
       <div class="actions">
-        <Button variant="ghost" onclick={handleClear}>Clear</Button>
-        <Button type="submit" variant="primary">Search</Button>
+        <Button variant="ghost" onclick={handleClear}>{t('search.advanced.clear')}</Button>
+        <Button type="submit" variant="primary">{t('search.advanced.search')}</Button>
       </div>
     </div>
   </form>

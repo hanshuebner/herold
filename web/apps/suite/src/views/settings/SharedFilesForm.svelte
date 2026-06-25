@@ -24,6 +24,7 @@
   import { router } from '../../lib/router/router.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   // ── State ─────────────────────────────────────────────────────────────────
 
@@ -63,20 +64,22 @@
     const now = Date.now();
     const exp = new Date(expiresAt).getTime();
     const diffMs = exp - now;
-    if (diffMs <= 0) return 'Expired';
+    if (diffMs <= 0) return t('settings.sharedFiles.expiry.expired');
     const diffHours = diffMs / (1000 * 60 * 60);
     // Sub-day expiries (notably pending shares, which live for pending_ttl
     // ~1h) must not round up to whole days, or a share expiring in minutes
     // reads "Expires tomorrow".
-    if (diffHours < 1) return 'Expires in less than an hour';
+    if (diffHours < 1) return t('settings.sharedFiles.expiry.lessThanHour');
     if (diffHours < 24) {
       const h = Math.round(diffHours);
-      return `Expires in ${h} hour${h === 1 ? '' : 's'}`;
+      return h === 1
+        ? t('settings.sharedFiles.expiry.hour', { n: String(h) })
+        : t('settings.sharedFiles.expiry.hours', { n: String(h) });
     }
     const diffDays = Math.ceil(diffHours / 24);
-    if (diffDays === 1) return 'Expires tomorrow';
-    if (diffDays <= 7) return `Expires in ${diffDays} days`;
-    return `Expires ${formatDate(expiresAt)}`;
+    if (diffDays === 1) return t('settings.sharedFiles.expiry.tomorrow');
+    if (diffDays <= 7) return t('settings.sharedFiles.expiry.days', { n: String(diffDays) });
+    return t('settings.sharedFiles.expiry.on', { date: formatDate(expiresAt) });
   }
 
   // ── Sorted + filtered view ────────────────────────────────────────────────
@@ -101,7 +104,7 @@
     try {
       shares = await queryFileShares();
     } catch (err) {
-      loadError = err instanceof Error ? err.message : 'Could not load shared files';
+      loadError = err instanceof Error ? err.message : t('settings.sharedFiles.toast.couldNotLoad');
     } finally {
       loading = false;
     }
@@ -115,11 +118,10 @@
 
   async function revokeShare(share: FileShare): Promise<void> {
     const ok = await confirm.ask({
-      title: 'Revoke this shared link?',
-      message:
-        `"${share.name}" — any already-sent message linking this share will show a dead link.`,
-      confirmLabel: 'Revoke',
-      cancelLabel: 'Cancel',
+      title: t('settings.sharedFiles.confirmRevoke.title'),
+      message: t('settings.sharedFiles.confirmRevoke.message', { name: share.name }),
+      confirmLabel: t('settings.sharedFiles.confirmRevoke.confirm'),
+      cancelLabel: t('settings.sharedFiles.confirmRevoke.cancel'),
       kind: 'danger',
     });
     if (!ok) return;
@@ -131,9 +133,9 @@
       shares = shares.map((s) =>
         s.id === share.id ? { ...s, state: 'revoked' as FileShareState } : s,
       );
-      toast.show({ message: `"${share.name}" revoked.`, timeoutMs: 4000 });
+      toast.show({ message: t('settings.sharedFiles.toast.revoked', { name: share.name }), timeoutMs: 4000 });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Could not revoke share';
+      const msg = err instanceof Error ? err.message : t('settings.sharedFiles.toast.couldNotRevoke');
       toast.show({ message: msg, kind: 'error', timeoutMs: 6000 });
     } finally {
       const next = new Set(revoking);
@@ -151,7 +153,7 @@
     if (resolving.has(sourceMessageId)) return;
     const accountId = mail.mailAccountId;
     if (!accountId) {
-      toast.show({ message: 'No mail account available', kind: 'error', timeoutMs: 4000 });
+      toast.show({ message: t('settings.sharedFiles.toast.noAccount'), kind: 'error', timeoutMs: 4000 });
       return;
     }
     resolving = new Set([...resolving, sourceMessageId]);
@@ -168,7 +170,7 @@
       };
       const email = result.list?.[0];
       if (!email) {
-        toast.show({ message: 'That message no longer exists', timeoutMs: 4000 });
+        toast.show({ message: t('settings.sharedFiles.toast.messageGone'), timeoutMs: 4000 });
         return;
       }
       // Prime the thread into the mail store BEFORE navigating. Opening
@@ -178,7 +180,7 @@
       await mail.loadThread(email.threadId);
       router.navigate('/mail/thread/' + encodeURIComponent(email.threadId));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Could not open message';
+      const msg = err instanceof Error ? err.message : t('settings.sharedFiles.toast.couldNotOpen');
       toast.show({ message: msg, kind: 'error', timeoutMs: 6000 });
     } finally {
       const next = new Set(resolving);
@@ -197,7 +199,7 @@
         copyingId = null;
       }, 2000);
     } catch {
-      toast.show({ message: 'Could not copy link', kind: 'error', timeoutMs: 4000 });
+      toast.show({ message: t('settings.sharedFiles.toast.couldNotCopy'), kind: 'error', timeoutMs: 4000 });
     }
   }
 </script>
@@ -205,12 +207,11 @@
 <!-- Quota usage (REQ-ATT-72) -->
 {#if quotaMax !== null}
   <div class="quota-row">
-    <span class="quota-label">Share storage</span>
+    <span class="quota-label">{t('settings.sharedFiles.quotaLabel')}</span>
     <span class="quota-value">
-      {quotaUsed !== null ? formatBytes(quotaUsed) : '—'}
-      {' '}of{' '}
-      {formatBytes(quotaMax)}
-      {' '}used
+      {quotaUsed !== null
+        ? t('settings.sharedFiles.quotaUsed', { used: formatBytes(quotaUsed), max: formatBytes(quotaMax) })
+        : '—'}
     </span>
     {#if quotaMax > 0 && quotaUsed !== null}
       <div class="quota-bar" role="progressbar" aria-valuemin={0} aria-valuemax={quotaMax} aria-valuenow={quotaUsed}>
@@ -226,19 +227,19 @@
 <!-- Controls -->
 <div class="controls">
   <div class="filter-group">
-    <label for="share-filter">Filter</label>
+    <label for="share-filter">{t('settings.sharedFiles.filterLabel')}</label>
     <select id="share-filter" bind:value={filter}>
-      <option value="all">All</option>
-      <option value="active">Active</option>
-      <option value="pending">Pending</option>
-      <option value="revoked">Revoked</option>
+      <option value="all">{t('settings.sharedFiles.filterAll')}</option>
+      <option value="active">{t('settings.sharedFiles.filterActive')}</option>
+      <option value="pending">{t('settings.sharedFiles.filterPending')}</option>
+      <option value="revoked">{t('settings.sharedFiles.filterRevoked')}</option>
     </select>
   </div>
   <div class="sort-group">
-    <label for="share-sort">Sort by</label>
+    <label for="share-sort">{t('settings.sharedFiles.sortLabel')}</label>
     <select id="share-sort" bind:value={sortBy}>
-      <option value="createdAt">Created (newest first)</option>
-      <option value="expiresAt">Expiry (soonest first)</option>
+      <option value="createdAt">{t('settings.sharedFiles.sortCreated')}</option>
+      <option value="expiresAt">{t('settings.sharedFiles.sortExpiry')}</option>
     </select>
   </div>
   <button
@@ -246,23 +247,23 @@
     class="refresh-btn"
     onclick={() => void load()}
     disabled={loading}
-    aria-label="Refresh shared files"
+    aria-label={t('settings.sharedFiles.refreshAriaLabel')}
   >
-    {loading ? 'Loading...' : 'Refresh'}
+    {loading ? t('settings.sharedFiles.loading') : t('settings.sharedFiles.refresh')}
   </button>
 </div>
 
 {#if loading}
-  <p class="muted">Loading shared files...</p>
+  <p class="muted">{t('settings.sharedFiles.loadingFiles')}</p>
 {:else if loadError}
   <p class="error-text" role="alert">{loadError}</p>
-  <button type="button" onclick={() => void load()}>Retry</button>
+  <button type="button" onclick={() => void load()}>{t('settings.sharedFiles.retry')}</button>
 {:else if visibleShares.length === 0}
   <p class="muted">
-    {filter === 'all' ? 'No shared files.' : `No ${filter} shares.`}
+    {filter === 'all' ? t('settings.sharedFiles.emptyAll') : t('settings.sharedFiles.emptyFilter', { filter })}
   </p>
 {:else}
-  <ul class="shares-list" aria-label="Shared files">
+  <ul class="shares-list" aria-label={t('settings.sharedFiles.listAriaLabel')}>
     {#each visibleShares as share (share.id)}
       <li class="share-row" class:revoked={share.state === 'revoked'}>
         <div class="share-main">
@@ -270,19 +271,21 @@
           <span class="share-meta">
             {formatBytes(share.size)}
             {' · '}
-            Created {formatDate(share.createdAt)}
+            {t('settings.sharedFiles.created', { date: formatDate(share.createdAt) })}
             {' · '}
             {formatExpiry(share.expiresAt)}
           </span>
           <span class="share-counts">
-            {share.downloadCount} download{share.downloadCount !== 1 ? 's' : ''}
+            {share.downloadCount === 1
+              ? t('settings.sharedFiles.downloads.one', { count: String(share.downloadCount) })
+              : t('settings.sharedFiles.downloads.other', { count: String(share.downloadCount) })}
             {#if share.maxDownloads !== null}
-              {' of '}
-              {share.maxDownloads} max
+              {' '}
+              {t('settings.sharedFiles.ofMax', { max: String(share.maxDownloads) })}
             {/if}
             {#if share.lastDownloadedAt}
-              {' · last '}
-              {formatDate(share.lastDownloadedAt)}
+              {' · '}
+              {t('settings.sharedFiles.lastAt', { date: formatDate(share.lastDownloadedAt) })}
             {/if}
           </span>
           {#if share.sourceMessageId || share.sourceSubject || (share.sourceRecipients && share.sourceRecipients.length > 0)}
@@ -292,20 +295,21 @@
                  to the thread. When no id is available (deleted-without-id
                  snapshot) the subject renders as plain text. -->
             <span class="share-source">
-              {'Shared in '}
+              {t('settings.sharedFiles.sharedIn')}
+              {' '}
               {#if share.sourceMessageId}
                 <button
                   type="button"
                   class="share-source-link"
                   onclick={() => void openSourceMessage(share.sourceMessageId!)}
                   disabled={resolving.has(share.sourceMessageId)}
-                  aria-label="Open originating message: {share.sourceSubject || '(no subject)'}"
-                >"{share.sourceSubject || '(no subject)'}"</button>
+                  aria-label={t('settings.sharedFiles.openMessage', { subject: share.sourceSubject || t('settings.sharedFiles.noSubject') })}
+                >"{share.sourceSubject || t('settings.sharedFiles.noSubject')}"</button>
               {:else}
-                <span class="share-source-subject">"{share.sourceSubject || '(no subject)'}"</span>
+                <span class="share-source-subject">"{share.sourceSubject || t('settings.sharedFiles.noSubject')}"</span>
               {/if}
               {#if share.sourceRecipients && share.sourceRecipients.length > 0}
-                {' — to '}
+                {t('settings.sharedFiles.to')}
                 <span class="share-source-recipients">{share.sourceRecipients.join(', ')}</span>
               {/if}
             </span>
@@ -313,12 +317,12 @@
           <div class="share-badges">
             <span
               class="state-badge state-{share.state}"
-              title="State: {share.state}"
+              title={t('settings.sharedFiles.stateTitle', { state: share.state })}
             >
               {share.state}
             </span>
             {#if share.hasPassword}
-              <span class="lock-badge" title="Password protected">lock</span>
+              <span class="lock-badge" title={t('settings.sharedFiles.passwordProtected')}>{t('settings.sharedFiles.lockBadge')}</span>
             {/if}
           </div>
         </div>
@@ -329,23 +333,23 @@
               type="button"
               class="action-btn copy-btn"
               onclick={() => void copyLink(share)}
-              aria-label="Copy link for {share.name}"
+              aria-label={t('settings.sharedFiles.copyLinkAria', { name: share.name })}
             >
-              {copyingId === share.id ? 'Copied!' : 'Copy link'}
+              {copyingId === share.id ? t('settings.sharedFiles.copied') : t('settings.sharedFiles.copyLink')}
             </button>
             <button
               type="button"
               class="action-btn revoke-btn"
               onclick={() => void revokeShare(share)}
               disabled={revoking.has(share.id)}
-              aria-label="Revoke {share.name}"
+              aria-label={t('settings.sharedFiles.revokeAria', { name: share.name })}
             >
-              {revoking.has(share.id) ? 'Revoking...' : 'Revoke'}
+              {revoking.has(share.id) ? t('settings.sharedFiles.revoking') : t('settings.sharedFiles.revoke')}
             </button>
           </div>
         {:else if share.state === 'pending'}
           <div class="share-actions">
-            <span class="pending-note">Waiting for message to be sent</span>
+            <span class="pending-note">{t('settings.sharedFiles.pendingNote')}</span>
           </div>
         {/if}
       </li>

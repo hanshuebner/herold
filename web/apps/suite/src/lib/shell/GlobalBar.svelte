@@ -8,11 +8,13 @@
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
   import { help } from '../help/help.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     placeholder?: string;
   }
-  let { placeholder = 'Search mail' }: Props = $props();
+  let { placeholder }: Props = $props();
+  let searchPlaceholder = $derived(placeholder ?? t('globalBar.searchPlaceholder'));
 
   // Local state mirrors the active search query in the URL when present.
   let query = $state('');
@@ -70,23 +72,25 @@
       sync.connectionState === 'disconnected',
   );
   let indicatorLabel = $derived(
-    sync.connectionState === 'disconnected' ? 'Disconnected' : 'Reconnecting…',
+    sync.connectionState === 'disconnected'
+      ? t('globalBar.disconnected')
+      : t('globalBar.reconnecting'),
   );
 </script>
 
 <header class="global-bar">
   <div class="brand-area">
     <AppSwitcherMenu currentApp="mail" />
-    <a class="brand" href="/" aria-label="Herold home">Herold</a>
+    <a class="brand" href="/" aria-label={t('globalBar.brand')}>Herold</a>
   </div>
 
   <form class="search" onsubmit={onSubmit} role="search">
     <SearchIcon size={18} />
     <input
       type="search"
-      {placeholder}
+      placeholder={searchPlaceholder}
       bind:value={query}
-      aria-label={placeholder}
+      aria-label={searchPlaceholder}
       spellcheck="false"
     />
   </form>
@@ -103,9 +107,9 @@
       type="button"
       class="icon-btn"
       class:active={panelOpen}
-      aria-label="Advanced search"
+      aria-label={t('globalBar.advancedSearch')}
       aria-expanded={panelOpen}
-      title="Advanced search"
+      title={t('globalBar.advancedSearch')}
       onclick={togglePanel}
     >
       <FilterIcon size={18} />
@@ -113,8 +117,8 @@
     <button
       type="button"
       class="icon-btn"
-      aria-label="Help"
-      title="Keyboard shortcuts"
+      aria-label={t('globalBar.help')}
+      title={t('globalBar.shortcuts')}
       onclick={() => help.toggle()}
     >
       <HelpIcon size={20} />

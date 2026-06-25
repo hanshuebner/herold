@@ -33,6 +33,7 @@
   import { toast } from '../../lib/toast/toast.svelte';
   import type { Identity } from '../../lib/mail/types';
   import Button from '@herold/design-system/Button.svelte';
+  import { t } from '../../lib/i18n/i18n.svelte';
 
   interface Props {
     identity: Identity;
@@ -109,7 +110,7 @@
     probeError = null;
     saveError = null;
     if (!host.trim()) {
-      saveError = 'Host is required.';
+      saveError = t('settings.submission.hostRequired');
       return;
     }
     saving = true;
@@ -124,7 +125,7 @@
       await putSubmission(identity.id, body);
       submissionStore.evict(identity.id);
       await handle.refresh();
-      toast.show({ message: 'External submission saved.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.submission.toast.saved'), timeoutMs: 4000 });
       onchange?.();
     } catch (err) {
       if (err instanceof ApiError && err.status === 422) {
@@ -148,11 +149,10 @@
 
   async function remove(): Promise<void> {
     const ok = await confirm.ask({
-      title: 'Remove external submission config?',
-      message:
-        'This identity will revert to sending through herold\'s outbound queue.',
-      confirmLabel: 'Remove',
-      cancelLabel: 'Cancel',
+      title: t('settings.submission.confirmRemoveTitle'),
+      message: t('settings.submission.confirmRemoveMessage'),
+      confirmLabel: t('settings.submission.confirmRemoveConfirm'),
+      cancelLabel: t('settings.submission.confirmRemoveCancel'),
       kind: 'danger',
     });
     if (!ok) return;
@@ -169,7 +169,7 @@
       probeError = null;
       saveError = null;
       await handle.refresh();
-      toast.show({ message: 'External submission removed.', timeoutMs: 4000 });
+      toast.show({ message: t('settings.submission.toast.removed'), timeoutMs: 4000 });
       onchange?.();
     } catch (err) {
       saveError = err instanceof Error ? err.message : String(err);
@@ -188,7 +188,7 @@
       // (e.g. 503 provider not configured).
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
-        oauthError = `The ${providerLabel(provider)} provider is not configured on this server. Use manual entry instead.`;
+        oauthError = t('settings.submission.oauthError.notConfigured', { provider: providerLabel(provider) });
       } else {
         oauthError = err instanceof Error ? err.message : String(err);
       }
@@ -200,15 +200,15 @@
   function probeCategoryLabel(category: string): string {
     switch (category) {
       case 'auth-failed':
-        return 'Authentication failed';
+        return t('settings.submission.probe.authFailed');
       case 'unreachable':
-        return 'Server unreachable';
+        return t('settings.submission.probe.unreachable');
       case 'permanent':
-        return 'Rejected by external server';
+        return t('settings.submission.probe.permanent');
       case 'transient':
-        return 'Temporary failure';
+        return t('settings.submission.probe.transient');
       default:
-        return 'Probe failed';
+        return t('settings.submission.probe.default');
     }
   }
 
@@ -220,20 +220,16 @@
 </script>
 
 <div class="submission-section">
-  <h4 class="section-title">External SMTP submission</h4>
-  <p class="section-hint">
-    By default, mail sent as this identity goes through herold's outbound queue.
-    You can instead route it through an external SMTP server (e.g. Gmail,
-    Microsoft 365, or a corporate relay).
-  </p>
+  <h4 class="section-title">{t('settings.submission.title')}</h4>
+  <p class="section-hint">{t('settings.submission.hint')}</p>
 
   {#if handle.status === 'loading' || handle.status === 'idle'}
-    <div class="spinner" role="status" aria-label="Loading submission config"></div>
+    <div class="spinner" role="status" aria-label={t('settings.submission.loadingAriaLabel')}></div>
   {:else if handle.status === 'error'}
     <p class="form-error" role="alert">{handle.error}</p>
   {:else}
     <!-- Toggle -->
-    <div class="radio-group" role="radiogroup" aria-label="Submission routing">
+    <div class="radio-group" role="radiogroup" aria-label={t('settings.submission.radioGroup')}>
       <label class="radio-label">
         <input
           type="radio"
@@ -243,7 +239,7 @@
           disabled={saving || removing}
         />
         <span>
-          Use this server <span class="recommended">(recommended)</span>
+          {t('settings.submission.useThisServer')} <span class="recommended">{t('settings.submission.recommended')}</span>
         </span>
       </label>
       <label class="radio-label">
@@ -254,7 +250,7 @@
           onchange={() => onToggle(true)}
           disabled={saving || removing}
         />
-        <span>Use an external SMTP server</span>
+        <span>{t('settings.submission.useExternal')}</span>
       </label>
     </div>
 
@@ -264,36 +260,33 @@
 
         <!-- OAuth one-click buttons -->
         <div class="oauth-section">
-          <p class="oauth-hint">
-            For Gmail or Microsoft 365, sign in with one click to configure
-            submission automatically:
-          </p>
+          <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
           <div class="oauth-buttons">
             <Button
               variant="secondary"
               onclick={() => void startOAuthFlow('gmail')}
               disabled={oauthStarting !== null || saving}
             >
-              {oauthStarting === 'gmail' ? 'Starting...' : 'Sign in with Google'}
+              {oauthStarting === 'gmail' ? t('settings.submission.starting') : t('settings.submission.signinGoogle')}
             </Button>
             <Button
               variant="secondary"
               onclick={() => void startOAuthFlow('m365')}
               disabled={oauthStarting !== null || saving}
             >
-              {oauthStarting === 'm365' ? 'Starting...' : 'Sign in with Microsoft'}
+              {oauthStarting === 'm365' ? t('settings.submission.starting') : t('settings.submission.signinMicrosoft')}
             </Button>
           </div>
           {#if oauthError}
             <p class="form-error" role="alert">{oauthError}</p>
           {/if}
-          <p class="or-divider">or enter server details manually:</p>
+          <p class="or-divider">{t('settings.submission.orManual')}</p>
         </div>
 
         <!-- Manual entry form -->
         <form class="manual-form" onsubmit={save} novalidate>
           <div class="field">
-            <label for="sub-host-{identity.id}" class="field-label">Host</label>
+            <label for="sub-host-{identity.id}" class="field-label">{t('settings.submission.fieldHost')}</label>
             <input
               id="sub-host-{identity.id}"
               type="text"
@@ -308,7 +301,7 @@
 
           <div class="field-row">
             <div class="field field-port">
-              <label for="sub-port-{identity.id}" class="field-label">Port</label>
+              <label for="sub-port-{identity.id}" class="field-label">{t('settings.submission.fieldPort')}</label>
               <input
                 id="sub-port-{identity.id}"
                 type="number"
@@ -321,23 +314,23 @@
             </div>
 
             <div class="field field-security">
-              <label for="sub-security-{identity.id}" class="field-label">Security</label>
+              <label for="sub-security-{identity.id}" class="field-label">{t('settings.submission.fieldSecurity')}</label>
               <select
                 id="sub-security-{identity.id}"
                 class="select"
                 bind:value={security}
                 disabled={saving}
               >
-                <option value="implicit_tls">Implicit TLS (port 465)</option>
-                <option value="starttls">STARTTLS (port 587)</option>
-                <option value="none">None (plaintext)</option>
+                <option value="implicit_tls">{t('settings.submission.securityImplicitTls')}</option>
+                <option value="starttls">{t('settings.submission.securityStarttls')}</option>
+                <option value="none">{t('settings.submission.securityNone')}</option>
               </select>
             </div>
           </div>
 
           <div class="field">
             <label for="sub-authmethod-{identity.id}" class="field-label">
-              Authentication method
+              {t('settings.submission.fieldAuthMethod')}
             </label>
             <select
               id="sub-authmethod-{identity.id}"
@@ -345,17 +338,17 @@
               bind:value={authMethod}
               disabled={saving}
             >
-              <option value="password">Password / app-specific password</option>
-              <option value="oauth2">OAuth 2.0 token</option>
+              <option value="password">{t('settings.submission.authPassword')}</option>
+              <option value="oauth2">{t('settings.submission.authOauth2')}</option>
             </select>
           </div>
 
           {#if authMethod === 'password'}
             <div class="field">
               <label for="sub-password-{identity.id}" class="field-label">
-                Password
+                {t('settings.submission.fieldPassword')}
                 {#if isConfigured}
-                  <span class="muted">(leave blank to keep existing)</span>
+                  <span class="muted">{t('settings.submission.passwordKeepExisting')}</span>
                 {/if}
               </label>
               <input
@@ -369,11 +362,7 @@
               />
             </div>
           {:else}
-            <p class="hint">
-              OAuth 2.0 token-based auth requires the access and refresh tokens
-              from a completed OAuth flow. Use the "Sign in with Google" or
-              "Sign in with Microsoft" buttons above for a guided flow.
-            </p>
+            <p class="hint">{t('settings.submission.oauth2Hint')}</p>
           {/if}
 
           {#if probeError}
@@ -394,7 +383,7 @@
                 onclick={() => void remove()}
                 disabled={removing || saving}
               >
-                {removing ? 'Removing...' : 'Remove external configuration'}
+                {removing ? t('settings.submission.removing') : t('settings.submission.removeConfig')}
               </Button>
             {/if}
             <span class="spacer"></span>
@@ -403,10 +392,10 @@
               variant="primary"
               disabled={saving || removing || authMethod === 'oauth2'}
               title={authMethod === 'oauth2'
-                ? 'Use the OAuth buttons above to configure OAuth 2.0'
+                ? t('settings.submission.oauth2Title')
                 : ''}
             >
-              {saving ? 'Saving and testing...' : 'Save and test connection'}
+              {saving ? t('settings.submission.saving') : t('settings.submission.saveAndTest')}
             </Button>
           </div>
         </form>
@@ -414,11 +403,7 @@
     {:else if isConfigured}
       <!-- Was configured but user toggled back -->
       <div class="revert-hint">
-        <p class="hint">
-          External submission is currently configured. To remove it and revert to
-          herold's outbound queue, expand the external option and click
-          "Remove external configuration".
-        </p>
+        <p class="hint">{t('settings.submission.revertHint')}</p>
       </div>
     {/if}
   {/if}

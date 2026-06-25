@@ -387,8 +387,8 @@
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (d.toDateString() === today.toDateString()) return 'Today';
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    if (d.toDateString() === today.toDateString()) return t('chat.messages.today');
+    if (d.toDateString() === yesterday.toDateString()) return t('chat.messages.yesterday');
     return d.toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
@@ -443,13 +443,13 @@
    * without leaking the principal id (REQ-CHAT-15).
    */
   function senderName(senderPrincipalId: string): string {
-    if (isMine(senderPrincipalId)) return 'You';
+    if (isMine(senderPrincipalId)) return t('chat.messages.you');
     const member = conversation.members.find(
       (m) => m.principalId === senderPrincipalId,
     );
     if (member?.displayName) return member.displayName;
     if (conversation.kind === 'dm') return conversation.name;
-    return 'Member';
+    return t('chat.messages.member');
   }
 
   /** Resolve a senderPrincipalId to its canonical email for the avatar
@@ -498,9 +498,9 @@
       (id) => id !== auth.principalId,
     ).length;
     if (typerCount === 0) return null;
-    if (conversation.kind === 'dm') return `${conversation.name} is typing…`;
-    if (typerCount === 1) return 'Someone is typing…';
-    return `${typerCount} people are typing…`;
+    if (conversation.kind === 'dm') return t('chat.messages.typingOne', { name: conversation.name });
+    if (typerCount === 1) return t('chat.messages.typingSomeone');
+    return t('chat.messages.typingMany', { n: String(typerCount) });
   });
 </script>
 
@@ -512,9 +512,9 @@
   onerrorcapture={(ev: Event) => { if (ev.target instanceof HTMLImageElement) handleContainerImgLoad(); }}
 >
   {#if effectiveStatus === 'loading'}
-    <p class="loading">Loading messages…</p>
+    <p class="loading">{t('chat.messages.loading')}</p>
   {:else if effectiveStatus === 'error'}
-    <p class="error">Failed to load messages</p>
+    <p class="error">{t('chat.messages.failed')}</p>
   {:else}
     {#if effectiveHasMore}
       <button
@@ -528,7 +528,7 @@
           }
         }}
       >
-        Load earlier messages
+        {t('chat.messages.loadEarlier')}
       </button>
     {/if}
 
@@ -563,7 +563,7 @@
                 {/if}
 
                 {#if msg.deleted}
-                  <em class="deleted">message deleted</em>
+                  <em class="deleted">{t('chat.messages.deleted')}</em>
                 {:else}
                   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -614,10 +614,10 @@
                     </span>
                   {/if}
                   {#if msg.editedAt}
-                    <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">(edited)</span>
+                    <span class="edited" title="Edited: {new Date(msg.editedAt).toLocaleString()}">{t('chat.messages.edited')}</span>
                   {/if}
                   {#if conversation.kind === 'dm' && isMine(msg.senderPrincipalId) && otherReadThrough === msg.id}
-                    <span class="read-receipt">Read</span>
+                    <span class="read-receipt">{t('chat.messages.readReceipt')}</span>
                   {/if}
                 </div>
 
@@ -670,7 +670,7 @@
         </div>
         {#if dividerVisible && dividerAnchorId === msg.id}
           <div class="new-divider" role="separator" aria-label={t('chat.newMessages')} bind:this={dividerEl}>
-            <span class="new-divider-label">New</span>
+            <span class="new-divider-label">{t('chat.messages.unreadDivider')}</span>
           </div>
         {/if}
       {/each}

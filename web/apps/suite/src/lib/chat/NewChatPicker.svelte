@@ -18,6 +18,7 @@
   import { toast } from '../toast/toast.svelte';
   import type { Principal } from './types';
   import Button from '@herold/design-system/Button.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   /** A confirmed recipient chip. */
   interface Chip {
@@ -188,12 +189,12 @@
     try {
       const principal = await chat.lookupPrincipalByEmail(raw);
       if (!principal) {
-        emailError = `${raw} is not a Herold user on this server`;
+        emailError = t('chat.new.error.notUser', { address: raw });
         return;
       }
       pickSuggestion(principal);
     } catch {
-      emailError = `${raw} is not a Herold user on this server`;
+      emailError = t('chat.new.error.notUser', { address: raw });
     }
   }
 
@@ -251,7 +252,7 @@
       close();
       chatOverlay.openWindow(id);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to start conversation';
+      const msg = err instanceof Error ? err.message : t('chat.new.error.startFailed');
       toast.show({ message: msg, kind: 'error' });
     } finally {
       submitting = false;
@@ -271,7 +272,7 @@
       close();
       chatOverlay.openWindow(id);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to create space';
+      const msg = err instanceof Error ? err.message : t('chat.new.error.createFailed');
       toast.show({ message: msg, kind: 'error' });
     } finally {
       submitting = false;
@@ -289,11 +290,11 @@
   >
     <div class="modal">
       <div class="modal-header">
-        <h2 id="ncp-title" class="title">Chat</h2>
+        <h2 id="ncp-title" class="title">{t('chat.new.title')}</h2>
         <button
           type="button"
           class="close-btn"
-          aria-label="Close"
+          aria-label={t('chat.new.close')}
           onclick={close}
         >x</button>
       </div>
@@ -306,7 +307,7 @@
           class="tab"
           class:active={mode === 'dm'}
           onclick={() => switchMode('dm')}
-        >Direct message</button>
+        >{t('chat.new.tabDm')}</button>
         <button
           type="button"
           role="tab"
@@ -314,28 +315,28 @@
           class="tab"
           class:active={mode === 'space'}
           onclick={() => switchMode('space')}
-        >Create Space</button>
+        >{t('chat.new.tabSpace')}</button>
       </div>
 
       <div class="modal-body">
         {#if mode === 'space'}
           <label class="field">
-            <span class="field-label">Space name <span class="required" aria-hidden="true">*</span></span>
+            <span class="field-label">{t('chat.new.spaceNameLabel')} <span class="required" aria-hidden="true">*</span></span>
             <input
               type="text"
               class="text-input"
               bind:value={spaceName}
-              placeholder="e.g. Project Hermes"
+              placeholder={t('chat.new.spaceNamePlaceholder')}
               autocomplete="off"
             />
           </label>
           <label class="field">
-            <span class="field-label">Description (optional)</span>
+            <span class="field-label">{t('chat.new.descriptionLabel')}</span>
             <input
               type="text"
               class="text-input"
               bind:value={spaceDescription}
-              placeholder="What is this space for?"
+              placeholder={t('chat.new.descriptionPlaceholder')}
               autocomplete="off"
             />
           </label>
@@ -343,7 +344,7 @@
 
         <div class="field">
           <span class="field-label">
-            {mode === 'dm' ? 'To' : 'Members'}
+            {mode === 'dm' ? t('chat.new.toLabel') : t('chat.new.membersLabel')}
           </span>
 
           <div class="recipient-anchor">
@@ -372,10 +373,10 @@
                   class="recipient-input"
                   bind:value={inputValue}
                   bind:this={inputEl}
-                  placeholder={chips.length === 0 ? 'Name or email' : 'Add another'}
+                  placeholder={chips.length === 0 ? t('chat.new.recipientPlaceholder') : t('chat.new.recipientAddAnother')}
                   autocomplete="off"
                   spellcheck="false"
-                  aria-label="Search for a person"
+                  aria-label={t('chat.new.recipientSearchLabel')}
                   aria-autocomplete="list"
                   oninput={handleInput}
                   onkeydown={(e) => void handleKeydown(e)}
@@ -384,7 +385,7 @@
             </div>
 
             {#if suggestions.length > 0}
-              <ul class="suggestions" role="listbox" aria-label="People suggestions">
+              <ul class="suggestions" role="listbox" aria-label={t('chat.new.peopleSuggestions')}>
                 {#each suggestions as suggestion, idx (suggestion.id)}
                   <li
                     role="option"
@@ -404,7 +405,7 @@
                 {/each}
               </ul>
             {:else if suggestionsLoading}
-              <p class="suggestions-loading" aria-live="polite">Searching...</p>
+              <p class="suggestions-loading" aria-live="polite">{t('chat.new.searching')}</p>
             {/if}
           </div>
 
@@ -415,14 +416,14 @@
       </div>
 
       <div class="modal-footer">
-        <Button variant="secondary" onclick={close}>Cancel</Button>
+        <Button variant="secondary" onclick={close}>{t('chat.new.cancel')}</Button>
         {#if mode === 'dm'}
           <Button
             variant="primary"
             disabled={!dmCanSubmit}
             onclick={() => void submit()}
           >
-            {submitting ? 'Starting...' : 'Start chat'}
+            {submitting ? t('chat.new.starting') : t('chat.new.startChat')}
           </Button>
         {:else}
           <Button
@@ -430,7 +431,7 @@
             disabled={!spaceCanSubmit}
             onclick={() => void submit()}
           >
-            {submitting ? 'Creating...' : 'Create Space'}
+            {submitting ? t('chat.new.creating') : t('chat.new.createSpace')}
           </Button>
         {/if}
       </div>
