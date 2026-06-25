@@ -6,6 +6,7 @@
   import { labelDialog } from './label-dialog.svelte';
   import { randomLabelColor } from '../mail/label-color';
   import Button from '@herold/design-system/Button.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   let ctx = $derived(labelDialog.pending);
   let name = $state('');
@@ -99,7 +100,7 @@
       <h2 id="ld-title" class="title">{ctx.title}</h2>
 
       <label class="field">
-        <span class="field-label">Name</span>
+        <span class="field-label">{t('label.dialog.nameLabel')}</span>
         <input
           type="text"
           bind:value={name}
@@ -110,17 +111,17 @@
       </label>
 
       <div class="color-row">
-        <span class="field-label">Color</span>
+        <span class="field-label">{t('label.dialog.colorLabel')}</span>
         <div class="color-controls">
           <input
             type="color"
             bind:value={color}
             class="color-input"
-            aria-label="Label color"
-            title="Label color"
+            aria-label={t('label.dialog.colorAriaLabel')}
+            title={t('label.dialog.colorAriaLabel')}
           />
           <span class="color-swatch" style="background:{color};" aria-hidden="true"></span>
-          <Button variant="secondary" compact onclick={pickRandom}>Random</Button>
+          <Button variant="secondary" compact onclick={pickRandom}>{t('label.dialog.random')}</Button>
         </div>
       </div>
 

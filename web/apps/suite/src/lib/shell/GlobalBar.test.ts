@@ -57,7 +57,18 @@ vi.mock('../auth/auth.svelte', () => ({
 }));
 
 vi.mock('../i18n/i18n.svelte', () => ({
-  t: (key: string) => key,
+  t: (key: string): string => {
+    const map: Record<string, string> = {
+      'globalBar.searchPlaceholder': 'Search mail',
+      'globalBar.advancedSearch': 'Advanced search',
+      'globalBar.help': 'Help',
+      'globalBar.shortcuts': 'Keyboard shortcuts',
+      'globalBar.brand': 'Herold home',
+      'globalBar.disconnected': 'Disconnected',
+      'globalBar.reconnecting': 'Reconnecting…',
+    };
+    return map[key] ?? key;
+  },
 }));
 
 // AdvancedSearchPanel dependency: the mail store.

@@ -556,10 +556,12 @@
   async function confirmEmptyTrash(): Promise<void> {
     const n = mail.listEmails.length;
     const ok = await confirm.ask({
-      title: 'Empty Trash?',
-      message: `Permanently delete ${n} message${n === 1 ? '' : 's'} from Trash. This cannot be undone.`,
-      confirmLabel: 'Empty Trash',
-      cancelLabel: 'Cancel',
+      title: t('mail.emptyTrash.title'),
+      message: t(n === 1 ? 'mail.emptyTrash.messageOne' : 'mail.emptyTrash.messageMany', {
+        n: String(n),
+      }),
+      confirmLabel: t('mail.emptyTrash.confirm'),
+      cancelLabel: t('common.cancel'),
       kind: 'danger',
     });
     if (ok) void mail.emptyTrash();
@@ -573,10 +575,10 @@
   }
   async function confirmAndDestroy(id: string): Promise<void> {
     const ok = await confirm.ask({
-      title: 'Delete this message permanently?',
-      message: "Permanently delete this message? It can't be recovered.",
-      confirmLabel: 'Delete permanently',
-      cancelLabel: 'Cancel',
+      title: t('mail.deleteMsg.title'),
+      message: t('mail.deleteMsg.message'),
+      confirmLabel: t('mail.deleteMsg.confirm'),
+      cancelLabel: t('common.cancel'),
       kind: 'danger',
     });
     if (ok) void mail.destroyEmail(id);
@@ -591,10 +593,14 @@
     if (folder === 'trash') {
       const n = ids.length;
       const ok = await confirm.ask({
-        title: `Permanently delete ${n} message${n === 1 ? '' : 's'}?`,
-        message: `Permanently delete ${n} message${n === 1 ? '' : 's'}? They can't be recovered.`,
-        confirmLabel: 'Delete permanently',
-        cancelLabel: 'Cancel',
+        title: t(n === 1 ? 'mail.deleteMsgs.titleOne' : 'mail.deleteMsgs.titleMany', {
+          n: String(n),
+        }),
+        message: t(n === 1 ? 'mail.deleteMsgs.messageOne' : 'mail.deleteMsgs.messageMany', {
+          n: String(n),
+        }),
+        confirmLabel: t('mail.deleteMsgs.confirm'),
+        cancelLabel: t('common.cancel'),
         kind: 'danger',
       });
       if (ok) void mail.bulkDestroy(ids);
@@ -616,24 +622,23 @@
 
   function emptyMessage(f: FolderID | undefined): string {
     if (!f) return '';
-    if (f === 'inbox') return 'Inbox is empty.';
-    if (f === 'all') return 'No mail.';
-    if (FOLDER_DISPLAY[f]) return `${FOLDER_DISPLAY[f]} is empty.`;
-    return `${mail.mailboxes.get(f)?.name ?? 'Mailbox'} is empty.`;
+    if (f === 'inbox') return t('list.empty.inbox');
+    if (f === 'all') return t('list.empty.allMail');
+    const folderSidebarKey = FOLDER_SIDEBAR_KEY[f];
+    if (folderSidebarKey) return t('list.empty.folder', { name: t(folderSidebarKey) });
+    return t('list.empty.folder', { name: mail.mailboxes.get(f)?.name ?? '' });
   }
-  const FOLDER_DISPLAY: Record<string, string> = {
-    inbox: 'Inbox',
-    sent: 'Sent',
-    drafts: 'Drafts',
-    trash: 'Trash',
-    all: 'All Mail',
-    important: 'Important',
-    snoozed: 'Snoozed',
+  const FOLDER_SIDEBAR_KEY: Record<string, string> = {
+    sent: 'sidebar.sent',
+    drafts: 'sidebar.drafts',
+    trash: 'sidebar.trash',
+    important: 'sidebar.important',
+    snoozed: 'sidebar.snoozed',
   };
 
   function senderLabel(email: Email): string {
     const a = email.from?.[0];
-    if (!a) return '(no sender)';
+    if (!a) return t('msg.noSender');
     return a.name?.trim() || a.email;
   }
 

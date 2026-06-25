@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from './auth.svelte';
   import LoginView from './LoginView.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -23,12 +24,12 @@
   <div class="splash" role="alert" aria-live="assertive">
     <div class="card">
       <h1 class="wordmark">Herold</h1>
-      <p class="message error">Could not reach the server.</p>
+      <p class="message error">{t('auth.error.unreachable')}</p>
       {#if auth.errorMessage}
         <p class="detail">{auth.errorMessage}</p>
       {/if}
       <button type="button" class="retry" onclick={() => auth.bootstrap()}>
-        Retry
+        {t('auth.retry')}
       </button>
     </div>
   </div>
@@ -37,7 +38,7 @@
   <div class="splash" role="status" aria-live="polite">
     <div class="card">
       <h1 class="wordmark">Herold</h1>
-      <p class="message">Connecting...</p>
+      <p class="message">{t('auth.connecting')}</p>
       <div class="spinner" aria-hidden="true"></div>
     </div>
   </div>

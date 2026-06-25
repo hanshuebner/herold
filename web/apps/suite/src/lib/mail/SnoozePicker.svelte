@@ -7,7 +7,7 @@
   import { mail } from './store.svelte';
   import { snoozePicker, snoozeQuickOptions } from './snooze-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
-  import { localeTag } from '../i18n/i18n.svelte';
+  import { localeTag, t } from '../i18n/i18n.svelte';
 
   let options = $derived(snoozeQuickOptions());
   let custom = $state('');
@@ -50,7 +50,7 @@
         86400000,
     );
     if (dayDiff === 0) return time;
-    if (dayDiff === 1) return `${time} tomorrow`;
+    if (dayDiff === 1) return `${time} ${t('mail.snooze.tomorrow')}`;
     if (dayDiff > 0 && dayDiff < 7) {
       return `${d.toLocaleDateString(tag, { weekday: 'long' })}, ${time}`;
     }
@@ -71,21 +71,21 @@
     tabindex="-1"
   >
     <header>
-      <h2 id="snooze-title">Snooze until…</h2>
+      <h2 id="snooze-title">{t('mail.snooze.heading')}</h2>
       <button
         type="button"
         class="close"
-        aria-label="Close"
+        aria-label={t('mail.snooze.close')}
         onclick={() => snoozePicker.close()}
       >
         ×
       </button>
     </header>
-    <ul class="quick-list" role="listbox" aria-label="Quick options">
+    <ul class="quick-list" role="listbox" aria-label={t('mail.snooze.quickOptions')}>
       {#each options as o (o.label)}
         <li>
           <button type="button" onclick={() => commit(o.at)}>
-            <span class="label">{o.label}</span>
+            <span class="label">{t(o.key)}</span>
             <span class="when">{fmt(o.at)}</span>
           </button>
         </li>
@@ -93,11 +93,11 @@
     </ul>
     <div class="custom-row">
       <label>
-        <span>Custom</span>
+        <span>{t('mail.snooze.custom')}</span>
         <input type="datetime-local" bind:value={custom} />
       </label>
       <button type="button" class="commit" onclick={commitCustom} disabled={!custom}>
-        Snooze
+        {t('mail.snooze.button')}
       </button>
     </div>
   </div>

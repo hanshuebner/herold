@@ -1,6 +1,7 @@
 <script lang="ts">
   import { help } from './help.svelte';
   import { keyboard, type Binding } from '../keyboard/engine.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   // Push a layer to handle Escape while the overlay is open.
   $effect(() => {
@@ -47,11 +48,11 @@
     tabindex="-1"
   >
     <header>
-      <h2 id="help-title">Keyboard shortcuts</h2>
+      <h2 id="help-title">{t('help.title')}</h2>
       <button
         type="button"
         class="close"
-        aria-label="Close help"
+        aria-label={t('help.closeAriaLabel')}
         onclick={() => help.close()}
       >
         ×
@@ -59,7 +60,7 @@
     </header>
 
     {#if bindings.length === 0}
-      <p class="empty">No bindings active.</p>
+      <p class="empty">{t('help.empty')}</p>
     {:else}
       <ul class="bindings">
         {#each bindings as b (b.key)}

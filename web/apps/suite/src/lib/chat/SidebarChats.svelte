@@ -95,7 +95,7 @@
       <span class="loading-dot"></span>
     </div>
   {:else if chat.conversationsStatus === 'ready' && conversations.length === 0}
-    <p class="chats-empty">No conversations yet</p>
+    <p class="chats-empty">{t('chat.conversations.empty')}</p>
   {:else}
     <ul class="conv-list">
       {#each conversations as conv (conv.id)}

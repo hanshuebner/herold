@@ -140,6 +140,12 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'list.retry': 'Retry',
       'list.emptyTrash': 'Empty Trash',
       'list.couldNotLoad': 'Could not load',
+      'mail.deleteMsgs.titleOne': "Permanently delete {n} message?",
+      'mail.deleteMsgs.titleMany': "Permanently delete {n} messages?",
+      'mail.deleteMsgs.messageOne': "Permanently delete {n} message? It can't be recovered.",
+      'mail.deleteMsgs.messageMany': "Permanently delete {n} messages? They can't be recovered.",
+      'mail.deleteMsgs.confirm': 'Delete permanently',
+      'common.cancel': 'Cancel',
     };
     return map[key] ?? key;
   },

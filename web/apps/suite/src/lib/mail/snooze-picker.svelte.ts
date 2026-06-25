@@ -28,6 +28,8 @@ export const snoozePicker = new SnoozePicker();
  */
 export interface SnoozeOption {
   label: string;
+  /** i18n key for the option label; use t(option.key) in UI. */
+  key: string;
   /** ISO 8601 timestamp the picker will hand to snoozeEmail. */
   at: Date;
 }
@@ -39,14 +41,14 @@ export function snoozeQuickOptions(now: Date = new Date()): SnoozeOption[] {
   const laterToday = new Date(now);
   laterToday.setHours(now.getHours() + 3, 0, 0, 0);
   if (laterToday.getDate() === now.getDate() && laterToday.getHours() <= 21) {
-    out.push({ label: 'Later today', at: laterToday });
+    out.push({ label: 'Later today', key: 'mail.snooze.option.laterToday', at: laterToday });
   }
 
   // Tomorrow morning: 8:00 next day.
   const tomorrowAm = new Date(now);
   tomorrowAm.setDate(now.getDate() + 1);
   tomorrowAm.setHours(8, 0, 0, 0);
-  out.push({ label: 'Tomorrow morning', at: tomorrowAm });
+  out.push({ label: 'Tomorrow morning', key: 'mail.snooze.option.tomorrowMorning', at: tomorrowAm });
 
   // This weekend: next Saturday 9:00. Saturday is JS day 6.
   const weekend = new Date(now);
@@ -56,7 +58,7 @@ export function snoozeQuickOptions(now: Date = new Date()): SnoozeOption[] {
   // Only show if weekend is at least one day away — otherwise the
   // tomorrow-morning option is the better choice.
   if (daysToSat >= 2) {
-    out.push({ label: 'This weekend', at: weekend });
+    out.push({ label: 'This weekend', key: 'mail.snooze.option.thisWeekend', at: weekend });
   }
 
   // Next week: next Monday 8:00.
@@ -64,7 +66,7 @@ export function snoozeQuickOptions(now: Date = new Date()): SnoozeOption[] {
   const daysToMon = (1 - now.getDay() + 7) % 7 || 7;
   nextMon.setDate(now.getDate() + daysToMon);
   nextMon.setHours(8, 0, 0, 0);
-  out.push({ label: 'Next week', at: nextMon });
+  out.push({ label: 'Next week', key: 'mail.snooze.option.nextWeek', at: nextMon });
 
   return out;
 }
