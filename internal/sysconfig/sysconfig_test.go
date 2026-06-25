@@ -3417,6 +3417,85 @@ tls = "none"
 	}
 }
 
+func TestValidate_AllowPlainAuth_RejectedOnNonLoopback(t *testing.T) {
+	// allow_plain_auth on a non-loopback address exposes credentials in
+	// transit and must be rejected at startup (re #8).
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = "0.0.0.0:587"
+protocol = "smtp-submission"
+tls = "none"
+auth_required = true
+allow_plain_auth = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	if _, err := Parse([]byte(cfg)); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("expected loopback rejection, got: %v", err)
+	}
+}
+
+func TestValidate_AllowPlainAuth_AcceptedOnLoopbackIPv6(t *testing.T) {
+	// allow_plain_auth on an IPv6 loopback address (::1) is valid (re #8).
+	const cfg = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "none"
+
+[[listener]]
+name = "smtp-submission"
+address = "[::1]:1587"
+protocol = "smtp-submission"
+tls = "none"
+auth_required = true
+allow_plain_auth = true
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:8080"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:9443"
+protocol = "http"
+kind = "admin"
+tls = "none"
+`
+	parsed, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error on IPv6 loopback, got: %v", err)
+	}
+	if !parsed.Listener[0].AllowPlainAuth {
+		t.Error("expected AllowPlainAuth to be true on the smtp-submission listener")
+	}
+}
+
 func TestValidate_LegacyAdminProtocol_RejectedWithHint(t *testing.T) {
 	// issue #107: the HTTP listener protocol value "admin" was renamed
 	// to "http". An old config must fail with a message that names the

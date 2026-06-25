@@ -48,6 +48,38 @@ func (s *Server) AttachManageSieve(name string, srv *protomanagesieve.Server) {
 	}()
 }
 
+// AttachManageSieveWithOptions is like AttachManageSieve but accepts the
+// full ListenerOptions so callers can set per-listener fields such as
+// AllowPlainAuth.
+func (s *Server) AttachManageSieveWithOptions(name string, srv *protomanagesieve.Server, opts protomanagesieve.ListenerOptions) {
+	if srv == nil {
+		panic("testharness: AttachManageSieveWithOptions nil server")
+	}
+	s.mu.Lock()
+	st, ok := s.listeners[name]
+	if !ok {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("testharness: AttachManageSieveWithOptions: no listener %q", name))
+	}
+	if st.managed != nil {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("testharness: AttachManageSieveWithOptions: listener %q already attached", name))
+	}
+	st.managed = make(chan struct{})
+	stopCh := st.stopDefault
+	doneCh := st.defaultDone
+	s.mu.Unlock()
+	close(stopCh)
+	<-doneCh
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer close(st.managed)
+		_ = srv.Serve(s.ctx, st.ln, opts)
+	}()
+}
+
 // DialManageSieveByName dials the named ManageSieve listener as a raw
 // TCP connection (the listener serves plaintext-on-accept; STARTTLS is
 // the per-session TLS upgrade).

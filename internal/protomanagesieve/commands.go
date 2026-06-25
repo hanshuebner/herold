@@ -242,7 +242,11 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	if err != nil {
 		return ses.writeNO("", err.Error())
 	}
-	if ses.tlsActive {
+	// Mark the SASL context TLS-present when TLS is active or when the
+	// listener is in the loopback plaintext posture (allow_plain_auth,
+	// issue #8). Plain-text mechanisms (PLAIN/LOGIN) gate on
+	// tlsPresent(ctx), so this enables them in both cases.
+	if ses.tlsActive || ses.allowPlainAuth {
 		ctx = sasl.WithTLS(ctx, true)
 		if len(ses.serverEndpoint) > 0 {
 			ctx = sasl.WithTLSServerEndpoint(ctx, ses.serverEndpoint)
