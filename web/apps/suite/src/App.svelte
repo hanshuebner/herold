@@ -309,6 +309,13 @@
     });
   });
 
+  // Re-sync mailbox counters when the tab regains visibility so the
+  // favicon badge and title stay accurate after the tab was hidden (re #36).
+  $effect(() => {
+    if (auth.status !== 'ready') return;
+    return untrack(() => mail.installVisibilitySync());
+  });
+
   // Suite-global bindings — always active.
   keyboard.registerGlobal({
     key: 'c',

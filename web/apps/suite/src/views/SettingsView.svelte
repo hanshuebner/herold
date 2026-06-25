@@ -578,9 +578,25 @@
         </label>
       </div>
 
+      <div class="row vertical">
+        <span class="label">{t('settings.notifications.desktopLabel')}</span>
+        <p class="hint">
+          {t('settings.notifications.desktopHint')}
+        </p>
+        <label class="switch" aria-label={t('settings.notifications.desktopAria')}>
+          <input
+            type="checkbox"
+            checked={settings.desktopNotifEnabled}
+            onchange={(e) => settings.setDesktopNotifEnabled((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span class="track" aria-hidden="true"></span>
+        </label>
+      </div>
+
       {#if hasPush}
         <div class="row vertical">
           <span class="label">{t('settings.notifications.pushLabel')}</span>
+          <p class="hint">{t('settings.notifications.pushSubscriptionHint')}</p>
           {#if pushSubscription.permissionState === 'denied'}
             <p class="hint">
               {t('settings.notifications.pushDeniedHint')}

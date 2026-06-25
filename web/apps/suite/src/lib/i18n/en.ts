@@ -39,11 +39,15 @@ export const en = {
   'list.refresh': 'Refresh',
   'list.emptyTrash': 'Empty trash',
   'list.loading': 'Loading...',
+  // Slow-load warning shown after 1 s of loading (re #30).
+  'list.loadSlow': "Sorry we're slow. There may be a system problem.",
   'list.retry': 'Retry',
   'list.empty.inbox': 'Inbox is empty.',
   'list.empty.allMail': 'No mail.',
   'list.empty.folder': '{name} is empty.',
   'list.couldNotLoad': "Couldn't load {name}.",
+  // Supplementary hint in the hard-error state (re #30).
+  'list.couldNotLoad.systemHint': 'This may be a capacity or system problem. Please try again.',
   'list.dragMessageCount': 'Move {count} messages',
   // External-image internalize-pending badge (REQ-EXTIMG-BG-30).
   'mail.list.internalizePending.tooltip':
@@ -786,6 +790,11 @@ export const en = {
   'settings.notifications.soundsHint':
     'Play a sound when a new message or call arrives while this tab is open.',
   'settings.notifications.soundsAria': 'Notification sounds',
+  // Desktop notification toggle (re #23).
+  'settings.notifications.desktopLabel': 'Desktop notifications',
+  'settings.notifications.desktopHint':
+    'Show a desktop notification for new inbox messages when this tab is open and permission is granted.',
+  'settings.notifications.desktopAria': 'Desktop notifications',
   'settings.notifications.pushLabel': 'Push notifications',
   'settings.notifications.pushDeniedHint':
     'Notifications are off. You can re-enable them in your browser settings.',
@@ -795,6 +804,9 @@ export const en = {
   'settings.notifications.pushDisable': 'Disable notifications',
   'settings.notifications.pushOffHint':
     'Get notified about new mail and messages when this tab is closed.',
+  // Clarification of what "push subscription" means (re #23c).
+  'settings.notifications.pushSubscriptionHint':
+    'Push notifications are delivered by your browser even when this tab is closed.',
   'settings.notifications.pushEnabling': 'Enabling…',
   'settings.notifications.pushEnable': 'Enable notifications',
   'settings.notifications.forgetAllLabel': 'Forget all subscriptions',

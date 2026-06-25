@@ -39,6 +39,7 @@ const KEYS = {
   coachEnabled: 'coachEnabled',
   swipeLeft: 'swipeLeft',
   swipeRight: 'swipeRight',
+  desktopNotifEnabled: 'desktopNotifEnabled',
 } as const;
 
 const DEFAULTS = {
@@ -49,6 +50,7 @@ const DEFAULTS = {
   coachEnabled: true,
   swipeLeft: 'archive' as SwipeAction,
   swipeRight: 'snooze' as SwipeAction,
+  desktopNotifEnabled: false,
 };
 
 const UNDO_WINDOW_MIN = 0;
@@ -91,6 +93,7 @@ class Settings {
   #coachEnabled = $state<boolean>(DEFAULTS.coachEnabled);
   #swipeLeft = $state<SwipeAction>(DEFAULTS.swipeLeft);
   #swipeRight = $state<SwipeAction>(DEFAULTS.swipeRight);
+  #desktopNotifEnabled = $state<boolean>(DEFAULTS.desktopNotifEnabled);
 
   /** Read every setting from localStorage. Idempotent. */
   hydrate(): void {
@@ -120,6 +123,10 @@ class Settings {
     this.#swipeRight = readJson<SwipeAction>(
       KEYS.swipeRight,
       DEFAULTS.swipeRight,
+    );
+    this.#desktopNotifEnabled = readJson<boolean>(
+      KEYS.desktopNotifEnabled,
+      DEFAULTS.desktopNotifEnabled,
     );
   }
 
@@ -226,6 +233,16 @@ class Settings {
   setSwipeRight(value: SwipeAction): void {
     this.#swipeRight = value;
     writeJson(KEYS.swipeRight, value);
+  }
+
+  // ── Desktop notifications ──────────────────────────────────────────────
+  /** Show an OS-level notification for new inbox mail while the tab is open (re #23). */
+  get desktopNotifEnabled(): boolean {
+    return this.#desktopNotifEnabled;
+  }
+  setDesktopNotifEnabled(value: boolean): void {
+    this.#desktopNotifEnabled = value;
+    writeJson(KEYS.desktopNotifEnabled, value);
   }
 }
 
