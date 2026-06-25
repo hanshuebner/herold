@@ -10,8 +10,9 @@
 //  2. Stores their sha256 hashes plus a 24h expiry on the identity row
 //     via store.Meta().IssueIdentityVerificationToken (REQ-IDENT-31/32/34).
 //  3. Renders a multipart/alternative RFC 5322 message containing the
-//     callback URL "https://<host>/verify-identity?token=<token>" and
-//     the bare code on its own line (REQ-IDENT-33).
+//     callback URL "<public_base_url>/verify-identity?token=<token>" and
+//     the bare code on its own line (REQ-IDENT-33). The URL uses
+//     [server].public_base_url (the SPA origin), not the MTA hostname.
 //  4. Submits the message to the outbound queue, signed under the
 //     canonical hosted domain's DKIM key (REQ-IDENT-30, REQ-DKIM-*).
 //

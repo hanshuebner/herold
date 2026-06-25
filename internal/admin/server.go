@@ -2681,7 +2681,7 @@ func composeAdminAndUI(
 			Submitter:      outboundQ,
 			Logger:         logger.With("subsystem", "identityverify"),
 			Clock:          clk,
-			Hostname:       cfg.Server.Hostname,
+			PublicBaseURL:  publicBaseURL(cfg.Server),
 			VerifierFrom:   cfg.Server.IdentityCreation.VerifierFrom,
 			Auditor:        identityVerifyAuditor{st: st},
 			ResendCooldown: time.Duration(cfg.Server.IdentityCreation.ResendCooldownSeconds) * time.Second,
@@ -3662,6 +3662,19 @@ type ivResenderAdapter struct {
 func (a ivResenderAdapter) Resend(ctx context.Context, row store.JMAPIdentity) error {
 	_, err := a.d.Resend(ctx, row)
 	return err
+}
+
+// publicBaseURL returns the externally-reachable base URL of the public
+// listener. It prefers [server].public_base_url; when that is empty it
+// falls back to "https://<hostname>" so single-domain deployments that
+// omit public_base_url get a working default. The identity-verification
+// email link and Message-ID use this value so they reflect the SPA
+// origin, not the internal MTA hostname (re #19).
+func publicBaseURL(sc sysconfig.ServerConfig) string {
+	if sc.PublicBaseURL != "" {
+		return sc.PublicBaseURL
+	}
+	return "https://" + sc.Hostname
 }
 
 func buildIdentityExternalDomainPolicy(ic sysconfig.IdentityCreationConfig) func(string) bool {

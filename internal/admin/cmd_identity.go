@@ -214,7 +214,7 @@ func runIdentityReissueCode(cmd *cobra.Command, identityID, operatorRef string) 
 		fmt.Sprintf("verification code re-issued for identity %s by admin CLI", identityID))
 
 	w := cmd.OutOrStdout()
-	link := "https://" + cfg.Server.Hostname + "/verify-identity?token=" + token
+	link := publicBaseURL(cfg.Server) + "/verify-identity?token=" + token
 	fmt.Fprintf(w, "identity:   %s %s\n", row.ID, row.Email)
 	fmt.Fprintf(w, "code:       %s\n", code)
 	fmt.Fprintf(w, "token:      %s\n", token)
