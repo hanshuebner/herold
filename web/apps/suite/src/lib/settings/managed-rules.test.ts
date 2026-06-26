@@ -103,6 +103,7 @@ vi.mock('../auth/auth.svelte', () => ({
     errorMessage: null,
     needsStepUp: false,
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── Sync mock ─────────────────────────────────────────────────────────────

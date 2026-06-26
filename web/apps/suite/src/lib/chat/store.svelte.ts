@@ -22,7 +22,7 @@
  */
 
 import { jmap } from '../jmap/client';
-import { auth } from '../auth/auth.svelte';
+import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
 import { Capability } from '../jmap/types';
@@ -1579,6 +1579,33 @@ class ChatStore {
     sounds.play('chat');
     this.#lastSoundPlayedAt = now;
   }
+
+  /**
+   * Reset all in-memory state to the empty baseline so a freshly-signed-in
+   * account always re-fetches its own conversations. Called via the
+   * account-change reset callback registered below.
+   */
+  reset(): void {
+    this.conversations = new Map();
+    this.conversationIds = [];
+    this.conversationsStatus = 'idle';
+    this.openConversationId = null;
+    this.messages = [];
+    this.messagesStatus = 'idle';
+    this.hasMoreMessages = false;
+    this.memberships = new Map();
+    this.overlayMessages = new Map();
+    this.presence = new Map();
+    this.typing = new Map();
+    this.focusRequest = null;
+    this.#conversationState = null;
+    this.#messageState = null;
+    this.#membershipState = null;
+  }
 }
 
 export const chat = new ChatStore();
+
+// Reset all chat state when the active account changes so a freshly-
+// signed-in user always sees their own conversations.
+registerAccountResetCallback(() => chat.reset());

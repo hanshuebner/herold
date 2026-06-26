@@ -23,7 +23,7 @@
 
 import { jmap, strict } from '../jmap/client';
 import { Capability } from '../jmap/types';
-import { auth } from '../auth/auth.svelte';
+import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
 import { seenAddresses, type SeenAddress } from './seen-addresses.svelte';
 import { hasDirectoryAutocomplete } from '../auth/capabilities';
 
@@ -138,6 +138,16 @@ class Contacts {
 }
 
 export const contacts = new Contacts();
+
+// Reset contacts on account change so the new account's address book is
+// fetched fresh rather than serving the previous account's cached data.
+// The Contacts class's load() is idempotent when status === 'idle', so
+// App.svelte's existing `if (contacts.status === 'idle') contacts.load()`
+// boot-prime naturally re-fetches after the status is cleared here.
+registerAccountResetCallback(() => {
+  contacts.status = 'idle';
+  contacts.suggestions = [];
+});
 
 /**
  * Query the server's Directory/search method with the given prefix.

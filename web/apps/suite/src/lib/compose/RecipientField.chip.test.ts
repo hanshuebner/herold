@@ -50,6 +50,7 @@ vi.mock('../auth/auth.svelte', () => ({
       primaryAccounts: {},
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 function renderField(chips: Recipient[]) {

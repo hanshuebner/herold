@@ -78,6 +78,7 @@ vi.mock('../jmap/types', () => ({
 
 vi.mock('../auth/auth.svelte', () => ({
   auth: { session: null },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../contacts/store.svelte', () => ({

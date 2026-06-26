@@ -61,6 +61,11 @@
   $effect(() => {
     if (auth.status === 'ready') {
       settings.hydrate();
+      // Reload search history from the newly-authenticated account's
+      // localStorage namespace. The mail store clears its in-memory
+      // history on account change (reset callback); this call re-reads
+      // the correct per-account key now that the session is established.
+      mail.hydrateSearchHistory();
       // Start the EventSource for mail types; if chat is available also
       // subscribe to Conversation, Message, Membership changes.
       const hasCap = auth.session

@@ -32,14 +32,17 @@ import {
 import type { Identity } from './types';
 import { jmap } from '../jmap/client';
 import { Capability } from '../jmap/types';
-import { auth } from '../auth/auth.svelte';
+import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
+import { accountKey } from '../storage/account-scoped';
 
 // ---------------------------------------------------------------------------
 // localStorage keys & TTL
 // ---------------------------------------------------------------------------
 
-const CACHE_KEY = 'herold:avatar:cache';
-const TOGGLE_KEY = 'herold:avatar:emailMetadata';
+// Keys are computed at call time so they resolve to the currently logged-in
+// account's namespace. The pre-auth namespace ('anon') is normally empty.
+const CACHE_NAME = 'avatar.cache';
+const TOGGLE_NAME = 'avatar.emailMetadata';
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
 // ---------------------------------------------------------------------------
@@ -85,7 +88,7 @@ type CacheMap = Record<string, CacheEntry>;
 
 function loadCache(): CacheMap {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(accountKey(CACHE_NAME));
     if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
@@ -98,7 +101,7 @@ function loadCache(): CacheMap {
 
 function saveCache(cache: CacheMap): void {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(accountKey(CACHE_NAME), JSON.stringify(cache));
   } catch {
     // Quota / private mode — cache just lives in-memory this session.
   }
@@ -114,7 +117,7 @@ function isExpired(entry: CacheEntry): boolean {
 
 function readToggle(): boolean {
   try {
-    const raw = localStorage.getItem(TOGGLE_KEY);
+    const raw = localStorage.getItem(accountKey(TOGGLE_NAME));
     if (raw === null) return true; // default on
     return raw !== 'false';
   } catch {
@@ -299,6 +302,7 @@ function writeCache(key: string, url: string | null): void {
   } else {
     // Strip any stale persisted entry for this key so a previous positive
     // result does not survive after the picture is removed.
+    // loadCache() reads from the current account's namespace.
     const persisted = loadCache();
     if (key in persisted) {
       delete persisted[key];
@@ -366,12 +370,15 @@ export function _getMemCache(): CacheMap {
 }
 
 /**
- * Clear both the in-memory and persisted avatar caches.
+ * Clear the in-memory avatar cache and remove the current account's
+ * persisted entry from localStorage. Called as part of the account-
+ * change reset so a different account does not see the previous
+ * account's cached avatars.
  */
 export function clearAvatarCache(): void {
   memCache = {};
   try {
-    localStorage.removeItem(CACHE_KEY);
+    localStorage.removeItem(accountKey(CACHE_NAME));
   } catch {
     // ignore
   }
@@ -383,8 +390,12 @@ export { readToggle as avatarEmailMetadataEnabled };
 
 export function setAvatarEmailMetadataEnabled(value: boolean): void {
   try {
-    localStorage.setItem(TOGGLE_KEY, value ? 'true' : 'false');
+    localStorage.setItem(accountKey(TOGGLE_NAME), value ? 'true' : 'false');
   } catch {
     // ignore
   }
 }
+
+// Clear avatar cache when the active account changes so a different
+// account does not see the previous account's cached avatar URLs.
+registerAccountResetCallback(clearAvatarCache);

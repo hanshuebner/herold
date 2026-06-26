@@ -57,6 +57,7 @@ vi.mock('../auth/auth.svelte', () => ({
       },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // JMAP client mock.

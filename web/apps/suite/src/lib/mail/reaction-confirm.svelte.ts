@@ -4,18 +4,24 @@
  * When a user reacts to a mailing-list message (List-ID header present)
  * with more than 5 recipients, we surface a one-time confirmation
  * explaining that the reaction will propagate to N people. The "don't
- * ask again" decision is stored in localStorage, keyed by list-id.
+ * ask again" decision is stored in localStorage, scoped per account so
+ * a shared browser profile does not carry one user's list-confirm flags
+ * into another user's session.
  *
  * The store holds the pending confirmation context; the component reads
  * it and calls `confirm()` or `cancel()` in response.
  */
 
-const STORAGE_KEY_PREFIX = 'herold.suite.reaction-confirm.';
+import { accountKey } from '../storage/account-scoped';
+
+function listKey(listId: string): string {
+  return accountKey('reaction-confirm.' + listId);
+}
 
 /** Persist that the user has agreed to react to list `listId` without asking again. */
 function saveListConfirmed(listId: string): void {
   try {
-    localStorage.setItem(STORAGE_KEY_PREFIX + listId, '1');
+    localStorage.setItem(listKey(listId), '1');
   } catch {
     // Quota / private mode — OK; next reaction will ask again.
   }
@@ -24,7 +30,7 @@ function saveListConfirmed(listId: string): void {
 /** Return true if the user has already confirmed reactions for this list. */
 function isListConfirmed(listId: string): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY_PREFIX + listId) === '1';
+    return localStorage.getItem(listKey(listId)) === '1';
   } catch {
     return false;
   }

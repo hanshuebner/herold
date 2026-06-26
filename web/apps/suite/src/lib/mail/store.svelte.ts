@@ -11,7 +11,8 @@
  */
 
 import { jmap, strict } from '../jmap/client';
-import { auth } from '../auth/auth.svelte';
+import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
+import { accountKey } from '../storage/account-scoped';
 import { sync } from '../jmap/sync.svelte';
 import { toast } from '../toast/toast.svelte';
 import { i18n, localeTag } from '../i18n/i18n.svelte';
@@ -68,11 +69,11 @@ export class IdentitySetError extends Error {
 }
 
 const SEARCH_HISTORY_MAX = 12;
-const SEARCH_HISTORY_KEY = 'herold.suite.search.history';
+const SEARCH_HISTORY_NAME = 'mail.search.history';
 
 function readSearchHistory(): string[] {
   try {
-    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    const raw = localStorage.getItem(accountKey(SEARCH_HISTORY_NAME));
     if (raw === null) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -84,7 +85,7 @@ function readSearchHistory(): string[] {
 
 function persistSearchHistory(history: string[]): void {
   try {
-    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history));
+    localStorage.setItem(accountKey(SEARCH_HISTORY_NAME), JSON.stringify(history));
   } catch {
     // Quota / private mode — history just doesn't persist this run.
   }
@@ -174,10 +175,45 @@ class MailStore {
     sync.on('Mailbox', (newState) => {
       void this.#onMailboxStateChange(newState);
     });
-    // Search history is local-only and survives reload.
-    if (typeof localStorage !== 'undefined') {
-      this.searchHistory = readSearchHistory();
-    }
+    // Search history is not hydrated eagerly here because the account-
+    // scoped localStorage key resolves to 'anon' before the session is
+    // established. App.svelte calls hydrateSearchHistory() once the
+    // auth status transitions to 'ready'.
+  }
+
+  /**
+   * Reset all in-memory state to the empty baseline so a freshly-signed-in
+   * account always re-fetches its own data. Called via the account-change
+   * reset callback registered below.
+   *
+   * Per-account localStorage data (search history) is cleared here while
+   * the session is still set (the departing account's key is still correct).
+   * After the new login completes, App.svelte calls hydrateSearchHistory()
+   * to load the new account's history.
+   */
+  reset(): void {
+    this.mailboxes = new Map();
+    this.emails = new Map();
+    this.threads = new Map();
+    this.identities = new Map();
+    this.listFolder = 'inbox';
+    this.listEmailIds = [];
+    this.listLoadStatus = 'idle';
+    this.listError = null;
+    this.listFocusedIndex = -1;
+    this.listSelectedIds = new Set();
+    this.threadLoadStatus = new Map();
+    this.threadLoadError = new Map();
+    this.openThreadId = null;
+    this.pendingArrivals = new Map();
+    this.searchQuery = '';
+    this.searchEmailIds = [];
+    this.searchLoadStatus = 'idle';
+    this.searchError = null;
+    this.searchFocusedIndex = -1;
+    this.searchHistory = [];
+    this.emailState = null;
+    this.mailboxState = null;
   }
 
   async #onEmailStateChange(newState: string): Promise<void> {
@@ -640,7 +676,10 @@ class MailStore {
     persistSearchHistory(next);
   }
 
-  /** Clear search history entirely. */
+  /**
+   * Clear search history entirely. Removes both the in-memory state and
+   * the current account's persisted entry from localStorage.
+   */
   clearSearchHistory(): void {
     this.searchHistory = [];
     persistSearchHistory([]);
@@ -3281,6 +3320,10 @@ export function expandToThreadIds(
 }
 
 export const mail = new MailStore();
+
+// Reset all mail state when the active account changes so a freshly-
+// signed-in user always sees their own data, not the previous account's.
+registerAccountResetCallback(() => mail.reset());
 
 /** Exported purely for unit tests; not part of the public surface. */
 export const _internals_forTest = {

@@ -33,6 +33,7 @@ vi.mock('../auth/auth.svelte', () => ({
     },
     principalId: 'p1',
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../jmap/sync.svelte', () => ({

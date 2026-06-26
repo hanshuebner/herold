@@ -30,6 +30,7 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
       username: 'test@example.local',
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── API client mock ────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@
 
 import { jmap, strict } from '../jmap/client';
 import { Capability } from '../jmap/types';
-import { auth } from '../auth/auth.svelte';
+import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 
 export interface SeenAddress {
@@ -145,3 +145,8 @@ class SeenAddresses {
 }
 
 export const seenAddresses = new SeenAddresses();
+
+// Reset seen-address cache on account change so the new account's
+// autocomplete suggestions are fetched fresh, not served from the
+// previous account's in-memory cache.
+registerAccountResetCallback(() => seenAddresses.clear());

@@ -56,6 +56,7 @@ vi.mock('../lib/auth/auth.svelte', () => ({
       state: 'session-state-1',
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../lib/mail/store.svelte', () => ({

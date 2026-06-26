@@ -32,6 +32,7 @@ vi.mock('../auth/auth.svelte', () => ({
       },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../jmap/sync.svelte', () => ({ sync: { on: vi.fn() } }));

@@ -44,6 +44,7 @@ const { mockAuth, mockPut } = vi.hoisted(() => {
 
 vi.mock('../../lib/auth/auth.svelte', () => ({
   auth: mockAuth,
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── API client mock ────────────────────────────────────────────────────────

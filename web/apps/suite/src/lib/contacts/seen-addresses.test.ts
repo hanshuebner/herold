@@ -78,6 +78,7 @@ vi.mock('../auth/auth.svelte', () => ({
     principalId: '42',
     errorMessage: null,
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── Sync mock ─────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ vi.mock('../auth/auth.svelte', () => {
     session: null as null | { capabilities: Record<string, unknown> },
     scopes: [] as string[],
   };
-  return { auth };
+  return { auth, registerAccountResetCallback: vi.fn() };
 });
 
 vi.mock('../i18n/i18n.svelte', () => ({
