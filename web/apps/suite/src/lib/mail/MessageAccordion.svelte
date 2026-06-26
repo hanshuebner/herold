@@ -204,6 +204,21 @@
     return out;
   });
 
+  // Build a cid -> intrinsic dimensions map from the email's attachments.
+  // The server emits width/height on inline image parts when the bodymeta
+  // worker has decoded the image (issue #47). The sanitiser uses this map
+  // to inject `aspect-ratio: W / H` on each resolved cid <img> so the
+  // browser can reserve layout space before the image bytes arrive.
+  let cidDimensions = $derived.by<Record<string, { width: number; height: number }>>(() => {
+    const out: Record<string, { width: number; height: number }> = {};
+    for (const part of email.attachments ?? []) {
+      const { cid, width, height } = part;
+      if (!cid || !width || !height || width <= 0 || height <= 0) continue;
+      out[cid] = { width, height };
+    }
+    return out;
+  });
+
   /**
    * G16: metadata keyed by the resolved image URL (the value in cidMap).
    * HtmlBody uses this to render per-image download buttons in the overlay
@@ -388,7 +403,7 @@
   // inline images regardless of the per-message image-blocking state.
   function printThisMessage(): void {
     const sanitised = html
-      ? sanitizeHtml(html, { loadImages: true, cidMap })
+      ? sanitizeHtml(html, { loadImages: true, cidMap, cidDimensions })
       : null;
     printMessage({
       subject: email.subject ?? '',
@@ -644,7 +659,7 @@
             {/if}
           </div>
         {/if}
-        <HtmlBody {html} {loadImages} {cidMap} {inlineImageMeta} />
+        <HtmlBody {html} {loadImages} {cidMap} {cidDimensions} {inlineImageMeta} />
       {:else if text && textSplit}
         <pre class="text-body">{textSplit.fresh}</pre>
         {#if textSplit.quoted}

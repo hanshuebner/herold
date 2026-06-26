@@ -41,20 +41,27 @@
     /** cid -> URL map for inline images. */
     cidMap?: Record<string, string>;
     /**
+     * Server-supplied intrinsic pixel dimensions keyed by cid (no angle
+     * brackets, no `cid:` prefix). Forwarded to `sanitizeHtml` so it can
+     * inject `aspect-ratio: W / H` on resolved cid images, enabling the
+     * browser to reserve layout space before image bytes arrive (issue #47).
+     */
+    cidDimensions?: Record<string, { width: number; height: number }>;
+    /**
      * Metadata for the inline images (name + download URL) keyed by the
      * resolved URL that appears in the rendered img src. Used to wire the
      * overlay download buttons to the correct blob URL.
      */
     inlineImageMeta?: Record<string, { name: string; downloadUrl: string }>;
   }
-  let { html, loadImages = false, cidMap, inlineImageMeta }: Props = $props();
+  let { html, loadImages = false, cidMap, cidDimensions, inlineImageMeta }: Props = $props();
 
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let wrapperEl = $state<HTMLDivElement | null>(null);
   let height = $state(120);
 
   // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
-  let srcdoc = $derived(sanitizeHtml(html, { loadImages, cidMap }));
+  let srcdoc = $derived(sanitizeHtml(html, { loadImages, cidMap, cidDimensions }));
 
   /**
    * One overlay entry: position relative to the wrapper element, plus

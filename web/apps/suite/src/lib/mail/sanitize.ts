@@ -41,6 +41,14 @@ export interface SanitizeOptions {
    * point at attachments of the same email so there is no privacy leak.
    */
   cidMap?: Record<string, string>;
+  /**
+   * Server-supplied intrinsic pixel dimensions keyed by cid (no angle
+   * brackets, no `cid:` prefix). When present for a resolved cid image,
+   * an `aspect-ratio: W / H` declaration is appended to the img's inline
+   * style so the browser can reserve the correct height before the image
+   * bytes arrive (issue #47). Absent keys leave the image unchanged.
+   */
+  cidDimensions?: Record<string, { width: number; height: number }>;
 }
 
 const ALLOWED_TAGS = [
@@ -291,6 +299,38 @@ function promoteStyleDimensions(img: Element): void {
   }
 }
 
+/**
+ * Append `aspect-ratio: W / H` to the img's inline style so the browser
+ * can reserve layout space before the image bytes arrive (issue #47).
+ *
+ * Safety invariants:
+ *   - W and H are validated as positive finite numbers; NaN / Infinity /
+ *     negative / zero values are silently dropped so nothing executable
+ *     can be smuggled into the style declaration.
+ *   - An existing `aspect-ratio` declaration is detected and skipped so
+ *     this function is idempotent.
+ *   - The author's width and height HTML attributes are never touched here;
+ *     only the inline style is extended.
+ */
+function applyAspectRatio(img: Element, w: number, h: number): void {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+  const wi = Math.round(w);
+  const hi = Math.round(h);
+  // After rounding, values below 0.5 become 0 — skip those too.
+  if (wi <= 0 || hi <= 0) return;
+  const existing = (img.getAttribute('style') ?? '').trim();
+  // Do not duplicate an aspect-ratio that is already present (e.g. authored
+  // by the message itself or added by an earlier sanitiser pass).
+  if (/(?:^|;)\s*aspect-ratio\s*:/i.test(existing)) return;
+  const declaration = `aspect-ratio: ${wi} / ${hi}`;
+  const newStyle = existing
+    ? existing.endsWith(';')
+      ? `${existing} ${declaration}`
+      : `${existing}; ${declaration}`
+    : declaration;
+  img.setAttribute('style', newStyle);
+}
+
 function rewriteImage(img: Element, options: SanitizeOptions): void {
   const src = img.getAttribute('src');
   const alt = img.getAttribute('alt') ?? '';
@@ -314,6 +354,17 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
       // HTML case) the function is a no-op. The style attribute itself is
       // left untouched — this only adds the missing HTML attributes.
       promoteStyleDimensions(img);
+      // Apply server-supplied intrinsic aspect-ratio (issue #47 cid-dimension
+      // path). When the JMAP response carries width/height on the body part,
+      // inject `aspect-ratio: W / H` into the inline style so the browser
+      // can reserve the correct height at the author's display width before
+      // the image bytes arrive. The author's width/height attributes are
+      // never overwritten — the intrinsic dimensions may be a retina
+      // multiple of the author's intended display width.
+      const dims = options.cidDimensions?.[cid];
+      if (dims) {
+        applyAspectRatio(img, dims.width, dims.height);
+      }
       return;
     }
     img.removeAttribute('src');

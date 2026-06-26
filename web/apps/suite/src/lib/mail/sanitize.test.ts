@@ -200,6 +200,129 @@ describe('sanitizeHtml — inline image dimension preservation (issue #47)', () 
   });
 });
 
+describe('sanitizeHtml — cid: image aspect-ratio from server-supplied dimensions (issue #47)', () => {
+  it('injects aspect-ratio into the style when cidDimensions provides W and H', () => {
+    // Afilio pattern: author sets width attribute and height:auto; server
+    // supplies intrinsic pixel size so the browser can reserve the height.
+    const html = '<img src="cid:img1" width="520" style="height: auto; max-width: 100%;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: 1040, height: 1600 } },
+    }));
+    expect(body).toContain('aspect-ratio: 1040 / 1600');
+    expect(body).toContain('src="/jmap/download/img1.png"');
+  });
+
+  it('preserves the author width attribute unchanged when aspect-ratio is injected', () => {
+    const html = '<img src="cid:img1" width="520" style="height: auto;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: 1040, height: 1600 } },
+    }));
+    // Author's display width must not be overwritten by the intrinsic width.
+    expect(body).toContain('width="520"');
+    expect(body).toContain('aspect-ratio: 1040 / 1600');
+  });
+
+  it('does not duplicate aspect-ratio when one is already present in the style', () => {
+    // If the author (or a previous pass) already set an aspect-ratio, the
+    // sanitiser must not add a second one.
+    const html = '<img src="cid:img1" style="aspect-ratio: 1 / 2; width: 200px;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: 400, height: 600 } },
+    }));
+    const occurrences = (body.match(/aspect-ratio/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('does not add aspect-ratio when the cid has no cidDimensions entry', () => {
+    const html = '<img src="cid:img1">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: {}, // img1 absent from the dimensions map
+    }));
+    expect(body).not.toContain('aspect-ratio');
+  });
+
+  it('does not add aspect-ratio when cidDimensions is omitted entirely', () => {
+    const html = '<img src="cid:img1">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      // no cidDimensions property
+    }));
+    expect(body).not.toContain('aspect-ratio');
+  });
+
+  it('security: NaN width is not injected into style', () => {
+    // NaN is a valid JS number type; the runtime guard must reject it.
+    const html = '<img src="cid:img1" style="display:block;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: NaN, height: 600 } },
+    }));
+    expect(body).not.toContain('aspect-ratio');
+  });
+
+  it('security: Infinity width is not injected into style', () => {
+    const html = '<img src="cid:img1" style="display:block;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: Infinity, height: 600 } },
+    }));
+    expect(body).not.toContain('aspect-ratio');
+  });
+
+  it('security: non-positive width is not injected into style', () => {
+    const html = '<img src="cid:img1" style="display:block;">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: -100, height: 600 } },
+    }));
+    expect(body).not.toContain('aspect-ratio');
+  });
+
+  it('appends aspect-ratio correctly when existing style ends without semicolon', () => {
+    const html = '<img src="cid:img1" style="display:block">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: 800, height: 600 } },
+    }));
+    expect(body).toContain('aspect-ratio: 800 / 600');
+  });
+
+  it('injects aspect-ratio on an image with no pre-existing style attribute', () => {
+    const html = '<img src="cid:img1" alt="logo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { img1: '/jmap/download/img1.png' },
+      cidDimensions: { img1: { width: 200, height: 150 } },
+    }));
+    expect(body).toContain('aspect-ratio: 200 / 150');
+  });
+
+  it('does not add aspect-ratio to a blocked cid: image (no cidMap entry)', () => {
+    const html = '<img src="cid:missing" width="520">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: {},
+      cidDimensions: { missing: { width: 1040, height: 1600 } },
+    }));
+    // Blocked images must not carry layout-reservation styling.
+    expect(body).not.toContain('aspect-ratio');
+    expect(body).toContain('data-herold-blocked="cid"');
+  });
+});
+
 describe('sanitizeHtml — external image gating', () => {
   it('removes src when loadImages=false', () => {
     const html = '<img src="https://x.test/a.png" alt="x">';

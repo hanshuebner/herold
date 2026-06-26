@@ -113,6 +113,19 @@ export interface EmailBodyPart {
   disposition: string | null;
   name: string | null;
   cid: string | null;
+  /**
+   * Intrinsic image width in pixels, as decoded by the server bodymeta
+   * worker (issue #47). Absent for older messages not yet re-indexed, or
+   * for formats other than png/jpeg/gif. When present together with
+   * `height`, the client uses the pair to set `aspect-ratio` on the
+   * rendered `<img>` so the browser can reserve layout space before the
+   * image bytes arrive.
+   */
+  width?: number;
+  /**
+   * Intrinsic image height in pixels. See `width` for semantics.
+   */
+  height?: number;
 }
 
 /**
