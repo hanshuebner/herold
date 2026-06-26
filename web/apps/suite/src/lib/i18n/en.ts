@@ -261,6 +261,7 @@ export const en = {
   'msg.rawSource.title': 'Original message source',
   'msg.rawSource.copy': 'Copy',
   'msg.rawSource.copied': 'Copied',
+  'msg.rawSource.download': 'Download',
   'msg.rawSource.close': 'Close',
   'msg.rawSource.loading': 'Loading raw source…',
   'msg.rawSource.error': 'Failed to load raw source',

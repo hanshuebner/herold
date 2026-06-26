@@ -14,9 +14,16 @@
     open: boolean;
     /** Same-origin URL pointing at the JMAP blob endpoint for this email. */
     sourceUrl: string | null;
+    /**
+     * Suggested filename for the .eml download (REQ-MAIL-142a). Derived by
+     * the caller from the email subject via emlDownloadFilename(). When null
+     * the Download button is still functional; the browser falls back to
+     * 'message.eml'.
+     */
+    filename?: string | null;
     onClose: () => void;
   }
-  let { open, sourceUrl, onClose }: Props = $props();
+  let { open, sourceUrl, filename = null, onClose }: Props = $props();
 
   type LoadState =
     | { kind: 'idle' }
@@ -68,6 +75,30 @@
     }
   }
 
+  /**
+   * Save the loaded source as a .eml file. Creates a Blob from the already-
+   * fetched text (no second network request), wires a temporary <a download>
+   * element, clicks it, then revokes the object URL immediately so the
+   * browser can GC the Blob. The clipboard is not involved — this path
+   * works for large messages that the Clipboard API would reject.
+   */
+  function downloadEml(): void {
+    if (loadState.kind !== 'ready') return;
+    const blob = new Blob([loadState.text], { type: 'message/rfc822' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename ?? 'message.eml';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
   async function copyToClipboard(): Promise<void> {
     if (loadState.kind !== 'ready') return;
     try {
@@ -108,6 +139,9 @@
       <header class="header">
         <h2 id="rsm-title" class="title">{t('msg.rawSource.title')}</h2>
         <div class="header-actions">
+          <Button variant="secondary" onclick={downloadEml} disabled={loadState.kind !== 'ready'}>
+            {t('msg.rawSource.download')}
+          </Button>
           <Button variant="secondary" onclick={copyToClipboard} disabled={loadState.kind !== 'ready'}>
             {copied ? t('msg.rawSource.copied') : t('msg.rawSource.copy')}
           </Button>

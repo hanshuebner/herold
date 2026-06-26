@@ -438,7 +438,6 @@ class MailStore {
                 properties: EMAIL_BODY_PROPERTIES,
                 fetchHTMLBodyValues: true,
                 fetchTextBodyValues: true,
-                maxBodyValueBytes: 256 * 1024,
               },
               [Capability.Mail],
             );
@@ -1486,7 +1485,6 @@ class MailStore {
             properties: EMAIL_BODY_PROPERTIES,
             fetchHTMLBodyValues: true,
             fetchTextBodyValues: true,
-            maxBodyValueBytes: 256 * 1024,
           },
           [Capability.Mail],
         );
@@ -1535,7 +1533,6 @@ class MailStore {
           properties: EMAIL_BODY_PROPERTIES,
           fetchHTMLBodyValues: true,
           fetchTextBodyValues: true,
-          maxBodyValueBytes: 256 * 1024,
         },
         [Capability.Mail],
       );
@@ -1576,7 +1573,6 @@ class MailStore {
           properties: EMAIL_BODY_PROPERTIES,
           fetchHTMLBodyValues: true,
           fetchTextBodyValues: true,
-          maxBodyValueBytes: 256 * 1024,
         },
         [Capability.Mail],
       );

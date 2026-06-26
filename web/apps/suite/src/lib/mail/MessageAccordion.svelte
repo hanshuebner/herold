@@ -606,6 +606,7 @@
 <RawSourceModal
   open={showOriginalOpen}
   sourceUrl={downloadEmlInfo?.href ?? null}
+  filename={downloadEmlInfo?.filename ?? null}
   onClose={() => (showOriginalOpen = false)}
 />
 

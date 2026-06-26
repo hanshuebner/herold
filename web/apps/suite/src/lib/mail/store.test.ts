@@ -11,7 +11,7 @@ import {
   resolveThreadEmails,
   IdentitySetError,
 } from './store.svelte';
-import type { Email } from './types';
+import { emailHtmlBody, emailTextBody, type Email, type EmailBodyPart, type EmailBodyValue } from './types';
 
 describe('allVisibleSelected', () => {
   it('returns false when visibleIds is empty', () => {
@@ -297,5 +297,65 @@ describe('IdentitySetError', () => {
     const isDuplicate =
       err.type === 'invalidProperties' && err.properties.includes('email');
     expect(isDuplicate).toBe(true);
+  });
+});
+
+// ── emailHtmlBody / emailTextBody body-value helpers (re #44) ────────────────
+//
+// The store fetches body values without a maxBodyValueBytes cap so the full
+// content is always returned. These helpers must pass through whatever value
+// the server sends, including bodies well over the former 256 KB ceiling.
+
+function makeBodyPart(partId: string): EmailBodyPart {
+  return {
+    partId,
+    blobId: 'blob-1',
+    size: 0,
+    type: 'text/html',
+    charset: 'utf-8',
+    disposition: null,
+    name: null,
+    cid: null,
+  };
+}
+
+function makeBodyValue(value: string, isTruncated = false): EmailBodyValue {
+  return { value, isEncodingProblem: false, isTruncated };
+}
+
+describe('emailHtmlBody / emailTextBody (re #44)', () => {
+  it('returns the full html body value regardless of size', () => {
+    const longBody = '<p>' + 'A'.repeat(300 * 1024) + '</p>';
+    const email: Partial<Email> = {
+      htmlBody: [makeBodyPart('p1')],
+      bodyValues: { p1: makeBodyValue(longBody) },
+    };
+    expect(emailHtmlBody(email as Email)).toBe(longBody);
+  });
+
+  it('returns the full text body value regardless of size', () => {
+    const longBody = 'B'.repeat(300 * 1024);
+    const email: Partial<Email> = {
+      textBody: [makeBodyPart('p2')],
+      bodyValues: { p2: makeBodyValue(longBody) },
+    };
+    expect(emailTextBody(email as Email)).toBe(longBody);
+  });
+
+  it('returns null when htmlBody is empty', () => {
+    const email: Partial<Email> = { htmlBody: [], bodyValues: {} };
+    expect(emailHtmlBody(email as Email)).toBeNull();
+  });
+
+  it('returns null when textBody is absent', () => {
+    const email: Partial<Email> = { bodyValues: {} };
+    expect(emailTextBody(email as Email)).toBeNull();
+  });
+
+  it('returns null when bodyValues is absent', () => {
+    const email: Partial<Email> = {
+      htmlBody: [makeBodyPart('p1')],
+    };
+    expect(emailHtmlBody(email as Email)).toBeNull();
   });
 });
