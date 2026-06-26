@@ -1065,16 +1065,20 @@ class ComposeStore {
       this.bccRecipients.length > 0
         ? this.bccRecipients
         : parseAddressList(this.bcc).map((email) => ({ email }));
-    // Rewrite blob: object URLs back to cid: references so the
-    // outbound message references the inline parts (issue #20). The
-    // editor uses blob URLs while composing for in-place preview.
-    const bodyHtml = rewriteInlineImageURLs(this.body, this.attachments);
+    // Rewrite blob: object URLs to cid: (issue #20), then extract any
+    // remaining data: image URIs and upload them as proper MIME parts
+    // (issue #50). Both steps work on local variables and do not mutate
+    // compose state.
+    const bodyHtml_blobRewritten = rewriteInlineImageURLs(this.body, this.attachments);
+    const { html: bodyHtml, attachments: dataImageAttachments } =
+      await processDataUriImages(bodyHtml_blobRewritten, accountId);
     const bodyText = htmlToPlainText(bodyHtml);
 
-    const readyAttachments = this.attachments.filter(
+    const baseReadyAttachments = this.attachments.filter(
       (a): a is ComposeAttachment & { blobId: string } =>
         a.status === 'ready' && typeof a.blobId === 'string',
     );
+    const readyAttachments = [...baseReadyAttachments, ...dataImageAttachments];
 
     const fields: Record<string, unknown> = {
       from: [{ name: identity.name, email: identity.email }],
@@ -1203,10 +1207,13 @@ class ComposeStore {
       return;
     }
     const subject = this.subject;
-    // Rewrite blob: object URLs back to cid: references so the
-    // outbound message references the inline parts (issue #20). The
-    // editor uses blob URLs while composing for in-place preview.
-    const bodyHtml = rewriteInlineImageURLs(this.body, this.attachments);
+    // Rewrite blob: object URLs to cid: (issue #20), then extract any
+    // remaining data: image URIs and upload them as proper MIME parts
+    // (issue #50). Both steps work on local variables and do not mutate
+    // compose state.
+    const bodyHtml_blobRewritten = rewriteInlineImageURLs(this.body, this.attachments);
+    const { html: bodyHtml, attachments: dataImageAttachments } =
+      await processDataUriImages(bodyHtml_blobRewritten, accountId);
     const bodyText = htmlToPlainText(bodyHtml);
     const replyContext = this.replyContext;
 
@@ -1240,10 +1247,11 @@ class ComposeStore {
     // Include In-Reply-To / References when this is a reply or forward.
     // Mark the parent $answered / $forwarded in the same batch
     // (REQ-MAIL-33) so the UI reflects the change immediately.
-    const readyAttachments = this.attachments.filter(
+    const baseReadyAttachments = this.attachments.filter(
       (a): a is ComposeAttachment & { blobId: string } =>
         a.status === 'ready' && typeof a.blobId === 'string',
     );
+    const readyAttachments = [...baseReadyAttachments, ...dataImageAttachments];
     const draftEmail: Record<string, unknown> = {
       mailboxIds: { [drafts.id]: true },
       keywords: { $draft: true, $seen: true },
@@ -1797,6 +1805,182 @@ export function rewriteInlineImageURLs(
 }
 
 /**
+ * A data: image URI extracted from the HTML body (issue #50).
+ * Pure value type — carries everything needed to upload the image as a
+ * MIME part and rewrite the HTML body.
+ */
+export interface DataUriImage {
+  /** Generated Content-ID (RFC 2392), unique within this extraction pass. */
+  cid: string;
+  /** Full MIME type, e.g. 'image/png'. */
+  mime: string;
+  /**
+   * Decoded image bytes backed by a plain ArrayBuffer (not SharedArrayBuffer)
+   * so the value is directly passable to the Blob constructor.
+   */
+  bytes: Uint8Array<ArrayBuffer>;
+  /** Synthesized filename, e.g. 'inline-image-1.png'. */
+  name: string;
+  /** Byte count (equals bytes.length). */
+  size: number;
+  /** Original data: URI — used to revert the cid: if the upload fails. */
+  dataUri: string;
+}
+
+/**
+ * Map a common image MIME subtype to a file extension. Used to build
+ * a synthesized filename for extracted data: image parts.
+ */
+function mimeSubtypeToExt(subtype: string): string {
+  switch (subtype.toLowerCase()) {
+    case 'jpeg':
+      return 'jpg';
+    case 'svg+xml':
+      return 'svg';
+    default:
+      return subtype.toLowerCase();
+  }
+}
+
+/**
+ * Scan `html` for base64-encoded `data:image/*;base64,...` URIs in
+ * `<img src="...">` and `<img src='...'>` attributes. For each distinct
+ * data: URI, decode the bytes, generate a Content-ID, and collect a
+ * `DataUriImage` descriptor. Duplicate data: URIs (identical payloads) map
+ * to the same CID so one blob covers all occurrences.
+ *
+ * Returns the rewritten HTML (with data: srcs replaced by `cid:<cid>`
+ * references) and the list of images to upload. Non-base64 data: URIs and
+ * URIs whose base64 payload cannot be decoded are left in the HTML unchanged.
+ *
+ * This is a pure, synchronous helper; the async upload step is handled by
+ * the callers in `persistDraft` / `send` via `processDataUriImages`.
+ */
+export function extractDataUriImages(html: string): {
+  html: string;
+  images: DataUriImage[];
+} {
+  if (!html) return { html, images: [] };
+
+  // Map from raw data URI to its assigned cid for deduplication.
+  const dedup = new Map<string, string>();
+  const images: DataUriImage[] = [];
+  let seq = 0;
+
+  // Matches src=" or src=' followed by a base64 data: image URI.
+  // Capture groups: 1=quote, 2=full dataUri, 3=subtype, 4=base64 payload.
+  const DATA_URI_RE =
+    /src=(["'])(data:image\/([a-zA-Z0-9+.\-]+);base64,([A-Za-z0-9+/=\s]+))\1/g;
+
+  const rewritten = html.replace(
+    DATA_URI_RE,
+    (
+      match: string,
+      quote: string,
+      dataUri: string,
+      subtype: string,
+      b64: string,
+    ) => {
+      // Normalise whitespace that some editors embed in long base64 lines.
+      const b64clean = b64.replace(/\s/g, '');
+
+      let cid: string;
+      if (dedup.has(dataUri)) {
+        cid = dedup.get(dataUri)!;
+      } else {
+        seq++;
+        const rand = Math.random().toString(36).slice(2, 10);
+        cid = `di-${seq}-${rand}@herold.local`;
+
+        let bytes: Uint8Array<ArrayBuffer>;
+        try {
+          const raw = atob(b64clean);
+          bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) {
+            bytes[i] = raw.charCodeAt(i);
+          }
+        } catch {
+          // Base64 decode failed — leave this src untouched.
+          return match;
+        }
+
+        const ext = mimeSubtypeToExt(subtype);
+        images.push({
+          cid,
+          mime: `image/${subtype}`,
+          bytes,
+          name: `inline-image-${seq}.${ext}`,
+          size: bytes.length,
+          dataUri,
+        });
+        dedup.set(dataUri, cid);
+      }
+      return `src=${quote}cid:${cid}${quote}`;
+    },
+  );
+
+  return { html: rewritten, images };
+}
+
+/**
+ * Upload the images returned by `extractDataUriImages` as JMAP blobs and
+ * return ComposeAttachment entries ready to include in the outbound body
+ * structure. For any image whose upload fails, the corresponding `cid:`
+ * reference in the HTML is reverted to the original data: URI so the
+ * recipient's client still sees the image (at the cost of a larger body).
+ *
+ * Not exported — called only from `persistDraft` and `send`.
+ */
+async function processDataUriImages(
+  html: string,
+  accountId: string,
+): Promise<{ html: string; attachments: (ComposeAttachment & { blobId: string })[] }> {
+  const { html: extracted, images } = extractDataUriImages(html);
+  if (images.length === 0) return { html, attachments: [] };
+
+  const attachments: (ComposeAttachment & { blobId: string })[] = [];
+  const results = await Promise.allSettled(
+    images.map(async (img) => {
+      const blob = new Blob([img.bytes], { type: img.mime });
+      const r = await jmap.uploadBlob({ accountId, body: blob, type: img.mime });
+      return { img, blobId: r.blobId };
+    }),
+  );
+
+  let finalHtml = extracted;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]!;
+    if (r.status === 'fulfilled') {
+      const { img, blobId } = r.value;
+      attachments.push({
+        key: `di-${img.cid}`,
+        name: img.name,
+        size: img.size,
+        type: img.mime,
+        status: 'ready',
+        blobId,
+        error: null,
+        inline: true,
+        cid: img.cid,
+        objectURL: null,
+      });
+    } else {
+      // Upload failed: put the original data: URI back so the message
+      // body remains self-contained rather than containing a broken cid:.
+      const img = images[i]!;
+      const escapedCid = img.cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      finalHtml = finalHtml.replace(
+        new RegExp(`src=(["'])cid:${escapedCid}\\1`, 'g'),
+        `src=$1${img.dataUri}$1`,
+      );
+      console.error('compose: data: image upload failed for', img.name);
+    }
+  }
+
+  return { html: finalHtml, attachments };
+}
+
+/**
  * Construct the JMAP bodyStructure from the ready attachments list.
  *
  * Layout per RFC 8621 + RFC 2387:
@@ -2082,6 +2266,7 @@ export const _internals_forTest = {
   bodyTextWithoutSignature,
   bodyHasContent,
   rewriteInlineImageURLs,
+  extractDataUriImages,
   buildBodyStructure,
   buildAttachmentParts,
   generateInlineCID,
