@@ -162,3 +162,41 @@ func TestRealClockAfter_SmokeTest(t *testing.T) {
 		t.Fatal("Real.After never fired within 1s for a 10ms deadline")
 	}
 }
+
+func TestFakeNextWaiterDeadline(t *testing.T) {
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	f := clock.NewFake(start)
+
+	// No waiters yet.
+	if _, ok := f.NextWaiterDeadline(); ok {
+		t.Fatal("NextWaiterDeadline reported a deadline with no waiters")
+	}
+
+	// Register out of order; the earliest deadline must win.
+	_ = f.After(5 * time.Second)
+	_ = f.After(2 * time.Second)
+	_ = f.After(9 * time.Second)
+	got, ok := f.NextWaiterDeadline()
+	if !ok {
+		t.Fatal("NextWaiterDeadline reported no deadline with three waiters")
+	}
+	if want := start.Add(2 * time.Second); !got.Equal(want) {
+		t.Fatalf("NextWaiterDeadline = %v; want earliest %v", got, want)
+	}
+
+	// Firing the earliest waiter exposes the next one.
+	f.Advance(2 * time.Second)
+	got, ok = f.NextWaiterDeadline()
+	if !ok {
+		t.Fatal("NextWaiterDeadline reported no deadline with two waiters left")
+	}
+	if want := start.Add(5 * time.Second); !got.Equal(want) {
+		t.Fatalf("NextWaiterDeadline after advance = %v; want %v", got, want)
+	}
+
+	// Drain the rest; back to no waiters.
+	f.Advance(10 * time.Second)
+	if _, ok := f.NextWaiterDeadline(); ok {
+		t.Fatal("NextWaiterDeadline reported a deadline after all waiters fired")
+	}
+}

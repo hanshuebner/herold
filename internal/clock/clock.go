@@ -147,6 +147,28 @@ func (f *FakeClock) NumWaiters() int {
 	return len(f.waiters)
 }
 
+// NextWaiterDeadline returns the earliest deadline among the After-style
+// waiters currently registered, and ok=false when there are none. Tests
+// that drive the clock from a background pump use it to advance toward the
+// next due wake-up instead of jumping by a fixed large delta: a precise
+// advance fires exactly the earliest waiter, so a self-renewing poll (a
+// loop that re-registers After on each wake) is stepped one deadline at a
+// time rather than fired repeatedly within a single oversized jump.
+//
+// AfterFunc-style timers are not considered: their firing is observed by
+// the callback running, which is its own synchronisation primitive.
+func (f *FakeClock) NextWaiterDeadline() (deadline time.Time, ok bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	for _, w := range f.waiters {
+		if !ok || w.deadline.Before(deadline) {
+			deadline = w.deadline
+			ok = true
+		}
+	}
+	return deadline, ok
+}
+
 // After registers a waiter whose channel fires once the fake clock has
 // advanced past now+d. The returned channel is buffered size 1 so firing
 // never blocks a concurrent Advance.

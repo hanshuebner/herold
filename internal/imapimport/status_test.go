@@ -45,15 +45,39 @@ func newPoolForTest(t *testing.T, ha *testharness.Server, ts *testIMAPServer) *P
 }
 
 // pumpFakeClock advances the harness fake clock in the background until the
-// test ends. The worker's reconnect backoff (worker.run) and the write-back
-// poll/retry loop wait on the injected clock via clk.After. On the happy path
-// the worker reaches idle/polling without any clock wait, but a transient
+// test ends so a worker parked on an injected clk.After wakes up.
+//
+// The worker's reconnect backoff (worker.run) and the write-back poll/retry
+// loop wait on the injected clock. On the happy path the worker reaches
+// idle/polling without depending on any of these timers, but a transient
 // connect or sync error (more likely under loaded CI) drops it into the
-// backoff branch, where clk.After blocks forever on a frozen fake clock -- so
-// the worker never reaches idle/polling and the test fails at its real-time
-// deadline. Pumping the clock lets those waits fire promptly so a transient
-// failure is retried immediately rather than parking the worker. Mirrors the
-// advance loop in TestSnapshotBackoffAndErrored.
+// backoff branch, where clk.After blocks forever on a frozen fake clock --
+// so the worker never reaches idle/polling and the test fails at its
+// real-time deadline. The pump fires those waits so a transient failure is
+// retried promptly.
+//
+// The pump advances only when the worker is genuinely parked on a fake-clock
+// waiter, and only toward the earliest due deadline:
+//
+//   - It gates on NumWaiters via the documented poll-until-stable barrier
+//     (FakeClock.NumWaiters): it samples the earliest deadline, yields one
+//     real millisecond, and advances only if the waiter set is unchanged --
+//     i.e. the worker is blocked on that timer rather than mid-flight
+//     registering or firing one. While the worker makes progress on a
+//     non-clock step (dial, SELECT, IDLE) the pump observes the moving
+//     waiter set and holds off, so it does not race registration.
+//   - It advances to exactly the earliest deadline (clock.NextWaiterDeadline)
+//     instead of a fixed large jump. The write-back loop re-registers a
+//     2s poll on every wake; a large jump would fire that poll on every
+//     iteration and spin the change-feed read into a CPU-bound hot loop that
+//     starves the worker and the in-process IMAP server under CI contention.
+//     Stepping one deadline at a time, gated on the barrier, paces the
+//     self-renewing poll to the barrier and keeps the pump asleep between
+//     advances rather than busy-advancing.
+//
+// A backoff or write-back-retry timer, once registered, is a stable waiter,
+// so the barrier clears within a couple of milliseconds and the pump fires
+// it promptly.
 func pumpFakeClock(t *testing.T, ha *testharness.Server) {
 	t.Helper()
 	fc, ok := ha.Clock.(*clock.FakeClock)
@@ -69,8 +93,33 @@ func pumpFakeClock(t *testing.T, ha *testharness.Server) {
 			case <-stop:
 				return
 			default:
-				fc.Advance(backoffCap + time.Second)
+			}
+
+			deadline, ok := fc.NextWaiterDeadline()
+			if !ok {
+				// Worker is on a non-clock step (dial / SELECT / IDLE wait)
+				// with nothing parked on the clock; idle the pump.
 				time.Sleep(time.Millisecond)
+				continue
+			}
+
+			// Stability barrier: only advance once the earliest deadline has
+			// stayed put across one real millisecond, proving the worker is
+			// parked on it rather than in the middle of (re-)registering or
+			// firing a waiter.
+			before := fc.NumWaiters()
+			time.Sleep(time.Millisecond)
+			after, stillOK := fc.NextWaiterDeadline()
+			if !stillOK || !after.Equal(deadline) || fc.NumWaiters() != before {
+				continue
+			}
+
+			if d := deadline.Sub(fc.Now()); d > 0 {
+				fc.Advance(d)
+			} else {
+				// Deadline already reached (a zero/negative After); nudge so
+				// the waiter fires.
+				fc.Advance(time.Nanosecond)
 			}
 		}
 	}()
