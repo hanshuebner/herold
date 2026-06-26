@@ -78,10 +78,41 @@ production or UI work.
 
 ## Running locally
 
-### Backend + Vite dev server (standard web dev loop)
+### make dev (recommended)
 
-Start a herold backend on port 8080 with your own config, then start
-the Vite dev server for the Suite SPA:
+`make dev` is the one-command web dev loop. It builds the server,
+starts a herold backend on port 8080, and starts the Vite dev server
+for the Suite SPA at `http://localhost:5173/` with hot module reload.
+Editing any file under `web/apps/suite/` reloads in the browser with
+no backend restart.
+
+```bash
+make dev
+```
+
+The first run provisions a self-signed admin cert, bootstraps
+`admin@example.local`, and seeds principals `alice`, `filip`, and
+`bob` on `example.local` (all with password `testpass123...` -- the
+three trailing dots are part of the password). Subsequent runs reuse
+the existing store, so your test mail and other local state survive
+restarts. State lives in a gitignored `.dev/` directory; override it
+with `HEROLD_DEV_DIR`.
+
+Override the ports with `HEROLD_DEV_BACKEND_PORT` (default 8080) and
+`HEROLD_DEV_VITE_PORT` (default 5173). Press Ctrl-C to stop both the
+backend and Vite; the `.dev/` store is preserved.
+
+```bash
+# Run on a different port pair, leaving the reserved 8080/5173 free:
+HEROLD_DEV_BACKEND_PORT=18080 HEROLD_DEV_VITE_PORT=15173 make dev
+```
+
+### Backend + Vite dev server (manual two-terminal loop)
+
+`make dev` automates the two steps below; reach for the manual form
+when you want to run the backend with your own config or point Vite at
+a backend it did not start. Start a herold backend on port 8080 with
+your own config, then start the Vite dev server for the Suite SPA:
 
 ```bash
 # Terminal 1: backend
