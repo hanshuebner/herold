@@ -174,6 +174,18 @@ func openPostgresStoreForLoopback(t *testing.T) store.Store {
 	if err != nil {
 		t.Skipf("storepg.Open: %v", err)
 	}
+	// HEROLD_PG_DSN is a single shared throwaway database; reset row state
+	// before each test so seeds (the local domain + principal) do not
+	// collide with a prior test in the same run. Mirrors the storepg test
+	// harness's TruncateAll-between-tests pattern.
+	if tr, ok := st.(interface {
+		TruncateAll(ctx context.Context) error
+	}); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			_ = st.Close()
+			t.Fatalf("TruncateAll: %v", err)
+		}
+	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
