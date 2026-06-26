@@ -163,6 +163,23 @@ type Signer interface {
 	SignStream(ctx context.Context, domain string, src io.ReadSeeker) (io.Reader, error)
 }
 
+// LocalRecipientChecker, when injected via Options, lets the queue
+// determine whether a given recipient is hosted on this server.
+//
+// The queue uses this to skip the outbound DKIM signing requirement
+// for local recipients: DKIM authenticates mail crossing the public
+// internet, and a message delivered in-process to a local mailbox
+// must not be blocked because a DKIM key for the sending domain is
+// absent (re #43). The external-relay refuse-unsigned guarantee from
+// re #20 is preserved because implementations return false for any
+// address that is not a known local principal.
+type LocalRecipientChecker interface {
+	// IsLocalRecipient reports whether rcpt is hosted on this server
+	// and resolves to a known principal. The ctx passed is the
+	// per-delivery attempt context; implementations must respect it.
+	IsLocalRecipient(ctx context.Context, rcpt string) bool
+}
+
 // RetryPolicy encodes the per-attempt backoff schedule. Element i is
 // the delay applied between attempt i and attempt i+1; once Attempts
 // reaches len(Schedule) the orchestrator escalates the row to permanent

@@ -154,6 +154,16 @@ func (s *failingSigner) SignStream(ctx context.Context, domain string, src io.Re
 	return nil, s.err
 }
 
+// localRecipientSet is a stub queue.LocalRecipientChecker that treats
+// a fixed set of addresses as local. Used in tests that exercise the
+// locality-aware signing skip (re #43).
+type localRecipientSet map[string]struct{}
+
+func (s localRecipientSet) IsLocalRecipient(_ context.Context, rcpt string) bool {
+	_, ok := s[strings.ToLower(rcpt)]
+	return ok
+}
+
 type fixture struct {
 	t      *testing.T
 	clk    *clock.FakeClock
@@ -166,13 +176,14 @@ type fixture struct {
 }
 
 type fixtureOpts struct {
-	concurrency       int
-	perHost           int
-	pollInterval      time.Duration
-	retry             queue.RetryPolicy
-	signer            queue.Signer
-	skipRun           bool
-	delayDSNThreshold time.Duration
+	concurrency         int
+	perHost             int
+	pollInterval        time.Duration
+	retry               queue.RetryPolicy
+	signer              queue.Signer
+	localRecipientCheck queue.LocalRecipientChecker
+	skipRun             bool
+	delayDSNThreshold   time.Duration
 }
 
 func newFixture(t *testing.T, opts fixtureOpts) *fixture {
@@ -189,19 +200,20 @@ func newFixture(t *testing.T, opts fixtureOpts) *fixture {
 		opts.pollInterval = 50 * time.Millisecond
 	}
 	q := queue.New(queue.Options{
-		Store:             st,
-		Deliverer:         deliv,
-		Signer:            opts.signer,
-		Logger:            discardLogger(),
-		Clock:             clk,
-		Concurrency:       opts.concurrency,
-		PerHostMax:        opts.perHost,
-		Retry:             opts.retry,
-		PollInterval:      opts.pollInterval,
-		Hostname:          "mail.test.example",
-		DSNFromAddress:    "postmaster@mail.test.example",
-		ShutdownGrace:     2 * time.Second,
-		DelayDSNThreshold: opts.delayDSNThreshold,
+		Store:                 st,
+		Deliverer:             deliv,
+		Signer:                opts.signer,
+		LocalRecipientChecker: opts.localRecipientCheck,
+		Logger:                discardLogger(),
+		Clock:                 clk,
+		Concurrency:           opts.concurrency,
+		PerHostMax:            opts.perHost,
+		Retry:                 opts.retry,
+		PollInterval:          opts.pollInterval,
+		Hostname:              "mail.test.example",
+		DSNFromAddress:        "postmaster@mail.test.example",
+		ShutdownGrace:         2 * time.Second,
+		DelayDSNThreshold:     opts.delayDSNThreshold,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &fixture{
@@ -805,6 +817,51 @@ func TestSignTrueWithNilSignerIsPermanent(t *testing.T) {
 	rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
 	if !strings.Contains(rows[0].LastError, "no Signer configured") {
 		t.Errorf("last_error must mention missing Signer; got %q", rows[0].LastError)
+	}
+}
+
+// TestSignerFailure_LocalRecipient_SkipsSigning is the unit-level
+// regression guard for re #43: when Sign=true and the signer would
+// fail, but the recipient is reported as local by LocalRecipientChecker,
+// the signing step is skipped entirely and the message is delivered
+// successfully via the (fake) deliverer. A missing DKIM key must not
+// block same-server delivery.
+//
+// TestSignerFailureIsPermanentNotUnsignedDelivery covers the external-
+// recipient case (re #20 preserved); this test covers the local case.
+func TestSignerFailure_LocalRecipient_SkipsSigning(t *testing.T) {
+	signer := &failingSigner{err: errors.New("no active DKIM key for domain local.test")}
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		signer:      signer,
+		// Treat alice@local.test as a local recipient so the signing
+		// block is bypassed for her but still fires for external ones.
+		localRecipientCheck: localRecipientSet{"alice@local.test": {}},
+	})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:      "postmaster@local.test",
+		Recipients:    []string{"alice@local.test"},
+		Body:          strings.NewReader("Subject: local\r\n\r\nbody\r\n"),
+		Sign:          true,
+		SigningDomain: "local.test",
+	})
+
+	// The signer must NOT have been invoked (signing was skipped) and the
+	// message must be delivered successfully via the fake deliverer.
+	if !waitFor(t, 3*time.Second, func() bool {
+		s, _ := f.queue.Stats(f.ctx)
+		return s.Done >= 1
+	}) {
+		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+		t.Fatalf("local recipient row never reached done state; rows=%+v signer.calls=%d deliv.calls=%d",
+			rows, signer.calls.Load(), f.deliv.callCount())
+	}
+	if got := f.deliv.callCount(); got != 1 {
+		t.Fatalf("deliverer must be called exactly once for local recipient; got %d", got)
+	}
+	if got := signer.calls.Load(); got != 0 {
+		t.Fatalf("signer must not be invoked for local recipient; got %d call(s)", got)
 	}
 }
 
