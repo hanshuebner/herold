@@ -4,19 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"path/filepath"
-
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
@@ -729,4 +731,253 @@ func TestEmailSubmission_Set_StreamsBodyToQueue(t *testing.T) {
 	if !bytes.Equal(sub.bodies[0], []byte(rawBody)) {
 		t.Fatalf("body content mismatch: got %d bytes, want %d", len(sub.bodies[0]), len(rawBody))
 	}
+}
+
+// -- thread-id correctness tests (REQ-PROTO-40) ---------------------------
+
+// openPostgresStore opens a Postgres store for testing. It skips the test if
+// HEROLD_PG_DSN is not set or the connection cannot be established.
+func openPostgresStore(t *testing.T) store.Store {
+	t.Helper()
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clk)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// newSetupFromStore is like newSetup but accepts a pre-opened store. This
+// allows the same test logic to run against both SQLite and Postgres.
+func newSetupFromStore(t *testing.T, st store.Store) (*handlerSet, store.Principal, store.Mailbox, *fakeSubmitter) {
+	t.Helper()
+	ctx := context.Background()
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Drafts: %v", err)
+	}
+	sub := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:    st,
+		queue:    sub,
+		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity: stubResolver{email: "alice@example.test"},
+	}
+	t.Cleanup(func() { h.Wait() })
+	return h, p, mb, sub
+}
+
+// testEmailSubmissionThreadID is the backend-agnostic body of
+// TestEmailSubmission_Set_ReplyJoinsParentThread_*.
+//
+// It inserts a parent message with a known Message-ID, creates a reply draft
+// with an In-Reply-To pointing at the parent, submits the reply via
+// EmailSubmission/set, and asserts that:
+//
+//  1. The store assigns the reply's thread_id correctly at insert time
+//     (insertMessageTx resolution).
+//  2. The EmailSubmission.threadId in the response is a valid JMAP Thread ID
+//     ("t" + decimal) and matches the parent message's JMAP threadId.
+//  3. After moving the draft to a Sent mailbox via MoveMessage, the Sent copy
+//     retains the correct thread_id.
+func testEmailSubmissionThreadID(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+
+	h, p, draftsMB, _ := newSetupFromStore(t, st)
+
+	// Create Inbox and Sent mailboxes in addition to the Drafts mailbox that
+	// newSetupFromStore already created.
+	inboxMB, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	sentMB, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Sent", Attributes: store.MailboxAttrSent,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Sent: %v", err)
+	}
+
+	// Insert the parent message (Bob's email to Alice) with a known Message-ID.
+	// The Message-ID is stored with angle brackets in Envelope.MessageID;
+	// insertMessageTx normalises it to the bare form before storing in
+	// env_message_id.
+	parentMsgID := "<parent-msg@example.test>"
+	parentBody := "From: bob@example.test\r\nTo: alice@example.test\r\n" +
+		"Subject: Hello\r\nMessage-ID: " + parentMsgID + "\r\n\r\nhi\r\n"
+	parentRef, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(parentBody)))
+	if err != nil {
+		t.Fatalf("Blobs.Put parent: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        parentRef,
+		Size:        parentRef.Size,
+		Envelope: store.Envelope{
+			Subject:   "Hello",
+			From:      "bob@example.test",
+			To:        "alice@example.test",
+			MessageID: parentMsgID,
+		},
+	}, []store.MessageMailbox{{MailboxID: inboxMB.ID}}); err != nil {
+		t.Fatalf("InsertMessage parent: %v", err)
+	}
+	// Discover the parent's message ID from the change feed.
+	feed, err := st.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var parentID store.MessageID
+	for _, e := range feed {
+		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
+			parentID = store.MessageID(e.EntityID)
+		}
+	}
+	if parentID == 0 {
+		t.Fatalf("parent message ID not found in change feed")
+	}
+	// The parent is a thread root: thread_id = 0 in the store, so its JMAP
+	// threadId = "t" + decimal(parentID).
+	wantThreadID := fmt.Sprintf("t%d", parentID)
+
+	// Insert a reply draft in Drafts with In-Reply-To pointing at the parent.
+	// Envelope.InReplyTo uses angle brackets; insertMessageTx calls
+	// ParseReferences which strips them before the lookup.
+	replyBody := "From: alice@example.test\r\nTo: bob@example.test\r\n" +
+		"Subject: Re: Hello\r\nIn-Reply-To: " + parentMsgID +
+		"\r\nReferences: " + parentMsgID + "\r\n\r\nreply\r\n"
+	replyRef, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(replyBody)))
+	if err != nil {
+		t.Fatalf("Blobs.Put reply: %v", err)
+	}
+	replyUID, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        replyRef,
+		Size:        replyRef.Size,
+		Envelope: store.Envelope{
+			Subject:   "Re: Hello",
+			From:      "alice@example.test",
+			To:        "bob@example.test",
+			InReplyTo: parentMsgID,
+		},
+	}, []store.MessageMailbox{{MailboxID: draftsMB.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage reply draft: %v", err)
+	}
+
+	// Discover the reply draft's message ID.
+	msgs, err := st.Meta().ListMessages(ctx, draftsMB.ID, store.MessageFilter{Limit: 10, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var replyMsgID store.MessageID
+	for _, m := range msgs {
+		if m.UID == replyUID {
+			replyMsgID = m.ID
+		}
+	}
+	if replyMsgID == 0 {
+		t.Fatalf("reply draft message ID not found")
+	}
+
+	// Verify that insertMessageTx assigned the correct thread_id at insert time
+	// (this is the store-level assertion; the JMAP response assertion follows).
+	replyMsg, err := st.Meta().GetMessage(ctx, replyMsgID)
+	if err != nil {
+		t.Fatalf("GetMessage reply: %v", err)
+	}
+	if replyMsg.ThreadID == 0 {
+		t.Errorf("reply draft ThreadID = 0; expected insertMessageTx to resolve it to %d (parent)", parentID)
+	} else if replyMsg.ThreadID != uint64(parentID) {
+		t.Errorf("reply draft ThreadID = %d, want %d (parent ID)", replyMsg.ThreadID, parentID)
+	}
+
+	// Submit the reply via EmailSubmission/set (no onSuccessUpdateEmail here;
+	// the move-to-Sent assertion is done separately below via MoveMessage).
+	args, marshalErr := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(replyMsgID),
+			},
+		},
+	})
+	if marshalErr != nil {
+		t.Fatalf("marshal args: %v", marshalErr)
+	}
+	respAny, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	js, _ := json.Marshal(respAny)
+
+	// Verify EmailSubmission.threadId is a proper JMAP Thread ID ("t<N>") and
+	// matches the parent's expected threadId (REQ-PROTO-40 Fix 2).
+	var setResp struct {
+		Created map[string]struct {
+			ThreadID string `json:"threadId"`
+		} `json:"created"`
+	}
+	if err := json.Unmarshal(js, &setResp); err != nil {
+		t.Fatalf("unmarshal response: %v: %s", err, js)
+	}
+	sub, ok := setResp.Created["k1"]
+	if !ok {
+		t.Fatalf("k1 not in created: %s", js)
+	}
+	if !strings.HasPrefix(sub.ThreadID, "t") {
+		t.Errorf("EmailSubmission.threadId = %q has no 't' prefix; want JMAP Thread ID format", sub.ThreadID)
+	}
+	if sub.ThreadID != wantThreadID {
+		t.Errorf("EmailSubmission.threadId = %q, want %q (parent thread)", sub.ThreadID, wantThreadID)
+	}
+
+	// Simulate the onSuccessUpdateEmail Sent move: verify that MoveMessage
+	// preserves the correct thread_id on the Sent copy.
+	if err := st.Meta().MoveMessage(ctx, replyMsgID, draftsMB.ID, sentMB.ID); err != nil {
+		t.Fatalf("MoveMessage Drafts→Sent: %v", err)
+	}
+	sentMsg, err := st.Meta().GetMessage(ctx, replyMsgID)
+	if err != nil {
+		t.Fatalf("GetMessage sent copy: %v", err)
+	}
+	if sentMsg.ThreadID != uint64(parentID) {
+		t.Errorf("Sent copy ThreadID = %d, want %d (parent)", sentMsg.ThreadID, parentID)
+	}
+}
+
+// TestEmailSubmission_Set_ReplyJoinsParentThread_SQLite runs the thread-ID
+// round-trip test against the SQLite backend.
+func TestEmailSubmission_Set_ReplyJoinsParentThread_SQLite(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testEmailSubmissionThreadID(t, st)
+}
+
+// TestEmailSubmission_Set_ReplyJoinsParentThread_Postgres runs the same test
+// against the Postgres backend. Skips when HEROLD_PG_DSN is not set.
+func TestEmailSubmission_Set_ReplyJoinsParentThread_Postgres(t *testing.T) {
+	st := openPostgresStore(t)
+	testEmailSubmissionThreadID(t, st)
 }

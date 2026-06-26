@@ -1489,6 +1489,123 @@ func TestEmailSet_Create_FromBodyValues_WithReplyHeaders(t *testing.T) {
 	}
 }
 
+// TestEmailSet_Create_ReplyJoinsParentThread verifies that when a reply is
+// created via Email/set with inReplyTo pointing at an existing message, the
+// create response contains the SAME threadId as the parent (REQ-PROTO-40).
+//
+// The bug this guards against: insertMessageTx updates thread_id in the DB
+// during the insert transaction, but the caller's store.Message struct is not
+// updated. Before the fix, createEmail rendered the response from the stale
+// struct (ThreadID == 0), producing a fresh threadId instead of the parent's.
+func TestEmailSet_Create_ReplyJoinsParentThread(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	// Insert the parent message with a known Message-ID via the store directly.
+	parentMsgID := "<parent-thread-root@example.test>"
+	parentBody := "From: bob@example.test\r\nTo: alice@example.test\r\n" +
+		"Subject: Hello\r\nMessage-ID: " + parentMsgID + "\r\n\r\nbody"
+	parentRef, err := f.srv.Store.Blobs().Put(ctx, strings.NewReader(parentBody))
+	if err != nil {
+		t.Fatalf("Blobs.Put parent: %v", err)
+	}
+	now := f.srv.Clock.Now()
+	if _, _, err := f.srv.Store.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  f.pid,
+		Blob:         parentRef,
+		Size:         parentRef.Size,
+		InternalDate: now,
+		ReceivedAt:   now,
+		Envelope: store.Envelope{
+			Subject:   "Hello",
+			From:      "bob@example.test",
+			To:        "alice@example.test",
+			MessageID: parentMsgID,
+		},
+	}, []store.MessageMailbox{{MailboxID: f.inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage parent: %v", err)
+	}
+	parentID := mostRecentMessageID(t, f)
+
+	// Get the parent's threadId via Email/get (canonical source of truth).
+	_, rawParent := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", parentID)},
+		"properties": []string{"threadId"},
+	})
+	var parentGet struct {
+		List []struct {
+			ThreadID string `json:"threadId"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawParent, &parentGet); err != nil {
+		t.Fatalf("unmarshal parent Email/get: %v: %s", err, rawParent)
+	}
+	if len(parentGet.List) == 0 {
+		t.Fatalf("parent not found via Email/get")
+	}
+	parentThreadID := parentGet.List[0].ThreadID
+	if parentThreadID == "" {
+		t.Fatalf("parent threadId is empty")
+	}
+
+	// Create a reply via Email/set create (inline path) with inReplyTo
+	// pointing at the parent's message-id.
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"from":       []map[string]any{{"email": "alice@example.test"}},
+		"to":         []map[string]any{{"email": "bob@example.test"}},
+		"subject":    "Re: Hello",
+		"inReplyTo":  []string{parentMsgID},
+		"references": []string{parentMsgID},
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "reply body", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain"},
+		},
+	})
+	if len(notCreated) != 0 {
+		t.Fatalf("Email/set notCreated: %v", notCreated)
+	}
+	if len(created) == 0 {
+		t.Fatalf("Email/set created nothing")
+	}
+	replyCreate := created["draft"]
+
+	// The create RESPONSE must carry the correct threadId (RFC 8621 §4.6).
+	// Before the fix this returned the reply's own ID as a fresh thread.
+	replyThreadID, _ := replyCreate["threadId"].(string)
+	if replyThreadID == "" {
+		t.Fatalf("reply create response missing threadId: %v", replyCreate)
+	}
+	if replyThreadID != parentThreadID {
+		t.Errorf("reply create response threadId = %q, want %q (parent thread)", replyThreadID, parentThreadID)
+	}
+
+	// Also confirm via Email/get that the stored threadId is consistent.
+	replyEmailID, _ := replyCreate["id"].(string)
+	_, rawReply := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{replyEmailID},
+		"properties": []string{"threadId"},
+	})
+	var replyGet struct {
+		List []struct {
+			ThreadID string `json:"threadId"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawReply, &replyGet); err != nil {
+		t.Fatalf("unmarshal reply Email/get: %v: %s", err, rawReply)
+	}
+	if len(replyGet.List) == 0 {
+		t.Fatalf("reply not found via Email/get")
+	}
+	if got := replyGet.List[0].ThreadID; got != parentThreadID {
+		t.Errorf("reply Email/get threadId = %q, want %q (parent thread)", got, parentThreadID)
+	}
+}
+
 func TestEmailSet_Create_NoBlobAndNoBody(t *testing.T) {
 	f := setupFixture(t)
 

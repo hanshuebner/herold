@@ -491,20 +491,33 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return fmt.Errorf("admin: directory.resolve_rcpt resolver: %w", err)
 	}
 
+	// Categoriser: shared by SMTP inbound delivery and the IMAP import pool.
+	// Constructed here (before smtpServer) so the same instance can be passed
+	// to both. LLM endpoint / model / API key come from per-principal DB config
+	// rows (CategorisationConfig), not sysconfig, so no operator fields need to
+	// be threaded through — the Categoriser reads them lazily on each call via
+	// GetCategorisationConfig. REQ-FILT-200.
+	smtpCategoriser := categorise.New(categorise.Options{
+		Store:  st,
+		Logger: logger.With("subsystem", "categoriser"),
+		Clock:  clk,
+	})
+
 	// Protocol servers.
 	smtpServer, err := protosmtp.New(protosmtp.Config{
-		Store:     st,
-		Directory: dir,
-		DKIM:      dkim,
-		SPF:       spf,
-		DMARC:     dmarc,
-		ARC:       arc,
-		Spam:      spamClassifier,
-		Sieve:     sieveInterp,
-		TLS:       tlsStore,
-		Resolver:  resolver,
-		Clock:     clk,
-		Logger:    logger.With("subsystem", "smtp"),
+		Store:      st,
+		Directory:  dir,
+		DKIM:       dkim,
+		SPF:        spf,
+		DMARC:      dmarc,
+		ARC:        arc,
+		Spam:       spamClassifier,
+		Sieve:      sieveInterp,
+		Categorise: smtpCategoriser,
+		TLS:        tlsStore,
+		Resolver:   resolver,
+		Clock:      clk,
+		Logger:     logger.With("subsystem", "smtp"),
 		Options: protosmtp.Options{
 			Hostname:      cfg.Server.Hostname,
 			ShutdownGrace: cfg.Server.ShutdownGrace.AsDuration(),
@@ -742,21 +755,12 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 	}
 
-	// IMAP import categoriser (REQ-IMAP-IMP-31). Constructed here so the same
-	// instance serves both the Pool below and (if needed) the JMAP layer.
-	// categorise.New returns nil when Store is nil; we always supply a non-nil
-	// store so the result is non-nil. LLM endpoint / model / API key come from
-	// per-principal DB config rows (CategorisationConfig), not sysconfig, so
-	// no operator fields need to be threaded through here — the Categoriser
-	// reads them lazily on each call via GetCategorisationConfig.
-	imapImportCat := categorise.New(categorise.Options{
-		Store:  st,
-		Logger: logger.With("subsystem", "imap-import-categoriser"),
-		Clock:  clk,
-	})
+	// IMAP import categoriser adapter (REQ-IMAP-IMP-31). The same Categoriser
+	// instance that is wired into the SMTP server above is reused here so that
+	// a single LLM-client / HTTP-client pool backs all categorisation paths.
 	imapImportCatAdapter := newIMAPImportCategoriserAdapter(
 		st,
-		imapImportCat,
+		smtpCategoriser,
 		logger.With("subsystem", "imap-import-categoriser"),
 	)
 
