@@ -995,6 +995,7 @@ export const en = {
   'login.signingIn': 'Signing in...',
   'login.signIn': 'Sign in',
   'login.signInFailed': 'Sign-in failed.',
+  'login.fieldsRequired': 'Please enter your e-mail address and password.',
 
   // ── Chat view (re #97) ──────────────────────────────────────────────
   'chat.unavailable': 'Chat is not configured on this server',

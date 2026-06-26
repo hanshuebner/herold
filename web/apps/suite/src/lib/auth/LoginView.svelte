@@ -14,6 +14,13 @@
   /** Core login action shared by the form submit and the auto-submit path. */
   async function doLogin(): Promise<void> {
     if (submitting) return;
+    // Client-side validation: require both fields unless TOTP step-up is
+    // active (at that point the user already passed the first step and
+    // email+password are both in state).
+    if (!auth.needsStepUp && (email.trim() === '' || password === '')) {
+      errorMessage = t('login.fieldsRequired');
+      return;
+    }
     submitting = true;
     errorMessage = null;
     // Flag set in catch so the refocus runs after finally clears submitting.

@@ -1010,6 +1010,7 @@ export const de = {
   'login.signingIn': 'Anmeldung läuft...',
   'login.signIn': 'Anmelden',
   'login.signInFailed': 'Anmeldung fehlgeschlagen.',
+  'login.fieldsRequired': 'Bitte E-Mail-Adresse und Passwort eingeben.',
 
   // ── Chat-Ansicht (re #97) ────────────────────────────────────────────
   'chat.unavailable': 'Chat ist auf diesem Server nicht konfiguriert',

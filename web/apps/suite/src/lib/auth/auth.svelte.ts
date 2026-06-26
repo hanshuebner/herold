@@ -282,7 +282,17 @@ class Auth {
       throw new Error(errorMessage);
     }
 
-    const msg = `Unexpected response: HTTP ${response.status}`;
+    let msg: string;
+    if (response.status === 400) {
+      try {
+        const body = (await response.json()) as { message?: string };
+        msg = body.message ?? 'Invalid request. Please check your e-mail address and password.';
+      } catch {
+        msg = 'Invalid request. Please check your e-mail address and password.';
+      }
+    } else {
+      msg = `Unexpected response: HTTP ${response.status}`;
+    }
     this.errorMessage = msg;
     throw new Error(msg);
   }
