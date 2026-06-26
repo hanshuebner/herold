@@ -474,6 +474,14 @@
   $effect(() => {
     if (!threadId) return;
 
+    // On a cold load the folder list has never been fetched: listFolder
+    // holds its default value ('inbox') with no real context. Only enforce
+    // the auto-navigate-away rule after a folder has been loaded
+    // (listLoadStatus === 'ready'). A thread opened directly by URL must
+    // render and not be bounced to the inbox list just because it lives
+    // in a non-inbox folder.
+    if (mail.listLoadStatus !== 'ready') return;
+
     // Skip when the thread was opened from a search-results view: the
     // user's listFolder is unrelated to where this thread actually
     // lives (a Junk-mailbox hit on a search submitted from Inbox would

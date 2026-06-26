@@ -43,7 +43,7 @@ const { mailMock, routerParts, navigate, TRASH_MAILBOX_ID, INBOX_MAILBOX_ID } = 
   const mailMock = {
     listSelectedIds: new Set<string>(),
     listEmailIds: [] as string[],
-    listLoadStatus: 'ready' as const,
+    listLoadStatus: 'ready' as ('idle' | 'loading' | 'ready' | 'error'),
     listError: null,
     listFocusedIndex: -1,
     listEmails: [] as unknown[],
@@ -194,6 +194,8 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
     navigate.mockClear();
     mailMock.threadEmails.mockClear();
     mailMock.searchEmailIds = [];
+    // Restore the default: folder list has been loaded.
+    mailMock.listLoadStatus = 'ready';
   });
 
   it('navigates to the trash folder when no thread email is in trash anymore', () => {
@@ -297,6 +299,30 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
         id: 'email-1',
         threadId: 'thread-1',
         mailboxIds: { 'mbx-junk': true }, // junk only, NOT in inbox
+        keywords: { $seen: true },
+      } as unknown as Email,
+    ]);
+
+    render(MailView);
+
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // Regression (issue #52): cold-loading a thread URL (e.g. pasting
+  // #/mail/thread/<id> into a new tab) used to bounce the user to the
+  // inbox list because listFolder defaults to 'inbox' before any folder
+  // has been fetched and the thread lives in a different mailbox.
+  // The guard must not fire until listLoadStatus reaches 'ready'.
+  it('does NOT navigate on cold load when listLoadStatus is idle', () => {
+    mailMock.listLoadStatus = 'idle';
+    mailMock.listFolder = 'inbox';
+    mailMock.threadEmails.mockReturnValue([
+      {
+        id: 'email-1',
+        threadId: 'thread-1',
+        // Thread is in archive, not inbox — without the fix this triggers
+        // an immediate bounce back to /mail.
+        mailboxIds: { 'mbx-archive': true },
         keywords: { $seen: true },
       } as unknown as Email,
     ]);
