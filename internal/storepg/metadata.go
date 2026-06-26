@@ -2393,6 +2393,9 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 		limit = 1000
 	}
 	lower := strings.ToLower(prefix)
+	// Match display_name anywhere and canonical_email from its start so a
+	// prefix containing '@' (e.g. "admin@" or "admin@exa") still matches
+	// the full address "admin@example.local".
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, created_at_us, updated_at_us
@@ -2400,7 +2403,7 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 		 WHERE lower(display_name) LIKE $1 OR lower(canonical_email) LIKE $2
 		 LIMIT $3`,
 		"%"+lower+"%",
-		lower+"%@%",
+		lower+"%",
 		limit*2, // over-fetch; Go-side sort trims to limit
 	)
 	if err != nil {
@@ -2458,7 +2461,7 @@ func (m *metadata) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, d
 		   AND lower(canonical_email) LIKE $3
 		 LIMIT $4`,
 		"%"+lower+"%",
-		lower+"%@%",
+		lower+"%",
 		"%@"+lowerDomain,
 		limit*2, // over-fetch; Go-side sort trims to limit
 	)

@@ -8,7 +8,7 @@ import (
 // SortPrincipalSearchResults orders principals for Principal/query
 // textPrefix results: principals whose DisplayName contains lowerPrefix
 // (case-insensitive) come first; those matched only on the email
-// local-part come second. Within each group, entries are sorted
+// prefix come second. Within each group, entries are sorted
 // alphabetically by DisplayName then CanonicalEmail. The result is
 // trimmed to at most limit entries.
 //
@@ -20,7 +20,7 @@ import (
 func SortPrincipalSearchResults(principals []Principal, lowerPrefix string, limit int) []Principal {
 	type ranked struct {
 		p    Principal
-		prio int // 0 = display-name match, 1 = email-local-part match
+		prio int // 0 = display-name match, 1 = email prefix match
 	}
 	ranked2 := make([]ranked, 0, len(principals))
 	seen := make(map[PrincipalID]struct{}, len(principals))
@@ -30,8 +30,10 @@ func SortPrincipalSearchResults(principals []Principal, lowerPrefix string, limi
 		}
 		seen[p.ID] = struct{}{}
 		nameMatch := strings.Contains(strings.ToLower(p.DisplayName), lowerPrefix)
-		localPart := emailLocalPart(p.CanonicalEmail)
-		emailMatch := strings.HasPrefix(strings.ToLower(localPart), lowerPrefix)
+		// Match the prefix from the start of the full canonical_email so
+		// that a prefix containing '@' (e.g. "admin@" or "admin@exa")
+		// still resolves "admin@example.local".
+		emailMatch := strings.HasPrefix(strings.ToLower(p.CanonicalEmail), lowerPrefix)
 		if !nameMatch && !emailMatch {
 			continue
 		}
@@ -61,13 +63,4 @@ func SortPrincipalSearchResults(principals []Principal, lowerPrefix string, limi
 		out = append(out, r.p)
 	}
 	return out
-}
-
-// emailLocalPart returns the part of an email address before '@', or
-// the full string when no '@' is present.
-func emailLocalPart(email string) string {
-	if idx := strings.IndexByte(email, '@'); idx >= 0 {
-		return email[:idx]
-	}
-	return email
 }
