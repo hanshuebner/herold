@@ -187,6 +187,35 @@ func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 	return queue.DeliveryOutcome{Status: queue.DeliveryStatusSuccess}, nil
 }
 
+// localityChecker implements queue.LocalRecipientChecker using the
+// metadata store and directory to determine whether a given email
+// address resolves to a principal on this server.
+//
+// The check mirrors the locality test that loopbackDeliverer performs
+// at deliver time. The queue calls it earlier — before the DKIM
+// signing step — so that a missing DKIM key does not permanently fail
+// delivery to a local recipient (re #43). External recipients (domain
+// not hosted here, or local domain but unknown principal) return false,
+// keeping the Sign=true refuse-unsigned guarantee from re #20 intact.
+type localityChecker struct {
+	meta store.Metadata
+	dir  addressResolver
+}
+
+// IsLocalRecipient implements queue.LocalRecipientChecker.
+func (lc localityChecker) IsLocalRecipient(ctx context.Context, rcpt string) bool {
+	local, dom := splitEmailAddr(rcpt)
+	if dom == "" || lc.meta == nil || lc.dir == nil {
+		return false
+	}
+	domRow, err := lc.meta.GetDomain(ctx, strings.ToLower(dom))
+	if err != nil || !domRow.IsLocal {
+		return false
+	}
+	_, err = lc.dir.ResolveAddress(ctx, strings.ToLower(local), strings.ToLower(dom))
+	return err == nil
+}
+
 // buildOutboundQueue constructs the production *queue.Queue alongside
 // the DKIM signer and SMTP-client deliverer. Returns the queue handle
 // and a non-nil error on construction failure.
@@ -201,7 +230,9 @@ func (d loopbackDeliverer) Deliver(ctx context.Context, req queue.DeliveryReques
 //
 // smtpServer + dir, when both non-nil, install the loopback short-
 // circuit on the deliverer chain so messages addressed to local
-// principals stay on this host instead of being MX-resolved.
+// principals stay on this host instead of being MX-resolved. The same
+// pair also activates the locality checker so the queue skips DKIM
+// signing for local recipients (re #43).
 func buildOutboundQueue(
 	cfg *sysconfig.Config,
 	st store.Store,
@@ -235,6 +266,7 @@ func buildOutboundQueue(
 		return nil, fmt.Errorf("admin: build outbound smtp client: %w", err)
 	}
 	var deliverer queue.Deliverer = outboundDeliverer{client: client}
+	var localChecker queue.LocalRecipientChecker
 	if smtpServer != nil && dir != nil {
 		deliverer = loopbackDeliverer{
 			inner: deliverer,
@@ -243,17 +275,22 @@ func buildOutboundQueue(
 			dir:   dir,
 			log:   logger.With("subsystem", "queue-loopback"),
 		}
+		localChecker = localityChecker{
+			meta: st.Meta(),
+			dir:  dir,
+		}
 	}
 	dsnFrom := "postmaster@" + cfg.Server.Hostname
 	q := queue.New(queue.Options{
-		Store:          st,
-		Deliverer:      deliverer,
-		Signer:         signer,
-		Logger:         logger.With("subsystem", "queue"),
-		Clock:          clk,
-		Hostname:       cfg.Server.Hostname,
-		DSNFromAddress: dsnFrom,
-		ShutdownGrace:  cfg.Server.ShutdownGrace.AsDuration(),
+		Store:                 st,
+		Deliverer:             deliverer,
+		Signer:                signer,
+		LocalRecipientChecker: localChecker,
+		Logger:                logger.With("subsystem", "queue"),
+		Clock:                 clk,
+		Hostname:              cfg.Server.Hostname,
+		DSNFromAddress:        dsnFrom,
+		ShutdownGrace:         cfg.Server.ShutdownGrace.AsDuration(),
 		// Operator-supplied concurrency knobs (0 = queue built-in default).
 		Concurrency:       cfg.Server.Queue.Concurrency,
 		PerHostMax:        cfg.Server.Queue.PerHostMax,

@@ -46,6 +46,15 @@ type Options struct {
 	// delivery — strict receivers treat a fresh unsigned domain as
 	// spam and the submitter explicitly asked for a signature.
 	Signer Signer
+	// LocalRecipientChecker, when non-nil, is called for each delivery
+	// attempt before the DKIM signing step. If it returns true the
+	// signing block is skipped entirely: the message is delivered
+	// unsigned via the Deliverer, which is expected to be a loopback
+	// short-circuit that never relays to the public internet (re #43).
+	// External recipients (IsLocalRecipient == false or checker nil)
+	// are still subject to the Sign=true refusal-if-unsigned policy
+	// (re #20).
+	LocalRecipientChecker LocalRecipientChecker
 	// Deliverer is the wire-side outbound SMTP client. Required.
 	Deliverer Deliverer
 	// Logger is the structured logger. Required.
@@ -739,9 +748,15 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 
 	// Reattach signing intent if recorded. A submission with Sign=true
 	// is a cryptographic-policy decision by the submitter; if signing
-	// fails, we must NOT fall through with the unsigned body. Strict
-	// receivers will treat a freshly-seen unsigned domain as spam (see
-	// re #20). Classify the row instead so the failure is visible.
+	// fails for an external recipient, we must NOT fall through with the
+	// unsigned body. Strict receivers will treat a freshly-seen unsigned
+	// domain as spam (see re #20). Classify the row instead so the
+	// failure is visible.
+	//
+	// Exception: when the recipient is hosted locally (reported by
+	// LocalRecipientChecker), the message is delivered in-process by
+	// the loopback deliverer and never crosses the public internet.
+	// A missing DKIM key must not block same-server delivery (re #43).
 	//
 	// SignStream reads the seekable blobReader twice (pass 1: body hash +
 	// header signature; pass 2: output) without ever holding the full
@@ -750,68 +765,80 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 	var messageReader io.Reader
 	intent, _ := q.lookupSigning(item.EnvelopeID)
 	if intent.Sign {
-		if q.opts.Signer == nil {
-			q.opts.Logger.ErrorContext(ctx, "queue: refusing to deliver unsigned: Sign=true but no Signer configured",
-				slog.String("activity", observe.ActivitySystem),
-				slog.Uint64("id", uint64(item.ID)),
-				slog.String("envelope_id", string(item.EnvelopeID)),
-				slog.String("domain", intent.Domain),
-			)
-			q.handlePermanent(ctx, item, DeliveryOutcome{
-				Status:       DeliveryStatusPermanent,
-				Detail:       "queue: Sign=true but no Signer configured",
-				EnhancedCode: "5.7.0",
-			})
-			return
-		}
-		// Seek to the start of the blob so each delivery attempt signs
-		// from offset 0 regardless of any prior reads.
-		if _, seekErr := blobReader.Seek(0, io.SeekStart); seekErr != nil {
-			q.opts.Logger.ErrorContext(ctx, "queue: seek body for signing failed",
-				slog.String("activity", observe.ActivitySystem),
-				slog.Uint64("id", uint64(item.ID)),
-				slog.Any("err", seekErr))
-			q.handleTransient(ctx, item, DeliveryOutcome{
-				Status: DeliveryStatusTransient,
-				Detail: "blob seek error: " + seekErr.Error(),
-			})
-			return
-		}
-		signedReader, sErr := q.opts.Signer.SignStream(ctx, intent.Domain, blobReader)
-		if sErr != nil {
-			// Context cancellation is the worker shutting down or the
-			// per-attempt deadline expiring; route to transient so the
-			// row gets a real retry rather than a permanent failure on
-			// what is operationally a timing issue.
-			if errors.Is(sErr, context.Canceled) || errors.Is(sErr, context.DeadlineExceeded) {
-				q.opts.Logger.WarnContext(ctx, "queue: signer interrupted; rescheduling",
+		// Check locality before attempting to sign. Local recipients are
+		// delivered in-process so no outbound DKIM signature is needed.
+		isLocal := q.opts.LocalRecipientChecker != nil &&
+			q.opts.LocalRecipientChecker.IsLocalRecipient(ctx, item.RcptTo)
+		if isLocal {
+			// Unsigned path for local delivery (re #43). The
+			// loopback deliverer handles the recipient and never
+			// relays to the public internet, so the Sign=true
+			// refusal-if-unsigned policy (re #20) does not apply.
+			messageReader = blobReader
+		} else {
+			if q.opts.Signer == nil {
+				q.opts.Logger.ErrorContext(ctx, "queue: refusing to deliver unsigned: Sign=true but no Signer configured",
+					slog.String("activity", observe.ActivitySystem),
+					slog.Uint64("id", uint64(item.ID)),
+					slog.String("envelope_id", string(item.EnvelopeID)),
+					slog.String("domain", intent.Domain),
+				)
+				q.handlePermanent(ctx, item, DeliveryOutcome{
+					Status:       DeliveryStatusPermanent,
+					Detail:       "queue: Sign=true but no Signer configured",
+					EnhancedCode: "5.7.0",
+				})
+				return
+			}
+			// Seek to the start of the blob so each delivery attempt signs
+			// from offset 0 regardless of any prior reads.
+			if _, seekErr := blobReader.Seek(0, io.SeekStart); seekErr != nil {
+				q.opts.Logger.ErrorContext(ctx, "queue: seek body for signing failed",
+					slog.String("activity", observe.ActivitySystem),
+					slog.Uint64("id", uint64(item.ID)),
+					slog.Any("err", seekErr))
+				q.handleTransient(ctx, item, DeliveryOutcome{
+					Status: DeliveryStatusTransient,
+					Detail: "blob seek error: " + seekErr.Error(),
+				})
+				return
+			}
+			signedReader, sErr := q.opts.Signer.SignStream(ctx, intent.Domain, blobReader)
+			if sErr != nil {
+				// Context cancellation is the worker shutting down or the
+				// per-attempt deadline expiring; route to transient so the
+				// row gets a real retry rather than a permanent failure on
+				// what is operationally a timing issue.
+				if errors.Is(sErr, context.Canceled) || errors.Is(sErr, context.DeadlineExceeded) {
+					q.opts.Logger.WarnContext(ctx, "queue: signer interrupted; rescheduling",
+						slog.String("activity", observe.ActivitySystem),
+						slog.Uint64("id", uint64(item.ID)),
+						slog.String("envelope_id", string(item.EnvelopeID)),
+						slog.String("domain", intent.Domain),
+						slog.Any("err", sErr),
+					)
+					q.handleTransient(ctx, item, DeliveryOutcome{
+						Status: DeliveryStatusTransient,
+						Detail: "queue: signer interrupted: " + sErr.Error(),
+					})
+					return
+				}
+				q.opts.Logger.ErrorContext(ctx, "queue: signer failed; refusing to deliver unsigned",
 					slog.String("activity", observe.ActivitySystem),
 					slog.Uint64("id", uint64(item.ID)),
 					slog.String("envelope_id", string(item.EnvelopeID)),
 					slog.String("domain", intent.Domain),
 					slog.Any("err", sErr),
 				)
-				q.handleTransient(ctx, item, DeliveryOutcome{
-					Status: DeliveryStatusTransient,
-					Detail: "queue: signer interrupted: " + sErr.Error(),
+				q.handlePermanent(ctx, item, DeliveryOutcome{
+					Status:       DeliveryStatusPermanent,
+					Detail:       "queue: signer failure: " + sErr.Error(),
+					EnhancedCode: "5.7.0",
 				})
 				return
 			}
-			q.opts.Logger.ErrorContext(ctx, "queue: signer failed; refusing to deliver unsigned",
-				slog.String("activity", observe.ActivitySystem),
-				slog.Uint64("id", uint64(item.ID)),
-				slog.String("envelope_id", string(item.EnvelopeID)),
-				slog.String("domain", intent.Domain),
-				slog.Any("err", sErr),
-			)
-			q.handlePermanent(ctx, item, DeliveryOutcome{
-				Status:       DeliveryStatusPermanent,
-				Detail:       "queue: signer failure: " + sErr.Error(),
-				EnhancedCode: "5.7.0",
-			})
-			return
+			messageReader = signedReader
 		}
-		messageReader = signedReader
 	} else {
 		// Unsigned path: stream the blob reader directly to the
 		// deliverer; no full-body allocation (REQ-STORE-17/19).
