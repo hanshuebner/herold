@@ -317,6 +317,7 @@ func Run(t *testing.T, f Factory) {
 		{"SearchPrincipalsByText_LimitClamped", testSearchPrincipalsByTextLimitClamped},
 		{"SearchPrincipalsByText_NoMatch", testSearchPrincipalsByTextNoMatch},
 		{"SearchPrincipalsByText_CaseInsensitive", testSearchPrincipalsByTextCaseInsensitive},
+		{"SearchPrincipalsByText_AtSignPrefix", testSearchPrincipalsByTextAtSignPrefix},
 		// -- Directory/search domain-scoped search (REQ-JMAP-DIR-01) ------
 		{"SearchPrincipalsByTextInDomain_EmptyDomain", testSearchPrincipalsByTextInDomainEmptyDomain},
 		{"SearchPrincipalsByTextInDomain_DomainFilter", testSearchPrincipalsByTextInDomainDomainFilter},
@@ -324,6 +325,7 @@ func Run(t *testing.T, f Factory) {
 		{"SearchPrincipalsByTextInDomain_NoMatch", testSearchPrincipalsByTextInDomainNoMatch},
 		{"SearchPrincipalsByTextInDomain_EmptyPrefix", testSearchPrincipalsByTextInDomainEmptyPrefix},
 		{"SearchPrincipalsByTextInDomain_LimitRespected", testSearchPrincipalsByTextInDomainLimitRespected},
+		{"SearchPrincipalsByTextInDomain_AtSignPrefix", testSearchPrincipalsByTextInDomainAtSignPrefix},
 		// -- REQ-MAIL-11e..m seen-addresses history -----------------------
 		{"SeenAddress_UpsertInsert", testSeenAddressUpsertInsert},
 		{"SeenAddress_UpsertUpdate_CountsIncrement", testSeenAddressUpsertUpdate},
@@ -8478,6 +8480,65 @@ func testSearchPrincipalsByTextCaseInsensitive(t *testing.T, s store.Store) {
 	}
 }
 
+// testSearchPrincipalsByTextAtSignPrefix is the regression for #41:
+// directory autocomplete returned zero results as soon as the typed query
+// contained an '@' character. The old email LIKE pattern was
+// lower+"%@%" which requires a second '@' after the prefix, so
+// "admin@%@%" never matched "admin@example.local". The fix anchors the
+// pattern to the start of canonical_email (lower+"%") so any prefix
+// works uniformly.
+func testSearchPrincipalsByTextAtSignPrefix(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "atadmin@example.local",
+		DisplayName: "AT Admin",
+	}); err != nil {
+		t.Fatalf("insert atadmin: %v", err)
+	}
+	if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "other@example.local",
+		DisplayName: "Other User",
+	}); err != nil {
+		t.Fatalf("insert other: %v", err)
+	}
+
+	// prefix without '@' — must still work.
+	got, err := s.Meta().SearchPrincipalsByText(ctx, "atadmin", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText(%q): %v", "atadmin", err)
+	}
+	if len(got) != 1 || got[0].CanonicalEmail != "atadmin@example.local" {
+		t.Fatalf("prefix %q: got %v, want [atadmin@example.local]", "atadmin", got)
+	}
+
+	// prefix ending with '@' — the regression case.
+	got, err = s.Meta().SearchPrincipalsByText(ctx, "atadmin@", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText(%q): %v", "atadmin@", err)
+	}
+	if len(got) != 1 || got[0].CanonicalEmail != "atadmin@example.local" {
+		t.Fatalf("prefix %q: got %v, want [atadmin@example.local]", "atadmin@", got)
+	}
+
+	// prefix into the domain part — also must match.
+	got, err = s.Meta().SearchPrincipalsByText(ctx, "atadmin@exa", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText(%q): %v", "atadmin@exa", err)
+	}
+	if len(got) != 1 || got[0].CanonicalEmail != "atadmin@example.local" {
+		t.Fatalf("prefix %q: got %v, want [atadmin@example.local]", "atadmin@exa", got)
+	}
+
+	// prefix with '@' and a non-matching local-part — must return nothing.
+	got, err = s.Meta().SearchPrincipalsByText(ctx, "nobody@", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByText(%q): %v", "nobody@", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("prefix %q: got %d results, want 0", "nobody@", len(got))
+	}
+}
+
 // -- SearchPrincipalsByTextInDomain tests -----------------------------
 
 // testSearchPrincipalsByTextInDomainEmptyDomain verifies that passing an
@@ -8635,6 +8696,52 @@ func testSearchPrincipalsByTextInDomainLimitRespected(t *testing.T, s store.Stor
 	}
 	if len(got) != 3 {
 		t.Fatalf("got %d results, want 3 (limit applied): %+v", len(got), got)
+	}
+}
+
+// testSearchPrincipalsByTextInDomainAtSignPrefix is the InDomain companion
+// to testSearchPrincipalsByTextAtSignPrefix (re #41). It verifies that
+// a prefix containing '@' is matched correctly when a domain filter is
+// also active.
+func testSearchPrincipalsByTextInDomainAtSignPrefix(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	for _, row := range []struct{ email, name string }{
+		{"atprinc@scoped.example", "AT Princ"},
+		{"atprinc@other.example", "AT Princ Other"},
+		{"someone@scoped.example", "Someone Scoped"},
+	} {
+		if _, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind: store.PrincipalKindUser, CanonicalEmail: row.email, DisplayName: row.name,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", row.email, err)
+		}
+	}
+
+	// prefix "atprinc@" in domain "scoped.example" — the regression case.
+	got, err := s.Meta().SearchPrincipalsByTextInDomain(ctx, "atprinc@", "scoped.example", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain(%q, %q): %v", "atprinc@", "scoped.example", err)
+	}
+	if len(got) != 1 || got[0].CanonicalEmail != "atprinc@scoped.example" {
+		t.Fatalf("got %v, want [atprinc@scoped.example]", got)
+	}
+
+	// prefix into the domain portion — also must match.
+	got, err = s.Meta().SearchPrincipalsByTextInDomain(ctx, "atprinc@scoped", "scoped.example", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain(%q, %q): %v", "atprinc@scoped", "scoped.example", err)
+	}
+	if len(got) != 1 || got[0].CanonicalEmail != "atprinc@scoped.example" {
+		t.Fatalf("got %v, want [atprinc@scoped.example]", got)
+	}
+
+	// prefix naming a different domain must be excluded by the domain clause.
+	got, err = s.Meta().SearchPrincipalsByTextInDomain(ctx, "atprinc@other", "scoped.example", 10)
+	if err != nil {
+		t.Fatalf("SearchPrincipalsByTextInDomain(%q, %q): %v", "atprinc@other", "scoped.example", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("cross-domain prefix: got %d results, want 0", len(got))
 	}
 }
 

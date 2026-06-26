@@ -2617,11 +2617,13 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 		limit = 1000
 	}
 	lower := strings.ToLower(prefix)
-	// Two groups: display-name matches (anywhere) and email-local-part
-	// matches (prefix). We fetch both groups in one query using a
-	// computed priority column, then sort in Go to guarantee determinism.
-	// The LIKE patterns use '%' to match anywhere in display_name and
-	// prefix-match the local-part of canonical_email.
+	// Two groups: display-name matches (anywhere) and email prefix
+	// matches (start of canonical_email). We fetch both groups in one
+	// query using a computed priority column, then sort in Go to
+	// guarantee determinism. The LIKE patterns use '%' to match anywhere
+	// in display_name and prefix-match canonical_email from its start,
+	// so a prefix containing '@' (e.g. "admin@" or "admin@exa") still
+	// matches the full address "admin@example.local".
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, created_at_us, updated_at_us
@@ -2629,7 +2631,7 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 		 WHERE lower(display_name) LIKE ? OR lower(canonical_email) LIKE ?
 		 LIMIT ?`,
 		"%"+lower+"%",
-		lower+"%@%",
+		lower+"%",
 		limit*2, // over-fetch to ensure we can sort and trim to limit
 	)
 	if err != nil {
@@ -2687,7 +2689,7 @@ func (m *metadata) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, d
 		   AND lower(canonical_email) LIKE ?
 		 LIMIT ?`,
 		"%"+lower+"%",
-		lower+"%@%",
+		lower+"%",
 		"%@"+lowerDomain,
 		limit*2, // over-fetch; Go-side sort trims to limit
 	)
