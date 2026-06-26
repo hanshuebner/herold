@@ -67,6 +67,7 @@ vi.mock('../auth/auth.svelte', () => ({
       primaryAccounts: { 'urn:ietf:params:jmap:mail': 'account-1' },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 async function getJmapMock() {

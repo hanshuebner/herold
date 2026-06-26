@@ -10,6 +10,7 @@ import type { Conversation, Membership } from './types';
 
 vi.mock('../auth/auth.svelte', () => ({
   auth: { principalId: 'p1' },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('./presence.svelte', () => {

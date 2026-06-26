@@ -46,6 +46,19 @@ vi.stubGlobal('crypto', {
   },
 });
 
+// ── auth stub ─────────────────────────────────────────────────────────────
+//
+// avatar-resolver.svelte.ts imports { auth, registerAccountResetCallback }
+// directly from auth.svelte.  Mocking here prevents the real auth module
+// from pulling in jmap/client and api/client (which would require a server).
+// Session is null so lookupHostedPrincipalAvatar returns null immediately,
+// and accountKey() uses the 'anon' namespace throughout.
+
+vi.mock('../auth/auth.svelte', () => ({
+  auth: { session: null },
+  registerAccountResetCallback: vi.fn(),
+}));
+
 // ── identity-avatar stub ─────────────────────────────────────────────────
 
 vi.mock('./identity-avatar', () => ({
@@ -198,7 +211,7 @@ describe('avatar-resolver', () => {
 
     await resolve('cached@example.com', []);
 
-    const raw = lsStore['herold:avatar:cache'];
+    const raw = lsStore['herold.suite.anon.avatar.cache'];
     expect(raw).toBeDefined();
     const parsed: Record<string, { url: string | null; ts: number }> = JSON.parse(raw!);
     const cachedEntry = parsed['cached@example.com'];

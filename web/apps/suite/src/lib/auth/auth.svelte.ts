@@ -249,6 +249,11 @@ class Auth {
       } catch {
         // Ignore parse errors; loadMe() in bootstrap() will populate it.
       }
+      // Reset per-account store state before bootstrapping under the new
+      // account. The session may still refer to the previous account at
+      // this point, which is intentional: account-scoped localStorage
+      // helpers use it to clear the departing account's keys.
+      callAccountResets();
       // Re-bootstrap so the JMAP session descriptor reflects the new auth state.
       // Reset status to allow bootstrap() to re-run.
       this.status = 'idle';
@@ -296,6 +301,9 @@ class Auth {
     } catch {
       // Swallow network errors: we log out locally regardless.
     }
+    // Reset per-account store state while the session is still set so
+    // account-scoped localStorage keys resolve to the departing account.
+    callAccountResets();
     this.session = null;
     this.principalId = null;
     this.scopes = [];
@@ -313,6 +321,9 @@ class Auth {
    */
   signalUnauthenticated(): void {
     if (this.status === 'unauthenticated') return;
+    // Reset per-account store state while the session is still set so
+    // account-scoped localStorage keys resolve to the departing account.
+    callAccountResets();
     this.session = null;
     this.principalId = null;
     this.scopes = [];
@@ -356,3 +367,29 @@ export const auth = new Auth();
 // cannot import auth; auth imports the clients).
 setOnUnauthenticated(() => auth.signalUnauthenticated());
 setJmapOnUnauthenticated(() => auth.signalUnauthenticated());
+
+// ── Account-change reset callbacks ────────────────────────────────────────
+//
+// Stores that hold per-account in-memory state (mail, chat, contacts,
+// avatar cache) register a reset function here. Auth calls every
+// registered callback when the active account changes — on explicit
+// logout, on session expiry (signalUnauthenticated), and at the start of
+// a new login — so that a freshly-signed-in account always sees a clean
+// cache rather than the previous account's data.
+//
+// Callbacks are registered by the store modules at their own module-init
+// boundary (bottom of each *.svelte.ts file), which avoids circular imports
+// (auth cannot import the stores; the stores import auth).
+const accountResetCallbacks: Array<() => void> = [];
+
+/**
+ * Register a function to be called whenever the active account changes.
+ * Call from store module init (outside any class) to avoid circular imports.
+ */
+export function registerAccountResetCallback(cb: () => void): void {
+  accountResetCallbacks.push(cb);
+}
+
+function callAccountResets(): void {
+  for (const cb of accountResetCallbacks) cb();
+}

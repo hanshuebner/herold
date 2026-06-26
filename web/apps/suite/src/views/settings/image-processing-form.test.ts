@@ -24,6 +24,7 @@ const { mockAuth } = vi.hoisted(() => {
 
 vi.mock('../../lib/auth/auth.svelte', () => ({
   auth: mockAuth,
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../../lib/i18n/i18n.svelte', () => ({

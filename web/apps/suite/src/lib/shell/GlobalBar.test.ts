@@ -54,6 +54,7 @@ vi.mock('../auth/auth.svelte', () => ({
     session: { capabilities: {} },
     scopes: [],
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../i18n/i18n.svelte', () => ({

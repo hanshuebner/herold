@@ -20,6 +20,7 @@ vi.mock('../auth/auth.svelte', () => ({
       primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct1' },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // Stub JMAP client — downloadUrl returns a predictable string.

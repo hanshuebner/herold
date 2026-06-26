@@ -111,6 +111,7 @@ vi.mock('./overlay-store.svelte', () => ({
 
 vi.mock('../auth/auth.svelte', () => ({
   auth: { principalId: 'self' },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../mail/EmojiPicker.svelte', () => ({

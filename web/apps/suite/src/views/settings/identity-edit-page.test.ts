@@ -79,6 +79,7 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
       capabilities: {},
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 const { hasExternalSubmission } = await import('../../lib/auth/capabilities');

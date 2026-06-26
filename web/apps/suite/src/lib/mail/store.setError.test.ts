@@ -32,6 +32,7 @@ vi.mock('../auth/auth.svelte', () => ({
     },
     principalId: 'p1',
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 vi.mock('../toast/toast.svelte', () => ({ toast: { show: vi.fn() } }));
 vi.mock('../notifications/sounds.svelte', () => ({ sounds: { play: vi.fn(), enabled: false } }));

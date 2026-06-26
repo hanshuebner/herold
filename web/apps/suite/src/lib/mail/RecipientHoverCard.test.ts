@@ -66,6 +66,7 @@ vi.mock('../auth/auth.svelte', () => ({
       primaryAccounts: { 'urn:ietf:params:jmap:contacts': 'acc-1' },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('../chat/new-chat-picker.svelte', () => ({

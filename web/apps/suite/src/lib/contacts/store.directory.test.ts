@@ -35,6 +35,7 @@ vi.mock('../auth/auth.svelte', () => ({
       },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // Mock seen-addresses so it doesn't blow up during import.

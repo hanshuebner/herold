@@ -25,6 +25,7 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
       username: 'test@example.com',
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── API client mock ────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ vi.mock('../auth/auth.svelte', () => ({
     principalId: 'p1',
     refreshSession,
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 describe('InternalizeStatus sync handler (REQ-EXTIMG-BG-INTERNAL-30/64)', () => {

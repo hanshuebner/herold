@@ -21,6 +21,7 @@ vi.mock('../auth/auth.svelte', () => ({
   auth: {
     session: { username: 'testuser@example.test' },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // Stub i18n so settings.hydrate() can resolve a locale.

@@ -50,6 +50,7 @@ vi.mock('./lib/auth/auth.svelte', () => ({
     errorMessage: null,
     needsStepUp: false,
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 vi.mock('./lib/jmap/sync.svelte', () => ({

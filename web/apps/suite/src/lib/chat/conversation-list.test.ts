@@ -63,6 +63,7 @@ vi.mock('./store.svelte', () => ({
 
 vi.mock('../auth/auth.svelte', () => ({
   auth: { principalId: 'p1' },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 import ConversationList from './ConversationList.svelte';

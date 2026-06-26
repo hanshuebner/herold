@@ -93,6 +93,7 @@ vi.mock('../auth/auth.svelte', () => ({
     login: vi.fn(),
     logout: vi.fn(),
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // ── Sync mock ─────────────────────────────────────────────────────────────

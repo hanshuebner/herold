@@ -22,6 +22,7 @@ const mockAuth = {
 
 vi.mock('../auth/auth.svelte', () => ({
   auth: mockAuth,
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // Re-import after mock is set up.

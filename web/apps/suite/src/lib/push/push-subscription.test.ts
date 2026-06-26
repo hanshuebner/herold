@@ -105,6 +105,7 @@ vi.mock('../auth/auth.svelte', () => ({
       primaryAccounts: { 'urn:ietf:params:jmap:mail': 'account-1' },
     },
   },
+  registerAccountResetCallback: vi.fn(),
 }));
 
 // Mock browser APIs used in subscribe/unsubscribe.
