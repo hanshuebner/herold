@@ -3,6 +3,7 @@ package email
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -125,13 +126,45 @@ func parseAddressList(raw string) []jmapAddress {
 	return out
 }
 
+// loadPartDims fetches the persisted part index for hash and returns a map
+// from 1-based DFS part index to intrinsic pixel dimensions. Returns nil when
+// meta is nil, the index is absent, stale (version != PartIndexVersion), or
+// unparseable — callers treat nil as "no dimensions available" and omit
+// width/height from the rendered EmailBodyPart (re #47).
+func loadPartDims(ctx context.Context, meta store.Metadata, hash string) map[int]struct{ W, H int } {
+	if meta == nil || hash == "" {
+		return nil
+	}
+	version, partsJSON, err := meta.GetBlobPartIndex(ctx, hash)
+	if err != nil || version != mailparse.PartIndexVersion {
+		return nil
+	}
+	var entries []mailparse.PartIndexEntry
+	if err := json.Unmarshal(partsJSON, &entries); err != nil {
+		return nil
+	}
+	m := make(map[int]struct{ W, H int }, len(entries))
+	for _, e := range entries {
+		if e.Width > 0 || e.Height > 0 {
+			m[e.Index] = struct{ W, H int }{e.Width, e.Height}
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
 // renderFull returns the full-bodied Email rendering, parsing the body
 // blob to assemble bodyStructure, bodyValues, textBody/htmlBody and
 // attachments. truncateAt clamps each bodyValue's value field; the
-// caller passes 0 for "no truncation".
+// caller passes 0 for "no truncation". meta, when non-nil, is used to
+// load the persisted part index so intrinsic image dimensions are
+// included on image body parts (re #47).
 func renderFull(
 	ctx context.Context,
 	blobs store.Blobs,
+	meta store.Metadata,
 	m store.Message,
 	truncateAt int,
 	parser parseFn,
@@ -162,7 +195,8 @@ func renderFull(
 		// see size, blobId, mailboxIds, keywords, and envelope fields.
 		return out, nil
 	}
-	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
+	dims := loadPartDims(ctx, meta, m.Blob.Hash)
+	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash, dims)
 	if m.InternalizePending {
 		// REQ-EXTIMG-BG-10: replace external image references in every
 		// HTML body part with a placeholder data URI until the
@@ -209,8 +243,11 @@ func defaultParseFn(r io.Reader) (mailparse.Message, error) {
 // walkParts builds the bodyStructure tree and the flat textBody /
 // htmlBody / attachments lists per RFC 8621 §4.1.4. Truncation
 // applies per-bodyValue. msgBlobHash is used to construct per-part
-// blobId values in the form "<msgBlobHash>/p<partId>".
-func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
+// blobId values in the form "<msgBlobHash>/p<partId>". dims, when
+// non-nil, maps 1-based DFS part index to intrinsic pixel dimensions;
+// Width/Height are set on image leaf bodyParts when the map has an
+// entry for that part (re #47).
+func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string, dims map[int]struct{ W, H int }) (
 	*bodyPart,
 	map[string]bodyValue,
 	[]bodyPart,
@@ -287,6 +324,21 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 		if msgBlobHash != "" {
 			blobID := msgBlobHash + "/p" + partID
 			out.BlobID = &blobID
+		}
+		// Populate intrinsic image dimensions from the persisted part index
+		// (re #47). Only image leaves carry non-zero dimensions in the index,
+		// so this is a no-op for multipart containers and non-image leaves.
+		if dims != nil {
+			if d, ok := dims[idx]; ok {
+				if d.W > 0 {
+					w := d.W
+					out.Width = &w
+				}
+				if d.H > 0 {
+					h := d.H
+					out.Height = &h
+				}
+			}
 		}
 		for _, hk := range p.Headers.Keys() {
 			for _, v := range p.Headers.GetAll(hk) {

@@ -342,8 +342,10 @@ func renderFullWithProperties(
 		return out, nil
 	}
 
-	// Populate body parts.
-	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash)
+	// Populate body parts. Load intrinsic image dimensions from the persisted
+	// part index (re #47) so Width/Height appear on image EmailBodyParts.
+	dims := loadPartDims(ctx, meta, m.Blob.Hash)
+	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash, dims)
 	if m.InternalizePending {
 		// REQ-EXTIMG-BG-10: replace external image references in every
 		// HTML body part with a placeholder data URI until the

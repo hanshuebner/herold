@@ -514,7 +514,7 @@ func (h *handlerSet) createEmail(
 	// hasAttachment is computed from the MIME structure rather than
 	// defaulting to false. RFC 8621 §4.6 requires the Email object
 	// returned on create to include server-set properties.
-	created, err := renderFull(ctx, h.store.Blobs(), msg, 0, parser)
+	created, err := renderFull(ctx, h.store.Blobs(), h.store.Meta(), msg, 0, parser)
 	if err != nil {
 		// Non-fatal: fall back to metadata-only render rather than
 		// failing the create.

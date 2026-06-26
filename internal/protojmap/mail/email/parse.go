@@ -179,7 +179,7 @@ func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			// Pass empty msgBlobHash for parsed emails since they have no
 			// persistent message blob hash (they're parsed from an uploaded
 			// blob that may not be a stored message).
-			bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, req.MaxBodyValueBytes, blobID)
+			bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, req.MaxBodyValueBytes, blobID, nil)
 			jm.BodyStructure = bs
 			jm.BodyValues = values
 			jm.TextBody = textParts

@@ -367,7 +367,7 @@ func buildFilterData(ctx context.Context, blobs store.Blobs, msgs []store.Messag
 			continue
 		}
 		if needAtt {
-			_, _, _, _, attParts := walkParts(parsed.Body, 0, "")
+			_, _, _, _, attParts := walkParts(parsed.Body, 0, "", nil)
 			fd.attachments[msg.ID] = len(attParts) > 0
 		}
 		if headerName != "" {

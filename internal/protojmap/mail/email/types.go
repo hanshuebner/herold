@@ -234,6 +234,13 @@ type bodyPart struct {
 	Language    []string         `json:"language,omitempty"`
 	Location    *string          `json:"location,omitempty"`
 	SubParts    []bodyPart       `json:"subParts,omitempty"`
+	// Width and Height are herold extensions on EmailBodyPart: intrinsic pixel
+	// dimensions of image leaves (image/png, image/jpeg, image/gif). Omitted
+	// when unknown so non-image parts and images with undecodable headers emit
+	// neither field. The web client reads these to reserve layout space before
+	// the image loads (re #47).
+	Width  *int `json:"width,omitempty"`
+	Height *int `json:"height,omitempty"`
 }
 
 // bodyPartHeader is the per-part Header object (RFC 8621 §4.1.2.1).
