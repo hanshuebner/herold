@@ -327,7 +327,7 @@ func renderFullWithProperties(
 
 	// TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
 	// streaming parser; bounded at 64MiB until then.
-	rawBody, err := io.ReadAll(io.LimitReader(rc, 64<<20))
+	rawBodyOrig, err := io.ReadAll(io.LimitReader(rc, 64<<20))
 	if err != nil {
 		return jmapEmail{}, fmt.Errorf("email: read blob: %w", err)
 	}
@@ -335,7 +335,7 @@ func renderFullWithProperties(
 	// REQ-FLOW-34: inject the synthetic X-Herold-Recipient header so
 	// header property accessors and body parts see it. No-op when
 	// ReceivedTo is empty (pre-feature / non-inbound membership).
-	rawBody = mailparse.InjectXHeroldRecipient(rawBody, m.ReceivedTo)
+	rawBody := mailparse.InjectXHeroldRecipient(rawBodyOrig, m.ReceivedTo)
 
 	parsed, err := parser(bytes.NewReader(rawBody))
 	if err != nil {
@@ -344,7 +344,19 @@ func renderFullWithProperties(
 
 	// Populate body parts. Load intrinsic image dimensions from the persisted
 	// part index (re #47) so Width/Height appear on image EmailBodyParts.
+	// When the index is absent (bodymeta worker has not yet processed this
+	// message), compute dims inline from the already-parsed body so the client
+	// can inject aspect-ratio reservations on first paint without waiting for
+	// the worker. A background goroutine then writes the correct index to the
+	// DB (using rawBodyOrig so byte-range offsets are valid for blob streaming)
+	// so subsequent calls hit the DB path instead of repeating the inline work.
 	dims := loadPartDims(ctx, meta, m.Blob.Hash)
+	if dims == nil {
+		dims = partDimsFromParsed(parsed, rawBody)
+		if meta != nil {
+			writePartIndexBackground(meta, m.Blob.Hash, rawBodyOrig)
+		}
+	}
 	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash, dims)
 	if m.InternalizePending {
 		// REQ-EXTIMG-BG-10: replace external image references in every

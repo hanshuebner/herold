@@ -3,10 +3,11 @@ package email_test
 // render_dims_test.go — integration tests for intrinsic image dimensions on
 // EmailBodyPart (re #47). These tests exercise the full Email/get path: real
 // PNG and JPEG images with known pixel dimensions are base64-encoded into a
-// multipart/related message, stored in the blob store, a part index is
-// persisted via PutBlobPartIndex, and then Email/get is invoked. The tests
-// assert that width/height are returned on image body parts when the index is
-// present and absent (graceful degradation) when it is not.
+// multipart/related message, stored in the blob store, and then Email/get is
+// invoked. The tests assert that width/height are returned on image body parts
+// both when a pre-stored part index exists and when it does not (the inline-
+// compute path that eliminates the race window between message delivery and the
+// bodymeta worker's first sweep).
 
 import (
 	"bytes"
@@ -18,8 +19,10 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -213,18 +216,31 @@ func TestEmailGet_InlineImageDimensions_WithIndex(t *testing.T) {
 	}
 }
 
-// TestEmailGet_InlineImageDimensions_NoIndex verifies graceful degradation:
-// when no part index is stored for the blob, Email/get omits width/height
-// entirely from image body parts so the client falls back to its previous
-// behaviour (allocating space based on the image after it loads).
+// TestEmailGet_InlineImageDimensions_NoIndex verifies that when no part index
+// is stored for the blob, Email/get still returns correct width/height by
+// computing image dimensions inline from the already-parsed body (re #47).
+// This eliminates the race window between message delivery and the bodymeta
+// worker's first sweep, so clients can inject aspect-ratio reservations on
+// first paint regardless of when the worker runs.
+//
+// The test also verifies that the inline computation triggers a background
+// write of the part index to the DB, so subsequent Email/get calls hit the
+// fast DB path instead of recomputing.
 func TestEmailGet_InlineImageDimensions_NoIndex(t *testing.T) {
 	f := setupFixture(t)
+	ctx := context.Background()
 
-	pngData := buildPNGImageBytes(t, 100, 60)
-	jpegData := buildJPEGImageBytes(t, 50, 30)
+	const (
+		pngW, pngH   = 100, 60
+		jpegW, jpegH = 50, 30
+	)
+
+	pngData := buildPNGImageBytes(t, pngW, pngH)
+	jpegData := buildJPEGImageBytes(t, jpegW, jpegH)
 	raw := buildInlineImagesMIME(pngData, jpegData)
 
-	// Insert without persisting a part index.
+	// Insert without persisting a part index — simulates the window between
+	// message delivery and the bodymeta worker's first sweep.
 	m := f.insertMessage(t, string(raw), "no index", "a@example.test", "b@example.test", nil, "")
 
 	_, rawResp := f.invoke(t, "Email/get", map[string]any{
@@ -235,7 +251,11 @@ func TestEmailGet_InlineImageDimensions_NoIndex(t *testing.T) {
 
 	var resp struct {
 		List []struct {
-			Attachments []map[string]json.RawMessage `json:"attachments"`
+			Attachments []struct {
+				Type   string `json:"type"`
+				Width  *int   `json:"width"`
+				Height *int   `json:"height"`
+			} `json:"attachments"`
 		} `json:"list"`
 	}
 	if err := json.Unmarshal(rawResp, &resp); err != nil {
@@ -244,12 +264,184 @@ func TestEmailGet_InlineImageDimensions_NoIndex(t *testing.T) {
 	if len(resp.List) != 1 {
 		t.Fatalf("want 1 message, got %d: %s", len(resp.List), rawResp)
 	}
-	for _, att := range resp.List[0].Attachments {
-		if _, ok := att["width"]; ok {
-			t.Errorf("attachment has 'width' key but no index was stored: %v", att)
+	atts := resp.List[0].Attachments
+	if len(atts) != 2 {
+		t.Fatalf("want 2 image attachments, got %d: %s", len(atts), rawResp)
+	}
+
+	// Dims must be returned via the inline-compute path even with no pre-stored
+	// index — this is the fix for the first-paint truncation (re #47).
+	var pngPart, jpegPart *struct {
+		Type   string `json:"type"`
+		Width  *int   `json:"width"`
+		Height *int   `json:"height"`
+	}
+	for i := range atts {
+		switch atts[i].Type {
+		case "image/png":
+			pngPart = &atts[i]
+		case "image/jpeg":
+			jpegPart = &atts[i]
 		}
-		if _, ok := att["height"]; ok {
-			t.Errorf("attachment has 'height' key but no index was stored: %v", att)
+	}
+	if pngPart == nil {
+		t.Fatal("no image/png attachment in response")
+	}
+	if jpegPart == nil {
+		t.Fatal("no image/jpeg attachment in response")
+	}
+	if pngPart.Width == nil || *pngPart.Width != pngW {
+		t.Errorf("png Width = %v, want %d", pngPart.Width, pngW)
+	}
+	if pngPart.Height == nil || *pngPart.Height != pngH {
+		t.Errorf("png Height = %v, want %d", pngPart.Height, pngH)
+	}
+	if jpegPart.Width == nil || *jpegPart.Width != jpegW {
+		t.Errorf("jpeg Width = %v, want %d", jpegPart.Width, jpegW)
+	}
+	if jpegPart.Height == nil || *jpegPart.Height != jpegH {
+		t.Errorf("jpeg Height = %v, want %d", jpegPart.Height, jpegH)
+	}
+
+	// The inline computation must also trigger a background write of the correct
+	// part index so future calls hit the DB path. Poll with a short timeout.
+	deadline := time.Now().Add(2 * time.Second)
+	var dbVersion int
+	for time.Now().Before(deadline) {
+		ver, _, err := f.srv.Store.Meta().GetBlobPartIndex(ctx, m.Blob.Hash)
+		if err == nil && ver >= mailparse.PartIndexVersion {
+			dbVersion = ver
+			break
 		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if dbVersion < mailparse.PartIndexVersion {
+		t.Errorf("background write: part index not written to DB within 2s (got version %d, want >= %d)", dbVersion, mailparse.PartIndexVersion)
+	}
+
+	// Verify the DB-written index also carries correct dims (not just
+	// the placeholder empty index written on parse failure).
+	ver, partsJSON, err := f.srv.Store.Meta().GetBlobPartIndex(ctx, m.Blob.Hash)
+	if err != nil {
+		t.Fatalf("GetBlobPartIndex after background write: %v", err)
+	}
+	if ver != mailparse.PartIndexVersion {
+		t.Fatalf("DB index version = %d, want %d", ver, mailparse.PartIndexVersion)
+	}
+	var dbEntries []mailparse.PartIndexEntry
+	if err := json.Unmarshal(partsJSON, &dbEntries); err != nil {
+		t.Fatalf("unmarshal DB entries: %v", err)
+	}
+	var dbPNG, dbJPEG *mailparse.PartIndexEntry
+	for i := range dbEntries {
+		switch dbEntries[i].ContentType {
+		case "image/png":
+			e := dbEntries[i]
+			dbPNG = &e
+		case "image/jpeg":
+			e := dbEntries[i]
+			dbJPEG = &e
+		}
+	}
+	if dbPNG == nil || dbPNG.Width != pngW || dbPNG.Height != pngH {
+		t.Errorf("DB PNG dims: got %v, want %dx%d", dbPNG, pngW, pngH)
+	}
+	if dbJPEG == nil || dbJPEG.Width != jpegW || dbJPEG.Height != jpegH {
+		t.Errorf("DB JPEG dims: got %v, want %dx%d", dbJPEG, jpegW, jpegH)
+	}
+}
+
+// TestEmailGet_InlineImageDimensions_BackgroundWriteCorrectOffsets verifies
+// that the part index written by writePartIndexBackground carries byte-range
+// offsets valid for the stored blob (not for the injected rawBody). It checks
+// that store.GetBlobPartIndex after the background write returns entries whose
+// RawOffset values can be used to open each part's body.
+func TestEmailGet_InlineImageDimensions_BackgroundWriteCorrectOffsets(t *testing.T) {
+	f := setupFixture(t)
+	ctx := context.Background()
+
+	const (
+		pngW, pngH = 80, 40
+	)
+	pngData := buildPNGImageBytes(t, pngW, pngH)
+	const bnd = "BNDOFF"
+	var b strings.Builder
+	b.WriteString("Content-Type: multipart/related; boundary=\"" + bnd + "\"\r\n\r\n")
+	b.WriteString("--" + bnd + "\r\n")
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
+	b.WriteString("<img src=\"cid:img@t\"/>\r\n")
+	b.WriteString("--" + bnd + "\r\n")
+	b.WriteString("Content-Type: image/png\r\n")
+	b.WriteString("Content-Transfer-Encoding: base64\r\n")
+	b.WriteString("Content-ID: <img@t>\r\n")
+	b.WriteString("Content-Disposition: inline\r\n\r\n")
+	b.WriteString(base64.StdEncoding.EncodeToString(pngData))
+	b.WriteString("\r\n--" + bnd + "--\r\n")
+	raw := []byte(b.String())
+
+	// Insert without pre-stored index.
+	m := f.insertMessage(t, string(raw), "offsets", "a@t", "b@t", nil, "")
+
+	// Trigger Email/get to kick off the background write.
+	f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
+		"properties": []string{"attachments"},
+	})
+
+	// Wait for background write.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ver, _, err := f.srv.Store.Meta().GetBlobPartIndex(ctx, m.Blob.Hash)
+		if err == nil && ver >= mailparse.PartIndexVersion {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify the DB index entries can open the PNG body from the stored blob.
+	_, partsJSON, err := f.srv.Store.Meta().GetBlobPartIndex(ctx, m.Blob.Hash)
+	if err != nil {
+		t.Fatalf("GetBlobPartIndex: %v", err)
+	}
+	var entries []mailparse.PartIndexEntry
+	if err := json.Unmarshal(partsJSON, &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var pngEntry *mailparse.PartIndexEntry
+	for i := range entries {
+		if entries[i].ContentType == "image/png" {
+			e := entries[i]
+			pngEntry = &e
+			break
+		}
+	}
+	if pngEntry == nil {
+		t.Fatal("no image/png entry in DB index")
+	}
+
+	// Fetch the blob from the store and verify the PNG entry's OpenBody reads
+	// the correct bytes (decodable as a PNG with the expected dimensions).
+	rc, err := f.srv.Store.Blobs().Get(ctx, m.Blob.Hash)
+	if err != nil {
+		t.Fatalf("blobs.Get: %v", err)
+	}
+	blobBytes, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+
+	body, err := pngEntry.OpenBody(bytes.NewReader(blobBytes))
+	if err != nil {
+		t.Fatalf("OpenBody: %v", err)
+	}
+	defer body.Close()
+	cfg, _, err := image.DecodeConfig(body)
+	if err != nil {
+		t.Fatalf("image.DecodeConfig from stored blob offsets: %v", err)
+	}
+	if cfg.Width != pngW || cfg.Height != pngH {
+		t.Errorf("decoded dims from stored blob = %dx%d, want %dx%d", cfg.Width, cfg.Height, pngW, pngH)
 	}
 }

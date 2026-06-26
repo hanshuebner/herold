@@ -126,6 +126,59 @@ func parseAddressList(raw string) []jmapAddress {
 	return out
 }
 
+// partDimsFromParsed computes intrinsic pixel dimensions for image leaf parts
+// by walking an already-parsed message and decoding each image's header.
+// rawBody must be the bytes that produced parsed (e.g. the blob with an
+// optional synthetic header prepended). The returned map uses the same 1-based
+// DFS index as loadPartDims so it can be passed directly to walkParts.
+//
+// The RawOffset values in the underlying PartIndexEntry structs are relative
+// to rawBody. Do not persist these entries when rawBody contains a prepended
+// synthetic header (such as X-Herold-Recipient): the offsets would be wrong
+// relative to the stored blob. Use writePartIndexBackground for DB persistence.
+//
+// Returns nil when no image parts have decodable dimensions.
+func partDimsFromParsed(parsed mailparse.Message, rawBody []byte) map[int]struct{ W, H int } {
+	src := bytes.NewReader(rawBody)
+	entries := mailparse.BuildPartIndex(parsed, src)
+	m := make(map[int]struct{ W, H int }, len(entries))
+	for _, e := range entries {
+		if e.Width > 0 || e.Height > 0 {
+			m[e.Index] = struct{ W, H int }{e.Width, e.Height}
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// writePartIndexBackground starts a goroutine that parses rawBodyOrig
+// (the stored blob bytes without any prepended synthetic headers) and writes
+// the v2 part index to meta. Call this after serving dims computed inline via
+// partDimsFromParsed so the index is available for future Email/get calls
+// without repeating the inline computation.
+//
+// Errors are silently ignored: the bodymeta worker will recompute the index
+// on its next sweep. A 30-second context bounds the goroutine lifetime so it
+// cannot leak indefinitely.
+func writePartIndexBackground(meta store.Metadata, blobHash string, rawBodyOrig []byte) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		parsed, err := mailparse.Parse(bytes.NewReader(rawBodyOrig), mailparse.NewParseOptions())
+		if err != nil {
+			return
+		}
+		entries := mailparse.BuildPartIndex(parsed, bytes.NewReader(rawBodyOrig))
+		indexJSON, err := json.Marshal(entries)
+		if err != nil {
+			return
+		}
+		_ = meta.PutBlobPartIndex(ctx, blobHash, mailparse.PartIndexVersion, indexJSON, time.Now().UnixMicro())
+	}()
+}
+
 // loadPartDims fetches the persisted part index for hash and returns a map
 // from 1-based DFS part index to intrinsic pixel dimensions. Returns nil when
 // meta is nil, the index is absent, stale (version != PartIndexVersion), or
