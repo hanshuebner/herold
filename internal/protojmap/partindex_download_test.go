@@ -96,7 +96,7 @@ func TestResolvePartBlobIndexedServesByRange(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("parse: %v", perr)
 	}
-	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed))
+	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed, bytes.NewReader(raw)))
 	if err := st.Meta().PutBlobPartIndex(ctx, hash, mailparse.PartIndexVersion, idxJSON, clk.Now().UnixMicro()); err != nil {
 		t.Fatalf("put index: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestResolvePartBlobTextPartNotCappedAt1MiB(t *testing.T) {
 
 	// And with the index persisted:
 	parsed, _ := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
-	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed))
+	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed, bytes.NewReader(raw)))
 	if err := st.Meta().PutBlobPartIndex(ctx, ref.Hash, mailparse.PartIndexVersion, idxJSON, clk.Now().UnixMicro()); err != nil {
 		t.Fatalf("put index: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestResolvePartBlobConcurrentFanoutBounded(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	parsed, _ := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
-	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed))
+	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed, bytes.NewReader(raw)))
 	if err := st.Meta().PutBlobPartIndex(ctx, ref.Hash, mailparse.PartIndexVersion, idxJSON, clk.Now().UnixMicro()); err != nil {
 		t.Fatalf("put index: %v", err)
 	}

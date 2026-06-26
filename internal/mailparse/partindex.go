@@ -2,6 +2,10 @@ package mailparse
 
 import (
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"strings"
 )
@@ -9,7 +13,8 @@ import (
 // PartIndexVersion is the schema version of the serialized part index. Bump it
 // whenever the PartIndexEntry shape or the enumeration changes so the body-index
 // worker rebuilds stale indexes and consumers reject indexes they cannot read.
-const PartIndexVersion = 1
+// Version 2 adds Width/Height intrinsic pixel dimensions to image leaves.
+const PartIndexVersion = 2
 
 // PartIndexEntry is the persistable descriptor of one MIME part: the metadata
 // and raw byte range needed to stream and decode that part's body directly from
@@ -36,20 +41,30 @@ type PartIndexEntry struct {
 	// Container is true when the part has children (a multipart/* branch or a
 	// message/rfc822 wrapper). Body streaming is defined only for leaves.
 	Container bool `json:"cont,omitempty"`
+	// Width and Height are the intrinsic pixel dimensions of image leaves
+	// (image/png, image/jpeg, image/gif). Both are 0 for container parts,
+	// non-image leaves, and image leaves whose header cannot be decoded.
+	Width  int `json:"w,omitempty"`
+	Height int `json:"h,omitempty"`
 }
 
 // BuildPartIndex walks msg.Body in 1-based pre-order DFS, returning one entry
 // per part in the same order the renderer enumerates blobId values. The raw byte
 // ranges are relative to the bytes passed to Parse (the stored blob), so callers
 // that consume the index must stream from those same bytes.
-func BuildPartIndex(msg Message) []PartIndexEntry {
+//
+// src must be an io.ReaderAt over the same bytes that produced msg (e.g.
+// bytes.NewReader over the raw blob). It is used to decode intrinsic pixel
+// dimensions for image leaves (image/png, image/jpeg, image/gif). When src is
+// nil, dimensions are left at 0 for all parts.
+func BuildPartIndex(msg Message, src io.ReaderAt) []PartIndexEntry {
 	var out []PartIndexEntry
 	idx := 0
 	var walk func(p Part, parent int)
 	walk = func(p Part, parent int) {
 		idx++
 		me := idx
-		out = append(out, PartIndexEntry{
+		e := PartIndexEntry{
 			Index:       me,
 			Parent:      parent,
 			ContentType: p.ContentType,
@@ -63,13 +78,41 @@ func BuildPartIndex(msg Message) []PartIndexEntry {
 			DecodedSize: p.Size,
 			IsText:      p.IsText(),
 			Container:   len(p.Children) > 0,
-		})
+		}
+		if src != nil && !e.Container {
+			e.Width, e.Height = decodeImageDimensions(e, src)
+		}
+		out = append(out, e)
 		for _, c := range p.Children {
 			walk(c, me)
 		}
 	}
 	walk(msg.Body, 0)
 	return out
+}
+
+// decodeImageDimensions returns the intrinsic pixel dimensions of the image
+// leaf described by e. It decodes only the image header via image.DecodeConfig,
+// reading at most 8 MiB to bound header reads on hostile inputs. Returns 0, 0
+// when the content type is not a supported format (image/png, image/jpeg,
+// image/gif), or when the header cannot be decoded for any reason.
+func decodeImageDimensions(e PartIndexEntry, src io.ReaderAt) (width, height int) {
+	switch e.ContentType {
+	case "image/png", "image/jpeg", "image/gif":
+		// supported; fall through
+	default:
+		return 0, 0
+	}
+	rc, err := e.OpenBody(src)
+	if err != nil {
+		return 0, 0
+	}
+	defer rc.Close()
+	cfg, _, err := image.DecodeConfig(io.LimitReader(rc, 8<<20))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }
 
 // normalizeCID strips surrounding angle brackets and whitespace from a

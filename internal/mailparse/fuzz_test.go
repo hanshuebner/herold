@@ -75,7 +75,7 @@ func FuzzParse(f *testing.F) {
 // shared 1-based pre-order DFS enumeration.
 func checkPartIndexRoundtrip(t *testing.T, src []byte, msg Message) {
 	t.Helper()
-	entries := BuildPartIndex(msg)
+	entries := BuildPartIndex(msg, bytes.NewReader(src))
 	var parts []Part
 	var collect func(p Part)
 	collect = func(p Part) {

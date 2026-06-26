@@ -3,6 +3,10 @@ package mailparse
 import (
 	"bytes"
 	"encoding/base64"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"testing"
 )
@@ -36,7 +40,7 @@ func TestBuildPartIndexEnumerationMatchesTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	entries := BuildPartIndex(msg)
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
 
 	// Collect the live parts in the same 1-based pre-order DFS.
 	var parts []Part
@@ -71,7 +75,7 @@ func TestBuildPartIndexStructureAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	entries := BuildPartIndex(msg)
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
 
 	// Expected pre-order DFS:
 	//  1 multipart/related        (container, parent 0)
@@ -125,7 +129,7 @@ func TestPartIndexEntryOpenBodyMatchesPartOpenBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	entries := BuildPartIndex(msg)
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
 	img := entries[4]
 
 	// Decode via the persisted entry; it must equal the original payload.
@@ -162,7 +166,7 @@ func TestPartIndexEntryGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	entries := BuildPartIndex(msg)
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
 	container := entries[0] // multipart/related
 	leaf := entries[4]      // image/png
 
@@ -199,7 +203,165 @@ func TestNormalizeCID(t *testing.T) {
 func TestPartIndexVersionPinned(t *testing.T) {
 	// A change in serialized shape must come with a version bump so the worker
 	// rebuilds and consumers reject stale indexes. Pin the current value.
-	if PartIndexVersion != 1 {
+	if PartIndexVersion != 2 {
 		t.Fatalf("PartIndexVersion = %d; update this test and the migration/backfill story when bumping", PartIndexVersion)
+	}
+}
+
+// encodePNG returns the bytes of a PNG image with the given dimensions, filled
+// with a solid colour.
+func encodePNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 100, G: 149, B: 237, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// encodeJPEG returns the bytes of a JPEG image with the given dimensions.
+func encodeJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 255, G: 200, B: 50, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// buildImageMessage assembles a multipart/related message containing a
+// text/plain body, a PNG attachment with the given pixel dimensions, and a JPEG
+// attachment with the given pixel dimensions. Returns the raw bytes.
+func buildImageMessage(t *testing.T, pngW, pngH, jpegW, jpegH int) []byte {
+	t.Helper()
+	pngBytes := encodePNG(t, pngW, pngH)
+	jpegBytes := encodeJPEG(t, jpegW, jpegH)
+
+	var b bytes.Buffer
+	b.WriteString("Content-Type: multipart/related; boundary=IMG\r\n\r\n")
+	b.WriteString("--IMG\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhello\r\n")
+	b.WriteString("--IMG\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n")
+	b.WriteString("Content-Disposition: inline; filename=\"shot.png\"\r\n\r\n")
+	b.WriteString(base64.StdEncoding.EncodeToString(pngBytes))
+	b.WriteString("\r\n--IMG\r\nContent-Type: image/jpeg\r\nContent-Transfer-Encoding: base64\r\n")
+	b.WriteString("Content-Disposition: inline; filename=\"shot.jpg\"\r\n\r\n")
+	b.WriteString(base64.StdEncoding.EncodeToString(jpegBytes))
+	b.WriteString("\r\n--IMG--\r\n")
+	return b.Bytes()
+}
+
+// TestBuildPartIndexImageDimensions verifies that Width and Height are populated
+// for PNG and JPEG leaves and are 0 for text and container parts.
+func TestBuildPartIndexImageDimensions(t *testing.T) {
+	const pngW, pngH = 7, 13
+	const jpegW, jpegH = 20, 5
+
+	raw := buildImageMessage(t, pngW, pngH, jpegW, jpegH)
+	msg, err := Parse(bytes.NewReader(raw), NewParseOptions())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
+
+	// Expected DFS order:
+	//  1 multipart/related  (container)
+	//  2 text/plain         (leaf, no dimensions)
+	//  3 image/png          (leaf, pngW x pngH)
+	//  4 image/jpeg         (leaf, jpegW x jpegH)
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 parts, got %d", len(entries))
+	}
+
+	container := entries[0]
+	if container.Width != 0 || container.Height != 0 {
+		t.Errorf("container part has non-zero dimensions: %dx%d", container.Width, container.Height)
+	}
+
+	textPart := entries[1]
+	if textPart.Width != 0 || textPart.Height != 0 {
+		t.Errorf("text/plain part has non-zero dimensions: %dx%d", textPart.Width, textPart.Height)
+	}
+
+	pngPart := entries[2]
+	if pngPart.Width != pngW || pngPart.Height != pngH {
+		t.Errorf("image/png: got %dx%d, want %dx%d", pngPart.Width, pngPart.Height, pngW, pngH)
+	}
+
+	jpegPart := entries[3]
+	if jpegPart.Width != jpegW || jpegPart.Height != jpegH {
+		t.Errorf("image/jpeg: got %dx%d, want %dx%d", jpegPart.Width, jpegPart.Height, jpegW, jpegH)
+	}
+}
+
+// TestBuildPartIndexImageDimensionsGarbage verifies that a leaf with
+// Content-Type image/png but a body that is not a valid PNG produces Width=0
+// and Height=0 with no error, and that the rest of the index is unaffected.
+func TestBuildPartIndexImageDimensionsGarbage(t *testing.T) {
+	// Build a message where one part claims to be image/png but its body is
+	// garbage binary data.
+	garbage := make([]byte, 512)
+	for i := range garbage {
+		garbage[i] = byte(i)
+	}
+	var b bytes.Buffer
+	b.WriteString("Content-Type: multipart/mixed; boundary=G\r\n\r\n")
+	b.WriteString("--G\r\nContent-Type: text/plain\r\n\r\nhello\r\n")
+	b.WriteString("--G\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+	b.WriteString(base64.StdEncoding.EncodeToString(garbage))
+	b.WriteString("\r\n--G--\r\n")
+	raw := b.Bytes()
+
+	msg, err := Parse(bytes.NewReader(raw), NewParseOptions())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	entries := BuildPartIndex(msg, bytes.NewReader(raw))
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(entries))
+	}
+	garbagePart := entries[2]
+	if garbagePart.ContentType != "image/png" {
+		t.Fatalf("expected image/png, got %q", garbagePart.ContentType)
+	}
+	if garbagePart.Width != 0 || garbagePart.Height != 0 {
+		t.Errorf("garbage image/png has non-zero dimensions: %dx%d", garbagePart.Width, garbagePart.Height)
+	}
+	// The text part before the garbage image must still be correctly indexed.
+	textPart := entries[1]
+	if textPart.ContentType != "text/plain" {
+		t.Errorf("expected text/plain at index 2, got %q", textPart.ContentType)
+	}
+}
+
+// TestBuildPartIndexNilSrc verifies that BuildPartIndex with a nil src returns
+// a valid index with Width=Height=0 for all parts (including image leaves).
+func TestBuildPartIndexNilSrc(t *testing.T) {
+	const pngW, pngH = 4, 4
+	raw := buildImageMessage(t, pngW, pngH, 4, 4)
+	msg, err := Parse(bytes.NewReader(raw), NewParseOptions())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	entries := BuildPartIndex(msg, nil)
+	for _, e := range entries {
+		if e.Width != 0 || e.Height != 0 {
+			t.Errorf("part %d (%s): expected 0x0 with nil src, got %dx%d", e.Index, e.ContentType, e.Width, e.Height)
+		}
+	}
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 parts, got %d", len(entries))
 	}
 }

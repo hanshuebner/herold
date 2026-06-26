@@ -223,7 +223,7 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 	}
 	// Part index is per-blob: the byte-range map that lets the JMAP part-
 	// download path serve a part without re-parsing the whole message.
-	indexJSON, jerr := json.Marshal(mailparse.BuildPartIndex(parsed))
+	indexJSON, jerr := json.Marshal(mailparse.BuildPartIndex(parsed, bytes.NewReader(raw)))
 	if jerr != nil {
 		w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: marshal part index failed",
 			slog.Uint64("message_id", uint64(id)),
