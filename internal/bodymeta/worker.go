@@ -3,6 +3,7 @@ package bodymeta
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -78,7 +79,7 @@ func (w *Worker) Run(ctx context.Context) {
 			w.logger.LogAttrs(ctx, slog.LevelInfo, "bodymeta-worker: stopped")
 			return
 		}
-		ids, err := w.store.Meta().ListMessagesNeedingBodyMeta(ctx, beforeID, w.opts.BatchSize)
+		ids, err := w.store.Meta().ListMessagesNeedingPartIndex(ctx, beforeID, mailparse.PartIndexVersion, w.opts.BatchSize)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				w.logger.LogAttrs(ctx, slog.LevelInfo, "bodymeta-worker: stopped")
@@ -155,11 +156,6 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 		)
 		return false
 	}
-	if m.BodyMetaComputed {
-		// Already handled by a concurrent caller (e.g. Email/get opportunistic
-		// persist). Skip without error.
-		return true
-	}
 	rc, err := w.store.Blobs().Get(ctx, m.Blob.Hash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -183,17 +179,28 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 		)
 		return false
 	}
+	nowUS := w.clk.Now().UnixMicro()
 	opts := mailparse.NewParseOptions()
 	parsed, perr := mailparse.Parse(bytes.NewReader(raw), opts)
 	if perr != nil {
-		// Unparseable body: write zeroed meta so we don't retry forever.
-		// The flag is set so the message is excluded from future sweeps.
+		// Unparseable body: write zeroed meta (if not already computed) so we
+		// don't retry forever, and persist an empty part index keyed by blob
+		// hash so the blob is excluded from future part-index sweeps.
 		w.logger.LogAttrs(ctx, slog.LevelDebug, "bodymeta-worker: parse failed, writing zeroed meta",
 			slog.Uint64("message_id", uint64(id)),
 			slog.String("err", perr.Error()),
 		)
-		if serr := w.store.Meta().SetMessageBodyMeta(ctx, id, "", false); serr != nil {
-			w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: set body meta (zeroed) failed",
+		if !m.BodyMetaComputed {
+			if serr := w.store.Meta().SetMessageBodyMeta(ctx, id, "", false); serr != nil {
+				w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: set body meta (zeroed) failed",
+					slog.Uint64("message_id", uint64(id)),
+					slog.String("err", serr.Error()),
+				)
+				return false
+			}
+		}
+		if serr := w.store.Meta().PutBlobPartIndex(ctx, m.Blob.Hash, mailparse.PartIndexVersion, []byte("[]"), nowUS); serr != nil {
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: put part index (empty) failed",
 				slog.Uint64("message_id", uint64(id)),
 				slog.String("err", serr.Error()),
 			)
@@ -201,10 +208,31 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 		}
 		return true
 	}
-	preview := mailparse.BodyPreview(parsed, 256)
-	hasAtt := mailparse.HasAttachment(parsed)
-	if serr := w.store.Meta().SetMessageBodyMeta(ctx, id, preview, hasAtt); serr != nil {
-		w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: set body meta failed",
+	// Body metadata (preview + has-attachment) is per-message; compute it only
+	// when not already persisted (existing rows on prod already carry it).
+	if !m.BodyMetaComputed {
+		preview := mailparse.BodyPreview(parsed, 256)
+		hasAtt := mailparse.HasAttachment(parsed)
+		if serr := w.store.Meta().SetMessageBodyMeta(ctx, id, preview, hasAtt); serr != nil {
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: set body meta failed",
+				slog.Uint64("message_id", uint64(id)),
+				slog.String("err", serr.Error()),
+			)
+			return false
+		}
+	}
+	// Part index is per-blob: the byte-range map that lets the JMAP part-
+	// download path serve a part without re-parsing the whole message.
+	indexJSON, jerr := json.Marshal(mailparse.BuildPartIndex(parsed))
+	if jerr != nil {
+		w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: marshal part index failed",
+			slog.Uint64("message_id", uint64(id)),
+			slog.String("err", jerr.Error()),
+		)
+		return false
+	}
+	if serr := w.store.Meta().PutBlobPartIndex(ctx, m.Blob.Hash, mailparse.PartIndexVersion, indexJSON, nowUS); serr != nil {
+		w.logger.LogAttrs(ctx, slog.LevelWarn, "bodymeta-worker: put part index failed",
 			slog.Uint64("message_id", uint64(id)),
 			slog.String("err", serr.Error()),
 		)
@@ -212,8 +240,7 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 	}
 	w.logger.LogAttrs(ctx, slog.LevelDebug, "bodymeta-worker: computed",
 		slog.Uint64("message_id", uint64(id)),
-		slog.Bool("has_attachment", hasAtt),
-		slog.Int("preview_len", len(preview)),
+		slog.String("blob_hash", m.Blob.Hash),
 	)
 	return true
 }

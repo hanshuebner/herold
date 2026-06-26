@@ -200,11 +200,88 @@ type partBlobResult struct {
 	data        []byte
 }
 
-// resolvePartBlob fetches message blob msgHash from blobs, parses the MIME
-// tree, and returns the decoded bytes of the part at 1-based pre-order DFS
-// index partIdx (the same enumeration walkParts uses when assigning blobId
-// values to each EmailBodyPart).
-func resolvePartBlob(ctx context.Context, blobs store.Blobs, msgHash string, partIdx int) (*partBlobResult, error) {
+// errIndexFallback signals that the persisted part index could not serve the
+// request for a non-authoritative reason (no index yet, unreadable index, or a
+// range that disagrees with the blob), so the caller should fall back to a fresh
+// full parse. It is never returned to HTTP callers.
+var errIndexFallback = errors.New("protojmap: part index fallback")
+
+// resolvePartBlob returns the decoded bytes and content-type of the MIME part at
+// 1-based pre-order DFS index partIdx within message blob msgHash. It serves the
+// part from the persisted blob_part_index when one is available — seeking to the
+// part's byte range and decoding only that part — and falls back to a full parse
+// for messages not yet indexed. The persisted path keeps a burst of inline-image
+// part downloads from re-reading and re-parsing the whole message on every
+// request, which is what drove the inline-image-fanout OOM (issue #46).
+func resolvePartBlob(ctx context.Context, meta store.Metadata, blobs store.Blobs, msgHash string, partIdx int) (*partBlobResult, error) {
+	res, err := resolvePartFromIndex(ctx, meta, blobs, msgHash, partIdx)
+	if errors.Is(err, errIndexFallback) {
+		return resolvePartByParse(ctx, blobs, msgHash, partIdx)
+	}
+	return res, err
+}
+
+// resolvePartFromIndex serves a part using the persisted index. It returns
+// errIndexFallback when the index cannot serve the request and the caller should
+// re-parse; store.ErrNotFound when the index authoritatively lacks the part; or a
+// concrete error for a blob-store failure.
+func resolvePartFromIndex(ctx context.Context, meta store.Metadata, blobs store.Blobs, msgHash string, partIdx int) (*partBlobResult, error) {
+	ver, js, err := meta.GetBlobPartIndex(ctx, msgHash)
+	if err != nil || ver != mailparse.PartIndexVersion {
+		return nil, errIndexFallback
+	}
+	var entries []mailparse.PartIndexEntry
+	if jerr := json.Unmarshal(js, &entries); jerr != nil {
+		return nil, errIndexFallback
+	}
+	var entry *mailparse.PartIndexEntry
+	for i := range entries {
+		if entries[i].Index == partIdx {
+			entry = &entries[i]
+			break
+		}
+	}
+	if entry == nil || entry.Container {
+		return nil, store.ErrNotFound
+	}
+	// Guard the persisted range against the blob it indexes. An immutable,
+	// content-addressed blob never disagrees with its index, so a mismatch
+	// means a stale or corrupt index: re-parse rather than serve out-of-range
+	// bytes.
+	size, _, serr := blobs.Stat(ctx, msgHash)
+	if serr != nil {
+		return nil, serr
+	}
+	if entry.RawOffset < 0 || entry.RawLen < 0 || entry.RawOffset+entry.RawLen > size {
+		return nil, errIndexFallback
+	}
+	rc, err := blobs.Get(ctx, msgHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	body, berr := entry.OpenBody(rc)
+	if berr != nil {
+		return nil, errIndexFallback
+	}
+	defer body.Close()
+	data, rerr := io.ReadAll(body)
+	if rerr != nil {
+		return nil, errIndexFallback
+	}
+	ct := entry.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return &partBlobResult{contentType: ct, data: data}, nil
+}
+
+// resolvePartByParse is the fallback that fetches message blob msgHash, parses
+// the full MIME tree, and returns the decoded bytes of the part at 1-based
+// pre-order DFS index partIdx (the same enumeration walkParts uses when
+// assigning blobId values to each EmailBodyPart). Used for messages the
+// body-index worker has not reached yet.
+func resolvePartByParse(ctx context.Context, blobs store.Blobs, msgHash string, partIdx int) (*partBlobResult, error) {
 	rc, err := blobs.Get(ctx, msgHash)
 	if err != nil {
 		return nil, err
@@ -331,7 +408,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// The blob store holds only full message blobs; resolve these by
 	// re-parsing the message and extracting the indicated MIME part.
 	if msgHash, partIdx, isPartBlob := partBlobID(blobID); isPartBlob {
-		part, err := resolvePartBlob(r.Context(), s.store.Blobs(), msgHash, partIdx)
+		part, err := resolvePartBlob(r.Context(), s.store.Meta(), s.store.Blobs(), msgHash, partIdx)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				WriteJMAPError(w, http.StatusNotFound, "blobNotFound", blobID)

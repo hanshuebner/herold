@@ -361,6 +361,32 @@ type Metadata interface {
 	// Preview + HasAttachment without touching protocol handlers.
 	ListMessagesNeedingBodyMeta(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
 
+	// -- Blob part index (re #46) -----------------------------------------
+
+	// PutBlobPartIndex upserts the serialised MIME part index for a blob.
+	// The store treats partsJSON as opaque bytes; the caller owns the schema.
+	// Idempotent on blobHash: a second call overwrites version, json, and
+	// computedAtUS. computedAtUS is wall-clock microseconds from the
+	// caller's injected clock.
+	PutBlobPartIndex(ctx context.Context, blobHash string, version int, partsJSON []byte, computedAtUS int64) error
+
+	// GetBlobPartIndex returns the stored index version and JSON for blobHash.
+	// Returns ErrNotFound when no row exists.
+	GetBlobPartIndex(ctx context.Context, blobHash string) (version int, partsJSON []byte, err error)
+
+	// DeleteBlobPartIndex removes the index row for blobHash. Returns nil
+	// when the row is absent (idempotent; a future blob-GC pass calls this
+	// when reaping a source blob).
+	DeleteBlobPartIndex(ctx context.Context, blobHash string) error
+
+	// ListMessagesNeedingPartIndex returns up to limit MessageIDs, newest
+	// first (id DESC), for messages whose blob_hash has no blob_part_index
+	// row at index_version >= minVersion. beforeID pages the sweep: pass 0
+	// to start from the newest message (treated as MAX_INT64 internally);
+	// subsequent pages pass the last returned ID. Mirrors
+	// ListMessagesNeedingBodyMeta's paging contract exactly.
+	ListMessagesNeedingPartIndex(ctx context.Context, beforeID MessageID, minVersion int, limit int) ([]MessageID, error)
+
 	// AppendStateChange writes a single change-feed row directly,
 	// honouring the supplied PrincipalID, Kind, EntityID,
 	// ParentEntityID, Op and Cause. It is intended for synthetic /

@@ -61,7 +61,63 @@ func FuzzParse(f *testing.F) {
 		// Invariant: for each leaf, OpenBody over the input bytes decodes without panic
 		// and returns a reader whose content length equals Part.Size (for non-text leaves).
 		checkOpenBody(t, data, msg.Body)
+		// Invariant: decoding a part via its persisted PartIndexEntry range yields
+		// byte-identical output to decoding it via the live Part. This is the
+		// correctness contract that lets the JMAP part-download path serve a part
+		// from the stored index without re-parsing the whole message.
+		checkPartIndexRoundtrip(t, data, msg)
 	})
+}
+
+// checkPartIndexRoundtrip builds the part index for msg and verifies that, for
+// every leaf, PartIndexEntry.OpenBody over src decodes to the same bytes as the
+// live Part.OpenBody. The index entries and the live parts are zipped by the
+// shared 1-based pre-order DFS enumeration.
+func checkPartIndexRoundtrip(t *testing.T, src []byte, msg Message) {
+	t.Helper()
+	entries := BuildPartIndex(msg)
+	var parts []Part
+	var collect func(p Part)
+	collect = func(p Part) {
+		parts = append(parts, p)
+		for _, c := range p.Children {
+			collect(c)
+		}
+	}
+	collect(msg.Body)
+	if len(entries) != len(parts) {
+		t.Fatalf("part index/tree length mismatch: %d entries, %d parts", len(entries), len(parts))
+	}
+	for i, e := range entries {
+		p := parts[i]
+		if (len(p.Children) > 0) != e.Container {
+			t.Fatalf("part %d container flag mismatch: entry=%v part-has-children=%v", e.Index, e.Container, len(p.Children) > 0)
+		}
+		if e.Container {
+			continue
+		}
+		want, werr := p.OpenBody(bytes.NewReader(src))
+		got, gerr := e.OpenBody(bytes.NewReader(src))
+		if (werr == nil) != (gerr == nil) {
+			t.Fatalf("part %d OpenBody error mismatch: part=%v entry=%v", e.Index, werr, gerr)
+		}
+		if werr != nil {
+			continue
+		}
+		wb, werr := io.ReadAll(want)
+		_ = want.Close()
+		gb, gerr := io.ReadAll(got)
+		_ = got.Close()
+		if (werr == nil) != (gerr == nil) {
+			t.Fatalf("part %d read error mismatch: part=%v entry=%v", e.Index, werr, gerr)
+		}
+		if werr != nil {
+			continue
+		}
+		if !bytes.Equal(wb, gb) {
+			t.Fatalf("part %d decode-by-range mismatch: %d vs %d bytes", e.Index, len(wb), len(gb))
+		}
+	}
 }
 
 func walkFuzzCheck(t *testing.T, p Part, depth int) {

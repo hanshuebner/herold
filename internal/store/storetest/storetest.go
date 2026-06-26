@@ -396,6 +396,10 @@ func Run(t *testing.T, f Factory) {
 		// Postgres is slow enough that three separate cases tipped the
 		// 5-minute confidence-smoke storepg budget over its timeout.
 		{"BodyMeta", testBodyMeta},
+		// -- blob part index (migration 0061, re #46) ---------------------
+		// Groups all blob_part_index scenarios under one top-level case for
+		// the same Postgres-latency reason as BodyMeta above.
+		{"BlobPartIndex", testBlobPartIndex},
 	}
 	for _, c := range cases {
 		tc := c
@@ -9281,4 +9285,293 @@ func testBodyMetaListNeedingBodyMetaPagination(t *testing.T, s store.Store) {
 			t.Fatalf("targetID %d still in pending list after SetMessageBodyMeta", targetID)
 		}
 	}
+}
+
+// -- blob part index (migration 0061, re #46) --------------------------------
+
+// testBlobPartIndex groups all blob_part_index scenarios as subtests so they
+// share one freshly-migrated store. Mirrors the BodyMeta grouping strategy.
+func testBlobPartIndex(t *testing.T, s store.Store) {
+	t.Run("PutGetRoundTrip", func(t *testing.T) { testBlobPartIndexPutGetRoundTrip(t, s) })
+	t.Run("OverwriteIsIdempotent", func(t *testing.T) { testBlobPartIndexOverwriteIsIdempotent(t, s) })
+	t.Run("GetMissingReturnsErrNotFound", func(t *testing.T) { testBlobPartIndexGetMissingReturnsErrNotFound(t, s) })
+	t.Run("DeleteAbsentIsNil", func(t *testing.T) { testBlobPartIndexDeleteAbsentIsNil(t, s) })
+	t.Run("DeleteRemovesRow", func(t *testing.T) { testBlobPartIndexDeleteRemovesRow(t, s) })
+	t.Run("ListNeedingPartIndex_Pagination", func(t *testing.T) { testBlobPartIndexListPagination(t, s) })
+	t.Run("ListNeedingPartIndex_MinVersionFilter", func(t *testing.T) { testBlobPartIndexMinVersionFilter(t, s) })
+}
+
+// testBlobPartIndexPutGetRoundTrip verifies that PutBlobPartIndex persists the
+// version and opaque JSON payload and that GetBlobPartIndex returns them intact.
+func testBlobPartIndexPutGetRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	hash := "deadbeef01"
+	wantVersion := 3
+	wantJSON := []byte(`{"parts":[{"start":0,"end":100}]}`)
+	wantUS := int64(1700000000000000)
+
+	if err := s.Meta().PutBlobPartIndex(ctx, hash, wantVersion, wantJSON, wantUS); err != nil {
+		t.Fatalf("PutBlobPartIndex: %v", err)
+	}
+
+	gotVersion, gotJSON, err := s.Meta().GetBlobPartIndex(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetBlobPartIndex: %v", err)
+	}
+	if gotVersion != wantVersion {
+		t.Errorf("version: want %d, got %d", wantVersion, gotVersion)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("partsJSON: want %s, got %s", wantJSON, gotJSON)
+	}
+}
+
+// testBlobPartIndexOverwriteIsIdempotent verifies that a second PutBlobPartIndex
+// call on the same blobHash overwrites version, json, and computedAtUS.
+func testBlobPartIndexOverwriteIsIdempotent(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	hash := "deadbeef02"
+
+	if err := s.Meta().PutBlobPartIndex(ctx, hash, 1, []byte(`{"v":1}`), 1000); err != nil {
+		t.Fatalf("PutBlobPartIndex (first): %v", err)
+	}
+	if err := s.Meta().PutBlobPartIndex(ctx, hash, 2, []byte(`{"v":2}`), 2000); err != nil {
+		t.Fatalf("PutBlobPartIndex (second): %v", err)
+	}
+
+	gotVersion, gotJSON, err := s.Meta().GetBlobPartIndex(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetBlobPartIndex after overwrite: %v", err)
+	}
+	if gotVersion != 2 {
+		t.Errorf("version after overwrite: want 2, got %d", gotVersion)
+	}
+	if string(gotJSON) != `{"v":2}` {
+		t.Errorf("json after overwrite: want {\"v\":2}, got %s", gotJSON)
+	}
+}
+
+// testBlobPartIndexGetMissingReturnsErrNotFound verifies that GetBlobPartIndex
+// returns store.ErrNotFound when no row exists for the given blobHash.
+func testBlobPartIndexGetMissingReturnsErrNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	_, _, err := s.Meta().GetBlobPartIndex(ctx, "no-such-hash-xyz")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetBlobPartIndex missing: want ErrNotFound, got %v", err)
+	}
+}
+
+// testBlobPartIndexDeleteAbsentIsNil verifies that DeleteBlobPartIndex returns
+// nil when no row exists (idempotent delete).
+func testBlobPartIndexDeleteAbsentIsNil(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().DeleteBlobPartIndex(ctx, "no-such-hash-abc"); err != nil {
+		t.Fatalf("DeleteBlobPartIndex absent: want nil, got %v", err)
+	}
+}
+
+// testBlobPartIndexDeleteRemovesRow verifies that a row inserted with
+// PutBlobPartIndex disappears after DeleteBlobPartIndex.
+func testBlobPartIndexDeleteRemovesRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	hash := "deadbeef03"
+
+	if err := s.Meta().PutBlobPartIndex(ctx, hash, 1, []byte(`{}`), 1000); err != nil {
+		t.Fatalf("PutBlobPartIndex: %v", err)
+	}
+	if err := s.Meta().DeleteBlobPartIndex(ctx, hash); err != nil {
+		t.Fatalf("DeleteBlobPartIndex: %v", err)
+	}
+	_, _, err := s.Meta().GetBlobPartIndex(ctx, hash)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetBlobPartIndex after delete: want ErrNotFound, got %v", err)
+	}
+	// Second delete is still nil (idempotent).
+	if err := s.Meta().DeleteBlobPartIndex(ctx, hash); err != nil {
+		t.Fatalf("DeleteBlobPartIndex (second): want nil, got %v", err)
+	}
+}
+
+// testBlobPartIndexListPagination verifies that ListMessagesNeedingPartIndex
+// returns messages in descending ID order and that beforeID pages the sweep.
+func testBlobPartIndexListPagination(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bpi-page@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Insert five messages; none has a blob_part_index row yet.
+	var ids []store.MessageID
+	for i := 0; i < 5; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("bpi-page-body-%d", i))
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+
+	// Collect the IDs for our five messages in mailbox order.
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
+	}
+	for _, msg := range msgs {
+		ids = append(ids, msg.ID)
+	}
+
+	const minVer = 1
+
+	// All five must appear with beforeID=0.
+	all, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 100)
+	if err != nil {
+		t.Fatalf("ListMessagesNeedingPartIndex all: %v", err)
+	}
+	// Must be in descending order.
+	for i := 1; i < len(all); i++ {
+		if all[i] >= all[i-1] {
+			t.Fatalf("not descending at index %d: %v", i, all)
+		}
+	}
+	// Our five IDs must all be present.
+	have := make(map[store.MessageID]bool, len(all))
+	for _, id := range all {
+		have[id] = true
+	}
+	for _, id := range ids {
+		if !have[id] {
+			t.Fatalf("message %d not in pending list; all=%v", id, all)
+		}
+	}
+
+	// Paginate: first page of 2, then continuation.
+	page1, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) < 2 {
+		t.Fatalf("page1: want at least 2, got %d", len(page1))
+	}
+	if page1[1] >= page1[0] {
+		t.Fatalf("page1 not descending: %v", page1)
+	}
+	cursor := page1[len(page1)-1]
+
+	page2, err := s.Meta().ListMessagesNeedingPartIndex(ctx, cursor, minVer, 100)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	for _, id := range page2 {
+		if id >= cursor {
+			t.Fatalf("page2 contains id %d >= cursor %d", id, cursor)
+		}
+	}
+
+	// limit=0 returns empty without error.
+	none, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 0)
+	if err != nil {
+		t.Fatalf("limit=0: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("limit=0: want empty, got %v", none)
+	}
+}
+
+// testBlobPartIndexMinVersionFilter verifies that ListMessagesNeedingPartIndex
+// treats rows with index_version < minVersion as absent, and that once a row
+// meets the minVersion threshold the message leaves the pending list.
+func testBlobPartIndexMinVersionFilter(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bpi-ver@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// Insert two messages with distinct blobs.
+	ref1 := putBlob(t, s, "bpi-ver-body-1")
+	ref2 := putBlob(t, s, "bpi-ver-body-2")
+
+	insertMsg := func(ref store.BlobRef) store.MessageID {
+		t.Helper()
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		return msgs[len(msgs)-1].ID
+	}
+
+	id1 := insertMsg(ref1)
+	id2 := insertMsg(ref2)
+
+	const minVer = 2
+
+	// Both messages start without a part index.
+	pending, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 100)
+	if err != nil {
+		t.Fatalf("before put: %v", err)
+	}
+	mustContain := func(list []store.MessageID, id store.MessageID, label string) {
+		t.Helper()
+		for _, x := range list {
+			if x == id {
+				return
+			}
+		}
+		t.Fatalf("%s: id %d not found in %v", label, id, list)
+	}
+	mustNotContain := func(list []store.MessageID, id store.MessageID, label string) {
+		t.Helper()
+		for _, x := range list {
+			if x == id {
+				t.Fatalf("%s: id %d unexpectedly found in %v", label, id, list)
+			}
+		}
+	}
+
+	mustContain(pending, id1, "before put")
+	mustContain(pending, id2, "before put")
+
+	// Index message 1 at version 1 (below minVer=2): must still appear.
+	if err := s.Meta().PutBlobPartIndex(ctx, ref1.Hash, 1, []byte(`{}`), 1000); err != nil {
+		t.Fatalf("PutBlobPartIndex v1: %v", err)
+	}
+	pendingAfterV1, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 100)
+	if err != nil {
+		t.Fatalf("after v1: %v", err)
+	}
+	mustContain(pendingAfterV1, id1, "after v1 put (below minVer)")
+	mustContain(pendingAfterV1, id2, "after v1 put")
+
+	// Index message 1 at version 2 (== minVer): must leave the pending list.
+	if err := s.Meta().PutBlobPartIndex(ctx, ref1.Hash, 2, []byte(`{}`), 2000); err != nil {
+		t.Fatalf("PutBlobPartIndex v2: %v", err)
+	}
+	pendingAfterV2, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 100)
+	if err != nil {
+		t.Fatalf("after v2: %v", err)
+	}
+	mustNotContain(pendingAfterV2, id1, "after v2 put (at minVer)")
+	mustContain(pendingAfterV2, id2, "after v2 put")
+
+	// Index message 2 at version 3 (above minVer): both messages leave.
+	if err := s.Meta().PutBlobPartIndex(ctx, ref2.Hash, 3, []byte(`{}`), 3000); err != nil {
+		t.Fatalf("PutBlobPartIndex v3: %v", err)
+	}
+	pendingAfterV3, err := s.Meta().ListMessagesNeedingPartIndex(ctx, 0, minVer, 100)
+	if err != nil {
+		t.Fatalf("after v3: %v", err)
+	}
+	mustNotContain(pendingAfterV3, id1, "after v3 put")
+	mustNotContain(pendingAfterV3, id2, "after v3 put")
 }

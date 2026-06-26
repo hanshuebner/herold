@@ -83,6 +83,11 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		// across subtests and break ClientLog_Pagination / EvictByAge /
 		// EvictByCap / EvictDoesNotCrossSlice in storetest.
 		"clientlog",
+		// Per-blob MIME part index (migration 0061). Keyed by blob_hash with
+		// no FK, so CASCADE from messages never reaches it; like clientlog it
+		// must be enumerated explicitly or rows leak across subtests and break
+		// BlobPartIndex/ListNeedingPartIndex_MinVersionFilter in storetest.
+		"blob_part_index",
 		// Mail core: messages, mailbox ACL, mailboxes, blob refs.
 		"messages",
 		"mailbox_acl",
