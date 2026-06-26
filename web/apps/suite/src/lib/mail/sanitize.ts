@@ -242,6 +242,55 @@ function linkifyOneTextNode(node: Text): void {
   node.parentNode?.replaceChild(frag, node);
 }
 
+/**
+ * Extract a positive pixel value for a CSS property from a raw style
+ * string. Returns null when the property is absent, not in px units,
+ * or not a positive finite number.
+ *
+ * The regex matches the property name at a declaration boundary (start
+ * of string or after a semicolon) so that a prefix like `max-width`
+ * cannot shadow `width`.
+ */
+function parsePxFromStyle(style: string, prop: string): number | null {
+  const re = new RegExp(
+    `(?:^|;)\\s*${prop}\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*px`,
+    'i',
+  );
+  const m = re.exec(style);
+  if (!m?.[1]) return null;
+  const v = parseFloat(m[1]);
+  return isFinite(v) && v > 0 ? Math.round(v) : null;
+}
+
+/**
+ * Promote pixel dimensions from an <img>'s inline style attribute to
+ * HTML width/height attributes so the browser can apply an implicit
+ * aspect-ratio and reserve layout space before the image loads (issue
+ * #47).
+ *
+ * Only missing attributes are filled in — existing HTML attributes are
+ * never overwritten. Only px values are accepted; relative units
+ * (%, em, rem, …) are skipped because they cannot be converted to
+ * meaningful absolute attribute values without knowing the containing
+ * block.
+ *
+ * No style content other than the extracted numeric pixel values is
+ * forwarded to the attribute, so this cannot smuggle arbitrary CSS
+ * through the sanitiser.
+ */
+function promoteStyleDimensions(img: Element): void {
+  const style = img.getAttribute('style');
+  if (!style) return;
+  if (!img.hasAttribute('width')) {
+    const w = parsePxFromStyle(style, 'width');
+    if (w !== null) img.setAttribute('width', String(w));
+  }
+  if (!img.hasAttribute('height')) {
+    const h = parsePxFromStyle(style, 'height');
+    if (h !== null) img.setAttribute('height', String(h));
+  }
+}
+
 function rewriteImage(img: Element, options: SanitizeOptions): void {
   const src = img.getAttribute('src');
   const alt = img.getAttribute('alt') ?? '';
@@ -258,6 +307,13 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
       img.setAttribute('src', resolved);
       img.setAttribute('referrerpolicy', 'no-referrer');
       img.setAttribute('loading', 'lazy');
+      // Promote inline-style pixel dimensions to HTML attributes so the
+      // browser can compute an implicit aspect-ratio and reserve layout
+      // space before the image bytes arrive (issue #47). When both width
+      // and height attributes are already present (the common marketing-
+      // HTML case) the function is a no-op. The style attribute itself is
+      // left untouched — this only adds the missing HTML attributes.
+      promoteStyleDimensions(img);
       return;
     }
     img.removeAttribute('src');

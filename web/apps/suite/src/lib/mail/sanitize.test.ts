@@ -69,6 +69,137 @@ describe('sanitizeHtml — cid: image rewrite', () => {
   });
 });
 
+describe('sanitizeHtml — inline image dimension preservation (issue #47)', () => {
+  // ── HTML attribute preservation ────────────────────────────────────────────
+
+  it('preserves existing width and height HTML attributes on cid: images (aspect-ratio reservation)', () => {
+    // DOMPurify keeps width/height by default; rewriteImage must not strip them.
+    const html = '<img width="600" height="200" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).toContain('width="600"');
+    expect(body).toContain('height="200"');
+    expect(body).toContain('src="/jmap/download/blob/foo.jpg"');
+  });
+
+  it('does not add width/height to a blocked cid: image (no cidMap entry)', () => {
+    const html = '<img width="600" height="200" src="cid:missing">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: {},
+    }));
+    // Blocked images show the alt text, not a reserved-space placeholder.
+    expect(body).toContain('data-herold-blocked="cid"');
+    expect(body).not.toContain('src=');
+  });
+
+  // ── Style-dimension promotion ──────────────────────────────────────────────
+
+  it('promotes style px dimensions to width/height attributes on cid: images when attrs are absent', () => {
+    // Marketing HTML often carries dimensions only as inline style; converting
+    // them to HTML attributes enables the browser implicit aspect-ratio.
+    const html = '<img style="display:block;width:600px;height:200px;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).toContain('width="600"');
+    expect(body).toContain('height="200"');
+    expect(body).toContain('src="/jmap/download/blob/foo.jpg"');
+  });
+
+  it('promotes only the missing attribute when one is already present', () => {
+    // If width is already an attribute, only height gets promoted from style.
+    const html = '<img width="300" style="width:600px;height:400px;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    // Existing width="300" is preserved; height is promoted from style.
+    expect(body).toContain('width="300"');
+    expect(body).toContain('height="400"');
+  });
+
+  it('promotes only width when style has width but not height', () => {
+    const html = '<img style="width:600px;display:block;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).toContain('width="600"');
+    // No height in style → no height attribute added (cannot infer).
+    expect(body).not.toMatch(/height="\d+"/);
+  });
+
+  it('does not promote non-px style dimensions (%, em, rem, vh)', () => {
+    // Relative units cannot be converted to meaningful absolute attribute
+    // values without knowing the containing block.
+    const html = '<img style="width:100%;height:50vh;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).not.toMatch(/width="\d+"/);
+    expect(body).not.toMatch(/height="\d+"/);
+  });
+
+  it('does not promote max-width as width (boundary guard)', () => {
+    // The regex anchors at declaration boundaries so max-width does not
+    // shadow width even if it appears first in the style string.
+    const html = '<img style="max-width:100%;height:200px;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    // max-width:100% is not px → no width attribute added.
+    expect(body).not.toMatch(/width="\d+"/);
+    // height:200px is promoted.
+    expect(body).toContain('height="200"');
+  });
+
+  it('rounds fractional px values to integers', () => {
+    const html = '<img style="width:600.5px;height:200.3px;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).toContain('width="601"');
+    expect(body).toContain('height="200"');
+  });
+
+  it('does not add width/height when style has no dimensions', () => {
+    const html = '<img style="display:block;border:0;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).not.toMatch(/width="\d+"/);
+    expect(body).not.toMatch(/height="\d+"/);
+  });
+
+  it('does not add width/height when no style attribute is present', () => {
+    const html = '<img alt="logo" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).not.toMatch(/width="\d+"/);
+    expect(body).not.toMatch(/height="\d+"/);
+  });
+
+  it('does not promote zero or negative px values', () => {
+    const html = '<img style="width:0px;height:-100px;" src="cid:foo">';
+    const body = bodyOf(sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { foo: '/jmap/download/blob/foo.jpg' },
+    }));
+    expect(body).not.toMatch(/width="\d+"/);
+    expect(body).not.toMatch(/height="\d+"/);
+  });
+});
+
 describe('sanitizeHtml — external image gating', () => {
   it('removes src when loadImages=false', () => {
     const html = '<img src="https://x.test/a.png" alt="x">';
