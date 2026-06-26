@@ -159,6 +159,60 @@ func TestResolvePartBlobFallsBackWithoutIndex(t *testing.T) {
 	}
 }
 
+// TestResolvePartBlobTextPartNotCappedAt1MiB verifies that downloading a text
+// part returns the full decoded body, not the 1 MiB-capped Part.Text. This is
+// the server guarantee the reader relies on to render an oversized HTML body
+// (issue #48): both the indexed path and the parse fallback must return it all.
+func TestResolvePartBlobTextPartNotCappedAt1MiB(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(ctx, t.TempDir()+"/t.db", nil, clk)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// A text/html part well over the 1 MiB DefaultMaxTextPartBytes cap.
+	const htmlLen = 1<<20 + 500_000 // ~1.5 MiB
+	var body bytes.Buffer
+	body.WriteString("Content-Type: multipart/alternative; boundary=A\r\n\r\n")
+	body.WriteString("--A\r\nContent-Type: text/plain\r\n\r\nplain\r\n")
+	body.WriteString("--A\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
+	body.WriteString("<html><body>")
+	body.Write(bytes.Repeat([]byte("x"), htmlLen))
+	body.WriteString("</body></html>\r\n--A--\r\n")
+	raw := body.Bytes()
+
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Part 3 is the text/html leaf (1=alternative, 2=text/plain, 3=text/html).
+	// Without an index (parse fallback):
+	res, err := resolvePartBlob(ctx, st.Meta(), st.Blobs(), ref.Hash, 3)
+	if err != nil {
+		t.Fatalf("resolvePartBlob (fallback): %v", err)
+	}
+	if len(res.data) <= 1<<20 {
+		t.Fatalf("fallback returned %d bytes; expected the full part (>1 MiB), not the capped Text", len(res.data))
+	}
+
+	// And with the index persisted:
+	parsed, _ := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	idxJSON, _ := json.Marshal(mailparse.BuildPartIndex(parsed))
+	if err := st.Meta().PutBlobPartIndex(ctx, ref.Hash, mailparse.PartIndexVersion, idxJSON, clk.Now().UnixMicro()); err != nil {
+		t.Fatalf("put index: %v", err)
+	}
+	res2, err := resolvePartBlob(ctx, st.Meta(), st.Blobs(), ref.Hash, 3)
+	if err != nil {
+		t.Fatalf("resolvePartBlob (indexed): %v", err)
+	}
+	if len(res2.data) != len(res.data) {
+		t.Fatalf("indexed (%d) and fallback (%d) text lengths differ", len(res2.data), len(res.data))
+	}
+}
+
 // TestResolvePartBlobConcurrentFanoutBounded reproduces the inline-image fanout
 // from issue #46: many concurrent part downloads of the same large message. With
 // the index, total bytes read across the burst stays proportional to the parts

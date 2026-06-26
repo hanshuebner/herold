@@ -300,8 +300,13 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string) (
 			return out
 		}
 		// Leaf: record body value and classify into textParts/htmlParts/attParts.
+		// p.Text is already capped at the parser's DefaultMaxTextPartBytes;
+		// propagate that cap as isTruncated so the client knows the inline
+		// value is incomplete and can fetch the full part by blobId (RFC 8621
+		// §4.1.4; issue #48). The truncateAt clamp below tightens it further
+		// when the client asked for a smaller maxBodyValueBytes.
 		text := p.Text
-		truncated := false
+		truncated := p.TextTruncated
 		if truncateAt > 0 && len(text) > truncateAt {
 			text = text[:truncateAt]
 			truncated = true

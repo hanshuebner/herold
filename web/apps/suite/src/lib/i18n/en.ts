@@ -244,6 +244,8 @@ export const en = {
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
   'msg.alwaysFrom': 'Always from {sender}',
+  // Truncated body recovery banner (Forgejo #48).
+  'msg.body.loadingFull': 'Loading complete message...',
   'msg.noBody': '(no body)',
   'msg.noSender': '(no sender)',
   'msg.recipientsTo': 'to {first}',

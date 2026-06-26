@@ -311,12 +311,12 @@ func resolvePartByParse(ctx context.Context, blobs store.Blobs, msgHash string, 
 			if ct == "" {
 				ct = "application/octet-stream"
 			}
-			// For text parts the decoded content is already in p.Text.
-			// For non-text parts we stream via OpenBody.
-			if p.IsText() && p.Text != "" {
-				found = &partBlobResult{contentType: ct, data: []byte(p.Text)}
-				return
-			}
+			// Stream the full decoded body via OpenBody for every leaf,
+			// including text parts. Part.Text is capped at
+			// DefaultMaxTextPartBytes (1 MiB); a part download must return the
+			// complete part, so decode the full byte range here rather than
+			// serving the truncated Text (this is what lets the reader fetch a
+			// large HTML body that exceeds the inline cap, issue #48).
 			bodyRC, berr := p.OpenBody(src)
 			if berr != nil {
 				found = &partBlobResult{contentType: ct, data: nil}

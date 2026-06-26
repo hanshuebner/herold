@@ -1,3 +1,10 @@
+<script module lang="ts">
+  // Module-level session cache: email.id → full HTML body text.
+  // Persists across accordion re-mounts within the same browser session so
+  // navigating away and back to the same thread does not re-fetch.
+  const _fullBodyCache = new Map<string, string>();
+</script>
+
 <script lang="ts">
   import HtmlBody from './HtmlBody.svelte';
   import AttachmentList from './AttachmentList.svelte';
@@ -7,6 +14,11 @@
   import { htmlHasExternalImages } from './sanitize';
   import { splitQuotedText } from './quoted';
   import { emailHtmlBody, emailTextBody, type Email } from './types';
+  import {
+    htmlBodyIsTruncated,
+    htmlBodyFullDownloadUrl,
+    fetchFullHtmlBody,
+  } from './html-body-full';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
@@ -33,7 +45,66 @@
   }
   let { email, expanded, onToggle }: Props = $props();
 
-  let html = $derived(emailHtmlBody(email));
+  // ── Truncated-body recovery (Forgejo #48) ─────────────────────────────
+  //
+  // Email/get caps body values at 1 MiB (mailparse.DefaultMaxTextPartBytes)
+  // and sets isTruncated: true on the affected bodyValue. When the inline
+  // value is truncated, we fetch the full body via the JMAP download URL
+  // for the html body part's blobId (no cap on the blob endpoint) and swap
+  // the rendered content once the fetch completes.
+  //
+  // The cache is module-level so navigating away and back to the same thread
+  // does not re-fetch within the same browser session.
+
+  let _isTruncated = $derived(htmlBodyIsTruncated(email));
+
+  // Rendered html: starts as the inline (possibly truncated) value and
+  // swaps to the fetched full text once the download completes. A null
+  // means "use the inline value", not "no body".
+  let _htmlFull = $state<string | null>(null);
+  let _htmlFetching = $state(false);
+  // Plain boolean (not reactive) so the effect does not loop on its own write.
+  let _htmlFetchAttempted = false;
+
+  // Kick off the full-body fetch when the accordion is expanded and the
+  // body value was truncated by the server. untrack() prevents the async
+  // writes to _htmlFull/_htmlFetching from looping back into the effect.
+  $effect(() => {
+    if (!expanded || !_isTruncated) return;
+    const emailId = email.id;
+    untrack(() => {
+      if (_htmlFetchAttempted) return;
+
+      // Cache hit from a previous mount of this email within the session.
+      const cached = _fullBodyCache.get(emailId);
+      if (cached !== undefined) {
+        _htmlFull = cached;
+        _htmlFetchAttempted = true;
+        return;
+      }
+
+      const accountId = auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'];
+      if (!accountId) return;
+      const url = htmlBodyFullDownloadUrl(email, accountId, (args) => jmap.downloadUrl(args));
+      if (!url) return;
+
+      _htmlFetchAttempted = true;
+      _htmlFetching = true;
+      void fetchFullHtmlBody(url)
+        .then((text) => {
+          _fullBodyCache.set(emailId, text);
+          _htmlFull = text;
+        })
+        .catch(() => {
+          // Fall back to the inline truncated value — _htmlFull stays null.
+        })
+        .finally(() => {
+          _htmlFetching = false;
+        });
+    });
+  });
+
+  let html = $derived(_htmlFull ?? emailHtmlBody(email));
   let text = $derived(emailTextBody(email));
   let textSplit = $derived(text ? splitQuotedText(text) : null);
   let quotedExpanded = $state(false);
@@ -550,6 +621,9 @@
   {#if expanded}
     <div class="body">
       {#if html}
+        {#if _htmlFetching}
+          <div class="loading-banner" role="status">{t('msg.body.loadingFull')}</div>
+        {/if}
         {#if hasExternalImages && !loadImages}
           <div class="image-banner" role="status">
             <span>{t('msg.imagesBlocked')}</span>
@@ -773,6 +847,19 @@
 
   .body {
     padding: 0 var(--spacing-05) var(--spacing-05);
+  }
+
+  /* Loading-full banner: shown while the truncated body is being replaced
+     with the full download. Deliberately small and non-blocking so the
+     user can already scroll the 1 MiB prefix while the rest loads. */
+  .loading-banner {
+    padding: var(--spacing-02) var(--spacing-04);
+    margin-bottom: var(--spacing-03);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
   }
 
   .image-banner {

@@ -242,6 +242,8 @@ export const de = {
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
   'msg.alwaysFrom': 'Immer von {sender}',
+  // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
+  'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
   'msg.noBody': '(kein Inhalt)',
   'msg.noSender': '(kein Absender)',
   'msg.recipientsTo': 'an {first}',
