@@ -44,6 +44,42 @@ func newPoolForTest(t *testing.T, ha *testharness.Server, ts *testIMAPServer) *P
 	})
 }
 
+// pumpFakeClock advances the harness fake clock in the background until the
+// test ends. The worker's reconnect backoff (worker.run) and the write-back
+// poll/retry loop wait on the injected clock via clk.After. On the happy path
+// the worker reaches idle/polling without any clock wait, but a transient
+// connect or sync error (more likely under loaded CI) drops it into the
+// backoff branch, where clk.After blocks forever on a frozen fake clock -- so
+// the worker never reaches idle/polling and the test fails at its real-time
+// deadline. Pumping the clock lets those waits fire promptly so a transient
+// failure is retried immediately rather than parking the worker. Mirrors the
+// advance loop in TestSnapshotBackoffAndErrored.
+func pumpFakeClock(t *testing.T, ha *testharness.Server) {
+	t.Helper()
+	fc, ok := ha.Clock.(*clock.FakeClock)
+	if !ok {
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				fc.Advance(backoffCap + time.Second)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+}
+
 // --------------------------------------------------------------------------
 // Test: after initial sync the snapshot shows connected, idle/polling, LastSyncAt set.
 // --------------------------------------------------------------------------
@@ -71,9 +107,18 @@ func TestSnapshotAfterInitialSync(t *testing.T) {
 	pool := newPoolForTest(t, ha, ts)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	go func() { _ = pool.Run(ctx) }()
+	// Advance the fake clock so a transient connect/sync error retries
+	// promptly instead of parking the worker in backoff on a frozen clock.
+	pumpFakeClock(t, ha)
+
+	// Run the pool and drain it on cleanup before the test returns, so worker
+	// shutdown (write-back LOGOUT etc.) never logs into a finished test.
+	// Registered after pumpFakeClock so the clock keeps advancing while the
+	// worker drains (t.Cleanup runs LIFO).
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); _ = pool.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	// Wait until the worker reaches idle or polling (initial sync done).
 	var s WorkerStatus
