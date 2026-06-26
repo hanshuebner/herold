@@ -220,6 +220,23 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: pnpm install (workspace)
         run: pnpm --dir web install --frozen-lockfile
+      # The ephemeral runner VM boots with unattended-upgrades holding the
+      # dpkg lock. Playwright's `install --with-deps` runs apt-get under the
+      # hood and exits 100 ("Could not get lock /var/lib/dpkg/lock-frontend")
+      # when it loses that race. Stop the upgrader and wait for the lock to
+      # clear so the browser-dependency install can acquire it.
+      - name: free apt lock (runner boots with unattended-upgrades)
+        run: |
+          sudo systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+          sudo systemctl kill --kill-who=all unattended-upgrades.service 2>/dev/null || true
+          for i in $(seq 1 60); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "waiting for apt/dpkg lock to release ($i/60)..."
+            sleep 2
+          done
+          echo "apt/dpkg lock still held after 120s; proceeding anyway" >&2
       - name: install Playwright browsers (chromium only)
         run: pnpm --filter @herold/admin test:e2e:install
       - name: run admin e2e tests (chromium)
