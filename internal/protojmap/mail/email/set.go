@@ -500,6 +500,16 @@ func (h *handlerSet) createEmail(
 	}
 	msg.ID = mid
 
+	// Thread resolution runs inside insertMessageTx and may assign a
+	// thread_id that differs from the zero value in msg.ThreadID (the
+	// transaction modifies the DB row but does not propagate back to
+	// the caller's struct). Fetch the assigned thread_id so the create
+	// response is authoritative: RFC 8621 §4.6 requires all server-set
+	// properties, including threadId, to be correct in the created map.
+	if m, fetchErr := h.store.Meta().GetMessage(ctx, mid); fetchErr == nil {
+		msg.ThreadID = m.ThreadID
+	}
+
 	// Render the created email. Use the full render path so that
 	// hasAttachment is computed from the MIME structure rather than
 	// defaulting to false. RFC 8621 §4.6 requires the Email object

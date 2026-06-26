@@ -947,7 +947,16 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	}
 	defer rc.Close()
 	signingDomain := domainOf(identityEmail)
-	threadID := strconv.FormatUint(msg.ThreadID, 10)
+	// Format the thread ID as a JMAP Thread ID (RFC 8621 §7.5). The store
+	// uses thread_id = 0 to mean "this message is its own thread root; the
+	// JMAP thread key is the message id itself." In that case we produce
+	// "t<messageID>"; otherwise we use the shared thread_id value.
+	var threadID string
+	if msg.ThreadID == 0 {
+		threadID = "t" + strconv.FormatUint(uint64(msg.ID), 10)
+	} else {
+		threadID = "t" + strconv.FormatUint(msg.ThreadID, 10)
+	}
 	now := s.h.clk.Now().UTC()
 	// SendAtUs records the user-visible sendAt for /get rendering. When
 	// the request supplied a future sendAt we persist it verbatim so
