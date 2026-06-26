@@ -10,7 +10,7 @@ BUILDFLAGS := -buildvcs=true $(LDFLAGS)
 PKGS := ./...
 FUZZTIME ?= 30s
 
-.PHONY: all build build-server build-web build-plugins prep-web manual test test-server test-web \
+.PHONY: all build build-server build-web build-plugins prep-web manual dev test test-server test-web \
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-jmaptest interop-clean \
@@ -69,6 +69,16 @@ prep-web:
 # the port with MANUAL_PORT.
 manual:
 	cd web/packages/manual && node scripts/dev.mjs
+
+# `dev` starts a persistent development loop: herold backend on
+# 127.0.0.1:8080 (or HEROLD_DEV_BACKEND_PORT) and the suite Vite dev
+# server on http://localhost:5173/ (or HEROLD_DEV_VITE_PORT). Editing
+# any file under web/apps/suite/** hot-reloads in the browser; no
+# backend restart is needed. State persists in .dev/ across restarts.
+# On first run the domain, admin principal, and seed principals are
+# provisioned automatically. Override HEROLD_DEV_DIR to relocate state.
+dev: build-server
+	./scripts/dev-server.sh
 
 build-plugins:
 	@for p in plugins/herold-*; do \
