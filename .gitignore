@@ -38,6 +38,7 @@ coverage.html
 /.env.local
 /data/
 /tmp/
+/.dev/
 /plugins/**/plugins/
 /.coquill
 

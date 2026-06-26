@@ -130,6 +130,9 @@ Design and specification (the historical record; not user-facing):
 
 Contributor and agent context:
 
+- [docs/manual/dev/getting-started.mdoc](./docs/manual/dev/getting-started.mdoc) -
+  clone, build, run locally, test, and pass the quality gate; the
+  starting point for new contributors.
 - [CLAUDE.md](./CLAUDE.md) - working agreement for Claude Code agents.
 - [STANDARDS.md](./STANDARDS.md) - global coding and development
   standards. Authoritative.
