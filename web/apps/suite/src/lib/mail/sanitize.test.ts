@@ -291,10 +291,11 @@ describe('sanitizeHtml — quoted-history collapse', () => {
     expect(body).not.toContain('<details');
   });
 
-  it('bottom-posted fresh reply stays outside the collapsed region (re #32)', () => {
+  it('bottom-posted fresh reply causes the quoted region to remain expanded (re #32, re #49)', () => {
     // Apple Mail bottom-posting: the user types their reply after the
-    // quoted block. The fresh reply div is a sibling of the blockquote.
-    // Without the fix, this sibling is swept into <details> and hidden.
+    // quoted block. With issue #49 the fix goes further than #32: when
+    // fresh content follows the blockquote the quote is not trailing and
+    // must not be wrapped in <details> at all — leaving it fully expanded.
     const html =
       '<blockquote>' +
         '<p>On Mon Alice wrote: original message text</p>' +
@@ -303,14 +304,11 @@ describe('sanitizeHtml — quoted-history collapse', () => {
         '<p>My bottom-posted reply that must remain visible</p>' +
       '</div>';
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
-    // The blockquote must be collapsed.
-    expect(body).toContain('<details class="herold-quoted">');
-    // The fresh reply text must appear AFTER </details>, not inside it.
-    const detailsEnd = body.indexOf('</details>');
-    const replyPos = body.indexOf('My bottom-posted reply');
-    expect(detailsEnd).not.toBe(-1);
-    expect(replyPos).not.toBe(-1);
-    expect(replyPos).toBeGreaterThan(detailsEnd);
+    // No <details> wrapping — the quoted region is not trailing.
+    expect(body).not.toContain('<details');
+    // Both the quoted history and the reply are directly visible.
+    expect(body).toContain('On Mon Alice wrote');
+    expect(body).toContain('My bottom-posted reply that must remain visible');
   });
 
   it('gmail attribution + quoted div are both swept into details (sweep not broken by re #32 fix)', () => {
@@ -343,6 +341,56 @@ describe('sanitizeHtml — quoted-history collapse', () => {
     const detailsEnd = body.indexOf('</details>');
     // The <br> must appear before </details>.
     expect(body.indexOf('<br')).toBeLessThan(detailsEnd);
+  });
+
+  // issue #49 — trailing-only collapse rule
+  it('#49 bottom-posted: <blockquote> followed by a fresh <p> is not collapsed', () => {
+    const html =
+      '<blockquote>Quoted history.</blockquote>' +
+      '<p>Reply that follows the quote.</p>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('<details');
+    expect(body).toContain('Quoted history.');
+    expect(body).toContain('Reply that follows the quote.');
+  });
+
+  it('#49 interleaved: fresh content between two quoted blocks prevents any collapsing', () => {
+    const html =
+      '<p>First reply paragraph.</p>' +
+      '<blockquote>First quoted block.</blockquote>' +
+      '<p>Second reply paragraph.</p>' +
+      '<blockquote>Second quoted block.</blockquote>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('<details');
+    expect(body).toContain('First quoted block.');
+    expect(body).toContain('Second quoted block.');
+  });
+
+  it('#49 quote-only body with no surrounding content collapses', () => {
+    const html = '<blockquote>Only quoted text, no reply at all.</blockquote>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('<details class="herold-quoted">');
+    expect(body).toContain('Only quoted text, no reply at all.');
+  });
+
+  it('#49 trailing whitespace-only text node after quote does not prevent collapsing', () => {
+    // Whitespace text nodes are not fresh content — the region is still
+    // trailing and the blockquote should be collapsed.
+    const html = '<p>My reply.</p><blockquote>Original.</blockquote>   ';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('<details class="herold-quoted">');
+  });
+
+  it('#49 top-posted reply before a trailing quote still collapses the quote', () => {
+    // Standard top-post: fresh reply is BEFORE the quote, not after.
+    // The quote is trailing — collapse it.
+    const html =
+      '<p>My reply.</p>' +
+      '<blockquote>Original message that was replied to.</blockquote>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('<details class="herold-quoted">');
+    expect(body).toContain('Original message that was replied to.');
+    expect(body.indexOf('My reply.')).toBeLessThan(body.indexOf('<details'));
   });
 });
 

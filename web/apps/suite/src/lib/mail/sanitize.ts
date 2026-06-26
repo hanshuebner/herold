@@ -313,11 +313,33 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
  * or a <div class*="gmail_quote"|"yahoo_quoted">. Only the *first* such
  * region per body is wrapped — nested replies inside a quote remain
  * inert because they are deeper in the tree.
+ *
+ * A quoted region is collapsed ONLY when it is trailing: no fresh
+ * (non-quoted, non-whitespace) content may follow it (or follow the
+ * quote/empty siblings that would be absorbed with it). Bottom-posted
+ * and interleaved replies leave fresh content after the quote — in those
+ * cases the quote is left expanded so the context remains readable
+ * (issue #49).
  */
 function collapseQuotedRegions(fragment: DocumentFragment): void {
   const root = fragment;
   const candidate = findFirstQuotedRegion(root);
   if (!candidate) return;
+
+  // Guard: only collapse when the quoted region is truly trailing.
+  // Walk past the contiguous block of quote-or-empty siblings that
+  // would be absorbed with the candidate to find the first fresh
+  // sibling. If one exists, the quote is not trailing (bottom-posted
+  // or interleaved reply content follows) and must be left expanded.
+  let probe: Node | null = candidate.nextSibling;
+  while (probe !== null && isQuoteOrEmptyNode(probe)) {
+    probe = probe.nextSibling;
+  }
+  if (probe !== null) {
+    // Fresh content follows the quoted group — leave it expanded.
+    return;
+  }
+
   const owner = candidate.ownerDocument!;
   const details = owner.createElement('details');
   details.setAttribute('class', 'herold-quoted');
@@ -332,12 +354,12 @@ function collapseQuotedRegions(fragment: DocumentFragment): void {
   details.appendChild(summary);
   candidate.parentNode?.insertBefore(details, candidate);
   details.appendChild(candidate);
-  // Move sibling nodes that are themselves quoted regions (or empty
-  // separators) into <details> too — quoted history sometimes continues
-  // outside the <blockquote> with an attribution div or a <hr>. Stop at
-  // the first sibling that contains non-empty, non-quoted text so that a
-  // bottom-posted fresh reply (a sibling div after the blockquote, as
-  // Apple Mail emits) stays visible outside the collapsed region (re #32).
+  // Absorb trailing siblings that are themselves quoted regions or empty
+  // separators into <details> — quoted history sometimes continues outside
+  // the first <blockquote> with an attribution div or a <hr>. The
+  // pre-check above guarantees that every remaining sibling is
+  // quote-or-empty, so the loop will reach the end without hitting the
+  // break condition; the guard is kept as a defensive boundary.
   let next = details.nextSibling;
   while (next) {
     if (!isQuoteOrEmptyNode(next)) break;
