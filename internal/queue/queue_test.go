@@ -324,10 +324,17 @@ func TestSubmitTransientThenSuccess(t *testing.T) {
 		t.Fatalf("never observed deferred state")
 	}
 
-	// Advance the clock past the next-attempt window. The scheduler arms
-	// its poll timer for the earliest NextAttemptAt, so if the advance
-	// fires between select exits the deferred row is already due and
-	// FakeClock.After fires immediately on the next iteration.
+	// Wait for the scheduler to register its clk.After poll-timer waiter
+	// before advancing the clock. The gap that causes the flake: after
+	// claiming the item (row→Inflight) the scheduler calls
+	// EarliestNextAttempt, which only looks at queued/deferred rows.
+	// While the row is Inflight that query returns nothing, so
+	// wait=pollInterval. If the advance fires between that call and the
+	// subsequent clk.After(pollInterval) registration, the waiter lands
+	// at now+advance+pollInterval — a deadline nothing ever crosses again.
+	// NumWaiters() >= 1 proves the scheduler is blocked on its timer, so
+	// Advance(45s) is guaranteed to fire it (50ms << 45s).
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(45 * time.Second)
 	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
@@ -1500,6 +1507,23 @@ func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
 	return pred()
 }
 
+// waitForSchedulerTimer blocks until the scheduler goroutine has registered
+// at least n After-style waiters on clk. In the steady state the Run loop
+// registers exactly one (the poll-timer in the main select). Tests that do
+// a single clk.Advance must call this before the Advance: if the advance
+// fires before clk.After(wait) is called, the subsequent registration lands
+// at now+advance+wait — a future deadline that nothing will ever cross again.
+// AfterFunc timers are not counted; the queue scheduler uses After, not
+// AfterFunc, for its poll timer.
+func waitForSchedulerTimer(t *testing.T, clk *clock.FakeClock, n int) {
+	t.Helper()
+	if !waitFor(t, 5*time.Second, func() bool {
+		return clk.NumWaiters() >= n
+	}) {
+		t.Fatalf("scheduler poll timer never armed: want >= %d waiters, got %d", n, clk.NumWaiters())
+	}
+}
+
 func mustStats(t *testing.T, f *fixture) queue.Stats {
 	t.Helper()
 	s, err := f.queue.Stats(f.ctx)
@@ -1637,10 +1661,13 @@ func TestRetry_ReopensBodyReader(t *testing.T) {
 	}) {
 		t.Fatalf("never observed deferred state after first attempt")
 	}
-	// No NumWaiters barrier: the scheduler arms clk.After for the next due
-	// time, so advancing past it fires immediately even if the scheduler
-	// re-arms after the advance (the lost-wakeup the barrier compensated
-	// for is fixed at its root in queue.go).
+	// Same race as TestSubmitTransientThenSuccess: EarliestNextAttempt
+	// sees no queued/deferred rows while the row is Inflight, so
+	// wait=pollInterval. An Advance that races the subsequent
+	// clk.After(pollInterval) call arms the waiter at
+	// now+advance+pollInterval — stuck. NumWaiters() >= 1 proves the
+	// scheduler is blocked on its timer before we fire the advance.
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(retryDelay + time.Second)
 	// Wait for the second delivery attempt to complete.
 	if !waitFor(t, 5*time.Second, func() bool {
