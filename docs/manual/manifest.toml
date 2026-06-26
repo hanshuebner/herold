@@ -63,3 +63,11 @@ home = "index"
   slug  = "advanced-builds"
   file  = "admin/advanced-builds.mdoc"
   title = "Advanced Build Options"
+
+[dev]
+home = "getting-started"
+
+  [[dev.chapters]]
+  slug  = "getting-started"
+  file  = "dev/getting-started.mdoc"
+  title = "Getting Started"

@@ -1,0 +1,351 @@
+---
+title: Developer Getting Started
+slug: getting-started
+audience: dev
+---
+
+# Developer Getting Started
+
+This guide takes you from a fresh clone to a working local dev loop:
+build, run, edit, test, and pass the quality gate. Read it top-to-bottom
+on your first day; afterwards use the headings as a reference.
+
+For operator install instructions see [Installing Herold](../admin/install);
+for the design baseline see `docs/design/` in the repository.
+
+## Prerequisites
+
+| Tool | Required version | Notes |
+|------|-----------------|-------|
+| Go | 1.26 or newer | `go.mod` pins `go 1.26.4`; `go` fetches the pinned toolchain transparently on the first build |
+| git | any recent | clone and pre-commit hooks |
+| Node.js | 20 LTS or newer | only needed to build or develop the web SPAs under `web/` |
+| pnpm | 10 | workspace manager for the `web/` monorepo; `npm install -g pnpm@10` |
+
+The default build is pure Go -- no C compiler, no CGO, no shared
+libraries. The `nofrontend` build tag lets you compile the backend with
+no Node toolchain at all (see [Backend-only build](#backend-only-build)).
+
+## Clone and first build
+
+```bash
+git clone https://code.netzhansa.com/hanshuebner/herold.git
+cd herold
+make build
+```
+
+`make build` runs `make build-web` (pnpm workspace build, produces the
+Suite SPA) then `make build-server` (compiles the binary). The binary
+lands at `bin/herold`.
+
+### The prep-web step
+
+The Go source embeds the compiled web assets via `//go:embed dist` in
+`internal/webspa/`. On a fresh checkout the `dist/` tree is empty, which
+causes `go build`, `go vet`, and `go test` to fail with an embed error.
+
+`make prep-web` copies tracked placeholder files from
+`internal/webspa/placeholder/` into `internal/webspa/dist/` when the
+real assets are absent, so the build succeeds without a full pnpm
+run. `make build-server` and `make test-server` both depend on
+`prep-web` and run it automatically; you only need to invoke it
+explicitly if you call `go build ./...` or `go test ./...` directly.
+
+```bash
+# Run once after a fresh clone if you are not running make build:
+make prep-web
+```
+
+### Backend-only build
+
+When only Go code has changed and the web assets are already current,
+skip the pnpm step:
+
+```bash
+make build-server
+```
+
+To build the binary with no web assets at all (Go-only environment,
+no Node required):
+
+```bash
+GOFLAGS="-tags nofrontend" make build-server
+```
+
+The `nofrontend` binary serves a placeholder page in place of the Suite
+app. It is suitable for backend development and Go-only CI, not for
+production or UI work.
+
+## Running locally
+
+### Backend + Vite dev server (standard web dev loop)
+
+Start a herold backend on port 8080 with your own config, then start
+the Vite dev server for the Suite SPA:
+
+```bash
+# Terminal 1: backend
+bin/herold server start --system-config data/system.toml
+
+# Terminal 2: Suite SPA with hot-reload
+pnpm -C web dev --filter @herold/suite
+```
+
+Vite starts at `http://localhost:5173/` and proxies the herold API
+paths (`/api`, `/jmap`, `/.well-known/jmap`, `/chat/ws`, `/login`,
+`/oidc`, `/proxy`) to the backend at `http://localhost:8080`. Set
+`HEROLD_URL` to point Vite at a different backend address.
+
+Ports **8080** (backend) and **5173** (Vite) are the reserved manual
+session ports; automated tooling must not bind them.
+
+For the admin SPA:
+
+```bash
+pnpm -C web dev --filter @herold/admin
+```
+
+The admin SPA starts at `http://localhost:5174/`.
+
+### Manual documentation loop
+
+To edit and preview the operator manual:
+
+```bash
+make manual
+```
+
+This builds the `.mdoc` sources to SSR HTML, serves them at
+`http://localhost:8000/`, and live-reloads the browser on every save.
+No herold binary is needed.
+
+### Ephemeral instances on kernel-picked ports
+
+`scripts/dev-instance.sh` provisions a complete throwaway herold
+instance -- binary, SQLite store, self-signed TLS, Vite dev server --
+on kernel-picked ports, so it does not collide with the manual session.
+The instance is seeded with a domain and four principals and is torn
+down when you kill the script.
+
+```bash
+# Start in foreground (SIGINT to tear down):
+scripts/dev-instance.sh start
+
+# The script prints one key=value per line:
+#   INSTANCE=<hex id>
+#   STATE_DIR=/tmp/herold-instances/<hex id>
+#   BACKEND_URL=http://127.0.0.1:<port>
+#   ADMIN_URL=http://127.0.0.1:<port>
+#   SUITE_URL=http://127.0.0.1:<port>
+#   IMAP_ADDR=127.0.0.1:<port>
+#   SMTP_ADDR=127.0.0.1:<port>
+#   SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
+```
+
+The seed always provisions:
+
+| Principal | Password |
+|-----------|----------|
+| `admin@example.local` | `testpass123...` |
+| `alice@example.local` | `testpass123...` |
+| `filip@example.local` | `testpass123...` |
+| `bob@example.local`   | `testpass123...` |
+
+The three trailing dots in `testpass123...` are part of the password,
+not punctuation.
+
+To stop an instance by ID:
+
+```bash
+scripts/dev-instance.sh stop <id>
+```
+
+To list running instances:
+
+```bash
+scripts/dev-instance.sh list
+```
+
+To remove tempdirs for dead instances:
+
+```bash
+scripts/dev-instance.sh gc
+```
+
+`scripts/dev-instance.sh` requires: `bash` 4+, `jq`, `lsof`, `curl`,
+and the herold binary at `bin/herold` (build it with `make build-server`
+first).
+
+## Tests
+
+### Go test suite
+
+```bash
+make test-server     # go test -race -count=1 ./...
+make test-short      # same, with -short (skips slow integration paths)
+```
+
+Both targets run `make prep-web` first so the embed resolves.
+
+### Web test suite
+
+```bash
+make test-web        # pnpm install + svelte-check + vitest + lint
+```
+
+### Run everything
+
+```bash
+make test            # runs make test-server
+```
+
+`make test` currently runs the server suite. `make test-web` is a
+separate step; CI runs both.
+
+### SQLite and Postgres
+
+The default `make test-server` run uses SQLite. Postgres tests are
+gated on the `HEROLD_PG_DSN` environment variable and skip cleanly
+when it is not set:
+
+```bash
+HEROLD_PG_DSN="postgres://herold:herold@localhost:5432/herold?sslmode=disable" \
+  make test-server
+```
+
+Both backends must pass. Code that works on only one backend is not
+mergeable.
+
+To start a local Postgres for testing:
+
+```bash
+docker run -d --name herold-pg --rm \
+  -p 5432:5432 \
+  -e POSTGRES_USER=herold \
+  -e POSTGRES_PASSWORD=herold \
+  -e POSTGRES_DB=herold \
+  postgres:16
+```
+
+### Admin SPA end-to-end suite
+
+```bash
+pnpm --filter @herold/admin test:e2e
+```
+
+Install Playwright browsers on first run:
+
+```bash
+pnpm --filter @herold/admin test:e2e:install
+```
+
+## Quality gate
+
+### Formatting and static analysis
+
+```bash
+make lint            # gofmt check + go vet + staticcheck
+```
+
+Broken formatting fails CI. Run `make fmt` to reformat in-place, or
+install goimports and let it handle import grouping:
+
+```bash
+make fmt
+```
+
+`staticcheck` must be on your PATH. Install it once:
+
+```bash
+go install honnef.co/go/tools/cmd/staticcheck@latest
+```
+
+### Schema-version invariant
+
+Every migration file must match the `CurrentSchemaVersion` constant in
+the store package. The invariant is checked in under one second:
+
+```bash
+make check-schema-version
+```
+
+This check runs automatically in the pre-commit hook.
+
+### Pre-commit hooks
+
+Install the pre-commit hook once per clone:
+
+```bash
+make install-hooks
+```
+
+The hook runs: `gofmt`, `goimports`, `go vet`, `go mod tidy`,
+`staticcheck`, the schema-version invariant, the fast diag tests
+(`internal/diag/backup`, `internal/diag/migrate`), `gitleaks`, and
+generic file hygiene. `git commit` triggers it; `git push` does not.
+
+To run the same checks manually (staged files only):
+
+```bash
+make precommit
+```
+
+Or across all files:
+
+```bash
+make precommit-all
+```
+
+### Local CI lane
+
+```bash
+make ci-local        # fmt-check + go vet + test + govulncheck
+```
+
+This is the fast subset of CI. `staticcheck` and the interop suite are
+separate (`make staticcheck`, `make interop`).
+
+`govulncheck` must be on your PATH:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+```
+
+### Fuzz smoke pass
+
+```bash
+make fuzz-short      # every Fuzz* target, 30 s each (FUZZTIME=30s)
+```
+
+Override the per-target budget with `FUZZTIME`:
+
+```bash
+FUZZTIME=5s make fuzz-short
+```
+
+## Where to go next
+
+**Design baseline** -- read these before changing any subsystem:
+
+- `docs/design/00-scope.md` -- goals, non-goals, and the target scale.
+- `docs/design/server/requirements/` -- numbered requirements (`REQ-XXX-nn`)
+  per subsystem. Authoritative over everything else.
+- `docs/design/server/architecture/` -- how the subsystems fit together.
+- `docs/design/server/implementation/` -- tech stack, phasing, testing
+  strategy, simplification decisions.
+- `docs/design/web/` -- web SPA scope, architecture, and ADRs.
+
+**Working agreements**:
+
+- `STANDARDS.md` -- coding and development rules. Authoritative over all
+  other guidance. Re-read it when in doubt.
+- `AGENTS.md` -- the subsystem map: which package is owned by which area,
+  and which RFCs govern it.
+- `web/CLAUDE.md` -- web workspace rules: build pipeline, UI verification
+  requirements, patterns to avoid, and the ephemeral-instance contract.
+
+**CI** -- the authoritative remote and CI are hosted on the Forgejo
+instance at `code.netzhansa.com`. The `origin` remote points there.
+GitHub is a mirror. CI runs on every push to `main` via Forgejo Actions
+(`.forgejo/workflows/ci.yml`). A failure on `main` is fixed forward;
+the branch is not reverted.
