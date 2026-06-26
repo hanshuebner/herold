@@ -34,6 +34,7 @@
    *   still giving the user a single-action download per inline image.
    */
   import { sanitizeHtml } from './sanitize';
+  import { findScrollParent } from './scroll-parent';
 
   interface Props {
     html: string;
@@ -146,6 +147,47 @@
       () => requestAnimationFrame(recomputeHeight),
       true,
     );
+
+    // Wheel-forwarding fix (issue #51): the iframe is always full-height
+    // (its CSS height equals its content scrollHeight) so it has no
+    // internal scroll. On macOS with a Magic Mouse, the first scroll
+    // gesture nevertheless targets the iframe's browsing context and the
+    // browser applies an elastic rubber-band animation there, absorbing
+    // the gesture without scrolling the outer thread container. The second
+    // gesture then scrolls the outer container normally.
+    //
+    // Fix: intercept wheel events inside the iframe document, cancel the
+    // default action (suppressing the rubber-band), and forward the delta
+    // directly to the nearest scrollable ancestor of the wrapper element.
+    // { passive: false } is required to be able to call preventDefault().
+    // The listener is attached to the iframe's document so it is
+    // automatically released when the document is replaced (srcdoc change).
+    const scrollParent = wrapperEl ? findScrollParent(wrapperEl) : null;
+    if (scrollParent) {
+      const sp = scrollParent;
+      doc.addEventListener(
+        'wheel',
+        (e: WheelEvent) => {
+          e.preventDefault();
+          // Normalise delta to pixels so scrollBy is correct for all
+          // pointer devices. Magic Mouse always emits DOM_DELTA_PIXEL;
+          // traditional scroll wheels typically emit DOM_DELTA_LINE.
+          let dy = e.deltaY;
+          let dx = e.deltaX;
+          if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+            // 16 px per line matches the Chrome/Firefox default line height
+            // used for line-delta wheel events.
+            dy *= 16;
+            dx *= 16;
+          } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+            dy *= sp.clientHeight;
+            dx *= sp.clientWidth;
+          }
+          sp.scrollBy({ top: dy, left: dx, behavior: 'instant' });
+        },
+        { passive: false },
+      );
+    }
     // Authoritative source of "the body grew/shrank": observe doc.body
     // directly. The previous approach watched the iframe's outer element,
     // which never changes size on inner reflow — so opening a trimmed
