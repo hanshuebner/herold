@@ -85,8 +85,14 @@
     // Archive every inbox-member email in the thread, not only latest.id,
     // so threads whose newest message is a self-sent reply (in Sent) are
     // fully removed from the Inbox. re #35.
-    const ids = inboxEmailIds.length > 0 ? inboxEmailIds : [latest.id];
-    void mail.bulkArchive(ids);
+    //
+    // When the thread is already fully archived (inboxEmailIds is empty),
+    // the action is a harmless no-op: no network call is made and the user
+    // stays on the thread view. The button remains visible so that the UI is
+    // consistent regardless of where the thread was opened from (Inbox, All
+    // Mail, Archive). re #35.
+    if (inboxEmailIds.length === 0) return;
+    void mail.bulkArchive(inboxEmailIds);
     back();
   }
 
@@ -194,7 +200,10 @@
 
   let allThreadActions = $derived.by((): Record<ThreadActionKey, ThreadActionDesc> => ({
     archive: {
-      visible: isInInbox,
+      // Show Archive whenever the thread is not in Trash: both for inbox
+      // threads (the common case) and for already-archived threads (a no-op
+      // that keeps the action consistent across all non-trash contexts). re #35.
+      visible: !isInTrash,
       label: t('thread.archive'),
       shortcut: 'e',
       onclick: archive,
