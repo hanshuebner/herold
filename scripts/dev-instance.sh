@@ -82,7 +82,11 @@ require_cmd() {
 
 new_instance_id() {
     # 12 hex chars of /dev/urandom — collision-resistant per host
-    head -c 6 /dev/urandom | xxd -p
+    if command -v xxd >/dev/null 2>&1; then
+        head -c 6 /dev/urandom | xxd -p
+    else
+        od -An -tx1 -N6 /dev/urandom | tr -d ' \n'
+    fi
 }
 
 state_file_for() {

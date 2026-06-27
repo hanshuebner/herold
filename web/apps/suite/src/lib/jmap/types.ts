@@ -167,6 +167,17 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldFileShares: 'https://netzhansa.com/jmap/file-shares',
+  /**
+   * Per-identity IMAP import (REQ-IMAP-IMP-61, REQ-SET-IMAPIMP-01).
+   * Advertised unconditionally (no sysconfig gate in v1).
+   * When present the suite surfaces the "Receiving (IMAP import)" section
+   * inside the per-identity edit dialog for external-domain identities.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/mail/imapimport/register.go CapabilityIMAPImport.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldIMAPImport: 'https://netzhansa.com/jmap/imap-import',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

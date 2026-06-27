@@ -89,6 +89,18 @@ export function hasIdentityVerification(): boolean {
 export { hasFileShares } from '../jmap/file-shares';
 
 /**
+ * True when the server advertises the IMAP-import capability
+ * (`https://netzhansa.com/jmap/imap-import`).
+ *
+ * When true the suite surfaces the optional "Receiving (IMAP import)"
+ * section inside the per-identity edit dialog for external-domain
+ * identities (REQ-SET-IMAPIMP-01, REQ-IMAP-IMP-61).
+ */
+export function hasIMAPImport(): boolean {
+  return jmap.hasCapability(Capability.HeroldIMAPImport);
+}
+
+/**
  * Seconds threshold under which a chat message's timestamp is hidden
  * because the previous message in the same day-group is recent enough.
  * Sourced from the chat capability descriptor; defaults to 120 (2

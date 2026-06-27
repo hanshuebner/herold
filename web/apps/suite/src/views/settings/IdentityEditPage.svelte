@@ -28,13 +28,17 @@
    */
 
   import { onDestroy } from 'svelte';
-  import { hasExternalSubmission } from '../../lib/auth/capabilities';
+  import { hasExternalSubmission, hasIMAPImport } from '../../lib/auth/capabilities';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
+  import { imapImportStore } from '../../lib/jmap/imap-import-store.svelte';
   import { mail } from '../../lib/mail/store.svelte';
   import { jmap, strict } from '../../lib/jmap/client';
   import { Capability, type Invocation } from '../../lib/jmap/types';
   import { identityStatus } from '../../lib/identities/identity-status';
+  import { confirm } from '../../lib/dialog/confirm.svelte';
+  import { toast } from '../../lib/toast/toast.svelte';
   import IdentitySubmissionSection from './IdentitySubmissionSection.svelte';
+  import IdentityImportSection from './IdentityImportSection.svelte';
   import IdentityAvatarForm from './IdentityAvatarForm.svelte';
   import IdentityDisplayNameForm from './IdentityDisplayNameForm.svelte';
   import IdentitySignatureForm from './IdentitySignatureForm.svelte';
@@ -60,7 +64,125 @@
   let { identity, onback, scrollToSubmission = false }: Props = $props();
 
   let showExternal = $derived(hasExternalSubmission());
+  let showImport = $derived(hasIMAPImport());
   let verified = $derived(identityStatus(identity) === 'verified');
+
+  /**
+   * Whether this identity qualifies as "external-domain": it has
+   * external SMTP submission configured and the probe is OK.
+   * Used to gate the IMAP import section (REQ-SET-IMAPIMP-01).
+   */
+  const submissionHandle = $derived(submissionStore.forIdentity(identity.id));
+  const isExternalConfigured = $derived(
+    submissionHandle.data?.configured === true &&
+    submissionHandle.data?.state === 'ok',
+  );
+
+  /**
+   * IMAP import handle for this identity, used for the "remove identity
+   * with imported mail" prompt (REQ-SET-IDENT-12).
+   */
+  const accountId = $derived(mail.mailAccountId ?? '');
+  const importHandle = $derived(
+    accountId ? imapImportStore.forIdentity(identity.id, accountId) : null,
+  );
+
+  // Pre-load import status so the remove prompt has the count available.
+  $effect(() => {
+    if (importHandle) void importHandle.load();
+  });
+
+  // ── Remove identity (REQ-SET-IDENT-12) ──────────────────────────────────
+
+  let removing = $state(false);
+
+  /**
+   * Remove the identity. When imported mail exists, a keep-or-delete
+   * prompt is shown before proceeding (REQ-SET-IDENT-12, REQ-IMAP-IMP-102).
+   *
+   * Implementation: if the identity has an IMAP import account AND the
+   * user wants to delete imported mail, we destroy the import account
+   * first (with deleteImportedMail=true), then destroy the Identity.
+   * This is the only way to pass the flag — the Identity/set destroy
+   * cascade keeps mail by default.
+   */
+  async function removeIdentity(): Promise<void> {
+    if (removing) return;
+
+    const importAccount = importHandle?.account ?? null;
+
+    // Determine whether this identity carries imported mail.
+    const hasImportedMail = importAccount !== null;
+
+    // Build the confirmation message body.
+    let confirmMsg = t('settings.identityEdit.removeMessage');
+    if (hasImportedMail) {
+      confirmMsg =
+        t('settings.import.removeIdentityExtended') + '\n\n' + confirmMsg;
+    }
+
+    const displayName = identity.name || identity.email;
+    const ok = await confirm.ask({
+      title: t('settings.identityEdit.removeTitle', {
+        name: displayName,
+        email: identity.email,
+      }),
+      message: confirmMsg,
+      confirmLabel: t('settings.identityEdit.removeConfirm'),
+      cancelLabel: t('settings.identityEdit.removeCancel'),
+      kind: 'danger',
+    });
+    if (!ok) return;
+
+    // For identities with imported mail, the user needs a second choice:
+    // keep the imported mail or delete it. We model this as a second
+    // confirm with bespoke labels (REQ-SET-IMAPIMP-04).
+    let deleteImportedMail = false;
+    if (hasImportedMail && importHandle && importAccount) {
+      const importMailboxes = Array.from(mail.mailboxes.values());
+      const provMailbox = importMailboxes.find(
+        (m) => m.name === importAccount.accountName,
+      );
+      const count = provMailbox?.totalEmails ?? null;
+      const deleteMsg = count !== null
+        ? t('settings.import.removeDeleteDesc', { count: String(count) })
+        : t('settings.import.removeDeleteDescUnknown');
+
+      const wantDelete = await confirm.ask({
+        title: t('settings.import.removeDeleteTitle'),
+        message: deleteMsg,
+        confirmLabel: t('settings.import.removeConfirmDelete'),
+        cancelLabel: t('settings.import.removeConfirmKeep'),
+        kind: 'danger',
+      });
+      deleteImportedMail = wantDelete;
+    }
+
+    removing = true;
+    try {
+      // Step 1: destroy IMAP import account (with flag) if needed.
+      if (hasImportedMail && importHandle && importAccount) {
+        await importHandle.destroy(importAccount.id, deleteImportedMail);
+      }
+      // Step 2: destroy the Identity (cascades any remaining import record
+      // with default keep=true, which is already handled above).
+      await mail.deleteIdentity(identity.id);
+      toast.show({
+        message: t('settings.identityEdit.removed', { email: identity.email }),
+        timeoutMs: 3000,
+      });
+      onback();
+    } catch (err) {
+      toast.show({
+        message: t('settings.identityEdit.removeFailed'),
+        kind: 'error',
+        timeoutMs: 5000,
+      });
+      console.error('removeIdentity failed', err);
+    } finally {
+      removing = false;
+    }
+  }
 
   // One shared autosave indicator for every autosaving field on the page.
   const autosave = new AutosaveController();
@@ -256,6 +378,29 @@
       />
     </div>
   {/if}
+
+  <!-- Receiving (IMAP import) section. Shown only for external-domain
+       identities (submission configured + ok) when the capability is
+       present and the identity is verified (REQ-SET-IMAPIMP-01,
+       REQ-SET-IDENT-13). -->
+  {#if showImport && verified && isExternalConfigured}
+    <IdentityImportSection {identity} />
+  {/if}
+
+  <!-- Remove identity (REQ-SET-IDENT-12). Hidden for the synthesized
+       default identity (mayDelete = false). -->
+  {#if identity.mayDelete}
+    <div class="remove-zone">
+      <Button
+        variant="danger"
+        onclick={() => void removeIdentity()}
+        disabled={removing}
+        testid="identity-edit-remove-btn"
+      >
+        {removing ? t('settings.import.saving') : t('settings.identityEdit.removeBtn')}
+      </Button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -350,6 +495,15 @@
 
   input[type='email'][aria-invalid='true'] {
     border-color: var(--support-error);
+  }
+
+  /* Remove identity — visually de-emphasised danger zone at page bottom. */
+  .remove-zone {
+    margin-top: var(--spacing-06);
+    padding-top: var(--spacing-04);
+    border-top: 1px solid var(--border-subtle-01);
+    display: flex;
+    justify-content: flex-start;
   }
 
   .error {

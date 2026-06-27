@@ -14,6 +14,7 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 
 vi.mock('../../lib/auth/capabilities', () => ({
   hasExternalSubmission: vi.fn(() => false),
+  hasIMAPImport: vi.fn(() => false),
 }));
 
 vi.mock('../../lib/identities/identity-submission.svelte', () => {

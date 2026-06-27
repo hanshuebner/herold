@@ -1348,6 +1348,101 @@ export const en = {
     'The {provider} provider is not configured on this server. Use manual ' +
     'entry instead.',
 
+  // identity import section (IdentityImportSection.svelte)
+  // REQ-SET-IMAPIMP-01..04
+  'settings.import.sectionTitle': 'Receiving (IMAP import)',
+  'settings.import.sectionHint':
+    'Automatically pull mail from your upstream inbox into herold in near ' +
+    'real time. New messages appear in your mailboxes within seconds ' +
+    '(REQ-IMAP-IMP-22 p95 < 10 s). Flag changes you make in herold ' +
+    'propagate back upstream best-effort.',
+  'settings.import.setupBtn': 'Set up mail import',
+  'settings.import.loadingAriaLabel': 'Loading import configuration',
+  // Status display
+  'settings.import.status.enabled': 'Active',
+  'settings.import.status.disabled': 'Paused',
+  'settings.import.status.errored': 'Error',
+  'settings.import.status.migrating': 'Migrating (full backfill in progress)',
+  'settings.import.status.migrated': 'Migration complete',
+  'settings.import.lastSuccess': 'Last sync: {date}',
+  'settings.import.neverSynced': 'Not yet synced',
+  'settings.import.lastError': 'Last error: {error}',
+  'settings.import.backfillHorizon': 'Backfill horizon: {horizon}',
+  'settings.import.horizonAllLabel': 'all mail',
+  // Setup / edit form
+  'settings.import.formTitle': 'Mail import settings',
+  'settings.import.fieldHost': 'IMAP server host',
+  'settings.import.fieldPort': 'Port',
+  'settings.import.fieldTLS': 'Connection security',
+  'settings.import.tlsImplicit': 'Implicit TLS (port 993)',
+  'settings.import.tlsStarttls': 'STARTTLS (port 143)',
+  'settings.import.fieldUsername': 'Username (usually your email address)',
+  'settings.import.fieldAuthMethod': 'Authentication method',
+  'settings.import.authPassword': 'Password',
+  'settings.import.authAppPassword': 'App-specific password',
+  'settings.import.authXoauth2': 'OAuth 2.0 (xoauth2)',
+  'settings.import.xoauth2Note':
+    'OAuth 2.0 requires the operator to have registered an OAuth application ' +
+    'with the restricted IMAP scope. Contact your herold administrator.',
+  'settings.import.fieldCredential': 'Password / credential',
+  'settings.import.credentialKeepExisting': '(leave blank to keep existing)',
+  'settings.import.credentialRequired': 'A credential is required.',
+  'settings.import.fieldHorizon': 'Backfill horizon (how far back to import)',
+  'settings.import.horizon30d': '30 days',
+  'settings.import.horizon90d': '90 days',
+  'settings.import.horizon1y': '1 year',
+  'settings.import.horizonAll': 'All mail (no limit)',
+  'settings.import.horizonCustom': 'Custom date',
+  'settings.import.fieldHorizonDate': 'Import mail from this date',
+  'settings.import.hostRequired': 'Host is required.',
+  'settings.import.usernameRequired': 'Username is required.',
+  'settings.import.horizonRequired': 'A backfill horizon is required.',
+  'settings.import.saving': 'Saving...',
+  'settings.import.saveBtn': 'Save import settings',
+  'settings.import.cancelBtn': 'Cancel',
+  'settings.import.toast.saved': 'Mail import configured.',
+  'settings.import.toast.removed': 'Mail import removed.',
+  'settings.import.toast.migrationStarted': 'Complete migration started.',
+  // Complete migration action (REQ-IMAP-IMP-90)
+  'settings.import.migrateBtn': 'Complete migration',
+  'settings.import.migrateTitle': 'Complete migration from upstream',
+  'settings.import.migrateMessage':
+    'This runs a full one-shot backfill of your upstream mailbox (all mail, ' +
+    'no horizon), then makes herold authoritative. The upstream connection is ' +
+    'retired when the backfill finishes. All herold-side state (read/unread, ' +
+    'flags, labels) is preserved. This cannot be undone.',
+  'settings.import.migrateConfirm': 'Start migration',
+  'settings.import.migrateCancel': 'Cancel',
+  // Remove import (REQ-SET-IMAPIMP-04, REQ-IMAP-IMP-102)
+  'settings.import.removeBtn': 'Remove mail import',
+  'settings.import.removeTitle': 'Remove mail import connection?',
+  'settings.import.removeKeepTitle': 'Keep imported mail',
+  'settings.import.removeKeepDesc':
+    'Removes the connection only. Mail already imported stays in your mailboxes.',
+  'settings.import.removeDeleteTitle': 'Also delete imported mail',
+  'settings.import.removeDeleteDesc':
+    'Permanently deletes the {count} messages imported through this account. ' +
+    'This cannot be undone and does not affect the upstream server.',
+  'settings.import.removeDeleteDescUnknown':
+    'Permanently deletes all messages imported through this account. ' +
+    'This cannot be undone and does not affect the upstream server.',
+  'settings.import.removeConfirmKeep': 'Remove connection (keep mail)',
+  'settings.import.removeConfirmDelete': 'Remove and delete imported mail',
+  'settings.import.removeCancel': 'Cancel',
+  // Identity removal when identity carries imported mail (REQ-SET-IDENT-12)
+  'settings.import.removeIdentityExtended':
+    'This identity has mail imported through it. Choose what to do with ' +
+    'that mail before removing the identity.',
+  // Remove identity button in the edit page (REQ-SET-IDENT-12)
+  'settings.identityEdit.removeBtn': 'Remove identity',
+  'settings.identityEdit.removeTitle': 'Remove {name} <{email}>?',
+  'settings.identityEdit.removeMessage':
+    'Mail already sent from this identity is unaffected. This cannot be undone.',
+  'settings.identityEdit.removeConfirm': 'Remove identity',
+  'settings.identityEdit.removeCancel': 'Cancel',
+  'settings.identityEdit.removed': 'Identity {email} removed',
+  'settings.identityEdit.removeFailed': 'Could not remove identity',
+
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.quotaLabel': 'Share storage',
   'settings.sharedFiles.quotaUsed': '{used} of {max} used',

@@ -1370,6 +1370,102 @@ export const de = {
     'Der Anbieter {provider} ist auf diesem Server nicht konfiguriert. ' +
     'Verwenden Sie stattdessen die manuelle Eingabe.',
 
+  // identity import section (IdentityImportSection.svelte)
+  'settings.import.sectionTitle': 'Empfang (IMAP-Import)',
+  'settings.import.sectionHint':
+    'E-Mails aus Ihrem vorgelagerten Posteingang werden nahezu in Echtzeit ' +
+    'automatisch in herold importiert. Neue Nachrichten erscheinen innerhalb ' +
+    'von Sekunden in Ihren Postfächern. Markierungsänderungen, die Sie in ' +
+    'herold vornehmen, werden nach bestem Bemühen an die Quelle übertragen.',
+  'settings.import.setupBtn': 'E-Mail-Import einrichten',
+  'settings.import.loadingAriaLabel': 'Importkonfiguration wird geladen',
+  'settings.import.status.enabled': 'Aktiv',
+  'settings.import.status.disabled': 'Pausiert',
+  'settings.import.status.errored': 'Fehler',
+  'settings.import.status.migrating': 'Migration läuft (vollständige Sicherung)',
+  'settings.import.status.migrated': 'Migration abgeschlossen',
+  'settings.import.lastSuccess': 'Letzter Abgleich: {date}',
+  'settings.import.neverSynced': 'Noch nicht abgeglichen',
+  'settings.import.lastError': 'Letzter Fehler: {error}',
+  'settings.import.backfillHorizon': 'Horizont: {horizon}',
+  'settings.import.horizonAllLabel': 'alle E-Mails',
+  'settings.import.formTitle': 'Import-Einstellungen',
+  'settings.import.fieldHost': 'IMAP-Server-Host',
+  'settings.import.fieldPort': 'Port',
+  'settings.import.fieldTLS': 'Verbindungssicherheit',
+  'settings.import.tlsImplicit': 'Implizites TLS (Port 993)',
+  'settings.import.tlsStarttls': 'STARTTLS (Port 143)',
+  'settings.import.fieldUsername': 'Benutzername (meist Ihre E-Mail-Adresse)',
+  'settings.import.fieldAuthMethod': 'Authentifizierungsmethode',
+  'settings.import.authPassword': 'Passwort',
+  'settings.import.authAppPassword': 'App-spezifisches Passwort',
+  'settings.import.authXoauth2': 'OAuth 2.0 (xoauth2)',
+  'settings.import.xoauth2Note':
+    'OAuth 2.0 erfordert, dass der Betreiber eine OAuth-Anwendung mit dem ' +
+    'eingeschränkten IMAP-Bereich registriert hat. Kontaktieren Sie Ihren ' +
+    'herold-Administrator.',
+  'settings.import.fieldCredential': 'Passwort / Anmeldedaten',
+  'settings.import.credentialKeepExisting':
+    '(leer lassen, um bestehende Daten zu behalten)',
+  'settings.import.credentialRequired': 'Anmeldedaten sind erforderlich.',
+  'settings.import.fieldHorizon': 'Rückfüllhorizont (wie weit zurück importieren)',
+  'settings.import.horizon30d': '30 Tage',
+  'settings.import.horizon90d': '90 Tage',
+  'settings.import.horizon1y': '1 Jahr',
+  'settings.import.horizonAll': 'Alle E-Mails (kein Limit)',
+  'settings.import.horizonCustom': 'Benutzerdefiniertes Datum',
+  'settings.import.fieldHorizonDate': 'E-Mails ab diesem Datum importieren',
+  'settings.import.hostRequired': 'Host ist erforderlich.',
+  'settings.import.usernameRequired': 'Benutzername ist erforderlich.',
+  'settings.import.horizonRequired': 'Ein Rückfüllhorizont ist erforderlich.',
+  'settings.import.saving': 'Wird gespeichert…',
+  'settings.import.saveBtn': 'Import-Einstellungen speichern',
+  'settings.import.cancelBtn': 'Abbrechen',
+  'settings.import.toast.saved': 'E-Mail-Import konfiguriert.',
+  'settings.import.toast.removed': 'E-Mail-Import entfernt.',
+  'settings.import.toast.migrationStarted': 'Vollständige Migration gestartet.',
+  'settings.import.migrateBtn': 'Migration abschließen',
+  'settings.import.migrateTitle': 'Migration vom vorgelagerten Server abschließen',
+  'settings.import.migrateMessage':
+    'Hierdurch wird eine vollständige einmalige Sicherung Ihres vorgelagerten ' +
+    'Postfachs durchgeführt (alle E-Mails, kein Horizont), und anschließend ' +
+    'herold als maßgeblich festgelegt. Die vorgelagerte Verbindung wird nach ' +
+    'Abschluss der Sicherung beendet. Alle herold-seitigen Zustände ' +
+    '(gelesen/ungelesen, Markierungen, Labels) bleiben erhalten. ' +
+    'Dies kann nicht rückgängig gemacht werden.',
+  'settings.import.migrateConfirm': 'Migration starten',
+  'settings.import.migrateCancel': 'Abbrechen',
+  'settings.import.removeBtn': 'E-Mail-Import entfernen',
+  'settings.import.removeTitle': 'E-Mail-Importverbindung entfernen?',
+  'settings.import.removeKeepTitle': 'Importierte E-Mails behalten',
+  'settings.import.removeKeepDesc':
+    'Entfernt nur die Verbindung. Bereits importierte E-Mails verbleiben ' +
+    'in Ihren Postfächern.',
+  'settings.import.removeDeleteTitle': 'Importierte E-Mails ebenfalls löschen',
+  'settings.import.removeDeleteDesc':
+    'Löscht dauerhaft die {count} über dieses Konto importierten Nachrichten. ' +
+    'Dies kann nicht rückgängig gemacht werden und hat keine Auswirkungen auf ' +
+    'den vorgelagerten Server.',
+  'settings.import.removeDeleteDescUnknown':
+    'Löscht dauerhaft alle über dieses Konto importierten Nachrichten. ' +
+    'Dies kann nicht rückgängig gemacht werden und hat keine Auswirkungen auf ' +
+    'den vorgelagerten Server.',
+  'settings.import.removeConfirmKeep': 'Verbindung entfernen (E-Mails behalten)',
+  'settings.import.removeConfirmDelete': 'Entfernen und importierte E-Mails löschen',
+  'settings.import.removeCancel': 'Abbrechen',
+  'settings.import.removeIdentityExtended':
+    'Diese Identität hat über sie importierte E-Mails. Wählen Sie aus, was mit ' +
+    'diesen E-Mails geschehen soll, bevor die Identität entfernt wird.',
+  'settings.identityEdit.removeBtn': 'Identität entfernen',
+  'settings.identityEdit.removeTitle': '{name} <{email}> entfernen?',
+  'settings.identityEdit.removeMessage':
+    'Bereits gesendete E-Mails von dieser Identität sind nicht betroffen. ' +
+    'Dies kann nicht rückgängig gemacht werden.',
+  'settings.identityEdit.removeConfirm': 'Identität entfernen',
+  'settings.identityEdit.removeCancel': 'Abbrechen',
+  'settings.identityEdit.removed': 'Identität {email} entfernt',
+  'settings.identityEdit.removeFailed': 'Identität konnte nicht entfernt werden',
+
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.quotaLabel': 'Freigegebener Speicher',
   'settings.sharedFiles.quotaUsed': '{used} von {max} verwendet',
