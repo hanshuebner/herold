@@ -161,6 +161,66 @@ test.describe('research', () => {
     await expect(page.locator('.expand-cell')).not.toBeVisible();
   });
 
+  test('items are displayed newest-first regardless of API response order', async ({ page }) => {
+    // Deliberately return items in oldest-first order from the API to verify
+    // that the view applies a client-side newest-first sort.
+    const oldestFirst = [
+      {
+        id: 'q-old',
+        principal_id: '1',
+        mail_from: 'oldest@sender.example',
+        rcpt_to: 'rcpt@example.org',
+        envelope_id: 'env-old',
+        state: 'queued',
+        attempts: 0,
+        created_at: '2024-01-01T06:00:00Z',
+      },
+      {
+        id: 'q-mid',
+        principal_id: '1',
+        mail_from: 'middle@sender.example',
+        rcpt_to: 'rcpt@example.org',
+        envelope_id: 'env-mid',
+        state: 'queued',
+        attempts: 0,
+        created_at: '2024-01-01T07:00:00Z',
+      },
+      {
+        id: 'q-new',
+        principal_id: '1',
+        mail_from: 'newest@sender.example',
+        rcpt_to: 'rcpt@example.org',
+        envelope_id: 'env-new',
+        state: 'queued',
+        attempts: 0,
+        created_at: '2024-01-01T08:00:00Z',
+      },
+    ];
+
+    await page.route(/\/api\/v1\/queue/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: oldestFirst, next: null }),
+      }),
+    );
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Research' }).click();
+    await expect(page.getByRole('heading', { name: 'Email research' })).toBeVisible();
+
+    // All three senders must appear.
+    await expect(page.getByText('oldest@sender.example')).toBeVisible();
+    await expect(page.getByText('middle@sender.example')).toBeVisible();
+    await expect(page.getByText('newest@sender.example')).toBeVisible();
+
+    // The DOM order of table rows should be newest -> middle -> oldest.
+    const rows = page.locator('table tbody tr.table-row');
+    await expect(rows.nth(0)).toContainText('newest@sender.example');
+    await expect(rows.nth(1)).toContainText('middle@sender.example');
+    await expect(rows.nth(2)).toContainText('oldest@sender.example');
+  });
+
   test('load-more fetches next page and appends rows', async ({ page }) => {
     let callCount = 0;
 

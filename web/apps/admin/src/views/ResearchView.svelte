@@ -1,5 +1,6 @@
 <script lang="ts">
   import { queue, type QueueStateFilter, type QueueItem } from '../lib/queue/queue.svelte';
+  import { sortByCreatedAtDesc } from '../lib/queue/sort';
 
   // Research uses the same queue state singleton but with different UX.
   // Load on mount so the operator can start with a full list.
@@ -57,6 +58,9 @@
       default: return 'chip-grey';
     }
   }
+
+  /** Items shown in this view: search-filtered then sorted newest-first. */
+  const researchItems = $derived(sortByCreatedAtDesc(queue.filtered));
 
   const totalLoaded = $derived(queue.items.length);
   const totalFiltered = $derived(queue.filtered.length);
@@ -143,7 +147,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each queue.filtered as item (item.id)}
+          {#each researchItems as item (item.id)}
             <tr
               class="table-row"
               class:expanded={expandedId === item.id}
