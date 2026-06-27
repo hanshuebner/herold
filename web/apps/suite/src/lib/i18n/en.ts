@@ -782,8 +782,6 @@ export const en = {
   'settings.account.externalBadgeTitle': 'External SMTP configured — click to edit',
   'settings.account.configureExternal': 'Configure external SMTP',
   'settings.account.configureExternalTitle': 'Configure external SMTP submission',
-  'settings.account.extSubHint':
-    'External SMTP submission (e.g. Gmail or Microsoft 365) is not enabled on this server. To allow routing outbound mail through an external provider, an operator can enable it in {systemToml} — see {docPath}.',
 
   // ── Settings: appearance section (re #97) ────────────────────────────
   'settings.appearance.themeHint':

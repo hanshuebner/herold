@@ -363,15 +363,6 @@
         onresend={resendVerificationFromList}
       />
 
-      {#if !showExtSub}
-        <p class="hint ext-sub-hint">
-          {@html t('settings.account.extSubHint', {
-            systemToml: '<code>system.toml</code>',
-            docPath: '<code>docs/manual/admin/external-smtp-submission.mdoc</code>',
-          })}
-        </p>
-      {/if}
-
       {#if showAddWizard}
         <AddIdentityWizard
           {hostedDomains}
@@ -885,10 +876,6 @@
     font-size: var(--type-body-compact-01-size);
     margin: 0;
   }
-  .ext-sub-hint {
-    margin-top: var(--spacing-04);
-  }
-
   .editor-missing-header {
     display: flex;
     margin-bottom: var(--spacing-04);

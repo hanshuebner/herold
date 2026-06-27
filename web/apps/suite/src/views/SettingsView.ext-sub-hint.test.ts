@@ -1,12 +1,14 @@
 /**
  * SettingsView.svelte — external-submission capability hint tests.
  *
- * REQ-MAIL-SUBMIT-01: when the server does not advertise the external-
- * submission capability, an informational hint appears in the
- * "Identities & signatures" subsection so the feature is discoverable.
+ * The operator hint that previously appeared when the server did not
+ * advertise the external-submission capability has been removed. End users
+ * cannot act on operator-facing instructions (system.toml paths, admin-
+ * manual references), so the Suite shows nothing when the capability is
+ * absent — matching how other unavailable capabilities are handled.
  *
- * Branch (a): capability present — badge/link visible, hint absent.
- * Branch (b): capability absent  — hint visible, badge/link absent.
+ * Branch (a): capability present — badge/link visible, no operator hint.
+ * Branch (b): capability absent  — no operator hint, identity list still renders.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -259,30 +261,28 @@ describe('SettingsView external-submission hint', () => {
     vi.clearAllMocks();
   });
 
-  it('(b) when capability is absent: hint text is present', () => {
+  it('(b) when capability is absent: operator hint is not rendered', () => {
     vi.mocked(hasExternalSubmission).mockReturnValue(false);
 
     render(SettingsView);
 
     expect(
-      screen.getByText(/External SMTP submission.*is not enabled on this server/),
-    ).toBeInTheDocument();
+      screen.queryByText(/External SMTP submission.*is not enabled on this server/),
+    ).not.toBeInTheDocument();
   });
 
-  it('(b) when capability is absent: system.toml reference is present', () => {
+  it('(b) when capability is absent: system.toml and admin-doc references are absent', () => {
     vi.mocked(hasExternalSubmission).mockReturnValue(false);
 
     render(SettingsView);
 
-    expect(screen.getByText('system.toml')).toBeInTheDocument();
-    expect(screen.getByText('docs/manual/admin/external-smtp-submission.mdoc')).toBeInTheDocument();
+    expect(screen.queryByText('system.toml')).not.toBeInTheDocument();
+    expect(screen.queryByText('docs/manual/admin/external-smtp-submission.mdoc')).not.toBeInTheDocument();
   });
 
   it('(b) when capability is absent: identity list still renders the row', () => {
-    // After the REQ-SET-IDENT-01 refactor the per-row "Configure
-    // external SMTP" link moved into the edit dialog; the list always
-    // renders the row regardless of capability. The hint section sits
-    // beneath the list and explains why submission is unavailable.
+    // The list always renders the identity row regardless of capability;
+    // unavailable capabilities are simply absent from the UI.
     vi.mocked(hasExternalSubmission).mockReturnValue(false);
 
     const { container } = render(SettingsView);
@@ -300,7 +300,7 @@ describe('SettingsView external-submission hint', () => {
     expect(container.querySelector('[data-testid="identity-row"]')).not.toBeNull();
   });
 
-  it('(a) when capability is present: hint text is absent', () => {
+  it('(a) when capability is present: operator hint is absent', () => {
     vi.mocked(hasExternalSubmission).mockReturnValue(true);
 
     render(SettingsView);

@@ -795,8 +795,6 @@ export const de = {
     'Externer SMTP-Versand konfiguriert — klicken zum Bearbeiten',
   'settings.account.configureExternal': 'Externen SMTP einrichten',
   'settings.account.configureExternalTitle': 'Externen SMTP-Versand einrichten',
-  'settings.account.extSubHint':
-    'Externer SMTP-Versand (z. B. Gmail oder Microsoft 365) ist auf diesem Server nicht aktiviert. Um ausgehende Mail über einen externen Anbieter zu leiten, kann ein Operator dies in {systemToml} aktivieren — siehe {docPath}.',
 
   // ── Einstellungen: Darstellung (re #97) ──────────────────────────────
   'settings.appearance.themeHint':
