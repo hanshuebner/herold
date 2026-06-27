@@ -27,6 +27,11 @@
     // We cannot call focus() inside catch because the input is disabled while
     // submitting is true; a disabled element cannot receive focus (re #29).
     let refocusTotp = false;
+    // Capture the pre-call step-up state. If needsStepUp was false before the
+    // call, this submit is the password step. When auth.login() then throws
+    // with needsStepUp=true, step-up was just triggered — no TOTP code was
+    // submitted and rejected, so no wrong-code error should appear (re #29).
+    const wasStepUp = auth.needsStepUp;
     try {
       await auth.login({
         email,
@@ -36,11 +41,13 @@
       // On success auth.bootstrap() ran inside auth.login(); status is 'ready'.
     } catch (err) {
       if (auth.needsStepUp) {
-        // Wrong TOTP code: use a distinct message so it reads differently from
-        // the initial step-up prompt (re #29).
-        errorMessage = t('login.totpWrongCode');
-        totpCode = '';
-        refocusTotp = true;
+        if (wasStepUp) {
+          // A TOTP code was submitted and rejected by the server.
+          errorMessage = t('login.totpWrongCode');
+          totpCode = '';
+          refocusTotp = true;
+        }
+        // else: step-up just became required; show the TOTP form with no error.
       } else {
         // auth.login() sets auth.errorMessage; mirror it locally for display.
         errorMessage = auth.errorMessage ?? (err instanceof Error ? err.message : t('login.signInFailed'));

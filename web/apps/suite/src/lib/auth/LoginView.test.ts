@@ -1,18 +1,21 @@
 /**
- * LoginView.svelte — empty-field validation (re #53).
+ * LoginView.svelte — empty-field validation (re #53) and TOTP step-up
+ * error-message gating (re #29).
  *
  * Verifies that submitting the sign-in form with an empty field:
  *   1. Does NOT call auth.login (no network request is sent).
  *   2. Shows the login.fieldsRequired validation message.
  *   3. Never surfaces raw "HTTP 400" text in the error area.
  *
- * The TOTP step-up auto-submit path is not blocked by the validation
- * because auth.needsStepUp is false in all cases below (that path is
- * exercised separately in the live-browser puppeteer session).
+ * Also verifies the TOTP step-up error-message gating:
+ *   4. When the password step triggers step-up, the TOTP form appears with
+ *      NO error message.
+ *   5. When a submitted TOTP code is rejected, the wrong-code message appears.
+ *   6. When a correct TOTP code is submitted, login() is called with no error.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import LoginView from './LoginView.svelte';
 
 // ── Auth mock ─────────────────────────────────────────────────────────────
@@ -20,18 +23,24 @@ import LoginView from './LoginView.svelte';
 // variable referenced inside one must be defined via vi.hoisted() rather
 // than a plain const — otherwise the variable is not yet initialised when
 // the factory runs.
+//
+// mockAuth is a plain mutable object so individual tests can adjust
+// needsStepUp before rendering (or via mockLogin side-effects) without
+// needing Svelte reactive state.
 
-const { mockLogin } = vi.hoisted(() => ({
-  mockLogin: vi.fn(),
-}));
+const { mockLogin, mockAuth } = vi.hoisted(() => {
+  const mockLogin = vi.fn();
+  const mockAuth = {
+    status: 'unauthenticated' as const,
+    needsStepUp: false,
+    errorMessage: null as string | null,
+    login: mockLogin,
+  };
+  return { mockLogin, mockAuth };
+});
 
 vi.mock('./auth.svelte', () => ({
-  auth: {
-    status: 'unauthenticated',
-    needsStepUp: false,
-    errorMessage: null,
-    login: mockLogin,
-  },
+  auth: mockAuth,
   registerAccountResetCallback: vi.fn(),
 }));
 
@@ -67,6 +76,8 @@ async function submitForm(): Promise<void> {
 describe('LoginView — empty-field validation (re #53)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuth.needsStepUp = false;
+    mockAuth.errorMessage = null;
   });
 
   it('does not call auth.login when password is empty', async () => {
@@ -146,5 +157,67 @@ describe('LoginView — empty-field validation (re #53)', () => {
         totpCode: undefined,
       });
     });
+  });
+});
+
+describe('LoginView — TOTP step-up error gating (re #29)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuth.needsStepUp = false;
+    mockAuth.errorMessage = null;
+  });
+
+  it('shows no error when the password step triggers step-up', async () => {
+    // Simulate auth.login() setting needsStepUp = true and throwing.
+    // wasStepUp is false at the start of doLogin(), so the catch block
+    // must NOT set errorMessage.
+    mockLogin.mockImplementationOnce(() => {
+      mockAuth.needsStepUp = true;
+      return Promise.reject(new Error('Enter your two-factor authentication code to continue.'));
+    });
+    render(LoginView);
+    await fillEmail('alice@example.local');
+    await fillPassword('testpass123...');
+    await submitForm();
+    await waitFor(() => {
+      // submitting goes false after finally; wait for async completion.
+      expect(mockLogin).toHaveBeenCalledOnce();
+    });
+    // The TOTP form is now required, but the error element must be absent.
+    const error = document.querySelector('.error');
+    expect(error).toBeNull();
+  });
+
+  it('shows the wrong-code error when a submitted TOTP code is rejected', async () => {
+    // Render with needsStepUp already true so the TOTP field is in the DOM
+    // from the initial render (the mock object is plain, not reactive, so
+    // the template evaluates needsStepUp once at mount time).
+    //
+    // We do NOT enter six digits here — entering six digits triggers
+    // onTotpInput's auto-submit path which would consume the mock before
+    // the explicit submitForm() call. Instead we submit with an empty
+    // totpCode; the validation bypass (needsStepUp=true) lets it through.
+    mockAuth.needsStepUp = true;
+    // auth.login() throws; needsStepUp stays true.
+    mockLogin.mockRejectedValueOnce(new Error('Invalid TOTP code.'));
+    render(LoginView);
+    // The TOTP field is rendered because needsStepUp was true at mount.
+    await submitForm();
+    await waitFor(() => {
+      const error = document.querySelector('.error');
+      expect(error).not.toBeNull();
+      expect(error!.textContent).toContain('login.totpWrongCode');
+    });
+  });
+
+  it('calls login and shows no error on successful TOTP submit', async () => {
+    mockAuth.needsStepUp = true;
+    mockLogin.mockResolvedValueOnce(undefined);
+    render(LoginView);
+    await submitForm();
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledOnce();
+    });
+    expect(document.querySelector('.error')).toBeNull();
   });
 });
