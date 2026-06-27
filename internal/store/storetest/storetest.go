@@ -377,6 +377,7 @@ func Run(t *testing.T, f Factory) {
 		{"IMAPImport_Update", testIMAPImport_Update},
 		{"IMAPImport_Delete", testIMAPImport_Delete},
 		{"IMAPImport_SetAccountState", testIMAPImport_SetAccountState},
+		{"IMAPImport_IdentityScope", testIMAPImport_IdentityScope},
 		{"IMAPImport_FolderMapReplace", testIMAPImport_FolderMapReplace},
 		{"IMAPImport_FolderCursorUpsertGet", testIMAPImport_FolderCursorUpsertGet},
 		{"IMAPImport_MessageStateUpsertAndLookups", testIMAPImport_MessageStateUpsertAndLookups},

@@ -14,7 +14,7 @@ import (
 // Schema commentary lives in migrations/0057_imap_import.sql.
 
 const imapImportAccountSelectCols = `
-	id, principal_id, account_name, host, port, tls_mode,
+	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
 	delete_propagates, created_at, updated_at`
@@ -22,6 +22,7 @@ const imapImportAccountSelectCols = `
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
 		id, accountName, host, tlsMode, username, authMethod, state, lastError string
+		identityID                                                             sql.NullString
 		pid, port                                                              int64
 		backfillFloorUs, lastSuccessUs                                         sql.NullInt64
 		credentialCT                                                           []byte
@@ -29,7 +30,7 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
-		&id, &pid, &accountName, &host, &port, &tlsMode,
+		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
 		&deletePropagates, &createdUs, &updatedUs,
@@ -39,6 +40,7 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	}
 	acc := store.IMAPImportAccount{
 		ID:               id,
+		IdentityID:       identityID.String,
 		PrincipalID:      store.PrincipalID(pid),
 		AccountName:      accountName,
 		Host:             host,
@@ -85,12 +87,13 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO imapimport_account
-			  (id, principal_id, account_name, host, port, tls_mode,
+			  (id, identity_id, principal_id, account_name, host, port, tls_mode,
 			   username, auth_method, backfill_floor_date,
 			   credential_ct, state, last_success_at, last_error,
 			   delete_propagates, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?)`,
-			id, int64(create.PrincipalID), create.AccountName, create.Host, create.Port,
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?)`,
+			id, nullStringOrNil(create.IdentityID), int64(create.PrincipalID),
+			create.AccountName, create.Host, create.Port,
 			string(create.TLSMode), create.Username, string(create.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(create.BackfillFloorDate)),
 			create.CredentialCT, string(state),
@@ -103,6 +106,7 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	}
 	acc := store.IMAPImportAccount{
 		ID:                id,
+		IdentityID:        create.IdentityID,
 		PrincipalID:       create.PrincipalID,
 		AccountName:       create.AccountName,
 		Host:              create.Host,
@@ -134,6 +138,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		// Build args in query column order so positional ? placeholders align.
 		args := []any{
+			nullStringOrNil(update.IdentityID),
 			update.AccountName, update.Host, update.Port,
 			string(update.TLSMode), update.Username, string(update.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(update.BackfillFloorDate)),
@@ -149,6 +154,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 		)
 		res, err := tx.ExecContext(ctx, `
 			UPDATE imapimport_account SET
+			  identity_id = ?,
 			  account_name = ?, host = ?, port = ?, tls_mode = ?,
 			  username = ?, auth_method = ?,
 			  backfill_floor_date = ?,
@@ -446,6 +452,16 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 		)
 		return mapErr(err)
 	})
+}
+
+// nullStringOrNil returns nil when s is empty (so the column is written as
+// SQL NULL) and the string otherwise. Used for the nullable identity_id
+// column on imapimport_account.
+func nullStringOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // ptrTimeOrZero returns the time.Time value pointed to by t, or the zero

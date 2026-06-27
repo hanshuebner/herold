@@ -29,6 +29,7 @@ import (
 // account. The sealed credential is NEVER returned (REQ-IMAP-IMP-70).
 type imapImportAccountDTO struct {
 	ID               string     `json:"id"`
+	IdentityID       string     `json:"identity_id,omitempty"`
 	PrincipalID      uint64     `json:"principal_id"`
 	AccountName      string     `json:"account_name"`
 	Host             string     `json:"host"`
@@ -57,6 +58,7 @@ type imapImportFolderMapEntryDTO struct {
 func toImapImportDTO(a store.IMAPImportAccount) imapImportAccountDTO {
 	dto := imapImportAccountDTO{
 		ID:               a.ID,
+		IdentityID:       a.IdentityID,
 		PrincipalID:      uint64(a.PrincipalID),
 		AccountName:      a.AccountName,
 		Host:             a.Host,
@@ -85,6 +87,7 @@ func toImapImportDTO(a store.IMAPImportAccount) imapImportAccountDTO {
 
 // createIMAPImportRequest is the body for POST .../imap-imports.
 type createIMAPImportRequest struct {
+	IdentityID       string                        `json:"identity_id,omitempty"`
 	AccountName      string                        `json:"account_name"`
 	Host             string                        `json:"host"`
 	Port             int                           `json:"port"`
@@ -260,6 +263,17 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Validate the owning Identity (decision 10, REQ-IMAP-IMP-01/02). When
+	// supplied it must reference an Identity owned by the same principal.
+	if req.IdentityID != "" {
+		ident, ierr := s.store.Meta().GetJMAPIdentity(r.Context(), req.IdentityID)
+		if ierr != nil || ident.PrincipalID != pid {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"identity_id does not reference an Identity owned by this principal", req.IdentityID)
+			return
+		}
+	}
+
 	// Resolve the backfill horizon (REQ-IMAP-IMP-15, -16).
 	floor, err := store.ParseBackfillHorizon(req.BackfillHorizon, s.clk.Now())
 	if err != nil {
@@ -296,6 +310,7 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 	}
 
 	create := store.IMAPImportAccountCreate{
+		IdentityID:        req.IdentityID,
 		PrincipalID:       pid,
 		AccountName:       req.AccountName,
 		Host:              req.Host,
@@ -388,6 +403,7 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 	upd := store.IMAPImportAccountUpdate{
 		ID:                existing.ID,
 		PrincipalID:       pid,
+		IdentityID:        existing.IdentityID, // owning Identity preserved
 		AccountName:       existing.AccountName,
 		Host:              existing.Host,
 		Port:              existing.Port,

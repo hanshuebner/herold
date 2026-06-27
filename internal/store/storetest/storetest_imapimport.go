@@ -332,6 +332,106 @@ func testIMAPImport_Delete(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_IdentityScope verifies the per-identity re-scope (decision
+// 10, REQ-IMAP-IMP-01/02): an account carries its owning IdentityID, the
+// store enforces 0-or-1 account per identity, and deleting the owning
+// Identity cascades to the import config.
+func testIMAPImport_IdentityScope(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-ident@example.com")
+
+	identID := "imap-ident-1"
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: identID, PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	acc, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:       identID,
+		PrincipalID:      p.ID,
+		AccountName:      "External",
+		Host:             "imap.external.test",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "alice",
+		AuthMethod:       store.IMAPImportAuthMethodAppPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	if acc.IdentityID != identID {
+		t.Errorf("IdentityID = %q; want %q", acc.IdentityID, identID)
+	}
+
+	// Round-trip carries identity_id.
+	got, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if got.IdentityID != identID {
+		t.Errorf("Get IdentityID = %q; want %q", got.IdentityID, identID)
+	}
+
+	// 0-or-1 per identity: a second account on the same identity conflicts.
+	_, err = s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:       identID,
+		PrincipalID:      p.ID,
+		AccountName:      "Second",
+		Host:             "imap.external.test",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "alice",
+		AuthMethod:       store.IMAPImportAuthMethodAppPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("second account on same identity: want ErrConflict, got %v", err)
+	}
+
+	// A different identity on the same principal is allowed.
+	identID2 := "imap-ident-2"
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: identID2, PrincipalID: p.ID, Email: "bob@external.test", MayDelete: true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity 2: %v", err)
+	}
+	acc2, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:       identID2,
+		PrincipalID:      p.ID,
+		AccountName:      "Other",
+		Host:             "imap.external.test",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "bob",
+		AuthMethod:       store.IMAPImportAuthMethodAppPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount (second identity): %v", err)
+	}
+
+	// Deleting the owning Identity cascades to its import config.
+	if err := s.Meta().DeleteJMAPIdentity(ctx, identID); err != nil {
+		t.Fatalf("DeleteJMAPIdentity: %v", err)
+	}
+	if _, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("after identity delete: want account gone (ErrNotFound), got %v", err)
+	}
+	// The other identity's account is untouched.
+	if _, err := s.Meta().GetIMAPImportAccount(ctx, acc2.ID); err != nil {
+		t.Errorf("unrelated account removed by cascade: %v", err)
+	}
+}
+
 // testIMAPImport_SetAccountState verifies SetIMAPImportAccountState
 // updates state/last_error and only advances last_success_at when
 // non-nil is passed.

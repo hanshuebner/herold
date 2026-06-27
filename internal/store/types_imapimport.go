@@ -79,7 +79,14 @@ type IMAPImportAccount struct {
 	// ID is the opaque string primary key (32-hex UUID-shaped, generated
 	// by the store on create).
 	ID string
-	// PrincipalID is the owning principal.
+	// IdentityID is the owning JMAP Identity (decision 10,
+	// REQ-IMAP-IMP-01/02). Empty for legacy principal-scoped rows that
+	// predate the per-identity re-scope. Deleting the Identity cascades
+	// to this row. An import account is 0-or-1 per identity (enforced by a
+	// partial unique index).
+	IdentityID string
+	// PrincipalID is the owning principal, denormalised from the identity
+	// for query convenience and the worker-pool fan-out (REQ-IMAP-IMP-02).
 	PrincipalID PrincipalID
 	// AccountName is the operator/user-visible label.
 	AccountName string
@@ -122,6 +129,11 @@ type IMAPImportAccount struct {
 // imapimport_account row. CredentialCT must carry the "v1:" prefix
 // (validated by CreateIMAPImportAccount before insert).
 type IMAPImportAccountCreate struct {
+	// IdentityID is the owning JMAP Identity (decision 10). Optional: when
+	// empty the row is principal-scoped only. When set it must reference an
+	// existing jmap_identities row owned by PrincipalID; the store enforces
+	// 0-or-1 per identity and returns ErrConflict on a duplicate.
+	IdentityID        string
 	PrincipalID       PrincipalID
 	AccountName       string
 	Host              string
@@ -145,7 +157,11 @@ type IMAPImportAccountUpdate struct {
 	// PrincipalID scopes the update to the owning principal (required).
 	// The store rejects updates where the stored principal_id does not
 	// match, returning ErrNotFound.
-	PrincipalID       PrincipalID
+	PrincipalID PrincipalID
+	// IdentityID is the owning JMAP Identity (decision 10). Carried so a
+	// re-home (domain cutover) can move an account between identities; the
+	// JMAP/admin patch paths preserve the existing value.
+	IdentityID        string
 	AccountName       string
 	Host              string
 	Port              int

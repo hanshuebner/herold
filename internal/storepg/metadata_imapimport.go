@@ -14,7 +14,7 @@ import (
 // Schema commentary lives in migrations/0057_imap_import.sql.
 
 const imapImportAccountSelectColsPG = `
-	id, principal_id, account_name, host, port, tls_mode,
+	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
 	delete_propagates, created_at, updated_at`
@@ -22,6 +22,7 @@ const imapImportAccountSelectColsPG = `
 func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 	var (
 		id, accountName, host, tlsMode, username, authMethod, state, lastError string
+		identityID                                                             *string
 		pid, port                                                              int64
 		backfillFloorUs, lastSuccessUs                                         *int64
 		credentialCT                                                           []byte
@@ -29,7 +30,7 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
-		&id, &pid, &accountName, &host, &port, &tlsMode,
+		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
 		&deletePropagates, &createdUs, &updatedUs,
@@ -39,6 +40,7 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 	}
 	acc := store.IMAPImportAccount{
 		ID:               id,
+		IdentityID:       strDeref(identityID),
 		PrincipalID:      store.PrincipalID(pid),
 		AccountName:      accountName,
 		Host:             host,
@@ -81,12 +83,13 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO imapimport_account
-			  (id, principal_id, account_name, host, port, tls_mode,
+			  (id, identity_id, principal_id, account_name, host, port, tls_mode,
 			   username, auth_method, backfill_floor_date,
 			   credential_ct, state, last_success_at, last_error,
 			   delete_propagates, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,'',$12,$13,$14)`,
-			id, int64(create.PrincipalID), create.AccountName, create.Host, create.Port,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,'',$13,$14,$15)`,
+			id, nullStringOrNilPG(create.IdentityID), int64(create.PrincipalID),
+			create.AccountName, create.Host, create.Port,
 			string(create.TLSMode), create.Username, string(create.AuthMethod),
 			nullOrMicrosPG(create.BackfillFloorDate),
 			create.CredentialCT, string(state),
@@ -99,6 +102,7 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	}
 	acc := store.IMAPImportAccount{
 		ID:                id,
+		IdentityID:        create.IdentityID,
 		PrincipalID:       create.PrincipalID,
 		AccountName:       create.AccountName,
 		Host:              create.Host,
@@ -133,7 +137,8 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 				  username = $5, auth_method = $6,
 				  backfill_floor_date = $7,
 				  credential_ct = $8,
-				  state = $9, delete_propagates = $10, updated_at = $11
+				  state = $9, delete_propagates = $10, updated_at = $11,
+				  identity_id = $14
 				WHERE id = $12 AND principal_id = $13`,
 				update.AccountName, update.Host, update.Port,
 				string(update.TLSMode), update.Username, string(update.AuthMethod),
@@ -141,6 +146,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 				update.CredentialCT,
 				string(update.State), update.DeletePropagates, nowUs,
 				update.ID, int64(update.PrincipalID),
+				nullStringOrNilPG(update.IdentityID),
 			)
 			if err != nil {
 				return mapErr(err)
@@ -152,13 +158,15 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 				  account_name = $1, host = $2, port = $3, tls_mode = $4,
 				  username = $5, auth_method = $6,
 				  backfill_floor_date = $7,
-				  state = $8, delete_propagates = $9, updated_at = $10
+				  state = $8, delete_propagates = $9, updated_at = $10,
+				  identity_id = $13
 				WHERE id = $11 AND principal_id = $12`,
 				update.AccountName, update.Host, update.Port,
 				string(update.TLSMode), update.Username, string(update.AuthMethod),
 				nullOrMicrosPG(update.BackfillFloorDate),
 				string(update.State), update.DeletePropagates, nowUs,
 				update.ID, int64(update.PrincipalID),
+				nullStringOrNilPG(update.IdentityID),
 			)
 			if err != nil {
 				return mapErr(err)
@@ -263,6 +271,24 @@ func nullOrMicrosPG(t *time.Time) any {
 		return nil
 	}
 	return usMicros(*t)
+}
+
+// nullStringOrNilPG returns nil when s is empty (written as SQL NULL) and the
+// string otherwise. Used for the nullable identity_id column.
+func nullStringOrNilPG(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// strDeref returns the empty string when p is nil, otherwise *p. Used to scan
+// a nullable TEXT column into a non-pointer store field.
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // -- folder map -----------------------------------------------------------

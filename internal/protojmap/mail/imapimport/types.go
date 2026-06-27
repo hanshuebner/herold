@@ -21,6 +21,9 @@ func jmapUTCDate(t time.Time) string {
 type jmapIMAPImportAccount struct {
 	// ID is the opaque account identifier.
 	ID jmapID `json:"id"`
+	// IdentityID is the owning JMAP Identity (decision 10,
+	// REQ-IMAP-IMP-01/02). Empty for legacy principal-scoped accounts.
+	IdentityID jmapID `json:"identityId,omitempty"`
 	// AccountName is the user/operator-visible label.
 	AccountName string `json:"accountName"`
 	// Host is the upstream IMAP server hostname.
@@ -60,6 +63,7 @@ type jmapIMAPImportAccount struct {
 func recordToJMAP(a store.IMAPImportAccount) jmapIMAPImportAccount {
 	wire := jmapIMAPImportAccount{
 		ID:               a.ID,
+		IdentityID:       a.IdentityID,
 		AccountName:      a.AccountName,
 		Host:             a.Host,
 		Port:             a.Port,

@@ -188,6 +188,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	// createIn is the wire form for IMAPImport/set create. credential is
 	// write-only and sealed server-side before storage (REQ-IMAP-IMP-70).
 	type createIn struct {
+		IdentityID       string `json:"identityId"`
 		AccountName      string `json:"accountName"`
 		Host             string `json:"host"`
 		Port             int    `json:"port"`
@@ -260,6 +261,19 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			continue
 		}
 
+		// Validate the owning Identity (decision 10, REQ-IMAP-IMP-01/02).
+		// When supplied it must reference an Identity owned by the caller;
+		// the store enforces 0-or-1 account per identity at insert time.
+		if in.IdentityID != "" {
+			ident, ierr := s.h.store.Meta().GetJMAPIdentity(ctx, in.IdentityID)
+			if ierr != nil || ident.PrincipalID != p.ID {
+				setNotCreated(&resp, clientID, "invalidProperties",
+					[]string{"identityId"},
+					"identityId does not reference an Identity owned by the caller")
+				continue
+			}
+		}
+
 		// Resolve backfill horizon to absolute floor date
 		// (REQ-IMAP-IMP-15, -16). Relative values are resolved at
 		// create time using the injected clock so the horizon does not
@@ -301,6 +315,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 
 		create := store.IMAPImportAccountCreate{
+			IdentityID:        in.IdentityID,
 			PrincipalID:       p.ID,
 			AccountName:       in.AccountName,
 			Host:              in.Host,
@@ -318,6 +333,13 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			if errors.Is(cerr, store.ErrInvalidArgument) {
 				setNotCreated(&resp, clientID, "invalidProperties",
 					nil, cerr.Error())
+				continue
+			}
+			if errors.Is(cerr, store.ErrConflict) {
+				// 0-or-1 import account per identity (decision 10).
+				setNotCreated(&resp, clientID, "invalidProperties",
+					[]string{"identityId"},
+					"this Identity already has an IMAP import account")
 				continue
 			}
 			return nil, protojmap.NewMethodError("serverFail", cerr.Error())
@@ -385,6 +407,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		upd := store.IMAPImportAccountUpdate{
 			ID:                prior.ID,
 			PrincipalID:       p.ID,
+			IdentityID:        prior.IdentityID, // owning Identity is immutable here
 			AccountName:       prior.AccountName,
 			Host:              prior.Host,
 			Port:              prior.Port,
