@@ -310,6 +310,7 @@ func Run(t *testing.T, f Factory) {
 		{"EmailReaction_ListEmpty", testEmailReactionListEmpty},
 		{"EmailReaction_BatchList", testEmailReactionBatchList},
 		{"EmailReaction_GetMessageByMessageIDHeader", testGetMessageByMessageIDHeader},
+		{"Message_GetMessageByBlobHash", testGetMessageByBlobHash},
 		// -- Principal/query support (REQ-CHAT-01b/c) --------------------
 		{"SearchPrincipalsByText_DisplayNameMatch", testSearchPrincipalsByTextDisplayNameMatch},
 		{"SearchPrincipalsByText_EmailLocalPartMatch", testSearchPrincipalsByTextEmailLocalPartMatch},
@@ -8338,6 +8339,54 @@ func testGetMessageByMessageIDHeader(t *testing.T, s store.Store) {
 	_, err = s.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "not-here@host")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing msgid: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testGetMessageByBlobHash(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "blobhash-lookup@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// A message with no Message-ID header: dedup must fall back to blob_hash.
+	ref := putBlob(t, s, "From: nobody@example.com\r\nSubject: no message id here\r\n\r\nunique blob-hash dedup body\r\n")
+	uid, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Size:         ref.Size,
+		Blob:         ref,
+		ReceivedAt:   time.Now().UTC(),
+		InternalDate: time.Now().UTC(),
+		Envelope:     store.Envelope{From: "nobody@example.com"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	if uid == 0 {
+		t.Fatalf("InsertMessage returned uid 0")
+	}
+
+	got, err := s.Meta().GetMessageByBlobHash(ctx, p.ID, ref.Hash)
+	if err != nil {
+		t.Fatalf("GetMessageByBlobHash: %v", err)
+	}
+	if got.Blob.Hash != ref.Hash {
+		t.Fatalf("GetMessageByBlobHash: got blob hash %q, want %q", got.Blob.Hash, ref.Hash)
+	}
+
+	// A different principal does not see the first principal's message even
+	// for the identical blob hash (principal scoping).
+	p2 := mustInsertPrincipal(t, s, "blobhash-other@example.com")
+	if _, err := s.Meta().GetMessageByBlobHash(ctx, p2.ID, ref.Hash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cross-principal blob hash lookup: err = %v, want ErrNotFound", err)
+	}
+
+	// Unknown hash -> ErrNotFound.
+	if _, err := s.Meta().GetMessageByBlobHash(ctx, p.ID, "0000000000000000000000000000000000000000000000000000000000000000"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing blob hash: err = %v, want ErrNotFound", err)
+	}
+
+	// Empty hash -> ErrNotFound (defensive; never matches a real row).
+	if _, err := s.Meta().GetMessageByBlobHash(ctx, p.ID, ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("empty blob hash: err = %v, want ErrNotFound", err)
 	}
 }
 

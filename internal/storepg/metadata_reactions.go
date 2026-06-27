@@ -145,6 +145,33 @@ func (m *metadata) GetMessageByMessageIDHeader(
 	return m.GetMessage(ctx, store.MessageID(msgID))
 }
 
+// GetMessageByBlobHash looks up a message owned by principalID whose
+// blob_hash column equals blobHash. Content-hash dedup fallback; see
+// store.Metadata for the contract.
+func (m *metadata) GetMessageByBlobHash(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	blobHash string,
+) (store.Message, error) {
+	if blobHash == "" {
+		return store.Message{}, store.ErrNotFound
+	}
+	const q = `
+		SELECT id FROM messages
+		WHERE principal_id = $1
+		  AND blob_hash = $2
+		LIMIT 1`
+	var msgID int64
+	err := m.s.pool.QueryRow(ctx, q, int64(principalID), blobHash).Scan(&msgID)
+	if err == pgx.ErrNoRows {
+		return store.Message{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.Message{}, fmt.Errorf("storepg: get message by blob hash: %w", err)
+	}
+	return m.GetMessage(ctx, store.MessageID(msgID))
+}
+
 // ListPrincipalBlobHashes returns every distinct blob_hash owned by
 // principalID. Bulk-importer entry point; see store.Metadata for the
 // contract.

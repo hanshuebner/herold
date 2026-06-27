@@ -1910,6 +1910,17 @@ type Metadata interface {
 	// reaction handler to locate the original email by its Message-ID.
 	GetMessageByMessageIDHeader(ctx context.Context, principalID PrincipalID, msgIDHeader string) (Message, error)
 
+	// GetMessageByBlobHash looks up a message owned by principalID whose
+	// content-addressed body hash (blob_hash column) equals blobHash (the
+	// canonical-CRLF BLAKE3 of the message bytes, the same value
+	// BlobRef.Hash carries). Returns the first matching message, or
+	// ErrNotFound. This is the content-hash dedup fallback used by the IMAP
+	// importers when a message has no usable Message-ID header
+	// (REQ-IMAP-IMP-30 / REQ-IMPORT-05): two messages whose bodies
+	// canonicalise to the same bytes share a hash, so a message already
+	// mirrored is not duplicated on a later pass. blobHash must be non-empty.
+	GetMessageByBlobHash(ctx context.Context, principalID PrincipalID, blobHash string) (Message, error)
+
 	// ListPrincipalBlobHashes returns the distinct blob_hash values
 	// owned by principalID in arbitrary order. Used by the bulk gmail
 	// importer to seed a content-addressed dedup set

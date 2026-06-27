@@ -440,56 +440,42 @@ func (w *accountWorker) ingestMessage(
 		return false, false, 0, 0, fmt.Errorf("mailparse.Parse: %w", parseErr)
 	}
 
-	// Dedup by Message-ID (primary).
+	// Dedup by Message-ID (primary, REQ-IMAP-IMP-30).
 	rawMsgID := msg.Envelope.MessageID
 	if rawMsgID != "" {
 		normID := mailparse.NormalizeMessageID(rawMsgID)
 		existing, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID)
 		if lookupErr == nil {
-			// Message already exists in herold. Ensure it is also a member of
-			// the current target mailbox (multi-mailbox dedup path).
-			targetMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
-			if mbErr != nil {
-				return false, false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
-			}
-			// Check whether the message is already in this mailbox.
-			alreadyMember := false
-			for _, mm := range existing.Mailboxes {
-				if mm.MailboxID == targetMB.ID {
-					alreadyMember = true
-					break
-				}
-			}
-			if !alreadyMember {
-				// Add the membership. This is idempotent per AddMessageToMailbox's
-				// ErrConflict guard — a concurrent ingest of the same message
-				// into the same mailbox loses the race harmlessly.
-				if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
-					if !errors.Is(addErr, store.ErrConflict) {
-						return false, false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
-					}
-					// ErrConflict means a concurrent path already added it; harmless.
-					// Treat as not-new-member so the caller does not double-categorise.
-					return false, false, existing.ID, targetMB.ID, nil
-				}
-				// Membership created now: the caller should categorise if INBOX.
-				return false, true, existing.ID, targetMB.ID, nil
-			}
-			return false, false, existing.ID, targetMB.ID, nil
+			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
+			return false, newMember, eid, embID, placeErr
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
 			return false, false, 0, 0, fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)
 		}
 		// ErrNotFound -> proceed with insert.
 	}
-	// If no Message-ID, proceed (blob-hash dedup is not feasible
-	// without a separate store lookup; Put is idempotent for bytes so
-	// re-storing is safe).
 
-	// Store blob (idempotent).
+	// Store blob (idempotent). The content-addressed hash doubles as the
+	// fallback dedup key for messages that have no usable Message-ID.
 	blobRef, putErr := w.opts.store.Blobs().Put(ctx, bytes.NewReader(fm.RFC822))
 	if putErr != nil {
 		return false, false, 0, 0, fmt.Errorf("imapimport: Blobs.Put: %w", putErr)
+	}
+
+	// Dedup by blob_hash (fallback) when there is no Message-ID, matching the
+	// bulk importer's content-hash dedup (REQ-IMAP-IMP-30). Without this a
+	// no-Message-ID message re-fetched on a later pass would insert a fresh
+	// messages row every time.
+	if rawMsgID == "" {
+		existing, lookupErr := w.opts.store.Meta().GetMessageByBlobHash(ctx, principalID, blobRef.Hash)
+		if lookupErr == nil {
+			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
+			return false, newMember, eid, embID, placeErr
+		}
+		if !errors.Is(lookupErr, store.ErrNotFound) {
+			return false, false, 0, 0, fmt.Errorf("imapimport: GetMessageByBlobHash: %w", lookupErr)
+		}
+		// ErrNotFound -> proceed with insert.
 	}
 
 	// Ensure the target herold mailbox exists.
@@ -522,21 +508,61 @@ func (w *accountWorker) ingestMessage(
 		return false, false, 0, 0, fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
 	}
 
-	// Retrieve the assigned MessageID for state recording.
-	// InsertMessage does not return it directly; look it up via the
-	// Message-ID header if present.
+	// Retrieve the assigned MessageID for state recording. InsertMessage does
+	// not return it directly; look it up by Message-ID when present, else by
+	// the content hash (so write-back can address no-Message-ID mail too).
 	var assignedMsgID store.MessageID
 	if rawMsgID != "" {
 		normID := mailparse.NormalizeMessageID(rawMsgID)
-		inserted, err2 := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID)
-		if err2 == nil {
+		if inserted, err2 := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID); err2 == nil {
 			assignedMsgID = inserted.ID
 		}
-		// On lookup failure we still return isNew=true; mbID is known.
+	} else {
+		if inserted, err2 := w.opts.store.Meta().GetMessageByBlobHash(ctx, principalID, blobRef.Hash); err2 == nil {
+			assignedMsgID = inserted.ID
+		}
 	}
+	// On lookup failure we still return isNew=true; mbID is known.
 
 	// Fresh insert: the message is a new member of heroldMailbox.
 	return true, true, assignedMsgID, mb.ID, nil
+}
+
+// placeExistingMessage handles a dedup hit: the message `existing` is already
+// mirrored in herold. It ensures the message is also a member of heroldMailbox
+// (multi-mailbox-on-dedup, REQ-IMAP-IMP-51) and reports whether the membership
+// was created by this call. Used by both the Message-ID and the blob_hash
+// dedup paths (REQ-IMAP-IMP-30). isNewMember=false when the message was
+// already in heroldMailbox or a concurrent ingest won the race (ErrConflict),
+// so the caller does not double-categorise.
+func (w *accountWorker) placeExistingMessage(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	existing store.Message,
+	heroldMailbox string,
+) (isNewMember bool, msgID store.MessageID, mbID store.MailboxID, err error) {
+	targetMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
+	if mbErr != nil {
+		return false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
+	}
+	for _, mm := range existing.Mailboxes {
+		if mm.MailboxID == targetMB.ID {
+			// Already a member (e.g. re-fetching the same folder): no-op.
+			return false, existing.ID, targetMB.ID, nil
+		}
+	}
+	// Add the membership. Idempotent per AddMessageToMailbox's ErrConflict
+	// guard — a concurrent ingest of the same message into the same mailbox
+	// loses the race harmlessly.
+	if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
+		if !errors.Is(addErr, store.ErrConflict) {
+			return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+		}
+		// ErrConflict: another path already added it; not a new member here.
+		return false, existing.ID, targetMB.ID, nil
+	}
+	// Membership created now: the caller should categorise if INBOX.
+	return true, existing.ID, targetMB.ID, nil
 }
 
 // ensureMailbox returns the herold mailbox named mbName owned by pid,

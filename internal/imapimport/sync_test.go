@@ -474,6 +474,62 @@ func TestDedup(t *testing.T) {
 	}
 }
 
+// buildRFC822NoMsgID returns a minimal RFC 822 message with NO Message-ID
+// header, to exercise the blob_hash dedup fallback (REQ-IMAP-IMP-30 / D4).
+func buildRFC822NoMsgID(subject string, date time.Time) []byte {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&b, "From: sender@example.test\r\n")
+	fmt.Fprintf(&b, "To: recipient@example.test\r\n")
+	fmt.Fprintf(&b, "Date: %s\r\n", date.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	fmt.Fprintf(&b, "Content-Type: text/plain; charset=utf-8\r\n")
+	fmt.Fprintf(&b, "\r\n")
+	fmt.Fprintf(&b, "no-message-id body of %s\r\n", subject)
+	return b.Bytes()
+}
+
+// TestDedupNoMessageID verifies the blob_hash dedup fallback (D4): a message
+// with no usable Message-ID header, re-fetched on a later pass, does NOT
+// create a second messages row. REQ-IMAP-IMP-30.
+func TestDedupNoMessageID(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("u4b", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 3, 15, 10, 0, 0, 0, time.UTC)
+	raw := buildRFC822NoMsgID("No MessageID Dedup", d)
+	appendToServer(t, ts, "u4b", "pw", "INBOX", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u4b@example.test",
+		username:            "u4b",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// First sync: the no-Message-ID message is inserted.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 1 {
+		t.Fatalf("after first sync: want 1, got %d", got)
+	}
+
+	// Force a re-fetch of the same upstream UID by resetting high_water.
+	cursor, _, _ := ha.Store.Meta().GetIMAPImportFolderCursor(context.Background(), acc.ID, "INBOX")
+	cursor.HighWaterUID = 0
+	_ = ha.Store.Meta().UpsertIMAPImportFolderCursor(context.Background(), cursor)
+
+	// Second sync: blob_hash dedup must catch the message so it is NOT
+	// duplicated even though it has no Message-ID.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("second sync (reset high_water): %v", err)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 1 {
+		t.Errorf("after blob_hash dedup pass: want 1, got %d (duplicate inserted)", got)
+	}
+}
+
 // TestFolderMapping verifies that an upstream folder maps to a
 // differently-named herold mailbox. REQ-IMAP-IMP-10/12.
 func TestFolderMapping(t *testing.T) {
