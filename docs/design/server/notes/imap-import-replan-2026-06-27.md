@@ -170,3 +170,16 @@ REQ-61 `IMAPImport/changes`; self-service folder-map in JMAP `set`.
   appear, remove with each of the two choices, screenshot the prompt.
 - Both SQLite and Postgres for every store-touching change; `-race` clean;
   full pre-commit chain per commit.
+
+## Related feature beyond #25: domain cutover
+
+`26-domain-cutover.md` (REQ-CUTOVER-\*) specifies the org-level adoption
+journey — trial with per-identity bridges, then a full domain cutover where
+the admin migrates every mailbox with one delegated/master credential and
+early adopters are re-homed (their `user@domain` identity promoted to the
+account's primary, mirror finalized, external SMTP dropped). It is a strict
+superset of the per-identity machinery here (it drives the same worker pool
+and complete-migration path) and depends on Waves A/C/D landing first. It is
+**its own feature** and likely warrants a separate tracking issue rather than
+expanding #25. Operator guide: `docs/manual/admin/domain-cutover.mdoc`
+(marked planned until the tooling ships).

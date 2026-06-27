@@ -1,0 +1,170 @@
+---
+title: Migrating a Domain to Herold
+slug: domain-cutover
+audience: admin
+---
+
+# Migrating a domain to herold
+
+This chapter describes how to move an entire mail domain onto herold: from a
+small trial where a few users bridge their existing accounts in, to a complete
+cutover where every mailbox lives on herold and MX points at it.
+
+{% callout type="info" title="Status: planned" %}
+The bulk migration tooling described here
+(`herold admin migration-source`, `herold admin domain migrate`) is specified
+in `docs/design/server/requirements/26-domain-cutover.md` (REQ-CUTOVER-\*) and
+is not yet available in this build. The per-user building blocks it composes —
+[External SMTP Submission](external-smtp-submission) and per-identity IMAP
+import — are tracked in issue #25. This chapter documents the intended
+operator workflow so the design and the manual stay in step; commands will
+work as written once the feature ships.
+{% /callout %}
+
+## The journey
+
+A typical adoption looks like this:
+
+1. **Trial.** You own `acme.com` and run an existing mail server. You stand up
+   herold on a domain you already control (a throwaway eval domain, or a
+   subdomain like `mail.acme.com`), following [Going Live](going-live). A few
+   users get herold accounts.
+2. **Bridge.** Each trial user adds their real address `user@acme.com` to
+   herold as an *identity* and configures it as an external account: external
+   SMTP for sending (see [External SMTP Submission](external-smtp-submission))
+   and, optionally, IMAP import so their `acme.com` mail mirrors into herold.
+   They live in herold day-to-day while `acme.com` MX still points at the old
+   server.
+3. **Cutover.** You decide to move `acme.com` onto herold for good. You add
+   `acme.com` as a hosted domain, migrate **every** mailbox from the legacy
+   server, flip MX to herold, and retire the old server.
+
+The trial and bridge steps are covered elsewhere. This chapter is about
+step 3 — and specifically the two things that make it more than "create
+accounts and copy mail":
+
+- migrating the mailboxes of users who never set anything up themselves, and
+- bringing the early adopters across without giving them a second account or
+  losing the mail they already mirrored.
+
+## Before you start
+
+Add `acme.com` as a hosted domain and publish its DKIM, MTA-STS, TLS-RPT, and
+SPF records **first**, exactly as in [Going Live](going-live) — but leave the
+**MX pointed at the legacy server** for now. Herold can sign and send for a
+hosted domain immediately; inbound keeps flowing to the old server until you
+flip MX at the end. This lets you migrate while users keep working.
+
+## Step 1 - register a migration source
+
+You do not collect a password from every user. Instead you register one
+**migration source** for the domain: a single delegated or master credential
+that lets herold read any mailbox on the legacy server.
+
+Pick the `auth_kind` that matches your legacy provider:
+
+- `google_domain_delegation` - a Google Workspace service account with
+  domain-wide delegation for the `https://mail.google.com/` scope. Herold
+  mints a per-user access token impersonating each `user@acme.com`.
+- `imap_master_user` - a Dovecot or Cyrus master user. Herold logs in as the
+  master principal and authorises as each target user.
+- `imap_admin_login` - a single admin account that is permitted to `SELECT`
+  other users' mailboxes.
+
+```
+herold admin migration-source add acme.com \
+    --imap-host imap.legacy.example \
+    --tls implicit \
+    --auth-kind imap_master_user \
+    --credential @/path/to/master-secret
+```
+
+The credential is sealed at rest with herold's data key (the same mechanism as
+external-submission credentials) and is only ever held in memory for the length
+of a connection. Herold verifies the source can authenticate as a sample user
+before accepting it. The source is admin-only and should be deleted once the
+migration is done.
+
+## Step 2 - review the plan
+
+Migration is always plan-then-apply. Generate the plan first:
+
+```
+herold admin domain migrate acme.com --source acme.com --plan
+```
+
+For every `user@acme.com` the plan tells you whether herold will **provision**
+a fresh native account or **reconcile** (re-home) an existing trial user, plus
+the mailbox size estimate and any conflicts. Re-home is chosen automatically
+when a trial principal already owns a verified `user@acme.com` external
+identity.
+
+Read the plan carefully. The uniqueness rule is strict: each `user@acme.com`
+must resolve to exactly one account. If two trial principals both claim the
+same address, herold refuses to guess and flags it for you to resolve. A trial
+user who added `ceo@acme.com` as an external identity does **not** thereby own
+the native `ceo@acme.com` mailbox — conversion only happens through this
+reviewed step, never as a side effect of adding the domain.
+
+## Step 3 - migrate in mirror mode
+
+Apply the plan:
+
+```
+herold admin domain migrate acme.com --source acme.com --apply
+```
+
+Each mailbox runs the IMAP-import [complete-migration](going-live) flow: a full
+backfill of the entire mailbox, deduplicated by Message-ID so nothing is copied
+twice. Mailboxes migrate independently and in parallel; one slow or broken
+account does not hold up the rest. Watch progress with:
+
+```
+herold imapimport status
+```
+
+For early adopters, herold **re-homes** the existing account rather than making
+a new one:
+
+- `user@acme.com` becomes the account's primary (login) address;
+- the old trial address is kept as a secondary alias (use `--drop-trial-alias`
+  to remove it instead);
+- their already-mirrored mail, settings, filters, Sieve, labels, and the
+  per-account import label all carry over - it is the same account;
+- their external SMTP submission config is removed, because herold now sends
+  and DKIM-signs natively for `acme.com`.
+
+Leave the migration running in mirror mode until `herold imapimport status`
+shows the backfill drained to ~0 across the batch and you have spot-checked a
+few mailboxes in the suite.
+
+## Step 4 - flip MX and finalize
+
+Once the mirror is caught up and verified:
+
+1. Point `acme.com` MX at herold.
+2. Finalize the batch. This drives every mailbox to the `migrated` state:
+   herold becomes the source of truth, and the legacy connections are retired.
+
+Any message that arrives twice during the MX-flip window (once at the old
+server, once at herold) is deduplicated, so you do not get duplicates from the
+overlap.
+
+## Rolling back
+
+Until you finalize in step 4, the legacy server stays authoritative and
+reachable, and herold never modifies anything on it. If you need to abort, stop
+the migration; a mailbox that already reached `migrated` can be re-opened to
+mirroring. Because herold only ever reads the legacy server, a rollback is a
+herold-side operation — the old mailboxes are untouched.
+
+## After cutover
+
+- Delete the migration source (`herold admin migration-source delete acme.com`).
+- Decommission the legacy server once you are confident.
+- Early adopters keep working in the same herold account they trialled with,
+  now under their real `acme.com` address.
+
+See also [External SMTP Submission](external-smtp-submission) for the per-user
+bridge that precedes a cutover, [Going Live](going-live) for domain/DKIM/MX
+setup, and [Operating Herold](operate) for day-to-day monitoring.

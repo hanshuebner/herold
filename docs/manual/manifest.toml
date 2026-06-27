@@ -55,6 +55,11 @@ home = "index"
   title = "External SMTP Submission"
 
   [[admin.chapters]]
+  slug  = "domain-cutover"
+  file  = "admin/domain-cutover.mdoc"
+  title = "Migrating a Domain to Herold"
+
+  [[admin.chapters]]
   slug  = "manual-test-runbook"
   file  = "admin/manual-test-runbook.mdoc"
   title = "Manual Test Runbook"

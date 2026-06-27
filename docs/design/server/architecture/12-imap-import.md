@@ -359,6 +359,40 @@ upstream reachable only as an offline archive; this is the path for an
 upstream still reachable over live IMAP; the shared dedup lets a user run
 both against the same principal without duplication.
 
+## Admin-driven bulk migration and re-home (domain cutover)
+
+The per-account worker is the engine; `26-domain-cutover.md` drives many of
+them at once for an org-level cutover. Two things extend the per-identity
+design:
+
+- **One credential, many users.** A per-domain *migration source*
+  (`REQ-CUTOVER-10`) carries a delegated/master credential — Google
+  Workspace domain-wide delegation, a Dovecot/Cyrus master user, or an IMAP
+  admin login. Instead of each account holding its own sealed credential,
+  the bulk migrator mints a per-user connection from the one domain
+  credential (impersonation token for Google; master-user authz for
+  Dovecot/Cyrus) and feeds it into the same download path (horizon, dedup,
+  as-synced ingest, folder mapping). The credential is sealed with
+  `internal/secrets`, admin-scoped, and short-lived.
+- **Reconcile vs provision.** Before provisioning a native principal for
+  `user@domain`, the migrator checks whether an existing principal already
+  owns a verified external-transport identity for that address. If so it
+  **re-homes** that principal (`REQ-CUTOVER-31`): promote `user@domain` to
+  the principal's primary address, demote the trial address to an alias,
+  finalize the adopter's existing mirror via the complete-migration path
+  (reusing already-fetched mail), and convert the identity native (drop
+  external SMTP, retire the import). Otherwise it provisions a fresh native
+  principal and runs a complete migration through the domain credential. The
+  delivery-uniqueness invariant (`REQ-CUTOVER-40`) — one principal per
+  `user@domain` — is enforced at this fork; a self-asserted external
+  identity never auto-claims the native address (`REQ-CUTOVER-41`, identity
+  side REQ-IDENT-23).
+
+Everything below the fork is the existing machinery: the same worker pool,
+the same `migrating -> migrated` cutover, the same dedup, observability, and
+resumability. The batch adds an aggregate progress view over the per-mailbox
+snapshots and is plan-then-apply (`REQ-CUTOVER-50`).
+
 ## Provenance label and account removal
 
 Provenance was originally out-of-band: `imapimport_message_state` records
