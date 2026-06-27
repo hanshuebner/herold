@@ -143,6 +143,14 @@ func TestActivityTagged_DeliverySuccess(t *testing.T) {
 	})
 
 	// Also assert specific level + activity on the success record.
+	// Poll directly for the log record rather than using Stats().Done as a
+	// proxy: CompleteQueueItem (which flips Done in the DB) and the subsequent
+	// Logger.InfoContext("queue: delivery success") both happen in the worker
+	// goroutine sequentially, but there is a real-time window between the two.
+	// A Stats-based waitFor can return as soon as the DB is updated, before
+	// the worker reaches the log call, causing a snapshot taken immediately
+	// afterwards to miss the record. Polling the capture directly eliminates
+	// the TOCTOU gap.
 	log, cap := newCaptureLogger()
 	f := newFixtureWithLogger(t, fixtureOpts{concurrency: 2, perHost: 1}, log)
 	f.submit(t, queue.Submission{
@@ -150,15 +158,17 @@ func TestActivityTagged_DeliverySuccess(t *testing.T) {
 		Recipients: []string{"bob@dest.test"},
 		Body:       strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 	})
-	waitFor(t, 2*time.Second, func() bool {
-		s, _ := f.queue.Stats(f.ctx)
-		return s.Done >= 1
-	})
-	recs := cap.snapshot()
-	r, ok := findRecord(recs, func(r capturedRec) bool {
-		return r.message == "queue: delivery success"
-	})
-	if !ok {
+	var r capturedRec
+	if !waitFor(t, 2*time.Second, func() bool {
+		recs := cap.snapshot()
+		rec, found := findRecord(recs, func(cr capturedRec) bool {
+			return cr.message == "queue: delivery success"
+		})
+		if found {
+			r = rec
+		}
+		return found
+	}) {
 		t.Fatal("delivery success log record not found")
 	}
 	if got := r.attrs["activity"]; got != observe.ActivitySystem {
@@ -287,16 +297,10 @@ func newFixtureWithLogger(t *testing.T, opts fixtureOpts, log *slog.Logger) *fix
 		DSNFromAddress: "postmaster@mail.test.example",
 		ShutdownGrace:  2 * time.Second,
 	})
-	if !opts.skipRun {
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
-			_ = f.queue.Run(f.ctx)
-		}()
-	} else {
-		// Always run for activity tests unless skipRun is set.
-	}
-	// Start the queue run for all tests here (activity tests need it running).
+	// Start the queue run. The if/else block that used to appear here started
+	// Run a second time when opts.skipRun was false, resulting in two
+	// concurrent scheduler goroutines on the same Queue. The unconditional
+	// start below covers all callers; the dead branch has been removed.
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()

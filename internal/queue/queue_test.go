@@ -765,12 +765,21 @@ func TestSignerFailureIsPermanentNotUnsignedDelivery(t *testing.T) {
 		perHost:     2,
 		signer:      signer,
 	})
+	// DSNNotify: store.DSNNotifyNever suppresses the failure DSN that would
+	// otherwise be enqueued by handlePermanent (shouldEmitFailureDSN returns
+	// true for the default DSNNotifyNone). The DSN row gets picked up by the
+	// scheduler almost immediately (NextAttemptAt=now causes EarliestNextAttempt
+	// to return 0, so clk.After(0) fires at once) and delivered via the fake
+	// deliverer, making callCount() == 1 before the test checks it. This test
+	// is verifying that the ORIGINAL message is not delivered unsigned, not DSN
+	// behaviour; suppress the DSN so the assertion is unambiguous.
 	envID := f.submit(t, queue.Submission{
 		MailFrom:      "postmaster@mx.example",
 		Recipients:    []string{"bob@dest.test"},
 		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 		Sign:          true,
 		SigningDomain: "mx.example",
+		DSNNotify:     store.DSNNotifyNever,
 	})
 
 	if !waitFor(t, 3*time.Second, func() bool {
@@ -803,12 +812,20 @@ func TestSignTrueWithNilSignerIsPermanent(t *testing.T) {
 		perHost:     2,
 		// No signer wired.
 	})
+	// DSNNotify: store.DSNNotifyNever suppresses the failure DSN that would
+	// otherwise be enqueued by handlePermanent (shouldEmitFailureDSN returns
+	// true for DSNNotifyNone). The DSN row has NextAttemptAt=now so
+	// EarliestNextAttempt returns 0, clk.After(0) fires immediately, and the
+	// scheduler delivers the DSN via the fake deliverer before the test can
+	// check callCount. This test verifies that the ORIGINAL message is not
+	// delivered unsigned; suppress the DSN so callCount() remains unambiguous.
 	envID := f.submit(t, queue.Submission{
 		MailFrom:      "postmaster@mx.example",
 		Recipients:    []string{"bob@dest.test"},
 		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
 		Sign:          true,
 		SigningDomain: "mx.example",
+		DSNNotify:     store.DSNNotifyNever,
 	})
 
 	if !waitFor(t, 3*time.Second, func() bool {
