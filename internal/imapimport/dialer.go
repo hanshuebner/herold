@@ -331,6 +331,61 @@ func (c *prodConn) UIDFetchFlags(_ context.Context, uid imap.UID) ([]imap.Flag, 
 	return bufs[0].Flags, nil
 }
 
+// UIDFetchFlagsMulti fetches FLAGS (and MODSEQ when the server advertises
+// CONDSTORE) for the given UIDs in one round-trip. REQ-IMAP-IMP-40/24.
+func (c *prodConn) UIDFetchFlagsMulti(_ context.Context, uids []imap.UID) ([]uidFlags, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	var uidSet imap.UIDSet
+	for _, uid := range uids {
+		uidSet.AddNum(uid)
+	}
+	opts := &imap.FetchOptions{Flags: true, UID: true}
+	if c.client.Caps().Has(imap.CapCondStore) {
+		opts.ModSeq = true
+	}
+	bufs, err := c.client.Fetch(uidSet, opts).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH FLAGS (multi): %w", err)
+	}
+	return uidFlagsFromBuffers(bufs), nil
+}
+
+// UIDFetchFlagsChangedSince fetches FLAGS + MODSEQ for messages changed since
+// sinceModSeq using CONDSTORE CHANGEDSINCE over 1:*. The caller guards on
+// Caps().Has(imap.CapCondStore). REQ-IMAP-IMP-24/40.
+func (c *prodConn) UIDFetchFlagsChangedSince(_ context.Context, sinceModSeq uint64) ([]uidFlags, error) {
+	var uidSet imap.UIDSet
+	uidSet.AddRange(1, 0) // 1:* (0 == "*")
+	opts := &imap.FetchOptions{
+		Flags:        true,
+		UID:          true,
+		ModSeq:       true,
+		ChangedSince: sinceModSeq,
+	}
+	bufs, err := c.client.Fetch(uidSet, opts).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH FLAGS CHANGEDSINCE: %w", err)
+	}
+	return uidFlagsFromBuffers(bufs), nil
+}
+
+// uidFlagsFromBuffers projects FETCH buffers to uidFlags, normalising a nil
+// flag slice (server sent FLAGS ()) to an empty non-nil slice so callers can
+// tell "no flags" from "absent".
+func uidFlagsFromBuffers(bufs []*imapclient.FetchMessageBuffer) []uidFlags {
+	out := make([]uidFlags, 0, len(bufs))
+	for _, buf := range bufs {
+		flags := buf.Flags
+		if flags == nil {
+			flags = []imap.Flag{}
+		}
+		out = append(out, uidFlags{UID: buf.UID, Flags: flags, ModSeq: buf.ModSeq})
+	}
+	return out
+}
+
 // UIDStoreFlags applies a flag delta to the message identified by uid.
 // op must be StoreFlagsAdd or StoreFlagsDel. REQ-IMAP-IMP-40/42.
 func (c *prodConn) UIDStoreFlags(_ context.Context, uid imap.UID, op imap.StoreFlagsOp, flags []imap.Flag) error {

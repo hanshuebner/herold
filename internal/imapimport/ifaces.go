@@ -41,6 +41,20 @@ type fetchedMessage struct {
 	RFC822 []byte
 }
 
+// uidFlags carries the flag state of one upstream message, optionally with its
+// CONDSTORE MODSEQ. Returned by the flag down-sync fetches
+// (UIDFetchFlagsMulti / UIDFetchFlagsChangedSince) used to apply upstream-only
+// \Seen / \Flagged changes back to herold (REQ-IMAP-IMP-40/24).
+type uidFlags struct {
+	// UID is the upstream IMAP UID.
+	UID imap.UID
+	// Flags is the upstream system-flag set for the message.
+	Flags []imap.Flag
+	// ModSeq is the message's per-message MODSEQ (CONDSTORE). Zero when the
+	// upstream does not advertise CONDSTORE.
+	ModSeq uint64
+}
+
 // idleHandle is the handle returned by Conn.Idle. The worker calls
 // Wait to block until an unsolicited update arrives, and Close to stop
 // IDLE and return to the command-capable state.
@@ -110,6 +124,20 @@ type Conn interface {
 	// Used by the write-back reconcile path to read the upstream-current
 	// flags before deciding whether to push. REQ-IMAP-IMP-42.
 	UIDFetchFlags(ctx context.Context, uid imap.UID) ([]imap.Flag, error)
+
+	// UIDFetchFlagsMulti fetches FLAGS (and MODSEQ when the upstream supports
+	// CONDSTORE) for each UID in uids, in one round-trip. Returns one entry
+	// per UID that still exists in the currently-selected mailbox. This is the
+	// non-CONDSTORE down-sync path: a bounded re-fetch of the known UID set on
+	// poll (REQ-IMAP-IMP-40/24).
+	UIDFetchFlagsMulti(ctx context.Context, uids []imap.UID) ([]uidFlags, error)
+
+	// UIDFetchFlagsChangedSince fetches FLAGS + MODSEQ for every message in the
+	// currently-selected mailbox whose MODSEQ is greater than sinceModSeq, via
+	// CONDSTORE "UID FETCH 1:* (FLAGS) (CHANGEDSINCE <sinceModSeq>)". The
+	// caller must only use this when Caps().Has(imap.CapCondStore). Returns the
+	// changed entries (REQ-IMAP-IMP-24/40).
+	UIDFetchFlagsChangedSince(ctx context.Context, sinceModSeq uint64) ([]uidFlags, error)
 
 	// UIDStoreFlags applies a flag delta to the message identified by uid
 	// in the currently-selected (read-write) mailbox. op must be

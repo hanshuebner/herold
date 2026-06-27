@@ -271,6 +271,22 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 		}
 	}
 
+	// Apply upstream-only \Seen / \Flagged changes down to herold for an
+	// already-initialised folder (D2+D3, REQ-IMAP-IMP-40/24/42). Uses the
+	// cursor's stored highest_modseq as the CONDSTORE base; persistCursor then
+	// advances it from the SELECT response below. Best-effort: a failure logs
+	// and does not abort the folder. The initial pass is skipped (the messages
+	// were just mirrored with their current flags as last_synced).
+	if folderInitialised {
+		if err := w.downSyncFlags(ctx, conn, upstreamFolder, &cursor, floorDate); err != nil {
+			log.Warn("imapimport: down-sync flags failed (continuing)",
+				slog.String("account_id", accountID),
+				slog.String("upstream_folder", upstreamFolder),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 persistCursor:
 	// Advance high-water to UIDNEXT-1 and update cursor metadata.
 	if si.UIDNext > 1 {
