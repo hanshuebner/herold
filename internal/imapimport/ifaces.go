@@ -41,6 +41,18 @@ type fetchedMessage struct {
 	RFC822 []byte
 }
 
+// fetchedMessageWithLabels is one message returned by UIDFetchWithLabels: a
+// fetchedMessage plus its Gmail X-GM-LABELS set. Used by the Gmail per-message
+// label placement path (REQ-IMAP-IMP-53). Labels carries the raw label tokens
+// as returned by the upstream — system labels backslash-prefixed (\Inbox,
+// \Sent, \Important, ...) and user labels verbatim.
+type fetchedMessageWithLabels struct {
+	fetchedMessage
+	// Labels is the message's X-GM-LABELS set (may be empty for archived,
+	// unlabeled mail).
+	Labels []string
+}
+
 // uidFlags carries the flag state of one upstream message, optionally with its
 // CONDSTORE MODSEQ. Returned by the flag down-sync fetches
 // (UIDFetchFlagsMulti / UIDFetchFlagsChangedSince) used to apply upstream-only
@@ -110,6 +122,13 @@ type Conn interface {
 	// in uids. Uses BODY.PEEK so the upstream \Seen flag is NOT set.
 	// REQ-IMAP-IMP-31.
 	UIDFetch(ctx context.Context, uids []imap.UID) ([]fetchedMessage, error)
+
+	// UIDFetchWithLabels fetches FLAGS, INTERNALDATE, BODY.PEEK[], and the
+	// Gmail X-GM-LABELS data item (X-GM-EXT-1) for each UID, in one round-trip.
+	// Used by the Gmail per-message label placement path (REQ-IMAP-IMP-53).
+	// Callers MUST only use it when Caps() advertises X-GM-EXT-1. Uses BODY.PEEK
+	// so the upstream \Seen flag is NOT set (REQ-IMAP-IMP-31 byte-fidelity).
+	UIDFetchWithLabels(ctx context.Context, uids []imap.UID) ([]fetchedMessageWithLabels, error)
 
 	// UIDFetchEnvelope fetches ENVELOPE, UID, INTERNALDATE, and FLAGS for
 	// the given UIDs WITHOUT fetching the message body. This is used by the

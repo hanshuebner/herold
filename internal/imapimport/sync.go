@@ -55,12 +55,18 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 	}
 
 	// Gmail detection: gate ALL Gmail-specific behaviour on this check.
+	// When the upstream advertises X-GM-EXT-1, use true per-message label
+	// placement via X-GM-LABELS (REQ-IMAP-IMP-53), which supersedes the
+	// folder-based interim placement (REQ-IMAP-IMP-50/51). syncAllFoldersGmailLabels
+	// itself falls back to folder-based placement when no [Gmail]/All Mail folder
+	// is present. Non-Gmail upstreams use the general per-folder loop below, which
+	// is the folder-based fallback for any server without X-GM-EXT-1.
 	if isGmailServer(conn.Caps(), folders, account.Host) {
-		log.Info("imapimport: Gmail detected; using All-Mail optimization",
+		log.Info("imapimport: Gmail detected; using X-GM-LABELS per-message placement",
 			slog.String("account_id", account.ID),
 			slog.String("host", account.Host),
 		)
-		return w.syncAllFoldersGmail(ctx, conn, folders)
+		return w.syncAllFoldersGmailLabels(ctx, conn, folders)
 	}
 
 	// Non-Gmail path: standard per-folder loop.

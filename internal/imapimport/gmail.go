@@ -15,14 +15,23 @@ package imapimport
 // behaviour is gated on isGmailServer; the normal (non-Gmail) path is
 // completely unaffected.
 //
-// # Folder-based label placement (REQ-IMAP-IMP-50/51) — Option B
+// # Folder-based label placement (REQ-IMAP-IMP-50/51) — Option B (now a fallback)
 //
-// Gmail exposes per-message labels as IMAP folders (one folder per label).
-// X-GM-LABELS is NOT used because go-imap/v2 beta.8 cannot parse unknown
-// msg-att names and would break the connection. X-Gmail-Labels is a
-// Takeout/Vault export artifact and is NOT present in messages FETCHed over
-// live IMAP. Therefore placement is derived from which folder each message
-// lives in, not from per-message label metadata.
+// As of REQ-IMAP-IMP-53 the primary Gmail path is true per-message label
+// placement via the X-GM-LABELS (X-GM-EXT-1) FETCH data item — see
+// gmail_labels.go (syncAllFoldersGmailLabels). The folder-based placement in
+// THIS file is retained as the fallback for the corner case of an X-GM-EXT-1
+// server that exposes no [Gmail]/All Mail folder (the label path needs All Mail
+// as its single source); the general per-folder loop in sync.go is the
+// folder-based fallback for any non-Gmail server.
+//
+// Folder-based placement: Gmail exposes per-message labels as IMAP folders (one
+// folder per label). X-Gmail-Labels is a Takeout/Vault export artifact and is
+// NOT present in messages FETCHed over live IMAP, so this path derives placement
+// from which folder each message lives in, not from per-message label metadata.
+// (The previous blocker — the pinned go-imap/v2 beta.8 FETCH parser rejecting
+// the X-GM-LABELS msg-att — is resolved by the patched go-imap fork the X-GM-LABELS
+// path depends on; see gmail_labels.go.)
 //
 // Folder classification:
 //

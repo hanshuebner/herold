@@ -272,6 +272,48 @@ func (c *prodConn) UIDFetch(_ context.Context, uids []imap.UID) ([]fetchedMessag
 	return out, nil
 }
 
+// UIDFetchWithLabels fetches FLAGS, INTERNALDATE, BODY.PEEK[], and the Gmail
+// X-GM-LABELS data item for the given UIDs in one round-trip. Uses BODY.PEEK so
+// the upstream \Seen flag is NOT set. Callers must only use it when the upstream
+// advertises X-GM-EXT-1. REQ-IMAP-IMP-53.
+func (c *prodConn) UIDFetchWithLabels(_ context.Context, uids []imap.UID) ([]fetchedMessageWithLabels, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	var uidSet imap.UIDSet
+	for _, uid := range uids {
+		uidSet.AddNum(uid)
+	}
+	fetchOpts := &imap.FetchOptions{
+		Flags:        true,
+		InternalDate: true,
+		UID:          true,
+		GmailLabels:  true, // X-GM-LABELS (X-GM-EXT-1)
+		BodySection: []*imap.FetchItemBodySection{
+			{Peek: true}, // BODY.PEEK[] — full RFC822, no \Seen side-effect
+		},
+	}
+	cmd := c.client.Fetch(uidSet, fetchOpts)
+	bufs, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapimport: UID FETCH (labels): %w", err)
+	}
+	out := make([]fetchedMessageWithLabels, 0, len(bufs))
+	for _, buf := range bufs {
+		fm := fetchedMessage{
+			UID:          buf.UID,
+			Flags:        buf.Flags,
+			InternalDate: buf.InternalDate,
+		}
+		for _, bs := range buf.BodySection {
+			fm.RFC822 = bs.Bytes
+			break
+		}
+		out = append(out, fetchedMessageWithLabels{fetchedMessage: fm, Labels: buf.GmailLabels})
+	}
+	return out, nil
+}
+
 // SelectReadWrite opens the mailbox for read-write access (SELECT, not EXAMINE).
 // Used by the write-back path. REQ-IMAP-IMP-40..44.
 func (c *prodConn) SelectReadWrite(_ context.Context, mailbox string) (selectInfo, error) {
