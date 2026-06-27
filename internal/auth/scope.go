@@ -36,9 +36,10 @@ type Scope string
 
 const (
 	// ScopeEndUser gates routes used by end users for non-mail-API
-	// surfaces (call credentials, image proxy). Cookies issued at the
-	// public login flow carry it; admin cookies do NOT (no implicit
-	// grant per REQ-AUTH-SCOPE-02).
+	// surfaces (call credentials, image proxy). Public-listener login
+	// cookies carry it for both admin and non-admin principals; the
+	// admin flag determines whether ScopeAdmin is also included
+	// (REQ-AUTH-SCOPE-02, re #58).
 	ScopeEndUser Scope = "end-user"
 	// ScopeAdmin gates protoadmin REST and /admin. Issued by the public
 	// login flow only to principals flagged as admin (PrincipalFlagAdmin)

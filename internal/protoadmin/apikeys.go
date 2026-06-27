@@ -109,6 +109,16 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed", err.Error(), "")
 		return
 	}
+	// Invariant: resolveAPIKeyScope never returns an empty set (it defaults
+	// to [mail.send] for an empty input), but guard here so a refactor
+	// cannot accidentally store "[]" in scope_json, which parseAPIKeyScope
+	// would read back as ScopeMailSend rather than the intended scope
+	// (B-3 defence-in-depth).
+	if len(scopes) == 0 {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"scope must not be empty", "")
+		return
+	}
 	scopeJSON, err := json.Marshal(scopes)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to encode scope", "")

@@ -73,8 +73,8 @@ func newSessionHarnessWithIdleTTL(t *testing.T, idleTTL time.Duration) *sessionH
 		RequestsPerMinutePerKey: 100,
 		Session: authsession.SessionConfig{
 			SigningKey:     testSigningKey,
-			CookieName:     "herold_admin_session",
-			CSRFCookieName: "herold_admin_csrf",
+			CookieName:     "herold_public_session",
+			CSRFCookieName: "herold_public_csrf",
 			TTL:            24 * time.Hour,
 			IdleTTL:        idleTTL,
 			SecureCookies:  false,
@@ -214,24 +214,24 @@ func (sh *sessionHarness) doLogin(email, password string, extra map[string]any) 
 	return res.StatusCode, out
 }
 
-// csrfToken reads herold_admin_csrf from the cookie jar.
+// csrfToken reads herold_public_csrf from the cookie jar.
 func (sh *sessionHarness) csrfToken() string {
 	sh.t.Helper()
 	u, _ := url.Parse(sh.baseURL + "/")
 	for _, c := range sh.cookieJar.Cookies(u) {
-		if c.Name == "herold_admin_csrf" {
+		if c.Name == "herold_public_csrf" {
 			return c.Value
 		}
 	}
-	sh.t.Fatal("herold_admin_csrf not in cookie jar")
+	sh.t.Fatal("herold_public_csrf not in cookie jar")
 	return ""
 }
 
-// sessionCookiePresent reports whether herold_admin_session is in the jar.
+// sessionCookiePresent reports whether herold_public_session is in the jar.
 func (sh *sessionHarness) sessionCookiePresent() bool {
 	u, _ := url.Parse(sh.baseURL + "/")
 	for _, c := range sh.cookieJar.Cookies(u) {
-		if c.Name == "herold_admin_session" {
+		if c.Name == "herold_public_session" {
 			return true
 		}
 	}
@@ -763,7 +763,7 @@ func TestSessionAuth_AdminWithoutTOTP_RefusedAtLogin(t *testing.T) {
 		t.Errorf("enroll_url=%v, want /api/v1/totp/enroll", body["enroll_url"])
 	}
 	if sh.sessionCookiePresent() {
-		t.Errorf("session cookie should not be set when TOTP enrollment is required")
+		t.Errorf("herold_public_session should not be set when TOTP enrollment is required")
 	}
 }
 
@@ -996,5 +996,126 @@ func TestSessionAuth_NoIdleGate_WhenIdleTTLZero(t *testing.T) {
 	code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
 	if code != http.StatusOK {
 		t.Errorf("GET after long idle with IdleTTL=0: status=%d, want 200", code)
+	}
+}
+
+// TestSessionAuth_AdminTTL_ShorterThanSessionTTL asserts that an admin
+// login with ScopeAdmin uses AdminTTL (not Session.TTL) for the cookie
+// expiry (B-1 regression guard, re #58).
+//
+// The test harness sets Session.TTL = 24 h and leaves AdminTTL = 0 (which
+// defaults to 8 h in handleLogin). The session_expires_at in the login
+// response MUST be ~8 h from now, not ~24 h.
+func TestSessionAuth_AdminTTL_ShorterThanSessionTTL(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t) // Session.TTL = 24 h; AdminTTL = 0 → default 8 h
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-ttl@example.com")
+
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
+	if code != http.StatusOK {
+		t.Fatalf("admin login: status=%d body=%v", code, body)
+	}
+
+	// The response carries session_expires_at.
+	expiresAtStr, _ := body["session_expires_at"].(string)
+	if expiresAtStr == "" {
+		t.Fatalf("session_expires_at missing from login response: %v", body)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		t.Fatalf("session_expires_at parse: %v", err)
+	}
+
+	ttl := expiresAt.Sub(sh.clk.Now())
+
+	// Admin sessions must use AdminTTL (default 8 h when zero), NOT
+	// Session.TTL (24 h in the harness). Allow a small margin for code
+	// execution time inside the server.
+	const adminDefault = 8 * time.Hour
+	const sessionTTL = 24 * time.Hour
+	if ttl >= sessionTTL {
+		t.Errorf("admin session TTL %s >= Session.TTL %s; expected ~AdminTTL (%s)",
+			ttl, sessionTTL, adminDefault)
+	}
+	// Lower bound: must be at least 7 hours (allows ~1 h of test overhead).
+	if ttl < 7*time.Hour {
+		t.Errorf("admin session TTL %s < 7h; expected ~AdminTTL (%s)", ttl, adminDefault)
+	}
+}
+
+// TestSessionAuth_AdminIdleTTL_EnforcedViaAdminIdleTTLOption asserts that
+// Options.AdminIdleTTL is honoured for admin-scoped sessions when
+// Session.IdleTTL is zero. This is the per-scope idle gate (B-1, re #58).
+func TestSessionAuth_AdminIdleTTL_EnforcedViaAdminIdleTTLOption(t *testing.T) {
+	t.Parallel()
+	const adminIdleTTL = 30 * time.Minute
+
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	th, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+		BootstrapPerWindow:      1,
+		BootstrapWindow:         5 * time.Minute,
+		RequestsPerMinutePerKey: 100,
+		Session: authsession.SessionConfig{
+			SigningKey:     testSigningKey,
+			CookieName:     "herold_public_session",
+			CSRFCookieName: "herold_public_csrf",
+			TTL:            24 * time.Hour,
+			IdleTTL:        0, // not set — non-admin sessions have no idle gate
+			SecureCookies:  false,
+		},
+		AdminIdleTTL: adminIdleTTL, // admin sessions: 30-minute idle gate
+	})
+	if err := th.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	_, base := th.DialAdminByName(context.Background(), "admin")
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Transport: &http.Transport{},
+		Jar:       jar,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	// Re-use the base transport from the test harness.
+	baseClient, _ := th.DialAdminByName(context.Background(), "admin")
+	client.Transport = baseClient.Transport
+
+	sh := &sessionHarness{
+		harness:         &harness{t: t, h: th, srv: srv, client: baseClient, baseURL: base, clk: clk, dir: dir, rp: rp},
+		cookieJar:       jar,
+		cookieJarClient: client,
+	}
+
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-idle@example.com")
+
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("admin login: status=%d", loginCode)
+	}
+
+	// Inside the idle window the admin cookie works.
+	clk.Advance(adminIdleTTL - time.Minute)
+	code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if code != http.StatusOK {
+		t.Fatalf("admin GET inside idle window: status=%d, want 200", code)
+	}
+
+	// Past the idle window the gate trips.
+	clk.Advance(adminIdleTTL + time.Minute)
+	staleCode, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if staleCode != http.StatusUnauthorized {
+		t.Fatalf("admin GET past idle window: status=%d, want 401", staleCode)
 	}
 }

@@ -800,12 +800,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	adminServerOpts := protoadmin.Options{
 		ServerVersion: "0.1.0",
 		Health:        health,
-		// The admin REST surface is now served on the public listener (re #58).
-		// Use the public session cookie config (herold_public_session) so the
-		// single session cookie grants both end-user and admin access after
-		// TOTP step-up. The retired admin listener used adminSessionCookieConfig
-		// (herold_admin_session, 8h TTL); that config is no longer wired here.
+		// The admin REST surface is served on the public listener (re #58).
+		// Use the public session cookie config (herold_public_session) for the
+		// shared cookie; admin-scoped sessions get the shorter AdminTTL and
+		// AdminIdleTTL so the risk window for a captured admin cookie stays
+		// bounded (REQ-AUTH-72). Non-admin sessions use Session.TTL (7 days).
 		Session:                   publicSessionCookieConfig(cfg, logger),
+		AdminTTL:                  cfg.Server.UI.AdminAbsoluteTTL.AsDuration(),
+		AdminIdleTTL:              cfg.Server.UI.AdminIdleTTL.AsDuration(),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
 		DKIMKeyManager:            adminDKIMManager,

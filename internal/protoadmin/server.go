@@ -231,7 +231,7 @@ type Options struct {
 	// ServerVersion is returned by /api/v1/server/status. Defaults to
 	// "dev" when empty.
 	ServerVersion string
-	// Session configures cookie-based authentication for the admin REST
+	// Session configures cookie-based authentication for the public REST
 	// surface (REQ-AUTH-SESSION-REST). When Session.SigningKey is non-nil
 	// and at least 32 bytes long, authenticate() falls back to reading
 	// the named session cookie if no Authorization: Bearer header is
@@ -240,6 +240,19 @@ type Options struct {
 	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
 	// existing deployments that wire only Bearer keys are unaffected.
 	Session authsession.SessionConfig
+	// AdminTTL is the absolute lifetime for sessions that carry ScopeAdmin.
+	// Defaults to 8 hours when zero. Ceiling is 12 hours (enforced by
+	// sysconfig validation). Non-admin sessions use Session.TTL instead.
+	// The shorter lifetime limits the risk window if an admin session
+	// cookie is captured (REQ-AUTH-72, re #58).
+	AdminTTL time.Duration
+	// AdminIdleTTL is the inactivity window for sessions carrying ScopeAdmin.
+	// When non-zero and the session has ScopeAdmin, a session row with
+	// LastSeenAt older than AdminIdleTTL is rejected and the row is deleted
+	// (REQ-AUTH-72). The gate is skipped for non-admin sessions unless
+	// Session.IdleTTL is also non-zero (their independent idle setting).
+	// Defaults to 1 hour in production via sysconfig; zero disables the gate.
+	AdminIdleTTL time.Duration
 	// ExternalSubmissionDataKey is the 32-byte data key used to seal and
 	// open per-identity submission credentials (REQ-AUTH-EXT-SUBMIT-02).
 	// Sourced from sysconfig.SecretsConfig.DataKeyRef at server boot.

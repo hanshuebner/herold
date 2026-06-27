@@ -1,11 +1,11 @@
 package protoadmin
 
 // session_auth.go implements the JSON login / logout / whoami endpoints
-// for the admin REST surface (REQ-AUTH-SESSION-REST).
+// for the public REST surface (REQ-AUTH-SESSION-REST).
 //
 // POST /api/v1/auth/login  -- accepts {email, password, totp_code?},
 //
-//	issues herold_admin_session + herold_admin_csrf cookies, returns
+//	issues herold_public_session + herold_public_csrf cookies, returns
 //	{principal_id, email, scopes:[...]}.
 //
 // POST /api/v1/auth/logout -- clears the cookies, returns 204.
@@ -100,10 +100,15 @@ type whoamiResponse struct {
 // brute-force is throttled; the per-principal bucket is applied after
 // the principal is resolved to stay consistent with the API-key path.
 //
-// On success it issues herold_admin_session (HttpOnly) and
-// herold_admin_csrf (non-HttpOnly, readable by the SPA's JS) cookies
+// On success it issues herold_public_session (HttpOnly) and
+// herold_public_csrf (non-HttpOnly, readable by the SPA's JS) cookies
 // via authsession.WriteSessionCookie and returns 200 with {principal_id,
 // email, scopes}. See REQ-AUTH-SESSION-REST and REQ-AUTH-CSRF.
+//
+// Session lifetime: admin-scoped sessions (ScopeAdmin) use Options.AdminTTL
+// (default 8 h, max 12 h) to enforce a shorter absolute lifetime than
+// end-user sessions (Options.Session.TTL, default 7 days). The gap
+// reduces the risk window on a captured admin cookie (REQ-AUTH-72, re #58).
 //
 // TOTP step-up (REQ-AUTH-SCOPE-03): if the principal has TOTP enrolled
 // and totp_code is absent or wrong, the response is 401 with
@@ -166,11 +171,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Mandatory TOTP for admin role (REQ-AUTH-44, issue #12): an admin
 	// principal without TOTP enrolled CANNOT obtain an admin-scoped
-	// session via the password-login endpoint. The only path to
-	// enrolling TOTP without an existing TOTP code is via the
-	// bootstrap API key (slice 6); password login refuses here so
-	// the public-facing admin vhost is safe to expose without an IP
-	// allowlist.
+	// session via the password-login endpoint. Password login refuses
+	// here so the public-facing admin surface is safe to expose without
+	// an IP allowlist.
+	//
+	// First-time enrollment: use the one-shot bootstrap API key
+	// (initial_api_key from POST /api/v1/bootstrap) as a Bearer token
+	// to reach POST /api/v1/principals/{pid}/totp/enroll and then
+	// /totp/confirm. The bootstrap endpoint only works when there are
+	// no principals yet (new installation). For a sole-admin lockout
+	// (admin lost TOTP device, no second admin), use
+	// `herold recover --reset-totp <email>` on the server host
+	// (re #24, re #21) — the bootstrap path is not available after
+	// the first principal is created.
 	if p.Flags.Has(store.PrincipalFlagAdmin) && !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.admin_totp_missing",
 			"activity", observe.ActivityAudit,
@@ -216,15 +229,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	//   the single public session (REQ-AUTH-SCOPE-01..03, re #58).
 	// - Non-admin principals receive the full end-user scope set only.
 	//
-	// TOTP hard-require: the block above (line ~169) already refused admin
-	// principals without TOTP enrolled. Reaching here with PrincipalFlagAdmin
-	// set implies TOTP was verified (or re-verified) in the block above.
-	//
-	// Security note: admin sessions now use the same cookie and TTL as end-user
-	// sessions (herold_public_session, 7 days default). The shorter admin TTL
-	// that the retired admin listener used (AdminAbsoluteTTL, default 8 h) no
-	// longer applies. Operators who need a shorter maximum lifetime should set
-	// [server.ui].session_ttl in system.toml (re #58).
+	// TOTP hard-require: the block above already refused admin principals
+	// without TOTP enrolled. Reaching here with PrincipalFlagAdmin set implies
+	// TOTP was verified (or re-verified) in the block above.
 	var sessScopes auth.ScopeSet
 	if p.Flags.Has(store.PrincipalFlagAdmin) {
 		// Admin principal with TOTP verified: grant admin scope in addition to
@@ -236,9 +243,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// excluded — no privilege escalation via this login path.
 		sessScopes = auth.NewScopeSet(auth.AllEndUserScopes...)
 	}
-	ttl := s.opts.Session.TTL
-	if ttl <= 0 {
-		ttl = 7 * 24 * time.Hour
+
+	// Session lifetime: admin-scoped sessions use the shorter AdminTTL
+	// (default 8 h, ceiling 12 h) to limit the risk window from a captured
+	// cookie. End-user sessions use the longer Session.TTL (default 7 days)
+	// because they carry no elevated privilege (REQ-AUTH-72, re #58).
+	var ttl time.Duration
+	if sessScopes.Has(auth.ScopeAdmin) {
+		ttl = s.opts.AdminTTL
+		if ttl <= 0 {
+			ttl = 8 * time.Hour
+		}
+	} else {
+		ttl = s.opts.Session.TTL
+		if ttl <= 0 {
+			ttl = 7 * 24 * time.Hour
+		}
 	}
 	sess := authsession.Session{
 		PrincipalID: pid,
@@ -481,10 +501,10 @@ func (s *Server) auditLoginFailure(r *http.Request, attemptedEmail string, princ
 func (s *Server) sessionConfig() authsession.SessionConfig {
 	cfg := s.opts.Session
 	if cfg.CookieName == "" {
-		cfg.CookieName = "herold_admin_session"
+		cfg.CookieName = "herold_public_session"
 	}
 	if cfg.CSRFCookieName == "" {
-		cfg.CSRFCookieName = "herold_admin_csrf"
+		cfg.CSRFCookieName = "herold_public_csrf"
 	}
 	return cfg
 }

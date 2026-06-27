@@ -1,17 +1,17 @@
 package admin
 
 // public_selfservice_test.go is the integration test for Phase 4a
-// (REQ-ADM-203): self-service REST routes mounted on the public listener
-// so the Suite SPA /settings panel can reach them with the public-session
-// cookie.
+// (REQ-ADM-203): the full REST surface is on the unified public listener
+// (re #58); admin-only routes are gated by ScopeAdmin.
 //
 // Scenarios covered:
 //  1. A non-admin principal can call GET /api/v1/principals/{ownPid} on the
 //     public listener with the public-session cookie and receive 200.
 //  2. The same principal calling GET /api/v1/principals/{otherPid} receives
 //     403 (requireSelfOrAdmin blocks cross-principal reads).
-//  3. GET /api/v1/queue on the public listener returns 404 (the admin-only
-//     queue surface is not mounted on the public listener).
+//  3. GET /api/v1/queue on the public listener returns 401 for unauthenticated
+//     callers and 403 for non-admin callers (ScopeAdmin gate). The route IS
+//     mounted; access is scope-gated, not 404.
 //  4. GET /api/v1/api-keys on the public listener with the public-session
 //     cookie returns 200 — regression for #6.
 //  5. POST /api/v1/principals/{pid}/api-keys on the public listener with

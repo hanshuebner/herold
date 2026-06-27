@@ -354,6 +354,14 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 // panel in the Suite SPA can reach the relevant REST endpoints without
 // exposing the full admin surface.
 //
+// NOTE: as of commit 782fd73 (re #58), admin/server.go mounts Handler()
+// — the full unified handler — directly on the public listener at "/".
+// SelfServiceHandler is no longer called from production paths. It is
+// retained for potential use by embedded deployments or test harnesses
+// that want the narrower self-service surface without the full admin
+// REST. RegisterSelfServiceRoutes is the underlying registrar; callers
+// that need only route registration can use it directly.
+//
 // Recommended mount points (longest-prefix wins in Go's stdlib mux):
 //
 //	publicMux.Handle("/api/v1/principals/",            selfServiceHandler)

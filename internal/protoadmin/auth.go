@@ -38,13 +38,13 @@ func HashAPIKey(plaintext string) string {
 //  1. Authorization: Bearer hk_... — protoadmin API key. The Bearer
 //     form is exempt from CSRF checks because it carries no ambient
 //     browser credential (REQ-AUTH-CSRF).
-//  2. Session cookie (herold_admin_session by default) — issued by the
-//     protoui /login flow or POST /api/v1/auth/login. Enabled only
-//     when Options.Session.SigningKey is set (REQ-AUTH-SESSION-REST).
-//     Mutating requests (POST/PUT/PATCH/DELETE) authenticated this way
-//     MUST also present an X-CSRF-Token header whose value matches the
-//     herold_admin_csrf cookie (constant-time compare, REQ-AUTH-CSRF).
-//     Safe methods (GET/HEAD/OPTIONS) are exempt from CSRF.
+//  2. Session cookie (herold_public_session by default) — issued by
+//     POST /api/v1/auth/login. Enabled only when Options.Session.SigningKey
+//     is set (REQ-AUTH-SESSION-REST). Mutating requests (POST/PUT/PATCH/
+//     DELETE) authenticated this way MUST also present an X-CSRF-Token
+//     header whose value matches the herold_public_csrf cookie
+//     (constant-time compare, REQ-AUTH-CSRF). Safe methods (GET/HEAD/
+//     OPTIONS) are exempt from CSRF.
 //
 // On success the auth.AuthContext is attached to the request context.
 // On failure a 401 problem is written and the chain aborts.
@@ -117,7 +117,7 @@ func (s *Server) validateCSRF(w http.ResponseWriter, r *http.Request) bool {
 	}
 	csrfCookieName := s.opts.Session.CSRFCookieName
 	if csrfCookieName == "" {
-		csrfCookieName = "herold_admin_csrf"
+		csrfCookieName = "herold_public_csrf"
 	}
 	c, err := r.Cookie(csrfCookieName)
 	if err != nil || c.Value == "" {
@@ -224,7 +224,7 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
 	cookieName := s.opts.Session.CookieName
 	if cookieName == "" {
-		cookieName = "herold_admin_session"
+		cookieName = "herold_public_session"
 	}
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
@@ -261,10 +261,18 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
-	// Idle-timeout gate (REQ-AUTH-72, issue #12 slice 3). Only fires
-	// when the configured idle TTL is non-zero — public-listener
-	// callers leave IdleTTL=0 and skip the row lookup entirely.
-	if idleTTL := s.opts.Session.IdleTTL; idleTTL > 0 {
+	// Idle-timeout gate (REQ-AUTH-72, issue #12 slice 3). Admin-scoped
+	// sessions use Options.AdminIdleTTL when set; all other sessions use
+	// Session.IdleTTL. Zero on the effective TTL disables the gate —
+	// public-listener non-admin callers leave both at zero and skip the
+	// row lookup entirely. Production wiring sets AdminIdleTTL=1h via
+	// sysconfig so admin sessions have a tighter inactivity window than
+	// end-user sessions (re #58).
+	idleTTL := s.opts.Session.IdleTTL
+	if scopes.Has(auth.ScopeAdmin) && s.opts.AdminIdleTTL > 0 {
+		idleTTL = s.opts.AdminIdleTTL
+	}
+	if idleTTL > 0 {
 		row, err := s.store.Meta().GetSession(ctx, sess.CSRFToken)
 		if err != nil {
 			// Row missing => session was deleted (logout) or evicted.
@@ -292,17 +300,33 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 }
 
 // parseAPIKeyScope decodes the JSON-encoded scope list stored on an
-// APIKey row. Empty / malformed values fall back to the legacy admin
-// scope so a bug in the storage layer can't silently drop access; the
-// migration body has already backfilled every row, so the fallback is
-// only triggered by fresh test fixtures.
+// APIKey row.
+//
+// Fallback rules (security-critical — admin surface now faces the internet):
+//   - raw == "":   legacy unset column → ScopeAdmin (pre-scope-column rows;
+//     the migration has already backfilled all rows so this only fires
+//     for test fixtures that predate the column).
+//   - malformed JSON: degrade to ScopeMailSend (least-privilege) rather
+//     than granting admin scope — a storage bug must not escalate
+//     privileges (B-3).
+//   - raw == "[]" (empty array): degrade to ScopeMailSend — an explicitly
+//     empty scope set stored in the DB must not escalate to admin scope
+//     (B-3 privilege-escalation guard).
 func parseAPIKeyScope(raw string) auth.ScopeSet {
 	if raw == "" {
+		// Legacy: column absent before the scope migration; treat as admin.
 		return auth.NewScopeSet(auth.ScopeAdmin)
 	}
 	var s auth.ScopeSet
-	if err := json.Unmarshal([]byte(raw), &s); err != nil || len(s) == 0 {
-		return auth.NewScopeSet(auth.ScopeAdmin)
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		// Malformed JSON: least-privilege fallback.
+		return auth.NewScopeSet(auth.ScopeMailSend)
+	}
+	if len(s) == 0 {
+		// Empty array "[]": least-privilege fallback. resolveAPIKeyScope
+		// never produces an empty set (it defaults to [mail.send]), so an
+		// empty stored value indicates a migration anomaly, not intent.
+		return auth.NewScopeSet(auth.ScopeMailSend)
 	}
 	return s
 }
@@ -370,8 +394,19 @@ func requireSelfOnly(w http.ResponseWriter, r *http.Request, caller store.Princi
 	return false
 }
 
-// requireAdmin returns 403 when the caller is not an admin.
-// Permission denials are logged activity=audit at warn (REQ-OPS-86).
+// requireAdmin returns 403 when the caller does not have the
+// PrincipalFlagAdmin DB flag. Permission denials are logged
+// activity=audit at warn (REQ-OPS-86).
+//
+// Defence-in-depth: some handlers (handleServerStatus,
+// handleServerConfigCheck) call both authAdmin (requireScope(ScopeAdmin))
+// in routes.go AND requireAdmin here. The two gates are independent:
+// authAdmin checks the scope encoded in the cookie/API-key at issuance
+// time; requireAdmin checks the live DB flag at request time. Together
+// they ensure that revoking the admin flag from a principal also revokes
+// access even when an existing long-lived API key carrying ScopeAdmin
+// is still in circulation (the scope gate passes, the DB-flag gate does
+// not). This is intentional defence-in-depth, not accidental duplication.
 func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
 	if caller.Flags.Has(store.PrincipalFlagAdmin) {
 		return true
