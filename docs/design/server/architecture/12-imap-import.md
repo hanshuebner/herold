@@ -359,6 +359,44 @@ upstream reachable only as an offline archive; this is the path for an
 upstream still reachable over live IMAP; the shared dedup lets a user run
 both against the same principal without duplication.
 
+## Provenance label and account removal
+
+Provenance was originally out-of-band: `imapimport_message_state` records
+`(account_id, upstream_folder, upstream_uid -> herold_message_id)`, which
+is enough for write-back but invisible to the user. REQ-IMAP-IMP-100..105
+promote the import channel to a **user-visible label** so the user can
+browse "everything from my Gmail account" and so account removal can offer
+to take that mail with it.
+
+Mechanism:
+
+- **At enable**, the worker ensures a provenance `Mailbox` named from
+  `account_name` exists (no JMAP `role`), optionally under an "Imported"
+  parent. Its id is cached on the account record.
+- **At ingest**, `ingestMessage` adds the provenance-label membership via
+  the same `AddMessageToMailbox` used for multi-mailbox-on-dedup — so a
+  message landing in K folder-mapped mailboxes gets K+1 memberships, and
+  re-import is idempotent (`ErrConflict` ignored). No new write path.
+- **At removal**, the `delete_imported_mail` flag (default false) decides:
+  - *keep* — drop the account row, credential, cursors, and
+    `message_state`; the provenance label and its memberships remain as an
+    ordinary user label (REQ-IMAP-IMP-104).
+  - *purge* — walk this account's `message_state`; for each message,
+    destroy it only if the provenance label is its sole non-system
+    membership and no other source claims it (another import account's
+    `message_state`, or a native-delivery membership), else just remove
+    this account's membership + `message_state` (REQ-IMAP-IMP-103). The
+    dedup-safety check is the reason purge keys on `message_state` joined
+    against remaining memberships rather than blindly destroying every
+    message under the label.
+
+Purge is dedup-safe (a message that also arrived via SMTP / Takeout / a
+second account survives, losing only this account's label) and crash-safe
+(performed in the account-delete transaction or as a resumable sweep keyed
+on the detached label, REQ-IMAP-IMP-105). Removal is herold-side only — it
+never issues upstream `\Deleted`/EXPUNGE (REQ-IMAP-IMP-102); the upstream
+account is simply abandoned.
+
 ## Gmail per-message labels via X-GM-LABELS (planned client upgrade)
 
 The folder-based placement below (Option B) is an interim measure, not

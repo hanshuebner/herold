@@ -249,7 +249,26 @@ cutover for everything since.)*
 | REQ-IMAP-IMP-93 | On reaching `migrated` the worker stops cleanly: IDLE / poll loops end, the change-feed write-back driver detaches, and both upstream connections close. The `imapimport_account` row, folder cursors, and `imapimport_message_state` are retained for provenance (surfaced in the message-inspect view) but drive no further upstream traffic. |
 | REQ-IMAP-IMP-94 | Cutover is **resumable and idempotent.** A herold restart during `migrating` resumes the complete backfill from the persisted cursors (REQ-IMAP-IMP-74); re-running the complete backfill never duplicates (dedup) and never regresses herold-side state (REQ-IMAP-IMP-92). |
 | REQ-IMAP-IMP-95 | A `migrated` account MAY be **re-opened** to mirroring by an explicit user action, returning it to `enabled` and re-asserting upstream-authoritative conflict handling (REQ-IMAP-IMP-42) from that point. This covers the user who cut over prematurely. Re-opening does not re-fetch already-mirrored mail (cursors persist). |
-| REQ-IMAP-IMP-96 | Deleting (`DELETE`) a `migrated` account removes only the upstream-account configuration, its cursors, and the sealed credential; the mirrored **mail stays** in the principal's mailboxes (it is now herold-native). This is the expected end state once a migration is confirmed good, and is distinct from disabling. |
+| REQ-IMAP-IMP-96 | Deleting (`DELETE`) a `migrated` account follows the keep-or-purge choice of REQ-IMAP-IMP-102, defaulting to **keep**: the mirrored mail stays in the principal's mailboxes (it is now herold-native) and only the upstream-account configuration, cursors, and sealed credential are removed. Keeping is the expected end state once a migration is confirmed good, and is distinct from disabling. |
+
+## Provenance label and account removal
+
+*(Added 2026-06-27 at the maintainer's request. Two coupled needs: a
+removed account must let the user decide whether the mail it brought in
+goes with it, and that is only tractable if imported mail is **labelled
+by the channel it arrived through**. Today provenance lives only in the
+out-of-band `imapimport_message_state` row — not visible to the user and
+not a label they can browse or bulk-act on. This section makes the import
+channel a first-class, user-visible label and defines the removal flow.)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-IMAP-IMP-100 | Every message ingested by an account is tagged with a per-account **provenance label** — an additional herold mailbox membership added at ingest, alongside the folder-mapped mailbox(es). The label makes the import channel / identity visible and browsable in the suite and is the handle for the bulk-removal of REQ-IMAP-IMP-102. It is applied to backfilled and newly-arrived mail alike, and to a message placed in K folders (the provenance label is one membership on top of the K). It does not replace folder mapping or the `imapimport_message_state` provenance row. |
+| REQ-IMAP-IMP-101 | The provenance label is a normal herold mailbox (JMAP `Mailbox`, no special `role`) created when the account is first enabled and named from `account_name` (e.g. "Gmail (work)"). Renaming the account renames the label. Implementations MAY nest these under a parent "Imported" label. A message imported by two accounts carries both provenance labels. |
+| REQ-IMAP-IMP-102 | Removing an account (JMAP `IMAPImport/set destroy` / admin `DELETE`) carries a `delete_imported_mail` boolean, default **false**. The web SPA MUST present this as an explicit choice at removal time (REQ-SET-IMAPIMP-04): **keep** the imported mail (default) or **also delete** the mail imported through this account, shown with the message count. The flag is local-only: it never propagates `\Deleted`/EXPUNGE upstream (upstream deletion while the account is live is governed by REQ-IMAP-IMP-44; removal is a herold-side operation). |
+| REQ-IMAP-IMP-103 | **Purge semantics (dedup-safe).** With `delete_imported_mail = true`, for each message tracked in this account's `imapimport_message_state`: if the account's provenance label is the message's **only** non-system mailbox membership and no other source claims it (no other import account's `message_state`, no native-delivery membership), the message is destroyed (`Email/set destroy` equivalent, blob refcount decremented, FTS removed via the change feed). Otherwise only this account's provenance-label membership and its `message_state` rows are removed and the message itself survives (it is also present from another channel). This protects mail that arrived both via this account and via SMTP, Takeout, or a second import account. |
+| REQ-IMAP-IMP-104 | **Keep semantics.** With `delete_imported_mail = false` the imported mail stays in place. The provenance label is retained as an ordinary user label (the account is gone, but the user can still browse / rename / delete the label themselves). The account configuration, sealed credential, folder cursors, and `imapimport_message_state` rows are removed. |
+| REQ-IMAP-IMP-105 | The removal flow (both keep and purge) is **idempotent and crash-safe**: it is performed in the store transaction that deletes the account, or as a resumable post-delete sweep keyed on the (now-detached) provenance label, so a herold restart mid-purge completes the purge rather than orphaning half-deleted mail. |
 
 ## Operator surface
 

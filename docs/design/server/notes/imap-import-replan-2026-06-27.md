@@ -61,6 +61,23 @@ credential (REQ-60/61). The upstream-authoritative three-way compare
 - **Self-service folder-map** — folder-map mutation is admin-REST-only;
   JMAP `IMAPImport/set` has no `FolderMap` field (REQ-10/61 self-service
   gap).
+- **No web SPA surface at all** — `web/apps/{suite,admin}/src` contain
+  zero `imap` references. The backend (JMAP `IMAPImport/get|set` + admin
+  REST + `herold imapimport status` CLI) shipped without any UI; an
+  account can only be configured by calling the API directly. The
+  self-service story of REQ-61 is unfulfilled. New web requirements
+  REQ-SET-IMAPIMP-01..05 (`web/requirements/20-settings.md`) specify the
+  missing surface.
+
+### New requirement added 2026-06-27 — provenance label + delete-on-removal
+
+REQ-IMAP-IMP-100..105 + REQ-SET-IMAPIMP-04. On removing an account the web
+SPA must ask whether to also delete the mail imported through it; that is
+only tractable if imported mail carries a per-account **provenance label**
+(today provenance lives only in `imapimport_message_state`, invisible to
+the user). Backend work: add the provenance-label membership at ingest;
+implement dedup-safe purge on `destroy` with a `delete_imported_mail`
+flag. None of this exists yet.
 
 ### Beyond spec (noted, no action)
 
@@ -101,7 +118,19 @@ connections at `migrated`; expose the transition on JMAP `IMAPImport/set`
 + admin PATCH; show phase in status; make `DELETE` of a `migrated` account
 keep the mail.
 
-**Wave D — deferred-gap closure (optional / lower priority).** REQ-11
+**Wave D — provenance label + delete-on-removal (REQ-100..105), owner:
+worker + storage.** Create the per-account provenance label at enable; add
+its membership at ingest; implement the dedup-safe purge on `destroy` with
+the `delete_imported_mail` flag (keep = default). Crash-safe / resumable.
+
+**Wave E — web SPA surface (REQ-SET-IMAPIMP-01..05), owner:
+`web-frontend-implementor`.** The currently-absent suite UI: connected-
+accounts list, add-account wizard, edit + "Complete migration" action, and
+the remove dialog with the keep-or-delete prompt (depends on Wave D for the
+provenance-label count and the `deleteImportedMail` flag, and on Wave C for
+the migrate action). Puppeteer-verified per `web/CLAUDE.md`.
+
+**Wave F — deferred-gap closure (optional / lower priority).** REQ-11
 host-pattern folder-map defaults; REQ-21/73 rate-limit-specific fallback;
 REQ-61 `IMAPImport/changes`; self-service folder-map in JMAP `set`.
 
@@ -120,5 +149,12 @@ REQ-61 `IMAPImport/changes`; self-service folder-map in JMAP `set`.
   `migrate`; assert the complete mailbox is present, herold-side state is
   preserved (not overwritten), `backfill_remaining` reaches 0, and the
   worker reaches `migrated` with connections closed. Both backends.
+- Wave D: provenance label appears on imported mail (membership assertion);
+  purge with a message shared by two import accounts removes only one
+  account's label and keeps the message; purge of a single-source message
+  destroys it and decrements the blob refcount; restart mid-purge completes.
+- Wave E: puppeteer end-to-end against an ephemeral instance
+  (`scripts/dev-instance.sh`) — add an account, see the provenance label
+  appear, remove with each of the two choices, screenshot the prompt.
 - Both SQLite and Postgres for every store-touching change; `-race` clean;
   full pre-commit chain per commit.

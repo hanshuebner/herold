@@ -129,6 +129,22 @@ in `../../server/requirements/16-import.md` (REQ-IMPORT-70..74).
 | REQ-SET-IMPORT-5 | Errors (parse failures, oversize archive, quota exceeded mid-import) surface inline with the actionable next step. Quota-exceeded shows the current quota and the principal admin email; oversize shows the configured limit and links to the operator-facing CLI path for larger imports. Per-message parse errors are NOT shown inline (the count would dwarf the UI); the user gets a "X messages skipped — view details" link that opens the error list paginated. |
 | REQ-SET-IMPORT-6 | The wizard is keyboard-accessible (REQ-KEY-* applies). Drag-and-drop upload is offered as a convenience; the file picker is the primary path. |
 
+## IMAP import accounts (v1)
+
+Self-service UI for IMAP client mode. Server contract is in
+`../../server/requirements/19-imap-import.md` (REQ-IMAP-IMP-*) and JMAP
+`IMAPImport/get|set`. **This UI does not exist yet** — the backend
+(JMAP + admin REST + CLI) shipped without any suite surface; these
+requirements specify the missing surface.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-SET-IMAPIMP-01 | The Settings panel exposes a "Connected accounts" entry (under `Account`, or a shared `Import` section with REQ-SET-IMPORT-1). Hidden when the JMAP session does not advertise `https://netzhansa.com/jmap/imap-import`. It lists the principal's upstream IMAP accounts from `IMAPImport/get`: account name, host, username, state (`enabled` / `disabled` / `errored` / `migrating` / `migrated`), backfill floor, last-success / last-error, and per-folder progress (from the read-only status surface, REQ-IMAP-IMP-65). |
+| REQ-SET-IMAPIMP-02 | **Add-account wizard:** host / port / TLS mode, username, auth method (`password` / `app_password` / `xoauth2`), the credential (write-only field, never echoed back — REQ-IMAP-IMP-70), a **required** backfill horizon (`30d` / `90d` / `1y` / `all` / custom date — REQ-IMAP-IMP-15), and optional folder mapping (defaults to name-equals-name). Submitting issues `IMAPImport/set create`. The `xoauth2` option is shown only when the operator has registered an OAuth app (REQ-IMAP-IMP-03) and carries the operator-burden note. |
+| REQ-SET-IMAPIMP-03 | **Edit + migrate.** The per-account view edits the mapping / horizon / credential and exposes a "Complete migration" action (REQ-IMAP-IMP-90) with an explanation: it pulls the entire mailbox, makes herold authoritative, and retires the upstream connection. The action confirms before committing the state transition. |
+| REQ-SET-IMAPIMP-04 | **Remove account — keep-or-delete prompt (REQ-IMAP-IMP-102).** Removing an account opens a confirmation dialog with two explicit choices: (a) **Keep imported mail** (default) — "Removes the connection only; the mail already imported stays in your mailboxes." (b) **Also delete imported mail** — "Permanently delete the N messages imported through this account. This cannot be undone and does not affect the upstream server." The count N is shown (from the provenance label, REQ-IMAP-IMP-100). On confirm the suite issues `IMAPImport/set destroy` with the chosen `deleteImportedMail` flag and surfaces progress for a large purge. |
+| REQ-SET-IMAPIMP-05 | Imported mail is identifiable by its per-account **provenance label** (REQ-IMAP-IMP-100/101), which appears in the label sidebar (`03-labels.md`) like any other label; the user can browse and filter by it, and it is the same label whose count drives the REQ-SET-IMAPIMP-04 prompt. |
+
 ## Cut for v1
 
 The following are intentionally cut. Each is a defensible decision; the cut keeps the surface area small.
