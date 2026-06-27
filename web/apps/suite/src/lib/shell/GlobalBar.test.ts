@@ -224,6 +224,31 @@ describe('GlobalBar — brand mark (re #31)', () => {
   });
 });
 
+describe('GlobalBar — build info tooltip (re #61)', () => {
+  it('exposes the build SHA as a title on the brand link when the meta tag is present', () => {
+    const meta = document.createElement('meta');
+    meta.name = 'herold-build';
+    meta.setAttribute('content', 'abc123def456');
+    document.head.appendChild(meta);
+
+    render(GlobalBar);
+
+    const brandLink = screen.getByRole('link', { name: /herold home/i });
+    expect(brandLink).toHaveAttribute('title', 'Build abc123def456');
+
+    document.head.removeChild(meta);
+  });
+
+  it('falls back to "Build dev" in the title when the meta tag is absent', () => {
+    document.querySelectorAll('meta[name="herold-build"]').forEach((el) => el.remove());
+
+    render(GlobalBar);
+
+    const brandLink = screen.getByRole('link', { name: /herold home/i });
+    expect(brandLink).toHaveAttribute('title', 'Build dev');
+  });
+});
+
 describe('Shell — no .brand-row after #31 fix', () => {
   it('Shell does not contain a .brand-row element', () => {
     const { container } = render(Shell);

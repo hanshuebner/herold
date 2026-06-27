@@ -14,6 +14,24 @@
     placeholder?: string;
   }
   let { placeholder }: Props = $props();
+
+  // Read the build SHA from the <meta name="herold-build"> tag injected
+  // by the Go webspa server at index.html serve time (REQ-CLOG-03). In
+  // Vite dev mode the tag is absent; fall back to "dev" so the tooltip
+  // is always shown regardless of environment.
+  function readBuildMeta(): string {
+    try {
+      return (
+        document
+          .querySelector<HTMLMetaElement>('meta[name="herold-build"]')
+          ?.getAttribute('content') ?? 'dev'
+      );
+    } catch {
+      return 'dev';
+    }
+  }
+
+  const buildInfo = `Build ${readBuildMeta()}`;
   let searchPlaceholder = $derived(placeholder ?? t('globalBar.searchPlaceholder'));
 
   // Local state mirrors the active search query in the URL when present.
@@ -81,7 +99,7 @@
 <header class="global-bar">
   <div class="brand-area">
     <AppSwitcherMenu currentApp="mail" />
-    <a class="brand" href="/" aria-label={t('globalBar.brand')}>Herold</a>
+    <a class="brand" href="/" aria-label={t('globalBar.brand')} title={buildInfo}>Herold</a>
   </div>
 
   <form class="search" onsubmit={onSubmit} role="search">
