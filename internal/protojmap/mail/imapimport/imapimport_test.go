@@ -622,6 +622,79 @@ func TestUpdate_RejectImmutableField(t *testing.T) {
 	}
 }
 
+// TestUpdate_MigratingTransition exercises the complete-migration cutover
+// transitions on the JMAP surface (REQ-IMAP-IMP-90/91/95): starting migration
+// from enabled forces the backfill floor to "all"; setting migrated directly
+// is rejected; starting migration from a non-enabled state is rejected; and a
+// migrated account may be re-opened to enabled.
+func TestUpdate_MigratingTransition(t *testing.T) {
+	h, st, p := newHandlers(t)
+	ctx := context.Background()
+
+	resp := doCreate(t, h, p, minimalCreate("c1"))
+	createdID := resp.Created["c1"].ID
+
+	// Precondition: a 30d horizon resolves to a non-nil floor.
+	row0, _ := st.Meta().GetIMAPImportAccount(ctx, createdID)
+	if row0.BackfillFloorDate == nil {
+		t.Fatal("precondition: 30d horizon should produce a non-nil floor")
+	}
+
+	setState := func(id, state string) setResponse {
+		t.Helper()
+		args, _ := json.Marshal(map[string]any{
+			"accountId": accountID(p),
+			"update":    map[string]any{id: map[string]any{"state": state}},
+		})
+		r, merr := setHandler{h: h}.executeAs(p, args)
+		if merr != nil {
+			t.Fatalf("set state=%s: %v", state, merr)
+		}
+		return r.(setResponse)
+	}
+
+	// enabled -> migrating: accepted; floor forced to "all" (nil).
+	if r := setState(createdID, "migrating"); len(r.NotUpdated) != 0 {
+		t.Fatalf("enabled->migrating rejected: %v", r.NotUpdated)
+	}
+	rowM, _ := st.Meta().GetIMAPImportAccount(ctx, createdID)
+	if rowM.State != store.IMAPImportAccountStateMigrating {
+		t.Errorf("state = %q; want migrating", rowM.State)
+	}
+	if rowM.BackfillFloorDate != nil {
+		t.Errorf("backfill floor = %v; want nil (forced to all on migrating)", rowM.BackfillFloorDate)
+	}
+
+	// Direct set to migrated is rejected (worker-only transition).
+	resp2 := doCreate(t, h, p, map[string]any{"c2": minimalCreate("c2")["c2"]})
+	id2 := resp2.Created["c2"].ID
+	if r := setState(id2, "migrated"); r.NotUpdated[jmapID(id2)].Type != "invalidProperties" {
+		t.Errorf("direct set migrated should be invalidProperties, got %+v", r.NotUpdated)
+	}
+
+	// migrating from a non-enabled (disabled) state is rejected.
+	if r := setState(id2, "disabled"); len(r.NotUpdated) != 0 {
+		t.Fatalf("->disabled rejected: %v", r.NotUpdated)
+	}
+	if r := setState(id2, "migrating"); r.NotUpdated[jmapID(id2)].Type != "invalidProperties" {
+		t.Errorf("migrating from disabled should be invalidProperties, got %+v", r.NotUpdated)
+	}
+
+	// Re-open: migrated -> enabled is accepted (REQ-IMAP-IMP-95). Put the
+	// account into migrated via the store (the worker's terminal transition).
+	if err := st.Meta().SetIMAPImportAccountState(ctx, createdID,
+		store.IMAPImportAccountStateMigrated, "", nil); err != nil {
+		t.Fatalf("set migrated via store: %v", err)
+	}
+	if r := setState(createdID, "enabled"); len(r.NotUpdated) != 0 {
+		t.Fatalf("re-open migrated->enabled rejected: %v", r.NotUpdated)
+	}
+	rowR, _ := st.Meta().GetIMAPImportAccount(ctx, createdID)
+	if rowR.State != store.IMAPImportAccountStateEnabled {
+		t.Errorf("re-opened state = %q; want enabled", rowR.State)
+	}
+}
+
 func TestUpdate_NotFound(t *testing.T) {
 	h, _, p := newHandlers(t)
 	args, _ := json.Marshal(map[string]any{

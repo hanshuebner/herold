@@ -157,14 +157,37 @@ func validateIMAPState(s string) error {
 	switch store.IMAPImportAccountState(s) {
 	case store.IMAPImportAccountStateEnabled,
 		store.IMAPImportAccountStateDisabled,
-		store.IMAPImportAccountStateErrored:
+		store.IMAPImportAccountStateErrored,
+		store.IMAPImportAccountStateMigrating,
+		store.IMAPImportAccountStateMigrated:
 		return nil
 	default:
-		return fmt.Errorf("state must be one of %q, %q, %q; got %q",
+		return fmt.Errorf("state must be one of %q, %q, %q, %q, %q; got %q",
 			store.IMAPImportAccountStateEnabled,
 			store.IMAPImportAccountStateDisabled,
-			store.IMAPImportAccountStateErrored, s)
+			store.IMAPImportAccountStateErrored,
+			store.IMAPImportAccountStateMigrating,
+			store.IMAPImportAccountStateMigrated, s)
 	}
+}
+
+// validateIMAPStateTransition enforces the cutover lifecycle rules for an
+// admin PATCH state change (REQ-IMAP-IMP-90/95): migrating only from enabled
+// (or idempotently migrating); migrated is worker-only and cannot be set
+// directly; enabled / disabled are allowed from any state.
+func validateIMAPStateTransition(prior, next store.IMAPImportAccountState) error {
+	switch next {
+	case store.IMAPImportAccountStateMigrating:
+		if prior != store.IMAPImportAccountStateEnabled &&
+			prior != store.IMAPImportAccountStateMigrating {
+			return fmt.Errorf("complete migration can only be started from the %q state (current: %q)",
+				store.IMAPImportAccountStateEnabled, prior)
+		}
+	case store.IMAPImportAccountStateMigrated:
+		return fmt.Errorf("%q is reached automatically when the cutover completes; it cannot be set directly",
+			store.IMAPImportAccountStateMigrated)
+	}
+	return nil
 }
 
 // -- handlers -----------------------------------------------------------------
@@ -300,6 +323,16 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 	if req.State != "" {
 		if err := validateIMAPState(req.State); err != nil {
 			writeProblem(w, r, http.StatusBadRequest, "validation_failed", err.Error(), "")
+			return
+		}
+		// A new account may only be created enabled or disabled; the cutover
+		// states are reached by transitioning an existing account
+		// (REQ-IMAP-IMP-90).
+		if s := store.IMAPImportAccountState(req.State); s != store.IMAPImportAccountStateEnabled &&
+			s != store.IMAPImportAccountStateDisabled {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				fmt.Sprintf("a new account may only be created %q or %q",
+					store.IMAPImportAccountStateEnabled, store.IMAPImportAccountStateDisabled), "")
 			return
 		}
 		state = store.IMAPImportAccountState(req.State)
@@ -459,7 +492,18 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, http.StatusBadRequest, "validation_failed", err.Error(), "")
 			return
 		}
-		upd.State = store.IMAPImportAccountState(*req.State)
+		next := store.IMAPImportAccountState(*req.State)
+		if err := validateIMAPStateTransition(existing.State, next); err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", err.Error(), "")
+			return
+		}
+		upd.State = next
+		// Entering migrating forces the backfill floor to "all" so the
+		// one-shot complete backfill reaches the earliest UID
+		// (REQ-IMAP-IMP-91).
+		if next == store.IMAPImportAccountStateMigrating {
+			upd.BackfillFloorDate = nil
+		}
 	}
 	if req.DeletePropagates != nil {
 		upd.DeletePropagates = *req.DeletePropagates

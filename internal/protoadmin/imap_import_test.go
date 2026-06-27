@@ -406,6 +406,66 @@ func TestIMAPImport_UpdatePreservesCredentialWhenOmitted(t *testing.T) {
 	}
 }
 
+// TestIMAPImport_MigratingTransition exercises the complete-migration cutover
+// transitions on the admin PATCH surface (REQ-IMAP-IMP-90/91/95): start from
+// enabled forces the floor to "all"; direct migrated is rejected; migrating
+// from a non-enabled state is rejected; migrated -> enabled re-opens.
+func TestIMAPImport_MigratingTransition(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	ctx := context.Background()
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	row0, _ := ih.fs.Meta().GetIMAPImportAccount(ctx, created.ID)
+	if row0.BackfillFloorDate == nil {
+		t.Fatal("precondition: 30d horizon should produce a non-nil floor")
+	}
+
+	// enabled -> migrating: accepted; floor forced to nil.
+	res2, buf2 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{"state": "migrating"})
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("enabled->migrating: %d: %s", res2.StatusCode, buf2)
+	}
+	rowM, _ := ih.fs.Meta().GetIMAPImportAccount(ctx, created.ID)
+	if rowM.State != store.IMAPImportAccountStateMigrating {
+		t.Errorf("state = %q; want migrating", rowM.State)
+	}
+	if rowM.BackfillFloorDate != nil {
+		t.Errorf("floor = %v; want nil after migrating", rowM.BackfillFloorDate)
+	}
+
+	// Direct migrated is rejected.
+	res3, _ := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{"state": "migrated"})
+	if res3.StatusCode != http.StatusBadRequest {
+		t.Errorf("direct migrated should be 400, got %d", res3.StatusCode)
+	}
+
+	// migrated -> enabled re-opens (set migrated via store first).
+	if err := ih.fs.Meta().SetIMAPImportAccountState(ctx, created.ID,
+		store.IMAPImportAccountStateMigrated, "", nil); err != nil {
+		t.Fatalf("set migrated via store: %v", err)
+	}
+	res4, buf4 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{"state": "enabled"})
+	if res4.StatusCode != http.StatusOK {
+		t.Fatalf("re-open migrated->enabled: %d: %s", res4.StatusCode, buf4)
+	}
+	// migrating from a non-enabled state is rejected: disable, then attempt it.
+	if dr, db := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{"state": "disabled"}); dr.StatusCode != http.StatusOK {
+		t.Fatalf("->disabled: %d: %s", dr.StatusCode, db)
+	}
+	res5, _ := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{"state": "migrating"})
+	if res5.StatusCode != http.StatusBadRequest {
+		t.Errorf("migrating from disabled should be 400, got %d", res5.StatusCode)
+	}
+}
+
 // TestIMAPImport_UpdateResealsCredentialWhenProvided verifies that supplying
 // a new credential in the patch replaces the ciphertext.
 func TestIMAPImport_UpdateResealsCredentialWhenProvided(t *testing.T) {

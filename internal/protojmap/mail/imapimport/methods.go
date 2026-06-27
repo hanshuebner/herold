@@ -312,6 +312,16 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 					[]string{"state"}, err.Error())
 				continue
 			}
+			// A new account may only be created enabled or disabled; the
+			// cutover states are reached by transitioning an existing account
+			// (REQ-IMAP-IMP-90).
+			if s := store.IMAPImportAccountState(in.State); s != store.IMAPImportAccountStateEnabled &&
+				s != store.IMAPImportAccountStateDisabled {
+				setNotCreated(&resp, clientID, "invalidProperties", []string{"state"},
+					fmt.Sprintf("a new account may only be created %q or %q",
+						store.IMAPImportAccountStateEnabled, store.IMAPImportAccountStateDisabled))
+				continue
+			}
 			state = store.IMAPImportAccountState(in.State)
 		}
 		deletePropagates := true
@@ -478,7 +488,20 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 					[]string{"state"}, err.Error())
 				continue
 			}
-			upd.State = store.IMAPImportAccountState(*in.State)
+			next := store.IMAPImportAccountState(*in.State)
+			if err := validateStateTransition(prior.State, next); err != nil {
+				setNotUpdated(&resp, id, "invalidProperties",
+					[]string{"state"}, err.Error())
+				continue
+			}
+			upd.State = next
+			// Entering migrating forces the backfill floor to "all" so the
+			// one-shot complete backfill reaches the earliest UID
+			// (REQ-IMAP-IMP-91). Done here (and re-forced in the worker) so
+			// IMAPImport/get reflects it and a restart resumes with no floor.
+			if next == store.IMAPImportAccountStateMigrating {
+				upd.BackfillFloorDate = nil
+			}
 		}
 		if in.DeletePropagates != nil {
 			upd.DeletePropagates = *in.DeletePropagates
@@ -585,14 +608,41 @@ func validateState(s string) error {
 	switch store.IMAPImportAccountState(s) {
 	case store.IMAPImportAccountStateEnabled,
 		store.IMAPImportAccountStateDisabled,
-		store.IMAPImportAccountStateErrored:
+		store.IMAPImportAccountStateErrored,
+		store.IMAPImportAccountStateMigrating,
+		store.IMAPImportAccountStateMigrated:
 		return nil
 	default:
-		return fmt.Errorf("state must be one of %q, %q, %q; got %q",
+		return fmt.Errorf("state must be one of %q, %q, %q, %q, %q; got %q",
 			store.IMAPImportAccountStateEnabled,
 			store.IMAPImportAccountStateDisabled,
-			store.IMAPImportAccountStateErrored, s)
+			store.IMAPImportAccountStateErrored,
+			store.IMAPImportAccountStateMigrating,
+			store.IMAPImportAccountStateMigrated, s)
 	}
+}
+
+// validateStateTransition enforces the lifecycle rules for a state change
+// requested through the JMAP / admin surfaces (REQ-IMAP-IMP-90/95):
+//
+//   - migrating may only be requested from enabled (or idempotently from
+//     migrating) — it starts the complete-migration cutover.
+//   - migrated is reached automatically by the worker when the cutover
+//     completes; it cannot be set directly.
+//   - enabled (re-open / re-enable) and disabled are allowed from any state.
+func validateStateTransition(prior, next store.IMAPImportAccountState) error {
+	switch next {
+	case store.IMAPImportAccountStateMigrating:
+		if prior != store.IMAPImportAccountStateEnabled &&
+			prior != store.IMAPImportAccountStateMigrating {
+			return fmt.Errorf("complete migration can only be started from the %q state (current: %q)",
+				store.IMAPImportAccountStateEnabled, prior)
+		}
+	case store.IMAPImportAccountStateMigrated:
+		return fmt.Errorf("%q is reached automatically when the cutover completes; it cannot be set directly",
+			store.IMAPImportAccountStateMigrated)
+	}
+	return nil
 }
 
 // resolveHorizon converts the backfillHorizon value to an absolute floor
