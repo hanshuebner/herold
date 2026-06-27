@@ -120,6 +120,13 @@ type IMAPImportAccount struct {
 	// propagated upstream via IMAP EXPUNGE (REQ-IMAP-IMP-44). Default
 	// true.
 	DeletePropagates bool
+	// ProvenanceMailboxID is the cached id of this account's provenance
+	// label (REQ-IMAP-IMP-100..101): a normal herold Mailbox (no role)
+	// created when the account is first enabled and named from
+	// AccountName. Every ingested message gets an extra membership in it.
+	// Zero until the worker first enables the account and creates the
+	// label.
+	ProvenanceMailboxID MailboxID
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time

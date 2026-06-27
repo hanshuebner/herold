@@ -432,6 +432,182 @@ func testIMAPImport_IdentityScope(t *testing.T, s store.Store) {
 	}
 }
 
+// blobHashes returns the distinct blob hashes referenced by the principal's
+// messages — a proxy for blob refcounts (refcounted per messages row).
+func blobHashes(t *testing.T, s store.Store, pid store.PrincipalID) []string {
+	t.Helper()
+	hs, err := s.Meta().ListPrincipalBlobHashes(ctxT(t), pid)
+	if err != nil {
+		t.Fatalf("ListPrincipalBlobHashes: %v", err)
+	}
+	return hs
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// testIMAPImport_ProvenanceAndRemoval exercises the provenance-label
+// removal flow (REQ-IMAP-IMP-100..105): keep leaves everything, purge of a
+// single-source message destroys it (decrementing the blob refcount), and
+// purge of a message shared with a second import account removes only this
+// account's provenance label and keeps the message.
+func testIMAPImport_ProvenanceAndRemoval(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-prov@example.com")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	// insertMsg inserts a message into INBOX and returns its id and blob hash.
+	insertMsg := func(body string) (store.MessageID, string) {
+		t.Helper()
+		ref := putBlob(t, s, body)
+		if _, _, err := s.Meta().InsertMessage(ctx,
+			store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size},
+			[]store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+			t.Fatalf("InsertMessage: %v", err)
+		}
+		m, err := s.Meta().GetMessageByBlobHash(ctx, p.ID, ref.Hash)
+		if err != nil {
+			t.Fatalf("GetMessageByBlobHash: %v", err)
+		}
+		return m.ID, ref.Hash
+	}
+	addLabel := func(msgID store.MessageID, mbID store.MailboxID) {
+		t.Helper()
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, msgID, mbID); err != nil {
+			t.Fatalf("AddMessageToMailbox: %v", err)
+		}
+	}
+	recordState := func(accID string, msgID store.MessageID, uid uint32) {
+		t.Helper()
+		if err := s.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+			AccountID: accID, UpstreamFolder: "INBOX", UpstreamUID: uid,
+			HeroldMessageID: msgID, HeroldMailboxID: inbox.ID,
+		}); err != nil {
+			t.Fatalf("UpsertIMAPImportMessageState: %v", err)
+		}
+	}
+	mkAccount := func(name string, provName string) store.IMAPImportAccount {
+		t.Helper()
+		acc := mustCreateIMAPImportAccount(t, s, p.ID, name)
+		prov := mustInsertMailbox(t, s, p.ID, provName)
+		if err := s.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, prov.ID); err != nil {
+			t.Fatalf("SetIMAPImportProvenanceMailbox: %v", err)
+		}
+		acc.ProvenanceMailboxID = prov.ID
+		return acc
+	}
+	memberCount := func(msgID store.MessageID) int {
+		t.Helper()
+		m, err := s.Meta().GetMessage(ctx, msgID)
+		if err != nil {
+			t.Fatalf("GetMessage: %v", err)
+		}
+		return len(m.Mailboxes)
+	}
+	isMember := func(msgID store.MessageID, mbID store.MailboxID) bool {
+		t.Helper()
+		m, err := s.Meta().GetMessage(ctx, msgID)
+		if err != nil {
+			t.Fatalf("GetMessage: %v", err)
+		}
+		for _, mm := range m.Mailboxes {
+			if mm.MailboxID == mbID {
+				return true
+			}
+		}
+		return false
+	}
+
+	// -- KEEP: removal with delete_imported_mail=false leaves everything. --
+	keepAcc := mkAccount("Keep", "Label Keep")
+	keepMsg, _ := insertMsg("keep-body-unique")
+	addLabel(keepMsg, keepAcc.ProvenanceMailboxID)
+	recordState(keepAcc.ID, keepMsg, 1)
+
+	res, err := store.RemoveIMAPImportAccount(ctx, s, p.ID, keepAcc.ID, false)
+	if err != nil {
+		t.Fatalf("RemoveIMAPImportAccount (keep): %v", err)
+	}
+	if res.MessagesDestroyed != 0 || res.LabelsDetached != 0 {
+		t.Errorf("keep result = %+v; want zero", res)
+	}
+	if _, err := s.Meta().GetIMAPImportAccount(ctx, keepAcc.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("keep: account should be gone, got %v", err)
+	}
+	if _, err := s.Meta().GetMessage(ctx, keepMsg); err != nil {
+		t.Errorf("keep: message should survive, got %v", err)
+	}
+	if !isMember(keepMsg, keepAcc.ProvenanceMailboxID) {
+		t.Error("keep: provenance label should be retained as an ordinary label")
+	}
+
+	// -- PURGE single-source: destroy the message + decrement blob refcount. --
+	soloAcc := mkAccount("Solo", "Label Solo")
+	soloMsg, soloHash := insertMsg("solo-body-unique")
+	addLabel(soloMsg, soloAcc.ProvenanceMailboxID)
+	recordState(soloAcc.ID, soloMsg, 1)
+
+	// The blob is referenced before purge (one message holds it). Blobs are
+	// refcounted per messages row, so the principal's blob-hash set is a
+	// faithful proxy: when the message is destroyed and the last reference
+	// dropped, the hash leaves the set.
+	if !containsStr(blobHashes(t, s, p.ID), soloHash) {
+		t.Fatalf("solo blob hash should be referenced before purge")
+	}
+
+	res, err = store.RemoveIMAPImportAccount(ctx, s, p.ID, soloAcc.ID, true)
+	if err != nil {
+		t.Fatalf("RemoveIMAPImportAccount (purge solo): %v", err)
+	}
+	if res.MessagesDestroyed != 1 || res.LabelsDetached != 0 {
+		t.Errorf("purge solo result = %+v; want {1,0}", res)
+	}
+	if _, err := s.Meta().GetMessage(ctx, soloMsg); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("purge solo: message should be destroyed, got %v", err)
+	}
+	// Blob reference dropped (refcount decremented to zero).
+	if containsStr(blobHashes(t, s, p.ID), soloHash) {
+		t.Errorf("purge solo: blob hash still referenced; refcount was not decremented")
+	}
+
+	// -- PURGE shared: two accounts claim one message; purge one keeps it. --
+	accA := mkAccount("Shared A", "Label A")
+	accB := mkAccount("Shared B", "Label B")
+	sharedMsg, _ := insertMsg("shared-body-unique")
+	addLabel(sharedMsg, accA.ProvenanceMailboxID)
+	addLabel(sharedMsg, accB.ProvenanceMailboxID)
+	recordState(accA.ID, sharedMsg, 1)
+	recordState(accB.ID, sharedMsg, 1)
+	beforeCount := memberCount(sharedMsg) // INBOX + Label A + Label B = 3
+
+	res, err = store.RemoveIMAPImportAccount(ctx, s, p.ID, accA.ID, true)
+	if err != nil {
+		t.Fatalf("RemoveIMAPImportAccount (purge shared A): %v", err)
+	}
+	if res.MessagesDestroyed != 0 || res.LabelsDetached != 1 {
+		t.Errorf("purge shared result = %+v; want {0,1}", res)
+	}
+	if _, err := s.Meta().GetMessage(ctx, sharedMsg); err != nil {
+		t.Errorf("purge shared: message should survive (claimed by B), got %v", err)
+	}
+	if isMember(sharedMsg, accA.ProvenanceMailboxID) {
+		t.Error("purge shared: account A's label should be removed")
+	}
+	if !isMember(sharedMsg, accB.ProvenanceMailboxID) {
+		t.Error("purge shared: account B's label should be retained")
+	}
+	if got := memberCount(sharedMsg); got != beforeCount-1 {
+		t.Errorf("purge shared: membership count = %d; want %d (only A's label removed)", got, beforeCount-1)
+	}
+}
+
 // testIMAPImport_SetAccountState verifies SetIMAPImportAccountState
 // updates state/last_error and only advances last_success_at when
 // non-nil is passed.

@@ -256,6 +256,15 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 		slog.String("host", account.Host),
 	)
 
+	// Ensure the per-account provenance label exists and is cached before the
+	// first ingest (REQ-IMAP-IMP-100..101). A failure here is non-fatal: the
+	// mirror can still run without the label; it will be retried next session.
+	if err := w.ensureProvenanceMailbox(ctx); err != nil {
+		w.opts.log.Warn("imapimport: failed to ensure provenance label; continuing without it",
+			slog.String("account_id", account.ID),
+			slog.String("error", err.Error()))
+	}
+
 	// 3b: drive a full sync pass for all mapped folders.
 	w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
 	if err := w.syncAllFolders(ctx, conn); err != nil {

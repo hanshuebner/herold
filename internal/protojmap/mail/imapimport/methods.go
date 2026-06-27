@@ -44,6 +44,11 @@ type setRequest struct {
 	Create    map[string]json.RawMessage `json:"create,omitempty"`
 	Update    map[jmapID]json.RawMessage `json:"update,omitempty"`
 	Destroy   []jmapID                   `json:"destroy,omitempty"`
+	// DeleteImportedMail selects the keep-or-purge behaviour for every id in
+	// Destroy (REQ-IMAP-IMP-102): false / absent keeps the imported mail (the
+	// provenance label survives as an ordinary user label); true also deletes
+	// the mail imported through the account, dedup-safe (REQ-IMAP-IMP-103).
+	DeleteImportedMail *bool `json:"deleteImportedMail,omitempty"`
 }
 
 type setError struct {
@@ -515,8 +520,9 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 
 	// -- destroys ------------------------------------------------------
 
+	deleteImportedMail := req.DeleteImportedMail != nil && *req.DeleteImportedMail
 	for _, id := range req.Destroy {
-		derr := s.h.store.Meta().DeleteIMAPImportAccount(ctx, p.ID, id)
+		_, derr := store.RemoveIMAPImportAccount(ctx, s.h.store, p.ID, id, deleteImportedMail)
 		if derr != nil {
 			if errors.Is(derr, store.ErrNotFound) {
 				if resp.NotDestroyed == nil {

@@ -578,6 +578,9 @@ func (w *accountWorker) ingestMessage(
 	}
 	// On lookup failure we still return isNew=true; mbID is known.
 
+	// Tag with the per-account provenance label (REQ-IMAP-IMP-100).
+	w.addProvenanceLabel(ctx, assignedMsgID)
+
 	// Fresh insert: the message is a new member of heroldMailbox.
 	return true, true, assignedMsgID, mb.ID, nil
 }
@@ -599,6 +602,9 @@ func (w *accountWorker) placeExistingMessage(
 	if mbErr != nil {
 		return false, existing.ID, existing.MailboxID, fmt.Errorf("imapimport: ensureMailbox %q (dedup): %w", heroldMailbox, mbErr)
 	}
+	// Tag with the per-account provenance label (REQ-IMAP-IMP-100); idempotent
+	// across the K folder placements of a multi-mailbox dedup.
+	w.addProvenanceLabel(ctx, existing.ID)
 	for _, mm := range existing.Mailboxes {
 		if mm.MailboxID == targetMB.ID {
 			// Already a member (e.g. re-fetching the same folder): no-op.
@@ -665,6 +671,85 @@ func (w *accountWorker) ensureMailbox(ctx context.Context, pid store.PrincipalID
 		return store.Mailbox{}, err
 	}
 	return mb, nil
+}
+
+// ensureProvenanceMailbox makes sure this account's provenance label
+// (REQ-IMAP-IMP-100..101) exists and caches its id on the account row and
+// the in-memory account copy. The label is a normal herold Mailbox with no
+// special-use role, named from the account name. Idempotent: a no-op once
+// the id is cached. Called once per session before the first ingest.
+func (w *accountWorker) ensureProvenanceMailbox(ctx context.Context) error {
+	if w.opts.account.ProvenanceMailboxID != 0 {
+		return nil
+	}
+	pid := store.PrincipalID(w.opts.account.PrincipalID)
+	name := w.opts.account.AccountName
+	if name == "" {
+		name = "Imported (" + w.opts.account.Host + ")"
+	}
+
+	// Find an existing mailbox by name; adopt it if present (so a restart
+	// after the row was created but before the id was cached re-binds it).
+	mbs, err := w.opts.store.Meta().ListMailboxes(ctx, pid)
+	if err != nil {
+		return err
+	}
+	var mbID store.MailboxID
+	for _, mb := range mbs {
+		if strings.EqualFold(mb.Name, name) {
+			mbID = mb.ID
+			break
+		}
+	}
+	if mbID == 0 {
+		// Create with NO special-use role (REQ-IMAP-IMP-101).
+		mb, ierr := w.opts.store.Meta().InsertMailbox(ctx, store.Mailbox{
+			PrincipalID: pid,
+			Name:        name,
+			Attributes:  store.MailboxAttributes(0),
+		})
+		if ierr != nil {
+			if errors.Is(ierr, store.ErrConflict) {
+				mbs2, _ := w.opts.store.Meta().ListMailboxes(ctx, pid)
+				for _, mb2 := range mbs2 {
+					if strings.EqualFold(mb2.Name, name) {
+						mbID = mb2.ID
+						break
+					}
+				}
+			}
+			if mbID == 0 {
+				return ierr
+			}
+		} else {
+			mbID = mb.ID
+		}
+	}
+
+	if err := w.opts.store.Meta().SetIMAPImportProvenanceMailbox(ctx, w.opts.account.ID, mbID); err != nil {
+		return err
+	}
+	w.opts.account.ProvenanceMailboxID = mbID
+	return nil
+}
+
+// addProvenanceLabel adds the account's provenance-label membership to msgID
+// (REQ-IMAP-IMP-100). Idempotent: an existing membership (ErrConflict) is
+// ignored, so backfilled and re-synced mail converge on a single membership.
+// A no-op when the provenance label has not been created yet (id zero) or the
+// message id is unknown.
+func (w *accountWorker) addProvenanceLabel(ctx context.Context, msgID store.MessageID) {
+	provID := w.opts.account.ProvenanceMailboxID
+	if provID == 0 || msgID == 0 {
+		return
+	}
+	if _, _, err := w.opts.store.Meta().AddMessageToMailbox(ctx, msgID, provID); err != nil {
+		if !errors.Is(err, store.ErrConflict) {
+			w.opts.log.Warn("imapimport: failed to add provenance label",
+				slog.String("account_id", w.opts.account.ID),
+				slog.String("error", err.Error()))
+		}
+	}
 }
 
 // envelopeFromParsed extracts the cached envelope fields the store

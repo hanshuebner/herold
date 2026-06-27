@@ -181,6 +181,83 @@ func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc s
 	return w.syncAllFolders(ctx, conn)
 }
 
+// TestProvenanceLabelAppearsOnImport verifies that, once the account's
+// provenance label is created and cached (as the worker does at enable),
+// every ingested message gets an extra membership in it, and that re-syncing
+// the same folder does not duplicate that membership (REQ-IMAP-IMP-100).
+func TestProvenanceLabelAppearsOnImport(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("prov1", "pw")
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 9, 1, 12, 0, 0, 0, time.UTC)
+	raw := buildRFC822("prov-msg@test", "Prov", d)
+	appendToServer(t, ts, "prov1", "pw", "INBOX", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "prov1@example.test",
+		username:            "prov1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// Create the provenance label and cache it on the account — the work
+	// attempt() does at enable; runSyncOnce drives syncAllFolders directly.
+	ctx := context.Background()
+	prov, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: acc.PrincipalID,
+		Name:        acc.AccountName,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox (provenance): %v", err)
+	}
+	if err := ha.Store.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, prov.ID); err != nil {
+		t.Fatalf("SetIMAPImportProvenanceMailbox: %v", err)
+	}
+	acc, err = ha.Store.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if acc.ProvenanceMailboxID != prov.ID {
+		t.Fatalf("provenance mailbox id not cached: got %d want %d", acc.ProvenanceMailboxID, prov.ID)
+	}
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "prov-msg@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	provCount := 0
+	for _, mm := range msg.Mailboxes {
+		if mm.MailboxID == prov.ID {
+			provCount++
+		}
+	}
+	if provCount != 1 {
+		t.Errorf("imported message has %d provenance memberships; want 1 (memberships=%d)", provCount, len(msg.Mailboxes))
+	}
+
+	// Idempotent: a second sync pass does not duplicate the membership.
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "prov-msg@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader (second): %v", err)
+	}
+	provCount2 := 0
+	for _, mm := range msg2.Mailboxes {
+		if mm.MailboxID == prov.ID {
+			provCount2++
+		}
+	}
+	if provCount2 != 1 {
+		t.Errorf("after second sync: %d provenance memberships; want 1 (idempotent)", provCount2)
+	}
+}
+
 // countMailboxMessages returns the number of messages in the named herold
 // mailbox for the given principal.
 func countMailboxMessages(t *testing.T, s store.Store, pid store.PrincipalID, mailboxName string) int {

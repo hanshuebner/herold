@@ -17,7 +17,7 @@ const imapImportAccountSelectCols = `
 	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
-	delete_propagates, created_at, updated_at`
+	delete_propagates, provenance_mailbox_id, created_at, updated_at`
 
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
@@ -27,33 +27,35 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		backfillFloorUs, lastSuccessUs                                         sql.NullInt64
 		credentialCT                                                           []byte
 		deletePropagates                                                       int64
+		provenanceMailboxID                                                    sql.NullInt64
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
 		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
-		&deletePropagates, &createdUs, &updatedUs,
+		&deletePropagates, &provenanceMailboxID, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
 	}
 	acc := store.IMAPImportAccount{
-		ID:               id,
-		IdentityID:       identityID.String,
-		PrincipalID:      store.PrincipalID(pid),
-		AccountName:      accountName,
-		Host:             host,
-		Port:             int(port),
-		TLSMode:          store.IMAPImportTLSMode(tlsMode),
-		Username:         username,
-		AuthMethod:       store.IMAPImportAuthMethod(authMethod),
-		CredentialCT:     nullableBytes(credentialCT),
-		State:            store.IMAPImportAccountState(state),
-		LastError:        lastError,
-		DeletePropagates: deletePropagates != 0,
-		CreatedAt:        fromMicros(createdUs),
-		UpdatedAt:        fromMicros(updatedUs),
+		ID:                  id,
+		IdentityID:          identityID.String,
+		ProvenanceMailboxID: store.MailboxID(provenanceMailboxID.Int64),
+		PrincipalID:         store.PrincipalID(pid),
+		AccountName:         accountName,
+		Host:                host,
+		Port:                int(port),
+		TLSMode:             store.IMAPImportTLSMode(tlsMode),
+		Username:            username,
+		AuthMethod:          store.IMAPImportAuthMethod(authMethod),
+		CredentialCT:        nullableBytes(credentialCT),
+		State:               store.IMAPImportAccountState(state),
+		LastError:           lastError,
+		DeletePropagates:    deletePropagates != 0,
+		CreatedAt:           fromMicros(createdUs),
+		UpdatedAt:           fromMicros(updatedUs),
 	}
 	if backfillFloorUs.Valid {
 		t := fromMicros(backfillFloorUs.Int64)
@@ -270,6 +272,64 @@ func (m *metadata) SetIMAPImportAccountState(ctx context.Context, id string, sta
 		}
 		return nil
 	})
+}
+
+func (m *metadata) SetIMAPImportProvenanceMailbox(ctx context.Context, id string, mailboxID store.MailboxID) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE imapimport_account SET provenance_mailbox_id = ?, updated_at = ?
+			   WHERE id = ?`,
+			int64(mailboxID), usMicros(m.s.clock.Now().UTC()), id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: SetIMAPImportProvenanceMailbox rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) ListIMAPImportMessageStatesByAccount(ctx context.Context, accountID string) ([]store.IMAPImportMessageState, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT account_id, upstream_folder, upstream_uid,
+		        herold_message_id, herold_mailbox_id, last_synced_flags
+		   FROM imapimport_message_state WHERE account_id = ?`,
+		accountID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	return scanIMAPImportMessageStateRows(rows)
+}
+
+func (m *metadata) ListIMAPImportMessageStatesByMessage(ctx context.Context, heroldMessageID store.MessageID) ([]store.IMAPImportMessageState, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT account_id, upstream_folder, upstream_uid,
+		        herold_message_id, herold_mailbox_id, last_synced_flags
+		   FROM imapimport_message_state WHERE herold_message_id = ?`,
+		int64(heroldMessageID))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	return scanIMAPImportMessageStateRows(rows)
+}
+
+func scanIMAPImportMessageStateRows(rows *sql.Rows) ([]store.IMAPImportMessageState, error) {
+	var out []store.IMAPImportMessageState
+	for rows.Next() {
+		s, err := scanIMAPImportMessageState(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // -- folder map -----------------------------------------------------------

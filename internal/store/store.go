@@ -2270,6 +2270,25 @@ type Metadata interface {
 	// when id is absent.
 	SetIMAPImportAccountState(ctx context.Context, id string, state IMAPImportAccountState, lastError string, lastSuccessAt *time.Time) error
 
+	// SetIMAPImportProvenanceMailbox caches the per-account provenance
+	// label mailbox id on the account row (REQ-IMAP-IMP-100..101). The
+	// worker calls this once, when it first enables the account and
+	// creates the label. Returns ErrNotFound when id is absent.
+	SetIMAPImportProvenanceMailbox(ctx context.Context, id string, mailboxID MailboxID) error
+
+	// ListIMAPImportMessageStatesByAccount returns every message_state row
+	// owned by accountID. Used by the account-removal purge to enumerate
+	// the messages this account imported and the herold mailboxes it
+	// placed them in (REQ-IMAP-IMP-103). Returns an empty slice when none.
+	ListIMAPImportMessageStatesByAccount(ctx context.Context, accountID string) ([]IMAPImportMessageState, error)
+
+	// ListIMAPImportMessageStatesByMessage returns every message_state row
+	// across all accounts that maps to heroldMessageID. The purge uses it
+	// to decide dedup-safety: a message claimed by another import account
+	// is kept, not destroyed (REQ-IMAP-IMP-103). Returns an empty slice
+	// when none.
+	ListIMAPImportMessageStatesByMessage(ctx context.Context, heroldMessageID MessageID) ([]IMAPImportMessageState, error)
+
 	// GetIMAPImportFolderMap returns the folder-name mapping entries for
 	// accountID in ascending upstream_folder order. Returns an empty
 	// slice (nil) and nil error when no entries exist.

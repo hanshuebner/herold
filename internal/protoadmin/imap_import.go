@@ -546,9 +546,16 @@ func (s *Server) handleDeleteIMAPImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// DeleteIMAPImportAccount is owner-scoped: it returns ErrNotFound when
-	// the account does not exist or does not belong to pid.
-	if err := s.store.Meta().DeleteIMAPImportAccount(r.Context(), pid, aid); err != nil {
+	// delete_imported_mail selects keep (default) vs purge (REQ-IMAP-IMP-102):
+	// keep leaves the imported mail and the provenance label in place; purge
+	// also deletes the mail imported through this account, dedup-safe.
+	deleteImportedMail := r.URL.Query().Get("delete_imported_mail") == "true"
+
+	// RemoveAccount is owner-scoped: it returns ErrNotFound when the account
+	// does not exist or does not belong to pid. It performs the dedup-safe
+	// purge (when requested) before dropping the account row.
+	result, err := store.RemoveIMAPImportAccount(r.Context(), s.store, pid, aid, deleteImportedMail)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "not_found", "imap import account not found", aid)
 			return
@@ -561,8 +568,11 @@ func (s *Server) handleDeleteIMAPImport(w http.ResponseWriter, r *http.Request) 
 		fmt.Sprintf("imap_import:%s", aid),
 		store.OutcomeSuccess, "",
 		map[string]string{
-			"principal_id": fmt.Sprintf("%d", pid),
-			"account_id":   aid,
+			"principal_id":         fmt.Sprintf("%d", pid),
+			"account_id":           aid,
+			"delete_imported_mail": fmt.Sprintf("%t", deleteImportedMail),
+			"messages_destroyed":   fmt.Sprintf("%d", result.MessagesDestroyed),
+			"labels_detached":      fmt.Sprintf("%d", result.LabelsDetached),
 		})
 
 	w.WriteHeader(http.StatusNoContent)
