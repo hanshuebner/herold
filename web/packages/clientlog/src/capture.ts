@@ -173,24 +173,45 @@ export function installCapture(
     } catch { /* never throw */ }
   };
 
-  // window.onerror
-  function onError(
-    message: string | Event,
-    _source?: string,
-    _lineno?: number,
-    _colno?: number,
-    error?: Error,
-  ): void {
+  // window error listener (covers unhandled JS exceptions propagated to window)
+  //
+  // Registered via addEventListener so the callback receives a single Event
+  // argument, not the five positional args of the window.onerror property.
+  // ErrorEvent carries the real Error on .error and the browser-supplied
+  // message string on .message. Plain Event (not ErrorEvent) arrives when a
+  // resource load fails (img, script, link); those events are dispatched on
+  // the element and may reach window via capture or direct dispatch.
+  function onError(event: Event): void {
     try {
-      const { msg, stack } = error
-        ? extractError(error)
-        : { msg: String(message).slice(0, 4096), stack: undefined };
+      if (!(event instanceof ErrorEvent)) {
+        // Resource load failure. Log a bounded description when the target is
+        // an element we can identify; skip silently otherwise to avoid noise.
+        const target = event.target;
+        if (target instanceof HTMLElement) {
+          const tagName = target.tagName.toLowerCase();
+          const src =
+            String(('src' in target ? (target as HTMLImageElement).src : '') || '') ||
+            String(('href' in target ? (target as HTMLLinkElement).href : '') || '');
+          const srcPart = src ? ` ${src.slice(0, 200)}` : '';
+          const msg = `resource load error: ${tagName}${srcPart}`.slice(0, 4096);
+          const ev = makeEvent('error', 'error', msg, getSeq, { isError: true });
+          emit(ev);
+          devEcho(orig.error, 'window.error (resource)', [msg]);
+        }
+        return;
+      }
+      // Prefer event.error (a real Error with stack) over event.message.
+      // event.message is a plain string and for cross-origin scripts is
+      // limited to "Script error." with no further detail.
+      const { msg, stack } = event.error != null
+        ? extractError(event.error)
+        : { msg: event.message.slice(0, 4096), stack: undefined };
       const ev = makeEvent('error', 'error', msg, getSeq, { stack, isError: true });
       emit(ev);
-      devEcho(orig.error, 'window.onerror', [message]);
+      devEcho(orig.error, 'window.onerror', [event.error ?? event.message]);
     } catch { /* never throw */ }
   }
-  window.addEventListener('error', onError as EventListener);
+  window.addEventListener('error', onError);
 
   // window.unhandledrejection
   function onUnhandledRejection(e: PromiseRejectionEvent): void {
@@ -210,7 +231,7 @@ export function installCapture(
     console.info = orig.info;
     console.log = orig.log;
     console.debug = orig.debug;
-    window.removeEventListener('error', onError as EventListener);
+    window.removeEventListener('error', onError);
     window.removeEventListener('unhandledrejection', onUnhandledRejection);
   }
 
