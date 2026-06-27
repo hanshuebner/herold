@@ -57,6 +57,42 @@ are called out inline at the requirements they touch:*
 
 *The "how" lives in architecture/12-imap-import.md.)*
 
+*(Revised 2026-06-27 — re-plan and validation pass against issue #25's
+recently-edited description (the "important use case" and the inline
+answers to the open questions). The shipped implementation was validated
+against this file; three further maintainer decisions:*
+
+7. ***Conflict model stands; the issue's "latest wins" answer is
+   corrected to match the build.** The shipped design is
+   upstream-authoritative (decision 5), NOT timestamp-based "latest
+   wins" — there is no per-side change clock, and decision 5 deliberately
+   removed the HLC machinery that a true latest-wins rule would need.
+   This is kept as the intentional simplification; instead the issue
+   description's open-question answer is amended to "upstream-
+   authoritative while mirroring; herold-authoritative at cutover."
+   REQ-IMAP-IMP-42 is unchanged.*
+8. ***Complete-migration cutover is now first-class.** The "important use
+   case" — trial in client mode, then fully migrate off the upstream
+   while preserving the state the user built up in herold — was not
+   modelled by the perpetual-mirror design. New requirement set
+   REQ-IMAP-IMP-90..96 specifies a one-shot complete backfill followed by
+   an authority transfer to herold and retirement of the upstream
+   connection. This is the lifecycle boundary at which upstream-
+   authoritative conflict handling (decision 5) stops applying.*
+9. ***True Gmail per-message labels via X-GM-LABELS is planned, not
+   permanently deferred.** The folder-based placement in
+   REQ-IMAP-IMP-50/51 is an interim measure forced by the pinned
+   `go-imap` beta.8's inability to fetch the X-GM-EXT-1 `X-GM-LABELS`
+   msg-att. New REQ-IMAP-IMP-53 mandates upgrading/patching the client so
+   per-message label placement becomes the Gmail path, with folder-based
+   placement retained as the fallback for non-Gmail servers.*
+
+*Three doc defects found during validation are corrected in this
+revision: a dangling REQ-IMAP-IMP-30bis cross-reference (the mechanism
+is REQ-IMAP-IMP-51), a duplicated REQ-IMAP-IMP-52 row, and the
+architecture doc's "migration 0057" (the migration shipped as 0058 after
+a number collision with `file_shares_source`).)*
+
 ## Scope
 
 A herold principal can configure one or more **upstream IMAP
@@ -191,6 +227,30 @@ HLC borrow from 18-partial-replica.md is withdrawn.)*
 | REQ-IMAP-IMP-44 | Delete semantics: a herold-side `Email/set destroy` removes the message from herold AND issues a best-effort IMAP STORE +FLAGS `\Deleted` + EXPUNGE upstream. Operators / users can opt into a "delete-locally-only" mode (`delete_propagates = false`) for users who use herold to declutter without removing upstream history. Because the design is upstream-authoritative, a destroy whose upstream EXPUNGE failed to land will see the message re-mirrored on a later pass (it still exists upstream); this is the documented best-effort consequence, surfaced in the worker log. |
 | REQ-IMAP-IMP-45 | Snooze, reactions, and other herold-specific datatypes are local-only and never propagate upstream. |
 
+## Complete migration (cutover)
+
+*(Decision 8. The issue's "important use case": a user trials herold in
+client mode, then completely migrates off the upstream — bulk-importing
+the complete mailbox and preserving the state they built up in herold
+during the trial. The perpetual-mirror design above does not, by itself,
+model the terminal state where the upstream is retired and herold becomes
+the source of truth. This section specifies that cutover. Contrast
+16-import.md: that importer is for accounts reachable only as an offline
+Takeout archive; this is the path when the upstream is still reachable
+over live IMAP. Both share the Message-ID / blob_hash dedup, so a user
+MAY combine them, e.g. Takeout for the deep archive plus a live-IMAP
+cutover for everything since.)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-IMAP-IMP-90 | A principal MAY request **complete migration** of an upstream account. The account transitions `enabled` -> `migrating` -> `migrated`. `migrated` is a terminal state in which herold is authoritative for the mirrored mail and no further upstream I/O occurs. The transition is exposed on the same surfaces as the other state mutations (JMAP `IMAPImport/set`, admin REST `PATCH`). |
+| REQ-IMAP-IMP-91 | Entering `migrating` forces the account's backfill floor to `all` (no floor) and runs a **one-shot complete backfill** of every mapped folder: the worker re-issues the bounded re-scan of REQ-IMAP-IMP-19 down to the earliest upstream UID so the entire mailbox — not just mail above the prior horizon — is mirrored before cutover. Progress is observable via `herold_imapimport_backfill_remaining` draining to zero and the live snapshot's `migrating` phase. |
+| REQ-IMAP-IMP-92 | **State preservation (the load-bearing clause for the important use case).** All herold-side state accumulated during the trial is preserved verbatim across cutover: `\Seen` / `\Flagged`, custom keywords (`$category-*`, `$snoozed`), mailbox / label memberships, snooze and reaction datatypes. Once `migrating` begins, the reconcile MUST NOT apply the upstream-authoritative overwrite of REQ-IMAP-IMP-42 to herold-side values — authority has transferred to herold. The final backfill only **adds** not-yet-mirrored messages (deduped by Message-ID / blob_hash, REQ-IMAP-IMP-30/35); it never rewrites the flags or memberships of already-mirrored mail. |
+| REQ-IMAP-IMP-93 | On reaching `migrated` the worker stops cleanly: IDLE / poll loops end, the change-feed write-back driver detaches, and both upstream connections close. The `imapimport_account` row, folder cursors, and `imapimport_message_state` are retained for provenance (surfaced in the message-inspect view) but drive no further upstream traffic. |
+| REQ-IMAP-IMP-94 | Cutover is **resumable and idempotent.** A herold restart during `migrating` resumes the complete backfill from the persisted cursors (REQ-IMAP-IMP-74); re-running the complete backfill never duplicates (dedup) and never regresses herold-side state (REQ-IMAP-IMP-92). |
+| REQ-IMAP-IMP-95 | A `migrated` account MAY be **re-opened** to mirroring by an explicit user action, returning it to `enabled` and re-asserting upstream-authoritative conflict handling (REQ-IMAP-IMP-42) from that point. This covers the user who cut over prematurely. Re-opening does not re-fetch already-mirrored mail (cursors persist). |
+| REQ-IMAP-IMP-96 | Deleting (`DELETE`) a `migrated` account removes only the upstream-account configuration, its cursors, and the sealed credential; the mirrored **mail stays** in the principal's mailboxes (it is now herold-native). This is the expected end state once a migration is confirmed good, and is distinct from disabling. |
+
 ## Operator surface
 
 | ID | Requirement |
@@ -216,11 +276,11 @@ HLC borrow from 18-partial-replica.md is withdrawn.)*
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-50 | Gmail exposes per-message labels as IMAP folders — one folder per label. The worker uses **folder-based label placement** (Option B): INBOX, [Gmail]/Sent Mail, [Gmail]/Drafts, [Gmail]/Spam, [Gmail]/Trash, and every user-label folder are each synced into a mapped herold mailbox. A message present in K label folders lands in K herold mailbox memberships via the multi-mailbox-on-dedup mechanism (REQ-IMAP-IMP-30bis). Virtual/flag folders ([Gmail]/Important, [Gmail]/Starred, [Gmail]/Chats) are skipped — they contain no unique content and no body is fetched from them. [Gmail]/All Mail is synced LAST using envelope-first dedup (REQ-IMAP-IMP-50b) to capture archived/unlabeled mail without re-downloading bodies already fetched from label folders. The backfill horizon (REQ-IMAP-IMP-17) applies to all folders. |
+| REQ-IMAP-IMP-50 | Gmail exposes per-message labels as IMAP folders — one folder per label. The worker uses **folder-based label placement** (Option B): INBOX, [Gmail]/Sent Mail, [Gmail]/Drafts, [Gmail]/Spam, [Gmail]/Trash, and every user-label folder are each synced into a mapped herold mailbox. A message present in K label folders lands in K herold mailbox memberships via the multi-mailbox-on-dedup mechanism (REQ-IMAP-IMP-51). Virtual/flag folders ([Gmail]/Important, [Gmail]/Starred, [Gmail]/Chats) are skipped — they contain no unique content and no body is fetched from them. [Gmail]/All Mail is synced LAST using envelope-first dedup (REQ-IMAP-IMP-50b) to capture archived/unlabeled mail without re-downloading bodies already fetched from label folders. The backfill horizon (REQ-IMAP-IMP-17) applies to all folders. |
 | REQ-IMAP-IMP-50b | **Envelope-first dedup for [Gmail]/All Mail (archived mail capture).** After all label folders are synced, the worker syncs [Gmail]/All Mail as a catch-all. For each UID in the horizon, it fetches ENVELOPE + UID + INTERNALDATE + FLAGS (no body). If the Message-ID is already mirrored in herold (via GetMessageByMessageIDHeader), the body download is skipped entirely. Only for messages NOT yet mirrored (archived mail with no label folder), the worker body-fetches (BODY.PEEK[]) and ingests into the "Archive" herold mailbox. This avoids re-downloading bodies already placed by label folders while still capturing archived/unlabeled mail. |
-| REQ-IMAP-IMP-51 | **Multi-mailbox-on-dedup.** When a message (identified by Message-ID) is already in herold but the current sync folder maps to a different herold mailbox, the worker adds the additional membership via `AddMessageToMailbox` instead of treating it as a no-op. This is the foundation of folder-based label placement: a message in K upstream folders gets K herold mailbox memberships. The mechanism is general — it applies to ALL IMAP accounts, not just Gmail. Re-fetching the same folder is idempotent (the membership already exists; `AddMessageToMailbox` returns `ErrConflict` which is caught and ignored). Gmail's per-message labels are NOT accessed: `X-Gmail-Labels:` is a Takeout/Vault export artifact absent from IMAP FETCH responses, and `X-GM-LABELS` (X-GM-EXT-1 fetch item) cannot be fetched by the pinned `emersion/go-imap/v2 v2.0.0-beta.8` client (its FETCH parser rejects unknown msg-att names). Folder-based placement is the correct v1 approach and is tested end-to-end against the in-process memory server. A best-effort `X-Gmail-Labels:` header parser is retained for sources (e.g. Takeout-style providers) that do include the header. |
+| REQ-IMAP-IMP-51 | **Multi-mailbox-on-dedup.** When a message (identified by Message-ID) is already in herold but the current sync folder maps to a different herold mailbox, the worker adds the additional membership via `AddMessageToMailbox` instead of treating it as a no-op. This is the foundation of folder-based label placement: a message in K upstream folders gets K herold mailbox memberships. The mechanism is general — it applies to ALL IMAP accounts, not just Gmail. Re-fetching the same folder is idempotent (the membership already exists; `AddMessageToMailbox` returns `ErrConflict` which is caught and ignored). Gmail's per-message labels are NOT accessed: `X-Gmail-Labels:` is a Takeout/Vault export artifact absent from IMAP FETCH responses, and `X-GM-LABELS` (X-GM-EXT-1 fetch item) cannot be fetched by the pinned `emersion/go-imap/v2 v2.0.0-beta.8` client (its FETCH parser rejects unknown msg-att names). Folder-based placement is the interim approach pending the X-GM-LABELS client upgrade (REQ-IMAP-IMP-53) and is tested end-to-end against the in-process memory server. A best-effort `X-Gmail-Labels:` header parser is retained for sources (e.g. Takeout-style providers) that do include the header. |
 | REQ-IMAP-IMP-52 | **(Decision 3.)** For gmail, `auth_method = app_password` remains viable (app-passwords still work for accounts with 2-step verification; only the legacy "less secure app access" toggle was removed). `auth_method = xoauth2` is the cleaner long-term path but requires the operator to register a Google Cloud OAuth application with the restricted `https://mail.google.com/` scope and pass Google's verification (CASA security assessment) — a real operator burden, configured under `[imap_import.oauth.google]`. herold does NOT obtain this scope from its login-OIDC federation (NG11). The suite surfaces both options with the operator burden documented. |
-| REQ-IMAP-IMP-52 | **(Decision 3.)** For gmail, `auth_method = app_password` remains viable (app-passwords still work for accounts with 2-step verification; only the legacy "less secure app access" toggle was removed). `auth_method = xoauth2` is the cleaner long-term path but requires the operator to register a Google Cloud OAuth application with the restricted `https://mail.google.com/` scope and pass Google's verification (CASA security assessment) — a real operator burden, configured under `[imap_import.oauth.google]`. herold does NOT obtain this scope from its login-OIDC federation (NG11). The suite surfaces both options with the operator burden documented. |
+| REQ-IMAP-IMP-53 | **(Decision 9 — planned client upgrade.)** True per-message Gmail label placement SHALL be implemented by fetching Gmail's `X-GM-LABELS` (the X-GM-EXT-1 FETCH data item), which requires upgrading or locally patching `emersion/go-imap/v2` beyond the pinned `v2.0.0-beta.8` whose FETCH parser rejects the unknown msg-att. When `X-GM-LABELS` is available the worker derives each message's herold mailbox memberships directly from its label set, superseding the folder-based interim placement of REQ-IMAP-IMP-50/51 for Gmail and removing the need to sync per-label folders and to body-fetch `[Gmail]/All Mail` separately. Folder-based placement (REQ-IMAP-IMP-51) is retained as the fallback for servers that do not advertise X-GM-EXT-1. The pin bump is reviewed by `imap-implementor` + `conformance-fuzz-engineer` (wire-surface change). |
 
 ## Out of scope (deferred / future iterations)
 

@@ -92,10 +92,12 @@ owns one supervising goroutine that holds the primary IDLE connection
 and, when the upstream allows it, a second connection for concurrent
 FETCH (REQ-IMAP-IMP-21). One slow upstream cannot starve others.
 
-### Store: new tables (migration 0057)
+### Store: new tables (migration 0058)
 
 Carried in lock-step on SQLite (`internal/storesqlite/migrations`) and
-Postgres (`internal/storepg/migrations`), next free number `0057`.
+Postgres (`internal/storepg/migrations`). (Designed against the then-free
+number `0057`; it shipped as `0058_imap_import.sql` after `0057` was
+taken by `file_shares_source`.)
 
 ```
 imapimport_account(
@@ -247,6 +249,12 @@ each wake triggers a fetch round on the second connection
 NOOP-polls every `poll_interval` (REQ-IMAP-IMP-23). Latency target 10 s
 p95 notification-to-store (REQ-IMAP-IMP-22).
 
+Two terminal states extend the machine for the migration use case
+(REQ-IMAP-IMP-90..96): `enabled` -> `migrating` (a one-shot complete
+backfill with authority already transferred to herold) -> `migrated`
+(loops stopped, connections closed, herold authoritative). See
+"Complete migration (cutover)" below.
+
 ## Write-back: change feed → upstream (upstream-authoritative)
 
 Herold-side changes are discovered by subscribing to the **store change
@@ -304,7 +312,75 @@ GCs old mail off the edge. Concretely:
 - `herold_imapimport_backfill_remaining{account}` lets the operator
   watch a large initial mirror drain.
 
-## Gmail folder-based label placement (Option B)
+## Complete migration (cutover)
+
+The mirror as specified above runs forever and is upstream-authoritative.
+The "important use case" in issue #25 needs a terminal shape: the user
+trials herold, then fully migrates off the upstream while keeping the
+state they built up in herold. Decision 8 makes that a first-class state
+transition (`enabled` -> `migrating` -> `migrated`, REQ-IMAP-IMP-90..96)
+rather than an emergent side effect of setting `horizon = all` and
+disabling.
+
+Mechanically the cutover reuses parts already built:
+
+- **Complete backfill** is the existing horizon machinery driven to its
+  limit. Entering `migrating` sets `backfill_floor_date = NULL` ("all")
+  and triggers the bounded re-scan of REQ-IMAP-IMP-19 for every mapped
+  folder, lowering each `low_water_uid` to the earliest upstream UID. No
+  new fetch path — just the floor removed and the re-scan run to
+  completion. `backfill_remaining` drains to zero as it finishes.
+- **Authority transfer** is the one genuinely new rule. The instant
+  `migrating` begins, the write-back reconcile stops applying the
+  upstream-wins overwrite of REQ-IMAP-IMP-42 to herold-side values
+  (REQ-IMAP-IMP-92): the user's trial-period curation (`\Seen`,
+  `\Flagged`, `$category-*`, label memberships, snooze, reactions) is now
+  the source of truth. The complete backfill only *adds* not-yet-mirrored
+  messages — deduped by Message-ID / blob_hash — and never rewrites the
+  flags or memberships of mail already present. This is the lifecycle
+  boundary at which decision 5 stops applying; before it, upstream is
+  live and authoritative; after it, the upstream is being retired and
+  herold owns the mail.
+- **Retirement.** On `migrated` the supervising goroutine stops both
+  connections, the change-feed write-back driver detaches, and the
+  account contributes no further upstream traffic. The
+  `imapimport_account` / `imapimport_folder_cursor` /
+  `imapimport_message_state` rows are retained for provenance (the
+  message-inspect view still shows "imported from <account>") until the
+  user `DELETE`s the account, which drops the config + sealed credential
+  but leaves the now-herold-native mail in place (REQ-IMAP-IMP-96).
+
+Cutover is resumable (cursors are durable; a restart mid-migration
+resumes the complete backfill, REQ-IMAP-IMP-94) and reversible (a
+`migrated` account can be re-opened to `enabled`, re-asserting
+upstream-authoritative handling from that point, REQ-IMAP-IMP-95). The
+relationship to 16-import.md is additive: Takeout is the path for an
+upstream reachable only as an offline archive; this is the path for an
+upstream still reachable over live IMAP; the shared dedup lets a user run
+both against the same principal without duplication.
+
+## Gmail per-message labels via X-GM-LABELS (planned client upgrade)
+
+The folder-based placement below (Option B) is an interim measure, not
+the intended end state (decision 9, REQ-IMAP-IMP-53). The correct Gmail
+mapping is per-message: fetch each message's `X-GM-LABELS` (the
+X-GM-EXT-1 FETCH data item) and translate the label set directly into
+herold mailbox memberships. The blocker is purely client-side — the
+pinned `emersion/go-imap/v2 v2.0.0-beta.8` FETCH parser rejects the
+unknown `X-GM-LABELS` msg-att rather than surfacing it.
+
+The planned upgrade: bump (or locally patch) `emersion/go-imap/v2` to a
+revision whose FETCH parser tolerates / exposes the X-GM-EXT-1 items,
+add an `X-GM-LABELS` fetch item to the Gmail sync path, and place each
+message by its label set. With per-message labels available, the
+per-label folder sync and the separate `[Gmail]/All Mail` body-fetch
+(REQ-IMAP-IMP-50/50b) collapse into a single All-Mail pass that reads
+labels off each message — fewer round-trips and exact placement.
+Folder-based placement (Option B) stays as the fallback for any server
+not advertising X-GM-EXT-1. The pin bump touches the IMAP wire surface,
+so it is reviewed by `imap-implementor` + `conformance-fuzz-engineer`.
+
+## Gmail folder-based label placement (Option B, interim)
 
 Gmail exposes per-message labels as IMAP folders. The worker uses
 **folder-based label placement** rather than per-message label metadata
