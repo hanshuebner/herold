@@ -180,6 +180,6 @@ early adopters are re-homed (their `user@domain` identity promoted to the
 account's primary, mirror finalized, external SMTP dropped). It is a strict
 superset of the per-identity machinery here (it drives the same worker pool
 and complete-migration path) and depends on Waves A/C/D landing first. It is
-**its own feature** and likely warrants a separate tracking issue rather than
-expanding #25. Operator guide: `docs/manual/admin/domain-cutover.mdoc`
-(marked planned until the tooling ships).
+**its own feature**, tracked as **issue #62** (labelled `deferred`), not part
+of #25. Operator guide: `docs/manual/admin/domain-cutover.mdoc` (marked
+planned until the tooling ships).
