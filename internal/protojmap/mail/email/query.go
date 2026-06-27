@@ -368,7 +368,9 @@ func buildFilterData(ctx context.Context, blobs store.Blobs, msgs []store.Messag
 		}
 		if needAtt {
 			_, _, _, _, attParts := walkParts(parsed.Body, 0, "", nil)
-			fd.attachments[msg.ID] = len(attParts) > 0
+			// Match Email/get's hasAttachment: inline (cid-referenced) parts
+			// do not count, so the query filter and the property agree.
+			fd.attachments[msg.ID] = hasRealAttachment(attParts)
 		}
 		if headerName != "" {
 			hdrMap := make(map[string]string, len(parsed.Headers.Keys()))
