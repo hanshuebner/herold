@@ -1098,6 +1098,182 @@ func TestChanges_RequiresSinceState(t *testing.T) {
 	}
 }
 
+// -- Self-service folder map (REQ-IMAP-IMP-10/11/61) -----------------
+
+// getFolderMap loads the wire-form folder map for the principal's single
+// account via IMAPImport/get.
+func getFolderMap(t *testing.T, h *handlerSet, p store.Principal) []jmapFolderMapEntry {
+	t.Helper()
+	args, _ := json.Marshal(map[string]any{"accountId": accountID(p)})
+	r, merr := getHandler{h: h}.executeAs(p, args)
+	if merr != nil {
+		t.Fatalf("get: %v", merr)
+	}
+	resp := r.(getResponse)
+	if len(resp.List) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(resp.List))
+	}
+	return resp.List[0].FolderMap
+}
+
+// folderMapAsMap flattens wire entries into upstream->herold for assertions.
+func folderMapAsMap(entries []jmapFolderMapEntry) map[string]string {
+	m := map[string]string{}
+	for _, e := range entries {
+		m[e.UpstreamFolder] = e.HeroldMailboxName
+	}
+	return m
+}
+
+// TestFolderMap_CreateAndEcho verifies that a folderMap supplied on create is
+// persisted and echoed back on the created object and on get.
+func TestFolderMap_CreateAndEcho(t *testing.T) {
+	h, st, p := newHandlers(t)
+
+	creates := map[string]any{
+		"c1": map[string]any{
+			"accountName":     "With map",
+			"host":            "imap.example.com",
+			"port":            993,
+			"tlsMode":         "implicit",
+			"username":        "user",
+			"authMethod":      "password",
+			"backfillHorizon": "30d",
+			"credential":      "pw",
+			"folderMap": []map[string]string{
+				{"upstreamFolder": "Sent Mail", "heroldMailboxName": "Sent"},
+				{"upstreamFolder": "Bin", "heroldMailboxName": "Trash"},
+			},
+		},
+	}
+	resp := doCreate(t, h, p, creates)
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not created; notCreated=%v", resp.NotCreated)
+	}
+	if got := folderMapAsMap(created.FolderMap); got["Sent Mail"] != "Sent" || got["Bin"] != "Trash" {
+		t.Fatalf("created folderMap = %v", got)
+	}
+	// Persisted in the store.
+	stored, err := st.Meta().GetIMAPImportFolderMap(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportFolderMap: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored folder map len = %d, want 2", len(stored))
+	}
+	// Echoed on get.
+	if got := folderMapAsMap(getFolderMap(t, h, p)); got["Sent Mail"] != "Sent" {
+		t.Fatalf("get folderMap = %v", got)
+	}
+}
+
+// TestFolderMap_UpdateReplaces verifies an update folderMap replaces the
+// existing map, and that an explicit empty array clears it while an absent
+// folderMap leaves it untouched.
+func TestFolderMap_UpdateReplaces(t *testing.T) {
+	h, _, p := newHandlers(t)
+	resp := doCreate(t, h, p, map[string]any{
+		"c1": map[string]any{
+			"accountName":     "Acct",
+			"host":            "imap.example.com",
+			"port":            993,
+			"tlsMode":         "implicit",
+			"username":        "user",
+			"authMethod":      "password",
+			"backfillHorizon": "30d",
+			"credential":      "pw",
+			"folderMap": []map[string]string{
+				{"upstreamFolder": "Old", "heroldMailboxName": "OldHerold"},
+			},
+		},
+	})
+	id := resp.Created["c1"].ID
+
+	// Update with a new map: replaces.
+	upArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update": map[string]any{id: map[string]any{
+			"folderMap": []map[string]string{
+				{"upstreamFolder": "New", "heroldMailboxName": "NewHerold"},
+			},
+		}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, upArgs); merr != nil {
+		t.Fatalf("update: %v", merr)
+	}
+	got := folderMapAsMap(getFolderMap(t, h, p))
+	if _, stale := got["Old"]; stale {
+		t.Fatalf("old mapping not replaced: %v", got)
+	}
+	if got["New"] != "NewHerold" {
+		t.Fatalf("new mapping missing: %v", got)
+	}
+
+	// Update WITHOUT folderMap (rename only): map left untouched.
+	renameArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{id: map[string]any{"accountName": "Renamed"}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, renameArgs); merr != nil {
+		t.Fatalf("rename: %v", merr)
+	}
+	if got := folderMapAsMap(getFolderMap(t, h, p)); got["New"] != "NewHerold" {
+		t.Fatalf("absent folderMap should leave map untouched; got %v", got)
+	}
+
+	// Update with an explicit empty array clears it.
+	clearArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{id: map[string]any{"folderMap": []map[string]string{}}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, clearArgs); merr != nil {
+		t.Fatalf("clear: %v", merr)
+	}
+	if got := getFolderMap(t, h, p); len(got) != 0 {
+		t.Fatalf("folderMap not cleared: %v", got)
+	}
+}
+
+// TestFolderMap_InvalidEntryRejected verifies that a folderMap entry with an
+// empty name is rejected on create without creating the account.
+func TestFolderMap_InvalidEntryRejected(t *testing.T) {
+	h, st, p := newHandlers(t)
+	resp := doCreate(t, h, p, map[string]any{
+		"c1": map[string]any{
+			"accountName":     "Bad map",
+			"host":            "imap.example.com",
+			"port":            993,
+			"tlsMode":         "implicit",
+			"username":        "user",
+			"authMethod":      "password",
+			"backfillHorizon": "30d",
+			"credential":      "pw",
+			"folderMap": []map[string]string{
+				{"upstreamFolder": "Sent", "heroldMailboxName": ""},
+			},
+		},
+	})
+	if _, ok := resp.Created["c1"]; ok {
+		t.Fatalf("account should not have been created with an invalid folderMap")
+	}
+	nc, ok := resp.NotCreated["c1"]
+	if !ok {
+		t.Fatalf("expected notCreated entry for c1")
+	}
+	if len(nc.Properties) == 0 || nc.Properties[0] != "folderMap" {
+		t.Fatalf("notCreated properties = %v, want [folderMap]", nc.Properties)
+	}
+	// No account was persisted.
+	all, err := st.Meta().ListIMAPImportAccountsByPrincipal(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("expected no accounts persisted, got %d", len(all))
+	}
+}
+
 // -- Horizon variants ------------------------------------------------
 
 func TestCreate_Horizon90d(t *testing.T) {

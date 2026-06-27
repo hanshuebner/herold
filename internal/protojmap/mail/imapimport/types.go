@@ -55,6 +55,33 @@ type jmapIMAPImportAccount struct {
 	// HasCredential reports whether a sealed credential is stored
 	// (REQ-IMAP-IMP-70). The actual credential is never returned.
 	HasCredential bool `json:"hasCredential"`
+	// FolderMap is the per-account upstream-folder -> herold-mailbox mapping
+	// table (REQ-IMAP-IMP-10/11). Self-service users manage it through
+	// IMAPImport/set; it is echoed here on read. Omitted when empty.
+	FolderMap []jmapFolderMapEntry `json:"folderMap,omitempty"`
+}
+
+// jmapFolderMapEntry is one wire-form folder-mapping row: a mapping from an
+// upstream IMAP folder name to a herold mailbox name (REQ-IMAP-IMP-10).
+type jmapFolderMapEntry struct {
+	UpstreamFolder    string `json:"upstreamFolder"`
+	HeroldMailboxName string `json:"heroldMailboxName"`
+}
+
+// folderMapToJMAP converts store folder-map rows to the wire form. Returns nil
+// for an empty map so the field is omitted on the wire.
+func folderMapToJMAP(entries []store.IMAPImportFolderMapEntry) []jmapFolderMapEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]jmapFolderMapEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, jmapFolderMapEntry{
+			UpstreamFolder:    e.UpstreamFolder,
+			HeroldMailboxName: e.HeroldMailboxName,
+		})
+	}
+	return out
 }
 
 // recordToJMAP converts a store.IMAPImportAccount to the wire form.

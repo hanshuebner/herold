@@ -104,6 +104,44 @@ func stateString(seq int64) string {
 	return strconv.FormatInt(seq, 10)
 }
 
+// wireWithFolderMap builds the wire form for an account and attaches its
+// folder-map rows (REQ-IMAP-IMP-10/11) so a self-service client sees the
+// current mappings on read.
+func (h *handlerSet) wireWithFolderMap(ctx context.Context, a store.IMAPImportAccount) (jmapIMAPImportAccount, error) {
+	wire := recordToJMAP(a)
+	entries, err := h.store.Meta().GetIMAPImportFolderMap(ctx, a.ID)
+	if err != nil {
+		return jmapIMAPImportAccount{}, err
+	}
+	wire.FolderMap = folderMapToJMAP(entries)
+	return wire, nil
+}
+
+// folderMapEntryIn is the wire form of one inbound folder-mapping row for
+// IMAPImport/set create / update (REQ-IMAP-IMP-10).
+type folderMapEntryIn struct {
+	UpstreamFolder    string `json:"upstreamFolder"`
+	HeroldMailboxName string `json:"heroldMailboxName"`
+}
+
+// toStoreFolderMap converts inbound wire rows to store rows for accountID,
+// validating that neither name is empty. Mirrors the admin REST mapping logic
+// (internal/protoadmin/imap_import.go) so the two surfaces behave identically.
+func toStoreFolderMap(accountID string, in []folderMapEntryIn) ([]store.IMAPImportFolderMapEntry, error) {
+	entries := make([]store.IMAPImportFolderMapEntry, 0, len(in))
+	for _, e := range in {
+		if e.UpstreamFolder == "" || e.HeroldMailboxName == "" {
+			return nil, fmt.Errorf("folderMap entries must have non-empty upstreamFolder and heroldMailboxName")
+		}
+		entries = append(entries, store.IMAPImportFolderMapEntry{
+			AccountID:         accountID,
+			UpstreamFolder:    e.UpstreamFolder,
+			HeroldMailboxName: e.HeroldMailboxName,
+		})
+	}
+	return entries, nil
+}
+
 // validateAccountID checks the inbound accountId against the
 // authenticated principal.
 func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
@@ -154,7 +192,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			return nil, protojmap.NewMethodError("serverFail", lerr.Error())
 		}
 		for _, a := range rows {
-			resp.List = append(resp.List, recordToJMAP(a))
+			wire, werr := g.h.wireWithFolderMap(ctx, a)
+			if werr != nil {
+				return nil, protojmap.NewMethodError("serverFail", werr.Error())
+			}
+			resp.List = append(resp.List, wire)
 		}
 		return resp, nil
 	}
@@ -173,7 +215,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		resp.List = append(resp.List, recordToJMAP(rec))
+		wire, werr := g.h.wireWithFolderMap(ctx, rec)
+		if werr != nil {
+			return nil, protojmap.NewMethodError("serverFail", werr.Error())
+		}
+		resp.List = append(resp.List, wire)
 	}
 	return resp, nil
 }
@@ -269,17 +315,18 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	// createIn is the wire form for IMAPImport/set create. credential is
 	// write-only and sealed server-side before storage (REQ-IMAP-IMP-70).
 	type createIn struct {
-		IdentityID       string `json:"identityId"`
-		AccountName      string `json:"accountName"`
-		Host             string `json:"host"`
-		Port             int    `json:"port"`
-		TLSMode          string `json:"tlsMode"`
-		Username         string `json:"username"`
-		AuthMethod       string `json:"authMethod"`
-		BackfillHorizon  string `json:"backfillHorizon"`
-		Credential       string `json:"credential"`
-		State            string `json:"state,omitempty"`
-		DeletePropagates *bool  `json:"deletePropagates,omitempty"`
+		IdentityID       string             `json:"identityId"`
+		AccountName      string             `json:"accountName"`
+		Host             string             `json:"host"`
+		Port             int                `json:"port"`
+		TLSMode          string             `json:"tlsMode"`
+		Username         string             `json:"username"`
+		AuthMethod       string             `json:"authMethod"`
+		BackfillHorizon  string             `json:"backfillHorizon"`
+		Credential       string             `json:"credential"`
+		State            string             `json:"state,omitempty"`
+		DeletePropagates *bool              `json:"deletePropagates,omitempty"`
+		FolderMap        []folderMapEntryIn `json:"folderMap,omitempty"`
 	}
 
 	for clientID, raw := range req.Create {
@@ -405,6 +452,16 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			deletePropagates = *in.DeletePropagates
 		}
 
+		// Validate the optional folder map before creating the account so a
+		// malformed entry fails the create rather than leaving an account
+		// without its mappings (REQ-IMAP-IMP-10/11). The accountID is stamped
+		// after the row exists.
+		if _, ferr := toStoreFolderMap("", in.FolderMap); ferr != nil {
+			setNotCreated(&resp, clientID, "invalidProperties",
+				[]string{"folderMap"}, ferr.Error())
+			continue
+		}
+
 		create := store.IMAPImportAccountCreate{
 			IdentityID:        in.IdentityID,
 			PrincipalID:       p.ID,
@@ -435,10 +492,24 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			}
 			return nil, protojmap.NewMethodError("serverFail", cerr.Error())
 		}
+
+		// Persist the folder map for the new account (REQ-IMAP-IMP-10/11).
+		// Validated above, so the conversion cannot fail here.
+		if len(in.FolderMap) > 0 {
+			entries, _ := toStoreFolderMap(created.ID, in.FolderMap)
+			if serr := s.h.store.Meta().SetIMAPImportFolderMap(ctx, created.ID, entries); serr != nil {
+				return nil, protojmap.NewMethodError("serverFail", serr.Error())
+			}
+		}
+
 		if resp.Created == nil {
 			resp.Created = make(map[string]jmapIMAPImportAccount)
 		}
-		resp.Created[clientID] = recordToJMAP(created)
+		wire, werr := s.h.wireWithFolderMap(ctx, created)
+		if werr != nil {
+			return nil, protojmap.NewMethodError("serverFail", werr.Error())
+		}
+		resp.Created[clientID] = wire
 	}
 
 	// -- updates -------------------------------------------------------
@@ -447,16 +518,17 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	// non-secret fields may appear in a patch. credential, when present,
 	// is re-sealed; when absent the stored credential is preserved.
 	type updateIn struct {
-		AccountName      *string `json:"accountName,omitempty"`
-		Host             *string `json:"host,omitempty"`
-		Port             *int    `json:"port,omitempty"`
-		TLSMode          *string `json:"tlsMode,omitempty"`
-		Username         *string `json:"username,omitempty"`
-		AuthMethod       *string `json:"authMethod,omitempty"`
-		BackfillHorizon  *string `json:"backfillHorizon,omitempty"`
-		Credential       *string `json:"credential,omitempty"`
-		State            *string `json:"state,omitempty"`
-		DeletePropagates *bool   `json:"deletePropagates,omitempty"`
+		AccountName      *string             `json:"accountName,omitempty"`
+		Host             *string             `json:"host,omitempty"`
+		Port             *int                `json:"port,omitempty"`
+		TLSMode          *string             `json:"tlsMode,omitempty"`
+		Username         *string             `json:"username,omitempty"`
+		AuthMethod       *string             `json:"authMethod,omitempty"`
+		BackfillHorizon  *string             `json:"backfillHorizon,omitempty"`
+		Credential       *string             `json:"credential,omitempty"`
+		State            *string             `json:"state,omitempty"`
+		DeletePropagates *bool               `json:"deletePropagates,omitempty"`
+		FolderMap        *[]folderMapEntryIn `json:"folderMap,omitempty"`
 	}
 
 	// Load current accounts for update validation.
@@ -598,6 +670,20 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			upd.CredentialCT = ct
 		}
 
+		// Validate the folder map (when present in the patch) before mutating
+		// the account, so a malformed entry does not leave a half-applied
+		// update (REQ-IMAP-IMP-10/11).
+		var folderEntries []store.IMAPImportFolderMapEntry
+		if in.FolderMap != nil {
+			fe, ferr := toStoreFolderMap(prior.ID, *in.FolderMap)
+			if ferr != nil {
+				setNotUpdated(&resp, id, "invalidProperties",
+					[]string{"folderMap"}, ferr.Error())
+				continue
+			}
+			folderEntries = fe
+		}
+
 		updated, uerr := s.h.store.Meta().UpdateIMAPImportAccount(ctx, upd)
 		if uerr != nil {
 			if errors.Is(uerr, store.ErrNotFound) {
@@ -610,7 +696,21 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			}
 			return nil, protojmap.NewMethodError("serverFail", uerr.Error())
 		}
-		wire := recordToJMAP(updated)
+
+		// Replace the folder map when it was present in the patch (a present
+		// empty array clears it). Absent leaves the existing map untouched
+		// (REQ-IMAP-IMP-10/11). Mirrors the admin REST "req.FolderMap != nil"
+		// semantics.
+		if in.FolderMap != nil {
+			if serr := s.h.store.Meta().SetIMAPImportFolderMap(ctx, updated.ID, folderEntries); serr != nil {
+				return nil, protojmap.NewMethodError("serverFail", serr.Error())
+			}
+		}
+
+		wire, werr := s.h.wireWithFolderMap(ctx, updated)
+		if werr != nil {
+			return nil, protojmap.NewMethodError("serverFail", werr.Error())
+		}
 		if resp.Updated == nil {
 			resp.Updated = make(map[jmapID]*jmapIMAPImportAccount)
 		}
@@ -744,7 +844,7 @@ func immutableUpdateField(rawMap map[string]json.RawMessage) string {
 		switch k {
 		case "accountName", "host", "port", "tlsMode", "username",
 			"authMethod", "backfillHorizon", "credential",
-			"state", "deletePropagates":
+			"state", "deletePropagates", "folderMap":
 			// mutable
 		default:
 			return k
