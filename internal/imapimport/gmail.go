@@ -524,7 +524,7 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 				needBodyFetch = append(needBodyFetch, env.UID)
 				continue
 			}
-			_, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, env.MessageID)
+			existing, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, env.MessageID)
 			if lookupErr == nil {
 				// Already mirrored by a label folder. Skip body download.
 				log.Debug("imapimport: Gmail All Mail envelope dedup skip (already placed)",
@@ -532,13 +532,18 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 					slog.Uint64("uid", uid),
 					slog.String("message_id", env.MessageID),
 				)
-				// Still record the import state so write-back can address it.
+				// Record the import state with the REAL herold ids of the
+				// already-mirrored message so the write-back loop can address
+				// this All Mail UID (D5). Writing 0/0 here left the row
+				// unaddressable, so flag changes to archived mail never
+				// propagated upstream. REQ-IMAP-IMP-34.
 				sf := syncedFlagsFromIMAP(env.Flags)
 				if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
-					AccountID:      accountID,
-					UpstreamFolder: gmailAllMail,
-					UpstreamUID:    uint32(env.UID),
-					// HeroldMessageID / HeroldMailboxID: look up from the existing message.
+					AccountID:       accountID,
+					UpstreamFolder:  gmailAllMail,
+					UpstreamUID:     uint32(env.UID),
+					HeroldMessageID: existing.ID,
+					HeroldMailboxID: existing.MailboxID,
 					LastSyncedFlags: sf,
 				}); msErr != nil {
 					log.Warn("imapimport: Gmail All Mail UpsertIMAPImportMessageState (skip) failed",
