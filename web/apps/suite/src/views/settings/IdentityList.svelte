@@ -3,10 +3,9 @@
    * Identity list in the Account section of Settings.
    *
    * REQ-SET-IDENT-01..08: one row per Identity, with a default-selector
-   * radio at the leading edge under a "Standard" column header, the
-   * avatar thumbnail, the display name / email, the verification status
-   * label, and an external-submission disabled treatment for unverified
-   * / mis-configured external rows.
+   * radio at the leading edge, the avatar thumbnail, the display name /
+   * email, the verification status label, and an external-submission
+   * disabled treatment for unverified / mis-configured external rows.
    *
    * Each row is split into two regions (re #18):
    *   - A non-clickable radio column at the leading edge that promotes
@@ -227,11 +226,6 @@
   {#if sorted.length === 0}
     <p class="muted">{t('settings.account.noIdentities')}</p>
   {:else}
-    <div class="rows-header" aria-hidden="true">
-      <span class="col-default">{t('settings.identityList.defaultColumn')}</span>
-      <span class="col-spacer"></span>
-      <span class="col-identity">{t('settings.identityList.identityColumn')}</span>
-    </div>
     <ul class="rows" role="list">
       {#each sorted as identity (identity.id)}
         {@const status = identityStatus(identity)}
@@ -410,26 +404,6 @@
     line-height: var(--type-heading-compact-02-line);
     font-weight: var(--type-heading-compact-02-weight);
     color: var(--text-secondary);
-  }
-
-  /* Column headers align with the row layout: radio column | card body. */
-  .rows-header {
-    display: grid;
-    grid-template-columns: 24px 1fr;
-    gap: var(--spacing-04);
-    padding: 0 var(--spacing-04);
-  }
-
-  .rows-header span {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-helper);
-  }
-
-  .col-default {
-    text-align: center;
   }
 
   .rows {

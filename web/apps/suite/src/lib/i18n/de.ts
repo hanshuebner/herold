@@ -481,8 +481,6 @@ export const de = {
     'Nur verifizierte Identitäten können Standard sein.',
   'settings.identityList.editRowAria': '{email} bearbeiten',
   'settings.identityList.editBtn': 'Bearbeiten',
-  'settings.identityList.defaultColumn': 'Standard',
-  'settings.identityList.identityColumn': 'Identität',
   'settings.identityList.defaultBadge': 'Standard',
   'settings.identityList.chip.verified': 'Verifiziert',
   'settings.identityList.chip.verifying': 'Verifikation ausstehend',

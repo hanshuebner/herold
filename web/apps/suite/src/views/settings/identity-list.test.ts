@@ -86,8 +86,6 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.identityList.defaultRadioAria': `Set ${params?.email ?? ''} as default`,
       'settings.identityList.editRowAria': `Edit ${params?.email ?? ''}`,
       'settings.identityList.editBtn': 'Edit',
-      'settings.identityList.defaultColumn': 'Default',
-      'settings.identityList.identityColumn': 'Identity',
       'settings.identityList.defaultBadge': 'Default',
       'settings.identityList.defaultChanged': 'Default identity updated',
       'settings.identityList.defaultChangeFailed':
@@ -635,13 +633,6 @@ describe('IdentityList', () => {
     );
     expect(defaultBadge).not.toBeNull();
     expect(nonDefaultBadge).toBeNull();
-  });
-
-  it('renders the Default column header above the radio column', () => {
-    seedIdentities(VERIFIED_DEFAULT);
-    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
-    const header = container.querySelector('.rows-header .col-default');
-    expect(header?.textContent?.trim()).toBe('Default');
   });
 
   it('verification status renders as a non-interactive label, not a button', () => {

@@ -478,8 +478,6 @@ export const en = {
     'Only verified identities can be the default.',
   'settings.identityList.editRowAria': 'Edit {email}',
   'settings.identityList.editBtn': 'Edit',
-  'settings.identityList.defaultColumn': 'Default',
-  'settings.identityList.identityColumn': 'Identity',
   'settings.identityList.defaultBadge': 'Default',
   'settings.identityList.chip.verified': 'Verified',
   'settings.identityList.chip.verifying': 'Verification pending',
