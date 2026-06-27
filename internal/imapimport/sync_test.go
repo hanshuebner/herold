@@ -394,17 +394,17 @@ func TestForwardSync(t *testing.T) {
 
 	cat := &countingCategoriser{}
 
-	// First pass: syncs 2 messages.
+	// First pass: syncs 2 messages. This is the INITIAL backfill of the
+	// folder, so the categoriser must NOT fire (REQ-IMAP-IMP-31 / D1).
 	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 2 {
 		t.Fatalf("after first sync: want 2, got %d", got)
 	}
-	// Forward sync fires categoriser for new INBOX messages.
 	firstCalls := cat.calls.Load()
-	if firstCalls != 2 {
-		t.Errorf("categoriser calls after first sync = %d; want 2", firstCalls)
+	if firstCalls != 0 {
+		t.Errorf("categoriser calls after initial backfill = %d; want 0 (D1)", firstCalls)
 	}
 
 	// Append one more message.
@@ -412,14 +412,16 @@ func TestForwardSync(t *testing.T) {
 	raw := buildRFC822("fwd-new-0@test", "New Message", d)
 	appendToServer(t, ts, "u3", "pw", "INBOX", raw, nil, d)
 
-	// Second pass: should fetch only the new message.
+	// Second pass: should fetch only the new message. This is a genuine
+	// live arrival on an already-initialised folder, so the categoriser
+	// fires exactly once.
 	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 3 {
 		t.Fatalf("after second sync: want 3, got %d", got)
 	}
-	// Exactly 1 more categoriser call for the new message.
+	// Exactly 1 categoriser call for the new live-arrival message.
 	secondCalls := cat.calls.Load()
 	if secondCalls-firstCalls != 1 {
 		t.Errorf("categoriser calls delta for second sync = %d; want 1", secondCalls-firstCalls)
@@ -693,20 +695,22 @@ func TestBodyPeekNoSeenSideEffect(t *testing.T) {
 	}
 }
 
-// TestCategoriserNotCalledForBackfill verifies that the categoriser
-// seam is only called for forward (new) mail, not for backfill.
-// REQ-IMAP-IMP-31.
+// TestCategoriserNotCalledForBackfill verifies the D1 invariant
+// (REQ-IMAP-IMP-31): the LLM categoriser is NOT invoked across the
+// initial/historical backfill of a folder, but IS invoked for a subsequent
+// genuine live arrival on that already-initialised folder.
 func TestCategoriserNotCalledForBackfill(t *testing.T) {
 	ts := startTestIMAPServer(t)
 	ts.addUser("u10", "pw")
 
 	ha, _ := testharness.Start(t, testharness.Options{})
 
-	// Seed messages that are clearly in the past so they are
-	// only reachable via backfill (first sync with nil floor).
+	// Seed a year's worth of historical INBOX mail. On first connect this is
+	// the initial backfill: running the LLM over it would be ruinous, so the
+	// categoriser must not fire at all.
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
-		d := base.AddDate(0, 0, i)
+	for i := 0; i < 12; i++ {
+		d := base.AddDate(0, i, 0)
 		raw := buildRFC822(fmt.Sprintf("backfill-cat-%d@test", i), fmt.Sprintf("Backfill %d", i), d)
 		appendToServer(t, ts, "u10", "pw", "INBOX", raw, nil, d)
 	}
@@ -719,43 +723,33 @@ func TestCategoriserNotCalledForBackfill(t *testing.T) {
 
 	cat := &countingCategoriser{}
 
-	// First sync: all messages come in as forward sync on the initial
-	// pass (since LowWater=0 and high_water=0, both backfill and forward
-	// paths run; on first pass messages arrive via forward). Verify
-	// categoriser fires for INBOX mail on forward pass.
+	// Initial sync: the whole historical backfill lands in herold but the
+	// categoriser is NEVER called for it (D1).
 	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
-		t.Fatalf("sync: %v", err)
+		t.Fatalf("initial backfill sync: %v", err)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 12 {
+		t.Fatalf("after initial backfill: want 12 messages, got %d", got)
+	}
+	if calls := cat.calls.Load(); calls != 0 {
+		t.Errorf("categoriser called %d times across initial backfill; want 0 (D1)", calls)
 	}
 
-	// The important invariant is that categoriser is NOT called for
-	// messages ingested during the backfill pass (isForward=false).
-	// On the very first sync with no cursor, the sync proceeds:
-	// backfill path (fetches all UIDs below low_water=0, which is empty)
-	// then forward path (fetches all UIDs >= high_water=0 = all).
-	// So all 3 messages arrive via the forward path and the
-	// categoriser SHOULD fire for them (they are new INBOX mail).
-	calls := cat.calls.Load()
-	if calls != 3 {
-		t.Errorf("categoriser calls = %d; want 3 for first forward sync", calls)
-	}
+	// A new message arrives upstream after the initial sync completed.
+	dNew := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	rawNew := buildRFC822("live-arrival@test", "Live Arrival", dNew)
+	appendToServer(t, ts, "u10", "pw", "INBOX", rawNew, nil, dNew)
 
-	// Now simulate a second pass where only backfill runs by manually
-	// setting high_water but resetting low_water so backfill fires.
-	cursor, _, _ := ha.Store.Meta().GetIMAPImportFolderCursor(context.Background(), acc.ID, "INBOX")
-	// Keep high_water set so forward finds nothing new.
-	// Lower low_water to 1 so backfill tries to fetch old UIDs.
-	cursor.LowWaterUID = 0
-	_ = ha.Store.Meta().UpsertIMAPImportFolderCursor(context.Background(), cursor)
-
-	cat2 := &countingCategoriser{}
-	if err := runSyncOnce(t, ha, ts, acc, cat2); err != nil {
-		t.Fatalf("second sync (backfill only): %v", err)
+	// Next sync round: the genuine live arrival on the already-initialised
+	// folder IS categorised, exactly once.
+	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+		t.Fatalf("live-arrival sync: %v", err)
 	}
-	// All messages are deduplicated; categoriser should not fire for dedup hits.
-	// Even if the backfill fetches them, ingestMessage returns isNew=false,
-	// so categoriser is not called.
-	if cat2.calls.Load() != 0 {
-		t.Errorf("categoriser called %d times for dedup hits; want 0", cat2.calls.Load())
+	if calls := cat.calls.Load(); calls != 1 {
+		t.Errorf("categoriser calls after live arrival = %d; want 1 (D1)", calls)
+	}
+	if lb := cat.lastMailbox.Load(); lb != "INBOX" {
+		t.Errorf("last categoriser mailbox = %v; want INBOX", lb)
 	}
 }
 
@@ -957,28 +951,34 @@ func TestCategoriserCalledForINBOXOnly(t *testing.T) {
 
 	ha, _ := testharness.Start(t, testharness.Options{})
 
-	d := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	// One message in INBOX.
-	rawInbox := buildRFC822("cat-inbox@test", "Cat INBOX", d)
-	appendToServer(t, ts, "u15", "pw", "INBOX", rawInbox, nil, d)
-
-	// One message in Archive.
-	rawArchive := buildRFC822("cat-archive@test", "Cat Archive", d.AddDate(0, 0, 1))
-	appendToServer(t, ts, "u15", "pw", "Archive", rawArchive, nil, d.AddDate(0, 0, 1))
-
 	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
 		email:               "u15@example.test",
 		username:            "u15",
 		credentialPlaintext: "pw",
 	}, nil)
 
+	// Initial sync over the (empty) INBOX and Archive folders so they are
+	// recorded as initialised. Nothing is categorised here (D1).
 	cat := &countingCategoriser{}
 	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
-		t.Fatalf("sync: %v", err)
+		t.Fatalf("initial sync: %v", err)
+	}
+	if cat.calls.Load() != 0 {
+		t.Fatalf("categoriser fired during initial sync = %d; want 0", cat.calls.Load())
 	}
 
-	// Only 1 categoriser call (for INBOX), not 2 (not for Archive).
+	// Now genuinely-new mail arrives in both INBOX and Archive.
+	d := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+	rawInbox := buildRFC822("cat-inbox@test", "Cat INBOX", d)
+	appendToServer(t, ts, "u15", "pw", "INBOX", rawInbox, nil, d)
+	rawArchive := buildRFC822("cat-archive@test", "Cat Archive", d.AddDate(0, 0, 1))
+	appendToServer(t, ts, "u15", "pw", "Archive", rawArchive, nil, d.AddDate(0, 0, 1))
+
+	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+		t.Fatalf("live-arrival sync: %v", err)
+	}
+
+	// Only 1 categoriser call (for the INBOX arrival), not 2 (not for Archive).
 	if cat.calls.Load() != 1 {
 		t.Errorf("categoriser calls = %d; want 1 (INBOX only)", cat.calls.Load())
 	}
@@ -1152,12 +1152,6 @@ func TestCategoriserCalledForLabelBeforeINBOX(t *testing.T) {
 
 	ha, _ := testharness.Start(t, testharness.Options{})
 
-	d := time.Date(2025, 10, 1, 12, 0, 0, 0, time.UTC)
-	// Same Message-ID in both folders: the inbox label and a user label.
-	raw := buildRFC822("label-before-inbox@test", "Label Before INBOX", d)
-	appendToServer(t, ts, "lblinbox1", "pw", "WorkLabel", raw, nil, d)
-	appendToServer(t, ts, "lblinbox1", "pw", "INBOX", raw, nil, d)
-
 	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
 		email:               "lblinbox1@example.test",
 		username:            "lblinbox1",
@@ -1201,6 +1195,26 @@ func TestCategoriserCalledForLabelBeforeINBOX(t *testing.T) {
 		conn.Logout()
 		conn.Close()
 	}()
+
+	// Initialise both folders while empty so the subsequent passes are
+	// live-arrival passes, not the initial backfill (D1: categorisation
+	// only runs once a folder is initialised).
+	if err := w.syncFolder(ctx, conn, "WorkLabel", "WorkLabel"); err != nil {
+		t.Fatalf("initial syncFolder WorkLabel: %v", err)
+	}
+	if err := w.syncFolder(ctx, conn, "INBOX", "INBOX"); err != nil {
+		t.Fatalf("initial syncFolder INBOX: %v", err)
+	}
+	if cat.calls.Load() != 0 {
+		t.Fatalf("categoriser fired during initial folder sync = %d; want 0", cat.calls.Load())
+	}
+
+	// Now a genuinely-new message arrives carrying both the inbox label and a
+	// user label, so it appears in two IMAP folders with the same Message-ID.
+	d := time.Date(2025, 10, 1, 12, 0, 0, 0, time.UTC)
+	raw := buildRFC822("label-before-inbox@test", "Label Before INBOX", d)
+	appendToServer(t, ts, "lblinbox1", "pw", "WorkLabel", raw, nil, d)
+	appendToServer(t, ts, "lblinbox1", "pw", "INBOX", raw, nil, d)
 
 	// Sync WorkLabel FIRST: the message is inserted into herold "WorkLabel".
 	// The categoriser must NOT fire because WorkLabel != INBOX.

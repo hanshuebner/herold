@@ -106,17 +106,27 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 // The sync has two phases:
 //
 //  1. Initial / rollover (cursor.HighWaterUID == 0): SEARCH SINCE floor to
-//     get all in-horizon UIDs; ingest them as "forward" (they are new to
-//     herold); set both low_water and high_water from the result.
+//     get all in-horizon UIDs and ingest them. This is the historical
+//     backfill: the LLM categoriser is NOT run across it (REQ-IMAP-IMP-31),
+//     unless the folder was already initialised on a prior pass (an
+//     already-known but previously-empty folder receiving its first live
+//     mail). Both low_water and high_water are set from the result.
 //
 //  2. Incremental (cursor already set):
 //     a. Backfill extension (REQ-IMAP-IMP-19): if the floor date was lowered
 //     since the last sync, SEARCH SINCE new_floor returns UIDs below
 //     current low_water; fetch and ingest those as backfill
-//     (isForward=false, so categoriser is NOT called).
+//     (categorise=false, so the categoriser is NOT called).
 //     b. Forward sync (REQ-IMAP-IMP-34): fetch UIDs > high_water (new mail);
-//     ingest as forward (isForward=true) so the categoriser IS called for
-//     INBOX-mapped mail.
+//     these are genuine live arrivals on an already-initialised folder, so
+//     the categoriser IS called for INBOX-mapped mail (categorise=true).
+//
+// The categoriser gate (REQ-IMAP-IMP-31 / D1): categorisation runs ONLY for
+// genuinely-new live arrivals — mail that turns up after the folder's first
+// sync has completed — and NEVER across the initial/historical backfill. The
+// signal for "the folder was already initialised before this pass" is whether
+// a cursor row already existed (found); a brand-new folder and a UIDVALIDITY
+// rollover both reset that to false so their (re)mirror is treated as backfill.
 //
 // The cursor is persisted at the end of each folder. REQ-IMAP-IMP-74.
 func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolder, heroldMailbox string) error {
@@ -162,6 +172,14 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	backfillNewCount := 0
 	forwardNewCount := 0
 
+	// folderInitialised is true when a cursor row already existed before this
+	// pass, i.e. the folder has been synced at least once. It is the gate for
+	// LLM categorisation (REQ-IMAP-IMP-31 / D1): the initial/historical
+	// backfill of a fresh folder (and a forced re-sync after a UIDVALIDITY
+	// rollover, where found was reset to false above) must NOT be categorised;
+	// only mail arriving on an already-initialised folder is.
+	folderInitialised := found
+
 	if si.NumMessages == 0 {
 		// Empty mailbox: nothing to do; just advance cursor state.
 		goto persistCursor
@@ -169,9 +187,10 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 
 	if cursor.HighWaterUID == 0 {
 		// ── Initial sync (or post-rollover reset). ──────────────────────
-		// Fetch all UIDs at or after the horizon floor. All these messages
-		// are "new to herold" so we treat them as the forward pass
-		// (categoriser fires for INBOX-mapped new mail).
+		// Fetch all UIDs at or after the horizon floor. On a brand-new or
+		// post-rollover folder this is the historical backfill and is NOT
+		// categorised. If the folder was already initialised (a previously-
+		// empty known folder now receiving its first live mail), categorise.
 		var horizonFloor time.Time
 		if floorDate != nil {
 			horizonFloor = *floorDate
@@ -181,7 +200,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			return fmt.Errorf("imapimport: initial search: %w", err)
 		}
 		if len(initialUIDs) > 0 {
-			n, minUID, err := w.fetchAndIngest(ctx, conn, initialUIDs, upstreamFolder, heroldMailbox, true /* isForward */)
+			n, minUID, err := w.fetchAndIngest(ctx, conn, initialUIDs, upstreamFolder, heroldMailbox, folderInitialised /* categorise */)
 			if err != nil {
 				return fmt.Errorf("imapimport: initial fetch: %w", err)
 			}
@@ -209,7 +228,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 				}
 			}
 			if len(belowLow) > 0 {
-				n, newLow, err := w.fetchAndIngest(ctx, conn, belowLow, upstreamFolder, heroldMailbox, false /* isForward */)
+				n, newLow, err := w.fetchAndIngest(ctx, conn, belowLow, upstreamFolder, heroldMailbox, false /* categorise */)
 				if err != nil {
 					return fmt.Errorf("imapimport: backfill fetch: %w", err)
 				}
@@ -227,7 +246,9 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			return fmt.Errorf("imapimport: forward search: %w", err)
 		}
 		if len(forwardUIDs) > 0 {
-			n, _, err := w.fetchAndIngest(ctx, conn, forwardUIDs, upstreamFolder, heroldMailbox, true /* isForward */)
+			// Forward UIDs on an already-initialised folder are genuine live
+			// arrivals: categorise INBOX-mapped new mail (REQ-IMAP-IMP-31).
+			n, _, err := w.fetchAndIngest(ctx, conn, forwardUIDs, upstreamFolder, heroldMailbox, true /* categorise */)
 			if err != nil {
 				return fmt.Errorf("imapimport: forward fetch: %w", err)
 			}
@@ -296,15 +317,17 @@ func uidsAbove(conn Conn, ctx context.Context, aboveUID uint64) ([]imap.UID, err
 // (dedup hits are not counted). lowestUID is the smallest UID in the
 // batch, or 0 when toFetch is empty.
 //
-// isForward indicates whether this is a forward-sync pass (true) or a
-// backfill pass (false); the categoriser is only called during forward
-// passes on INBOX-mapped messages.
+// categorise indicates whether new INBOX-mapped members ingested in this pass
+// should be handed to the LLM categoriser. It is true ONLY for genuine live
+// arrivals on an already-initialised folder, and false across the
+// initial/historical backfill and the lowered-horizon re-scan
+// (REQ-IMAP-IMP-31 / D1).
 func (w *accountWorker) fetchAndIngest(
 	ctx context.Context,
 	conn Conn,
 	toFetch []imap.UID,
 	upstreamFolder, heroldMailbox string,
-	isForward bool,
+	categorise bool,
 ) (countNew int, lowestUID uint64, err error) {
 	if len(toFetch) == 0 {
 		return 0, 0, nil
@@ -357,8 +380,9 @@ func (w *accountWorker) fetchAndIngest(
 			)
 		}
 
-		// Categoriser seam: for new INBOX-mapped messages on the forward-sync
-		// pass (REQ-IMAP-IMP-31). Not called during backfill.
+		// Categoriser seam: for new INBOX-mapped messages on a live-arrival
+		// pass (REQ-IMAP-IMP-31). Never called across the initial/historical
+		// backfill (categorise=false) — D1.
 		//
 		// isNewMember is true for both fresh inserts and for dedup hits where
 		// AddMessageToMailbox just placed the message into this mailbox for the
@@ -368,7 +392,7 @@ func (w *accountWorker) fetchAndIngest(
 		// is synced and the dedup path adds the membership (isNew=false but
 		// isNewMember=true, mailbox == INBOX so categorise fires). Without this
 		// check the message would never receive a $category-* keyword (re #27).
-		if isNewMember && isForward && strings.EqualFold(heroldMailbox, "INBOX") {
+		if isNewMember && categorise && strings.EqualFold(heroldMailbox, "INBOX") {
 			if catErr := w.opts.categoriser.Categorise(ctx, fmt.Sprint(account.PrincipalID), fmt.Sprint(msgID), heroldMailbox); catErr != nil {
 				w.opts.log.Warn("imapimport: categorise failed (non-fatal)",
 					slog.String("account_id", account.ID),

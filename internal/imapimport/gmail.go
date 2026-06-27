@@ -561,7 +561,10 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 		// Body-fetch and ingest into Archive for unlabeled messages.
 		if len(needBodyFetch) > 0 {
 			archiveMBName := "Archive"
-			n, _, fetchErr := w.fetchAndIngest(ctx, conn, needBodyFetch, gmailAllMail, archiveMBName, true /* isForward */)
+			// All Mail captures archived/unlabeled mail into Archive; it is a
+			// backfill catch-all, never a live INBOX arrival, so the
+			// categoriser is not run (categorise=false). REQ-IMAP-IMP-31 / D1.
+			n, _, fetchErr := w.fetchAndIngest(ctx, conn, needBodyFetch, gmailAllMail, archiveMBName, false /* categorise */)
 			if fetchErr != nil {
 				return fmt.Errorf("imapimport: Gmail All Mail archive body-fetch: %w", fetchErr)
 			}
