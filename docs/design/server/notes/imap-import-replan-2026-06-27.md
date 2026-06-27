@@ -118,17 +118,29 @@ connections at `migrated`; expose the transition on JMAP `IMAPImport/set`
 + admin PATCH; show phase in status; make `DELETE` of a `migrated` account
 keep the mail.
 
-**Wave D — provenance label + delete-on-removal (REQ-100..105), owner:
-worker + storage.** Create the per-account provenance label at enable; add
-its membership at ingest; implement the dedup-safe purge on `destroy` with
-the `delete_imported_mail` flag (keep = default). Crash-safe / resumable.
+**Wave D — provenance label + delete-on-removal (REQ-100..105) + per-identity
+re-scope (decision 10), owner: worker + storage.** Create the per-account
+provenance label at enable; add its membership at ingest; implement the
+dedup-safe purge on `destroy` with the `delete_imported_mail` flag (keep =
+default), crash-safe / resumable. **Plus the schema change:** the shipped
+`imapimport_account` table is `principal_id`-scoped; decision 10 re-scopes
+it to per-`Identity` (add `identity_id`, keep `principal_id` denormalised,
+`ON DELETE CASCADE` from the identity). New migration (0058 already
+shipped). Also: make `PUT /identities/{id}/submission` **probe-gated** so
+external-SMTP setup cannot finish unverified (REQ-AUTH-EXT-SUBMIT-11) — a
+small server change in the identity-submission surface.
 
-**Wave E — web SPA surface (REQ-SET-IMAPIMP-01..05), owner:
-`web-frontend-implementor`.** The currently-absent suite UI: connected-
-accounts list, add-account wizard, edit + "Complete migration" action, and
-the remove dialog with the keep-or-delete prompt (depends on Wave D for the
-provenance-label count and the `deleteImportedMail` flag, and on Wave C for
-the migrate action). Puppeteer-verified per `web/CLAUDE.md`.
+**Wave E — per-identity transport UI (SMTP + IMAP), owner:
+`web-frontend-implementor`.** The currently-absent suite surface, built
+**into the Identity edit dialog** (REQ-SET-IDENT-10), not a standalone
+section: a mandatory **Sending (SMTP)** section (probe-verified before save,
+REQ-MAIL-SUBMIT-01..06 + REQ-AUTH-EXT-SUBMIT-11/12) and an optional
+**Receiving (IMAP import)** section for external-domain identities
+(REQ-SET-IMAPIMP-01..05) — set-up form, edit + "Complete migration", and the
+remove/keep-or-delete prompt (also fired from the identity's Remove action
+when it carries imported mail). Depends on Wave D (provenance count,
+`deleteImportedMail`, per-identity scope) and Wave C (migrate action).
+Puppeteer-verified per `web/CLAUDE.md`.
 
 **Wave F — deferred-gap closure (optional / lower priority).** REQ-11
 host-pattern folder-map defaults; REQ-21/73 rate-limit-specific fallback;

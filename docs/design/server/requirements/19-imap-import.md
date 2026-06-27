@@ -93,6 +93,21 @@ is REQ-IMAP-IMP-51), a duplicated REQ-IMAP-IMP-52 row, and the
 architecture doc's "migration 0057" (the migration shipped as 0058 after
 a number collision with `file_shares_source`).)*
 
+*(Revised 2026-06-27 (second pass) — decision 10: **IMAP import is
+re-scoped from per-principal to per-`Identity`.** It becomes the inbound
+half of the per-identity "external transport identity" envisioned in
+`02-identity-and-auth.md` § External transport identities: an `Identity`
+carries a **mandatory send path** (hosted-domain identities send natively
+through herold's queue; external-domain identities MUST configure an
+external SMTP submission endpoint, REQ-AUTH-EXT-SUBMIT-\*, which is
+probe-verified before setup can finish) and an **optional** IMAP import
+config (this file, 0-or-1 per identity). The shipped `imapimport_account`
+table (migration 0058, `principal_id`-scoped) gains an `identity_id`
+association in a follow-up migration; REQ-IMAP-IMP-01/02 below are amended.
+The web surface for both halves lives in the Identity edit dialog
+(`web/requirements/20-settings.md` REQ-SET-IDENT-10 + REQ-SET-IMAPIMP-\*),
+not a standalone "Connected accounts" section.)*
+
 ## Scope
 
 A herold principal can configure one or more **upstream IMAP
@@ -157,8 +172,8 @@ Out of scope:
 
 | ID | Requirement |
 |----|-------------|
-| REQ-IMAP-IMP-01 | Each principal MAY configure zero-or-more upstream IMAP accounts. The configuration is stored per-principal in the metadata store (not in `system.toml`); a JMAP `IMAPImport/set` surface mutates it. |
-| REQ-IMAP-IMP-02 | Each upstream-account record carries non-secret fields stored plaintext — `id`, `account_name` (operator-visible label), `host`, `port`, `tls_mode` (`starttls` / `implicit`), `username`, `auth_method` (`password`, `app_password`, `xoauth2`), `backfill_horizon` (REQ-IMAP-IMP-15), `state` (`enabled` / `disabled` / `errored`), `last_success_at`, `last_error` — plus exactly one **sealed** credential column (`credential_ct`) holding the password / app-password / OAuth-refresh-token encrypted with the `internal/secrets` data key. The non-secret/secret split mirrors `store.IdentitySubmission` (plaintext config fields + `*CT` sealed fields). (Decision 2.) |
+| REQ-IMAP-IMP-01 | **(Decision 10 — per-identity.)** Each `Identity` MAY carry zero-or-one upstream IMAP import config (IMAP is the optional inbound half of the identity; the SMTP send path is mandatory, REQ-AUTH-EXT-SUBMIT-\*). A principal therefore has as many possible import accounts as it has identities. The configuration is stored in the metadata store keyed by `identity_id` (not in `system.toml`); a JMAP `IMAPImport/set` surface mutates it. IMAP import is meaningful only for external-domain identities (a hosted-domain identity's mail is already local); the suite offers it only there. |
+| REQ-IMAP-IMP-02 | Each upstream-account record carries non-secret fields stored plaintext — `id`, `identity_id` (owning `Identity`; decision 10), `principal_id` (denormalised from the identity for query convenience and the worker-pool fan-out), `account_name` (operator-visible label, defaulting from the identity's address), `host`, `port`, `tls_mode` (`starttls` / `implicit`), `username`, `auth_method` (`password`, `app_password`, `xoauth2`), `backfill_horizon` (REQ-IMAP-IMP-15), `state` (`enabled` / `disabled` / `errored` / `migrating` / `migrated`), `last_success_at`, `last_error` — plus exactly one **sealed** credential column (`credential_ct`) holding the password / app-password / OAuth-refresh-token encrypted with the `internal/secrets` data key. The non-secret/secret split mirrors `store.IdentitySubmission` (plaintext config fields + `*CT` sealed fields). Deleting the owning `Identity` cascades to its import config (subject to the keep-or-purge choice of REQ-IMAP-IMP-102). (Decisions 2 + 10.) |
 | REQ-IMAP-IMP-03 | `auth_method = xoauth2` is the OAuth path for gmail / microsoft. It requires the **operator** to have registered an OAuth application that carries the restricted IMAP scope (e.g. Google's `https://mail.google.com/`, Microsoft's `https://outlook.office.com/IMAP.AccessAsUser.All`). This is a different grant from herold's login-OIDC federation (which is RP-for-login only, NG11) and is configured separately under `[imap_import.oauth.<provider>]` in `system.toml`. The per-account record stores a sealed refresh-token (`credential_ct`); the worker exchanges it for an access token before each connect and re-seals a rotated refresh token if the provider issues one. (Decision 3.) |
 | REQ-IMAP-IMP-04 | `auth_method = app_password` and `auth_method = password` both store a static credential, sealed in `credential_ct`. The difference is the upstream's intended audience (app-passwords are the apple / fastmail / gmail-with-2FA flow; `password` is the cpanel / bare-IMAP flow). The IMAP layer treats them identically. Self-service users enter the credential through the suite; it is sealed before it touches the DB (REQ-IMAP-IMP-70). (Decision 2.) |
 | REQ-IMAP-IMP-05 | Operators MAY block plain-password auth with an explicit `[imap_import] allow_password = false` config knob (default true so existing setups keep working; future iterations should flip the default). `app_password` and `xoauth2` are unaffected by this knob. |
