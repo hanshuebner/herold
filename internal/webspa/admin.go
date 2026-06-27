@@ -30,6 +30,10 @@ type AdminOptions struct {
 	// <meta name="herold-build"> tag (REQ-CLOG-03). When empty
 	// the tag carries "dev".
 	BuildSHA string
+	// BuildTime is the RFC3339 commit timestamp embedded in the
+	// <meta name="herold-build-time"> tag. When empty the tag is
+	// omitted so dev builds do not show a broken/empty date.
+	BuildTime string
 }
 
 // NewAdmin constructs a Server for the admin SPA.
@@ -89,6 +93,7 @@ func NewAdmin(opts AdminOptions) (*Server, error) {
 	s.csp = buildAdminCSP()
 	s.clientLog = opts.ClientLog
 	s.buildSHA = opts.BuildSHA
+	s.buildTime = opts.BuildTime
 	return s, nil
 }
 

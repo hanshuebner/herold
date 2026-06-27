@@ -16,7 +16,7 @@
  * re #31.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 
 // ── mocks (hoisted before component imports) ─────────────────────────────────
@@ -225,7 +225,12 @@ describe('GlobalBar — brand mark (re #31)', () => {
 });
 
 describe('GlobalBar — build info tooltip (re #61)', () => {
-  it('exposes the build SHA as a title on the brand link when the meta tag is present', () => {
+  afterEach(() => {
+    document.querySelectorAll('meta[name="herold-build"]').forEach((el) => el.remove());
+    document.querySelectorAll('meta[name="herold-build-time"]').forEach((el) => el.remove());
+  });
+
+  it('shows SHA only in title when herold-build is present but herold-build-time is absent', () => {
     const meta = document.createElement('meta');
     meta.name = 'herold-build';
     meta.setAttribute('content', 'abc123def456');
@@ -235,13 +240,26 @@ describe('GlobalBar — build info tooltip (re #61)', () => {
 
     const brandLink = screen.getByRole('link', { name: /herold home/i });
     expect(brandLink).toHaveAttribute('title', 'Build abc123def456');
-
-    document.head.removeChild(meta);
   });
 
-  it('falls back to "Build dev" in the title when the meta tag is absent', () => {
-    document.querySelectorAll('meta[name="herold-build"]').forEach((el) => el.remove());
+  it('shows SHA and formatted date+time in title when both meta tags are present', () => {
+    const metaSHA = document.createElement('meta');
+    metaSHA.name = 'herold-build';
+    metaSHA.setAttribute('content', 'abc123def456');
+    document.head.appendChild(metaSHA);
 
+    const metaTime = document.createElement('meta');
+    metaTime.name = 'herold-build-time';
+    metaTime.setAttribute('content', '2026-06-27T09:06:00Z');
+    document.head.appendChild(metaTime);
+
+    render(GlobalBar);
+
+    const brandLink = screen.getByRole('link', { name: /herold home/i });
+    expect(brandLink).toHaveAttribute('title', 'Build abc123def456 - 2026-06-27 09:06 UTC');
+  });
+
+  it('falls back to "Build dev" in the title when both meta tags are absent', () => {
     render(GlobalBar);
 
     const brandLink = screen.getByRole('link', { name: /herold home/i });

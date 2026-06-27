@@ -2302,6 +2302,7 @@ func composeAdminAndUI(
 		AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
 		ClientLog:     clientLogBootstrap(cfg),
 		BuildSHA:      buildSHA(),
+		BuildTime:     buildTime(),
 	})
 	if err != nil {
 		return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
@@ -2890,6 +2891,7 @@ func composeAdminAndUI(
 			PublicHost:    cfg.Server.Hostname,
 			ClientLog:     clientLogBootstrap(cfg),
 			BuildSHA:      buildSHA(),
+			BuildTime:     buildTime(),
 		})
 		if err != nil {
 			return composedHandlers{}, fmt.Errorf("admin: suite SPA: %w", err)
@@ -3041,6 +3043,20 @@ func buildSHA() string {
 		}
 	}
 	return "dev"
+}
+
+// buildTime returns the RFC3339 commit timestamp of the built revision
+// from the embedded VCS metadata (vcs.time from -buildvcs=true). Returns
+// the empty string when not available (dev builds, stripped binaries).
+func buildTime() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.time" && s.Value != "" {
+				return s.Value
+			}
+		}
+	}
+	return ""
 }
 
 func adminSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) authsession.SessionConfig {

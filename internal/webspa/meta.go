@@ -30,11 +30,11 @@ type ClientLogBootstrap struct {
 }
 
 // InjectMetaTags rewrites the raw HTML content of index.html by
-// inserting two <meta> tags immediately before the closing </head>
-// tag:
+// inserting meta tags immediately before the closing </head> tag:
 //
 //   - <meta name="herold-clientlog" content='{ bootstrap JSON }'>
 //   - <meta name="herold-build" content="<sha>">
+//   - <meta name="herold-build-time" content="<rfc3339>"> (only when buildTime is non-empty)
 //
 // When content does not contain </head> (malformed HTML) the tags are
 // prepended to the document without any surgery on the existing
@@ -45,7 +45,7 @@ type ClientLogBootstrap struct {
 // safe: the content is single-quoted in the attribute so double-quotes
 // in the JSON value are fine; angle brackets and ampersands are escaped
 // so the tag is valid inside a raw HTML context.
-func InjectMetaTags(content []byte, bootstrap ClientLogBootstrap, buildSHA string) []byte {
+func InjectMetaTags(content []byte, bootstrap ClientLogBootstrap, buildSHA string, buildTime string) []byte {
 	sha := buildSHA
 	if sha == "" {
 		sha = "dev"
@@ -61,6 +61,9 @@ func InjectMetaTags(content []byte, bootstrap ClientLogBootstrap, buildSHA strin
 
 	tags := "\n<meta name=\"herold-clientlog\" content='" + escaped + "'>\n" +
 		"<meta name=\"herold-build\" content=\"" + htmlEscapeString(sha) + "\">\n"
+	if buildTime != "" {
+		tags += "<meta name=\"herold-build-time\" content=\"" + htmlEscapeString(buildTime) + "\">\n"
+	}
 
 	// Inject immediately before </head>. The search is case-insensitive
 	// because some template engines emit </HEAD>; we only do the first

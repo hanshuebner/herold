@@ -15,23 +15,39 @@
   }
   let { placeholder }: Props = $props();
 
-  // Read the build SHA from the <meta name="herold-build"> tag injected
+  // Read the build SHA from the <meta name="herold-build"> tag and the
+  // commit timestamp from <meta name="herold-build-time">, both injected
   // by the Go webspa server at index.html serve time (REQ-CLOG-03). In
-  // Vite dev mode the tag is absent; fall back to "dev" so the tooltip
-  // is always shown regardless of environment.
+  // Vite dev mode the tags are absent; fall back to "Build dev" so the
+  // tooltip is always shown regardless of environment.
   function readBuildMeta(): string {
     try {
-      return (
+      const sha =
         document
           .querySelector<HTMLMetaElement>('meta[name="herold-build"]')
-          ?.getAttribute('content') ?? 'dev'
-      );
+          ?.getAttribute('content') ?? 'dev';
+      const timeRaw =
+        document
+          .querySelector<HTMLMetaElement>('meta[name="herold-build-time"]')
+          ?.getAttribute('content') ?? '';
+      if (timeRaw) {
+        const d = new Date(timeRaw);
+        // Format as "YYYY-MM-DD HH:MM UTC" -- unambiguous, locale-independent.
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const hours = String(d.getUTCHours()).padStart(2, '0');
+        const minutes = String(d.getUTCMinutes()).padStart(2, '0');
+        const formatted = `${year}-${month}-${day} ${hours}:${minutes} UTC`;
+        return `Build ${sha} - ${formatted}`;
+      }
+      return `Build ${sha}`;
     } catch {
-      return 'dev';
+      return 'Build dev';
     }
   }
 
-  const buildInfo = `Build ${readBuildMeta()}`;
+  const buildInfo = readBuildMeta();
   let searchPlaceholder = $derived(placeholder ?? t('globalBar.searchPlaceholder'));
 
   // Local state mirrors the active search query in the URL when present.

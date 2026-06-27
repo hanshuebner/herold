@@ -44,6 +44,10 @@ type Options struct {
 	// <meta name="herold-build"> tag (REQ-CLOG-03). When empty the
 	// tag carries "dev".
 	BuildSHA string
+	// BuildTime is the RFC3339 commit timestamp embedded in the
+	// <meta name="herold-build-time"> tag. When empty the tag is
+	// omitted so dev builds do not show a broken/empty date.
+	BuildTime string
 }
 
 // Server is the suite SPA HTTP handler. Construct via New; serve via
@@ -55,6 +59,7 @@ type Server struct {
 	csp       string
 	clientLog ClientLogBootstrap
 	buildSHA  string
+	buildTime string
 	// serveDirectoryIndex, when true, causes directory hits to look for
 	// index.html within the matched directory before falling back to root
 	// index.html. Used by the manual server (NewManual) whose dist tree
@@ -134,6 +139,7 @@ func New(opts Options) (*Server, error) {
 	s.csp = buildCSP(opts.PublicHost)
 	s.clientLog = opts.ClientLog
 	s.buildSHA = opts.BuildSHA
+	s.buildTime = opts.BuildTime
 	return s, nil
 }
 
@@ -280,7 +286,7 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request, status int) 
 		http.Error(w, "index.html unavailable", http.StatusInternalServerError)
 		return
 	}
-	body = InjectMetaTags(body, s.clientLog, s.buildSHA)
+	body = InjectMetaTags(body, s.clientLog, s.buildSHA, s.buildTime)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))

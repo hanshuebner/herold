@@ -55,7 +55,7 @@ func TestInjectMetaTags_Basic(t *testing.T) {
 		QueueCap:                200,
 		TelemetryEnabledDefault: true,
 	}
-	result := InjectMetaTags([]byte(html), bootstrap, "abc123")
+	result := InjectMetaTags([]byte(html), bootstrap, "abc123", "")
 
 	resultStr := string(result)
 
@@ -95,7 +95,7 @@ func TestInjectMetaTags_ClientLogJSON(t *testing.T) {
 		QueueCap:                200,
 		TelemetryEnabledDefault: true,
 	}
-	result := InjectMetaTags([]byte(html), bootstrap, "sha1")
+	result := InjectMetaTags([]byte(html), bootstrap, "sha1", "")
 	resultStr := string(result)
 
 	content, ok := parseMetaContent(resultStr, "herold-clientlog")
@@ -130,7 +130,7 @@ func TestInjectMetaTags_ClientLogJSON(t *testing.T) {
 func TestInjectMetaTags_EnabledFalse(t *testing.T) {
 	html := `<!doctype html><html><head></head><body></body></html>`
 	bootstrap := ClientLogBootstrap{Enabled: false}
-	result := InjectMetaTags([]byte(html), bootstrap, "sha2")
+	result := InjectMetaTags([]byte(html), bootstrap, "sha2", "")
 	resultStr := string(result)
 
 	content, ok := parseMetaContent(resultStr, "herold-clientlog")
@@ -151,7 +151,7 @@ func TestInjectMetaTags_EnabledFalse(t *testing.T) {
 // the sentinel "dev" value in the meta tag (REQ-CLOG-03).
 func TestInjectMetaTags_DevSHA(t *testing.T) {
 	html := `<!doctype html><html><head></head><body></body></html>`
-	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "")
+	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "", "")
 	resultStr := string(result)
 
 	if !strings.Contains(resultStr, `content="dev"`) {
@@ -163,7 +163,7 @@ func TestInjectMetaTags_DevSHA(t *testing.T) {
 // </head> the tags are still injected (graceful degradation).
 func TestInjectMetaTags_MalformedHTML(t *testing.T) {
 	html := `<html><body>no head tag at all</body></html>`
-	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha3")
+	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha3", "")
 	resultStr := string(result)
 
 	if !strings.Contains(resultStr, "herold-clientlog") {
@@ -178,11 +178,50 @@ func TestInjectMetaTags_MalformedHTML(t *testing.T) {
 // case) is handled the same as </head>.
 func TestInjectMetaTags_CaseInsensitiveHead(t *testing.T) {
 	html := `<!doctype html><html><head><title>T</title></HEAD><body></body></html>`
-	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha4")
+	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha4", "")
 	resultStr := string(result)
 
 	if !strings.Contains(resultStr, "herold-clientlog") {
 		t.Errorf("meta tag not injected before </HEAD>; html=%q", resultStr)
+	}
+}
+
+// TestInjectMetaTags_BuildTimePresent verifies that when buildTime is
+// non-empty the herold-build-time meta tag is injected before </head>.
+func TestInjectMetaTags_BuildTimePresent(t *testing.T) {
+	html := `<!doctype html><html><head><title>T</title></head><body></body></html>`
+	ts := "2026-06-27T09:06:00Z"
+	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha7", ts)
+	resultStr := string(result)
+
+	if !strings.Contains(resultStr, `name="herold-build-time"`) {
+		t.Errorf("herold-build-time meta tag missing; html=%q", resultStr)
+	}
+	if !strings.Contains(resultStr, `content="2026-06-27T09:06:00Z"`) {
+		t.Errorf("herold-build-time content not found; html=%q", resultStr)
+	}
+
+	// Must appear before </head>.
+	headClose := strings.Index(strings.ToLower(resultStr), "</head>")
+	buildTimeMeta := strings.Index(resultStr, "herold-build-time")
+	if buildTimeMeta < 0 || buildTimeMeta > headClose {
+		t.Errorf("herold-build-time meta not before </head>; html=%q", resultStr)
+	}
+}
+
+// TestInjectMetaTags_BuildTimeAbsent verifies that when buildTime is
+// empty the herold-build-time meta tag is not injected (dev builds).
+func TestInjectMetaTags_BuildTimeAbsent(t *testing.T) {
+	html := `<!doctype html><html><head><title>T</title></head><body></body></html>`
+	result := InjectMetaTags([]byte(html), ClientLogBootstrap{Enabled: true}, "sha8", "")
+	resultStr := string(result)
+
+	if strings.Contains(resultStr, "herold-build-time") {
+		t.Errorf("herold-build-time meta tag must be absent when buildTime is empty; html=%q", resultStr)
+	}
+	// herold-build tag (SHA) must still be present.
+	if !strings.Contains(resultStr, `name="herold-build"`) {
+		t.Errorf("herold-build meta tag missing when buildTime is empty; html=%q", resultStr)
 	}
 }
 
@@ -283,17 +322,22 @@ func TestSpaServesMetaTags_SPAFallback(t *testing.T) {
 }
 
 // newMetaServer is a test helper that creates a Server with explicit
-// ClientLogBootstrap and BuildSHA.
-func newMetaServer(t *testing.T, files map[string]string, bootstrap ClientLogBootstrap, sha string) (*Server, string) {
+// ClientLogBootstrap, BuildSHA, and BuildTime.
+func newMetaServer(t *testing.T, files map[string]string, bootstrap ClientLogBootstrap, sha string, buildTime ...string) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range files {
 		writeFile(t, dir, name, body)
 	}
+	bt := ""
+	if len(buildTime) > 0 {
+		bt = buildTime[0]
+	}
 	s, err := New(Options{
 		SuiteAssetDir: dir,
 		ClientLog:     bootstrap,
 		BuildSHA:      sha,
+		BuildTime:     bt,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -350,4 +394,49 @@ func TestAdminSpaServesMetaTags(t *testing.T) {
 	if !strings.Contains(html, `content="adminsha"`) {
 		t.Errorf("admin SPA missing build SHA; html=%q", html)
 	}
+}
+
+// TestSpaServesMetaTags_BuildTime verifies that the HTTP handler
+// injects the herold-build-time meta tag when BuildTime is set, and
+// omits it when BuildTime is empty.
+func TestSpaServesMetaTags_BuildTime(t *testing.T) {
+	const ts = "2026-06-27T09:06:00Z"
+	bootstrap := ClientLogBootstrap{Enabled: true}
+
+	t.Run("present when BuildTime set", func(t *testing.T) {
+		s, _ := newMetaServer(t, map[string]string{
+			"index.html": `<!doctype html><html><head><title>T</title></head><body></body></html>`,
+		}, bootstrap, "deadbeef", ts)
+
+		resp := do(t, s, "/")
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		html := string(body)
+
+		if !strings.Contains(html, `name="herold-build-time"`) {
+			t.Errorf("herold-build-time meta missing; html=%q", html)
+		}
+		content, ok := parseMetaContent(html, "herold-build-time")
+		if !ok {
+			t.Fatalf("could not extract herold-build-time content; html=%q", html)
+		}
+		if content != ts {
+			t.Errorf("herold-build-time content: got %q, want %q", content, ts)
+		}
+	})
+
+	t.Run("absent when BuildTime empty", func(t *testing.T) {
+		s, _ := newMetaServer(t, map[string]string{
+			"index.html": `<!doctype html><html><head><title>T</title></head><body></body></html>`,
+		}, bootstrap, "deadbeef")
+
+		resp := do(t, s, "/")
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		html := string(body)
+
+		if strings.Contains(html, "herold-build-time") {
+			t.Errorf("herold-build-time meta must be absent when BuildTime is empty; html=%q", html)
+		}
+	})
 }
