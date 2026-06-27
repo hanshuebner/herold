@@ -8,8 +8,8 @@ This runbook covers the external SMTP submission feature
 - Alerts fire on `herold_external_submission_oauth_refresh_total{outcome="failure"}`.
 
 For operator setup (data-key configuration, OAuth provider registration,
-manual credential entry), see
-`docs/operator/external-smtp-submission.md`.
+manual credential entry), see the admin manual chapter
+`external-smtp-submission` (served at `/admin/#/help/external-smtp-submission`).
 
 ## Quick diagnostic checklist
 
