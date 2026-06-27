@@ -228,9 +228,15 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 
 		// 3a. Backfill extension: if the floor was lowered, SEARCH SINCE
 		//     new_floor returns UIDs below the current low_water.
-		//     REQ-IMAP-IMP-19.
-		if floorDate != nil && cursor.LowWaterUID > 0 {
-			horizonFloor := *floorDate
+		//     REQ-IMAP-IMP-19. A nil floor ("all", e.g. forced by the
+		//     complete-migration cutover, REQ-IMAP-IMP-91) drives the re-scan
+		//     down to the earliest UID: UIDSearchSince(zero) returns every UID
+		//     and the below-low_water set is the entire un-fetched history.
+		if cursor.LowWaterUID > 0 {
+			var horizonFloor time.Time
+			if floorDate != nil {
+				horizonFloor = *floorDate
+			}
 			allInHorizon, err := conn.UIDSearchSince(ctx, horizonFloor)
 			if err != nil {
 				return fmt.Errorf("imapimport: backfill search: %w", err)
@@ -277,7 +283,14 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	// advances it from the SELECT response below. Best-effort: a failure logs
 	// and does not abort the folder. The initial pass is skipped (the messages
 	// were just mirrored with their current flags as last_synced).
-	if folderInitialised {
+	//
+	// Authority transfer (REQ-IMAP-IMP-92): once the complete-migration cutover
+	// has begun (migrating/migrated), herold is authoritative for already-
+	// mirrored mail. The down-sync MUST NOT overwrite herold-side \Seen /
+	// \Flagged with the upstream value, so it is skipped entirely — the cutover
+	// only ADDS not-yet-mirrored messages (handled by the fetch paths above)
+	// and never rewrites the flags of existing mail.
+	if folderInitialised && !w.authorityIsHerold() {
 		if err := w.downSyncFlags(ctx, conn, upstreamFolder, &cursor, floorDate); err != nil {
 			log.Warn("imapimport: down-sync flags failed (continuing)",
 				slog.String("account_id", accountID),

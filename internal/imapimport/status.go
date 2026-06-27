@@ -31,6 +31,13 @@ const (
 	PhaseWriteback  = "writeback"
 	PhaseStopped    = "stopped"
 	PhaseErrored    = "errored"
+	// PhaseMigrating is the live phase while the worker runs the one-shot
+	// complete backfill of the cutover (REQ-IMAP-IMP-90/91). Observable in
+	// the snapshot alongside backfill_remaining draining to zero.
+	PhaseMigrating = "migrating"
+	// PhaseMigrated is the live phase once the cutover has finished and the
+	// worker is shutting down its upstream connections (REQ-IMAP-IMP-93).
+	PhaseMigrated = "migrated"
 )
 
 // WorkerStatus is a point-in-time, read-only snapshot of what one

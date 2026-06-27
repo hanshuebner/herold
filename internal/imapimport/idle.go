@@ -36,6 +36,15 @@ import (
 // advertise IDLE. REQ-IMAP-IMP-23.
 const defaultPollInterval = 60 * time.Second
 
+// stateRecheckInterval bounds how long an idle (no-upstream-event) worker may
+// sit in IDLE before re-reading its persisted account state, so a runtime
+// transition to migrating / migrated / disabled requested via JMAP or admin
+// PATCH is observed without waiting for a disconnect (REQ-IMAP-IMP-90). It is
+// a coarse interval — the latency-sensitive path is the upstream-event wake,
+// not state polling. Driven by the injected clock, so tests with a fake clock
+// that is never advanced never trip it.
+const stateRecheckInterval = 30 * time.Second
+
 // runIDLELoop is the durable "running" phase entered after attempt() has
 // completed an initial full syncAllFolders. It holds IDLE (or NOOP-polls)
 // on the primary connection until ctx is cancelled or a fatal error occurs.
@@ -129,7 +138,8 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 			return err // connection-level error → reconnect
 		}
 
-		// Block until: (a) update arrives, (b) ctx cancelled, (c) conn drop.
+		// Block until: (a) update arrives, (b) ctx cancelled, (c) conn drop,
+		// (d) the periodic state-recheck timer fires (REQ-IMAP-IMP-90).
 		waitDone := make(chan error, 1)
 		go func() { waitDone <- handle.Wait() }()
 
@@ -141,6 +151,18 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 			// Record idle time before returning.
 			w.recordIdleSeconds(idleStart)
 			return nil
+
+		case <-w.opts.clk.After(stateRecheckInterval):
+			// Periodic wake to re-check the persisted state for a runtime
+			// transition (e.g. enabled -> migrating). Close IDLE, then either
+			// re-dispatch (state changed) or re-arm IDLE.
+			_ = handle.Close()
+			<-waitDone
+			w.recordIdleSeconds(idleStart)
+			if w.stateChangedFromEnabled(ctx) {
+				return errStateChanged
+			}
+			continue
 
 		case waitErr := <-waitDone:
 			// Either an unsolicited update (waitErr == nil from our
@@ -168,6 +190,12 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 			)
 		} else {
 			w.status.recordSyncOK(w.opts.clk.Now())
+		}
+
+		// A runtime transition observed after the sync round re-dispatches
+		// (REQ-IMAP-IMP-90).
+		if w.stateChangedFromEnabled(ctx) {
+			return errStateChanged
 		}
 	}
 }
@@ -213,6 +241,11 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 			)
 		} else {
 			w.status.recordSyncOK(w.opts.clk.Now())
+		}
+
+		// Observe a runtime state transition between polls (REQ-IMAP-IMP-90).
+		if w.stateChangedFromEnabled(ctx) {
+			return errStateChanged
 		}
 	}
 }

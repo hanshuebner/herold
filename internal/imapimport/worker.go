@@ -2,6 +2,7 @@ package imapimport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -14,6 +15,13 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
+
+// errStateChanged is returned by the running IDLE / poll loops (and the
+// migration path) when the account's persisted state has moved away from the
+// state the current dispatch was started for. run() treats it as a clean
+// re-dispatch signal, NOT a connection failure, so the backoff / consecutive-
+// failure counters are untouched (REQ-IMAP-IMP-90/95).
+var errStateChanged = errors.New("imapimport: account state changed; re-dispatch")
 
 // maxConsecutiveFailures is the number of consecutive connection
 // failures after which the account is flipped to state=errored and
@@ -94,7 +102,15 @@ func newAccountWorker(opts accountWorkerOpts) *accountWorker {
 }
 
 // run is the main loop of the accountWorker. It runs until ctx is
-// cancelled or the account reaches the errored state.
+// cancelled or the account reaches a terminal state (errored, migrated,
+// disabled, or deleted).
+//
+// On each iteration the authoritative account state is re-read from the
+// store so a transition requested at runtime via JMAP IMAPImport/set or the
+// admin PATCH surface (enabled -> migrating, or migrated -> enabled) is
+// observed even on an already-running worker — the running IDLE / poll loops
+// also re-check the state and return errStateChanged on a change so this
+// loop re-dispatches promptly (REQ-IMAP-IMP-90/95).
 func (w *accountWorker) run(ctx context.Context) {
 	defer w.status.setPhase(PhaseStopped, w.opts.clk.Now())
 
@@ -103,12 +119,53 @@ func (w *accountWorker) run(ctx context.Context) {
 			return
 		}
 
+		// Re-read the authoritative state so a runtime transition is picked
+		// up. A missing row (account deleted) or a terminal state stops the
+		// worker. (REQ-IMAP-IMP-90/93/95.)
+		if cur, err := w.opts.store.Meta().GetIMAPImportAccount(ctx, w.opts.account.ID); err == nil {
+			w.refreshAccount(cur)
+		} else if errors.Is(err, store.ErrNotFound) {
+			w.opts.log.Info("imapimport: account row gone; stopping worker",
+				slog.String("account_id", w.opts.account.ID))
+			return
+		} else if ctx.Err() != nil {
+			return
+		}
+		switch w.opts.account.State {
+		case store.IMAPImportAccountStateDisabled,
+			store.IMAPImportAccountStateErrored,
+			store.IMAPImportAccountStateMigrated:
+			// Terminal / stopped: no worker activity. (REQ-IMAP-IMP-93.)
+			return
+		}
+
 		// Transition to connecting before each attempt.
 		w.status.setPhase(PhaseConnecting, w.opts.clk.Now())
 
-		err := w.attempt(ctx)
-		if err == nil {
-			// Successful connection: record success, reset failure counter.
+		// Dispatch on the account state. migrating runs the one-shot complete
+		// backfill and, on success, advances to migrated and stops; enabled
+		// runs the perpetual mirror. (REQ-IMAP-IMP-90/91.)
+		var err error
+		migrating := w.opts.account.State == store.IMAPImportAccountStateMigrating
+		if migrating {
+			err = w.attemptMigration(ctx)
+			if err == nil {
+				// Cutover complete: account is now migrated, worker stops.
+				return
+			}
+		} else {
+			err = w.attempt(ctx)
+		}
+
+		// A clean state change (e.g. enabled -> migrating mid-IDLE, or the
+		// account re-read above already moved on) is not a failure: loop and
+		// re-dispatch without touching the backoff / consecutive counters.
+		if errors.Is(err, errStateChanged) {
+			continue
+		}
+
+		if !migrating && err == nil {
+			// Successful enabled session: record success, reset failure counter.
 			w.consecutive = 0
 			w.status.setConsecutiveFailures(0)
 			now := w.opts.clk.Now()
@@ -122,72 +179,122 @@ func (w *accountWorker) run(ctx context.Context) {
 				w.opts.log.Warn("imapimport: failed to persist last_success_at",
 					slog.String("error", setErr.Error()))
 			}
-			// In 3a we immediately fall through to reconnect loop so
-			// backoff logic also handles the no-work-to-do case. For
-			// 3b-3e the running phase will loop internally (IDLE + fetch
-			// rounds) and only return here on a disconnection.
+			// The running phase loops internally (IDLE + fetch rounds) and only
+			// returns here on a disconnection, so fall through to reconnect.
 			continue
 		}
 
-		// Classify the error kind for metrics — without revealing
-		// credential content in any label value.
-		kind := classifyErrorKind(err)
-		observe.IMAPImportConnectionErrorsTotal.WithLabelValues(
-			w.opts.account.ID,
-			kind,
-		).Inc()
-
-		w.consecutive++
-		redacted := redactError(err)
-		w.status.setConsecutiveFailures(w.consecutive)
-		w.status.setLastError(redacted)
-		w.opts.log.Warn("imapimport: connection attempt failed",
-			slog.String("account_id", w.opts.account.ID),
-			slog.String("kind", kind),
-			slog.String("error", redacted),
-			slog.Int("consecutive_failures", w.consecutive),
-		)
-
-		limit := maxConsecutiveFailures
-		if w.opts.maxConsecutiveFailures > 0 {
-			limit = w.opts.maxConsecutiveFailures
-		}
-		if w.consecutive >= limit {
-			// Flip to errored; worker stops (REQ-IMAP-IMP-25).
-			lastErr := fmt.Sprintf("connection failed after %d consecutive attempts: %s",
-				w.consecutive, redacted)
-			w.status.setPhase(PhaseErrored, w.opts.clk.Now())
-			w.status.setLastError(lastErr)
-			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
-				ctx,
-				w.opts.account.ID,
-				store.IMAPImportAccountStateErrored,
-				lastErr,
-				nil,
-			); setErr != nil {
-				w.opts.log.Warn("imapimport: failed to persist errored state",
-					slog.String("error", setErr.Error()))
-			}
-			w.opts.log.Error("imapimport: account errored after M consecutive failures; stopping worker",
-				slog.String("account_id", w.opts.account.ID),
-				slog.Int("max_failures", limit),
-			)
+		// err != nil: a connection / sync failure on either path.
+		if stop := w.handleAttemptFailure(ctx, err); stop {
 			return
-		}
-
-		// Exponential backoff with jitter (REQ-IMAP-IMP-25).
-		delay := backoffDuration(w.consecutive)
-		w.status.setPhase(PhaseBackoff, w.opts.clk.Now())
-		w.opts.log.Info("imapimport: waiting before retry",
-			slog.String("account_id", w.opts.account.ID),
-			slog.Duration("delay", delay),
-		)
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.opts.clk.After(delay):
 		}
 	}
+}
+
+// handleAttemptFailure records a failed connection/sync attempt: it counts the
+// error for metrics and the live snapshot, flips the account to errored after
+// M consecutive failures (REQ-IMAP-IMP-25), and otherwise sleeps the backoff.
+// Returns true when the worker should stop (errored or ctx cancelled).
+func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (stop bool) {
+	// Classify the error kind for metrics — without revealing credential
+	// content in any label value.
+	kind := classifyErrorKind(err)
+	observe.IMAPImportConnectionErrorsTotal.WithLabelValues(
+		w.opts.account.ID,
+		kind,
+	).Inc()
+
+	w.consecutive++
+	redacted := redactError(err)
+	w.status.setConsecutiveFailures(w.consecutive)
+	w.status.setLastError(redacted)
+	w.opts.log.Warn("imapimport: connection attempt failed",
+		slog.String("account_id", w.opts.account.ID),
+		slog.String("kind", kind),
+		slog.String("error", redacted),
+		slog.Int("consecutive_failures", w.consecutive),
+	)
+
+	limit := maxConsecutiveFailures
+	if w.opts.maxConsecutiveFailures > 0 {
+		limit = w.opts.maxConsecutiveFailures
+	}
+	if w.consecutive >= limit {
+		// Flip to errored; worker stops (REQ-IMAP-IMP-25). A migrating account
+		// that cannot reach the upstream errors like any other; the user
+		// re-enables (which resumes the cutover) once the cause is fixed.
+		lastErr := fmt.Sprintf("connection failed after %d consecutive attempts: %s",
+			w.consecutive, redacted)
+		w.status.setPhase(PhaseErrored, w.opts.clk.Now())
+		w.status.setLastError(lastErr)
+		if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
+			ctx,
+			w.opts.account.ID,
+			store.IMAPImportAccountStateErrored,
+			lastErr,
+			nil,
+		); setErr != nil {
+			w.opts.log.Warn("imapimport: failed to persist errored state",
+				slog.String("error", setErr.Error()))
+		}
+		w.opts.log.Error("imapimport: account errored after M consecutive failures; stopping worker",
+			slog.String("account_id", w.opts.account.ID),
+			slog.Int("max_failures", limit),
+		)
+		return true
+	}
+
+	// Exponential backoff with jitter (REQ-IMAP-IMP-25).
+	delay := backoffDuration(w.consecutive)
+	w.status.setPhase(PhaseBackoff, w.opts.clk.Now())
+	w.opts.log.Info("imapimport: waiting before retry",
+		slog.String("account_id", w.opts.account.ID),
+		slog.Duration("delay", delay),
+	)
+	select {
+	case <-ctx.Done():
+		return true
+	case <-w.opts.clk.After(delay):
+	}
+	return false
+}
+
+// refreshAccount copies the durable fields that can change at runtime from a
+// freshly-read account row onto the worker's in-memory copy, so the next
+// dispatch and the running loops see the current state, backfill floor,
+// provenance label, and delete policy. Called only from the worker's own
+// goroutine between attempts, so no other goroutine reads w.opts.account
+// concurrently. The cached identity fields in w.status are left untouched
+// (account_id / host do not change).
+func (w *accountWorker) refreshAccount(cur store.IMAPImportAccount) {
+	w.opts.account.State = cur.State
+	w.opts.account.BackfillFloorDate = cur.BackfillFloorDate
+	w.opts.account.AccountName = cur.AccountName
+	w.opts.account.DeletePropagates = cur.DeletePropagates
+	w.opts.account.ProvenanceMailboxID = cur.ProvenanceMailboxID
+}
+
+// authorityIsHerold reports whether herold (not the upstream) is the
+// authoritative source for already-mirrored mail. True once the
+// complete-migration cutover has begun (migrating) or finished (migrated):
+// from that point the reconcile MUST NOT apply the upstream-authoritative
+// overwrite of REQ-IMAP-IMP-42 to herold-side values (REQ-IMAP-IMP-92).
+func (w *accountWorker) authorityIsHerold() bool {
+	return w.opts.account.State == store.IMAPImportAccountStateMigrating ||
+		w.opts.account.State == store.IMAPImportAccountStateMigrated
+}
+
+// stateChangedFromEnabled re-reads the account state and reports whether it is
+// no longer "enabled" (a runtime transition to migrating/migrated/disabled or
+// a delete). The running IDLE / poll loops call this so a transition is
+// observed without waiting for a disconnect (REQ-IMAP-IMP-90). A read error is
+// treated as "no change" so a transient store hiccup does not bounce the loop.
+func (w *accountWorker) stateChangedFromEnabled(ctx context.Context) bool {
+	cur, err := w.opts.store.Meta().GetIMAPImportAccount(ctx, w.opts.account.ID)
+	if err != nil {
+		return errors.Is(err, store.ErrNotFound)
+	}
+	return cur.State != store.IMAPImportAccountStateEnabled
 }
 
 // attempt performs one connection attempt: open credential, dial,
