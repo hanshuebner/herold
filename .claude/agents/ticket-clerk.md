@@ -70,8 +70,27 @@ user happens to notice in the UI (e.g. a JMAP property computed wrong) is
 **STATUS (only when warranted):**
 - `deferred` — add only if the maintainer signals the work is large/architectural
   and intentionally not in the current batch.
-- `waiting-for-feedback` — NEVER apply at creation. It belongs to the bugfix flow
-  after a fix has been pushed.
+- `waiting-for-feedback` — NEVER apply at creation. It marks the next stage of the
+  lifecycle (below); the clerk does not move tickets there.
+
+## Issue lifecycle (so you classify with the full picture in mind)
+
+A herold ticket moves through these states; understand them even though you only
+own the first:
+
+1. **Filed** — you create it with a TYPE and an AREA label. This is your job.
+2. **Fixed** — once a fix has landed on `main` and deployed, the ticket is
+   relabeled `waiting-for-feedback`: the work is done but unverified. The
+   maintainer (or reporter) confirms the fix against the deployed build at
+   `mail.netzhansa.com`.
+3. **Closed** — issues are closed MANUALLY by the maintainer after that
+   verification, never auto-closed by a commit. Commit messages reference issues
+   with neutral phrasing (`re #N`, `refs #N`) precisely to avoid GitHub-style
+   auto-close.
+
+So a ticket carrying `waiting-for-feedback` has a shipped fix awaiting sign-off,
+not open work. You never apply or remove that label, and you never close issues —
+but knowing the flow keeps your tickets aligned with how they are tracked.
 
 If a request does not fit cleanly (e.g. a pure docs tweak), choose the closest
 TYPE (`enhancement`, or `bug` if the docs are wrong) plus the AREA, and call out
