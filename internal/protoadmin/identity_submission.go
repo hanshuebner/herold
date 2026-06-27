@@ -14,13 +14,16 @@ import (
 )
 
 // ExternalProbe is the function signature that handlePutSubmission calls to
-// validate credentials before persisting. The default implementation calls
-// extsubmit.Submitter.Probe; tests inject a fake via Options.ExternalProbe.
+// validate credentials and send capability before persisting. The default
+// implementation calls extsubmit.Submitter.Probe; tests inject a fake via
+// Options.ExternalProbe.
 //
 // The sub argument already has sealed credential fields (PasswordCT /
 // OAuthAccessCT etc.) because the prober must unseal them internally. The
-// DataKey on the Submitter must match the key used to seal.
-type ExternalProbe func(ctx context.Context, sub store.IdentitySubmission) extsubmit.Outcome
+// DataKey on the Submitter must match the key used to seal. fromAddr is the
+// identity's own addr-spec, used as the MAIL FROM / RCPT TO target in the
+// send-capability probe (REQ-AUTH-EXT-SUBMIT-11).
+type ExternalProbe func(ctx context.Context, sub store.IdentitySubmission, fromAddr string) extsubmit.Outcome
 
 // writeProbeFailed writes a 422 RFC 7807 response for a probe failure. The
 // type is "external_submission_probe_failed" and the body carries the failure
@@ -61,6 +64,14 @@ func resolveIdentityOwner(ctx context.Context, meta store.Metadata, identityID s
 		return 0, err
 	}
 	return identity.PrincipalID, nil
+}
+
+// resolveIdentity looks up the JMAP identity by id, returning the whole row
+// (owner and addr-spec). Callers that need the identity's own address for
+// the submission probe (REQ-AUTH-EXT-SUBMIT-11) use this instead of
+// resolveIdentityOwner.
+func resolveIdentity(ctx context.Context, meta store.Metadata, identityID string) (store.JMAPIdentity, error) {
+	return meta.GetJMAPIdentity(ctx, identityID)
 }
 
 // isSyntheticDefault reports whether identityID refers to the per-
@@ -161,7 +172,7 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
+	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
@@ -170,7 +181,7 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if !requireSelfOnly(w, r, caller, ownerID) {
+	if !requireSelfOnly(w, r, caller, identity.PrincipalID) {
 		return
 	}
 
@@ -242,7 +253,7 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 	// Probe the external endpoint before persisting. On any failure, emit
 	// an audit entry and return 422 — nothing is written to the store.
 	correlationID := fmt.Sprintf("probe:%s", newRequestID())
-	probeOutcome := s.opts.ExternalProbe(r.Context(), sub)
+	probeOutcome := s.opts.ExternalProbe(r.Context(), sub, identity.Email)
 	if probeOutcome.State != extsubmit.OutcomeOK {
 		s.appendAudit(r.Context(), "submission.external.failure",
 			fmt.Sprintf("identity:%s", identityID),
@@ -371,7 +382,7 @@ func validatePutRequest(req *submissionPutRequest) error {
 // noopProbe is never reachable in that code path. In test builds where
 // the data key IS set but no real SMTP server is available, tests inject
 // their own probe via Options.ExternalProbe.
-func noopProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome {
+func noopProbe(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
 	return extsubmit.Outcome{State: extsubmit.OutcomeOK}
 }
 
@@ -379,7 +390,7 @@ func noopProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome 
 // admin/server.go uses this to pass the real probe into protoadmin.Options
 // (REQ-MAIL-SUBMIT-03 — the probe validates credentials before persisting).
 func DefaultProbeFromSubmitter(sub *extsubmit.Submitter) ExternalProbe {
-	return func(ctx context.Context, row store.IdentitySubmission) extsubmit.Outcome {
-		return sub.Probe(ctx, row)
+	return func(ctx context.Context, row store.IdentitySubmission, fromAddr string) extsubmit.Outcome {
+		return sub.Probe(ctx, row, fromAddr)
 	}
 }

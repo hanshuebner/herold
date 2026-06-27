@@ -357,10 +357,21 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 	return out
 }
 
-// Probe performs an AUTH-only session (EHLO + AUTH + QUIT) to verify that the
-// configured credentials are accepted by the remote. It does not send any mail.
-// This avoids MAIL FROM:<> which Gmail and M365 reject.
-func (s *Submitter) Probe(ctx context.Context, sub store.IdentitySubmission) Outcome {
+// Probe verifies, before a submission config is persisted, that the
+// configured endpoint both accepts the credentials and will accept mail
+// from the identity's own address (REQ-AUTH-EXT-SUBMIT-11). It runs
+// EHLO + AUTH + MAIL FROM:<fromAddr> + RCPT TO:<fromAddr> + RSET, then
+// QUIT — proving send capability without ever transmitting a message
+// body. fromAddr is the identity's own addr-spec; the RCPT TO targets the
+// identity itself so the probe never injects mail to a third party. A 5xx
+// on MAIL FROM / RCPT TO is mapped to OutcomePermanent (permanent reject);
+// a 4xx to OutcomeTransient; a transport failure to OutcomeUnreachable; an
+// AUTH rejection to OutcomeAuthFailed.
+//
+// When fromAddr is empty the probe degrades to an AUTH-only check (no
+// MAIL FROM is issued), which avoids the MAIL FROM:<> some providers
+// reject; callers should supply the identity address whenever it is known.
+func (s *Submitter) Probe(ctx context.Context, sub store.IdentitySubmission, fromAddr string) Outcome {
 	out := Outcome{}
 
 	sess, conn, err := s.buildSession(ctx, sub)
@@ -374,15 +385,13 @@ func (s *Submitter) Probe(ctx context.Context, sub store.IdentitySubmission) Out
 		_ = conn.Close()
 	}()
 
-	// For Probe we need a username. Sub.OAuthClientID is used as a
-	// fallback when the caller hasn't provided one via the envelope, but
-	// Probe has no envelope. We use OAuthClientID here as it is the only
-	// per-user identifier available on the sub row. Callers that want
-	// to probe with the canonical email should set OAuthClientID to the
-	// email address (which is the intended usage: OAuthClientID for the
-	// per-user identifier in XOAUTH2 is the user's email, not the app's
-	// client_id in v1).
-	probeUser := sub.OAuthClientID
+	// AUTH username: prefer the identity's own address (the canonical
+	// submission user). Fall back to the per-row OAuthClientID when the
+	// caller did not supply an address.
+	probeUser := fromAddr
+	if probeUser == "" {
+		probeUser = sub.OAuthClientID
+	}
 	if err := s.auth(ctx, sess, sub, probeUser); err != nil {
 		if isAuthError(err) {
 			out.State = OutcomeAuthFailed
@@ -392,6 +401,37 @@ func (s *Submitter) Probe(ctx context.Context, sub store.IdentitySubmission) Out
 			out.Diagnostic = fmt.Sprintf("auth probe: %s", err.Error())
 		}
 		return out
+	}
+
+	// Send-capability check (REQ-AUTH-EXT-SUBMIT-11). Skipped only when the
+	// identity address is unknown.
+	if fromAddr != "" {
+		r, err := sess.MailFrom(fromAddr)
+		if err != nil {
+			out.State = OutcomeUnreachable
+			out.Diagnostic = fmt.Sprintf("MAIL FROM probe: %s", err.Error())
+			return out
+		}
+		if !r.IsSuccess() {
+			out.State = mapSMTPCode(r.Code)
+			out.Diagnostic = fmt.Sprintf("MAIL FROM probe <%s>: %d %s", fromAddr, r.Code, r.Text)
+			return out
+		}
+		r, err = sess.RcptTo(fromAddr)
+		if err != nil {
+			out.State = OutcomeUnreachable
+			out.Diagnostic = fmt.Sprintf("RCPT TO probe: %s", err.Error())
+			return out
+		}
+		if !r.IsSuccess() {
+			out.State = mapSMTPCode(r.Code)
+			out.Diagnostic = fmt.Sprintf("RCPT TO probe <%s>: %d %s", fromAddr, r.Code, r.Text)
+			return out
+		}
+		// RSET aborts the transaction so no body is transmitted. Send
+		// capability is already proven by the accepted RCPT TO, so an
+		// RSET hiccup does not fail the probe (best-effort; QUIT follows).
+		_, _ = sess.Cmd("RSET")
 	}
 
 	out.State = OutcomeOK

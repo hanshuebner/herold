@@ -42,17 +42,17 @@ import (
 var testDataKey = []byte("submission-test-data-key-32byttx")
 
 // alwaysOKProbe is an ExternalProbe that always returns OutcomeOK.
-func alwaysOKProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome {
+func alwaysOKProbe(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
 	return extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "probe ok"}
 }
 
 // alwaysAuthFailProbe is an ExternalProbe that always returns OutcomeAuthFailed.
-func alwaysAuthFailProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome {
+func alwaysAuthFailProbe(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
 	return extsubmit.Outcome{State: extsubmit.OutcomeAuthFailed, Diagnostic: "535 bad credentials"}
 }
 
 // alwaysUnreachableProbe is an ExternalProbe that always returns OutcomeUnreachable.
-func alwaysUnreachableProbe(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome {
+func alwaysUnreachableProbe(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
 	return extsubmit.Outcome{State: extsubmit.OutcomeUnreachable, Diagnostic: "connection refused"}
 }
 

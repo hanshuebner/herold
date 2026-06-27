@@ -312,7 +312,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Recover the identity id and verify the caller owns it.
 	identityID := entry.IdentityID
-	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
+	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
@@ -321,6 +321,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	ownerID := identity.PrincipalID
 	if !requireSelfOnly(w, r, caller, ownerID) {
 		return
 	}
@@ -400,7 +401,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Run probe before persisting.
-	probeOutcome := s.opts.ExternalProbe(r.Context(), sub)
+	probeOutcome := s.opts.ExternalProbe(r.Context(), sub, identity.Email)
 	if probeOutcome.State != extsubmit.OutcomeOK {
 		s.appendAudit(r.Context(), "submission.external.failure",
 			fmt.Sprintf("identity:%s", identityID),

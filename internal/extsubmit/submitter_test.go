@@ -521,10 +521,12 @@ func TestSubmit_STARTTLS_HappyPath(t *testing.T) {
 	}
 }
 
-// TestProbe_HappyPath verifies that Probe runs AUTH-only and returns OutcomeOK.
+// TestProbe_HappyPath verifies that Probe runs EHLO + AUTH + MAIL FROM +
+// RCPT TO + RSET against the identity's own address and returns OutcomeOK
+// without transmitting a body (REQ-AUTH-EXT-SUBMIT-11).
 func TestProbe_HappyPath(t *testing.T) {
-	var authSeen bool
-	var mailFromSeen bool
+	var authSeen, mailFromSeen, rcptSeen, rsetSeen, dataSeen bool
+	var mailFromArg, rcptArg string
 	srv := newSMTPServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		r := bufio.NewReader(conn)
@@ -533,15 +535,34 @@ func TestProbe_HappyPath(t *testing.T) {
 		srvRead(r) // EHLO
 		srvWrite(w, "250-smtp.test")
 		srvWrite(w, "250 AUTH PLAIN")
-		line := srvRead(r)
-		if strings.HasPrefix(line, "AUTH") {
-			authSeen = true
-			srvWrite(w, "235 2.7.0 ok")
-		}
-		// Should receive QUIT next, NOT MAIL FROM.
-		nextLine := srvRead(r)
-		if strings.HasPrefix(nextLine, "MAIL") {
-			mailFromSeen = true
+		for {
+			line := srvRead(r)
+			switch {
+			case line == "":
+				return
+			case strings.HasPrefix(line, "AUTH"):
+				authSeen = true
+				srvWrite(w, "235 2.7.0 ok")
+			case strings.HasPrefix(line, "MAIL"):
+				mailFromSeen = true
+				mailFromArg = line
+				srvWrite(w, "250 2.1.0 ok")
+			case strings.HasPrefix(line, "RCPT"):
+				rcptSeen = true
+				rcptArg = line
+				srvWrite(w, "250 2.1.5 ok")
+			case strings.HasPrefix(line, "RSET"):
+				rsetSeen = true
+				srvWrite(w, "250 2.0.0 reset")
+			case strings.HasPrefix(line, "DATA"):
+				dataSeen = true
+				srvWrite(w, "354 send")
+			case line == "QUIT":
+				srvWrite(w, "221 bye")
+				return
+			default:
+				srvWrite(w, "250 ok")
+			}
 		}
 	})
 
@@ -560,15 +581,30 @@ func TestProbe_HappyPath(t *testing.T) {
 		OAuthClientID:    "alice@example.com",
 	}
 
-	out := s.Probe(context.Background(), sub)
+	out := s.Probe(context.Background(), sub, "alice@example.com")
 	if out.State != extsubmit.OutcomeOK {
 		t.Fatalf("state = %q; want ok; diagnostic: %s", out.State, out.Diagnostic)
 	}
 	if !authSeen {
 		t.Error("expected AUTH to be sent")
 	}
-	if mailFromSeen {
-		t.Error("MAIL FROM must not be sent during Probe")
+	if !mailFromSeen {
+		t.Error("expected MAIL FROM to be sent during send-capability probe")
+	}
+	if !strings.Contains(mailFromArg, "alice@example.com") {
+		t.Errorf("MAIL FROM arg = %q; want it to carry the identity address", mailFromArg)
+	}
+	if !rcptSeen {
+		t.Error("expected RCPT TO to be sent during send-capability probe")
+	}
+	if !strings.Contains(rcptArg, "alice@example.com") {
+		t.Errorf("RCPT TO arg = %q; want the identity's own address", rcptArg)
+	}
+	if !rsetSeen {
+		t.Error("expected RSET to be sent to abort the probe transaction")
+	}
+	if dataSeen {
+		t.Error("DATA must not be sent during Probe (no body is transmitted)")
 	}
 }
 
@@ -601,9 +637,50 @@ func TestProbe_AuthFailed(t *testing.T) {
 		OAuthClientID:    "alice@example.com",
 	}
 
-	out := s.Probe(context.Background(), sub)
+	out := s.Probe(context.Background(), sub, "alice@example.com")
 	if out.State != extsubmit.OutcomeAuthFailed {
 		t.Fatalf("state = %q; want auth-failed; diagnostic: %s", out.State, out.Diagnostic)
+	}
+}
+
+// TestProbe_PermanentReject verifies that a 5xx on RCPT TO during the
+// send-capability probe is mapped to OutcomePermanent and the config is
+// not accepted (REQ-AUTH-EXT-SUBMIT-11 "permanent-reject").
+func TestProbe_PermanentReject(t *testing.T) {
+	srv := newSMTPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		srvWrite(w, "220 smtp.test ESMTP")
+		srvRead(r) // EHLO
+		srvWrite(w, "250-smtp.test")
+		srvWrite(w, "250 AUTH PLAIN")
+		srvRead(r) // AUTH PLAIN
+		srvWrite(w, "235 2.7.0 ok")
+		srvRead(r) // MAIL FROM
+		srvWrite(w, "250 2.1.0 ok")
+		srvRead(r) // RCPT TO
+		srvWrite(w, "550 5.7.1 sender address rejected: not allowed to send as this address")
+	})
+
+	s := &extsubmit.Submitter{DataKey: testDataKey, HostName: "client.test"}
+	s.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", srv.addr())
+	})
+
+	sub := store.IdentitySubmission{
+		IdentityID:       "identity-probe-perm",
+		SubmitHost:       "smtp.test",
+		SubmitPort:       587,
+		SubmitSecurity:   "none",
+		SubmitAuthMethod: "password",
+		PasswordCT:       sealSecret(t, "pw"),
+		OAuthClientID:    "alice@example.com",
+	}
+
+	out := s.Probe(context.Background(), sub, "alice@example.com")
+	if out.State != extsubmit.OutcomePermanent {
+		t.Fatalf("state = %q; want permanent; diagnostic: %s", out.State, out.Diagnostic)
 	}
 }
 

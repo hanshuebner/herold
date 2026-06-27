@@ -370,7 +370,7 @@ func TestOAuthStart_MissingClientSecret(t *testing.T) {
 		BootstrapWindow:           5 * time.Minute,
 		RequestsPerMinutePerKey:   100,
 		ExternalSubmissionDataKey: testDataKey,
-		ExternalProbe: func(_ context.Context, _ store.IdentitySubmission) extsubmit.Outcome {
+		ExternalProbe: func(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
 			return extsubmit.Outcome{State: extsubmit.OutcomeOK}
 		},
 		OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
