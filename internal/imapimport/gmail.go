@@ -361,6 +361,11 @@ func (w *accountWorker) syncAllFoldersGmail(ctx context.Context, conn Conn, fold
 		userMapping[e.UpstreamFolder] = e.HeroldMailboxName
 	}
 
+	// Reset the per-pass backfill-remaining accumulator; the label-folder
+	// passes and the All Mail pass each add their count, and we publish the
+	// account-wide sum to the gauge below (REQ-IMAP-IMP-63 / D6).
+	w.backfillRemaining = 0
+
 	var lastErr error
 
 	// Phase 1: Sync all Normal folders (label/system folders except All Mail).
@@ -413,6 +418,9 @@ func (w *accountWorker) syncAllFoldersGmail(ctx context.Context, conn Conn, fold
 			lastErr = err
 		}
 	}
+
+	// Publish the account-wide backfill-remaining gauge (REQ-IMAP-IMP-63).
+	observe.IMAPImportBackfillRemaining.WithLabelValues(account.ID).Set(float64(w.backfillRemaining))
 
 	return lastErr
 }
@@ -563,6 +571,11 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 			cursor.LowWaterUID = minUID
 		}
 
+		// Contribute this folder's backfill-remaining to the per-pass
+		// accumulator (REQ-IMAP-IMP-63 / D6): in-horizon All Mail UIDs still
+		// below the low-water mark that have not been examined yet.
+		w.backfillRemaining += int64(countUIDsBelow(allUIDs, cursor.LowWaterUID))
+
 		// Body-fetch and ingest into Archive for unlabeled messages.
 		if len(needBodyFetch) > 0 {
 			archiveMBName := "Archive"
@@ -598,7 +611,8 @@ persistCursor:
 	observe.IMAPImportFetchDurationSeconds.WithLabelValues(accountID).Observe(
 		w.opts.clk.Now().Sub(start).Seconds(),
 	)
-	observe.IMAPImportBackfillRemaining.WithLabelValues(accountID).Set(0)
+	// backfill_remaining is accumulated into w.backfillRemaining above and
+	// published by syncAllFoldersGmail for the whole pass (REQ-IMAP-IMP-63).
 
 	log.Debug("imapimport: Gmail All Mail envelope-dedup sync complete",
 		slog.String("account_id", accountID),

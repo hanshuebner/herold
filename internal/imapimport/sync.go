@@ -75,6 +75,10 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 		mapping[e.UpstreamFolder] = e.HeroldMailboxName
 	}
 
+	// Reset the per-pass backfill-remaining accumulator; each folder adds its
+	// count and we publish the account-wide sum to the gauge below (D6).
+	w.backfillRemaining = 0
+
 	var lastErr error
 	for _, fi := range folders {
 		// Skip \NoSelect mailboxes (e.g. hierarchy-only nodes).
@@ -98,6 +102,8 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 			lastErr = err
 		}
 	}
+	// Publish the account-wide backfill-remaining gauge (REQ-IMAP-IMP-63).
+	observe.IMAPImportBackfillRemaining.WithLabelValues(account.ID).Set(float64(w.backfillRemaining))
 	return lastErr
 }
 
@@ -180,6 +186,13 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	// only mail arriving on an already-initialised folder is.
 	folderInitialised := found
 
+	// inHorizonUIDs holds the result of the most recent UID SEARCH SINCE
+	// <floor> in this pass; it is used at persistCursor to compute the
+	// backfill-remaining gauge (REQ-IMAP-IMP-63 / D6). Nil when the pass did
+	// not search (empty mailbox, or a forward-only incremental pass whose
+	// backfill is already complete) — in which case the remaining count is 0.
+	var inHorizonUIDs []imap.UID
+
 	if si.NumMessages == 0 {
 		// Empty mailbox: nothing to do; just advance cursor state.
 		goto persistCursor
@@ -199,6 +212,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 		if err != nil {
 			return fmt.Errorf("imapimport: initial search: %w", err)
 		}
+		inHorizonUIDs = initialUIDs
 		if len(initialUIDs) > 0 {
 			n, minUID, err := w.fetchAndIngest(ctx, conn, initialUIDs, upstreamFolder, heroldMailbox, folderInitialised /* categorise */)
 			if err != nil {
@@ -221,6 +235,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			if err != nil {
 				return fmt.Errorf("imapimport: backfill search: %w", err)
 			}
+			inHorizonUIDs = allInHorizon
 			var belowLow []imap.UID
 			for _, uid := range allInHorizon {
 				if uint64(uid) < cursor.LowWaterUID {
@@ -283,8 +298,13 @@ persistCursor:
 	observe.IMAPImportFetchDurationSeconds.WithLabelValues(accountID).Observe(
 		w.opts.clk.Now().Sub(start).Seconds(),
 	)
-	// backfill_remaining: approximate gauge. 0 when no backfill is in progress.
-	observe.IMAPImportBackfillRemaining.WithLabelValues(accountID).Set(0)
+	// backfill_remaining (REQ-IMAP-IMP-63 / D6): the count of in-horizon UIDs
+	// below this folder's low-water mark that are not yet mirrored. After a
+	// completed backfill this is 0; it is non-zero while older in-horizon mail
+	// remains to be fetched (e.g. a freshly-lowered horizon, or a resumed
+	// partial backfill). Accumulated per folder; syncAllFolders publishes the
+	// account-wide sum to the gauge once the pass finishes.
+	w.backfillRemaining += int64(countUIDsBelow(inHorizonUIDs, cursor.LowWaterUID))
 
 	log.Debug("imapimport: folder sync complete",
 		slog.String("account_id", accountID),
@@ -293,6 +313,24 @@ persistCursor:
 		slog.Int("new_forward", forwardNewCount),
 	)
 	return nil
+}
+
+// countUIDsBelow returns how many UIDs in uids are strictly below mark. It is
+// the per-folder backfill-remaining measure (REQ-IMAP-IMP-63 / D6): given the
+// in-horizon UID set and the folder's low-water mark, the UIDs still below the
+// mark are the in-horizon mail not yet fetched. Returns 0 for a nil/empty set
+// or a zero mark.
+func countUIDsBelow(uids []imap.UID, mark uint64) int {
+	if mark == 0 {
+		return 0
+	}
+	n := 0
+	for _, uid := range uids {
+		if uint64(uid) < mark {
+			n++
+		}
+	}
+	return n
 }
 
 // uidsAbove returns all UIDs strictly above aboveUID in the currently-selected

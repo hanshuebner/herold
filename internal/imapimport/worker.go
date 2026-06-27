@@ -60,6 +60,15 @@ type accountWorker struct {
 	// REQ-IMAP-IMP-65.
 	status workerStatus
 
+	// backfillRemaining accumulates, across one full sync pass, the number of
+	// in-horizon upstream UIDs below each folder's low-water mark that are not
+	// yet mirrored (REQ-IMAP-IMP-63). syncAllFolders / syncAllFoldersGmail
+	// reset it to 0 at the start of a pass and publish the sum to the
+	// per-account herold_imapimport_backfill_remaining gauge at the end; each
+	// folder pass adds its own count. Accessed only from the worker's single
+	// supervising goroutine, so it needs no synchronisation.
+	backfillRemaining int64
+
 	// testTokenSource, when non-nil, overrides the OAuth token source
 	// used in openCredential. Set in tests to inject a fakeTokenSource
 	// without wiring a real HTTP endpoint. Production code leaves this nil.
