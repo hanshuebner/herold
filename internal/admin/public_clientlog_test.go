@@ -512,15 +512,17 @@ func TestClientlogEmitter_SlogFanOut(t *testing.T) {
 			"captured %d client records: %v", len(recs), recs)
 	}
 
+	// Since the admin listener is now aliased to the public handler (re #58),
+	// events POSTed to the admin listener are tagged listener="public".
 	adminRecord := waitForClientRecord(t, cl, func(r map[string]any) bool {
 		return r["source"] == "client" &&
 			r["app"] == "admin" &&
 			r["kind"] == "log" &&
-			r["listener"] == "admin"
+			r["listener"] == "public"
 	}, 5*time.Second)
 	if adminRecord == nil {
 		recs := cl.clientRecords()
-		t.Fatalf("admin-listener log event not found in slog output within 5s; "+
+		t.Fatalf("admin-alias listener log event not found in slog output within 5s; "+
 			"captured %d client records: %v", len(recs), recs)
 	}
 }
@@ -1067,11 +1069,13 @@ func TestPublicListener_ClientlogIngest(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if adminSliceRow == nil {
-		t.Fatalf("admin-listener event did not land in the ring buffer")
+		t.Fatalf("admin-alias listener event did not land in the ring buffer")
 	}
-	if adminSliceRow.Payload.Listener != "admin" {
-		t.Fatalf("admin-listener row: listener=%q want %q",
-			adminSliceRow.Payload.Listener, "admin")
+	// Admin listener is aliased to the public handler (re #58); all events
+	// are tagged listener="public" regardless of which listener accepted the request.
+	if adminSliceRow.Payload.Listener != "public" {
+		t.Fatalf("admin-alias listener row: listener=%q want %q",
+			adminSliceRow.Payload.Listener, "public")
 	}
 
 	teReq, err := http.NewRequest("PUT",

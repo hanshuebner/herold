@@ -86,12 +86,11 @@ func TestPublicListener_API_TakesPriority(t *testing.T) {
 	}
 }
 
-// TestAdminListener_Root_DoesNotServeSuite asserts that hitting `/`
-// on the admin listener does NOT return the SPA shell. The admin
-// listener's root either redirects to the admin login or 404s; in
-// either case the SPA must not appear there (REQ-OPS-ADMIN-LISTENER-01
-// + REQ-DEPLOY-COLOC-02: the SPA is public-listener-only).
-func TestAdminListener_Root_DoesNotServeSuite(t *testing.T) {
+// TestAdminListener_Root_ServesSuiteAlias asserts that the admin listener
+// (now aliased to the public handler, re #58) serves the suite SPA shell
+// at `/` the same way the public listener does. Both listeners share the
+// unified handler; the suite SPA is the catch-all on both.
+func TestAdminListener_Root_ServesSuiteAlias(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -105,22 +104,17 @@ func TestAdminListener_Root_DoesNotServeSuite(t *testing.T) {
 	if adminAddr == "" {
 		t.Fatalf("admin listener not bound")
 	}
-	// Disable redirect-following so a 303 to /ui/login does not
-	// resolve into the admin UI body and confuse the assertion.
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Get("http://" + adminAddr + "/")
+	resp, err := http.Get("http://" + adminAddr + "/")
 	if err != nil {
 		t.Fatalf("GET / on admin: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if contains(string(body), "<title>Herold</title>") {
-		t.Errorf("admin listener / returned SPA shell; status=%d body=%s",
-			resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin-alias /: status=%d body=%s; want 200", resp.StatusCode, string(body))
+	}
+	if !contains(string(body), "<title>Herold</title>") {
+		t.Errorf("admin-alias / did not serve suite SPA shell; body=%q", string(body))
 	}
 }
 

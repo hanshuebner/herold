@@ -1,24 +1,21 @@
 // Package auth carries the closed-enum scope vocabulary that gates
 // every HTTP handler in the suite (REQ-AUTH-SCOPE-01..04).
 //
-// Cookies issued at the public-listener login flow carry the
-// AllEndUserScopes set (minus webhook.publish, unless the principal is
-// flagged as a webhook publisher). The admin-listener login flow
-// requires a TOTP step-up for principals with 2FA enabled and issues
-// a cookie carrying [ScopeAdmin] only — admin does NOT implicitly
-// grant end-user (REQ-AUTH-SCOPE-02). API keys (Bearer hk_<...>) carry
+// The public-listener login flow (POST /api/v1/auth/login) issues a
+// herold_public_session cookie. For non-admin principals the cookie
+// carries AllEndUserScopes. For admin-flagged principals the cookie
+// additionally carries ScopeAdmin, but ONLY after a TOTP second factor
+// is verified — an admin without TOTP enrolled cannot obtain admin scope
+// at all (REQ-AUTH-SCOPE-03, re #58). API keys (Bearer hk_<...>) carry
 // a scope set chosen at create time and immutable thereafter
 // (REQ-AUTH-SCOPE-04); rotation is the only "change" path.
 //
 // Mechanically the scope set is enforced at handler entry via the
 // RequireScope middleware. A mismatched set returns 403 with an
 // RFC 7807 problem detail (NOT 401 — the caller IS authenticated,
-// just not authorised for THIS scope). The boundary is defence in
-// depth on top of the listener split (REQ-OPS-ADMIN-LISTENER-01..03);
-// the public and admin handlers are mounted on disjoint listeners and
-// the cookie names differ (herold_public_session vs
-// herold_admin_session) so cookie reuse across listeners is
-// mechanically impossible at the parser level.
+// just not authorised for THIS scope). The scope boundary is the
+// primary gate for admin access; protoadmin's requireScope middleware
+// is called on every admin-only handler (REQ-AUTH-SCOPE-02).
 package auth
 
 import (
@@ -43,9 +40,11 @@ const (
 	// public login flow carry it; admin cookies do NOT (no implicit
 	// grant per REQ-AUTH-SCOPE-02).
 	ScopeEndUser Scope = "end-user"
-	// ScopeAdmin gates protoadmin REST, /admin, /metrics. Issued only
-	// after a TOTP step-up on the admin listener for principals with
-	// 2FA enabled (REQ-AUTH-SCOPE-03).
+	// ScopeAdmin gates protoadmin REST and /admin. Issued by the public
+	// login flow only to principals flagged as admin (PrincipalFlagAdmin)
+	// AND who completed a TOTP second factor. An admin principal without
+	// TOTP enrolled cannot obtain this scope at all — the login endpoint
+	// returns 401 totp_enrollment_required (REQ-AUTH-SCOPE-03, re #58).
 	ScopeAdmin Scope = "admin"
 	// ScopeMailSend gates the HTTP send API (/api/v1/mail/send-raw)
 	// and JMAP Email/set + EmailSubmission/set.
@@ -90,9 +89,10 @@ var AllScopes = []Scope{
 }
 
 // AllEndUserScopes is the default set for human-issued cookies on the
-// public listener. Excludes ScopeAdmin (admin requires TOTP step-up
-// on the admin listener) and ScopeWebhookPublish (operator-issued API
-// keys for transactional services hold this; humans don't).
+// public listener for non-admin principals. Excludes ScopeAdmin (admin
+// requires PrincipalFlagAdmin + TOTP step-up at login, re #58) and
+// ScopeWebhookPublish (operator-issued API keys for transactional
+// services hold this; humans don't).
 var AllEndUserScopes = []Scope{
 	ScopeEndUser,
 	ScopeMailSend,

@@ -1005,10 +1005,11 @@ tls = "none"
 	}
 }
 
-// TestValidate_MissingAdminKindWithPublicSet rejects a config that only
-// declares a public-kind listener (admin would be co-mounted, which is
-// the bug we're guarding against).
-func TestValidate_MissingAdminKindWithPublicSet(t *testing.T) {
+// TestValidate_PublicOnlyConfigIsValid verifies that a config with only a
+// public-kind listener is accepted (re #58: the admin SPA and REST surface
+// are served on the public listener gated by ScopeAdmin; a separate
+// kind="admin" listener is no longer required).
+func TestValidate_PublicOnlyConfigIsValid(t *testing.T) {
 	const onlyPublic = `
 [server]
 hostname = "mail.example.com"
@@ -1028,10 +1029,8 @@ tls = "implicit"
 cert_file = "/a"
 key_file = "/b"
 `
-	if _, err := Parse([]byte(onlyPublic)); err == nil {
-		t.Fatalf("expected error when admin-kind listener missing")
-	} else if !strings.Contains(err.Error(), "kind=\"admin\"") {
-		t.Errorf("error should mention required admin kind: %v", err)
+	if _, err := Parse([]byte(onlyPublic)); err != nil {
+		t.Fatalf("public-only config should be valid (re #58): %v", err)
 	}
 }
 

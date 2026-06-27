@@ -235,10 +235,10 @@ The legacy single-sink form (`[logging] format=... level=... destination=...` fr
 
 #### Endpoints and auth boundaries
 
-- **REQ-OPS-200** Two HTTP ingest paths exist, with different auth and different limits:
-  - **Authenticated**: `POST /api/v1/clientlog` on whichever listener serves the SPA emitting the event (public listener for Suite, admin listener for Admin UI). Requires a valid session cookie. Carries the full event schema.
-  - **Anonymous**: `POST /api/v1/clientlog/public` on the same listeners. No auth. Carries the *narrow* schema (REQ-OPS-207). Used for login-page crashes and any other pre-auth failure.
-  Each listener serves its own pair; the cookie-scope split (REQ-OPS-ADMIN-LISTENER-03) prevents cross-surface auth confusion.
+- **REQ-OPS-200** Two HTTP ingest paths exist on the public listener (which serves both the Suite SPA and the Admin SPA, re #58):
+  - **Authenticated**: `POST /api/v1/clientlog`. Requires a valid session cookie. Carries the full event schema.
+  - **Anonymous**: `POST /api/v1/clientlog/public`. No auth. Carries the *narrow* schema (REQ-OPS-207). Used for login-page crashes and pre-auth failures.
+  Both SPAs (Suite and Admin) POST to these endpoints on the public listener; the `app` field in the event payload distinguishes the source.
 - **REQ-OPS-201** Both endpoints accept a JSON body of shape `{events: [Event, ...]}`. The `Content-Type` is `application/json` for `fetch` and `Blob`-wrapped `application/json` for `navigator.sendBeacon`; servers MUST accept both. Bodies over the per-endpoint cap (REQ-OPS-216) are rejected with 413; rate-limited requests on the anonymous endpoint are dropped silently (200 with empty body) to avoid signalling abuse.
 
 #### Event schema
@@ -479,13 +479,13 @@ shared_secret = "file:/etc/herold/secrets/coturn"
 - coturn is the operator's responsibility to monitor and update. herold does not bundle coturn binaries, configurations, or systemd units in v1; the deploy/ docs include reference configurations.
 - Without coturn, video calls still work for ~85–90% of network configurations (STUN-only). The remaining ~10–15% (strict NAT, symmetric NAT, restrictive firewalls) require relay; absent TURN, those calls fail at ICE establishment.
 
-## Admin listener (operator-config)
+## Admin access (re #58)
 
-*(Added 2026-04-26 rev 9: distinct admin listener separates internet-facing end-user surfaces from operator-only admin surfaces; pairs with the auth-scope boundary in REQ-AUTH-SCOPE-01..04.)*
+*(Revised 2026-06-27: the separate loopback admin listener is retired. The admin SPA and the full protoadmin REST surface move to the public listener, gated by ScopeAdmin. The boundary is an authentication+scope check, not a network listener.)*
 
-- **REQ-OPS-ADMIN-LISTENER-01** The HTTP admin surface (admin REST at `/api/v1/admin/*` per REQ-ADM-01..06, admin UI under `/admin/*`, Prometheus `/metrics` per REQ-OPS-90, and all of protoadmin) MUST be served from a distinct listener configured via `[server.admin_listener]` in system.toml: `bind` (default `127.0.0.1:9443`), `tls` (cert/key file refs; ACME also acceptable per REQ-OPS-40). The public listener (`[server.public_listener]`, default `0.0.0.0:443`) MUST NOT serve any admin path; an admin path arriving at the public listener returns 404 (NOT 403 -- the path doesn't exist on this origin).
-- **REQ-OPS-ADMIN-LISTENER-02** The default `127.0.0.1:9443` bind makes the admin surface invisible to internet scanners and unreachable except via local-machine access or operator-tunnelled (`ssh -L 9443:127.0.0.1:9443 admin@host`). Operators with a VPN / wireguard / corporate intranet flip the bind to `0.0.0.0:9443` (or whatever interface); operators without any of those tunnel via SSH, documented in `docs/manual/admin/operate.mdoc`.
-- **REQ-OPS-ADMIN-LISTENER-03** Cross-listener cookie scope: a cookie issued by the public listener has `Domain=` set to the public origin (e.g. `mail.example.com`) and `SameSite=Lax`, so presenting it on the admin listener (different host or different port) is a no-op because Domain doesn't match. A cookie issued by the admin listener has `Domain=` set to the admin origin (e.g. the loopback or a separate `admin.mail.example.com`); presenting it on the public listener is similarly a no-op, and the listener boundary therefore mechanically enforces the auth-scope boundary while the handler-side scope check (REQ-AUTH-SCOPE-02) is defence-in-depth.
+- **REQ-OPS-ADMIN-LISTENER-01** The admin SPA at `/admin/` and the full protoadmin REST surface at `/api/v1/` are served on the public listener (`kind = "public"`). Access to admin routes is gated by `ScopeAdmin` in the session cookie. `ScopeAdmin` is issued by `POST /api/v1/auth/login` ONLY to principals flagged as admin (`PrincipalFlagAdmin`) who have completed TOTP step-up during the same login flow. A principal without TOTP enrolled cannot obtain `ScopeAdmin` at all; the login response returns `401 totp_enrollment_required`. The `kind = "admin"` listener kind is accepted for the transition period but is aliased to the public handler; operators should remove it from their configs.
+- **REQ-OPS-ADMIN-LISTENER-02** `/metrics` and `/debug/pprof/` are not served by the public listener (explicit 404). Use a dedicated `MetricsBind` listener or the Prometheus push gateway for scraping. Pprof profiles require direct server access (ssh + local port-forward to MetricsBind).
+- **REQ-OPS-ADMIN-LISTENER-03** A single `herold_public_session` cookie carries both end-user scopes and (when the principal is admin + TOTP-verified) `ScopeAdmin`. The scope check at every admin handler is the enforcement boundary; the single-cookie design eliminates the cross-listener cookie-scope confusion from the previous two-listener model.
 
 ## What we don't build
 

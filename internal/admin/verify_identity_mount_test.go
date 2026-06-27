@@ -72,16 +72,12 @@ func TestPublicListener_MountsVerifyIdentityCallback(t *testing.T) {
 	}
 }
 
-// TestAdminListener_VerifyIdentityNotMounted asserts that the admin
-// listener does NOT serve /verify-identity. The route exists in
-// registerRoutes for unit-test convenience (so protoadmin tests can
-// exercise the handler without a public-listener harness), but the
-// admin mux only mounts /api/v1/ on the protoadmin handler — the
-// root-path /verify-identity falls through to the stdlib 404. This
-// is the intended posture: end-users click the link from a mail
-// client and land on the public listener (port 8080 in production).
-// The admin listener has no business serving the surface.
-func TestAdminListener_VerifyIdentityNotMounted(t *testing.T) {
+// TestAdminListener_VerifyIdentityAlsoMounted asserts that the admin listener
+// (now aliased to the public handler, re #58) also serves /verify-identity.
+// End-users click the verification link from a mail client and land on the
+// public listener; the admin listener alias serves the same route.
+// No token -> 400 (failure HTML page), not 404.
+func TestAdminListener_VerifyIdentityAlsoMounted(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -100,9 +96,9 @@ func TestAdminListener_VerifyIdentityNotMounted(t *testing.T) {
 		t.Fatalf("GET /verify-identity on admin: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("admin listener served /verify-identity: status=%d body=%s; want 404",
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("admin-alias /verify-identity: status=%d body=%s; want 400 (handler is mounted)",
 			resp.StatusCode, body)
 	}
 }

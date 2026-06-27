@@ -684,10 +684,12 @@ func TestPublicSelfService_EphemeralSigningKey(t *testing.T) {
 	}
 }
 
-// TestPublicSelfService_QueueNotMounted verifies that GET /api/v1/queue
-// returns 404 on the public listener — the admin-only queue surface must not
-// be reachable from the public-facing port.
-func TestPublicSelfService_QueueNotMounted(t *testing.T) {
+// TestPublicSelfService_QueueRequiresAuth verifies that GET /api/v1/queue
+// is reachable on the public listener (re #58: all REST routes are on the
+// unified public listener) but returns 401 for unauthenticated callers and
+// 403 for non-admin principals. The route is mounted; the ScopeAdmin gate in
+// the handler enforces access control.
+func TestPublicSelfService_QueueRequiresAuth(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -708,9 +710,15 @@ func TestPublicSelfService_QueueNotMounted(t *testing.T) {
 		t.Fatalf("GET /api/v1/queue on public: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	// 401 for unauthenticated access; the path is mounted (not 404).
+	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("GET /api/v1/queue on public: status=%d body=%s (want 404)",
+		t.Errorf("GET /api/v1/queue on public: status=%d body=%s (got 404 -- route unmounted)",
+			resp.StatusCode, body)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("GET /api/v1/queue on public (unauthenticated): status=%d body=%s (want 401)",
 			resp.StatusCode, body)
 	}
 }

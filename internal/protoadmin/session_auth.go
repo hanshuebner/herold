@@ -55,6 +55,11 @@ type loginResponse struct {
 	// Scopes is the scope set encoded into the issued session cookie
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
+	// SessionExpiresAt is the RFC 3339 UTC deadline of the issued session
+	// cookie. The Suite SPA uses it to schedule a client-side expiry timer
+	// (re #58: now that the public listener also issues admin-scoped cookies,
+	// the suite SPA needs the expiry just like it did with protologin).
+	SessionExpiresAt string `json:"session_expires_at,omitempty"`
 }
 
 // clientlogSessionMeta is the per-session clientlog descriptor embedded
@@ -205,18 +210,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Issue the session. Admin listener -> admin scope only
-	// (REQ-AUTH-SCOPE-01..03). The TTL is the admin-listener absolute
-	// lifetime (REQ-AUTH-72, sysconfig.UIConfig.AdminAbsoluteTTL,
-	// default 8 h, ceiling 12 h, plumbed via adminSessionCookieConfig).
-	// applyDefaults guarantees a non-zero TTL; the fallback here is a
-	// belt-and-braces 8 h for any caller that builds Options directly
-	// (e.g. in-process tests) and forgets the wiring — never the
-	// pre-spec 24 h.
-	sessScopes := auth.NewScopeSet(auth.ScopeAdmin)
+	// Issue the session. The scope set depends on the principal's admin flag:
+	// - Admin principals who completed TOTP step-up receive ScopeAdmin plus
+	//   all end-user scopes, so the admin SPA and the suite SPA both work from
+	//   the single public session (REQ-AUTH-SCOPE-01..03, re #58).
+	// - Non-admin principals receive the full end-user scope set only.
+	//
+	// TOTP hard-require: the block above (line ~169) already refused admin
+	// principals without TOTP enrolled. Reaching here with PrincipalFlagAdmin
+	// set implies TOTP was verified (or re-verified) in the block above.
+	//
+	// Security note: admin sessions now use the same cookie and TTL as end-user
+	// sessions (herold_public_session, 7 days default). The shorter admin TTL
+	// that the retired admin listener used (AdminAbsoluteTTL, default 8 h) no
+	// longer applies. Operators who need a shorter maximum lifetime should set
+	// [server.ui].session_ttl in system.toml (re #58).
+	var sessScopes auth.ScopeSet
+	if p.Flags.Has(store.PrincipalFlagAdmin) {
+		// Admin principal with TOTP verified: grant admin scope in addition to
+		// all end-user scopes. ScopeAdmin is the innermost guard checked by
+		// protoadmin's requireScope middleware on admin-only routes.
+		sessScopes = auth.NewScopeSet(append([]auth.Scope{auth.ScopeAdmin}, auth.AllEndUserScopes...)...)
+	} else {
+		// Non-admin principal: end-user scopes only. ScopeAdmin is explicitly
+		// excluded — no privilege escalation via this login path.
+		sessScopes = auth.NewScopeSet(auth.AllEndUserScopes...)
+	}
 	ttl := s.opts.Session.TTL
 	if ttl <= 0 {
-		ttl = 8 * time.Hour
+		ttl = 7 * 24 * time.Hour
 	}
 	sess := authsession.Session{
 		PrincipalID: pid,
@@ -271,9 +293,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(loginResponse{
-		PrincipalID: uint64(p.ID),
-		Email:       p.CanonicalEmail,
-		Scopes:      sessScopes.Slice(),
+		PrincipalID:      uint64(p.ID),
+		Email:            p.CanonicalEmail,
+		Scopes:           sessScopes.Slice(),
+		SessionExpiresAt: sess.ExpiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// authMeResponse is the JSON body returned by GET /api/v1/auth/me.
+// Mirrors the protologin login response shape so the Suite SPA can
+// use a single type for both the login response and the page-reload
+// session probe (REQ-ADM-203).
+type authMeResponse struct {
+	PrincipalID      uint64       `json:"principal_id"`
+	Email            string       `json:"email"`
+	Scopes           []auth.Scope `json:"scopes"`
+	SessionExpiresAt string       `json:"session_expires_at,omitempty"`
+}
+
+// handleAuthMe handles GET /api/v1/auth/me.
+//
+// Returns 200 + {principal_id, email, scopes, session_expires_at} when the
+// request carries a valid session cookie or Bearer API key. Returns 401 when
+// no valid credential is present. The Suite SPA calls this on page load to
+// determine whether an existing session is still valid and to schedule the
+// client-side session-expiry timer (REQ-ADM-203).
+//
+// session_expires_at is populated from the session cookie when cookie auth is
+// in use. Bearer-authenticated callers receive an empty string because API
+// keys have no encoded expiry.
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFrom(r.Context())
+	if !ok {
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "authentication required", "")
+		return
+	}
+	ac := auth.FromContext(r.Context())
+	var scopes []auth.Scope
+	if ac != nil {
+		scopes = ac.Scopes.Slice()
+	}
+	// Resolve session_expires_at from the cookie, if present. This re-parses
+	// the cookie rather than threading ExpiresAt through context so the
+	// requireAuth middleware signature stays unchanged.
+	var sessionExpiresAt string
+	cfg := s.sessionConfig()
+	if c, err := r.Cookie(cfg.CookieName); err == nil {
+		if sess, err := authsession.DecodeSession(c.Value, cfg.SigningKey, s.clk.Now()); err == nil {
+			sessionExpiresAt = sess.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+	}
+	writeJSON(w, http.StatusOK, authMeResponse{
+		PrincipalID:      uint64(p.ID),
+		Email:            p.CanonicalEmail,
+		Scopes:           scopes,
+		SessionExpiresAt: sessionExpiresAt,
 	})
 }
 

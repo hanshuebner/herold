@@ -33,19 +33,25 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Bootstrap (unauth, rate-limited per remote).
 	mux.HandleFunc("POST /api/v1/bootstrap", s.handleBootstrap)
 
-	// JSON login / logout / whoami (REQ-AUTH-SESSION-REST). Login and
+	// JSON login / logout / whoami / me (REQ-AUTH-SESSION-REST). Login and
 	// logout are NOT protected by requireAuth -- they are the auth
-	// boundary. whoami IS protected: it returns 200 + principal info on
-	// a valid session or 401 when there is no session, which is the
-	// mechanism the admin SPA uses to probe session state on page load.
-	// POST /api/v1/auth/login  returns cookies + {principal_id, scopes}.
+	// boundary. whoami and me ARE protected: they return 200 + principal info
+	// on a valid session or 401 when there is no session, which is the
+	// mechanism the SPAs use to probe session state on page load.
+	// POST /api/v1/auth/login  returns cookies + {principal_id, scopes,
+	//                                              session_expires_at}.
 	// POST /api/v1/auth/logout clears the cookies; accepts cookie or
 	// Bearer (Bearer-authenticated callers get a 204 with cookie-clear
 	// headers that are harmless since they had no cookie to begin with).
-	// GET  /api/v1/auth/whoami returns the calling principal's identity.
+	// GET  /api/v1/auth/whoami returns the calling principal's identity plus
+	//                          clientlog metadata (admin SPA, re #58).
+	// GET  /api/v1/auth/me     returns {principal_id, email, scopes,
+	//                          session_expires_at} for the Suite SPA's
+	//                          page-reload session probe (re #58).
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", auth1(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/whoami", auth1(s.handleWhoAmI))
+	mux.HandleFunc("GET /api/v1/auth/me", auth1(s.handleAuthMe))
 
 	// OIDC callback (unauth).
 	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)
@@ -210,6 +216,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/domains/{name}/attachment-policy", authAdmin(s.handleGetDomainAttPol))
 	mux.HandleFunc("PUT /api/v1/domains/{name}/attachment-policy", authAdmin(s.handlePutDomainAttPol))
 
+	// Spam-classifier feedback signal (Wave 3.15). Self-service: the caller
+	// must own the referenced email (enforced inside the handler). Registered
+	// here so the full handler set (Handler()) exposes it alongside the
+	// self-service set (RegisterSelfServiceRoutes).
+	mux.HandleFunc("POST /api/v1/spam-feedback", auth1(s.handleSpamFeedback))
+
 	// Client-log ingest (REQ-OPS-200..207, REQ-OPS-215..218).
 	// Authenticated endpoint: requires valid session/API-key.
 	mux.HandleFunc("POST /api/v1/clientlog", auth1(s.handleClientLogAuth))
@@ -219,8 +231,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /api/v1/clientlog/public", s.handleClientLogPreflight)
 
 	// Client-log admin REST surfaces (REQ-ADM-23, REQ-ADM-230..233).
-	// Admin-listener-only; the public listener never exposes /api/v1/admin/*
-	// (REQ-OPS-ADMIN-LISTENER-01).
 	mux.HandleFunc("GET /api/v1/admin/clientlog", authAdmin(s.handleAdminListClientLog))
 	mux.HandleFunc("GET /api/v1/admin/clientlog/timeline", authAdmin(s.handleAdminClientLogTimeline))
 	mux.HandleFunc("POST /api/v1/admin/clientlog/livetail", authAdmin(s.handleAdminClientLogLivetailSet))

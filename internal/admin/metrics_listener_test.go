@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// TestMetrics_ServedFromAdminListener verifies that /metrics is reachable
-// on the admin listener (REQ-OPS-ADMIN-LISTENER-01). The Prometheus handler
-// returns 200 with a text/plain body; we assert the status code only so
-// the test does not depend on which metrics are registered.
-func TestMetrics_ServedFromAdminListener(t *testing.T) {
+// TestMetrics_Returns404OnAdminListener verifies that /metrics returns 404
+// on the admin listener (re #58: admin listener is now aliased to the public
+// handler which 404s /metrics). A dedicated MetricsBind is the correct scrape
+// endpoint; the explicit 404 guard prevents the suite SPA catch-all from
+// absorbing the request.
+func TestMetrics_Returns404OnAdminListener(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -30,9 +31,9 @@ func TestMetrics_ServedFromAdminListener(t *testing.T) {
 		t.Fatalf("GET /metrics on admin: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("/metrics on admin listener: status=%d body=%s; want 200",
+		t.Errorf("/metrics on admin listener: status=%d body=%s; want 404",
 			resp.StatusCode, string(body))
 	}
 }

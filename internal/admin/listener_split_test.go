@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// TestListenerSplit_AdminPathReturns404OnPublic asserts that a request
-// for an admin REST path arriving at the public listener returns 404
-// (REQ-OPS-ADMIN-LISTENER-01: an admin path on the public listener
-// "doesn't exist on this origin"; NOT 403, the path is unmounted).
-func TestListenerSplit_AdminPathReturns404OnPublic(t *testing.T) {
+// TestUnifiedListener_AdminPathRequiresAuth asserts that /api/v1/principals
+// on the public listener is reachable (the path is mounted) but requires
+// authentication (re #58: admin REST moved to the public listener, gated by
+// ScopeAdmin). Returns 401 unauthenticated, NOT 404.
+func TestUnifiedListener_AdminPathRequiresAuth(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -25,24 +25,23 @@ func TestListenerSplit_AdminPathReturns404OnPublic(t *testing.T) {
 	if publicAddr == "" {
 		t.Fatalf("public listener not bound; addrs=%+v", addrs)
 	}
-	// Admin REST surface: /api/v1/principals is mounted on the admin
-	// handler. Hitting it on the public listener must return 404.
+	// /api/v1/principals is mounted on the unified handler. An unauthenticated
+	// request must return 401 (not 404) proving the path is reachable.
 	resp, err := http.Get("http://" + publicAddr + "/api/v1/principals")
 	if err != nil {
 		t.Fatalf("GET principals on public: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("admin path on public listener: status=%d body=%s; want 404",
-			resp.StatusCode, string(body))
+		t.Errorf("admin path on public listener returned 404 (route missing); body=%s", string(body))
 	}
 }
 
-// TestListenerSplit_PublicPathReturns404OnAdmin asserts that a request
-// for a public-only path (JMAP) arriving at the admin listener
-// returns 404. Mirror of the previous test for the other direction.
-func TestListenerSplit_PublicPathReturns404OnAdmin(t *testing.T) {
+// TestUnifiedListener_AdminAliasServesJMAP asserts that the admin listener
+// (now aliased to the public handler, re #58) serves JMAP the same way the
+// public listener does. An unauthenticated JMAP request returns 401 on both.
+func TestUnifiedListener_AdminAliasServesJMAP(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
 		cancel()
@@ -61,10 +60,10 @@ func TestListenerSplit_PublicPathReturns404OnAdmin(t *testing.T) {
 		t.Fatalf("GET jmap on admin: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("public path on admin listener: status=%d body=%s; want 404",
-			resp.StatusCode, string(body))
+		t.Errorf("admin-alias listener returned 404 for JMAP (route missing); body=%s",
+			string(body))
 	}
 }
 

@@ -3093,24 +3093,14 @@ func Validate(c *Config) error {
 			return fmt.Errorf("sysconfig: [[listener]] %q: kind=%q only valid on protocol=\"admin\" listeners", l.Name, l.Kind)
 		}
 	}
-	// REQ-OPS-ADMIN-LISTENER-01..03: a production config MUST declare
-	// at least one admin-kind listener so admin surfaces are not
-	// co-mounted with public surfaces. DevMode bypasses this rule for
-	// developer convenience.
-	if !c.Server.DevMode {
-		// At least one HTTP listener must exist. If any HTTP listener
-		// carries a kind we require both kinds to be present (no
-		// silent admin co-mount on the public listener). If no HTTP
-		// listener carries a kind we already errored above.
-		if sawPublic && !sawAdmin {
-			return errors.New(
-				"sysconfig: at least one HTTP listener with kind=\"admin\" is required (REQ-OPS-ADMIN-LISTENER-01); set [server.dev_mode] = true to co-mount in development")
-		}
-		if sawAdmin && !sawPublic {
-			return errors.New(
-				"sysconfig: at least one HTTP listener with kind=\"public\" is required (REQ-OPS-ADMIN-LISTENER-01); set [server.dev_mode] = true to co-mount in development")
-		}
-	}
+	// re #58: the admin SPA and REST surface are now on the public listener,
+	// gated by ScopeAdmin. A separate kind="admin" listener is no longer
+	// required; operators should remove it from their configs. During the
+	// transition period kind="admin" is accepted and aliased to the public
+	// handler. DevMode still uses the no-kind co-mount path (sawPublic /
+	// sawAdmin are only inspected for diagnostics below, not for hard errors).
+	_ = sawPublic
+	_ = sawAdmin
 	// SMTP inbound (REQ-DIR-RCPT-*).
 	if err := validateSMTPInbound(c); err != nil {
 		return err

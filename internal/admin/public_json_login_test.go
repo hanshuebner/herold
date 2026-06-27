@@ -48,13 +48,18 @@ func bootstrapUserViaAdmin(t *testing.T, adminAddr string) (email, password stri
 	return email, out.InitialPassword
 }
 
-// TestPublicJSONLogin_HappyPath is the canonical happy-path test for the new
-// JSON login endpoint on the public listener.
+// TestPublicJSONLogin_HappyPath is the canonical happy-path test for the JSON
+// login endpoint on the public listener.
 //
 // Flow:
-//  1. Bootstrap a principal via the admin listener.
-//  2. POST /api/v1/auth/login on the public listener -> 200 + cookies.
-//  3. POST /api/v1/auth/logout on the public listener -> 204 + cookies cleared.
+//  1. Bootstrap the first principal (admin) via the public listener.
+//  2. Create a non-admin end-user via the admin API key.
+//  3. POST /api/v1/auth/login on the public listener with end-user creds -> 200 + cookies.
+//  4. POST /api/v1/auth/logout on the public listener -> 204 + cookies cleared.
+//
+// The non-admin user is used because admin principals require TOTP step-up
+// before a session cookie with ScopeAdmin is issued (re #58). Non-admin
+// principals receive AllEndUserScopes without TOTP.
 func TestPublicJSONLogin_HappyPath(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
@@ -75,7 +80,33 @@ func TestPublicJSONLogin_HappyPath(t *testing.T) {
 		t.Fatalf("admin listener not bound; addrs=%+v", addrs)
 	}
 
-	email, password := bootstrapUserViaAdmin(t, adminAddr)
+	// Bootstrap admin principal to get an API key for creating the end-user.
+	// bootstrapAndGetAPIKey is defined in public_selfservice_test.go.
+	_, adminAPIKey, _, _ := bootstrapAndGetAPIKey(t, adminAddr)
+
+	// Create a non-admin end-user principal.
+	endUserEmail := "enduser-json-login@example.com"
+	endUserPassword := "horse-battery-staple-login"
+	createBody, _ := json.Marshal(map[string]any{
+		"email":    endUserEmail,
+		"password": endUserPassword,
+	})
+	createReq, _ := http.NewRequest("POST",
+		"http://"+adminAddr+"/api/v1/principals",
+		bytes.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("Authorization", "Bearer "+adminAPIKey)
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatalf("create end-user: %v", err)
+	}
+	createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create end-user: status=%d", createResp.StatusCode)
+	}
+
+	email := endUserEmail
+	password := endUserPassword
 
 	client := &http.Client{
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -83,7 +114,7 @@ func TestPublicJSONLogin_HappyPath(t *testing.T) {
 		},
 	}
 
-	// Step 1: login.
+	// Step 3: login with the end-user on the public listener.
 	b, _ := json.Marshal(map[string]any{
 		"email":    email,
 		"password": password,
@@ -126,13 +157,16 @@ func TestPublicJSONLogin_HappyPath(t *testing.T) {
 	// discards Secure cookies on non-HTTPS transports. The server's default
 	// config sets secure_cookies=true (production default); we verify the
 	// header shape rather than jar contents to stay transport-independent.
+	var sessionCookie, csrfCookieVal *http.Cookie
 	var gotSession, gotCSRF bool
 	for _, c := range loginResp.Cookies() {
 		if c.Name == "herold_public_session" {
 			gotSession = true
+			sessionCookie = c
 		}
 		if c.Name == "herold_public_csrf" {
 			gotCSRF = true
+			csrfCookieVal = c
 		}
 	}
 	if !gotSession {
@@ -142,12 +176,22 @@ func TestPublicJSONLogin_HappyPath(t *testing.T) {
 		t.Error("herold_public_csrf not set after login")
 	}
 
-	// Step 2: logout.
-	logoutResp, err := client.Post(
+	// Step 4: logout. The logout handler requires authentication (cookie or
+	// Bearer) and CSRF protection. Attach both cookies and the X-CSRF-Token
+	// header manually since the plain-HTTP test transport does not automatically
+	// send Secure cookies via a cookie jar.
+	logoutReq, _ := http.NewRequest("POST",
 		"http://"+publicAddr+"/api/v1/auth/logout",
-		"application/json",
-		nil,
-	)
+		nil)
+	logoutReq.Header.Set("Content-Type", "application/json")
+	if sessionCookie != nil {
+		logoutReq.AddCookie(sessionCookie)
+	}
+	if csrfCookieVal != nil {
+		logoutReq.AddCookie(csrfCookieVal)
+		logoutReq.Header.Set("X-CSRF-Token", csrfCookieVal.Value)
+	}
+	logoutResp, err := client.Do(logoutReq)
 	if err != nil {
 		t.Fatalf("POST /api/v1/auth/logout: %v", err)
 	}

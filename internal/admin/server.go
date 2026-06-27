@@ -71,7 +71,6 @@ import (
 	jmapthread "github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	jmapvacation "github.com/hanshuebner/herold/internal/protojmap/mail/vacation"
 	jmappush "github.com/hanshuebner/herold/internal/protojmap/push"
-	"github.com/hanshuebner/herold/internal/protologin"
 	"github.com/hanshuebner/herold/internal/protomanagesieve"
 	"github.com/hanshuebner/herold/internal/protosend"
 	"github.com/hanshuebner/herold/internal/protoshare"
@@ -799,9 +798,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	)
 
 	adminServerOpts := protoadmin.Options{
-		ServerVersion:             "0.1.0",
-		Health:                    health,
-		Session:                   adminSessionCookieConfig(cfg, logger),
+		ServerVersion: "0.1.0",
+		Health:        health,
+		// The admin REST surface is now served on the public listener (re #58).
+		// Use the public session cookie config (herold_public_session) so the
+		// single session cookie grants both end-user and admin access after
+		// TOTP step-up. The retired admin listener used adminSessionCookieConfig
+		// (herold_admin_session, 8h TTL); that config is no longer wired here.
+		Session:                   publicSessionCookieConfig(cfg, logger),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
 		DKIMKeyManager:            adminDKIMManager,
@@ -1988,81 +1992,30 @@ func writePortReportFile(path string, addrs []namedBoundAddr) error {
 	return nil
 }
 
-// pickHTTPHandler returns the http.Handler appropriate to a single
-// listener entry. Production configs (DevMode == false) declare an
-// explicit Kind on every HTTP listener; the bundle's public handler
-// is wired to the kind="public" listener and the admin handler to
-// kind="admin". A listener that lands here without a Kind is
-// dev_mode-only territory and gets a co-mount mux that dispatches
-// admin paths to bundle.admin and everything else to bundle.public;
-// the inner auth.RequireScope check is the security boundary in that
-// shape.
+// pickHTTPHandler returns the http.Handler for a single listener entry.
+// Since re #58 both bundle.public and bundle.admin point to the same
+// unified handler; the kind value determines which logical surface the
+// operator intended but the handler is identical. A listener without a
+// Kind (dev-mode only) receives bundle.public directly.
 func pickHTTPHandler(cfg *sysconfig.Config, l sysconfig.ListenerConfig, bundle composedHandlers) http.Handler {
+	_ = cfg
 	switch l.Kind {
-	case sysconfig.ListenerKindPublic:
-		if bundle.public != nil {
-			return bundle.public
-		}
-		return bundle.admin
 	case sysconfig.ListenerKindAdmin:
+		// Deprecated: kind="admin" was the loopback admin listener retired
+		// in re #58. Operators should remove this stanza. During the
+		// transition period it routes to the same public handler so
+		// existing configs keep working.
 		if bundle.admin != nil {
 			return bundle.admin
 		}
 		return bundle.public
 	default:
-		// Dev-mode co-mount: admin paths go to admin handler, every
-		// other path goes to public handler. The split is along the
-		// well-known admin namespaces so a /api/v1/admin REST hit
-		// reaches the protoadmin server while a /jmap hit reaches
-		// the JMAP server. This shape is documented as dev-only;
-		// production deployments declare both Kinds.
-		if bundle.admin == nil {
+		// kind="public" or no-Kind dev-mode.
+		if bundle.public != nil {
 			return bundle.public
 		}
-		if bundle.public == nil {
-			return bundle.admin
-		}
-		_ = cfg
-		return coMountHandler(bundle.public, bundle.admin)
+		return bundle.admin
 	}
-}
-
-// coMountHandler is the dev-mode-only fallback. Routes /api/v1/, /admin/,
-// and /metrics to the admin handler; everything else to public.
-// The auth.RequireScope check on the admin paths still enforces the
-// scope boundary; coMountHandler is a routing convenience, not a
-// security boundary.
-func coMountHandler(public, admin http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/admin/"),
-			strings.HasPrefix(r.URL.Path, "/admin/"),
-			strings.HasPrefix(r.URL.Path, "/metrics"),
-			r.URL.Path == "/api/v1/principals" || strings.HasPrefix(r.URL.Path, "/api/v1/principals/"),
-			r.URL.Path == "/api/v1/domains" || strings.HasPrefix(r.URL.Path, "/api/v1/domains/"),
-			r.URL.Path == "/api/v1/aliases" || strings.HasPrefix(r.URL.Path, "/api/v1/aliases/"),
-			r.URL.Path == "/api/v1/api-keys" || strings.HasPrefix(r.URL.Path, "/api/v1/api-keys/"),
-			r.URL.Path == "/api/v1/audit",
-			r.URL.Path == "/api/v1/queue" || strings.HasPrefix(r.URL.Path, "/api/v1/queue/"),
-			r.URL.Path == "/api/v1/certs" || strings.HasPrefix(r.URL.Path, "/api/v1/certs/"),
-			r.URL.Path == "/api/v1/spam/policy",
-			r.URL.Path == "/api/v1/oidc/providers" || strings.HasPrefix(r.URL.Path, "/api/v1/oidc/providers/"),
-			// /api/v1/oidc/callback is intentionally omitted: it is a
-			// user-facing route (external IdP redirect) routed to public
-			// per REQ-AUTH-51; the public handler forwards it to the
-			// admin handler via an explicit mount in composeAdminAndUI.
-			r.URL.Path == "/api/v1/server/status" || r.URL.Path == "/api/v1/server/config-check",
-			r.URL.Path == "/api/v1/healthz/live" || r.URL.Path == "/api/v1/healthz/ready",
-			r.URL.Path == "/api/v1/bootstrap",
-			strings.HasPrefix(r.URL.Path, "/api/v1/webhooks"),
-			strings.HasPrefix(r.URL.Path, "/api/v1/diag/"),
-			strings.HasPrefix(r.URL.Path, "/api/v1/jobs/"),
-			strings.HasPrefix(r.URL.Path, "/api/v1/mailboxes/"):
-			admin.ServeHTTP(w, r)
-		default:
-			public.ServeHTTP(w, r)
-		}
-	})
 }
 
 // serveAdmin runs one admin HTTP server until ctx cancels or Serve
@@ -2255,35 +2208,38 @@ type suiteServers struct {
 	jmapSrv         *protojmap.Server
 }
 
-// composedHandlers is the bundle of HTTP handlers the bind path
-// installs on each listener. When DevMode co-mounts public + admin on
-// a single HTTP listener (Wave 3.6 dev escape) the binding code
-// chains both via a single mux; production deployments install the
-// public and admin handlers on disjoint listeners per
-// REQ-OPS-ADMIN-LISTENER-01.
+// composedHandlers is the bundle of HTTP handlers the bind path installs on
+// each listener. Since re #58 both public and admin point to the same unified
+// handler; admin is retained for the transition period while operators remove
+// the kind="admin" listener stanza from their configs.
 type composedHandlers struct {
 	public http.Handler
 	admin  http.Handler
 	srvs   suiteServers
 }
 
-// composeAdminAndUI returns the listener-split bundle described in
-// REQ-OPS-ADMIN-LISTENER-01..03 (Wave 3.6). The bundle's public
-// handler serves JMAP, the HTTP send API, call credentials, image
-// proxy, chat WS, webhook ingress, and the public /login flow; the
-// admin handler serves protoadmin REST, the admin UI, /metrics, and
-// the admin /login flow with TOTP step-up. The two handlers do NOT
-// share routes: an admin path on the public listener returns 404,
-// and a public path on the admin listener returns 404.
+// composeAdminAndUI assembles the single public HTTP handler that serves
+// all herold surfaces (re #58): the suite SPA, JMAP, the admin SPA at
+// /admin/, the full protoadmin REST surface at /api/v1/, image proxy,
+// chat WS, call credentials, webhook ingress, and the public login flow.
 //
-// In DevMode the binding code may install both handlers on a single
-// listener via a small composing mux; the scope check in
-// auth.RequireScope is the inner guard.
+// The admin SPA and admin REST routes are gated by ScopeAdmin in the
+// session cookie. ScopeAdmin is issued at login only to principals flagged
+// as admin AND who completed TOTP step-up (REQ-AUTH-SCOPE-03). Non-admin
+// principals receive the end-user scope set; admin routes return 403.
 //
-// The second return value carries the protocall and protochat
-// server handles so StartServer can register their shutdown hooks
-// against the lifecycle errgroup; both are nil when the corresponding
-// feature is disabled in cfg.
+// /metrics and /debug/pprof/ remain 404 on the public listener. A
+// dedicated MetricsBind listener is the correct scrape endpoint.
+//
+// The bundle.admin field is set to bundle.public so the binding code can
+// still use a kind="admin" listener during the operator config rollout
+// period without breaking. Once all operators have removed the admin
+// listener stanza, the kind="admin" handling and bundle.admin will be
+// removed.
+//
+// The second return value carries the protocall, protochat, send-server,
+// webpush-dispatcher, and jmap-server handles so StartServer can register
+// their shutdown hooks against the lifecycle errgroup.
 func composeAdminAndUI(
 	ctx context.Context,
 	cfg *sysconfig.Config,
@@ -2319,7 +2275,7 @@ func composeAdminAndUI(
 	// closure over authsession.ResolveSession so siblings that need
 	// cookie auth (image proxy, chat, call, JMAP) no longer depend on
 	// the deleted internal/protoui package. The cookie config is the
-	// same one protologin uses when issuing the cookie, so HMAC
+	// same one protoadmin uses when issuing the cookie, so HMAC
 	// verification succeeds.
 	publicCookieCfg := publicSessionCookieConfig(cfg, logger)
 	publicSessionResolver := func(r *http.Request) (store.PrincipalID, bool) {
@@ -2329,39 +2285,16 @@ func composeAdminAndUI(
 		return authsession.ResolveSessionWithScope(r, publicCookieCfg, st, clk)
 	}
 
-	// ----- Admin handler -----
-	adminMux := http.NewServeMux()
-	adminMux.Handle("/api/v1/", adminHandler)
-	// /metrics is always mounted on the admin listener
-	// (REQ-OPS-ADMIN-LISTENER-01). The dedicated MetricsBind listener
-	// remains for operators who want a separate scrape endpoint; this
-	// mount ensures scrapes also work when MetricsBind is empty or the
-	// admin listener is the only HTTP surface.
-	adminMux.Handle("/metrics", observe.MetricsHandler())
-	// /debug/pprof/* on the admin listener so operators can grab live
-	// heap, allocs, goroutine, mutex, block, cpu profiles via
-	// `go tool pprof http://<admin-host>/debug/pprof/<kind>`. Admin
-	// scope only — never on the public listener (the matching 404 guard
-	// is registered on publicMux below). No standalone auth on these
-	// endpoints; they inherit whatever wraps the admin mux.
-	observe.PprofMux(adminMux)
-	// Standalone manual -- public, no auth. Served at /admin/manual/ on
-	// the admin listener so operators can browse the manual while logged
-	// into the admin UI. The same manualSPA instance is reused on the
-	// public listener at /manual/.
-	manualSPA, err := webspa.NewManual(webspa.ManualOptions{
-		Logger: logger.With("subsystem", "webspa.manual"),
-	})
-	if err != nil {
-		return composedHandlers{}, fmt.Errorf("admin: manual SPA: %w", err)
-	}
-	adminMux.Handle("/admin/manual/",
-		http.StripPrefix("/admin/manual",
-			withPanicRecover(logger.With("subsystem", "webspa.manual"),
-				"webspa.manual", manualSPA.Handler())))
+	// ----- Single unified public handler (re #58) -----
+	// The admin SPA, admin REST API, and all end-user surfaces live on
+	// the same public listener. ScopeAdmin in the session cookie gates
+	// the admin surfaces; the session is issued only when the principal
+	// has PrincipalFlagAdmin AND has completed TOTP step-up.
+	publicMux := http.NewServeMux()
 
-	// Admin Svelte SPA at /admin/ (Phase 3b of the merge plan -- the
-	// only admin UI). Always mounted on the admin listener.
+	// Admin Svelte SPA at /admin/ (re #58). Access is gated by ScopeAdmin
+	// in the session cookie; the SPA itself redirects to login when the
+	// session is absent or lacks ScopeAdmin.
 	adminSPA, err := webspa.NewAdmin(webspa.AdminOptions{
 		Logger:        logger.With("subsystem", "webspa.admin"),
 		AdminAssetDir: cfg.Server.AdminSPA.AssetDir,
@@ -2371,165 +2304,57 @@ func composeAdminAndUI(
 	if err != nil {
 		return composedHandlers{}, fmt.Errorf("admin: admin SPA: %w", err)
 	}
-	adminMux.Handle("/admin/",
+	publicMux.Handle("/admin/",
 		http.StripPrefix("/admin",
 			withPanicRecover(logger.With("subsystem", "webspa.admin"),
 				"webspa.admin", adminSPA.Handler())))
-	// Legacy /ui/* paths on the admin listener -> 308 to /admin/ so
-	// older bookmarks land on the new SPA without breaking. The path
-	// is hardcoded to /ui/ (the only value that was ever used).
-	adminMux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
+	// Standalone manual at /admin/manual/ -- public, no session check.
+	// Mounted before /admin/ catch-all so longest-prefix routing gives
+	// this handler priority over the admin SPA handler.
+	manualSPA, err := webspa.NewManual(webspa.ManualOptions{
+		Logger: logger.With("subsystem", "webspa.manual"),
+	})
+	if err != nil {
+		return composedHandlers{}, fmt.Errorf("admin: manual SPA: %w", err)
+	}
+	publicMux.Handle("/admin/manual/",
+		http.StripPrefix("/admin/manual",
+			withPanicRecover(logger.With("subsystem", "webspa.manual"),
+				"webspa.manual", manualSPA.Handler())))
+	// Legacy /ui/* paths -> 308 to /admin/ so older bookmarks land on the
+	// new SPA without breaking.
+	publicMux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 	})
-	adminMux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+	publicMux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 	})
-	// Bare `/` on the admin listener: redirect a browser to the
-	// admin SPA. API consumers never hit `/`.
-	adminMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/admin/", http.StatusSeeOther)
-			return
-		}
-		http.NotFound(w, r)
-	})
-	bundle.admin = withPanicRecover(logger.With("subsystem", "admin-mux"),
-		"admin.mux", adminMux)
 
-	// ----- Public handler -----
-	publicMux := http.NewServeMux()
+	// Full protoadmin REST surface (login, logout, auth/me, principals,
+	// domains, aliases, queue, certs, TOTP enrollment, API keys, spam,
+	// webhooks, OIDC, clientlog, identities, tagged addresses, healthz,
+	// verify-identity, ...) -- all at /api/v1/ on the public listener.
+	// admin-only routes enforce ScopeAdmin in requireScope. End-user
+	// routes (TOTP enrollment, API-key management, settings, clientlog)
+	// enforce end-user scopes and are reachable with the normal session.
+	taggedAdminHandler := protoadmin.WithListenerTag("public", adminHandler)
+	publicMux.Handle("/api/v1/", taggedAdminHandler)
+	// /verify-identity sits outside /api/v1/ so the link in the
+	// verification email stays short. Route it to the tagged admin handler
+	// so the same requireAuth + store logic applies.
+	publicMux.Handle("/verify-identity", taggedAdminHandler)
 
-	// /metrics must NOT be served by the public listener
-	// (REQ-OPS-ADMIN-LISTENER-01). Register an explicit 404 handler
-	// before the suite SPA catch-all so the route is unambiguous.
-	// The SPA catch-all would otherwise absorb the request and return
-	// 200 with the SPA shell, leaking the metrics surface path to
-	// browser clients.
+	// /metrics must NOT be served by the public listener. Register an
+	// explicit 404 so the suite SPA catch-all does not absorb the path.
+	// The dedicated MetricsBind listener is the correct scrape endpoint.
 	publicMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
-	// /debug/pprof/* mirrors the metrics-listener guard: admin-only,
-	// explicit 404 on the public mux so the SPA catch-all does not
-	// inadvertently route a profile request to the SPA shell.
+	// /debug/pprof/* -- explicit 404 on the public mux so the SPA
+	// catch-all does not route a profile request to the SPA shell.
 	publicMux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
-
-	// OIDC callback: the external IdP redirects the user's browser to the
-	// callback URL after authentication. Since the user arrives on the
-	// public listener, POST /api/v1/oidc/callback must also be reachable
-	// there (REQ-AUTH-51). The route is forwarded to the same admin
-	// handler so the directoryoidc state-machine logic is shared.
-	// The link initiator (GET /api/v1/oidc/providers/...) is admin-REST
-	// only; only the callback completion needs to be public.
-	publicMux.Handle("/api/v1/oidc/callback", adminHandler)
-
-	// JSON login/logout on the public listener (Phase 3c-i, REQ-AUTH-SCOPE-01).
-	// POST /api/v1/auth/login issues herold_public_session + herold_public_csrf
-	// cookies with the end-user scope set so the Suite SPA can authenticate
-	// without the HTML /login redirect dance. POST /api/v1/auth/logout clears
-	// both cookies. This is the single login surface on the public listener;
-	// the protoui HTML /login flow was retired in Phase 3c-iii.
-	//
-	// A no-op rate limiter is used here; a public-listener per-IP bucket will
-	// be added as a follow-up to Phase 3c-i.
-	publicLoginSrv := protologin.New(protologin.Options{
-		Session:       publicCookieCfg,
-		Store:         st,
-		Directory:     dir,
-		Clock:         clk,
-		Logger:        logger.With("subsystem", "protologin", "listener", "public"),
-		Listener:      "public",
-		Scopes:        publicSessionScopes,
-		AuditAppender: publicLoginAuditAppender(st, clk),
-	})
-	publicLoginSrv.Mount(publicMux)
-
-	// Self-service REST routes (Phase 4a, REQ-ADM-203): the Suite SPA
-	// /settings panel calls these endpoints with the public-listener
-	// session cookie + CSRF token. A second protoadmin.Server instance
-	// is constructed with the public cookie config so requireAuth inside
-	// each handler verifies the herold_public_session cookie rather than
-	// the admin one. Only the self-service subset is mounted; admin-only
-	// routes (queue, certs, domains, audit, etc.) are not reachable on
-	// the public listener.
-	//
-	// Ordering note: publicLoginSrv already registered
-	// POST /api/v1/auth/login and POST /api/v1/auth/logout above; Go's
-	// longest-prefix mux gives those registrations priority over the
-	// self-service mounts below because they are more-specific patterns.
-	// The self-service server registers only /api/v1/principals/,
-	// /api/v1/api-keys, /api/v1/api-keys/, and /api/v1/healthz/ so
-	// there is no overlap with the login/logout paths.
-	//
-	// The OIDC callback (POST /api/v1/oidc/callback) continues to
-	// forward to adminHandler: it completes a flow started on the admin
-	// side and uses admin session state.
-	selfServiceSrv := protoadmin.NewServer(
-		st,
-		dir,
-		oidcRP,
-		logger.With("subsystem", "admin", "listener", "public-selfservice"),
-		clk,
-		protoadmin.Options{
-			ServerVersion: "0.1.0",
-			Health:        health,
-			Session:       publicCookieCfg,
-			Clientlog: protoadmin.ClientlogOptions{
-				Emitter:       clientEmitter,
-				TelemetryGate: telemetryGate,
-			},
-		},
-	)
-	selfServiceHandler := selfServiceSrv.SelfServiceHandler()
-	// Tag all requests on the public listener with listener="public" so the
-	// clientlog pipeline stamps the correct Listener field in slog/OTLP records
-	// (REQ-OPS-203, REQ-OPS-204). withListenerTag is a thin context-value
-	// wrapper exported by protoadmin.
-	publicSelfServiceHandler := protoadmin.WithListenerTag("public", selfServiceHandler)
-	publicMux.Handle("/api/v1/principals/", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/api-keys", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/api-keys/", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/healthz/", publicSelfServiceHandler)
-	// Client-log ingest from the Suite SPA (REQ-OPS-200, REQ-OPS-204, REQ-OPS-205).
-	// Both the authenticated and anonymous endpoints must be reachable on the
-	// public listener so the SPA can POST events regardless of which session
-	// state it holds. The selfServiceSrv instance carries the real emitter
-	// and TelemetryGate wired above; these two explicit mounts expose its
-	// /api/v1/clientlog and /api/v1/clientlog/public handlers.
-	publicMux.Handle("/api/v1/clientlog", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/clientlog/", publicSelfServiceHandler)
-	// Per-user telemetry opt-out is also reachable on the public listener
-	// so the Suite SPA settings panel can toggle it with the public session.
-	publicMux.Handle("/api/v1/me/", publicSelfServiceHandler)
-	// External SMTP submission per-Identity credentials and the OAuth
-	// initiation / callback. The routes themselves are registered inside
-	// RegisterSelfServiceRoutes; this mount is what makes them reachable
-	// on the public listener (port 8080) where the suite SPA runs. Without
-	// it, every GET/PUT/DELETE /api/v1/identities/{id}/submission falls
-	// through to the stdlib catch-all and returns a plaintext 404 — which
-	// the SPA can't distinguish from "identity not found" and which
-	// previously drove a runaway retry loop in submissionStore.
-	publicMux.Handle("/api/v1/identities/", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/oauth/external-submission/callback", publicSelfServiceHandler)
-	// Identity verification link callback (REQ-IDENT-40). Mounted
-	// OUTSIDE /api/v1/* so the URL embedded in the verification email
-	// stays short. Server-rendered: a successful redeem 302-redirects
-	// to /#/settings; failure renders a static HTML page that links
-	// back to the SPA. The handler itself has no auth gate — the
-	// token IS the auth.
-	publicMux.Handle("/verify-identity", publicSelfServiceHandler)
-	// Tagged-address dismissals + Convert-to-Sieve REST surface
-	// (REQ-TAG-50..62). Mounted on the public listener so the suite
-	// SPA can reach the dismissal banner gate and the one-way
-	// "convert filter to Sieve" power-user operation without paying
-	// the admin-listener TLS handshake. Both prefixes are needed
-	// because the dismissal collection sits at the plain path
-	// /api/v1/tagged-address-dismissals AND below it (DELETE has a
-	// {base_identity_id}/{suffix} suffix).
-	publicMux.Handle("/api/v1/tagged-address-dismissals", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/tagged-address-dismissals/", publicSelfServiceHandler)
-	publicMux.Handle("/api/v1/tagged-address-filters/", publicSelfServiceHandler)
 
 	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
 	// browser presenting an end-user cookie loads upstream-tracking-
@@ -2703,16 +2528,14 @@ func composeAdminAndUI(
 			ivResender = ivDispatcher
 		}
 	}
-	// Wire the resend dispatcher into both protoadmin instances so the
-	// public listener (where the suite SPA POSTs) and the admin
-	// listener both serve POST /api/v1/identities/{id}/verify-request
-	// (REQ-IDENT-36). Nil resender disables the endpoint (503).
+	// Wire the resend dispatcher into the protoadmin server so the suite
+	// SPA can POST /api/v1/identities/{id}/verify-request (REQ-IDENT-36).
+	// Nil resender disables the endpoint (503).
 	if ivResender != nil {
 		cooldown := time.Duration(cfg.Server.IdentityCreation.ResendCooldownSeconds) * time.Second
 		cap := cfg.Server.IdentityCreation.ResendDailyCap
 		adapter := ivResenderAdapter{d: ivResender}
 		adminServer.SetVerificationResender(adapter, cooldown, cap)
-		selfServiceSrv.SetVerificationResender(adapter, cooldown, cap)
 	}
 	identityOpts := jmapidentity.Options{
 		VerificationTrigger: identityVerifyTrigger,
@@ -3040,23 +2863,12 @@ func composeAdminAndUI(
 
 	// Standalone manual at /manual/ on the public listener -- intentionally
 	// PUBLIC, no session check. The same manualSPA instance constructed
-	// above for the admin listener is reused here; it is safe for
-	// concurrent use. Mount BEFORE the suite SPA catch-all so Go's
-	// longest-prefix routing gives the manual handler priority.
+	// above is reused here; it is safe for concurrent use. Mount BEFORE
+	// the suite SPA catch-all so longest-prefix routing gives it priority.
 	publicMux.Handle("/manual/",
 		http.StripPrefix("/manual",
 			withPanicRecover(logger.With("subsystem", "webspa.manual"),
 				"webspa.manual", manualSPA.Handler())))
-
-	// Block /admin/ on the public listener. The admin SPA lives on the
-	// admin listener (kind = "admin") only; without these explicit
-	// handlers Go's stdlib mux falls through to the Suite SPA catch-all
-	// below, which serves index.html and confuses the operator (the
-	// Suite hash router then snaps to its default /#/mail route).
-	// Return 404 with a hint so a misdirected operator can correct
-	// course rather than getting a silent miss.
-	publicMux.HandleFunc("/admin/", adminListenerHint)
-	publicMux.HandleFunc("/admin", adminListenerHint)
 
 	// Suite SPA mount (REQ-DEPLOY-COLOC-01..05). When the operator
 	// has not opted out (Suite.Enabled defaults true), the SPA
@@ -3087,24 +2899,12 @@ func composeAdminAndUI(
 
 	bundle.public = withPanicRecover(logger.With("subsystem", "public-mux"),
 		"public.mux", publicMux)
+	// Alias admin to public so a kind="admin" listener in operator configs
+	// serves the same handler during the transition period (re #58).
+	// Operators should remove the kind="admin" listener stanza after
+	// deploying this binary; until then it routes to the public handler.
+	bundle.admin = bundle.public
 	return bundle, nil
-}
-
-// adminListenerHint serves /admin and /admin/ on the public listener with
-// a 404 plus a short text body redirecting the operator to the admin
-// listener (kind = "admin") where the admin SPA actually lives. Without
-// this, the Suite SPA catch-all would intercept the request, serve
-// index.html, and the Suite's hash router would snap to its default
-// /#/mail route -- confusing operators who typed /admin/ on the public
-// host by mistake.
-func adminListenerHint(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = w.Write([]byte(
-		"The herold admin SPA is served by the admin listener (kind = \"admin\")," +
-			" not the public listener. Connect to the admin listener's host:port" +
-			" instead -- typically 127.0.0.1:9443 reachable via 'ssh -L 9443:127.0.0.1:9443'.\n",
-	))
 }
 
 // defaultSessionKeyEnv is the fixed env var name operators set to provide a
@@ -3199,17 +2999,10 @@ func loadOrCreatePersistedSessionKey(dataDir string) ([]byte, error) {
 	return key[:], nil
 }
 
-// adminSessionCookieConfig extracts the admin-listener cookie parameters
-// from sysconfig and returns an authsession.SessionConfig suitable for
-// passing to protoadmin.Options.Session. The returned config uses the same
-// signing key and cookie names as the admin listener so cookies minted by
-// protoadmin's JSON /api/v1/auth/login endpoint are verifiable by
-// requireAuth (REQ-AUTH-SESSION-REST).
-//
-// When no persistent signing key is configured, resolveSessionSigningKey
-// generates an ephemeral 32-byte key so cookie auth works out-of-the-box
-// (fixes #6, #7: the public self-service endpoints returned 401 because
-// the empty signing key caused authenticateWithMode to skip cookie auth).
+// adminSessionCookieConfig is the retired admin-listener cookie config
+// (herold_admin_session, 8h TTL). Retained for reference; no longer called
+// in production paths (re #58). The protoadmin server now uses
+// publicSessionCookieConfig with a 7-day TTL via herold_public_session.
 //
 // clientLogBootstrap derives the bootstrap descriptor injected into the
 // SPA's <meta name="herold-clientlog"> tag (REQ-CLOG-12) from the resolved
@@ -3281,16 +3074,10 @@ func adminSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) authse
 }
 
 // publicSessionCookieConfig extracts the public-listener cookie parameters
-// from sysconfig and returns an authsession.SessionConfig for
-// protologin.Options.Session and the authsession-based resolvers wired
-// into protoimg, protochat, protocall, and protojmap. Cookies issued by
-// protologin's JSON /api/v1/auth/login are verified by those resolvers
-// (REQ-AUTH-SESSION-REST).
-//
-// Critically, this function is called ONCE inside composeAdminAndUI and the
-// returned SessionConfig is shared between publicLoginSrv (cookie issuance)
-// and selfServiceSrv (cookie verification). Both consumers must use the
-// same SigningKey or HMAC verification will fail for every cookie.
+// from sysconfig and returns an authsession.SessionConfig used for cookie
+// issuance (protoadmin handleLogin) and the authsession-based resolvers
+// wired into protoimg, protochat, protocall, and protojmap. All consumers
+// share the same SigningKey so HMAC verification succeeds (re #58).
 //
 // When no persistent signing key is configured, resolveSessionSigningKey
 // generates an ephemeral 32-byte key (fixes #6, #7).
@@ -3319,43 +3106,6 @@ func publicSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) auths
 		CSRFCookieName: csrfName,
 		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
 		SecureCookies:  secure,
-	}
-}
-
-// publicSessionScopes returns the end-user scope set for cookies issued on
-// the public listener (REQ-AUTH-SCOPE-01). The set covers all nine end-user
-// scopes: end-user, mail.send, mail.receive, chat.read, chat.write, cal.read,
-// cal.write, contacts.read, contacts.write.
-//
-// Today the principal flags do not bifurcate access at a finer granularity
-// than "user has TOTP enabled"; a constant AllEndUserScopes set is therefore
-// correct. When per-subsystem principal flags are added in a future phase,
-// this function should be updated to gate the mail.*/chat.*/cal.*/contacts.*
-// scopes against those flags.
-func publicSessionScopes(_ store.Principal) auth.ScopeSet {
-	return auth.NewScopeSet(auth.AllEndUserScopes...)
-}
-
-// publicLoginAuditAppender returns an AuditAppender func that writes records
-// to the store's metadata audit log. It is the thin shim that lets
-// protologin (which does not depend on any specific store implementation)
-// write audit events via the store.Metadata interface (REQ-ADM-300).
-//
-// The actor defaults to ActorSystem / "system"; protologin's login handler
-// overrides this by attaching the principal to the context before calling
-// the appender on successful login.
-func publicLoginAuditAppender(st store.Store, clk clock.Clock) func(ctx context.Context, action, subject string, outcome store.AuditOutcome, message string, meta map[string]string) {
-	return func(ctx context.Context, action, subject string, outcome store.AuditOutcome, message string, meta map[string]string) {
-		_ = st.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
-			At:        clk.Now(),
-			ActorKind: store.ActorSystem,
-			ActorID:   "system",
-			Action:    action,
-			Subject:   subject,
-			Outcome:   outcome,
-			Message:   message,
-			Metadata:  meta,
-		})
 	}
 }
 

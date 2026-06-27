@@ -72,14 +72,20 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
 		// Attach the closed-enum scope set so downstream handlers'
 		// auth.RequireScope checks see what the credential granted
-		// (REQ-AUTH-SCOPE-02). Listener label is "admin" because
-		// protoadmin REST is mounted on the admin listener
-		// (REQ-OPS-ADMIN-LISTENER-01); the public-listener handler
-		// chain attaches "public".
+		// (REQ-AUTH-SCOPE-02). The listener label is read from the
+		// ctxKeyListener context value stamped by withListenerTag (or
+		// by the outer WithListenerTag wrapper when the handler is
+		// mounted on the public listener). This allows protoadmin to
+		// serve correctly on both the retired admin listener and the
+		// current public listener (re #58).
+		listenerTag := "public"
+		if tag, ok := ctx.Value(ctxKeyListener).(string); ok && tag != "" {
+			listenerTag = tag
+		}
 		ctx = auth.WithContext(ctx, &auth.AuthContext{
 			PrincipalID: uint64(principal.ID),
 			Scopes:      scope,
-			Listener:    "admin",
+			Listener:    listenerTag,
 		})
 		next(w, r.WithContext(ctx))
 	}
