@@ -34,6 +34,14 @@ const backoffBase = 2 * time.Second
 // backoffCap is the maximum retry delay.
 const backoffCap = 5 * time.Minute
 
+// maxRateLimitBackoffShift caps the extra backoff exponent accumulated from
+// upstream rate-limit / too-many-connections responses (REQ-IMAP-IMP-73). It
+// is added on top of the consecutive-failure exponent in backoffDuration so a
+// rate-limited account waits materially longer before reconnecting, without
+// letting the shift run away. backoffDuration already caps the total delay at
+// backoffCap, so this bound mainly limits how quickly the cap is reached.
+const maxRateLimitBackoffShift = 6
+
 // accountWorkerOpts bundles the constructor parameters for
 // accountWorker. All fields are required unless noted.
 type accountWorkerOpts struct {
@@ -81,6 +89,21 @@ type accountWorker struct {
 	// used in openCredential. Set in tests to inject a fakeTokenSource
 	// without wiring a real HTTP endpoint. Production code leaves this nil.
 	testTokenSource oauthTokenSource
+
+	// forceSingleConn is set once the upstream rejects a second / write-back
+	// connection with a rate-limit / too-many-connections response
+	// (REQ-IMAP-IMP-21/73). It is sticky for the worker's lifetime: subsequent
+	// sessions skip the second-connection attempt entirely and run in
+	// single-connection mode, so the worker stops hammering a connection-capped
+	// upstream. Accessed only from the worker's supervising goroutine.
+	forceSingleConn bool
+
+	// rateLimitBackoffShift is the extra backoff exponent accumulated from
+	// upstream rate-limit responses (REQ-IMAP-IMP-73), added on top of the
+	// consecutive-failure exponent in backoffDuration. Reset to 0 on a fully
+	// successful enabled session alongside the consecutive counter. Capped at
+	// maxRateLimitBackoffShift.
+	rateLimitBackoffShift int
 }
 
 func newAccountWorker(opts accountWorkerOpts) *accountWorker {
@@ -165,8 +188,13 @@ func (w *accountWorker) run(ctx context.Context) {
 		}
 
 		if !migrating && err == nil {
-			// Successful enabled session: record success, reset failure counter.
+			// Successful enabled session: record success, reset failure counter
+			// and the rate-limit backoff exponent (REQ-IMAP-IMP-73). The
+			// forceSingleConn decision stays sticky — a connection-capped
+			// upstream does not regain a second connection just because one
+			// single-conn session succeeded.
 			w.consecutive = 0
+			w.rateLimitBackoffShift = 0
 			w.status.setConsecutiveFailures(0)
 			now := w.opts.clk.Now()
 			if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
@@ -203,6 +231,18 @@ func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (st
 		w.opts.account.ID,
 		kind,
 	).Inc()
+
+	// An upstream rate-limit / too-many-connections response forces
+	// single-connection mode for subsequent sessions and raises the backoff
+	// exponent so the worker backs off harder (REQ-IMAP-IMP-73). Repeated
+	// rate-limiting still accumulates consecutive failures and ultimately flips
+	// the account to errored below.
+	if kind == "rate_limit" {
+		w.forceSingleConn = true
+		if w.rateLimitBackoffShift < maxRateLimitBackoffShift {
+			w.rateLimitBackoffShift++
+		}
+	}
 
 	w.consecutive++
 	redacted := redactError(err)
@@ -244,8 +284,9 @@ func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (st
 		return true
 	}
 
-	// Exponential backoff with jitter (REQ-IMAP-IMP-25).
-	delay := backoffDuration(w.consecutive)
+	// Exponential backoff with jitter (REQ-IMAP-IMP-25), raised by any
+	// accumulated rate-limit shift (REQ-IMAP-IMP-73).
+	delay := backoffDurationShift(w.consecutive, w.rateLimitBackoffShift)
 	w.status.setPhase(PhaseBackoff, w.opts.clk.Now())
 	w.opts.log.Info("imapimport: waiting before retry",
 		slog.String("account_id", w.opts.account.ID),
@@ -387,13 +428,26 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	// degraded mode (no write-back) but still run the IDLE loop.
 	wbCtx, wbCancel := context.WithCancel(ctx)
 	var wbWg sync.WaitGroup
-	if wbConn, wbErr := w.openSecondaryConn(wbCtx); wbErr == nil {
+	if w.forceSingleConn {
+		// A rate-limited / connection-capped upstream forced single-connection
+		// mode (REQ-IMAP-IMP-21/73); do not open the dedicated write-back
+		// connection either. Flag changes still reconcile on the next sync
+		// round over the primary connection.
+		w.opts.log.Info("imapimport: rate-limit fallback active; skipping write-back connection",
+			slog.String("account_id", account.ID),
+		)
+	} else if wbConn, wbErr := w.openSecondaryConn(wbCtx); wbErr == nil {
 		wbWg.Add(1)
 		go func() {
 			defer wbWg.Done()
 			w.runWriteBack(wbCtx, wbConn)
 		}()
 	} else {
+		// A rate-limit / too-many-connections rejection of the write-back
+		// connection is the same signal as for the second sync connection:
+		// drop to single-connection mode and raise the backoff
+		// (REQ-IMAP-IMP-21/73).
+		w.noteSecondaryConnError(wbErr)
 		w.opts.log.Info("imapimport: write-back connection unavailable; skipping write-back for this session",
 			slog.String("account_id", account.ID),
 			slog.String("error", redactError(wbErr)),
@@ -482,11 +536,22 @@ func (w *accountWorker) tokenSourceForProvider(_ context.Context, _ string, _ st
 // backoffDuration returns the exponential backoff delay for the n-th
 // failure (1-indexed), capped at backoffCap and jittered by ±25 %.
 func backoffDuration(n int) time.Duration {
+	return backoffDurationShift(n, 0)
+}
+
+// backoffDurationShift is backoffDuration with an additional exponent applied
+// on top of the consecutive-failure exponent (REQ-IMAP-IMP-73). extraShift is
+// accumulated from upstream rate-limit responses so a rate-limited account
+// waits materially longer than one failing only on transient network errors.
+func backoffDurationShift(n, extraShift int) time.Duration {
 	if n < 1 {
 		n = 1
 	}
-	// shift n-1 so first failure -> base
-	shift := n - 1
+	if extraShift < 0 {
+		extraShift = 0
+	}
+	// shift n-1 so first failure -> base, plus any rate-limit exponent.
+	shift := n - 1 + extraShift
 	if shift > 20 {
 		shift = 20 // prevent overflow
 	}
@@ -517,7 +582,10 @@ func classifyErrorKind(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	// Lower-case the message so detection is case-insensitive — real upstreams
+	// phrase rate-limit responses as "Too many connections", "Rate Limited",
+	// etc. (REQ-IMAP-IMP-73). The match patterns below are all lower-case.
+	msg := toLower(err.Error())
 	switch {
 	case contains(msg, "tls") || contains(msg, "certificate") || contains(msg, "x509"):
 		return "tls"
@@ -534,6 +602,23 @@ func classifyErrorKind(err error) string {
 	}
 }
 
+// noteSecondaryConnError inspects a failed secondary / write-back connection
+// open. When the upstream rejected it with a rate-limit / too-many-connections
+// error (REQ-IMAP-IMP-21/73), it forces single-connection mode for the rest of
+// the worker's life and raises the rate-limit backoff exponent so the next
+// backoff is materially longer. Non-rate-limit failures (e.g. an upstream that
+// simply caps at one connection) still fall back to single-connection mode in
+// runIDLELoop, but do NOT raise the backoff — they are not a throttling signal.
+func (w *accountWorker) noteSecondaryConnError(err error) {
+	if classifyErrorKind(err) != "rate_limit" {
+		return
+	}
+	w.forceSingleConn = true
+	if w.rateLimitBackoffShift < maxRateLimitBackoffShift {
+		w.rateLimitBackoffShift++
+	}
+}
+
 // redactError returns a safe-to-log version of the error. It strips any
 // substring that looks like it might carry credential material by
 // replacing everything after known sentinel words with "[redacted]".
@@ -544,6 +629,29 @@ func redactError(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// toLower is strings.ToLower restricted to ASCII A-Z, kept local to avoid
+// importing strings here (matching contains below). Error classification only
+// needs ASCII-case folding of IMAP response text.
+func toLower(s string) string {
+	var changed bool
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return s
+	}
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // contains is strings.Contains without importing strings here.

@@ -64,23 +64,38 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 	var syncConn Conn
 	useSingleConn := true // default until second connection succeeds
 
-	if syncConn2, err := w.openSecondaryConn(ctx); err != nil {
-		log.Info("imapimport: second connection unavailable; using single-connection mode",
+	switch {
+	case w.forceSingleConn:
+		// A prior rate-limit / too-many-connections rejection forced
+		// single-connection mode for the worker's lifetime (REQ-IMAP-IMP-21/73);
+		// skip the second-connection attempt entirely so we stop probing a
+		// connection-capped upstream.
+		log.Info("imapimport: rate-limit fallback active; using single-connection mode",
 			slog.String("account_id", account.ID),
-			slog.String("reason", redactError(err)),
 		)
 		useSingleConn = true
-	} else {
-		syncConn = syncConn2
-		useSingleConn = false
-		defer func() {
-			if logoutErr := syncConn.Logout(); logoutErr != nil {
-				log.Debug("imapimport: secondary LOGOUT error",
-					slog.String("account_id", account.ID),
-					slog.String("error", logoutErr.Error()))
-			}
-			syncConn.Close()
-		}()
+	default:
+		if syncConn2, err := w.openSecondaryConn(ctx); err != nil {
+			// A rate-limit rejection makes the single-conn fallback sticky and
+			// raises the backoff exponent (REQ-IMAP-IMP-73).
+			w.noteSecondaryConnError(err)
+			log.Info("imapimport: second connection unavailable; using single-connection mode",
+				slog.String("account_id", account.ID),
+				slog.String("reason", redactError(err)),
+			)
+			useSingleConn = true
+		} else {
+			syncConn = syncConn2
+			useSingleConn = false
+			defer func() {
+				if logoutErr := syncConn.Logout(); logoutErr != nil {
+					log.Debug("imapimport: secondary LOGOUT error",
+						slog.String("account_id", account.ID),
+						slog.String("error", logoutErr.Error()))
+				}
+				syncConn.Close()
+			}()
+		}
 	}
 
 	if useSingleConn {
