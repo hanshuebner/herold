@@ -542,10 +542,16 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 	// outcome on iteration 3 calls CompleteQueueItem (state=Failed).
 	// Tolerate either.
 	//
-	// The NumWaiters barrier that previously accompanied this loop is
-	// no longer needed: the scheduler now arms its poll timer for the
-	// earliest NextAttemptAt (queue.go), so a missed Advance leaves
-	// wait<=0 and FakeClock.After fires immediately on the next loop.
+	// Before each advance we wait for the scheduler to register its
+	// clk.After poll-timer waiter (NumWaiters >= 1). The race: the
+	// scheduler computes wait = pollInterval (50ms) from clk.Now() in
+	// one expression, then calls clk.After(wait) in the next. If
+	// Advance fires between those two calls, clk.After gets a baseline
+	// of (post-advance now), producing a deadline of
+	// now+advance+50ms -- a future instant nothing will ever cross.
+	// NumWaiters() >= 1 proves the scheduler is blocked on its timer
+	// before Advance fires, so the 2-minute advance is guaranteed to
+	// fire the 50ms waiter immediately (50ms << 2min).
 	for i := 0; i < 4; i++ {
 		if !waitFor(t, 5*time.Second, func() bool {
 			if f.deliv.callCount() < i+1 {
@@ -559,6 +565,7 @@ func TestRetryExhaustionEmitsFailureDSN(t *testing.T) {
 		}) {
 			t.Fatalf("attempt %d never observed", i+1)
 		}
+		waitForSchedulerTimer(t, f.clk, 1)
 		f.clk.Advance(2 * time.Minute)
 	}
 	if !waitFor(t, 3*time.Second, func() bool {
