@@ -50,6 +50,20 @@ const (
 	// IMAPImportAccountStateErrored is "worker hit M consecutive failures
 	// and has given up; user must re-enable" (REQ-IMAP-IMP-25).
 	IMAPImportAccountStateErrored IMAPImportAccountState = "errored"
+	// IMAPImportAccountStateMigrating is the complete-migration cutover in
+	// progress: the worker forces the backfill floor to "all" and runs a
+	// one-shot complete backfill, with authority already transferred to
+	// herold (the upstream-authoritative overwrite of REQ-IMAP-IMP-42 no
+	// longer applies). Entered from enabled; advances to migrated on
+	// completion (REQ-IMAP-IMP-90/91/92). A worker is launched for this
+	// state at boot so a restart resumes the cutover (REQ-IMAP-IMP-94).
+	IMAPImportAccountStateMigrating IMAPImportAccountState = "migrating"
+	// IMAPImportAccountStateMigrated is the terminal cutover state: herold
+	// is authoritative for the mirrored mail and no further upstream I/O
+	// occurs. The account row, cursors, and message_state are retained for
+	// provenance. May be re-opened to enabled by explicit user action
+	// (REQ-IMAP-IMP-93/95).
+	IMAPImportAccountStateMigrated IMAPImportAccountState = "migrated"
 )
 
 // IMAPImportSyncedFlags is a small bitfield that records the \Seen /

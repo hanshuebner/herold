@@ -2251,10 +2251,13 @@ type Metadata interface {
 	// principalID in ascending created_at order.
 	ListIMAPImportAccountsByPrincipal(ctx context.Context, principalID PrincipalID) ([]IMAPImportAccount, error)
 
-	// ListEnabledIMAPImportAccounts returns all accounts with state ==
-	// "enabled" across all principals in ascending created_at order.
-	// Used by the worker scheduler at startup and on config-change
-	// events (REQ-IMAP-IMP-25).
+	// ListEnabledIMAPImportAccounts returns all accounts that need a running
+	// worker — state == "enabled" or state == "migrating" — across all
+	// principals in ascending created_at order. "migrating" is included so a
+	// restart resumes an in-progress complete-migration cutover from its
+	// persisted cursors (REQ-IMAP-IMP-94); "disabled", "errored", and the
+	// terminal "migrated" drive no worker. Used by the worker scheduler at
+	// startup and on config-change events (REQ-IMAP-IMP-25/90).
 	ListEnabledIMAPImportAccounts(ctx context.Context) ([]IMAPImportAccount, error)
 
 	// DeleteIMAPImportAccount removes the account row and (via ON DELETE

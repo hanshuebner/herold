@@ -132,7 +132,9 @@ func testIMAPImport_ListByPrincipal(t *testing.T, s store.Store) {
 }
 
 // testIMAPImport_ListEnabled verifies that ListEnabledIMAPImportAccounts
-// returns only enabled accounts across all principals.
+// returns accounts that need a running worker — "enabled" and (for cutover
+// resume, REQ-IMAP-IMP-94) "migrating" — and excludes "disabled", "errored",
+// and the terminal "migrated".
 func testIMAPImport_ListEnabled(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -159,25 +161,38 @@ func testIMAPImport_ListEnabled(t *testing.T, s store.Store) {
 	}
 
 	enabled := make("Enabled", store.IMAPImportAccountStateEnabled)
+	migrating := make("Migrating", store.IMAPImportAccountStateMigrating)
 	_ = make("Disabled", store.IMAPImportAccountStateDisabled)
 	_ = make("Errored", store.IMAPImportAccountStateErrored)
+	migrated := make("Migrated", store.IMAPImportAccountStateMigrated)
 
 	list, err := s.Meta().ListEnabledIMAPImportAccounts(ctx)
 	if err != nil {
 		t.Fatalf("ListEnabledIMAPImportAccounts: %v", err)
 	}
 	// There may be accounts from other subtests, but we can check ours appears.
-	var found bool
+	var foundEnabled, foundMigrating bool
 	for _, a := range list {
-		if a.ID == enabled.ID {
-			found = true
+		switch a.ID {
+		case enabled.ID:
+			foundEnabled = true
+		case migrating.ID:
+			foundMigrating = true
+		case migrated.ID:
+			t.Errorf("migrated account %q must not be returned by ListEnabledIMAPImportAccounts", a.ID)
 		}
-		if a.State != store.IMAPImportAccountStateEnabled {
-			t.Errorf("account %q has state %q; want enabled", a.ID, a.State)
+		switch a.State {
+		case store.IMAPImportAccountStateEnabled, store.IMAPImportAccountStateMigrating:
+			// expected
+		default:
+			t.Errorf("account %q has state %q; want enabled or migrating", a.ID, a.State)
 		}
 	}
-	if !found {
+	if !foundEnabled {
 		t.Errorf("enabled account %q not found in ListEnabledIMAPImportAccounts", enabled.ID)
+	}
+	if !foundMigrating {
+		t.Errorf("migrating account %q not found in ListEnabledIMAPImportAccounts", migrating.ID)
 	}
 }
 

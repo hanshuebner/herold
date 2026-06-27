@@ -209,7 +209,7 @@ func (m *metadata) ListIMAPImportAccountsByPrincipal(ctx context.Context, princi
 func (m *metadata) ListEnabledIMAPImportAccounts(ctx context.Context) ([]store.IMAPImportAccount, error) {
 	rows, err := m.s.pool.Query(ctx,
 		`SELECT `+imapImportAccountSelectColsPG+`
-		   FROM imapimport_account WHERE state = 'enabled'
+		   FROM imapimport_account WHERE state IN ('enabled','migrating')
 		   ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, mapErr(err)
