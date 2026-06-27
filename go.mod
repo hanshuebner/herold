@@ -142,3 +142,13 @@ require (
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )
+
+// In-tree vendored fork of emersion/go-imap/v2 (beta.8) adding X-GM-LABELS
+// (X-GM-EXT-1) client FETCH support (REQ-IMAP-IMP-53); the upstream beta.8
+// FETCH parser rejects the X-GM-LABELS msg-att, and no released version (nor
+// master) supports it. The patch is minimal and upstream-able: the clean PR
+// against emersion/go-imap lives in docs/dev/go-imap-xgmlabels-upstream.patch.
+// Once that PR merges (or the fork is hosted), drop this replace + third_party
+// copy and bump the require. Vendored in-tree (not a hosted pseudo-version)
+// so CI needs no external module fetch.
+replace github.com/emersion/go-imap/v2 => ./third_party/go-imap

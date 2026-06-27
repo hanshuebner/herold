@@ -1,0 +1,285 @@
+From 3380a8ece93fc64d14ab44cba629cbffc0032a18 Mon Sep 17 00:00:00 2001
+From: Hans Hubner <hans@huebner.org>
+Date: Sat, 27 Jun 2026 14:32:05 +0200
+Subject: [PATCH] imapclient: add X-GM-LABELS (X-GM-EXT-1) FETCH support
+
+Gmail's IMAP server advertises X-GM-EXT-1 and exposes each message's set of
+labels via the X-GM-LABELS FETCH data item. The client previously hard-errored
+on this msg-att ("unsupported msg-att name") in handleFetch, breaking any
+FETCH that requested it.
+
+Add first-class support:
+
+  - imap.FetchOptions.GmailLabels requests the item; writeFetchItems emits the
+    X-GM-LABELS atom.
+  - handleFetch parses the parenthesised label list (backslash-prefixed system
+    labels such as \\Inbox / \\Sent, and astring user labels which may be
+    quoted and modified-UTF-7 encoded) into FetchItemDataGmailLabels.
+  - FetchMessageBuffer.GmailLabels is populated by Collect via populateItemData.
+
+A scripted-server unit test covers the round-trip (mixed system and quoted
+user labels, including a label with a space and one with a slash).
+---
+ fetch.go                       |   1 +
+ imapclient/fetch.go            |  66 ++++++++++++++++++-
+ imapclient/fetch_gmail_test.go | 117 +++++++++++++++++++++++++++++++++
+ 3 files changed, 183 insertions(+), 1 deletion(-)
+ create mode 100644 imapclient/fetch_gmail_test.go
+
+diff --git a/fetch.go b/fetch.go
+index f146c89..a2d8073 100644
+--- a/fetch.go
++++ b/fetch.go
+@@ -19,6 +19,7 @@ type FetchOptions struct {
+ 	BinarySection     []*FetchItemBinarySection     // requires IMAP4rev2 or BINARY
+ 	BinarySectionSize []*FetchItemBinarySectionSize // requires IMAP4rev2 or BINARY
+ 	ModSeq            bool                          // requires CONDSTORE
++	GmailLabels       bool                          // requires the X-GM-EXT-1 extension (Gmail)
+ 
+ 	ChangedSince uint64 // requires CONDSTORE
+ }
+diff --git a/imapclient/fetch.go b/imapclient/fetch.go
+index 309825c..45a262e 100644
+--- a/imapclient/fetch.go
++++ b/imapclient/fetch.go
+@@ -57,6 +57,7 @@ func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *i
+ 		"INTERNALDATE":  options.InternalDate,
+ 		"RFC822.SIZE":   options.RFC822Size,
+ 		"MODSEQ":        options.ModSeq,
++		"X-GM-LABELS":   options.GmailLabels,
+ 	}
+ 	for k, req := range m {
+ 		if req {
+@@ -356,6 +357,7 @@ var (
+ 	_ FetchItemData = FetchItemDataRFC822Size{}
+ 	_ FetchItemData = FetchItemDataUID{}
+ 	_ FetchItemData = FetchItemDataBodyStructure{}
++	_ FetchItemData = FetchItemDataGmailLabels{}
+ )
+ 
+ type discarder interface {
+@@ -479,6 +481,18 @@ type FetchItemDataModSeq struct {
+ 
+ func (FetchItemDataModSeq) fetchItemData() {}
+ 
++// FetchItemDataGmailLabels holds data returned by FETCH X-GM-LABELS.
++//
++// This requires the X-GM-EXT-1 extension advertised by Gmail. Each entry is a
++// Gmail label: system labels are returned with a leading backslash (e.g.
++// "\\Inbox", "\\Sent", "\\Important", "\\Starred"), user labels are returned
++// verbatim (decoded from modified UTF-7 when non-ASCII).
++type FetchItemDataGmailLabels struct {
++	Labels []string
++}
++
++func (FetchItemDataGmailLabels) fetchItemData() {}
++
+ // FetchBodySectionBuffer is a buffer for the data returned by
+ // FetchItemBodySection.
+ type FetchBodySectionBuffer struct {
+@@ -507,7 +521,8 @@ type FetchMessageBuffer struct {
+ 	BodySection       []FetchBodySectionBuffer
+ 	BinarySection     []FetchBinarySectionBuffer
+ 	BinarySectionSize []FetchItemDataBinarySectionSize
+-	ModSeq            uint64 // requires CONDSTORE
++	ModSeq            uint64   // requires CONDSTORE
++	GmailLabels       []string // requires the X-GM-EXT-1 extension (Gmail)
+ }
+ 
+ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
+@@ -554,6 +569,8 @@ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
+ 		buf.BinarySectionSize = append(buf.BinarySectionSize, item)
+ 	case FetchItemDataModSeq:
+ 		buf.ModSeq = item.ModSeq
++	case FetchItemDataGmailLabels:
++		buf.GmailLabels = item.Labels
+ 	default:
+ 		panic(fmt.Errorf("unsupported fetch item data %T", item))
+ 	}
+@@ -801,6 +818,15 @@ func (c *Client) handleFetch(seqNum uint32) error {
+ 				return dec.Err()
+ 			}
+ 			item = FetchItemDataModSeq{ModSeq: modSeq}
++		case "X-GM-LABELS":
++			if !dec.ExpectSP() {
++				return dec.Err()
++			}
++			labels, err := readGmailLabels(dec)
++			if err != nil {
++				return fmt.Errorf("in x-gm-labels: %v", err)
++			}
++			item = FetchItemDataGmailLabels{Labels: labels}
+ 		default:
+ 			return fmt.Errorf("unsupported msg-att name: %q", attName)
+ 		}
+@@ -828,6 +854,44 @@ func isMsgAttNameChar(ch byte) bool {
+ 	return ch != '[' && imapwire.IsAtomChar(ch)
+ }
+ 
++// readGmailLabels parses the parenthesised label list returned by the Gmail
++// X-GM-EXT-1 "X-GM-LABELS" FETCH data item, e.g.
++//
++//	(\Inbox \Sent "Travel" "Receipts/2024")
++//
++// System labels are flag-like (a backslash followed by an atom) and are
++// returned with their leading backslash preserved. User labels are astrings
++// (quoted strings or atoms) and are returned verbatim. An empty list "()" is
++// valid (a message with no labels) and yields a nil slice.
++func readGmailLabels(dec *imapwire.Decoder) ([]string, error) {
++	var labels []string
++	err := dec.ExpectList(func() error {
++		// Tolerate a stray leading space inside the list, mirroring the
++		// flag-list leniency in internal.ExpectFlagList.
++		dec.SP()
++
++		if dec.Special('\\') {
++			// System label: a backslash followed by an atom (\Inbox, \Sent,
++			// \Important, \Starred, \Trash, \Spam, \Draft, ...).
++			var name string
++			if !dec.ExpectAtom(&name) {
++				return dec.Err()
++			}
++			labels = append(labels, "\\"+name)
++			return nil
++		}
++		// User label: an astring (atom or quoted string; may contain spaces
++		// when quoted, and is modified-UTF-7 encoded when non-ASCII).
++		var label string
++		if !dec.ExpectAString(&label) {
++			return dec.Err()
++		}
++		labels = append(labels, label)
++		return nil
++	})
++	return labels, err
++}
++
+ func readEnvelope(dec *imapwire.Decoder, options *Options) (*imap.Envelope, error) {
+ 	var envelope imap.Envelope
+ 
+diff --git a/imapclient/fetch_gmail_test.go b/imapclient/fetch_gmail_test.go
+new file mode 100644
+index 0000000..6841418
+--- /dev/null
++++ b/imapclient/fetch_gmail_test.go
+@@ -0,0 +1,117 @@
++package imapclient_test
++
++import (
++	"bufio"
++	"net"
++	"strings"
++	"testing"
++
++	"github.com/emersion/go-imap/v2"
++	"github.com/emersion/go-imap/v2/imapclient"
++)
++
++// TestFetchGmailLabels exercises the X-GM-EXT-1 "X-GM-LABELS" FETCH data item
++// against a scripted raw IMAP server (the in-process imapmemserver does not
++// implement the Gmail extension). It verifies the client both emits the
++// "X-GM-LABELS" fetch item and parses the parenthesised label list, mixing
++// backslash-prefixed system labels with quoted user labels (one containing a
++// space and a slash).
++func TestFetchGmailLabels(t *testing.T) {
++	ln, err := net.Listen("tcp", "localhost:0")
++	if err != nil {
++		t.Fatalf("net.Listen() = %v", err)
++	}
++	defer ln.Close()
++
++	serverDone := make(chan struct{})
++	go func() {
++		defer close(serverDone)
++		conn, err := ln.Accept()
++		if err != nil {
++			t.Errorf("Accept() = %v", err)
++			return
++		}
++		defer conn.Close()
++		r := bufio.NewReader(conn)
++
++		writeLine := func(s string) {
++			if _, err := conn.Write([]byte(s + "\r\n")); err != nil {
++				t.Errorf("server write: %v", err)
++			}
++		}
++
++		// Greeting advertising the Gmail extension.
++		writeLine("* OK [CAPABILITY IMAP4rev2 X-GM-EXT-1] ready")
++
++		for {
++			line, err := r.ReadString('\n')
++			if err != nil {
++				return
++			}
++			line = strings.TrimRight(line, "\r\n")
++			fields := strings.SplitN(line, " ", 2)
++			tag := fields[0]
++			rest := ""
++			if len(fields) > 1 {
++				rest = strings.ToUpper(fields[1])
++			}
++			switch {
++			case strings.HasPrefix(rest, "LOGIN"):
++				writeLine(tag + " OK LOGIN completed")
++			case strings.HasPrefix(rest, "SELECT"):
++				writeLine("* 1 EXISTS")
++				writeLine("* OK [UIDVALIDITY 1] .")
++				writeLine("* OK [UIDNEXT 43] .")
++				writeLine(tag + " OK [READ-WRITE] SELECT completed")
++			case strings.HasPrefix(rest, "FETCH"), strings.HasPrefix(rest, "UID FETCH"):
++				// Return a message with a mix of system and user labels.
++				writeLine(`* 1 FETCH (UID 42 X-GM-LABELS (\Inbox \Sent "Travel" "Receipts/2024"))`)
++				writeLine(tag + " OK FETCH completed")
++			case strings.HasPrefix(rest, "LOGOUT"):
++				writeLine("* BYE logging out")
++				writeLine(tag + " OK LOGOUT completed")
++				return
++			default:
++				writeLine(tag + " OK done")
++			}
++		}
++	}()
++
++	conn, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatalf("net.Dial() = %v", err)
++	}
++	client := imapclient.New(conn, nil)
++	defer client.Close()
++
++	if err := client.Login(testUsername, testPassword).Wait(); err != nil {
++		t.Fatalf("Login().Wait() = %v", err)
++	}
++	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
++		t.Fatalf("Select().Wait() = %v", err)
++	}
++
++	msgs, err := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
++		UID:         true,
++		GmailLabels: true,
++	}).Collect()
++	if err != nil {
++		t.Fatalf("Fetch().Collect() = %v", err)
++	}
++	if len(msgs) != 1 {
++		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
++	}
++	got := msgs[0].GmailLabels
++	want := []string{`\Inbox`, `\Sent`, "Travel", "Receipts/2024"}
++	if len(got) != len(want) {
++		t.Fatalf("GmailLabels = %q, want %q", got, want)
++	}
++	for i := range want {
++		if got[i] != want[i] {
++			t.Errorf("GmailLabels[%d] = %q, want %q", i, got[i], want[i])
++		}
++	}
++	if msgs[0].UID != 42 {
++		t.Errorf("UID = %d, want 42", msgs[0].UID)
++	}
++}
+-- 
+2.47.3
+

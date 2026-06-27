@@ -18,6 +18,12 @@
 # explicitly so it still runs as the pre-push gate.
 default_stages: [pre-commit]
 
+# Vendored upstream code (in-tree fork of emersion/go-imap with the
+# X-GM-LABELS patch, REQ-IMAP-IMP-53) is exempt from all hooks: it is not
+# herold source and is gofmt-clean as imported. Drop this once the upstream
+# PR (docs/dev/go-imap-xgmlabels-upstream.patch) lands and the replace goes.
+exclude: ^third_party/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
