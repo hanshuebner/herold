@@ -135,6 +135,13 @@ func getUpstreamFlags(t *testing.T, ts *testIMAPServer, user, password, mailbox 
 // pass, and returns any error. It does NOT enter the IDLE / poll loop;
 // use TestIDLE* tests for that. This keeps the download-path tests fast.
 func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser) error {
+	return runSyncOnceCfg(t, ha, ts, acc, cat, sysconfig.IMAPImportConfig{})
+}
+
+// runSyncOnceCfg is runSyncOnce with an explicit IMAPImportConfig so tests can
+// exercise operator-wide policy (e.g. the system default folder map,
+// REQ-IMAP-IMP-11).
+func runSyncOnceCfg(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, cfg sysconfig.IMAPImportConfig) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -147,7 +154,7 @@ func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc s
 		account:     acc,
 		store:       ha.Store,
 		dataKey:     testDataKey(t),
-		cfg:         sysconfig.IMAPImportConfig{},
+		cfg:         cfg,
 		log:         newTestLogger(t),
 		clk:         ha.Clock,
 		dialer:      &fakeDialer{ts: ts},
@@ -647,6 +654,74 @@ func TestFolderMapping(t *testing.T) {
 	// And NOT in "Sent Mail".
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Sent Mail"); got != 0 {
 		t.Errorf("herold Sent Mail has %d messages; want 0 (was mapped away)", got)
+	}
+}
+
+// TestDefaultFolderMapFromSysconfig verifies that an operator-supplied
+// system-wide default folder map (matched by upstream-host pattern) is applied
+// when no per-account override exists, and that a per-account override still
+// wins over it (REQ-IMAP-IMP-11).
+func TestDefaultFolderMapFromSysconfig(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("u5d", "pw")
+	if err := u.Create("Sent Mail", nil); err != nil {
+		t.Fatalf("Create Sent Mail: %v", err)
+	}
+	if err := u.Create("Receipts", nil); err != nil {
+		t.Fatalf("Create Receipts: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+	appendToServer(t, ts, "u5d", "pw", "Sent Mail",
+		buildRFC822("def-sent@test", "Sent Test", d), nil, d)
+	appendToServer(t, ts, "u5d", "pw", "Receipts",
+		buildRFC822("def-receipt@test", "Receipt", d), nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u5d@example.test",
+		username:            "u5d",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// Per-account override remaps "Receipts" -> "Finance"; it must win over the
+	// system default below which would map it to "Money".
+	if err := ha.Store.Meta().SetIMAPImportFolderMap(context.Background(), acc.ID,
+		[]store.IMAPImportFolderMapEntry{
+			{AccountID: acc.ID, UpstreamFolder: "Receipts", HeroldMailboxName: "Finance"},
+		}); err != nil {
+		t.Fatalf("SetIMAPImportFolderMap: %v", err)
+	}
+
+	// The account host is the test server's host; match it with a wildcard.
+	cfg := sysconfig.IMAPImportConfig{
+		DefaultFolderMap: []sysconfig.IMAPImportDefaultFolderMap{{
+			Host: "*",
+			Mappings: map[string]string{
+				"Sent Mail": "Sent",
+				"Receipts":  "Money",
+			},
+		}},
+	}
+
+	if err := runSyncOnceCfg(t, ha, ts, acc, nil, cfg); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// System default applied: "Sent Mail" -> "Sent".
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Sent"); got != 1 {
+		t.Errorf("herold Sent has %d messages; want 1 (system default map)", got)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Sent Mail"); got != 0 {
+		t.Errorf("herold Sent Mail has %d messages; want 0 (mapped away by default)", got)
+	}
+	// Per-account override wins: "Receipts" -> "Finance", not "Money".
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Finance"); got != 1 {
+		t.Errorf("herold Finance has %d messages; want 1 (per-account override)", got)
+	}
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Money"); got != 0 {
+		t.Errorf("herold Money has %d messages; want 0 (override beat default)", got)
 	}
 }
 

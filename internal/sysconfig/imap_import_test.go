@@ -357,6 +357,80 @@ token_endpoint    = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 	}
 }
 
+// TestIMAPImport_DefaultFolderMap verifies that an operator-supplied
+// system-wide default folder-map per host pattern parses and resolves with the
+// documented precedence (REQ-IMAP-IMP-11).
+func TestIMAPImport_DefaultFolderMap(t *testing.T) {
+	const cfg = bareForIMAP + `
+[[imap_import.default_folder_map]]
+host = "imap.gmail.com"
+[imap_import.default_folder_map.mappings]
+"INBOX" = "INBOX"
+"[Gmail]/Sent Mail" = "Sent"
+
+[[imap_import.default_folder_map]]
+host = "*.fastmail.com"
+[imap_import.default_folder_map.mappings]
+"Archive" = "All Mail"
+`
+	parsed, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ii := &parsed.IMAPImport
+	if got, want := len(ii.DefaultFolderMap), 2; got != want {
+		t.Fatalf("DefaultFolderMap: got %d entries, want %d", got, want)
+	}
+
+	// Exact host match returns the merged mappings.
+	gm := ii.IMAPImportDefaultFolderMapFor("imap.gmail.com")
+	if gm["[Gmail]/Sent Mail"] != "Sent" || gm["INBOX"] != "INBOX" {
+		t.Errorf("gmail mapping: got %v", gm)
+	}
+	// Wildcard host pattern matches a subdomain, case-insensitively.
+	fm := ii.IMAPImportDefaultFolderMapFor("imap.FASTMAIL.com")
+	if fm["Archive"] != "All Mail" {
+		t.Errorf("fastmail wildcard mapping: got %v", fm)
+	}
+	// A non-matching host yields nil.
+	if other := ii.IMAPImportDefaultFolderMapFor("mail.example.org"); other != nil {
+		t.Errorf("non-matching host: got %v, want nil", other)
+	}
+}
+
+// TestIMAPImport_DefaultFolderMapEmptyMappingsRejected verifies that a
+// default-folder-map rule with no mappings is rejected (REQ-IMAP-IMP-11).
+func TestIMAPImport_DefaultFolderMapEmptyMappingsRejected(t *testing.T) {
+	const cfg = bareForIMAP + `
+[[imap_import.default_folder_map]]
+host = "imap.gmail.com"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for default_folder_map with no mappings")
+	}
+	if !strings.Contains(err.Error(), "at least one mapping") {
+		t.Errorf("error %q should mention the missing mapping", err.Error())
+	}
+}
+
+// TestIMAPImport_DefaultFolderMapMissingHostRejected verifies that a rule with
+// an empty host pattern is rejected (REQ-IMAP-IMP-11).
+func TestIMAPImport_DefaultFolderMapMissingHostRejected(t *testing.T) {
+	const cfg = bareForIMAP + `
+[[imap_import.default_folder_map]]
+[imap_import.default_folder_map.mappings]
+"INBOX" = "INBOX"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for default_folder_map with no host")
+	}
+	if !strings.Contains(err.Error(), "host is required") {
+		t.Errorf("error %q should mention the missing host", err.Error())
+	}
+}
+
 // maps returns the keys of the given map as a slice for test diagnostics.
 func maps[V any](m map[string]V) []string {
 	ks := make([]string, 0, len(m))

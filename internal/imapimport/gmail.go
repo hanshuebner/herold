@@ -170,12 +170,18 @@ func shouldSkipGmailFolder(folderName string) bool {
 }
 
 // gmailHeroldMailboxName returns the herold mailbox name for a Gmail folder.
-// System folders use the fixed system table; user-label folders map to
-// themselves (preserving slashes for hierarchy).
-func gmailHeroldMailboxName(folderName string, userMapping map[string]string) string {
+// Precedence (REQ-IMAP-IMP-10/11): per-account override (userMapping) wins
+// over the operator's system-wide default-for-host map (defaultMapping),
+// which wins over the fixed Gmail system table; a user-label folder with no
+// match maps to itself (preserving slashes for hierarchy).
+func gmailHeroldMailboxName(folderName string, userMapping, defaultMapping map[string]string) string {
 	// User-provided per-account override wins.
 	if override, ok := userMapping[folderName]; ok {
 		return override
+	}
+	// Operator system-wide default for this host.
+	if def, ok := defaultMapping[folderName]; ok {
+		return def
 	}
 	// System folder table.
 	if herold, ok := gmailSystemFolderMap[folderName]; ok {
@@ -360,6 +366,9 @@ func (w *accountWorker) syncAllFoldersGmail(ctx context.Context, conn Conn, fold
 	for _, e := range folderMap {
 		userMapping[e.UpstreamFolder] = e.HeroldMailboxName
 	}
+	// Operator system-wide default folder map for this host (REQ-IMAP-IMP-11);
+	// per-account entries above win over it (applied in gmailHeroldMailboxName).
+	defaultMapping := w.opts.cfg.IMAPImportDefaultFolderMapFor(account.Host)
 
 	// Reset the per-pass backfill-remaining accumulator; the label-folder
 	// passes and the All Mail pass each add their count, and we publish the
@@ -384,7 +393,7 @@ func (w *accountWorker) syncAllFoldersGmail(ctx context.Context, conn Conn, fold
 			// Deferred to Phase 2.
 			continue
 		case gmailFolderClassNormal:
-			heroldName := gmailHeroldMailboxName(fi.Name, userMapping)
+			heroldName := gmailHeroldMailboxName(fi.Name, userMapping, defaultMapping)
 			w.status.setSyncingFolder(fi.Name)
 			if err := w.syncFolder(ctx, conn, fi.Name, heroldName); err != nil {
 				log.Warn("imapimport: Gmail label folder sync failed (continuing)",

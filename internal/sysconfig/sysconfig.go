@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -780,6 +781,67 @@ type IMAPImportConfig struct {
 	// SMTP submission OAuth — IMAP OAuth needs the restricted IMAP scope under
 	// a separately-registered application (NG11).
 	OAuth map[string]IMAPImportOAuthProvider `toml:"oauth,omitempty"`
+	// DefaultFolderMap is an operator-supplied, system-wide default folder
+	// mapping table keyed by upstream-host pattern (REQ-IMAP-IMP-11). Each
+	// entry's mappings apply to every account whose host matches the entry's
+	// Host pattern; per-account folder maps (stored in the DB) win over these
+	// defaults, which in turn win over the name-equals-name fallback
+	// (REQ-IMAP-IMP-10). An absent table leaves the previous behaviour
+	// (per-account map or name-equals-name) unchanged.
+	//
+	// Example (system.toml):
+	//
+	//	[[imap_import.default_folder_map]]
+	//	host = "imap.gmail.com"
+	//	[imap_import.default_folder_map.mappings]
+	//	"INBOX" = "INBOX"
+	//	"[Gmail]/Sent Mail" = "Sent"
+	DefaultFolderMap []IMAPImportDefaultFolderMap `toml:"default_folder_map,omitempty"`
+}
+
+// IMAPImportDefaultFolderMap is one operator-supplied default folder-map
+// rule scoped to an upstream-host pattern (REQ-IMAP-IMP-11).
+type IMAPImportDefaultFolderMap struct {
+	// Host is the upstream-host pattern this rule applies to. Matching is
+	// case-insensitive and supports shell-style wildcards (path.Match
+	// semantics, e.g. "imap.gmail.com" or "*.gmail.com").
+	Host string `toml:"host"`
+	// Mappings maps an upstream IMAP folder name to the herold mailbox name
+	// it should be mirrored into. Upstream names are matched verbatim
+	// (case-sensitive, as the upstream presents them).
+	Mappings map[string]string `toml:"mappings"`
+}
+
+// IMAPImportDefaultFolderMapFor returns the merged default folder mapping
+// (upstream-folder -> herold-mailbox) for the given upstream host
+// (REQ-IMAP-IMP-11). Every DefaultFolderMap entry whose Host pattern matches
+// host contributes its mappings; when multiple entries match, later entries
+// override earlier ones for the same upstream folder. Returns nil when no
+// entry matches, so callers can cheaply skip the merge.
+func (ii *IMAPImportConfig) IMAPImportDefaultFolderMapFor(host string) map[string]string {
+	if ii == nil || len(ii.DefaultFolderMap) == 0 {
+		return nil
+	}
+	var merged map[string]string
+	for _, rule := range ii.DefaultFolderMap {
+		if !matchHostPattern(rule.Host, host) {
+			continue
+		}
+		for up, hm := range rule.Mappings {
+			if merged == nil {
+				merged = make(map[string]string)
+			}
+			merged[up] = hm
+		}
+	}
+	return merged
+}
+
+// matchHostPattern reports whether host matches pattern (case-insensitive,
+// path.Match shell-glob semantics). A malformed pattern never matches.
+func matchHostPattern(pattern, host string) bool {
+	ok, err := path.Match(strings.ToLower(pattern), strings.ToLower(host))
+	return err == nil && ok
 }
 
 // IMAPImportAllowPassword reports whether plain-password auth is permitted for
@@ -3506,6 +3568,29 @@ func validateIMAPImport(ii *IMAPImportConfig) error {
 		if u, err := url.ParseRequestURI(p.TokenEndpoint); err != nil || !u.IsAbs() {
 			return fmt.Errorf("sysconfig: [imap_import.oauth.%s] token_endpoint %q is not a valid absolute URL",
 				name, p.TokenEndpoint)
+		}
+	}
+	// Default folder-map rules: each entry requires a host pattern that is a
+	// valid path.Match glob and at least one non-empty mapping
+	// (REQ-IMAP-IMP-11).
+	for i := range ii.DefaultFolderMap {
+		rule := &ii.DefaultFolderMap[i]
+		if rule.Host == "" {
+			return fmt.Errorf("sysconfig: [[imap_import.default_folder_map]] #%d host is required", i)
+		}
+		if _, err := path.Match(rule.Host, ""); err != nil {
+			return fmt.Errorf("sysconfig: [[imap_import.default_folder_map]] host %q is not a valid pattern: %v",
+				rule.Host, err)
+		}
+		if len(rule.Mappings) == 0 {
+			return fmt.Errorf("sysconfig: [[imap_import.default_folder_map]] host %q must define at least one mapping",
+				rule.Host)
+		}
+		for up, hm := range rule.Mappings {
+			if up == "" || hm == "" {
+				return fmt.Errorf("sysconfig: [[imap_import.default_folder_map]] host %q has an empty upstream-folder or herold-mailbox name",
+					rule.Host)
+			}
 		}
 	}
 	return nil

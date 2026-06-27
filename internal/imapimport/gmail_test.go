@@ -451,7 +451,7 @@ var gmailMailboxNameCases = []struct {
 func TestGmailHeroldMailboxName_SystemFolders(t *testing.T) {
 	noUserMapping := map[string]string{}
 	for _, tc := range gmailMailboxNameCases {
-		got := gmailHeroldMailboxName(tc.folder, noUserMapping)
+		got := gmailHeroldMailboxName(tc.folder, noUserMapping, nil)
 		if got != tc.expected {
 			t.Errorf("gmailHeroldMailboxName(%q) = %q; want %q", tc.folder, got, tc.expected)
 		}
@@ -464,19 +464,47 @@ func TestGmailHeroldMailboxName_UserMappingOverride(t *testing.T) {
 		"[Gmail]/Sent Mail": "MySent",
 		"Work":              "Projects",
 	}
-	if got := gmailHeroldMailboxName("[Gmail]/Sent Mail", userMapping); got != "MySent" {
+	if got := gmailHeroldMailboxName("[Gmail]/Sent Mail", userMapping, nil); got != "MySent" {
 		t.Errorf("expected user override MySent; got %q", got)
 	}
-	if got := gmailHeroldMailboxName("Work", userMapping); got != "Projects" {
+	if got := gmailHeroldMailboxName("Work", userMapping, nil); got != "Projects" {
 		t.Errorf("expected user override Projects; got %q", got)
 	}
 	// Not overridden: system table.
-	if got := gmailHeroldMailboxName("[Gmail]/Drafts", userMapping); got != "Drafts" {
+	if got := gmailHeroldMailboxName("[Gmail]/Drafts", userMapping, nil); got != "Drafts" {
 		t.Errorf("expected Drafts (system table); got %q", got)
 	}
 	// Not overridden, not in system table: verbatim.
-	if got := gmailHeroldMailboxName("Newsletters", userMapping); got != "Newsletters" {
+	if got := gmailHeroldMailboxName("Newsletters", userMapping, nil); got != "Newsletters" {
 		t.Errorf("expected verbatim Newsletters; got %q", got)
+	}
+}
+
+func TestGmailHeroldMailboxName_DefaultMappingPrecedence(t *testing.T) {
+	// The operator system-wide default-for-host map (REQ-IMAP-IMP-11) wins
+	// over the fixed Gmail system table but loses to a per-account override.
+	defaultMapping := map[string]string{
+		"[Gmail]/Sent Mail": "Sent Items", // override the system table ("Sent")
+		"Receipts":          "Finance",    // map a user label
+	}
+	userMapping := map[string]string{
+		"[Gmail]/Sent Mail": "MySent", // per-account override beats the default
+	}
+	// Per-account override wins over the default.
+	if got := gmailHeroldMailboxName("[Gmail]/Sent Mail", userMapping, defaultMapping); got != "MySent" {
+		t.Errorf("expected per-account MySent; got %q", got)
+	}
+	// Default wins over the system table when no per-account override.
+	if got := gmailHeroldMailboxName("[Gmail]/Sent Mail", nil, defaultMapping); got != "Sent Items" {
+		t.Errorf("expected default Sent Items; got %q", got)
+	}
+	// Default applies to a user label folder.
+	if got := gmailHeroldMailboxName("Receipts", nil, defaultMapping); got != "Finance" {
+		t.Errorf("expected default Finance; got %q", got)
+	}
+	// No default, no override: system table still applies.
+	if got := gmailHeroldMailboxName("[Gmail]/Drafts", nil, defaultMapping); got != "Drafts" {
+		t.Errorf("expected Drafts (system table); got %q", got)
 	}
 }
 

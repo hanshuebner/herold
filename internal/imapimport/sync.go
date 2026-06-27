@@ -66,11 +66,17 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 	// Non-Gmail path: standard per-folder loop.
 
 	// Build the effective folder mapping: upstream name -> herold name.
+	// Precedence (REQ-IMAP-IMP-10/11): per-account map wins over the
+	// operator's system-wide default-for-host map, which wins over the
+	// name-equals-name fallback applied below.
 	folderMap, err := w.opts.store.Meta().GetIMAPImportFolderMap(ctx, account.ID)
 	if err != nil {
 		return fmt.Errorf("imapimport: GetIMAPImportFolderMap: %w", err)
 	}
-	mapping := make(map[string]string, len(folderMap))
+	mapping := make(map[string]string)
+	for k, v := range w.opts.cfg.IMAPImportDefaultFolderMapFor(account.Host) {
+		mapping[k] = v
+	}
 	for _, e := range folderMap {
 		mapping[e.UpstreamFolder] = e.HeroldMailboxName
 	}
