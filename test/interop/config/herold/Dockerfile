@@ -14,6 +14,11 @@ FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
 
 COPY go.mod go.sum* ./
+# The go.mod replaces github.com/emersion/go-imap/v2 with the in-tree vendor at
+# ./third_party/go-imap, so `go mod download` must be able to read that module's
+# go.mod. Copy it before the download step; it changes rarely, so the dependency
+# cache layer stays effective.
+COPY third_party/ ./third_party/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download
