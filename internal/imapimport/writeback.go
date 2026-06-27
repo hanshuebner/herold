@@ -314,8 +314,13 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 			slog.String("dest", newUpstreamFolder),
 			slog.String("error", moveErr.Error()),
 		)
-		// Best-effort: don't update state. On the next pass, if the upstream
-		// also moved the message, the download reconcile will fix herold.
+		// A failed best-effort MOVE is a membership conflict: the message may
+		// have moved (or been expunged) upstream, in which case the upstream
+		// location wins and the download reconcile fixes herold on the next
+		// pass (REQ-IMAP-IMP-43, upstream-authoritative). Count it under the
+		// "move" kind so it is observable alongside flag conflicts
+		// (REQ-IMAP-IMP-63). Do not update state — retry next reconcile.
+		observe.IMAPImportConflictsTotal.WithLabelValues(account.ID, "move").Inc()
 		return
 	}
 

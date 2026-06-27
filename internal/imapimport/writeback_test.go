@@ -21,7 +21,9 @@ import (
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 	"github.com/hanshuebner/herold/internal/testharness"
@@ -405,6 +407,81 @@ func TestWriteBackMove(t *testing.T) {
 	}
 	if archiveSI.NumMessages == 0 {
 		t.Error("upstream Archive should have 1 message after UID MOVE")
+	}
+}
+
+// failingMoveConn wraps a real Conn but makes UIDMove fail, simulating a move
+// conflict (the message already moved / was expunged upstream).
+type failingMoveConn struct {
+	Conn
+}
+
+func (c *failingMoveConn) UIDMove(_ context.Context, _ imap.UID, _ string) error {
+	return fmt.Errorf("injected UIDMove failure")
+}
+
+// TestWriteBackMoveConflictCounted verifies that a failed best-effort UID MOVE
+// increments conflicts_total{kind="move"} (D7). REQ-IMAP-IMP-43/63.
+func TestWriteBackMoveConflictCounted(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("wb4c", "pw")
+	if err := u.Create("Archive", nil); err != nil {
+		t.Fatalf("Create Archive: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "wb4c@example.test",
+		username:            "wb4c",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	_, ms := setupSyncedMessage(t, ha, ts, acc, "INBOX", "wb-move-conflict@test", nil)
+
+	ctx := context.Background()
+
+	archiveMB, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: store.PrincipalID(acc.PrincipalID),
+		Name:        "Archive",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Archive: %v", err)
+	}
+
+	// Move the herold message so write-back attempts a UID MOVE upstream.
+	heroldMsg, _ := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+	if err := ha.Store.Meta().MoveMessage(ctx, heroldMsg.ID, heroldMsg.MailboxID, archiveMB.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+
+	before := testutil.ToFloat64(observe.IMAPImportConflictsTotal.WithLabelValues(acc.ID, "move"))
+
+	// Run write-back with a conn whose UIDMove always fails.
+	w := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		cfg:         sysconfig.IMAPImportConfig{},
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		dialer:      &fakeDialer{ts: ts},
+		categoriser: noopCategoriser{},
+	})
+	wbCtx, wbCancel := context.WithCancel(ctx)
+	failConn := &failingMoveConn{Conn: dialFakeConn(t, ts, "wb4c", "pw")}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.runWriteBack(wbCtx, failConn)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	wbCancel()
+	<-done
+
+	after := testutil.ToFloat64(observe.IMAPImportConflictsTotal.WithLabelValues(acc.ID, "move"))
+	if after-before != 1 {
+		t.Errorf("conflicts_total{kind=move} delta = %v; want 1", after-before)
 	}
 }
 
