@@ -244,6 +244,9 @@ export const de = {
   'msg.alwaysFrom': 'Immer von {sender}',
   // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
   'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
+  // Zugängliche Bezeichnung für den Ladespinner, während der iframe
+  // rendert und die Höhe noch nicht gemessen wurde (Forgejo #47 follow-up).
+  'msg.body.renderingAria': 'Nachricht wird geladen...',
   'msg.noBody': '(kein Inhalt)',
   'msg.noSender': '(kein Absender)',
   'msg.recipientsTo': 'an {first}',

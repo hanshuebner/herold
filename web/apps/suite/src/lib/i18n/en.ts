@@ -246,6 +246,9 @@ export const en = {
   'msg.alwaysFrom': 'Always from {sender}',
   // Truncated body recovery banner (Forgejo #48).
   'msg.body.loadingFull': 'Loading complete message...',
+  // Accessible label for the spinner shown while the iframe is rendering
+  // and its height has not been measured yet (Forgejo #47 follow-up).
+  'msg.body.renderingAria': 'Loading message...',
   'msg.noBody': '(no body)',
   'msg.noSender': '(no sender)',
   'msg.recipientsTo': 'to {first}',

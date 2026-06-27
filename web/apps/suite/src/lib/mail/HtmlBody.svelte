@@ -35,6 +35,7 @@
    */
   import { sanitizeHtml } from './sanitize';
   import { findScrollParent } from './scroll-parent';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     html: string;
@@ -60,6 +61,45 @@
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let wrapperEl = $state<HTMLDivElement | null>(null);
   let height = $state(120);
+
+  /**
+   * Latches to true the first time recomputeHeight() produces a real height
+   * inside onLoad's rAF path. Never resets on subsequent srcdoc changes (e.g.
+   * "Load images") so the already-visible body is not re-hidden behind a
+   * spinner on user actions.
+   */
+  let measured = $state(false);
+
+  /**
+   * Flips to true ~100 ms after mount if the first height measurement has
+   * not yet arrived, so fast loads show nothing and slow ones show a spinner.
+   * Cleared immediately when the measurement lands.
+   */
+  let showSpinner = $state(false);
+
+  /**
+   * setTimeout handle, stored so recomputeHeight() can cancel it before it
+   * fires when measurement arrives quickly (avoiding a brief spinner flash).
+   * Not reactive — it is a plain timer ID.
+   */
+  let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Start the 100ms spinner delay once on component mount. This $effect has no
+  // synchronous reactive reads so Svelte only runs it once. The setTimeout
+  // callback executes outside the reactive tracking context, so reading
+  // `measured` inside it does not register a dependency and cannot loop.
+  $effect(() => {
+    spinnerTimer = setTimeout(() => {
+      spinnerTimer = null;
+      if (!measured) showSpinner = true;
+    }, 100);
+    return () => {
+      if (spinnerTimer !== null) {
+        clearTimeout(spinnerTimer);
+        spinnerTimer = null;
+      }
+    };
+  });
 
   // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
   let srcdoc = $derived(sanitizeHtml(html, { loadImages, cidMap, cidDimensions }));
@@ -123,6 +163,19 @@
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
     height = Math.max(doc.body.scrollHeight + 8, 120);
+    // Latch on the first real measurement: cancel the spinner timer, hide the
+    // spinner, and reveal the iframe. Subsequent calls (from the body
+    // ResizeObserver, image `load` events, or details `toggle` events) still
+    // update `height` so the iframe tracks content growth/shrinkage — the
+    // `measured` branch simply does not run again.
+    if (!measured) {
+      measured = true;
+      showSpinner = false;
+      if (spinnerTimer !== null) {
+        clearTimeout(spinnerTimer);
+        spinnerTimer = null;
+      }
+    }
     computeOverlay();
   }
 
@@ -223,7 +276,22 @@
   });
 </script>
 
-<div class="frame-wrapper" bind:this={wrapperEl}>
+<div class="frame-wrapper" bind:this={wrapperEl} style:min-height={measured ? undefined : '120px'}>
+  {#if !measured && showSpinner}
+    <!--
+      Spinner overlay: shown only when the first height measurement has not
+      arrived within ~100 ms. The iframe stays in the layout (opacity 0) so
+      contentDocument / scrollHeight remain measurable and onload fires
+      normally. The overlay is pointer-events: none so it does not interfere.
+    -->
+    <div class="body-spinner-wrap">
+      <div
+        class="body-spinner"
+        role="status"
+        aria-label={t('msg.body.renderingAria')}
+      ></div>
+    </div>
+  {/if}
   <iframe
     bind:this={frameEl}
     sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
@@ -232,6 +300,7 @@
     loading="lazy"
     title="Message body"
     style:height="{height}px"
+    class:body-hidden={!measured}
     onload={onLoad}
   ></iframe>
 
@@ -269,6 +338,47 @@
     border: none;
     background: var(--background);
     display: block;
+  }
+
+  /*
+   * While !measured the iframe is invisible but still in the layout so the
+   * browser can render its content and we can read contentDocument.scrollHeight.
+   * pointer-events: none prevents any stray interactions before reveal.
+   */
+  iframe.body-hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Spinner overlay: centred over the invisible iframe while it loads. */
+  .body-spinner-wrap {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .body-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--layer-02, #e0e0e0);
+    border-top-color: var(--interactive, #0f62fe);
+    border-radius: 50%;
+    animation: body-spin 800ms linear infinite;
+  }
+
+  @keyframes body-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .body-spinner {
+      animation: none;
+    }
   }
 
   /* Overlay layer covering the iframe; pointer-events are none so the
