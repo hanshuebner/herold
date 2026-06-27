@@ -935,6 +935,169 @@ func TestStateEnvelope(t *testing.T) {
 	}
 }
 
+// -- IMAPImport/changes ----------------------------------------------
+
+// doChanges calls IMAPImport/changes with the given sinceState and returns
+// the response.
+func doChanges(t *testing.T, h *handlerSet, p store.Principal, since string) changesResponse {
+	t.Helper()
+	args, _ := json.Marshal(map[string]any{
+		"accountId":  accountID(p),
+		"sinceState": since,
+	})
+	r, merr := changesHandler{h: h}.executeAs(p, args)
+	if merr != nil {
+		t.Fatalf("changes: %v", merr)
+	}
+	return r.(changesResponse)
+}
+
+// TestState_AdvancesOnMutation verifies that the per-principal IMAPImport
+// state counter advances on a create / update / destroy and that a no-op set
+// leaves it unchanged (REQ-IMAP-IMP-61, migration 0065).
+func TestState_AdvancesOnMutation(t *testing.T) {
+	h, _, p := newHandlers(t)
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID(p)})
+	gr, _ := getHandler{h: h}.executeAs(p, getArgs)
+	s0 := gr.(getResponse).State
+	if s0 != "0" {
+		t.Fatalf("initial state = %q, want 0", s0)
+	}
+
+	// Create bumps the state.
+	cresp := doCreate(t, h, p, minimalCreate("c1"))
+	if len(cresp.NotCreated) != 0 {
+		t.Fatalf("unexpected notCreated: %v", cresp.NotCreated)
+	}
+	if cresp.OldState != "0" || cresp.NewState == cresp.OldState {
+		t.Fatalf("create state envelope did not advance: old=%q new=%q", cresp.OldState, cresp.NewState)
+	}
+	id := cresp.Created["c1"].ID
+	afterCreate := cresp.NewState
+
+	// A set that mutates nothing (update of an unknown id) does NOT advance.
+	noopArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{"does-not-exist": map[string]any{"accountName": "x"}},
+	})
+	nr, merr := setHandler{h: h}.executeAs(p, noopArgs)
+	if merr != nil {
+		t.Fatalf("noop set: %v", merr)
+	}
+	if got := nr.(setResponse).NewState; got != afterCreate {
+		t.Fatalf("no-op set advanced state: %q -> %q", afterCreate, got)
+	}
+
+	// Update bumps the state.
+	upArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{id: map[string]any{"accountName": "Renamed"}},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, upArgs)
+	if merr != nil {
+		t.Fatalf("update set: %v", merr)
+	}
+	afterUpdate := ur.(setResponse).NewState
+	if afterUpdate == afterCreate {
+		t.Fatalf("update did not advance state: still %q", afterUpdate)
+	}
+
+	// Destroy bumps the state.
+	delArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"destroy":   []string{id},
+	})
+	dr, merr := setHandler{h: h}.executeAs(p, delArgs)
+	if merr != nil {
+		t.Fatalf("destroy set: %v", merr)
+	}
+	if dr.(setResponse).NewState == afterUpdate {
+		t.Fatalf("destroy did not advance state: still %q", afterUpdate)
+	}
+}
+
+// TestChanges_NoChangeWhenInSync verifies that IMAPImport/changes reports no
+// changes when sinceState equals the current state (REQ-IMAP-IMP-61).
+func TestChanges_NoChangeWhenInSync(t *testing.T) {
+	h, _, p := newHandlers(t)
+
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID(p)})
+	gr, _ := getHandler{h: h}.executeAs(p, getArgs)
+	cur := gr.(getResponse).State
+
+	resp := doChanges(t, h, p, cur)
+	if resp.OldState != cur || resp.NewState != cur {
+		t.Fatalf("state envelope: old=%q new=%q want %q", resp.OldState, resp.NewState, cur)
+	}
+	if len(resp.Created) != 0 || len(resp.Updated) != 0 || len(resp.Destroyed) != 0 {
+		t.Fatalf("expected no changes; got created=%v updated=%v destroyed=%v",
+			resp.Created, resp.Updated, resp.Destroyed)
+	}
+	if resp.HasMoreChanges {
+		t.Fatalf("hasMoreChanges should be false")
+	}
+}
+
+// TestChanges_ReportsDriftedAccounts verifies that when the client's
+// sinceState is behind the current state, IMAPImport/changes reports every
+// account as updated so the client re-fetches (REQ-IMAP-IMP-61).
+func TestChanges_ReportsDriftedAccounts(t *testing.T) {
+	h, _, p := newHandlers(t)
+
+	// Snapshot the empty state, then create two accounts.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID(p)})
+	gr, _ := getHandler{h: h}.executeAs(p, getArgs)
+	stale := gr.(getResponse).State
+
+	c1 := doCreate(t, h, p, minimalCreate("c1"))
+	id1 := c1.Created["c1"].ID
+	c2args, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{"c2": map[string]any{
+			"accountName":     "Second",
+			"host":            "imap.example.com",
+			"port":            993,
+			"tlsMode":         "implicit",
+			"username":        "user2",
+			"authMethod":      "password",
+			"backfillHorizon": "30d",
+			"credential":      "pw2",
+		}},
+	})
+	c2r, merr := setHandler{h: h}.executeAs(p, c2args)
+	if merr != nil {
+		t.Fatalf("create c2: %v", merr)
+	}
+	id2 := c2r.(setResponse).Created["c2"].ID
+
+	resp := doChanges(t, h, p, stale)
+	if resp.OldState != stale {
+		t.Fatalf("oldState = %q, want %q", resp.OldState, stale)
+	}
+	if resp.NewState == stale {
+		t.Fatalf("newState did not advance from %q", stale)
+	}
+	got := map[string]bool{}
+	for _, id := range resp.Updated {
+		got[id] = true
+	}
+	if !got[id1] || !got[id2] || len(resp.Updated) != 2 {
+		t.Fatalf("expected both accounts reported updated; got %v (want %s, %s)",
+			resp.Updated, id1, id2)
+	}
+}
+
+// TestChanges_RequiresSinceState verifies the sinceState argument is required.
+func TestChanges_RequiresSinceState(t *testing.T) {
+	h, _, p := newHandlers(t)
+	args, _ := json.Marshal(map[string]any{"accountId": accountID(p)})
+	_, merr := changesHandler{h: h}.executeAs(p, args)
+	if merr == nil {
+		t.Fatalf("expected error for missing sinceState")
+	}
+}
+
 // -- Horizon variants ------------------------------------------------
 
 func TestCreate_Horizon90d(t *testing.T) {

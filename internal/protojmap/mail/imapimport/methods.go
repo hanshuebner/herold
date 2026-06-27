@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,22 @@ type getResponse struct {
 	State     string                  `json:"state"`
 	List      []jmapIMAPImportAccount `json:"list"`
 	NotFound  []jmapID                `json:"notFound"`
+}
+
+type changesRequest struct {
+	AccountID  jmapID `json:"accountId"`
+	SinceState string `json:"sinceState"`
+	MaxChanges *int   `json:"maxChanges,omitempty"`
+}
+
+type changesResponse struct {
+	AccountID      string   `json:"accountId"`
+	OldState       string   `json:"oldState"`
+	NewState       string   `json:"newState"`
+	HasMoreChanges bool     `json:"hasMoreChanges"`
+	Created        []jmapID `json:"created"`
+	Updated        []jmapID `json:"updated"`
+	Destroyed      []jmapID `json:"destroyed"`
 }
 
 type setRequest struct {
@@ -69,18 +86,22 @@ type setResponse struct {
 	NotDestroyed map[jmapID]setError               `json:"notDestroyed,omitempty"`
 }
 
-// currentState returns the opaque JMAP state string for IMAPImport/get
-// and the OldState/NewState envelope of IMAPImport/set.
-//
-// IMAPImport/changes is not implemented in v1 (no dedicated jmap_states
-// column; migration 0057 is frozen), so there is no per-principal
-// IMAPImport state counter to report. Return a fixed placeholder rather
-// than borrowing an unrelated datatype's counter (e.g. FileShare), which
-// would couple the two and make this state change for reasons unrelated
-// to IMAPImport. A dedicated counter + /changes can be added in a later,
-// unfrozen migration.
-func (h *handlerSet) currentState(_ context.Context, _ store.PrincipalID) (string, error) {
-	return "0", nil
+// currentState returns the opaque JMAP state string for IMAPImport/get,
+// IMAPImport/changes, and the OldState/NewState envelope of IMAPImport/set.
+// It reads the per-principal IMAPImport state counter
+// (jmap_states.imap_import_state, migration 0065) which is bumped on every
+// IMAPImport/set create, update, or destroy (REQ-IMAP-IMP-61).
+func (h *handlerSet) currentState(ctx context.Context, pid store.PrincipalID) (string, error) {
+	st, err := h.store.Meta().GetJMAPStates(ctx, pid)
+	if err != nil {
+		return "", err
+	}
+	return stateString(st.IMAPImport), nil
+}
+
+// stateString stringifies a JMAP state counter.
+func stateString(seq int64) string {
+	return strconv.FormatInt(seq, 10)
 }
 
 // validateAccountID checks the inbound accountId against the
@@ -153,6 +174,61 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			continue
 		}
 		resp.List = append(resp.List, recordToJMAP(rec))
+	}
+	return resp, nil
+}
+
+// -- IMAPImport/changes ----------------------------------------------
+
+type changesHandler struct{ h *handlerSet }
+
+func (changesHandler) Method() string { return "IMAPImport/changes" }
+
+// Execute implements IMAPImport/changes (RFC 8620 §5.2, REQ-IMAP-IMP-61).
+// The per-principal imap_import_state counter advances on every
+// IMAPImport/set mutation but herold does not keep a per-id change ledger
+// for this datatype, so when the client's sinceState differs from the
+// current state every account is reported as "updated" — a drifted client
+// re-fetches the full set via IMAPImport/get. This mirrors the
+// FileShare/changes and Identity/changes behaviour.
+func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any, *protojmap.MethodError) {
+	var req changesRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, protojmap.NewMethodError("invalidArguments", err.Error())
+	}
+	p, ok := principalFor(ctx)
+	if !ok {
+		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
+	}
+	if e := validateAccountID(p, req.AccountID); e != nil {
+		return nil, e
+	}
+	if req.SinceState == "" {
+		return nil, protojmap.NewMethodError("invalidArguments", "sinceState is required")
+	}
+	now, err := c.h.currentState(ctx, p.ID)
+	if err != nil {
+		return nil, protojmap.NewMethodError("serverFail", err.Error())
+	}
+	accountID := string(protojmap.AccountIDForPrincipal(p.ID))
+	resp := changesResponse{
+		AccountID: accountID,
+		OldState:  req.SinceState,
+		NewState:  now,
+		Created:   []jmapID{},
+		Updated:   []jmapID{},
+		Destroyed: []jmapID{},
+	}
+	if req.SinceState == now {
+		// No drift: nothing changed.
+		return resp, nil
+	}
+	rows, lerr := c.h.store.Meta().ListIMAPImportAccountsByPrincipal(ctx, p.ID)
+	if lerr != nil {
+		return nil, protojmap.NewMethodError("serverFail", lerr.Error())
+	}
+	for _, a := range rows {
+		resp.Updated = append(resp.Updated, a.ID)
 	}
 	return resp, nil
 }
@@ -559,10 +635,18 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		resp.Destroyed = append(resp.Destroyed, id)
 	}
 
-	// State: wave 1 does not have a dedicated IMAPImport state counter
-	// (no jmap_states column in migration 0057). The state string does
-	// not advance on mutations; wave 2 will add IncrementJMAPState calls
-	// once JMAPStateKindIMAPImport and the column exist.
+	// Advance the per-principal IMAPImport state counter once if this call
+	// committed any mutation, so a self-service client tracking
+	// IMAPImport/changes observes the drift (REQ-IMAP-IMP-61, migration 0065).
+	// A call that only produced not-created/not-updated/not-destroyed errors
+	// leaves the state unchanged.
+	mutated := len(resp.Created) > 0 || len(resp.Updated) > 0 || len(resp.Destroyed) > 0
+	if mutated {
+		if _, ierr := s.h.store.Meta().IncrementJMAPState(ctx, p.ID,
+			store.JMAPStateKindIMAPImport); ierr != nil {
+			return nil, protojmap.NewMethodError("serverFail", ierr.Error())
+		}
+	}
 	newState, err := s.h.currentState(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())

@@ -422,6 +422,11 @@ const (
 	// suite SPA can refresh its share management view. The underlying
 	// column is jmap_states.file_share_state.
 	JMAPStateKindFileShare
+	// JMAPStateKindIMAPImport tracks JMAP IMAPImport changes
+	// (REQ-IMAP-IMP-61). Bumped on every IMAPImport/set create, update, or
+	// destroy so a self-service client can track drift via IMAPImport/changes.
+	// The underlying column is jmap_states.imap_import_state.
+	JMAPStateKindIMAPImport
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would

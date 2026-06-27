@@ -4458,6 +4458,23 @@ func testJMAPStatesIncrementAtomic(t *testing.T, s store.Store) {
 	if st.Email != n {
 		t.Fatalf("Email state = %d, want %d (mailbox bumps must not affect email)", st.Email, n)
 	}
+	// The IMAPImport counter (migration 0065, REQ-IMAP-IMP-61) round-trips and
+	// is independent of the other kinds.
+	if st.IMAPImport != 0 {
+		t.Fatalf("initial IMAPImport state = %d, want 0", st.IMAPImport)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := s.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindIMAPImport); err != nil {
+			t.Fatalf("Increment IMAPImport: %v", err)
+		}
+	}
+	st, _ = s.Meta().GetJMAPStates(ctx, p.ID)
+	if st.IMAPImport != 2 {
+		t.Fatalf("IMAPImport state = %d, want 2", st.IMAPImport)
+	}
+	if st.Email != n || st.Mailbox != 3 {
+		t.Fatalf("IMAPImport bumps must not affect other kinds: Email=%d Mailbox=%d", st.Email, st.Mailbox)
+	}
 }
 
 func testTLSRPTAppendAndRange(t *testing.T, s store.Store) {

@@ -1020,6 +1020,10 @@ type JMAPStates struct {
 	// FileShare is the JMAP FileShare state (REQ-SHARE-40). Bumped on
 	// every FileShare/set create, update, or destroy.
 	FileShare int64
+	// IMAPImport is the JMAP IMAPImport state (REQ-IMAP-IMP-61). Bumped on
+	// every IMAPImport/set create, update, or destroy so a self-service
+	// client can track drift via IMAPImport/changes.
+	IMAPImport int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

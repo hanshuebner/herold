@@ -39,3 +39,7 @@ func (g getHandler) executeAs(p store.Principal, args json.RawMessage) (any, *pr
 func (s setHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
 	return s.Execute(contextWithTestPrincipal(context.Background(), p), args)
 }
+
+func (c changesHandler) executeAs(p store.Principal, args json.RawMessage) (any, *protojmap.MethodError) {
+	return c.Execute(contextWithTestPrincipal(context.Background(), p), args)
+}

@@ -50,8 +50,7 @@ func Register(
 		dataKey: dataKey,
 	}
 	reg.Register(CapabilityIMAPImport, getHandler{h: h})
+	reg.Register(CapabilityIMAPImport, changesHandler{h: h})
 	reg.Register(CapabilityIMAPImport, setHandler{h: h})
-	// IMAPImport/changes is deferred to wave 2 (requires jmap_states
-	// column and JMAPStateKindIMAPImport; migration 0057 is frozen).
 	reg.RegisterCapabilityDescriptor(CapabilityIMAPImport, struct{}{})
 }
