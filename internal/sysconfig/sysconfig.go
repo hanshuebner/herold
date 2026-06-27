@@ -466,7 +466,12 @@ type IdentityCreationConfig struct {
 	// VerifierFrom is the sender address embedded in the envelope MAIL FROM
 	// and header From of outbound verification messages (REQ-IDENT-30). MUST
 	// be a locally-hosted address so DKIM signs under a key herold controls.
-	// Defaults to "postmaster@<server.hostname>" per RFC 5321 §4.5.1.
+	// When omitted, the dispatcher resolves the sender at runtime: if exactly
+	// one local domain is registered it uses "postmaster@<that domain>"; if
+	// multiple local domains are registered the dispatch fails with a clear
+	// error instructing the operator to set this field explicitly. Set this
+	// field to avoid the runtime lookup and to select the right domain in
+	// multi-domain deployments.
 	VerifierFrom string `toml:"verifier_from,omitempty"`
 	// ExternalDomains selects the external-domain Identity creation policy
 	// (REQ-IDENT-20). One of "allow_all" (default), "allowlist", or
@@ -2419,16 +2424,17 @@ func applyIMAPImportDefaults(ii *IMAPImportConfig) {
 
 // applyIdentityCreationDefaults populates the documented default values for
 // the [server.identity_creation] block (REQ-IDENT-10..36) when fields are
-// absent. Called once after parse; idempotent. hostname is the canonical
-// server hostname (cfg.Server.Hostname) used to construct the default
-// verifier_from address when none is supplied.
+// absent. Called once after parse; idempotent. hostname is accepted for
+// signature compatibility but is no longer used to build a VerifierFrom
+// default — that default is now resolved at dispatch time from the hosted
+// domain list (REQ-IDENT-30): when exactly one local domain is registered,
+// the dispatcher synthesises "postmaster@<domain>"; when multiple local
+// domains exist the operator must set verifier_from explicitly.
 func applyIdentityCreationDefaults(ic *IdentityCreationConfig, hostname string) {
+	_ = hostname // reserved for future use; default is resolved at dispatch time
 	if ic.Enabled == nil {
 		t := true
 		ic.Enabled = &t
-	}
-	if ic.VerifierFrom == "" && hostname != "" {
-		ic.VerifierFrom = "postmaster@" + hostname
 	}
 	if ic.ExternalDomains == "" {
 		ic.ExternalDomains = IdentityCreationExternalDomainsAllowAll

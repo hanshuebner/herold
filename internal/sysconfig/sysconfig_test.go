@@ -2933,8 +2933,9 @@ tls = "starttls"
 
 // TestIdentityCreation_DefaultsApplied confirms an omitted
 // [server.identity_creation] block yields the documented defaults from
-// REQ-IDENT-10..36: enabled, allow_all external policy, postmaster@<hostname>
-// verifier_from, 7-day purge window (168h), 60s resend cooldown, 5/day cap.
+// REQ-IDENT-10..36: enabled, allow_all external policy, empty verifier_from
+// (resolved at dispatch time from the hosted domain list — REQ-IDENT-30),
+// 7-day purge window (168h), 60s resend cooldown, 5/day cap.
 func TestIdentityCreation_DefaultsApplied(t *testing.T) {
 	cfg, err := Parse([]byte(identityCreationBase))
 	if err != nil {
@@ -2947,8 +2948,11 @@ func TestIdentityCreation_DefaultsApplied(t *testing.T) {
 	if ic.Enabled == nil || !*ic.Enabled {
 		t.Errorf("default Enabled pointer: want non-nil true, got %v", ic.Enabled)
 	}
-	if ic.VerifierFrom != "postmaster@mail.example.com" {
-		t.Errorf("default VerifierFrom: got %q, want %q", ic.VerifierFrom, "postmaster@mail.example.com")
+	// VerifierFrom has no static default; the dispatcher resolves it at
+	// dispatch time from the single hosted local domain (REQ-IDENT-30).
+	// A non-empty value here means the operator set it explicitly in config.
+	if ic.VerifierFrom != "" {
+		t.Errorf("default VerifierFrom: got %q, want empty (resolved at dispatch time)", ic.VerifierFrom)
 	}
 	if ic.ExternalDomains != IdentityCreationExternalDomainsAllowAll {
 		t.Errorf("default ExternalDomains: got %q, want %q", ic.ExternalDomains, IdentityCreationExternalDomainsAllowAll)

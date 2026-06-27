@@ -128,6 +128,9 @@ func newDispatcherWithStore(t *testing.T) (*Dispatcher, *fakeSubmitter, *fakeAud
 
 func TestDispatcher_Validate_RejectsMissingFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// VerifierFrom is NOT a Validate requirement — it is resolved at
+	// dispatch time from the local-domain list (REQ-IDENT-30). The cases
+	// below cover the fields that Validate() must check eagerly.
 	cases := []struct {
 		name string
 		opts Options
@@ -137,7 +140,6 @@ func TestDispatcher_Validate_RejectsMissingFields(t *testing.T) {
 		{"no logger", Options{Submitter: &fakeSubmitter{}, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
 		{"no clock", Options{Submitter: &fakeSubmitter{}, Logger: logger, PublicBaseURL: "https://h", VerifierFrom: "p@h"}},
 		{"no public base url", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), VerifierFrom: "p@h"}},
-		{"no verifier from", Options{Submitter: &fakeSubmitter{}, Logger: logger, Clock: clock.NewFake(time.Now()), PublicBaseURL: "https://h"}},
 	}
 	for _, c := range cases {
 		c := c
@@ -146,6 +148,156 @@ func TestDispatcher_Validate_RejectsMissingFields(t *testing.T) {
 				t.Fatalf("expected validation error for %s", c.name)
 			}
 		})
+	}
+}
+
+// TestDispatcher_Trigger_ResolvesVerifierFromSingleDomain verifies that when
+// VerifierFrom is empty the dispatcher derives "postmaster@<domain>" from
+// the single registered local domain at dispatch time (REQ-IDENT-30).
+func TestDispatcher_Trigger_ResolvesVerifierFromSingleDomain(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.com", IsLocal: true}); err != nil {
+		t.Fatalf("insert domain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.com", DisplayName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	row := store.JMAPIdentity{
+		ID: "iv-autofrom", PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	sub := &fakeSubmitter{}
+	// VerifierFrom intentionally empty — must be resolved from the domain list.
+	d := New(Options{
+		Store:         st,
+		Submitter:     sub,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		// VerifierFrom: (empty — resolved at dispatch time)
+	})
+	if _, err := d.Trigger(ctx, row); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("expected 1 submission, got %d", len(sub.calls))
+	}
+	if sub.calls[0].mailFrom != "postmaster@example.com" {
+		t.Errorf("MailFrom: got %q, want %q", sub.calls[0].mailFrom, "postmaster@example.com")
+	}
+	if sub.calls[0].signingDomain != "example.com" {
+		t.Errorf("SigningDomain: got %q, want %q", sub.calls[0].signingDomain, "example.com")
+	}
+	// The resolved From must appear in the rendered message headers.
+	if !strings.Contains(string(sub.calls[0].body), "From: postmaster@example.com") {
+		t.Errorf("body missing 'From: postmaster@example.com'")
+	}
+}
+
+// TestDispatcher_Trigger_FailsClosedWithMultipleLocalDomains verifies that
+// when VerifierFrom is empty and multiple local domains exist the dispatch
+// fails with a clear error (the operator must set verifier_from explicitly).
+func TestDispatcher_Trigger_FailsClosedWithMultipleLocalDomains(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+
+	for _, dom := range []string{"alpha.example.com", "beta.example.com"} {
+		if err := st.Meta().InsertDomain(ctx, store.Domain{Name: dom, IsLocal: true}); err != nil {
+			t.Fatalf("insert domain %s: %v", dom, err)
+		}
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@alpha.example.com", DisplayName: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	row := store.JMAPIdentity{
+		ID: "iv-multidomain", PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	sub := &fakeSubmitter{}
+	d := New(Options{
+		Store:         st,
+		Submitter:     sub,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		// VerifierFrom: (empty — should fail closed when multiple domains)
+	})
+	_, err = d.Trigger(ctx, row)
+	if err == nil {
+		t.Fatal("expected error when VerifierFrom is empty and multiple domains exist, got nil")
+	}
+	if !strings.Contains(err.Error(), "verifier_from") {
+		t.Errorf("error should mention verifier_from; got: %v", err)
+	}
+	if len(sub.calls) != 0 {
+		t.Errorf("no submission expected on failure, got %d", len(sub.calls))
+	}
+}
+
+// TestDispatcher_Trigger_FailsClosedWithNoLocalDomains verifies that when
+// VerifierFrom is empty and no local domains exist the dispatch fails with a
+// clear error (REQ-IDENT-30 zero-config path requires at least one domain).
+func TestDispatcher_Trigger_FailsClosedWithNoLocalDomains(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "admin@localhost", DisplayName: "Admin",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+	row := store.JMAPIdentity{
+		ID: "iv-nodomain", PrincipalID: p.ID, Email: "alice@external.test", MayDelete: true,
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	sub := &fakeSubmitter{}
+	d := New(Options{
+		Store:         st,
+		Submitter:     sub,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:         clk,
+		PublicBaseURL: "https://mail.example.com",
+		// VerifierFrom: (empty, no local domains registered)
+	})
+	_, err = d.Trigger(ctx, row)
+	if err == nil {
+		t.Fatal("expected error when VerifierFrom is empty and no domains exist, got nil")
+	}
+	if !strings.Contains(err.Error(), "verifier_from") {
+		t.Errorf("error should mention verifier_from; got: %v", err)
 	}
 }
 

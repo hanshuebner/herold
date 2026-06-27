@@ -108,6 +108,11 @@ func New(opts Options) *Dispatcher {
 // Validate returns a non-nil error when a required Option is missing.
 // Called by the trigger before any side effect; failures are logged
 // and the create call still succeeds (REQ-IDENT-30 best-effort).
+//
+// VerifierFrom is NOT validated here: when empty, it is resolved at
+// dispatch time from the store's local-domain list (REQ-IDENT-30
+// zero-config path). The dispatch fails with a clear error when the
+// canonical domain cannot be determined unambiguously.
 func (d *Dispatcher) Validate() error {
 	if d.opts.Store == nil {
 		return fmt.Errorf("identityverify: Store is required")
@@ -123,9 +128,6 @@ func (d *Dispatcher) Validate() error {
 	}
 	if strings.TrimSpace(d.opts.PublicBaseURL) == "" {
 		return fmt.Errorf("identityverify: PublicBaseURL is required")
-	}
-	if strings.TrimSpace(d.opts.VerifierFrom) == "" {
-		return fmt.Errorf("identityverify: VerifierFrom is required")
 	}
 	return nil
 }
@@ -176,6 +178,22 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 	if err := d.Validate(); err != nil {
 		d.logFailure(ctx, row.ID, "config_invalid", err, isResend)
 		return Tokens{}, err
+	}
+
+	// Resolve the effective sender address. When the operator has set
+	// verifier_from explicitly, use it verbatim. When it is empty,
+	// derive "postmaster@<domain>" from the single hosted local domain
+	// (REQ-IDENT-30 zero-config path). Fail closed with a clear error
+	// when the canonical domain is ambiguous (zero or multiple local
+	// domains) — the operator must set verifier_from explicitly then.
+	verifierFrom := d.opts.VerifierFrom
+	if strings.TrimSpace(verifierFrom) == "" {
+		var resolveErr error
+		verifierFrom, resolveErr = d.resolveVerifierFrom(ctx)
+		if resolveErr != nil {
+			d.logFailure(ctx, row.ID, "verifier_from_unresolved", resolveErr, isResend)
+			return Tokens{}, resolveErr
+		}
 	}
 
 	token, tokenBytes, err := GenerateToken()
@@ -237,7 +255,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 	}
 
 	composed, err := Compose(ComposeInput{
-		From:           d.opts.VerifierFrom,
+		From:           verifierFrom,
 		To:             row.Email,
 		Token:          token,
 		Code:           code,
@@ -250,11 +268,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 		return Tokens{}, err
 	}
 
-	signingDomain := domainOf(d.opts.VerifierFrom)
+	signingDomain := domainOf(verifierFrom)
 	pid := row.PrincipalID
 	sub := queue.Submission{
 		PrincipalID:   &pid,
-		MailFrom:      d.opts.VerifierFrom,
+		MailFrom:      verifierFrom,
 		Recipients:    []string{row.Email},
 		Body:          bytes.NewReader(composed.Bytes),
 		Sign:          true,
@@ -277,7 +295,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, row store.JMAPIdentity, isRes
 		slog.String("envelope_id", string(envID)),
 		slog.String("message_id", composed.MessageID),
 		slog.String("recipient", row.Email),
-		slog.String("verifier_from", d.opts.VerifierFrom),
+		slog.String("verifier_from", verifierFrom),
 		slog.Bool("resend", isResend),
 	)
 	d.audit(ctx, row, store.OutcomeSuccess, "queued", map[string]string{
@@ -302,6 +320,31 @@ func (d *Dispatcher) resolveInitiator(ctx context.Context, pid store.PrincipalID
 		return "", err
 	}
 	return p.CanonicalEmail, nil
+}
+
+// resolveVerifierFrom determines the sender address when the operator
+// has not configured [server.identity_creation].verifier_from explicitly.
+// Returns "postmaster@<domain>" when exactly one local domain is hosted.
+// Returns a descriptive error when the canonical domain is ambiguous:
+//   - zero local domains: no domain to derive a sender from.
+//   - multiple local domains: ambiguous; the operator must choose.
+//
+// The caller should surface the error so the operator can set
+// [server.identity_creation].verifier_from explicitly (REQ-IDENT-30).
+func (d *Dispatcher) resolveVerifierFrom(ctx context.Context) (string, error) {
+	domains, err := d.opts.Store.Meta().ListLocalDomains(ctx)
+	if err != nil {
+		return "", fmt.Errorf("identityverify: list local domains for verifier_from: %w", err)
+	}
+	switch len(domains) {
+	case 1:
+		return "postmaster@" + domains[0].Name, nil
+	case 0:
+		return "", fmt.Errorf("identityverify: no local domains registered; set [server.identity_creation].verifier_from explicitly (REQ-IDENT-30)")
+	default:
+		return "", fmt.Errorf("identityverify: %d local domains found — canonical sender domain is ambiguous; set [server.identity_creation].verifier_from explicitly (e.g. verifier_from = %q) (REQ-IDENT-30)",
+			len(domains), "postmaster@"+domains[0].Name)
+	}
 }
 
 // logFailure writes a structured failure line and audit entry for one
