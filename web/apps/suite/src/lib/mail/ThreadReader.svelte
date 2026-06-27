@@ -44,46 +44,51 @@
   let scrollContainerEl = $state<HTMLDivElement | null>(null);
 
   /**
-   * Expand `emailId`, scroll its accordion into view at the top of the
-   * scroll region, and return focus to the compose pane if it is open.
-   * Wired to the new-reply banner's "Show new reply" action and the
-   * thread-view `n` shortcut (issue #118).
+   * Accept all pending arrivals for the current thread: advance the
+   * committed snapshot so they appear in the rendered list and scroll the
+   * first new message into view (issue #118). Wired to the new-reply
+   * banner's "Neue Antwort anzeigen" button and the `n` keyboard shortcut.
    */
-  async function showNewReply(emailId: string): Promise<void> {
-    const next = new Set(expanded);
-    next.add(emailId);
-    expanded = next;
-    // Defer one frame so the accordion's expanded body lays out before
-    // we scroll it into view.
+  async function handleAccept(): Promise<void> {
+    const newEmails = mail.acceptPendingArrivals(threadId);
+    if (newEmails.length === 0) return;
+    // Wait two animation frames: first for Svelte to update `expanded` via
+    // the auto-expand effect, second for the DOM to lay out the new accordions.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     const container = scrollContainerEl;
     if (!container) return;
+    const firstNew = newEmails[0];
+    if (!firstNew) return;
     const target = container.querySelector<HTMLElement>(
-      `[data-email-id="${CSS.escape(emailId)}"]`,
+      `[data-email-id="${CSS.escape(firstNew.id)}"]`,
     );
     target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   /**
+   * Dismiss all pending arrivals for the current thread without inserting
+   * them into the rendered list (issue #118). Wired to the banner's
+   * "Verstanden" button.
+   */
+  function handleDismiss(): void {
+    mail.dismissPendingArrivals(threadId);
+  }
+
+  /**
    * While a new-reply banner is up, push an `n` shortcut that triggers
-   * Show new reply (issue #118 open questions). The binding lives in a
-   * dedicated layer so it disappears the moment the banner is dismissed
+   * "Neue Antwort anzeigen" (issue #118 open questions). The binding lives
+   * in a dedicated layer so it disappears the moment the banner is dismissed
    * or no replies are pending.
    */
   $effect(() => {
     if (pendingArrivals.length === 0) return;
-    const tid = threadId;
     const pop = keyboard.pushLayer([
       {
         key: 'n',
-        description: 'Show new reply',
+        description: 'Neue Antwort anzeigen',
         action: () => {
-          const arrivals = mail.pendingArrivalsForThread(tid);
-          const latestArrival = arrivals[arrivals.length - 1];
-          if (!latestArrival) return;
-          const id = latestArrival.id;
-          mail.dismissPendingArrivals(tid);
-          void showNewReply(id);
+          void handleAccept();
         },
       },
     ]);
@@ -93,13 +98,6 @@
   let status = $derived(mail.threadStatus(threadId));
   let emails = $derived(mail.threadEmails(threadId));
   let pendingArrivals = $derived(mail.pendingArrivalsForThread(threadId));
-  /** First email in display order that is a pending arrival, if any. */
-  let firstPendingArrivalId = $derived.by<string | null>(() => {
-    if (pendingArrivals.length === 0) return null;
-    const set = new Set(pendingArrivals.map((e) => e.id));
-    for (const e of emails) if (set.has(e.id)) return e.id;
-    return null;
-  });
   let subject = $derived(emails[0]?.subject || t('thread.subject.none'));
 
   // Most recent email — what reply / reply-all / forward target by
@@ -241,6 +239,15 @@
     <div class="state">{t('thread.empty')}</div>
   {:else}
     <ThreadToolbar {threadId} {latest} onPrint={() => void printThread()} />
+    <!-- New-reply banner lives OUTSIDE the scroll container so it is always
+         visible and never displaces the user's reading position when an
+         external message arrives (issue #56). The user must explicitly
+         accept before the message appears in the rendered list. -->
+    <ThreadNewReplyBanner
+      {threadId}
+      onAccept={() => void handleAccept()}
+      onDismiss={handleDismiss}
+    />
     <div class="scroll" bind:this={scrollContainerEl}>
       <header>
         <h1>{subject}</h1>
@@ -269,12 +276,6 @@
       <TaggedAddressBanner email={latest} />
       <div class="messages">
         {#each emails as email (email.id)}
-          {#if email.id === firstPendingArrivalId}
-            <ThreadNewReplyBanner
-              {threadId}
-              onShow={(id) => void showNewReply(id)}
-            />
-          {/if}
           <div data-email-id={email.id}>
             <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
           </div>

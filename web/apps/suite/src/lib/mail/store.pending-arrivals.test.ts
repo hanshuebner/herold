@@ -1,20 +1,31 @@
 /**
  * Tests for the "new reply while reading" plumbing on the mail store
- * (issue #118). The store exposes:
+ * (issue #118, issue #55, issue #56). The store exposes:
  *
  *   - `openThreadId` + `setOpenThread()` — ThreadReader registers the
  *     currently-rendered thread so the Email/changes handler knows when
  *     a fresh arrival should ping.
- *   - `pendingArrivalsForThread()` + `dismissPendingArrivals()` —
- *     ThreadReader's banner reads / clears the pending arrivals set.
- *   - `#recordPendingArrivals` — invoked from `#onEmailStateChange`
- *     after the cache refresh, populates the set with arrivals in the
- *     open thread that aren't from the user themselves.
+ *   - `pendingArrivalsForThread()` + `dismissPendingArrivals()` +
+ *     `acceptPendingArrivals()` — ThreadReader's banner reads / accepts
+ *     / dismisses the pending arrivals set.
+ *   - `committedThreadEmailIds` — frozen snapshot of the email IDs the
+ *     reader is currently rendering; guards against auto-insertion of
+ *     external arrivals (issue #56).
+ *   - `gatedEmailIds` — tracks arrivals that have already passed through
+ *     the banner (accepted or dismissed) so that subsequent state-change
+ *     events don't re-trigger the banner for the same messages.
+ *   - `#processFreshArrivals` — invoked from `#onEmailStateChange` after
+ *     the cache refresh; self-sent arrivals are auto-committed (no banner),
+ *     external arrivals go to `pendingArrivals` (shown in banner).
  *
  * The handler path is exercised end-to-end by capturing the `Email`
  * sync handler at module import time, mocking `jmap.batch` to return
  * a synthetic Email/changes delta + Thread/get + Email/get response,
- * and asserting that the resulting `pendingArrivals` matches.
+ * and asserting that the resulting `pendingArrivals` / committed snapshot
+ * match expectations.
+ *
+ * Pure helper tests (`normalizeMessageId`, `dedupeArrivalsByMessageId`)
+ * import the helpers directly from the store's `_internals_forTest` export.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -97,6 +108,80 @@ function makeIdentity(email: string): Identity {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Pure helper tests (no store singleton needed, import directly)
+// ---------------------------------------------------------------------------
+
+describe('normalizeMessageId', () => {
+  it('strips angle brackets and lowercases', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { normalizeMessageId } = _internals_forTest;
+    expect(normalizeMessageId('<Foo.BAR@host>')).toBe('foo.bar@host');
+    expect(normalizeMessageId('<abc@DEF.COM>')).toBe('abc@def.com');
+  });
+
+  it('returns null for empty or whitespace-only input', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { normalizeMessageId } = _internals_forTest;
+    expect(normalizeMessageId('')).toBeNull();
+    expect(normalizeMessageId('   ')).toBeNull();
+    expect(normalizeMessageId('<>')).toBeNull();
+  });
+
+  it('handles input without angle brackets', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { normalizeMessageId } = _internals_forTest;
+    expect(normalizeMessageId('plain@host')).toBe('plain@host');
+  });
+});
+
+describe('dedupeArrivalsByMessageId', () => {
+  it('removes new IDs whose Message-ID matches an existing committed email', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    const emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 't1', messageId: ['<msg1@host>'] })],
+      ['e2', makeEmail({ id: 'e2', threadId: 't1', messageId: ['<msg1@host>'] })],
+    ]);
+    // e1 is committed; e2 shares the same Message-ID — must be dropped.
+    expect(dedupeArrivalsByMessageId(['e2'], ['e1'], emails)).toEqual([]);
+  });
+
+  it('passes through IDs whose email has no messageId field', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    const emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 't1' })],
+    ]);
+    expect(dedupeArrivalsByMessageId(['e1'], [], emails)).toEqual(['e1']);
+  });
+
+  it('deduplicates within newIds themselves', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    const emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 't1', messageId: ['<msg1@host>'] })],
+      ['e2', makeEmail({ id: 'e2', threadId: 't1', messageId: ['<MSG1@HOST>'] })],
+    ]);
+    // Both e1 and e2 have the same normalised Message-ID; keep only the first.
+    expect(dedupeArrivalsByMessageId(['e1', 'e2'], [], emails)).toEqual(['e1']);
+  });
+
+  it('passes through IDs that are genuinely distinct', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    const emails = new Map<string, Email>([
+      ['e1', makeEmail({ id: 'e1', threadId: 't1', messageId: ['<msg1@host>'] })],
+      ['e2', makeEmail({ id: 'e2', threadId: 't1', messageId: ['<msg2@host>'] })],
+    ]);
+    expect(dedupeArrivalsByMessageId(['e2'], ['e1'], emails)).toEqual(['e2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Store singleton tests
+// ---------------------------------------------------------------------------
+
 describe('mail store: pending-arrival surface (issue #118)', () => {
   beforeEach(() => {
     syncHandlers.clear();
@@ -119,9 +204,11 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     const arrivals = mail.pendingArrivalsForThread('tid-1');
     expect(arrivals.map((e) => e.id)).toEqual(['e-arrival']);
 
-    // Dismiss drops the entry.
+    // Dismiss drops the pending-arrivals entry and gates the id.
     mail.dismissPendingArrivals('tid-1');
     expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
+    // Dismissed id is tracked in gatedEmailIds.
+    expect(mail.gatedEmailIds.get('tid-1')?.has('e-arrival')).toBe(true);
   });
 
   it('setOpenThread wipes pending arrivals from threads other than the one being opened', async () => {
@@ -144,6 +231,65 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     expect(mail.pendingArrivalsForThread('tid-b')).toEqual([]);
   });
 
+  it('acceptPendingArrivals advances committed snapshot and returns new emails', async () => {
+    const { mail } = await import('./store.svelte');
+    mail.emails.set('e-old', makeEmail({ id: 'e-old', threadId: 'tid-1' }));
+    mail.emails.set(
+      'e-new',
+      makeEmail({ id: 'e-new', threadId: 'tid-1', receivedAt: '2026-05-09T11:00:00Z' }),
+    );
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-old']]]);
+    mail.pendingArrivals = new Map([['tid-1', new Set(['e-new'])]]);
+
+    const added = mail.acceptPendingArrivals('tid-1');
+    expect(added.map((e) => e.id)).toEqual(['e-new']);
+    // Committed snapshot now includes the accepted email.
+    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-old', 'e-new']);
+    // Pending arrivals cleared.
+    expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
+    // Accepted id is gated.
+    expect(mail.gatedEmailIds.get('tid-1')?.has('e-new')).toBe(true);
+  });
+
+  it('acceptPendingArrivals deduplicates by Message-ID against committed snapshot', async () => {
+    const { mail } = await import('./store.svelte');
+    mail.emails.set(
+      'e-sent',
+      makeEmail({ id: 'e-sent', threadId: 'tid-1', messageId: ['<msg1@host>'] }),
+    );
+    mail.emails.set(
+      'e-inbox',
+      makeEmail({ id: 'e-inbox', threadId: 'tid-1', messageId: ['<msg1@host>'] }),
+    );
+    // e-sent is already committed; e-inbox shares the same Message-ID.
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-sent']]]);
+    mail.pendingArrivals = new Map([['tid-1', new Set(['e-inbox'])]]);
+
+    const added = mail.acceptPendingArrivals('tid-1');
+    // Duplicate: nothing added to committed snapshot.
+    expect(added).toEqual([]);
+    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-sent']);
+    // The pending id is still gated so it won't re-trigger the banner.
+    expect(mail.gatedEmailIds.get('tid-1')?.has('e-inbox')).toBe(true);
+  });
+
+  it('dismissPendingArrivals gates ids without advancing committed snapshot', async () => {
+    const { mail } = await import('./store.svelte');
+    mail.emails.set('e-old', makeEmail({ id: 'e-old', threadId: 'tid-1' }));
+    mail.emails.set('e-new', makeEmail({ id: 'e-new', threadId: 'tid-1' }));
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-old']]]);
+    mail.pendingArrivals = new Map([['tid-1', new Set(['e-new'])]]);
+
+    mail.dismissPendingArrivals('tid-1');
+
+    // Committed snapshot unchanged — dismissed email is NOT shown.
+    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-old']);
+    // Pending arrivals cleared.
+    expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
+    // Dismissed id is gated so it won't re-trigger the banner on next sync.
+    expect(mail.gatedEmailIds.get('tid-1')?.has('e-new')).toBe(true);
+  });
+
   it('Email/changes records arrivals in the currently-open thread, skipping self-sent messages', async () => {
     const { mail } = await import('./store.svelte');
 
@@ -159,13 +305,13 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
       ],
     ]);
     mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    // Set the committed snapshot so #processFreshArrivals can run.
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-old']]]);
 
     // ThreadReader registers the open thread.
     mail.setOpenThread('tid-1');
 
     // Prime the state baseline so the next push triggers the diff path.
-    // The handler captures the baseline on first push by recording the
-    // newState; subsequent pushes go through the changes/refresh flow.
     mail.emailState = 'state-1';
 
     // Push: Email/changes returns one created (carol's new reply) plus
@@ -246,6 +392,7 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
       ['e-seed', makeEmail({ id: 'e-seed', threadId: 'tid-open' })],
     ]);
     mail.threadLoadStatus = new Map([['tid-open', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-open', ['e-seed']]]);
     mail.setOpenThread('tid-open');
     mail.emailState = 'state-x';
 
@@ -265,7 +412,7 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
         if (c.name === 'Email/changes') {
           responses.push([
             c.name,
-            // e-self: own send in the open thread (must be filtered).
+            // e-self: own send in the open thread (must be auto-committed, not bannered).
             // e-other: arrival in a different thread (must be ignored).
             { created: ['e-self', 'e-other'], updated: [], destroyed: [] },
             `c${i}`,
@@ -311,7 +458,71 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     await handler!('state-y', 'acc1');
     await new Promise((r) => setTimeout(r, 0));
 
+    // Self-sent message in the open thread: no banner, auto-committed.
     expect(mail.pendingArrivalsForThread('tid-open')).toEqual([]);
+    expect(mail.committedThreadEmailIds.get('tid-open')).toContain('e-self');
+    // Arrival in a different thread: ignored.
     expect(mail.pendingArrivalsForThread('tid-other')).toEqual([]);
+  });
+
+  it('gated emails do not re-trigger the pending arrivals banner on subsequent syncs', async () => {
+    const { mail } = await import('./store.svelte');
+
+    mail.identities = new Map([['id-1', makeIdentity('me@example.test')]]);
+    mail.threads = new Map<string, Thread>([
+      ['tid-1', { id: 'tid-1', emailIds: ['e-old', 'e-external'] }],
+    ]);
+    mail.emails = new Map<string, Email>([
+      ['e-old', makeEmail({ id: 'e-old', threadId: 'tid-1' })],
+      [
+        'e-external',
+        makeEmail({
+          id: 'e-external',
+          threadId: 'tid-1',
+          receivedAt: '2026-05-09T11:00:00Z',
+        }),
+      ],
+    ]);
+    mail.threadLoadStatus = new Map([['tid-1', 'ready']]);
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-old']]]);
+    // Gate e-external (as if the user had previously dismissed its banner).
+    mail.gatedEmailIds = new Map([['tid-1', new Set(['e-external'])]]);
+    mail.setOpenThread('tid-1');
+
+    // A trivial sync that reports no new Email/changes but still exercises
+    // #processFreshArrivals — simulate by calling it via a state push
+    // that returns no changes.
+    mail.emailState = 'state-a';
+    batch.mockImplementation(async (builder: unknown) => {
+      let counter = 0;
+      const calls: { name: string; args: Record<string, unknown> }[] = [];
+      const api = {
+        call: (name: string, args: Record<string, unknown>) => {
+          calls.push({ name, args });
+          return { ref: () => ({ resultOf: `c${counter++}`, name, path: '' }) };
+        },
+      };
+      (builder as (b: unknown) => void)(api);
+      const responses: Array<[string, unknown, string]> = [];
+      for (let i = 0; i < calls.length; i++) {
+        const c = calls[i]!;
+        if (c.name === 'Email/changes') {
+          responses.push([c.name, { created: [], updated: [], destroyed: [] }, `c${i}`]);
+        } else if (c.name === 'Mailbox/get') {
+          responses.push([c.name, { list: [], state: 'mbx-a' }, `c${i}`]);
+        } else {
+          responses.push([c.name, { list: [], state: 'state-b' }, `c${i}`]);
+        }
+      }
+      return { responses, using: new Set<string>() };
+    });
+
+    const handler = syncHandlers.get('Email');
+    await handler!('state-b', 'acc1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // e-external is in thread.emailIds but also in gatedEmailIds, so it
+    // must NOT appear in pendingArrivals.
+    expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
   });
 });

@@ -1,9 +1,14 @@
 /**
  * Component tests for the inline "new reply while reading" banner
- * (issue #118). The banner appears whenever the mail store reports
+ * (issue #118, issue #56). The banner appears whenever the mail store reports
  * pending arrivals for the open thread; it persists until explicitly
- * dismissed; "Show new reply" passes the latest arrival's id to the
- * onShow callback so the thread reader can scroll and expand it.
+ * dismissed; "Neue Antwort anzeigen" invokes onAccept so ThreadReader can
+ * call acceptPendingArrivals and scroll to the new messages; "Verstanden"
+ * invokes onDismiss so ThreadReader can call dismissPendingArrivals without
+ * inserting the arrivals into the rendered list.
+ *
+ * The banner does NOT call store methods itself; it delegates all
+ * store mutations to the caller via the onAccept / onDismiss props.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -16,7 +21,6 @@ const { mailMock } = vi.hoisted(() => {
     mailMock: {
       arrivals: [] as Email[],
       pendingArrivalsForThread: vi.fn((_tid: string) => mailMock.arrivals),
-      dismissPendingArrivals: vi.fn(),
     },
   };
 });
@@ -51,7 +55,6 @@ function makeArrival(id: string, sender: string, preview: string, ts: string): E
 describe('ThreadNewReplyBanner', () => {
   beforeEach(() => {
     mailMock.arrivals = [];
-    mailMock.dismissPendingArrivals.mockReset();
     mailMock.pendingArrivalsForThread.mockReset();
     mailMock.pendingArrivalsForThread.mockImplementation(
       (_tid: string) => mailMock.arrivals,
@@ -60,7 +63,7 @@ describe('ThreadNewReplyBanner', () => {
 
   it('renders nothing when there are no pending arrivals', () => {
     const { container } = render(ThreadNewReplyBanner, {
-      props: { threadId: 'tid-1', onShow: vi.fn() },
+      props: { threadId: 'tid-1', onAccept: vi.fn(), onDismiss: vi.fn() },
     });
     expect(container.querySelector('.new-reply-banner')).toBeNull();
   });
@@ -70,7 +73,7 @@ describe('ThreadNewReplyBanner', () => {
       makeArrival('e-new', 'Carol', 'Quick correction: 16:00 UTC', '2026-05-09T12:00:00Z'),
     ];
     render(ThreadNewReplyBanner, {
-      props: { threadId: 'tid-1', onShow: vi.fn() },
+      props: { threadId: 'tid-1', onAccept: vi.fn(), onDismiss: vi.fn() },
     });
     expect(
       screen.getByText('mail.threadReader.newReply.one.heading(sender=Carol)'),
@@ -87,46 +90,48 @@ describe('ThreadNewReplyBanner', () => {
       makeArrival('e-3', 'Dan', 'latest', '2026-05-09T10:02:00Z'),
     ];
     render(ThreadNewReplyBanner, {
-      props: { threadId: 'tid-1', onShow: vi.fn() },
+      props: { threadId: 'tid-1', onAccept: vi.fn(), onDismiss: vi.fn() },
     });
-    // "3 new replies" — heading uses the many.heading key with count.
+    // "3 new replies" heading.
     expect(
       screen.getByText('mail.threadReader.newReply.many.heading(count=3)'),
     ).toBeInTheDocument();
     // Preview shows the latest (Dan's) snippet.
     expect(screen.getByText('latest')).toBeInTheDocument();
-    // "+2 more" hint surfaces the older arrivals.
+    // "+2 more" hint.
     expect(
       screen.getByText('mail.threadReader.newReply.more(count=2)'),
     ).toBeInTheDocument();
   });
 
-  it('Got it dismisses without invoking onShow', async () => {
+  it('"Verstanden" calls onDismiss without calling onAccept', async () => {
     mailMock.arrivals = [
       makeArrival('e-new', 'Carol', 'snippet', '2026-05-09T12:00:00Z'),
     ];
-    const onShow = vi.fn();
+    const onAccept = vi.fn();
+    const onDismiss = vi.fn();
     render(ThreadNewReplyBanner, {
-      props: { threadId: 'tid-1', onShow },
+      props: { threadId: 'tid-1', onAccept, onDismiss },
     });
     const dismissBtn = screen.getByText('mail.threadReader.newReply.dismiss');
     await fireEvent.click(dismissBtn);
-    expect(mailMock.dismissPendingArrivals).toHaveBeenCalledWith('tid-1');
-    expect(onShow).not.toHaveBeenCalled();
+    expect(onDismiss).toHaveBeenCalledOnce();
+    expect(onAccept).not.toHaveBeenCalled();
   });
 
-  it('Show new reply dismisses and invokes onShow with the latest id', async () => {
+  it('"Neue Antwort anzeigen" calls onAccept without calling onDismiss', async () => {
     mailMock.arrivals = [
       makeArrival('e-old', 'Bob', 'older', '2026-05-09T10:00:00Z'),
       makeArrival('e-latest', 'Dan', 'newest', '2026-05-09T10:02:00Z'),
     ];
-    const onShow = vi.fn();
+    const onAccept = vi.fn();
+    const onDismiss = vi.fn();
     render(ThreadNewReplyBanner, {
-      props: { threadId: 'tid-1', onShow },
+      props: { threadId: 'tid-1', onAccept, onDismiss },
     });
     const showBtn = screen.getByText('mail.threadReader.newReply.show');
     await fireEvent.click(showBtn);
-    expect(mailMock.dismissPendingArrivals).toHaveBeenCalledWith('tid-1');
-    expect(onShow).toHaveBeenCalledWith('e-latest');
+    expect(onAccept).toHaveBeenCalledOnce();
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 });

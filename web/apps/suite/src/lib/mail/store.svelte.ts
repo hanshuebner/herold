@@ -146,6 +146,26 @@ class MailStore {
    */
   pendingArrivals = $state(new Map<string, Set<string>>());
 
+  /**
+   * The frozen snapshot of emailIds used as the rendered set for an open
+   * thread. Populated on `loadThread`; advanced for self-sent arrivals
+   * immediately; advanced for external arrivals only when the user accepts
+   * them via the "Neue Antwort anzeigen" banner action. Prevents live
+   * refreshThread updates from mutating the rendered thread without user
+   * consent (gate for issue #118) and anchors the Message-ID dedup pass
+   * that eliminates the Sent-copy / Inbox-copy duplicate.
+   */
+  committedThreadEmailIds = $state(new Map<string, string[]>());
+
+  /**
+   * Per-thread set of email ids that have already passed through the
+   * arrival gate (either accepted via "Neue Antwort anzeigen" or dismissed
+   * via "Verstanden"). Used to prevent a future state-change from
+   * re-triggering the banner for the same emails once they are no longer
+   * in `pendingArrivals`.
+   */
+  gatedEmailIds = $state(new Map<string, Set<string>>());
+
   /** Most recent search query string (raw, user-typed). */
   searchQuery = $state('');
   searchEmailIds = $state<string[]>([]);
@@ -206,6 +226,8 @@ class MailStore {
     this.threadLoadError = new Map();
     this.openThreadId = null;
     this.pendingArrivals = new Map();
+    this.committedThreadEmailIds = new Map();
+    this.gatedEmailIds = new Map();
     this.searchQuery = '';
     this.searchEmailIds = [];
     this.searchLoadStatus = 'idle';
@@ -380,86 +402,130 @@ class MailStore {
       this.#refreshMailboxesSoon();
     }
 
-    // Record fresh arrivals in the currently-open thread so ThreadReader
-    // can surface a "new reply" banner (issue #118). Skip messages the
-    // user sent themselves (replying to your own thread shouldn't ping
-    // you about your own reply).
+    // Process fresh arrivals in the currently-open thread. Self-sent
+    // arrivals are merged into the committed snapshot immediately (so the
+    // user sees their own reply appear at once). External arrivals are
+    // held in `pendingArrivals` and gated behind the banner (issue #118).
     if (knownEmailIds.size > 0 && this.openThreadId !== null) {
-      await this.#recordPendingArrivals(knownEmailIds, delta);
+      await this.#processFreshArrivals();
     }
   }
 
-  async #recordPendingArrivals(
-    knownEmailIds: Set<string>,
-    delta: { created: Set<string>; updated: Set<string>; destroyed: Set<string> } | null,
-  ): Promise<void> {
+  /**
+   * Process emails that are in the open thread's server-side `emailIds`
+   * but have not yet been admitted to the committed rendering snapshot.
+   *
+   * Self-sent arrivals: merged into the committed snapshot immediately
+   * (with Message-ID deduplication so a Sent-copy / Inbox-copy pair of
+   * the same physical message renders once).
+   *
+   * External arrivals: kept in `pendingArrivals` behind the banner.
+   * Body values are pre-fetched so the banner preview is non-empty.
+   */
+  async #processFreshArrivals(): Promise<void> {
     const open = this.openThreadId;
     if (open === null) return;
-    const candidates = new Set<string>();
-    if (delta) {
-      for (const id of delta.created) candidates.add(id);
-    } else {
-      for (const id of this.emails.keys()) {
-        if (!knownEmailIds.has(id)) candidates.add(id);
-      }
+    const thread = this.threads.get(open);
+    if (!thread) return;
+    const committed = this.committedThreadEmailIds.get(open);
+    if (committed === undefined) return; // thread not yet cold-loaded
+    const committedSet = new Set(committed);
+    const gated = this.gatedEmailIds.get(open) ?? new Set<string>();
+
+    // IDs in the server's thread that are new to the committed snapshot
+    // and have not already passed through the gate.
+    const newToProcess: string[] = [];
+    for (const id of thread.emailIds) {
+      if (!committedSet.has(id) && !gated.has(id)) newToProcess.push(id);
     }
-    if (candidates.size === 0) return;
+    if (newToProcess.length === 0) return;
+
     const selfEmails = buildSelfEmailSet(this.identities.values());
-    const arrivals: string[] = [];
-    for (const id of candidates) {
+    const selfNewIds: string[] = [];
+    const externalNewIds: string[] = [];
+    for (const id of newToProcess) {
       const email = this.emails.get(id);
       if (!email) continue;
-      if (email.threadId !== open) continue;
-      if (isFromSelf(email, selfEmails)) continue;
-      arrivals.push(id);
-    }
-    if (arrivals.length === 0) return;
-
-    // Ensure body values are present before surfacing the arrival in the
-    // thread reader so it does not render "(no body)" until reload (re #31).
-    // refreshFolder (list-props only) and refreshThread (body-props) run
-    // concurrently; if refreshFolder wins it overwrites the email object
-    // with one that has no bodyValues. An explicit Email/get here with
-    // body properties wins that race by writing after both tasks settle.
-    const accountId = this.mailAccountId;
-    if (accountId) {
-      const needsBody = arrivals.filter((id) => {
-        const e = this.emails.get(id);
-        return e !== undefined && !e.bodyValues;
-      });
-      if (needsBody.length > 0) {
-        try {
-          const { responses } = await jmap.batch((b) => {
-            b.call(
-              'Email/get',
-              {
-                accountId,
-                ids: needsBody,
-                properties: EMAIL_BODY_PROPERTIES,
-                fetchHTMLBodyValues: true,
-                fetchTextBodyValues: true,
-              },
-              [Capability.Mail],
-            );
-          });
-          strict(responses);
-          const result = invocationArgs<{ list: Email[] }>(responses[0]);
-          const updated = new Map(this.emails);
-          for (const e of result.list) updated.set(e.id, e);
-          this.emails = updated;
-        } catch (err) {
-          // Body pre-fetch failure is non-fatal: the arrival still appears
-          // in the banner; the user can reload to see the full content.
-          console.warn('body pre-fetch for pending arrival failed', err);
-        }
+      if (isFromSelf(email, selfEmails)) {
+        selfNewIds.push(id);
+      } else {
+        externalNewIds.push(id);
       }
     }
 
-    const next = new Map(this.pendingArrivals);
-    const merged = new Set(next.get(open) ?? []);
-    for (const id of arrivals) merged.add(id);
-    next.set(open, merged);
-    this.pendingArrivals = next;
+    // Self-sent: advance the committed snapshot immediately (deduped by
+    // Message-ID) and mark as gated so future pushes don't re-process.
+    if (selfNewIds.length > 0) {
+      const nextGated = new Map(this.gatedEmailIds);
+      const existingGated = nextGated.get(open) ?? new Set<string>();
+      nextGated.set(open, new Set([...existingGated, ...selfNewIds]));
+      this.gatedEmailIds = nextGated;
+      this.#advanceCommittedSnapshot(open, selfNewIds);
+    }
+
+    // External: body pre-fetch, then surface in the banner.
+    if (externalNewIds.length > 0) {
+      // Ensure body values are present before surfacing the arrival in the
+      // thread reader so the banner preview is non-empty (re #31).
+      // refreshFolder (list-props only) and refreshThread (body-props) run
+      // concurrently; if refreshFolder wins it overwrites the email object
+      // with one that has no bodyValues. An explicit Email/get here wins
+      // that race by writing after both tasks settle.
+      const accountId = this.mailAccountId;
+      if (accountId) {
+        const needsBody = externalNewIds.filter((id) => {
+          const e = this.emails.get(id);
+          return e !== undefined && !e.bodyValues;
+        });
+        if (needsBody.length > 0) {
+          try {
+            const { responses } = await jmap.batch((b) => {
+              b.call(
+                'Email/get',
+                {
+                  accountId,
+                  ids: needsBody,
+                  properties: EMAIL_BODY_PROPERTIES,
+                  fetchHTMLBodyValues: true,
+                  fetchTextBodyValues: true,
+                },
+                [Capability.Mail],
+              );
+            });
+            strict(responses);
+            const result = invocationArgs<{ list: Email[] }>(responses[0]);
+            const updated = new Map(this.emails);
+            for (const e of result.list) updated.set(e.id, e);
+            this.emails = updated;
+          } catch (err) {
+            // Body pre-fetch failure is non-fatal: the arrival still
+            // appears in the banner; the user can reload for full content.
+            console.warn('body pre-fetch for pending arrival failed', err);
+          }
+        }
+      }
+
+      const next = new Map(this.pendingArrivals);
+      const merged = new Set(next.get(open) ?? []);
+      for (const id of externalNewIds) merged.add(id);
+      next.set(open, merged);
+      this.pendingArrivals = next;
+    }
+  }
+
+  /**
+   * Advance the committed snapshot for `threadId` by adding `newIds`,
+   * deduplicating against existing entries by normalized Message-ID.
+   * No-ops when the committed map has no entry for the thread.
+   */
+  #advanceCommittedSnapshot(threadId: string, newIds: string[]): void {
+    const existing = this.committedThreadEmailIds.get(threadId);
+    if (existing === undefined) return;
+    const toAdd = dedupeArrivalsByMessageId(newIds, existing, this.emails);
+    if (toAdd.length === 0) return;
+    const next = new Map(this.committedThreadEmailIds);
+    next.set(threadId, [...existing, ...toAdd]);
+    this.committedThreadEmailIds = next;
   }
 
   /**
@@ -471,6 +537,10 @@ class MailStore {
   setOpenThread(threadId: string | null): void {
     if (this.openThreadId === threadId) return;
     this.openThreadId = threadId;
+    // Clean up pendingArrivals for threads other than the one being opened.
+    // gatedEmailIds is intentionally NOT wiped here so that dismissed
+    // arrivals stay dismissed even when the user navigates away and back
+    // without a cold load.
     if (this.pendingArrivals.size === 0) return;
     if (threadId === null) {
       this.pendingArrivals = new Map();
@@ -497,9 +567,60 @@ class MailStore {
     return out;
   }
 
-  /** Drop the pending-arrival entry for `threadId` (user dismissed banner). */
+  /**
+   * Accept pending arrivals for `threadId` ("Neue Antwort anzeigen").
+   *
+   * Merges the pending email ids into the committed snapshot (with
+   * Message-ID deduplication), marks them as gated so future state-change
+   * events don't re-trigger the banner for the same emails, and clears
+   * `pendingArrivals` for the thread.
+   *
+   * Returns the Email objects actually added to the committed snapshot so
+   * the caller (ThreadReader) can scroll to and expand them.
+   */
+  acceptPendingArrivals(threadId: string): Email[] {
+    const ids = this.pendingArrivals.get(threadId);
+    const newIds = ids ? [...ids] : [];
+    const existing = this.committedThreadEmailIds.get(threadId) ?? [];
+    const toAdd = dedupeArrivalsByMessageId(newIds, existing, this.emails);
+    if (toAdd.length > 0) {
+      const next = new Map(this.committedThreadEmailIds);
+      next.set(threadId, [...existing, ...toAdd]);
+      this.committedThreadEmailIds = next;
+    }
+    // Mark all pending ids as gated (including duplicates that were dropped
+    // by dedup) so the banner is not re-triggered for any of them.
+    if (newIds.length > 0) {
+      const nextGated = new Map(this.gatedEmailIds);
+      const existingGated = nextGated.get(threadId) ?? new Set<string>();
+      nextGated.set(threadId, new Set([...existingGated, ...newIds]));
+      this.gatedEmailIds = nextGated;
+    }
+    // Clear the pending arrivals.
+    if (this.pendingArrivals.has(threadId)) {
+      const next = new Map(this.pendingArrivals);
+      next.delete(threadId);
+      this.pendingArrivals = next;
+    }
+    return toAdd.map((id) => this.emails.get(id)).filter((e): e is Email => e !== undefined);
+  }
+
+  /**
+   * Dismiss the pending-arrival banner without revealing the new messages
+   * ("Verstanden"). The new emails are NOT added to the committed snapshot,
+   * so they remain hidden until the thread is cold-loaded again. They are
+   * added to `gatedEmailIds` so that subsequent state-change events do not
+   * re-trigger the banner for the same emails.
+   */
   dismissPendingArrivals(threadId: string): void {
     if (!this.pendingArrivals.has(threadId)) return;
+    const ids = this.pendingArrivals.get(threadId);
+    if (ids && ids.size > 0) {
+      const nextGated = new Map(this.gatedEmailIds);
+      const existingGated = nextGated.get(threadId) ?? new Set<string>();
+      nextGated.set(threadId, new Set([...existingGated, ...ids]));
+      this.gatedEmailIds = nextGated;
+    }
     const next = new Map(this.pendingArrivals);
     next.delete(threadId);
     this.pendingArrivals = next;
@@ -1508,6 +1629,26 @@ class MailStore {
       for (const e of emailResult.list) nextEmails.set(e.id, e);
       this.emails = nextEmails;
 
+      // Initialise the committed snapshot from the cold-load Thread/get
+      // response. Apply Message-ID deduplication so that a Sent copy and
+      // an Inbox copy of the same physical message (both in thread.emailIds
+      // when the backend records them as separate Email objects) collapse
+      // into a single rendered accordion on first view.
+      const initialCommitted = dedupeArrivalsByMessageId(
+        thread.emailIds,
+        [],
+        nextEmails,
+      );
+      const nextCommitted = new Map(this.committedThreadEmailIds);
+      nextCommitted.set(thread.id, initialCommitted);
+      this.committedThreadEmailIds = nextCommitted;
+
+      // Cold load clears the gate so any future arrivals can pass through
+      // the banner (dismissed messages no longer suppressed).
+      const nextGated = new Map(this.gatedEmailIds);
+      nextGated.delete(thread.id);
+      this.gatedEmailIds = nextGated;
+
       this.#setThreadStatus(threadId, 'ready');
     } catch (err) {
       this.#setThreadStatus(threadId, 'error');
@@ -1596,8 +1737,21 @@ class MailStore {
     this.emails = nextEmails;
   }
 
-  /** Resolved thread emails in display order (per Thread.emailIds). */
+  /**
+   * Resolved thread emails in display order.
+   *
+   * Uses the committed snapshot (`committedThreadEmailIds`) rather than the
+   * live `Thread.emailIds` so that newly-arrived emails are only shown after
+   * the user accepts them via the banner ("Neue Antwort anzeigen"). Falls
+   * back to the live thread for threads that are not yet in the committed
+   * map (should not happen in normal operation, but defensive).
+   */
   threadEmails(threadId: string): Email[] {
+    const committed = this.committedThreadEmailIds.get(threadId);
+    if (committed !== undefined) {
+      return resolveThreadEmails(committed, this.emails);
+    }
+    // Fallback: thread loaded but committed snapshot not yet set.
     const thread = this.threads.get(threadId);
     if (!thread) return [];
     return resolveThreadEmails(thread.emailIds, this.emails);
@@ -3231,6 +3385,76 @@ export function resolveThreadEmails(emailIds: string[], emails: Map<string, Emai
 }
 
 /**
+ * Normalise an RFC 2822 Message-ID token for deduplication. Strips the
+ * angle-bracket delimiters mandated by RFC 5322 §3.6.4, trims whitespace,
+ * and lowercases. Returns null for empty or whitespace-only input.
+ *
+ * Example: "<Foo.BAR@host>" -> "foo.bar@host"
+ */
+export function normalizeMessageId(mid: string): string | null {
+  const stripped = mid.replace(/^<|>$/g, '').trim().toLowerCase();
+  return stripped || null;
+}
+
+/**
+ * Filter `newIds` to the subset that can be added to a committed thread
+ * snapshot without duplicating a physical message already represented there.
+ *
+ * Two Email objects represent the same physical message when they share the
+ * same normalised first Message-ID header value. This happens when herold
+ * records a Sent-mailbox copy and an Inbox-delivery copy as separate JMAP
+ * Email objects but places both in the same thread (the backend's intended
+ * dedup model is one-Email-many-mailboxIds; until that is enforced for all
+ * self-delivery paths, the frontend collapses duplicates here).
+ *
+ * Rules:
+ * - IDs whose email has no `messageId` field pass through unconditionally
+ *   (can't deduplicate without the header).
+ * - IDs whose normalised message-id already appears in `existingIds` are
+ *   dropped.
+ * - Among `newIds` themselves, only the first occurrence of each
+ *   normalised message-id is kept (thread order is preserved).
+ */
+export function dedupeArrivalsByMessageId(
+  newIds: readonly string[],
+  existingIds: readonly string[],
+  emails: ReadonlyMap<string, Email>,
+): string[] {
+  // Build the set of message-ids already present in the committed snapshot.
+  const existingMessageIds = new Set<string>();
+  for (const id of existingIds) {
+    const e = emails.get(id);
+    if (e?.messageId) {
+      for (const mid of e.messageId) {
+        const n = normalizeMessageId(mid);
+        if (n) existingMessageIds.add(n);
+      }
+    }
+  }
+  const seenInNew = new Set<string>();
+  const out: string[] = [];
+  for (const id of newIds) {
+    const e = emails.get(id);
+    if (!e?.messageId || e.messageId.length === 0) {
+      // No messageId: include unconditionally; cannot dedup.
+      out.push(id);
+      continue;
+    }
+    const mid = normalizeMessageId(e.messageId[0]!);
+    if (mid === null) {
+      out.push(id);
+      continue;
+    }
+    if (existingMessageIds.has(mid) || seenInNew.has(mid)) {
+      continue; // duplicate of an already-committed or already-accepted email
+    }
+    seenInNew.add(mid);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
  * Returns true when every id in `visibleIds` is present in `selected`
  * AND `visibleIds` is non-empty. Used by toggleSelectAllVisible to
  * decide whether to clear or set the selection.
@@ -3329,4 +3553,6 @@ export const _internals_forTest = {
   expandToThreadIds,
   setErrorToUserMessage,
   mergeEmailListFetch,
+  normalizeMessageId,
+  dedupeArrivalsByMessageId,
 };

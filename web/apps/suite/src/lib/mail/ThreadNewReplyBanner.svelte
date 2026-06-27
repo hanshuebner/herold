@@ -6,15 +6,21 @@
   interface Props {
     threadId: string;
     /**
-     * Invoked when the user clicks "Show new reply". Receives the latest
-     * arrival's email id so ThreadReader can scroll/expand it. The banner
-     * is always cleared from `pendingArrivals` after the click; callers
-     * decide what (if anything) to focus next.
+     * Invoked when the user clicks "Neue Antwort anzeigen". The caller is
+     * responsible for calling `mail.acceptPendingArrivals` and scrolling the
+     * newly-revealed messages into view. The banner does NOT mutate store
+     * state itself.
      */
-    onShow: (emailId: string) => void;
+    onAccept: () => void;
+    /**
+     * Invoked when the user clicks "Verstanden". The caller is responsible
+     * for calling `mail.dismissPendingArrivals`. The banner does NOT mutate
+     * store state itself.
+     */
+    onDismiss: () => void;
   }
 
-  let { threadId, onShow }: Props = $props();
+  let { threadId, onAccept, onDismiss }: Props = $props();
 
   let arrivals = $derived(mail.pendingArrivalsForThread(threadId));
   let latest = $derived<Email | undefined>(arrivals[arrivals.length - 1]);
@@ -30,20 +36,6 @@
   function previewText(email: Email | undefined): string {
     if (!email) return '';
     return email.preview?.trim() ?? '';
-  }
-
-  function dismiss(): void {
-    mail.dismissPendingArrivals(threadId);
-  }
-
-  function show(): void {
-    if (!latest) {
-      dismiss();
-      return;
-    }
-    const id = latest.id;
-    dismiss();
-    onShow(id);
   }
 </script>
 
@@ -65,10 +57,10 @@
       {/if}
     </div>
     <div class="actions">
-      <button type="button" class="primary" onclick={show}>
+      <button type="button" class="primary" onclick={onAccept}>
         {t('mail.threadReader.newReply.show')}
       </button>
-      <button type="button" class="secondary" onclick={dismiss}>
+      <button type="button" class="secondary" onclick={onDismiss}>
         {t('mail.threadReader.newReply.dismiss')}
       </button>
     </div>
@@ -76,23 +68,22 @@
 {/if}
 
 <style>
-  /* Inline non-modal banner inserted into the thread reader above the
-     first freshly-arrived message (issue #118). Calm light-blue chrome,
-     not a warning; pulses a thin border for the first 2s to draw the
-     eye, then settles. Persists until the user dismisses or clicks
-     Show new reply. */
+  /* Non-modal banner rendered outside the scrolling message list, anchored
+     between the thread toolbar and the scroll region (issue #118). Calm
+     light-blue chrome, not a warning; pulses a thin border for the first 2s
+     to draw the eye, then settles. Persists until the user dismisses or
+     clicks "Neue Antwort anzeigen". */
   .new-reply-banner {
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-04);
     padding: var(--spacing-03) var(--spacing-05);
-    margin: var(--spacing-04) var(--spacing-05) 0;
+    border-bottom: 1px solid var(--interactive);
     background: var(--layer-01);
-    border: 1px solid var(--interactive);
-    border-radius: var(--radius-md);
     color: var(--text-primary);
     font-size: var(--type-body-compact-01-size);
     animation: new-reply-pulse 800ms ease-out 0s 2;
+    flex-shrink: 0;
   }
   .text {
     flex: 1;
