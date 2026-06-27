@@ -109,7 +109,21 @@
   async function removeIdentity(): Promise<void> {
     if (removing) return;
 
-    const importAccount = importHandle?.account ?? null;
+    // Snapshot reactive prop and derived values before any async boundary.
+    // When mail.deleteIdentity() removes this identity from mail.identities,
+    // Svelte's reactive graph flushes and propagates null back to the
+    // `identity` prop of this component (the parent's editIdentity becomes
+    // null before async continuations resume). Reading identity.email or
+    // calling onback() from a continuation would then throw TypeError against
+    // the now-null prop. Capture every value needed for the success path here,
+    // before the first await.
+    const identityId = identity.id;
+    const identityEmail = identity.email;
+    const identityName = identity.name;
+    const capturedOnback = onback;
+    const capturedImportHandle = importHandle;
+
+    const importAccount = capturedImportHandle?.account ?? null;
 
     // Determine whether this identity carries imported mail.
     const hasImportedMail = importAccount !== null;
@@ -121,11 +135,11 @@
         t('settings.import.removeIdentityExtended') + '\n\n' + confirmMsg;
     }
 
-    const displayName = identity.name || identity.email;
+    const displayName = identityName || identityEmail;
     const ok = await confirm.ask({
       title: t('settings.identityEdit.removeTitle', {
         name: displayName,
-        email: identity.email,
+        email: identityEmail,
       }),
       message: confirmMsg,
       confirmLabel: t('settings.identityEdit.removeConfirm'),
@@ -138,7 +152,7 @@
     // keep the imported mail or delete it. We model this as a second
     // confirm with bespoke labels (REQ-SET-IMAPIMP-04).
     let deleteImportedMail = false;
-    if (hasImportedMail && importHandle && importAccount) {
+    if (hasImportedMail && capturedImportHandle && importAccount) {
       const importMailboxes = Array.from(mail.mailboxes.values());
       const provMailbox = importMailboxes.find(
         (m) => m.name === importAccount.accountName,
@@ -159,26 +173,42 @@
     }
 
     removing = true;
+    // Track whether the server confirmed the destroy. A server-confirmed
+    // delete must always result in navigation to the identities list, even
+    // if a subsequent client-side step throws.
+    let destroySucceeded = false;
     try {
       // Step 1: destroy IMAP import account (with flag) if needed.
-      if (hasImportedMail && importHandle && importAccount) {
-        await importHandle.destroy(importAccount.id, deleteImportedMail);
+      if (hasImportedMail && capturedImportHandle && importAccount) {
+        await capturedImportHandle.destroy(importAccount.id, deleteImportedMail);
       }
       // Step 2: destroy the Identity (cascades any remaining import record
       // with default keep=true, which is already handled above).
-      await mail.deleteIdentity(identity.id);
+      await mail.deleteIdentity(identityId);
+      destroySucceeded = true;
       toast.show({
-        message: t('settings.identityEdit.removed', { email: identity.email }),
+        message: t('settings.identityEdit.removed', { email: identityEmail }),
         timeoutMs: 3000,
       });
-      onback();
+      capturedOnback();
     } catch (err) {
-      toast.show({
-        message: t('settings.identityEdit.removeFailed'),
-        kind: 'error',
-        timeoutMs: 5000,
-      });
-      console.error('removeIdentity failed', err);
+      if (destroySucceeded) {
+        // The server completed the destroy; navigate away so the user is not
+        // stranded on the deleted identity's route. Show the success toast:
+        // the delete succeeded; only post-delete client-side bookkeeping threw.
+        toast.show({
+          message: t('settings.identityEdit.removed', { email: identityEmail }),
+          timeoutMs: 3000,
+        });
+        capturedOnback();
+      } else {
+        toast.show({
+          message: t('settings.identityEdit.removeFailed'),
+          kind: 'error',
+          timeoutMs: 5000,
+        });
+        console.error('removeIdentity failed', err);
+      }
     } finally {
       removing = false;
     }

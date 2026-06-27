@@ -146,4 +146,26 @@ describe('CodeInput', () => {
     }
     stop();
   });
+
+  it('focuses the first box on mount when autofocus is true', async () => {
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      container = render(CodeInput, { props: { autofocus: true } }).container;
+    });
+    await tick();
+    expect(document.activeElement).toBe(boxes(container)[0]);
+    stop();
+  });
+
+  it('does not auto-focus when autofocus is false (default)', async () => {
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      container = render(CodeInput, { props: { autofocus: false } }).container;
+    });
+    await tick();
+    // The active element should not be one of the code input boxes.
+    const b = boxes(container);
+    expect(b).not.toContain(document.activeElement);
+    stop();
+  });
 });

@@ -71,6 +71,10 @@
   let displayName = $state('');
   let createError = $state<string | null>(null);
   let creating = $state(false);
+  /** Whether the email field has been blurred at least once. The
+   *  invalid-email error is shown only after the user has left the field
+   *  (validate-on-blur), not while they are still typing. */
+  let emailBlurred = $state(false);
 
   // Step 2 — Verification.
   let createdIdentity = $state<Identity | null>(null);
@@ -378,11 +382,12 @@
               autocomplete="email"
               bind:value={email}
               disabled={creating}
-              aria-invalid={email.trim() !== '' && !emailValid}
+              aria-invalid={emailBlurred && email.trim() !== '' && !emailValid}
               data-testid="identity-wizard-email"
+              onblur={() => { emailBlurred = true; }}
             />
             <span class="helper">{t('settings.identityWizard.emailHelper')}</span>
-            {#if email.trim() !== '' && !emailValid}
+            {#if emailBlurred && email.trim() !== '' && !emailValid}
               <span class="error" role="alert" data-testid="identity-wizard-email-error">
                 {t('settings.identityWizard.emailInvalid')}
               </span>
@@ -451,6 +456,7 @@
               invalid={!!codeError}
               ariaLabel={t('settings.identityWizard.codeLabel')}
               testid="identity-wizard-code"
+              autofocus
             />
             <span class="helper">{t('settings.identityWizard.codeHelper')}</span>
             {#if codeError}

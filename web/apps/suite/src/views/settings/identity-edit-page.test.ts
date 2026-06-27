@@ -51,12 +51,29 @@ vi.mock('../../lib/toast/toast.svelte', () => ({
 vi.mock('../../lib/mail/store.svelte', () => ({
   mail: {
     identities: new Map(),
+    mailboxes: new Map(),
     mailAccountId: 'acct1',
     updateIdentityName: vi.fn(async () => undefined),
     updateIdentityAvatar: vi.fn(async () => undefined),
     updateIdentityXFaceEnabled: vi.fn(async () => undefined),
+    deleteIdentity: vi.fn(async () => undefined),
   },
 }));
+
+vi.mock('../../lib/jmap/imap-import-store.svelte', () => {
+  const mockHandle = {
+    account: null,
+    status: 'idle',
+    error: null,
+    load: vi.fn(async () => undefined),
+    destroy: vi.fn(async () => undefined),
+  };
+  return {
+    imapImportStore: {
+      forIdentity: vi.fn(() => mockHandle),
+    },
+  };
+});
 
 vi.mock('../../lib/jmap/client', () => ({
   jmap: {
@@ -85,6 +102,9 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
 
 const { hasExternalSubmission } = await import('../../lib/auth/capabilities');
 const { jmap } = await import('../../lib/jmap/client');
+const { mail } = await import('../../lib/mail/store.svelte');
+const { toast } = await import('../../lib/toast/toast.svelte');
+const { confirm } = await import('../../lib/dialog/confirm.svelte');
 
 const IDENTITY = {
   id: 'ident-1',
@@ -95,6 +115,12 @@ const IDENTITY = {
   textSignature: '',
   htmlSignature: '',
   mayDelete: false,
+};
+
+const DELETABLE_IDENTITY = {
+  ...IDENTITY,
+  id: 'ident-del',
+  mayDelete: true,
 };
 
 import IdentityEditPage from './IdentityEditPage.svelte';
@@ -223,5 +249,98 @@ describe('IdentityEditPage', () => {
     const unverified = { ...IDENTITY, verifiedAt: null };
     render(IdentityEditPage, { props: { identity: unverified, onback: vi.fn() } });
     expect(screen.queryByText('External SMTP submission')).not.toBeInTheDocument();
+  });
+
+  // ── removeIdentity ────────────────────────────────────────────────────────
+
+  it('hides the Remove button when mayDelete is false', () => {
+    const { container } = render(IdentityEditPage, {
+      props: { identity: IDENTITY, onback: vi.fn() },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-remove-btn"]'),
+    ).toBeNull();
+  });
+
+  it('shows the Remove button when mayDelete is true', () => {
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback: vi.fn() },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-remove-btn"]'),
+    ).not.toBeNull();
+  });
+
+  it('successful delete shows success toast and calls onback, not error toast', async () => {
+    const onback = vi.fn();
+    vi.mocked(confirm.ask).mockResolvedValue(true);
+    vi.mocked(mail.deleteIdentity).mockResolvedValue(undefined);
+
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback },
+    });
+    const removeBtn = container.querySelector(
+      '[data-testid="identity-edit-remove-btn"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(removeBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(mail.deleteIdentity)).toHaveBeenCalledWith(DELETABLE_IDENTITY.id);
+    });
+    await vi.waitFor(() => {
+      expect(onback).toHaveBeenCalledOnce();
+    });
+    // Success toast must have fired — check kind is not 'error'.
+    const calls = vi.mocked(toast.show).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const successCall = calls.find(([spec]) => spec.kind !== 'error');
+    expect(successCall).toBeDefined();
+    // Error toast must NOT have fired.
+    const errorCall = calls.find(([spec]) => spec.kind === 'error');
+    expect(errorCall).toBeUndefined();
+  });
+
+  it('server notDestroyed response surfaces the error toast and does not call onback', async () => {
+    const onback = vi.fn();
+    vi.mocked(confirm.ask).mockResolvedValue(true);
+    vi.mocked(mail.deleteIdentity).mockRejectedValue(
+      new Error('identity has dependents'),
+    );
+
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback },
+    });
+    const removeBtn = container.querySelector(
+      '[data-testid="identity-edit-remove-btn"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(removeBtn);
+
+    await vi.waitFor(() => {
+      const calls = vi.mocked(toast.show).mock.calls;
+      const errorCall = calls.find(([spec]) => spec.kind === 'error');
+      expect(errorCall).toBeDefined();
+    });
+    expect(onback).not.toHaveBeenCalled();
+  });
+
+  it('cancelling the confirm dialog does not delete or navigate', async () => {
+    const onback = vi.fn();
+    vi.mocked(confirm.ask).mockResolvedValue(false);
+
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback },
+    });
+    const removeBtn = container.querySelector(
+      '[data-testid="identity-edit-remove-btn"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(removeBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(confirm.ask)).toHaveBeenCalled();
+    });
+    await Promise.resolve();
+    expect(vi.mocked(mail.deleteIdentity)).not.toHaveBeenCalled();
+    expect(onback).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.show)).not.toHaveBeenCalled();
   });
 });

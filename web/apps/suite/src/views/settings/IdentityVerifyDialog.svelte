@@ -203,6 +203,7 @@
           invalid={!!codeError}
           ariaLabel={t('settings.identityVerify.codeLabel')}
           testid="identity-verify-code"
+          autofocus
         />
         {#if codeError}
           <span class="error" role="alert" data-testid="identity-verify-code-error">

@@ -11,11 +11,15 @@
    *   - arrow keys: move focus between boxes.
    *   - paste: pasting a string fills as many boxes as it has digits
    *     (capped at six) and focuses the next empty box.
+   *   - autofocus: when true, the first box receives focus on mount so
+   *     the user can type immediately without clicking.
    *
    * The assembled value is exposed via the bindable `value` prop. The
    * parent keeps its existing validation / submit semantics: `value`
    * is a plain string of 0..6 digits.
    */
+
+  import { onMount } from 'svelte';
 
   interface Props {
     /** Assembled 0..6-digit code. Bindable. */
@@ -28,6 +32,8 @@
     ariaLabel?: string;
     /** data-testid for the wrapping group; boxes get `${testid}-N`. */
     testid?: string;
+    /** When true, the first digit box receives focus after mount. */
+    autofocus?: boolean;
   }
 
   let {
@@ -36,11 +42,18 @@
     invalid = false,
     ariaLabel,
     testid = 'code-input',
+    autofocus = false,
   }: Props = $props();
 
   const SIZE = 6;
 
   let inputs = $state<(HTMLInputElement | null)[]>(new Array(SIZE).fill(null));
+
+  onMount(() => {
+    if (autofocus) {
+      inputs[0]?.focus();
+    }
+  });
 
   /** Per-box digit derived from the assembled value. */
   let digits = $derived.by<string[]>(() => {

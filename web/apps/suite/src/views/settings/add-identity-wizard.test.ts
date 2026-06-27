@@ -214,7 +214,21 @@ describe('AddIdentityWizard', () => {
     expect(next.disabled).toBe(false);
   });
 
-  it('surfaces an inline error for an invalid email', async () => {
+  it('does not show the email error while the user is still typing (validate-on-blur)', async () => {
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const input = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    // Typing an invalid value without blurring must NOT surface the error.
+    await fireEvent.input(input, { target: { value: 'not-an-email' } });
+    expect(
+      container.querySelector('[data-testid="identity-wizard-email-error"]'),
+    ).toBeNull();
+  });
+
+  it('shows the email error after blur with an invalid value', async () => {
     const { container } = render(AddIdentityWizard, {
       props: { hostedDomains: HOSTED, onclose: vi.fn() },
     });
@@ -222,8 +236,34 @@ describe('AddIdentityWizard', () => {
       '[data-testid="identity-wizard-email"]',
     ) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'not-an-email' } });
+    // Error must not appear yet.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-email-error"]'),
+    ).toBeNull();
+    // Blur triggers validation.
+    await fireEvent.blur(input);
     const err = container.querySelector('[data-testid="identity-wizard-email-error"]');
     expect(err?.textContent).toContain('valid email');
+  });
+
+  it('clears the email error once the value becomes valid', async () => {
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const input = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    // Establish blurred-invalid state.
+    await fireEvent.input(input, { target: { value: 'not-an-email' } });
+    await fireEvent.blur(input);
+    expect(
+      container.querySelector('[data-testid="identity-wizard-email-error"]'),
+    ).not.toBeNull();
+    // Correct the email: error should disappear as the value is now valid.
+    await fireEvent.input(input, { target: { value: 'alice@example.com' } });
+    expect(
+      container.querySelector('[data-testid="identity-wizard-email-error"]'),
+    ).toBeNull();
   });
 
   it('advances to Step 2 on successful create (hosted domain)', async () => {
