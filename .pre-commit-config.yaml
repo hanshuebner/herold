@@ -18,11 +18,16 @@
 # explicitly so it still runs as the pre-push gate.
 default_stages: [pre-commit]
 
-# Vendored upstream code (in-tree fork of emersion/go-imap with the
-# X-GM-LABELS patch, REQ-IMAP-IMP-53) is exempt from all hooks: it is not
-# herold source and is gofmt-clean as imported. Drop this once the upstream
-# PR (docs/dev/go-imap-xgmlabels-upstream.patch) lands and the replace goes.
-exclude: ^third_party/
+# Exempt from all hooks:
+#  - third_party/  : vendored upstream code (in-tree fork of emersion/go-imap
+#    with the X-GM-LABELS patch, REQ-IMAP-IMP-53). Not herold source;
+#    gofmt-clean as imported.
+#  - docs/dev/*.patch : a verbatim git-format patch (the upstream go-imap PR).
+#    A unified diff renders blank source lines as a single space, which the
+#    trailing-whitespace hook would "fix" and thereby corrupt the patch.
+# Drop both once the upstream PR (docs/dev/go-imap-xgmlabels-upstream.patch)
+# lands and the in-tree fork + replace go away.
+exclude: '^(third_party/|docs/dev/[^/]+\.patch$)'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
