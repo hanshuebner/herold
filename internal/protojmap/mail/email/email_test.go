@@ -86,6 +86,10 @@ func setupFixture(t *testing.T) *fixture {
 	mailbox.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
 	email.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
 	thread.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
+	// Drain background goroutines before the store closes. Registered after
+	// the st.Close() cleanup so it runs first (t.Cleanup is LIFO), preventing
+	// background SQLite part-index writes from racing t.TempDir RemoveAll.
+	t.Cleanup(func() { email.WaitBackgroundWrites(jmapServ.Registry()) })
 
 	if err := srv.AttachJMAP("jmap", jmapServ, protojmap.ListenerModePlain); err != nil {
 		t.Fatalf("AttachJMAP: %v", err)
@@ -1631,6 +1635,135 @@ func TestEmailSet_Create_NoBlobAndNoBody(t *testing.T) {
 	}
 }
 
+// -- hasAttachment regression tests ----------------------------------------
+
+// TestEmailGet_HasAttachment_InlineOnly_False verifies that a multipart/related
+// message whose only non-text parts are cid-referenced inline images (all with
+// Content-Disposition: inline) yields hasAttachment==false in Email/get. This
+// is the regression test for the neni.eml (OpenTable confirmation) repro where
+// the paperclip icon appeared even though the message had no downloadable
+// attachments.
+func TestEmailGet_HasAttachment_InlineOnly_False(t *testing.T) {
+	f := setupFixture(t)
+
+	const bnd = "TESTINLINEBND"
+	var b strings.Builder
+	b.WriteString("From: sender@example.test\r\nTo: rcpt@example.test\r\n")
+	b.WriteString("Subject: inline only\r\nMIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: multipart/related; boundary=\"" + bnd + "\"\r\n\r\n")
+	b.WriteString("--" + bnd + "\r\n")
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
+	b.WriteString("<html><body><img src=\"cid:img1@test\"/><img src=\"cid:img2@test\"/></body></html>\r\n")
+	b.WriteString("--" + bnd + "\r\n")
+	b.WriteString("Content-Type: image/png\r\n")
+	b.WriteString("Content-Disposition: inline\r\n")
+	b.WriteString("Content-ID: <img1@test>\r\n\r\n")
+	b.WriteString("FAKEPNGDATA\r\n")
+	b.WriteString("--" + bnd + "\r\n")
+	b.WriteString("Content-Type: image/jpeg\r\n")
+	b.WriteString("Content-Disposition: inline\r\n")
+	b.WriteString("Content-ID: <img2@test>\r\n\r\n")
+	b.WriteString("FAKEJPEGDATA\r\n")
+	b.WriteString("--" + bnd + "--\r\n")
+
+	m := f.insertMessage(t, b.String(), "inline only", "sender@example.test", "rcpt@example.test", nil, "")
+
+	// First Email/get: goes through the full body-parse path and
+	// also persists body meta. attachments is included so the
+	// response exercises the full body render (not just precomputed meta).
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
+		"properties": []string{"hasAttachment", "attachments"},
+	})
+	var resp struct {
+		List []struct {
+			HasAttachment bool  `json:"hasAttachment"`
+			Attachments   []any `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("want 1 message, got %d: %s", len(resp.List), raw)
+	}
+	msg := resp.List[0]
+	if msg.HasAttachment {
+		t.Errorf("hasAttachment = true for inline-only message, want false (raw=%s)", raw)
+	}
+	// The attachments list still includes the inline images per spec —
+	// only hasAttachment changes, not the attachments property itself.
+	if len(msg.Attachments) != 2 {
+		t.Errorf("attachments = %d, want 2 inline images in list (raw=%s)", len(msg.Attachments), raw)
+	}
+
+	// Second Email/get: hasAttachment is now served from the precomputed
+	// body-meta (BodyMetaComputed=true after the first call). Verify the
+	// persisted value is also false.
+	_, raw2 := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
+		"properties": []string{"hasAttachment"},
+	})
+	var resp2 struct {
+		List []struct {
+			HasAttachment bool `json:"hasAttachment"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw2, &resp2); err != nil {
+		t.Fatalf("unmarshal second: %v: %s", err, raw2)
+	}
+	if len(resp2.List) != 1 {
+		t.Fatalf("second: want 1 message, got %d", len(resp2.List))
+	}
+	if resp2.List[0].HasAttachment {
+		t.Errorf("precomputed-meta path: hasAttachment = true, want false (raw=%s)", raw2)
+	}
+}
+
+// TestEmailGet_HasAttachment_RealAttachment_True verifies that a message
+// with an explicit Content-Disposition: attachment part yields
+// hasAttachment==true in Email/get.
+func TestEmailGet_HasAttachment_RealAttachment_True(t *testing.T) {
+	f := setupFixture(t)
+
+	const bnd = "TESTATTBND"
+	body := "From: sender@example.test\r\nTo: rcpt@example.test\r\n" +
+		"Subject: with attachment\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"" + bnd + "\"\r\n\r\n" +
+		"--" + bnd + "\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"Here is the attachment.\r\n" +
+		"--" + bnd + "\r\n" +
+		"Content-Type: application/pdf\r\n" +
+		"Content-Disposition: attachment; filename=\"report.pdf\"\r\n\r\n" +
+		"FAKEPDFDATA\r\n" +
+		"--" + bnd + "--\r\n"
+
+	m := f.insertMessage(t, body, "with attachment", "sender@example.test", "rcpt@example.test", nil, "")
+
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", m.ID)},
+		"properties": []string{"hasAttachment"},
+	})
+	var resp struct {
+		List []struct {
+			HasAttachment bool `json:"hasAttachment"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("want 1 message, got %d: %s", len(resp.List), raw)
+	}
+	if !resp.List[0].HasAttachment {
+		t.Errorf("hasAttachment = false for message with Content-Disposition: attachment, want true (raw=%s)", raw)
+	}
+}
+
 // TestEmailGet_MailboxIds_MultiMailbox verifies that Email/get returns all
 // mailbox memberships in the mailboxIds map (REQ-STORE-36, jmaptest
 // email/get-mailbox-ids).
@@ -2279,11 +2412,12 @@ func TestEmailSet_Create_InlineImage_RoundTrip(t *testing.T) {
 	}
 	em := getResp.List[0]
 
-	// hasAttachment must be true.
-	if !em.HasAtt {
-		t.Errorf("hasAttachment=false, want true (raw=%s)", raw)
+	// hasAttachment must be false: the only attachment is an inline+CID image,
+	// which is body-embedded and not a downloadable file (RFC 8621 fix).
+	if em.HasAtt {
+		t.Errorf("hasAttachment=true for inline-only message, want false (raw=%s)", raw)
 	}
-	// At least one attachment must be present.
+	// The inline image still appears in the attachments list per RFC 8621 §4.1.4.
 	if len(em.Attachments) == 0 {
 		t.Fatalf("attachments empty after create with inline image (raw=%s)", raw)
 	}
@@ -2512,8 +2646,9 @@ func TestEmailSet_Update_RebuildsBody(t *testing.T) {
 	if em.Subject != "after image" {
 		t.Errorf("subject = %q, want %q", em.Subject, "after image")
 	}
-	if !em.HasAtt {
-		t.Errorf("hasAttachment=false, want true (raw=%s)", raw)
+	// hasAttachment must be false: the only attachment is an inline+CID image.
+	if em.HasAtt {
+		t.Errorf("hasAttachment=true for inline-only message, want false (raw=%s)", raw)
 	}
 	var found bool
 	for _, att := range em.Attachments {

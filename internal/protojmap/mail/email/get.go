@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailparse"
@@ -268,7 +269,7 @@ func (g *getHandler) renderOne(
 	if parser == nil {
 		parser = defaultParseFn
 	}
-	return renderFullWithProperties(ctx, g.h.store.Blobs(), g.h.store.Meta(), m, fetchBodyValues, truncateAt, parser, properties, g.h.logger)
+	return renderFullWithProperties(ctx, g.h.store.Blobs(), g.h.store.Meta(), m, fetchBodyValues, truncateAt, parser, properties, g.h.logger, g.h.bgWG)
 }
 
 // wantProp reports whether the named property should be included in the
@@ -313,6 +314,7 @@ func renderFullWithProperties(
 	parser parseFn,
 	properties *[]string,
 	logger *slog.Logger,
+	bgWG *sync.WaitGroup,
 ) (jmapEmail, error) {
 	out := renderEmailMetadata(m)
 
@@ -354,7 +356,7 @@ func renderFullWithProperties(
 	if dims == nil {
 		dims = partDimsFromParsed(parsed, rawBody)
 		if meta != nil {
-			writePartIndexBackground(meta, m.Blob.Hash, rawBodyOrig)
+			writePartIndexBackground(meta, m.Blob.Hash, rawBodyOrig, bgWG)
 		}
 	}
 	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash, dims)
@@ -385,7 +387,7 @@ func renderFullWithProperties(
 	// compute these so the opportunistic persist path below can call
 	// SetMessageBodyMeta regardless of what properties were requested.
 	computedPreview := previewFromValues(values, textParts, 256)
-	computedHasAttachment := len(attParts) > 0
+	computedHasAttachment := hasRealAttachment(attParts)
 
 	// Opportunistic persist: if the message has not yet had its body-meta
 	// computed, write it back now so future list-view calls skip the blob.

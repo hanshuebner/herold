@@ -127,6 +127,10 @@ func setupBodyMetaFixture(t *testing.T) (*fixture, *countingStore) {
 	mailbox.Register(jmapServ.Registry(), cs, srv.Logger, srv.Clock)
 	email.Register(jmapServ.Registry(), cs, srv.Logger, srv.Clock)
 	thread.Register(jmapServ.Registry(), cs, srv.Logger, srv.Clock)
+	// Drain background goroutines before the store closes. Registered after
+	// the st.Close() cleanup so it runs first (t.Cleanup is LIFO), preventing
+	// background SQLite part-index writes from racing t.TempDir RemoveAll.
+	t.Cleanup(func() { email.WaitBackgroundWrites(jmapServ.Registry()) })
 
 	if err := srv.AttachJMAP("jmap", jmapServ, protojmap.ListenerModePlain); err != nil {
 		t.Fatalf("AttachJMAP: %v", err)

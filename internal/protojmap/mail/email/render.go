@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/extimg"
@@ -159,11 +160,22 @@ func partDimsFromParsed(parsed mailparse.Message, rawBody []byte) map[int]struct
 // partDimsFromParsed so the index is available for future Email/get calls
 // without repeating the inline computation.
 //
+// wg, when non-nil, is incremented before the goroutine starts and decremented
+// when it exits. Tests pass the handlerSet's WaitGroup so that test teardown
+// can call WaitBackgroundWrites before closing the store, preventing the
+// goroutine from racing t.TempDir RemoveAll cleanup.
+//
 // Errors are silently ignored: the bodymeta worker will recompute the index
 // on its next sweep. A 30-second context bounds the goroutine lifetime so it
 // cannot leak indefinitely.
-func writePartIndexBackground(meta store.Metadata, blobHash string, rawBodyOrig []byte) {
+func writePartIndexBackground(meta store.Metadata, blobHash string, rawBodyOrig []byte, wg *sync.WaitGroup) {
+	if wg != nil {
+		wg.Add(1)
+	}
 	go func() {
+		if wg != nil {
+			defer wg.Done()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		parsed, err := mailparse.Parse(bytes.NewReader(rawBodyOrig), mailparse.NewParseOptions())
@@ -277,9 +289,25 @@ func renderFull(
 	out.TextBody = textParts
 	out.HTMLBody = htmlParts
 	out.Attachments = attParts
-	out.HasAttachment = len(attParts) > 0
+	out.HasAttachment = hasRealAttachment(attParts)
 	out.Preview = previewFromValues(values, textParts, 256)
 	return out, nil
+}
+
+// hasRealAttachment reports whether any part in attParts is a downloadable
+// attachment rather than a cid-referenced inline image. Parts whose
+// disposition is "inline" are body-embedded images (they carry a Content-ID
+// so they are referenced by cid: URLs in the HTML body) and do NOT constitute
+// a user-visible attachment. All other parts — explicit "attachment" disposition
+// or no disposition — count as real attachments per RFC 8621.
+func hasRealAttachment(parts []bodyPart) bool {
+	for _, p := range parts {
+		if p.Disposition != nil && *p.Disposition == "inline" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // parseFn is the body-parser injection point. v1 calls

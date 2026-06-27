@@ -308,3 +308,66 @@ func TestWalkParts_HasAttachment_InlineNoCID(t *testing.T) {
 		t.Error("attParts is empty; hasAttachment would be false, want true")
 	}
 }
+
+// hasRealAttachment direct unit tests
+
+// strPtr is a helper that returns a pointer to the given string.
+func strPtr(s string) *string { return &s }
+
+// TestHasRealAttachment_Empty verifies that an empty attParts list returns false.
+func TestHasRealAttachment_Empty(t *testing.T) {
+	if hasRealAttachment(nil) {
+		t.Error("empty slice: want false, got true")
+	}
+	if hasRealAttachment([]bodyPart{}) {
+		t.Error("nil slice: want false, got true")
+	}
+}
+
+// TestHasRealAttachment_AllInlineCID verifies that parts whose Disposition is
+// "inline" (they carry a Content-ID and are cid-referenced in the HTML body)
+// do NOT count as real attachments.
+func TestHasRealAttachment_AllInlineCID(t *testing.T) {
+	parts := []bodyPart{
+		{Type: "image/png", Disposition: strPtr("inline")},
+		{Type: "image/jpeg", Disposition: strPtr("inline")},
+	}
+	if hasRealAttachment(parts) {
+		t.Error("all inline/CID: want false, got true")
+	}
+}
+
+// TestHasRealAttachment_ExplicitAttachment verifies that a part with
+// Disposition=="attachment" is recognised as a real attachment.
+func TestHasRealAttachment_ExplicitAttachment(t *testing.T) {
+	parts := []bodyPart{
+		{Type: "application/pdf", Disposition: strPtr("attachment")},
+	}
+	if !hasRealAttachment(parts) {
+		t.Error("explicit attachment: want true, got false")
+	}
+}
+
+// TestHasRealAttachment_NilDisposition verifies that a part with nil
+// Disposition (no Content-Disposition header, e.g. an image without CID
+// in a multipart/mixed) counts as a real attachment.
+func TestHasRealAttachment_NilDisposition(t *testing.T) {
+	parts := []bodyPart{
+		{Type: "image/jpeg", Disposition: nil},
+	}
+	if !hasRealAttachment(parts) {
+		t.Error("nil disposition: want true, got false")
+	}
+}
+
+// TestHasRealAttachment_MixedInlineAndReal verifies that a list containing
+// both inline (CID) images and a real attachment returns true.
+func TestHasRealAttachment_MixedInlineAndReal(t *testing.T) {
+	parts := []bodyPart{
+		{Type: "image/png", Disposition: strPtr("inline")},
+		{Type: "application/zip", Disposition: strPtr("attachment")},
+	}
+	if !hasRealAttachment(parts) {
+		t.Error("mixed inline+real: want true, got false")
+	}
+}

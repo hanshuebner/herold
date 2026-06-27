@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/extimg"
@@ -35,6 +36,12 @@ type handlerSet struct {
 	// disables the path; the renderer treats InternalizePending
 	// messages as if the operator had selected mode = passthrough.
 	extImg extimg.Config
+	// bgWG tracks background goroutines started by Email/get handlers
+	// (currently writePartIndexBackground). WaitBackgroundWrites blocks
+	// until all outstanding background writes complete. Tests register a
+	// t.Cleanup that calls WaitBackgroundWrites before closing the store
+	// so background SQLite writes cannot race t.TempDir RemoveAll.
+	bgWG *sync.WaitGroup
 }
 
 // RegisterOptions carries optional configuration for the Email/* handler
@@ -83,6 +90,7 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 		hostname:       ropts.Hostname,
 		reactionMailer: ropts.ReactionMailer,
 		extImg:         ropts.ExtImg,
+		bgWG:           new(sync.WaitGroup),
 	}
 	reg.Register(protojmap.CapabilityMail, &getHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &changesHandler{h: h})
@@ -92,6 +100,22 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 	reg.Register(protojmap.CapabilityMail, &copyHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &importHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &parseHandler{h: h})
+}
+
+// WaitBackgroundWrites blocks until all background goroutines started by
+// Email/get handlers (writePartIndexBackground) have completed. Tests register
+// a t.Cleanup that calls this before closing the store so background SQLite
+// writes cannot race with t.TempDir RemoveAll cleanup.
+func WaitBackgroundWrites(reg *protojmap.CapabilityRegistry) {
+	raw, ok := reg.Resolve("Email/get")
+	if !ok {
+		return
+	}
+	h, ok := raw.(*getHandler)
+	if !ok {
+		return
+	}
+	h.h.bgWG.Wait()
 }
 
 // SetParser overrides the body parser injected into the handlers.
