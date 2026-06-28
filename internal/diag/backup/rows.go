@@ -697,6 +697,19 @@ type SessionRow struct {
 	ClientlogLivetailUntilUs  *int64 `json:"clientlog_livetail_until_us,omitempty"`
 }
 
+// SessionElevationRow mirrors one row of the session_elevations table
+// introduced in migration 0067 (REQ-AUTH-74, issue #79). Excluded from
+// backup by default: elevation records expire after elevation_ttl (default
+// 15 minutes) and restoring stale rows into a fresh system has no effect
+// because the parent session_id would also be absent. The row is listed in
+// TableNames so VerifyBundle has a typed receiver; the backup writes an empty JSONL.
+type SessionElevationRow struct {
+	SessionID   string `json:"session_id"`
+	PrincipalID int64  `json:"principal_id"`
+	ElevatedAt  int64  `json:"elevated_at_us"`
+	ExpiresAt   int64  `json:"expires_at_us"`
+}
+
 // ClientLogRow mirrors one row of the clientlog ring-buffer table
 // introduced in migration 0037 (REQ-OPS-206, REQ-OPS-219).
 // Nullable columns use pointers.  Excluded from backup by default;

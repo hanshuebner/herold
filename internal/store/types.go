@@ -1006,6 +1006,26 @@ type SessionRow struct {
 	ClientlogLivetailUntil *time.Time
 }
 
+// ElevationRow is one row in the session_elevations table. It records a
+// successful TOTP step-up for a session and grants access to admin-scoped
+// endpoints until expires_at_us elapses (REQ-AUTH-74, issue #79).
+//
+// The row is keyed on session_id (one elevation per session at a time).
+// A subsequent step-up overwrites the row via ON CONFLICT so the window
+// always starts fresh on re-elevation.  Deleting the parent sessions row
+// (logout, idle expiry) cascades here automatically via the FK.
+type ElevationRow struct {
+	// SessionID matches the CSRFToken / session_id in the sessions table.
+	SessionID string
+	// PrincipalID is the elevating principal (denormalised from the session
+	// row for middleware convenience).
+	PrincipalID PrincipalID
+	// ElevatedAt is the instant the step-up completed.
+	ElevatedAt time.Time
+	// ExpiresAt is the instant the elevation lapses.
+	ExpiresAt time.Time
+}
+
 // AuditLogFilter narrows a ListAuditLog read. Unset (zero) fields are
 // treated as "no constraint". Limit is capped at 1000 server-side
 // regardless of caller input.

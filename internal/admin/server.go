@@ -805,6 +805,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// (herold_public_session) and are governed by the unified idle-only
 		// lifetime configured in publicSessionCookieConfig (REQ-AUTH-72, issue #78).
 		Session:                   publicSessionCookieConfig(cfg, logger),
+		ElevationTTL:              cfg.Server.UI.ElevationTTL.AsDuration(),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
 		DKIMKeyManager:            adminDKIMManager,

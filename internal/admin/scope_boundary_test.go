@@ -207,6 +207,39 @@ func (h *adminScopeHelper) getWithCookies(path string, cookies []*http.Cookie) i
 	return resp.StatusCode
 }
 
+// stepUp posts a TOTP code to POST /api/v1/auth/step-up using the session
+// and CSRF cookies from a prior login response. It returns the HTTP status
+// code and the decoded JSON body.
+func (h *adminScopeHelper) stepUp(cookies []*http.Cookie, totpCode string) (int, map[string]any) {
+	h.t.Helper()
+	// Locate the CSRF cookie so we can echo it back in X-CSRF-Token.
+	var csrfValue string
+	for _, c := range cookies {
+		if c.Name == "herold_public_csrf" {
+			csrfValue = c.Value
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"totp_code": totpCode})
+	req, _ := http.NewRequest("POST", "http://"+h.publicAddr+"/api/v1/auth/step-up",
+		bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if csrfValue != "" {
+		req.Header.Set("X-CSRF-Token", csrfValue)
+	}
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		h.t.Fatalf("POST /api/v1/auth/step-up: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
 // TestScopeBoundary_NonAdminGets403OnAdminRoutes asserts that a logged-in
 // non-admin principal receives 403 (insufficient scope) on every admin-gated
 // REST route. The route is mounted on the public listener; ScopeAdmin is the
@@ -265,9 +298,13 @@ func TestScopeBoundary_NonAdminGets403OnAdminRoutes(t *testing.T) {
 	}
 }
 
-// TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes is the positive twin:
-// an admin principal that completed TOTP step-up obtains ScopeAdmin in the
-// session cookie and admin-gated REST routes return 200.
+// TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes verifies the positive
+// path: an admin principal with TOTP enrolled can login, step-up, and then
+// reach admin-gated REST routes. Under the step-up model (issue #79):
+//   - Login always issues an end-user session (no admin scope in the cookie).
+//   - POST /api/v1/auth/step-up with a valid TOTP code creates an elevation
+//     record that gates the admin surface.
+//   - While a live elevation record exists, admin-gated routes return 200.
 func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
@@ -294,15 +331,12 @@ func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	h.confirmTOTP(adminPID, adminAPIKey, totpSecret)
 
-	// Login as admin with TOTP code.
-	totpCode, err := adminScopeBoundaryOTPCode(totpSecret, time.Now())
-	if err != nil {
-		t.Fatalf("generate login TOTP code: %v", err)
-	}
-	adminCookies := h.loginAndGetCookies(adminEmail, adminPassword, totpCode)
+	// Login — TOTP code is ignored at login time; the field is accepted for
+	// backwards compatibility but no longer evaluated (REQ-AUTH-42, issue #79).
+	// Login always returns end-user scope only.
+	adminCookies := h.loginAndGetCookies(adminEmail, adminPassword, "")
 
-	// Verify the login response carried ScopeAdmin in session_expires_at
-	// (we can check via /api/v1/auth/whoami).
+	// Verify that whoami reports end-user scopes only (no 'admin').
 	req, _ := http.NewRequest("GET", "http://"+h.publicAddr+"/api/v1/auth/whoami", nil)
 	for _, c := range adminCookies {
 		req.AddCookie(c)
@@ -321,24 +355,59 @@ func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 		t.Fatalf("whoami unmarshal: %v", err)
 	}
 	scopes, _ := whoami["scopes"].([]interface{})
-	hasAdmin := false
 	for _, s := range scopes {
 		if s == "admin" {
-			hasAdmin = true
+			t.Fatalf("login response must not contain 'admin' scope (REQ-AUTH-SCOPE-01): scopes=%v", scopes)
 		}
 	}
-	if !hasAdmin {
-		t.Fatalf("admin login: scopes %v missing 'admin'; TOTP step-up did not grant ScopeAdmin", scopes)
+
+	// Before step-up, admin-gated routes must return 403 step_up_required.
+	code := h.getWithCookies("/api/v1/server/status", adminCookies)
+	if code != http.StatusForbidden {
+		t.Errorf("admin GET /api/v1/server/status before step-up: status=%d, want 403", code)
 	}
 
-	// Admin-gated routes must return 200 for the admin session.
-	code := h.getWithCookies("/api/v1/server/status", adminCookies)
+	// Step-up: POST /api/v1/auth/step-up with a fresh TOTP code.
+	totpCode, err := adminScopeBoundaryOTPCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("generate step-up TOTP code: %v", err)
+	}
+	stepStatus, stepBody := h.stepUp(adminCookies, totpCode)
+	if stepStatus != http.StatusOK {
+		t.Fatalf("step-up: status=%d body=%v, want 200", stepStatus, stepBody)
+	}
+	if _, ok := stepBody["elevation_expires_at"]; !ok {
+		t.Errorf("step-up response missing elevation_expires_at: %v", stepBody)
+	}
+
+	// After step-up, whoami must carry elevation_expires_at.
+	req, _ = http.NewRequest("GET", "http://"+h.publicAddr+"/api/v1/auth/whoami", nil)
+	for _, c := range adminCookies {
+		req.AddCookie(c)
+	}
+	whoamiResp2, err := h.client.Do(req)
+	if err != nil {
+		t.Fatalf("whoami after step-up: %v", err)
+	}
+	whoamiBody2, _ := io.ReadAll(whoamiResp2.Body)
+	whoamiResp2.Body.Close()
+	if whoamiResp2.StatusCode != http.StatusOK {
+		t.Fatalf("whoami after step-up: status=%d body=%s, want 200", whoamiResp2.StatusCode, whoamiBody2)
+	}
+	var whoami2 map[string]any
+	_ = json.Unmarshal(whoamiBody2, &whoami2)
+	if whoami2["elevation_expires_at"] == nil {
+		t.Errorf("whoami after step-up: elevation_expires_at should be non-null: %v", whoami2)
+	}
+
+	// Admin-gated routes must now return 200 with an active elevation record.
+	code = h.getWithCookies("/api/v1/server/status", adminCookies)
 	if code != http.StatusOK {
-		t.Errorf("admin GET /api/v1/server/status: status=%d, want 200", code)
+		t.Errorf("admin GET /api/v1/server/status after step-up: status=%d, want 200", code)
 	}
 
 	code = h.getWithCookies("/api/v1/domains", adminCookies)
 	if code != http.StatusOK {
-		t.Errorf("admin GET /api/v1/domains: status=%d, want 200", code)
+		t.Errorf("admin GET /api/v1/domains after step-up: status=%d, want 200", code)
 	}
 }

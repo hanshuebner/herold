@@ -371,6 +371,15 @@ func Run(t *testing.T, f Factory) {
 		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
 		{"Session_ClearExpiredLivetail", testSessionClearExpiredLivetail},
 		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},
+		// -- Elevation (session_elevations table, REQ-AUTH-74, issue #79) --
+		{"Elevation_UpsertGet_Roundtrip", testElevationUpsertGetRoundtrip},
+		{"Elevation_Get_Expired_ReturnsNotFound", testElevationGetExpiredReturnsNotFound},
+		{"Elevation_Get_NotFound", testElevationGetNotFound},
+		{"Elevation_Upsert_RefreshesWindow", testElevationUpsertRefreshesWindow},
+		{"Elevation_Delete_RemovesRow", testElevationDeleteRemovesRow},
+		{"Elevation_Delete_NotFound", testElevationDeleteNotFound},
+		{"Elevation_Cascade_OnSessionDelete", testElevationCascadeOnSessionDelete},
+		{"Elevation_EvictExpired_RemovesExpiredLeavesAlive", testElevationEvictExpired},
 		// -- IMAP import (issue #25, REQ-IMAP-IMP-02, -15..19, -34, -42, -70, -74) --
 		{"IMAPImport_CreateGet_Roundtrip", testIMAPImport_CreateGetRoundtrip},
 		{"IMAPImport_ListByPrincipal", testIMAPImport_ListByPrincipal},

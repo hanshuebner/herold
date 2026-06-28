@@ -2127,6 +2127,33 @@ type Metadata interface {
 	// cosmetic cleanup only (REQ-OPS-211).
 	ClearExpiredLivetail(ctx context.Context, nowMicros int64) (cleared int, err error)
 
+	// -- REQ-AUTH-74 / issue #79: step-up elevation rows ----------------
+
+	// UpsertElevation inserts or replaces the elevation row for
+	// e.SessionID.  A second step-up within the same session resets the
+	// window to now + elevation_ttl so the caller always gets a fresh
+	// expires_at after each correct TOTP submission.
+	UpsertElevation(ctx context.Context, e ElevationRow) error
+
+	// GetActiveElevation returns the elevation row for sessionID when it
+	// exists and expires_at_us > nowMicros.  Returns ErrNotFound when no
+	// active elevation exists (never elevated, elevation expired, or the
+	// session was deleted / logged out).
+	GetActiveElevation(ctx context.Context, sessionID string, nowMicros int64) (ElevationRow, error)
+
+	// DeleteElevation removes the elevation row for sessionID.  Returns
+	// ErrNotFound when the row is absent (already expired or never created).
+	// Called by logout and explicit session revocation (REQ-AUTH-77).
+	// Session-cascade (ON DELETE CASCADE) also handles it automatically
+	// when the sessions row is deleted; this method is for explicit removal.
+	DeleteElevation(ctx context.Context, sessionID string) error
+
+	// EvictExpiredElevations deletes all elevation rows whose expires_at_us
+	// is <= nowMicros.  Returns the number of rows deleted.  Intended for a
+	// periodic background sweeper; the on-request gate in GetActiveElevation
+	// already enforces expiry so this is a cosmetic cleanup only.
+	EvictExpiredElevations(ctx context.Context, nowMicros int64) (deleted int, err error)
+
 	// -- Attachment shares (REQ-SHARE-01..23) --------------------------
 
 	// CreateFileShare creates a file_shares row in state pending. The

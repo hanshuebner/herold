@@ -1,18 +1,23 @@
 package protoadmin
 
-// session_auth.go implements the JSON login / logout / whoami endpoints
-// for the public REST surface (REQ-AUTH-SESSION-REST).
+// session_auth.go implements the JSON login / logout / whoami / step-up
+// endpoints for the public REST surface (REQ-AUTH-SESSION-REST, REQ-AUTH-74).
 //
-// POST /api/v1/auth/login  -- accepts {email, password, totp_code?},
+// POST /api/v1/auth/login    -- accepts {email, password} only; issues
 //
-//	issues herold_public_session + herold_public_csrf cookies, returns
-//	{principal_id, email, scopes:[...]}.
+//	herold_public_session + herold_public_csrf cookies carrying end-user
+//	scope only (REQ-AUTH-SCOPE-01, REQ-AUTH-JSON-LOGIN).  TOTP is NOT
+//	evaluated at login; admin scope is never baked into the cookie.
 //
-// POST /api/v1/auth/logout -- clears the cookies, returns 204.
-// GET  /api/v1/auth/whoami -- returns 200 + {principal_id, email, scopes}
+// POST /api/v1/auth/step-up  -- accepts {totp_code}; verifies TOTP and
 //
-//	when the session is valid, 401 otherwise. Used by the admin SPA to
-//	probe session state on page load.
+//	creates a server-side elevation record (REQ-AUTH-74).  Returns
+//	{elevation_expires_at}.  Admin endpoints require a valid elevation.
+//
+// POST /api/v1/auth/logout   -- clears the cookies, returns 204.
+// GET  /api/v1/auth/whoami   -- returns 200 + {principal_id, email, scopes,
+//
+//	session_idle_deadline, elevation_expires_at} (REQ-AUTH-75).
 //
 // These endpoints are NOT protected by requireAuth (they ARE the auth
 // boundary). They are rate-limited via the per-source-IP bucket so
@@ -34,16 +39,16 @@ import (
 )
 
 // loginRequest is the JSON body accepted by POST /api/v1/auth/login.
+// Login accepts only email and password; TOTP is NOT evaluated here
+// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, REQ-AUTH-SCOPE-03). Admin scope is
+// never baked into the issued cookie. After login, an admin principal must
+// POST /api/v1/auth/step-up with their TOTP code to obtain an elevation
+// record that gates admin-scoped endpoints (REQ-AUTH-74).
 type loginRequest struct {
 	// Email is the principal's canonical email address.
 	Email string `json:"email"`
 	// Password is the principal's plain-text password for verification.
 	Password string `json:"password"`
-	// TOTPCode is the current TOTP one-time password. Required when the
-	// principal has TOTP enrolled (REQ-AUTH-SCOPE-03). Omit or send ""
-	// on the first POST to discover whether step-up is required (the
-	// response returns 401 with step_up_required=true).
-	TOTPCode string `json:"totp_code,omitempty"`
 }
 
 // loginResponse is the JSON body returned on a successful login.
@@ -96,6 +101,11 @@ type whoamiResponse struct {
 	// SessionIdleDeadline is the rolling idle deadline (REQ-AUTH-75, re #77).
 	// Computed as now + Session.IdleTTL; omitted for Bearer-key callers.
 	SessionIdleDeadline string `json:"session_idle_deadline,omitempty"`
+	// ElevationExpiresAt is the RFC 3339 UTC expiry of the current admin
+	// elevation record (REQ-AUTH-74, issue #79). Null/omitted when no
+	// active elevation exists. The admin SPA uses this to show whether
+	// TOTP step-up is currently active and when it expires.
+	ElevationExpiresAt *string `json:"elevation_expires_at"`
 	// Clientlog carries the per-session clientlog descriptor. Present
 	// on every authenticated response so the admin SPA can observe
 	// livetail_until and telemetry_enabled without a separate round-trip
@@ -121,9 +131,10 @@ type whoamiResponse struct {
 // MaxAge is set to a 365-day fallback when TTL=0 (idle-only mode); the
 // server-side idle gate is the sole expiry mechanism (REQ-AUTH-72, issue #78).
 //
-// TOTP step-up (REQ-AUTH-SCOPE-03): if the principal has TOTP enrolled
-// and totp_code is absent or wrong, the response is 401 with
-// {step_up_required: true} in the problem detail extensions.
+// TOTP is NOT evaluated at login (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42): the
+// issued session always carries only end-user scope (REQ-AUTH-SCOPE-01).
+// Admin principals must separately POST /api/v1/auth/step-up to create an
+// elevation record for admin-gated endpoints (REQ-AUTH-74, issue #79).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit by source IP before touching the directory, matching
 	// the bootstrap and JMAP login posture.
@@ -180,80 +191,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mandatory TOTP for admin role (REQ-AUTH-44, issue #12): an admin
-	// principal without TOTP enrolled CANNOT obtain an admin-scoped
-	// session via the password-login endpoint. Password login refuses
-	// here so the public-facing admin surface is safe to expose without
-	// an IP allowlist.
-	//
-	// First-time enrollment: use the one-shot bootstrap API key
-	// (initial_api_key from POST /api/v1/bootstrap) as a Bearer token
-	// to reach POST /api/v1/principals/{pid}/totp/enroll and then
-	// /totp/confirm. The bootstrap endpoint only works when there are
-	// no principals yet (new installation). For a sole-admin lockout
-	// (admin lost TOTP device, no second admin), use
-	// `herold recover --reset-totp <email>` on the server host
-	// (re #24, re #21) — the bootstrap path is not available after
-	// the first principal is created.
-	if p.Flags.Has(store.PrincipalFlagAdmin) && !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
-		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.admin_totp_missing",
-			"activity", observe.ActivityAudit,
-			"principal_id", pid)
-		s.auditLoginFailure(r, p.CanonicalEmail, pid, "admin role requires TOTP enrollment")
-		writeLoginProblemTOTPEnrollmentRequired(w, r)
-		return
-	}
-
-	// TOTP step-up (REQ-AUTH-SCOPE-03): admin listener requires a TOTP
-	// code for 2FA-enabled principals before issuing admin-scoped cookie.
-	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
-		if req.TOTPCode == "" {
-			s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_missing",
-				"activity", observe.ActivityAudit,
-				"principal_id", pid)
-			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code missing")
-			writeLoginProblemStepUp(w, r)
-			return
-		}
-		if err := s.dir.VerifyTOTP(ctx, pid, req.TOTPCode); err != nil {
-			if errors.Is(err, directory.ErrRateLimited) {
-				s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_rate_limited",
-					"activity", observe.ActivityAudit,
-					"principal_id", pid)
-				s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp rate-limited")
-				writeProblem(w, r, http.StatusUnauthorized,
-					"unauthorized", "too many TOTP attempts; please wait", "")
-				return
-			}
-			s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.auth.totp_invalid",
-				"activity", observe.ActivityAudit,
-				"principal_id", pid)
-			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code invalid")
-			writeLoginProblemStepUp(w, r)
-			return
-		}
-	}
-
-	// Issue the session. The scope set depends on the principal's admin flag:
-	// - Admin principals who completed TOTP step-up receive ScopeAdmin plus
-	//   all end-user scopes, so the admin SPA and the suite SPA both work from
-	//   the single public session (REQ-AUTH-SCOPE-01..03, re #58).
-	// - Non-admin principals receive the full end-user scope set only.
-	//
-	// TOTP hard-require: the block above already refused admin principals
-	// without TOTP enrolled. Reaching here with PrincipalFlagAdmin set implies
-	// TOTP was verified (or re-verified) in the block above.
-	var sessScopes auth.ScopeSet
-	if p.Flags.Has(store.PrincipalFlagAdmin) {
-		// Admin principal with TOTP verified: grant admin scope in addition to
-		// all end-user scopes. ScopeAdmin is the innermost guard checked by
-		// protoadmin's requireScope middleware on admin-only routes.
-		sessScopes = auth.NewScopeSet(append([]auth.Scope{auth.ScopeAdmin}, auth.AllEndUserScopes...)...)
-	} else {
-		// Non-admin principal: end-user scopes only. ScopeAdmin is explicitly
-		// excluded — no privilege escalation via this login path.
-		sessScopes = auth.NewScopeSet(auth.AllEndUserScopes...)
-	}
+	// Issue an end-user-scoped session. The admin scope is never baked
+	// into the cookie (REQ-AUTH-SCOPE-01, REQ-AUTH-SCOPE-03). Admin
+	// operations require a subsequent TOTP step-up that creates a
+	// server-side elevation record (REQ-AUTH-74, issue #79).
+	sessScopes := auth.NewScopeSet(auth.AllEndUserScopes...)
 
 	// Session lifetime: all sessions use the idle-only model. When
 	// Session.TTL=0 (no absolute cap), ExpiresAt is set to now+365d so
@@ -339,6 +281,10 @@ type authMeResponse struct {
 	Scopes              []auth.Scope `json:"scopes"`
 	SessionExpiresAt    string       `json:"session_expires_at,omitempty"`
 	SessionIdleDeadline string       `json:"session_idle_deadline,omitempty"`
+	// ElevationExpiresAt is the RFC 3339 UTC expiry of the current admin
+	// elevation record (REQ-AUTH-74, issue #79). Null/omitted when no
+	// active elevation exists.
+	ElevationExpiresAt *string `json:"elevation_expires_at"`
 }
 
 // handleAuthMe handles GET /api/v1/auth/me.
@@ -380,6 +326,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		Scopes:              scopes,
 		SessionExpiresAt:    sessionExpiresAt,
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
+		ElevationExpiresAt:  s.activeElevationExpiry(r),
 	})
 }
 
@@ -413,8 +360,170 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		Email:               p.CanonicalEmail,
 		Scopes:              scopes,
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
+		ElevationExpiresAt:  s.activeElevationExpiry(r),
 		Clientlog:           s.buildClientlogMeta(r),
 	})
+}
+
+// stepUpRequest is the JSON body for POST /api/v1/auth/step-up.
+type stepUpRequest struct {
+	TOTPCode string `json:"totp_code"`
+}
+
+// stepUpResponse is the JSON body returned on a successful step-up.
+type stepUpResponse struct {
+	// ElevationExpiresAt is the RFC 3339 UTC expiry of the new elevation
+	// record. The admin SPA displays this and schedules a re-step-up prompt
+	// before it expires (REQ-AUTH-74, issue #79).
+	ElevationExpiresAt string `json:"elevation_expires_at"`
+}
+
+// handleStepUp handles POST /api/v1/auth/step-up (REQ-AUTH-74, issue #79).
+//
+// The caller must be authenticated (requireAuth) and CSRF-checked. It
+// supplies a TOTP code; on success a server-side elevation record is created
+// (or refreshed) for the session, expiring at now + Options.ElevationTTL.
+// Admin-gated endpoints then check GetActiveElevation to authorise the call.
+//
+// Error responses:
+//   - 400  principal has no TOTP enrolled:  {enroll_required: true}
+//   - 401  TOTP code invalid or rate-limited: RFC 7807 "unauthorized"
+//   - 403  principal does not have the admin flag (elevation is only
+//     meaningful for admin principals)
+func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
+	sessID := s.sessionIDFromRequest(r)
+	if sessID == "" {
+		// Bearer-key callers have no persistent session and therefore no
+		// elevation record. Step-up is only meaningful for cookie sessions.
+		writeProblem(w, r, http.StatusBadRequest,
+			"bad_request", "step-up requires a cookie session", "")
+		return
+	}
+
+	p, ok := principalFrom(r.Context())
+	if !ok {
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "authentication required", "")
+		return
+	}
+	// Only admin principals can elevate — non-admin step-up is a no-op
+	// that would never be consumed.
+	if !p.Flags.Has(store.PrincipalFlagAdmin) {
+		writeProblem(w, r, http.StatusForbidden,
+			"forbidden", "admin privileges required for step-up", "")
+		return
+	}
+
+	// TOTP must be enrolled before step-up can be granted (REQ-AUTH-44).
+	// Return enroll_required so the SPA can redirect to TOTP setup.
+	if !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":            "about:blank",
+			"title":           "TOTP enrollment required",
+			"status":          http.StatusBadRequest,
+			"detail":          "TOTP must be enrolled before step-up elevation can be granted.",
+			"enroll_required": true,
+			"enroll_url":      "/api/v1/principals/" + strconv.FormatUint(uint64(p.ID), 10) + "/totp/enroll",
+		})
+		return
+	}
+
+	var req stepUpRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TOTPCode == "" {
+		writeProblem(w, r, http.StatusBadRequest,
+			"bad_request", "request body must be JSON {totp_code}", "")
+		return
+	}
+
+	// Rate-limit step-up attempts per session to prevent brute-force
+	// against the 6-digit TOTP window (directory also rate-limits per
+	// principal via its own bucket).
+	ipKey := "stepup-ip:" + remoteHost(r.RemoteAddr)
+	sessKey := "stepup-sess:" + sessID
+	if !s.checkRateLimit(w, r, ipKey) {
+		return
+	}
+	if !s.checkRateLimit(w, r, sessKey) {
+		return
+	}
+
+	ctx := r.Context()
+	if err := s.dir.VerifyTOTP(ctx, p.ID, req.TOTPCode); err != nil {
+		if errors.Is(err, directory.ErrRateLimited) {
+			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.stepup_rate_limited",
+				"activity", observe.ActivityAudit,
+				"principal_id", uint64(p.ID))
+			s.appendAudit(ctx, "auth.step_up", "principal:"+p.CanonicalEmail,
+				store.OutcomeFailure, "totp rate-limited",
+				map[string]string{"remote": remoteHost(r.RemoteAddr)})
+			writeProblem(w, r, http.StatusTooManyRequests,
+				"rate_limited", "too many TOTP attempts; please wait", "")
+			return
+		}
+		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.stepup_invalid",
+			"activity", observe.ActivityAudit,
+			"principal_id", uint64(p.ID))
+		s.appendAudit(ctx, "auth.step_up", "principal:"+p.CanonicalEmail,
+			store.OutcomeFailure, "totp code invalid",
+			map[string]string{"remote": remoteHost(r.RemoteAddr)})
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "TOTP code is invalid or expired", "")
+		return
+	}
+
+	ttl := s.opts.ElevationTTL
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	now := s.clk.Now()
+	expiresAt := now.Add(ttl)
+	elev := store.ElevationRow{
+		SessionID:   sessID,
+		PrincipalID: p.ID,
+		ElevatedAt:  now,
+		ExpiresAt:   expiresAt,
+	}
+	if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
+		s.loggerFrom(ctx).Error("protoadmin.auth.stepup_upsert_failed",
+			"activity", observe.ActivityInternal,
+			"err", err, "principal_id", uint64(p.ID))
+		writeProblem(w, r, http.StatusInternalServerError,
+			"internal_error", "failed to create elevation record", "")
+		return
+	}
+
+	s.loggerFrom(ctx).InfoContext(ctx, "protoadmin.auth.stepup_success",
+		"activity", observe.ActivityAudit,
+		"principal_id", uint64(p.ID),
+		"expires_at", expiresAt.UTC().Format(time.RFC3339))
+	s.appendAudit(ctx, "auth.step_up", "principal:"+p.CanonicalEmail,
+		store.OutcomeSuccess, "",
+		map[string]string{
+			"remote":     remoteHost(r.RemoteAddr),
+			"expires_at": expiresAt.UTC().Format(time.RFC3339),
+		})
+
+	writeJSON(w, http.StatusOK, stepUpResponse{
+		ElevationExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// activeElevationExpiry returns the elevation_expires_at string for the
+// current session, or nil when there is no active elevation. Used to
+// populate whoami and me responses (REQ-AUTH-74, issue #79).
+func (s *Server) activeElevationExpiry(r *http.Request) *string {
+	sessID := s.sessionIDFromRequest(r)
+	if sessID == "" {
+		return nil
+	}
+	elev, err := s.store.Meta().GetActiveElevation(r.Context(), sessID, s.clk.Now().UnixMicro())
+	if err != nil {
+		return nil
+	}
+	ts := elev.ExpiresAt.UTC().Format(time.RFC3339)
+	return &ts
 }
 
 // buildClientlogMeta populates the clientlog block in whoamiResponse by
@@ -535,41 +644,6 @@ func (s *Server) sessionConfig() authsession.SessionConfig {
 		cfg.CSRFCookieName = "herold_public_csrf"
 	}
 	return cfg
-}
-
-// writeLoginProblemStepUp writes a 401 problem with step_up_required=true
-// in the problem detail extensions (REQ-AUTH-SCOPE-03).
-func writeLoginProblemStepUp(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type":             "about:blank",
-		"title":            "TOTP code required",
-		"status":           http.StatusUnauthorized,
-		"detail":           "This account requires a TOTP code; supply totp_code and re-submit.",
-		"step_up_required": true,
-	})
-}
-
-// writeLoginProblemTOTPEnrollmentRequired writes a 401 problem with both
-// step_up_required and totp_enrollment_required set (REQ-AUTH-44, issue
-// #12). Returned to admin principals that authenticate with a correct
-// password but have not yet enrolled TOTP — the admin scope requires it.
-// The enroll_url extension points the client at the enrollment endpoint,
-// which is reachable via the bootstrap API key for the first-time
-// superadmin path (slice 6).
-func writeLoginProblemTOTPEnrollmentRequired(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type":                     "about:blank",
-		"title":                    "TOTP enrollment required",
-		"status":                   http.StatusUnauthorized,
-		"detail":                   "The admin role requires TOTP enrollment before password sign-in is permitted.",
-		"step_up_required":         true,
-		"totp_enrollment_required": true,
-		"enroll_url":               "/api/v1/totp/enroll",
-	})
 }
 
 // humanLoginError maps directory errors to terse user-facing strings.

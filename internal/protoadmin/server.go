@@ -240,6 +240,12 @@ type Options struct {
 	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
 	// existing deployments that wire only Bearer keys are unaffected.
 	Session authsession.SessionConfig
+	// ElevationTTL is the time-to-live for a successful TOTP step-up
+	// elevation (REQ-AUTH-74, issue #79). Zero applies the default
+	// (15 minutes). Admin-scoped endpoints require a valid elevation row
+	// that was created within this window. Sourced from
+	// sysconfig UIConfig.ElevationTTL at server boot.
+	ElevationTTL time.Duration
 	// ExternalSubmissionDataKey is the 32-byte data key used to seal and
 	// open per-identity submission credentials (REQ-AUTH-EXT-SUBMIT-02).
 	// Sourced from sysconfig.SecretsConfig.DataKeyRef at server boot.
@@ -430,6 +436,9 @@ func NewServer(
 	}
 	if opts.ServerVersion == "" {
 		opts.ServerVersion = "dev"
+	}
+	if opts.ElevationTTL <= 0 {
+		opts.ElevationTTL = 15 * time.Minute
 	}
 	// Default ExternalProbe: when no probe is injected and no data key is
 	// configured, the 503 fires before the probe is reached. When a data

@@ -408,14 +408,13 @@ func requireSelfOnly(w http.ResponseWriter, r *http.Request, caller store.Princi
 // activity=audit at warn (REQ-OPS-86).
 //
 // Defence-in-depth: some handlers (handleServerStatus,
-// handleServerConfigCheck) call both authAdmin (requireScope(ScopeAdmin))
-// in routes.go AND requireAdmin here. The two gates are independent:
-// authAdmin checks the scope encoded in the cookie/API-key at issuance
-// time; requireAdmin checks the live DB flag at request time. Together
-// they ensure that revoking the admin flag from a principal also revokes
-// access even when an existing long-lived API key carrying ScopeAdmin
-// is still in circulation (the scope gate passes, the DB-flag gate does
-// not). This is intentional defence-in-depth, not accidental duplication.
+// handleServerConfigCheck) call both authAdmin (requireElevation) in
+// routes.go AND requireAdmin here. The two gates are independent:
+// requireElevation checks the scope embedded in the API-key credential or
+// the elevation record in session_elevations; requireAdmin checks the live DB
+// flag at request time. Together they ensure that revoking the admin flag from
+// a principal also revokes access even when an existing long-lived API key
+// carrying ScopeAdmin is still in circulation.
 func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
 	if caller.Flags.Has(store.PrincipalFlagAdmin) {
 		return true
@@ -430,32 +429,100 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal
 	return false
 }
 
-// requireScope is the auth-scope (REQ-AUTH-SCOPE-02) middleware
-// counterpart to requireAuth: it asserts the auth.AuthContext attached
-// to r holds every scope in scs and writes a 403 RFC 7807 problem
-// detail otherwise. Callers chain it after requireAuth in routes.go.
-// Scope-boundary rejections are logged activity=audit at warn (REQ-OPS-86).
-func (s *Server) requireScope(scs ...auth.Scope) func(http.HandlerFunc) http.HandlerFunc {
-	return func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if err := auth.RequireScope(r.Context(), scs...); err != nil {
-				if errors.Is(err, auth.ErrUnauthenticated) {
-					writeProblem(w, r, http.StatusUnauthorized,
-						"unauthorized", "authentication required", "")
-					return
-				}
-				s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.scope_denied",
-					"activity", observe.ActivityAudit,
-					"method", r.Method,
-					"path", r.URL.Path,
-					"err", err)
-				writeProblem(w, r, http.StatusForbidden,
-					"insufficient_scope",
-					"insufficient scope for this resource",
-					err.Error())
+// requireElevation is the admin-route guard for the step-up elevation
+// model (REQ-AUTH-SCOPE-02, REQ-AUTH-74, issue #79).
+//
+// Two caller modes:
+//
+//  1. Bearer API-key callers (Authorization header present): must carry
+//     ScopeAdmin in the key's scope_json. A key with any other scope set
+//     receives 403 insufficient_scope. Elevation records are not consulted
+//     because API-key callers never go through the browser TOTP flow.
+//
+//  2. Cookie-authenticated callers: must have PrincipalFlagAdmin in the DB
+//     AND a valid unexpired elevation record in session_elevations. Missing
+//     or expired elevation → 403 step_up_required so the SPA can redirect
+//     the user to POST /api/v1/auth/step-up.
+//
+// When the principal is not an admin the response is always 403 "forbidden".
+func (s *Server) requireElevation(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		lg := s.loggerFrom(r.Context())
+		caller, ok := principalFrom(r.Context())
+		if !ok {
+			writeProblem(w, r, http.StatusUnauthorized,
+				"unauthorized", "authentication required", "")
+			return
+		}
+		if !caller.Flags.Has(store.PrincipalFlagAdmin) {
+			lg.WarnContext(r.Context(), "protoadmin.elevation_denied",
+				"activity", observe.ActivityAudit,
+				"actor_id", caller.ID,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"reason", "not an admin principal")
+			writeProblem(w, r, http.StatusForbidden,
+				"forbidden", "admin privileges required", "")
+			return
+		}
+
+		// Distinguish Bearer callers (Authorization header) from cookie callers.
+		if r.Header.Get("Authorization") != "" {
+			// API-key caller: gate on ScopeAdmin in the credential.
+			// A principal that is admin in the DB but used a limited-scope
+			// key (e.g. mail.send) is still rejected — the scope is the
+			// effective grant, not the DB flag.
+			ac := auth.FromContext(r.Context())
+			if ac != nil && ac.Scopes.Has(auth.ScopeAdmin) {
+				// Bearer admin with ScopeAdmin: bypass elevation check.
+				next(w, r)
 				return
 			}
-			next(w, r)
+			// Bearer caller without ScopeAdmin: 403 insufficient_scope
+			// (REQ-AUTH-SCOPE-02, REQ-OPS-86).
+			lg.WarnContext(r.Context(), "protoadmin.scope_denied",
+				"activity", observe.ActivityAudit,
+				"actor_id", caller.ID,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"reason", "Bearer caller lacks ScopeAdmin")
+			writeProblem(w, r, http.StatusForbidden,
+				"insufficient_scope", "admin scope required", "")
+			return
 		}
+
+		// Cookie-authenticated callers must have a live elevation record.
+		sessID := s.sessionIDFromRequest(r)
+		if sessID == "" {
+			// requireAuth already validated the cookie; a missing sessID here
+			// means the signing key is unset (test fixture without a session
+			// key). Defensive: treat as unauthenticated.
+			writeProblem(w, r, http.StatusUnauthorized,
+				"unauthorized", "authentication required", "")
+			return
+		}
+		_, err := s.store.Meta().GetActiveElevation(r.Context(), sessID, s.clk.Now().UnixMicro())
+		if err != nil {
+			// No active elevation: respond with the typed step_up_required body.
+			lg.WarnContext(r.Context(), "protoadmin.elevation_required",
+				"activity", observe.ActivityAudit,
+				"actor_id", caller.ID,
+				"method", r.Method,
+				"path", r.URL.Path)
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type":             "about:blank",
+				"title":            "Step-up elevation required",
+				"status":           http.StatusForbidden,
+				"detail":           "Admin operations require a current TOTP step-up. POST /api/v1/auth/step-up with your TOTP code.",
+				"step_up_required": true,
+				"elevation_scope":  "admin",
+				"step_up_url":      "/api/v1/auth/step-up",
+			})
+			return
+		}
+
+		next(w, r)
 	}
 }

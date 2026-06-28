@@ -159,6 +159,7 @@ var tableReg = map[string]tableDesc{
 	"imapimport_folder_cursor":   {&IMAPImportFolderCursorRow{}, "account_id, upstream_folder"},
 	"imapimport_message_state":   {&IMAPImportMessageStateRow{}, "account_id, upstream_folder, upstream_uid"},
 	"sessions":                   {&SessionRow{}, "session_id"},
+	"session_elevations":         {&SessionElevationRow{}, "session_id"},
 	"clientlog":                  {&ClientLogRow{}, "id"},
 }
 

@@ -2,8 +2,6 @@ package protoadmin
 
 import (
 	"net/http"
-
-	"github.com/hanshuebner/herold/internal/auth"
 )
 
 // registerRoutes registers every /api/v1/... endpoint on mux. Routes are
@@ -11,20 +9,21 @@ import (
 // honours method + path patterns without a separate Router type.
 //
 // REQ-AUTH-SCOPE-02: every authenticated route is scope-gated. The
-// vast majority of protoadmin's surface requires admin scope (the
+// vast majority of protoadmin's surface requires admin elevation (the
 // REST surface is mounted on the admin listener and operators are
-// the consumers). The scope-self handlers (GET /api/v1/api-keys,
+// the consumers). The self-service handlers (GET /api/v1/api-keys,
 // DELETE /api/v1/api-keys/{id}, POST /api/v1/principals/{pid}/api-keys
 // against the caller's own pid, the principals/{self} self-service
 // flows) are gated only by requireAuth + requireSelfOrAdmin inside
-// the handler — the scope check would over-match because a non-
-// admin end-user with a valid cookie should be able to manage their
-// own keys. Those handlers therefore retain their existing in-handler
-// authorisation gates and skip the admin requireScope wrapper.
+// the handler — a non-admin end-user with a valid cookie should be able
+// to manage their own keys without completing step-up elevation.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	admin := s.requireScope(auth.ScopeAdmin)
 	auth1 := func(h http.HandlerFunc) http.HandlerFunc { return s.requireAuth(h) }
-	authAdmin := func(h http.HandlerFunc) http.HandlerFunc { return s.requireAuth(admin(h)) }
+	// authAdmin requires authentication + a valid admin elevation record
+	// (PrincipalFlagAdmin AND an unexpired entry in session_elevations).
+	// API-key callers with ScopeAdmin in their credential are permitted
+	// without an elevation record (REQ-AUTH-SCOPE-02, REQ-AUTH-74, issue #79).
+	authAdmin := func(h http.HandlerFunc) http.HandlerFunc { return s.requireAuth(s.requireElevation(h)) }
 
 	// Health (unauth).
 	mux.HandleFunc("GET /api/v1/healthz/live", s.handleHealthLive)
@@ -49,6 +48,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	//                          session_expires_at} for the Suite SPA's
 	//                          page-reload session probe (re #58).
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	// Step-up: TOTP verification that creates a server-side elevation record
+	// gating admin endpoints (REQ-AUTH-74, issue #79). Requires a cookie session
+	// and CSRF check (auth1 enforces the CSRF gate on POST).
+	mux.HandleFunc("POST /api/v1/auth/step-up", auth1(s.handleStepUp))
 	mux.HandleFunc("POST /api/v1/auth/logout", auth1(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/whoami", auth1(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/v1/auth/me", auth1(s.handleAuthMe))

@@ -1300,6 +1300,13 @@ type UIConfig struct {
 	// bytes, the server generates a random per-process key (sessions are
 	// invalidated on every restart and a WARN is emitted at startup).
 	SigningKeyEnv string `toml:"signing_key_env,omitempty"`
+	// ElevationTTL is the time-to-live for a successful TOTP step-up
+	// elevation record (REQ-AUTH-74, issue #79). After this window the
+	// admin-endpoint gate returns 403 step_up_required again.  Default
+	// is 15 minutes ("15m"). Operators on high-security deployments may
+	// shorten this; operators who need longer admin windows may extend it
+	// up to 1 hour. Values outside [1m, 1h] are rejected by Validate.
+	ElevationTTL Duration `toml:"elevation_ttl,omitempty"`
 }
 
 // QueueConfig exposes operator-facing knobs for the outbound delivery queue.
@@ -2178,6 +2185,9 @@ func applyDefaults(c *Config) {
 		t := true
 		c.Server.UI.SecureCookies = &t
 	}
+	if c.Server.UI.ElevationTTL == 0 {
+		c.Server.UI.ElevationTTL = Duration(15 * time.Minute)
+	}
 	// Image proxy defaults (REQ-SEND-70..78). Operators get a working
 	// proxy without any TOML; the constants here mirror protoimg's
 	// own defaults so a missing block and an empty block behave the
@@ -2730,6 +2740,13 @@ func Validate(c *Config) error {
 	}
 	if idle, abs := c.Server.UI.AdminIdleTTL.AsDuration(), c.Server.UI.AdminAbsoluteTTL.AsDuration(); idle > abs {
 		return fmt.Errorf("sysconfig: [server.ui] admin_idle_ttl %s exceeds admin_absolute_ttl %s", idle, abs)
+	}
+	// Elevation TTL (REQ-AUTH-74, issue #79). Bounded to [1m, 1h] to
+	// prevent operator misconfiguration that would either lock admins out
+	// (< 1 min gives no window) or leave the admin surface open
+	// indefinitely (> 1 h weakens the step-up protection).
+	if dur := c.Server.UI.ElevationTTL.AsDuration(); dur < time.Minute || dur > time.Hour {
+		return fmt.Errorf("sysconfig: [server.ui] elevation_ttl %s must be between 1m and 1h", dur)
 	}
 	// Image proxy (REQ-SEND-70..78). Catch operator typos that would
 	// otherwise produce a silently-disabled feature: negative budgets

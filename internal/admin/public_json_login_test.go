@@ -260,18 +260,22 @@ func TestPublicJSONLogin_BadCreds_Returns401(t *testing.T) {
 	}
 }
 
-// TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint guards the
-// REQ-AUTH-44 gate on the admin listener's JSON login endpoint
-// (internal/protoadmin/session_auth.go). After issue #12 slice 4, an
-// admin principal that has not yet enrolled TOTP CANNOT obtain an
-// admin-scoped session via password sign-in. The regression here is
-// the previous version (Phase 3c-i, pre-slice-4) that allowed
-// password-only sign-in on the admin listener; this test would have
-// passed with the old contract and must FAIL there now.
+// TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint guards the step-up
+// model (REQ-AUTH-74, issue #79) for an admin principal without TOTP enrolled.
 //
-// The positive twin (login succeeds after TOTP enrollment) lives in
-// internal/protoadmin/session_auth_test.go, with direct access to the
-// directory for in-process TOTP enrollment.
+// Under the step-up model:
+//  1. Login always succeeds with an end-user-scoped session (TOTP is never
+//     evaluated at login time — REQ-AUTH-42, REQ-AUTH-SCOPE-03).
+//  2. An admin without TOTP enrolled who attempts POST /api/v1/auth/step-up
+//     receives 400 with enroll_required:true and an enroll_url.
+//  3. An admin-gated route (without elevation) returns 403 step_up_required.
+//
+// The regression this test guards: the old code rejected admin login entirely
+// when TOTP was not enrolled (pre-issue-#79). The new code permits the login
+// but blocks admin access until TOTP is enrolled and a step-up is performed.
+//
+// The positive twin (step-up succeeds after TOTP enrollment) lives in
+// internal/protoadmin/session_auth_test.go and internal/admin/scope_boundary_test.go.
 func TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
@@ -282,49 +286,108 @@ func TestAdminJSONLogin_NoTOTP_RefusedWithEnrollmentHint(t *testing.T) {
 			t.Fatalf("server did not shut down")
 		}
 	})
+	publicAddr := addrs["public"]
+	if publicAddr == "" {
+		t.Fatalf("public listener not bound; addrs=%+v", addrs)
+	}
 	adminAddr := addrs["admin"]
 	if adminAddr == "" {
 		t.Fatalf("admin listener not bound; addrs=%+v", addrs)
 	}
 
+	// Bootstrap an admin principal (has PrincipalFlagAdmin but no TOTP enrolled).
 	email, password := bootstrapUserViaAdmin(t, adminAddr)
 
-	b, _ := json.Marshal(map[string]any{
+	// Step 1: login returns 200 with a session cookie even without TOTP.
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	loginBody, _ := json.Marshal(map[string]any{
 		"email":    email,
 		"password": password,
 	})
-	resp, err := http.Post(
-		"http://"+adminAddr+"/api/v1/auth/login",
+	resp, err := client.Post(
+		"http://"+publicAddr+"/api/v1/auth/login",
 		"application/json",
-		bytes.NewReader(b),
+		bytes.NewReader(loginBody),
 	)
 	if err != nil {
-		t.Fatalf("admin POST /api/v1/auth/login: %v", err)
+		t.Fatalf("POST /api/v1/auth/login: %v", err)
 	}
-	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("admin login without TOTP: status=%d body=%s, want 401",
-			resp.StatusCode, body)
-	}
-	var detail map[string]any
-	if err := json.Unmarshal(body, &detail); err != nil {
-		t.Fatalf("problem detail unmarshal: %v body=%s", err, body)
-	}
-	if detail["step_up_required"] != true {
-		t.Errorf("step_up_required not true: %v", detail)
-	}
-	if detail["totp_enrollment_required"] != true {
-		t.Errorf("totp_enrollment_required not true: %v", detail)
-	}
-	if detail["enroll_url"] != "/api/v1/totp/enroll" {
-		t.Errorf("enroll_url=%v, want /api/v1/totp/enroll", detail["enroll_url"])
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: status=%d body=%s, want 200", resp.StatusCode, body)
 	}
 
-	// No admin session cookie may be set when the gate refuses.
+	// Session cookie must be set; it carries only end-user scopes.
+	var sessionCookie, csrfCookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == "herold_admin_session" {
-			t.Errorf("herold_admin_session must NOT be set when the TOTP gate refuses")
+		if c.Name == "herold_public_session" {
+			sessionCookie = c
 		}
+		if c.Name == "herold_public_csrf" {
+			csrfCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("herold_public_session not set after login")
+	}
+
+	// Step 2: step-up without TOTP enrolled → 400 with enroll_required.
+	var csrfValue string
+	if csrfCookie != nil {
+		csrfValue = csrfCookie.Value
+	}
+	stepUpBody, _ := json.Marshal(map[string]any{"totp_code": "123456"})
+	stepReq, _ := http.NewRequest("POST",
+		"http://"+publicAddr+"/api/v1/auth/step-up",
+		bytes.NewReader(stepUpBody))
+	stepReq.Header.Set("Content-Type", "application/json")
+	if csrfValue != "" {
+		stepReq.Header.Set("X-CSRF-Token", csrfValue)
+		stepReq.AddCookie(csrfCookie)
+	}
+	stepReq.AddCookie(sessionCookie)
+	stepResp, err := client.Do(stepReq)
+	if err != nil {
+		t.Fatalf("POST /api/v1/auth/step-up: %v", err)
+	}
+	stepRaw, _ := io.ReadAll(stepResp.Body)
+	stepResp.Body.Close()
+	if stepResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("step-up without TOTP enrolled: status=%d body=%s, want 400",
+			stepResp.StatusCode, stepRaw)
+	}
+	var stepDetail map[string]any
+	if err := json.Unmarshal(stepRaw, &stepDetail); err != nil {
+		t.Fatalf("step-up problem detail unmarshal: %v body=%s", err, stepRaw)
+	}
+	if stepDetail["enroll_required"] != true {
+		t.Errorf("step-up body missing enroll_required:true: %v", stepDetail)
+	}
+
+	// Step 3: admin route without elevation returns 403 step_up_required.
+	adminReq, _ := http.NewRequest("GET",
+		"http://"+publicAddr+"/api/v1/server/status", nil)
+	adminReq.AddCookie(sessionCookie)
+	adminResp, err := client.Do(adminReq)
+	if err != nil {
+		t.Fatalf("GET /api/v1/server/status: %v", err)
+	}
+	adminBody, _ := io.ReadAll(adminResp.Body)
+	adminResp.Body.Close()
+	if adminResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin route without elevation: status=%d body=%s, want 403",
+			adminResp.StatusCode, adminBody)
+	}
+	var adminDetail map[string]any
+	if err := json.Unmarshal(adminBody, &adminDetail); err != nil {
+		t.Fatalf("admin 403 unmarshal: %v body=%s", err, adminBody)
+	}
+	if adminDetail["step_up_required"] != true {
+		t.Errorf("admin 403 missing step_up_required:true: %v", adminDetail)
 	}
 }
