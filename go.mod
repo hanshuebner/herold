@@ -143,12 +143,13 @@ require (
 	modernc.org/token v1.1.0 // indirect
 )
 
-// In-tree vendored fork of emersion/go-imap/v2 (beta.8) adding X-GM-LABELS
-// (X-GM-EXT-1) client FETCH support (REQ-IMAP-IMP-53); the upstream beta.8
-// FETCH parser rejects the X-GM-LABELS msg-att, and no released version (nor
-// master) supports it. The patch is minimal and upstream-able: the clean PR
-// against emersion/go-imap lives in docs/dev/go-imap-xgmlabels-upstream.patch.
-// Once that PR merges (or the fork is hosted), drop this replace + third_party
-// copy and bump the require. Vendored in-tree (not a hosted pseudo-version)
-// so CI needs no external module fetch.
+// Permanent in-tree fork of emersion/go-imap/v2, based on tag v2.0.0-beta.8
+// (commit 7ac47a9cfd9a06ff5f3bdee52d7420137f023a1e, pinned in
+// third_party/go-imap/UPSTREAM). The fork adds X-GM-LABELS (X-GM-EXT-1)
+// client FETCH support required by REQ-IMAP-IMP-53; upstream declined the
+// change as out-of-scope for proprietary Gmail extensions. The runtime
+// dependency is client-only (imapclient, used by internal/imapimport); the
+// imapserver/imapmemserver subtree is kept as a test fixture. Vendored
+// in-tree so CI needs no external module fetch. Upstream parser and
+// robustness fixes are harvested periodically via `make imap-upstream-diff`.
 replace github.com/emersion/go-imap/v2 => ./third_party/go-imap

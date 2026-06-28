@@ -14,7 +14,8 @@ FUZZTIME ?= 30s
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-jmaptest interop-clean \
-        precommit precommit-all install-hooks check-schema-version
+        precommit precommit-all install-hooks check-schema-version \
+        imap-upstream-diff
 
 all: build
 
@@ -251,3 +252,10 @@ interop-jmaptest:
 interop-clean:
 	cd test/interop && docker compose down --remove-orphans --volumes 2>/dev/null || true
 	rm -rf test/interop/logs/[0-9]* test/interop/logs/latest
+
+# imap-upstream-diff shows upstream go-imap commits and diffs since the fork
+# base (third_party/go-imap/UPSTREAM) so a maintainer can identify parser or
+# robustness fixes worth cherry-picking. Read-only; never modifies the tree.
+# Run manually once or twice a year; not wired into ci-local or all.
+imap-upstream-diff:
+	./scripts/imap-upstream-diff.sh
