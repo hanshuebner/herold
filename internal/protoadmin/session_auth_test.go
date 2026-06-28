@@ -1178,3 +1178,103 @@ func TestSessionAuth_Logout_DeletesSessionRow(t *testing.T) {
 		t.Error("GetSession after logout: expected ErrNotFound, got nil")
 	}
 }
+
+// TestSessionAuth_IdleExpired_TypedProblem asserts that when the idle gate
+// trips, the 401 response carries a typed RFC 7807 body with
+// type="https://netzhansa.com/problems/session_expired" (REQ-AUTH-76, re #77).
+// The client uses this type to distinguish "session idle-expired" from "not
+// authenticated at all" so it can present the correct forced-login copy.
+func TestSessionAuth_IdleExpired_TypedProblem(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 30 * time.Minute
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-typed@example.com")
+
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("login: status=%d", loginCode)
+	}
+
+	// Advance past the idle window so the gate trips on the next request.
+	sh.clk.Advance(idleTTL + time.Minute)
+
+	code, raw := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("idle-expired GET: status=%d, want 401", code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal 401 body: %v body=%s", err, raw)
+	}
+	wantType := "https://netzhansa.com/problems/session_expired"
+	if body["type"] != wantType {
+		t.Errorf("401 type=%v, want %q", body["type"], wantType)
+	}
+}
+
+// TestSessionAuth_LoginResponse_SessionIdleDeadline asserts that a
+// successful login response includes session_idle_deadline when
+// Session.IdleTTL is configured (REQ-AUTH-75, re #77).
+func TestSessionAuth_LoginResponse_SessionIdleDeadline(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 7 * 24 * time.Hour
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-login@example.com")
+
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
+	if code != http.StatusOK {
+		t.Fatalf("login: status=%d body=%v", code, body)
+	}
+
+	deadlineStr, _ := body["session_idle_deadline"].(string)
+	if deadlineStr == "" {
+		t.Fatalf("session_idle_deadline missing from login response: %v", body)
+	}
+	deadline, err := time.Parse(time.RFC3339, deadlineStr)
+	if err != nil {
+		t.Fatalf("session_idle_deadline parse: %v", err)
+	}
+	// The deadline should be approximately now + idleTTL.
+	want := sh.clk.Now().Add(idleTTL)
+	diff := deadline.Sub(want)
+	if diff < -time.Minute || diff > time.Minute {
+		t.Errorf("session_idle_deadline=%s; want ~%s (diff=%s)", deadline, want, diff)
+	}
+}
+
+// TestAuthMe_SessionIdleDeadline asserts that GET /api/v1/auth/me
+// includes session_idle_deadline when Session.IdleTTL is configured
+// (REQ-AUTH-75, re #77).
+func TestAuthMe_SessionIdleDeadline(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 7 * 24 * time.Hour
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-me@example.com")
+
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
+		t.Fatalf("login: status=%d", code)
+	}
+
+	code, raw := sh.doWithCookie("GET", "/api/v1/auth/me", nil, "")
+	if code != http.StatusOK {
+		t.Fatalf("auth/me: status=%d body=%s", code, raw)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	deadlineStr, _ := out["session_idle_deadline"].(string)
+	if deadlineStr == "" {
+		t.Fatalf("session_idle_deadline missing from /auth/me response: %v", out)
+	}
+	deadline, err := time.Parse(time.RFC3339, deadlineStr)
+	if err != nil {
+		t.Fatalf("session_idle_deadline parse: %v", err)
+	}
+	want := sh.clk.Now().Add(idleTTL)
+	diff := deadline.Sub(want)
+	if diff < -time.Minute || diff > time.Minute {
+		t.Errorf("session_idle_deadline=%s; want ~%s (diff=%s)", deadline, want, diff)
+	}
+}

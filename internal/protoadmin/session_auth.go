@@ -60,6 +60,13 @@ type loginResponse struct {
 	// (re #58: now that the public listener also issues admin-scoped cookies,
 	// the suite SPA needs the expiry just like it did with protologin).
 	SessionExpiresAt string `json:"session_expires_at,omitempty"`
+	// SessionIdleDeadline is the rolling idle deadline for this session
+	// (REQ-AUTH-75, re #77). Computed as now + Session.IdleTTL at the time
+	// of the response; the server slides it forward on every authenticated
+	// request. The Suite SPA schedules a proactive forced-login transition at
+	// this deadline and re-arms it after each whoami/me response.
+	// Omitted when IdleTTL is zero (idle gate disabled).
+	SessionIdleDeadline string `json:"session_idle_deadline,omitempty"`
 }
 
 // clientlogSessionMeta is the per-session clientlog descriptor embedded
@@ -86,6 +93,9 @@ type whoamiResponse struct {
 	// Scopes is the scope set carried by the session or API key
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
+	// SessionIdleDeadline is the rolling idle deadline (REQ-AUTH-75, re #77).
+	// Computed as now + Session.IdleTTL; omitted for Bearer-key callers.
+	SessionIdleDeadline string `json:"session_idle_deadline,omitempty"`
 	// Clientlog carries the per-session clientlog descriptor. Present
 	// on every authenticated response so the admin SPA can observe
 	// livetail_until and telemetry_enabled without a separate round-trip
@@ -311,10 +321,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(loginResponse{
-		PrincipalID:      uint64(p.ID),
-		Email:            p.CanonicalEmail,
-		Scopes:           sessScopes.Slice(),
-		SessionExpiresAt: sess.ExpiresAt.UTC().Format(time.RFC3339),
+		PrincipalID:         uint64(p.ID),
+		Email:               p.CanonicalEmail,
+		Scopes:              sessScopes.Slice(),
+		SessionExpiresAt:    sess.ExpiresAt.UTC().Format(time.RFC3339),
+		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
 	})
 }
 
@@ -323,10 +334,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // use a single type for both the login response and the page-reload
 // session probe (REQ-ADM-203).
 type authMeResponse struct {
-	PrincipalID      uint64       `json:"principal_id"`
-	Email            string       `json:"email"`
-	Scopes           []auth.Scope `json:"scopes"`
-	SessionExpiresAt string       `json:"session_expires_at,omitempty"`
+	PrincipalID         uint64       `json:"principal_id"`
+	Email               string       `json:"email"`
+	Scopes              []auth.Scope `json:"scopes"`
+	SessionExpiresAt    string       `json:"session_expires_at,omitempty"`
+	SessionIdleDeadline string       `json:"session_idle_deadline,omitempty"`
 }
 
 // handleAuthMe handles GET /api/v1/auth/me.
@@ -363,10 +375,11 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, authMeResponse{
-		PrincipalID:      uint64(p.ID),
-		Email:            p.CanonicalEmail,
-		Scopes:           scopes,
-		SessionExpiresAt: sessionExpiresAt,
+		PrincipalID:         uint64(p.ID),
+		Email:               p.CanonicalEmail,
+		Scopes:              scopes,
+		SessionExpiresAt:    sessionExpiresAt,
+		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
 	})
 }
 
@@ -396,10 +409,11 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		scopes = ac.Scopes.Slice()
 	}
 	writeJSON(w, http.StatusOK, whoamiResponse{
-		PrincipalID: uint64(p.ID),
-		Email:       p.CanonicalEmail,
-		Scopes:      scopes,
-		Clientlog:   s.buildClientlogMeta(r),
+		PrincipalID:         uint64(p.ID),
+		Email:               p.CanonicalEmail,
+		Scopes:              scopes,
+		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
+		Clientlog:           s.buildClientlogMeta(r),
 	})
 }
 
@@ -435,6 +449,18 @@ func (s *Server) buildClientlogMeta(r *http.Request) clientlogSessionMeta {
 // (REQ-OPS-211).
 func formatAdminRFC3339Millis(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}
+
+// sessionIdleDeadlineStr returns the current rolling idle deadline as an
+// RFC 3339 UTC string (REQ-AUTH-75, re #77). The deadline is always
+// computed as now + Session.IdleTTL because authenticateCookie has
+// already touched the session row with the current time before any
+// handler runs. Returns "" when IdleTTL is zero (idle gate disabled).
+func (s *Server) sessionIdleDeadlineStr() string {
+	if s.opts.Session.IdleTTL <= 0 {
+		return ""
+	}
+	return s.clk.Now().Add(s.opts.Session.IdleTTL).UTC().Format(time.RFC3339)
 }
 
 // handleLogout handles POST /api/v1/auth/logout.

@@ -51,10 +51,16 @@ func HashAPIKey(plaintext string) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, scope, viaCookie, ok := s.authenticateWithMode(ctx, r)
+		principal, scope, viaCookie, typeSlug, ok := s.authenticateWithMode(ctx, r)
 		if !ok {
+			// Use the typed slug from cookie-auth failure when available
+			// (e.g. "session_expired" per REQ-AUTH-76); fall back to the
+			// generic "unauthorized" slug for all other failures.
+			if typeSlug == "" {
+				typeSlug = "unauthorized"
+			}
 			writeProblem(w, r, http.StatusUnauthorized,
-				"unauthorized", "authentication required", "")
+				typeSlug, "authentication required", "")
 			return
 		}
 		// CSRF gate: cookie-authenticated mutating requests must carry
@@ -150,20 +156,24 @@ func (s *Server) validateCSRF(w http.ResponseWriter, r *http.Request) bool {
 // Cookie-based auth is enabled only when Options.Session.SigningKey is
 // set and at least 32 bytes long (REQ-AUTH-SESSION-REST). When the key
 // is absent all cookie-bearing requests fall through to 401.
-func (s *Server) authenticateWithMode(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool, bool) {
+//
+// typeSlug is the RFC 7807 type slug to use when ok=false. It is only
+// meaningful on the failure path; success always yields "". An empty
+// typeSlug means the caller should fall back to "unauthorized".
+func (s *Server) authenticateWithMode(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool, string, bool) {
 	h := r.Header.Get("Authorization")
 	if h != "" {
 		p, scope, ok := s.authenticateBearer(ctx, h)
-		return p, scope, false, ok
+		return p, scope, false, "", ok
 	}
 	// No Authorization header: try the admin session cookie if the
 	// server was configured with a signing key (REQ-AUTH-SESSION-REST).
 	if len(s.opts.Session.SigningKey) >= 32 {
-		p, scope, ok := s.authenticateCookie(ctx, r)
-		return p, scope, ok, ok
+		p, scope, slug, ok := s.authenticateCookie(ctx, r)
+		return p, scope, ok, slug, ok
 	}
 	observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-	return store.Principal{}, nil, false, false
+	return store.Principal{}, nil, false, "", false
 }
 
 // authenticateBearer validates an Authorization header value that starts
@@ -221,7 +231,12 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 // value and then looks up the principal in the store. The scope set is
 // decoded from the cookie envelope (REQ-AUTH-SCOPE-01). Disabled
 // principals are rejected.
-func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool) {
+//
+// The returned typeSlug is non-empty only on the failure path and
+// indicates the RFC 7807 type to use in the 401 response (REQ-AUTH-76).
+// Currently "session_expired" is emitted when the idle gate trips. All
+// other failures yield "" (caller uses the generic "unauthorized" slug).
+func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, string, bool) {
 	cookieName := s.opts.Session.CookieName
 	if cookieName == "" {
 		cookieName = "herold_public_session"
@@ -229,12 +244,12 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, "", false
 	}
 	sess, err := authsession.DecodeSession(c.Value, s.opts.Session.SigningKey, s.clk.Now())
 	if err != nil {
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, "", false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, sess.PrincipalID)
 	if err != nil {
@@ -242,11 +257,11 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", sess.PrincipalID)
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, "", false
 	}
 	if p.Flags.Has(store.PrincipalFlagDisabled) {
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, "", false
 	}
 	scopes := sess.Scopes
 	if len(scopes) == 0 {
@@ -259,7 +274,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		// genuine pre-3b artefact that should also be rejected so a
 		// crafted empty-scope cookie cannot escalate. Reject.
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, "", false
 	}
 	// Idle-timeout gate (REQ-AUTH-72, REQ-AUTH-73, issue #78). All sessions
 	// — admin and end-user alike — use Session.IdleTTL. Zero disables the
@@ -269,15 +284,17 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		if err != nil {
 			// Row missing => session was deleted (logout) or evicted.
 			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-			return store.Principal{}, nil, false
+			return store.Principal{}, nil, "", false
 		}
 		now := s.clk.Now()
 		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > s.opts.Session.IdleTTL {
-			// Drop the row so the same cookie can't resurrect the
-			// session on a later request.
+			// Idle gate trips: drop the row so the same cookie cannot
+			// resurrect the session on a later request. Return the
+			// typed "session_expired" slug so requireAuth emits an RFC
+			// 7807 body that the client recognises (REQ-AUTH-76).
 			_ = s.store.Meta().DeleteSession(ctx, sess.CSRFToken)
 			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
-			return store.Principal{}, nil, false
+			return store.Principal{}, nil, "session_expired", false
 		}
 		// Best-effort touch; failures are logged but don't reject the
 		// in-flight request.
@@ -288,7 +305,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		}
 	}
 	observe.AuthAttemptsTotal.WithLabelValues("session", "ok").Inc()
-	return p, scopes, true
+	return p, scopes, "", true
 }
 
 // parseAPIKeyScope decodes the JSON-encoded scope list stored on an
