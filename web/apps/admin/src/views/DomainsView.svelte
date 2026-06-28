@@ -2,6 +2,7 @@
   import { domains } from '../lib/domains/domains.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
+  import { formatDateOnly } from '../lib/format';
 
   let createOpen = $state(false);
   let createName = $state('');
@@ -21,9 +22,7 @@
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    return formatDateOnly(iso);
   }
 
   async function handleCreate(e: SubmitEvent): Promise<void> {

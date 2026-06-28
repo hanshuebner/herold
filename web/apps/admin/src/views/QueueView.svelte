@@ -2,6 +2,7 @@
   import { queue, type QueueStateFilter } from '../lib/queue/queue.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
+  import { formatRelative } from '../lib/format';
 
   let flushDialogOpen = $state(false);
   let flushing = $state(false);
@@ -47,27 +48,6 @@
     flushResult = null;
     flushError = null;
     flushDialogOpen = true;
-  }
-
-  function formatRelative(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    const diff = d.getTime() - Date.now();
-    const abs = Math.abs(diff);
-    const past = diff < 0;
-
-    if (abs < 60_000) return past ? 'just now' : 'in <1m';
-    if (abs < 3_600_000) {
-      const m = Math.round(abs / 60_000);
-      return past ? `${m}m ago` : `in ${m}m`;
-    }
-    if (abs < 86_400_000) {
-      const h = Math.round(abs / 3_600_000);
-      return past ? `${h}h ago` : `in ${h}h`;
-    }
-    const days = Math.round(abs / 86_400_000);
-    return past ? `${days}d ago` : `in ${days}d`;
   }
 
   function stateChipClass(state: string): string {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { clientlog } from '../lib/clientlog/clientlog.svelte';
+  import { formatRelative, formatAbsolute } from '../lib/format';
 
   // Load on mount; reload when filters change via Apply button.
   $effect(() => {
@@ -19,16 +20,6 @@
     clientlog.resetFilters();
     clientlog.status = 'idle';
     void clientlog.load();
-  }
-
-  function formatRelative(iso: string): string {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    const diff = Date.now() - d.getTime();
-    if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
-    return `${Math.round(diff / 86_400_000)}d ago`;
   }
 
   function formatSkew(skewMs: number): string {
@@ -240,7 +231,7 @@
                   aria-pressed={clientlog.selected?.id === row.id}
                 >
                   <td class="col-when">
-                    <span class="relative-time" title={row.server_ts}>
+                    <span class="relative-time" title={formatAbsolute(row.server_ts)}>
                       {formatRelative(row.server_ts)}
                     </span>
                   </td>

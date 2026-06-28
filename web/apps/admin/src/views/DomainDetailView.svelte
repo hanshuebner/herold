@@ -2,6 +2,7 @@
   import { domainDetail, type CreateAliasPayload } from '../lib/domains/domain-detail.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
+  import { formatDateOnly } from '../lib/format';
 
   interface Props {
     name: string;
@@ -161,9 +162,7 @@
 
   function formatDate(iso: string | null | undefined): string {
     if (!iso) return 'never';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    return formatDateOnly(iso);
   }
 </script>
 

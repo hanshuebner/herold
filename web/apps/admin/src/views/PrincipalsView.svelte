@@ -2,6 +2,7 @@
   import { principals, FLAG_ADMIN, FLAG_TOTP_ENABLED, FLAG_DISABLED, type CreatePrincipalPayload } from '../lib/principals/principals.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
+  import { formatDateOnly } from '../lib/format';
 
   let createOpen = $state(false);
   let createEmail = $state('');
@@ -29,9 +30,7 @@
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    return formatDateOnly(iso);
   }
 
   function generatePassword(): string {

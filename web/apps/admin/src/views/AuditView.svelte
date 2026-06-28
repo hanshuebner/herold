@@ -1,5 +1,6 @@
 <script lang="ts">
   import { audit } from '../lib/audit/audit.svelte';
+  import { formatRelative, formatAbsolute } from '../lib/format';
 
   $effect(() => {
     if (audit.status === 'idle') {
@@ -9,18 +10,6 @@
 
   function applyFilters(): void {
     void audit.load();
-  }
-
-  function formatRelative(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    const diff = Date.now() - d.getTime();
-
-    if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
-    return `${Math.round(diff / 86_400_000)}d ago`;
   }
 
   function outcomeChipClass(outcome: string): string {
@@ -129,7 +118,7 @@
           {#each audit.items as entry (entry.id)}
             <tr class="table-row">
               <td class="col-time">
-                <span class="relative-time" title={entry.at}>{formatRelative(entry.at)}</span>
+                <span class="relative-time" title={formatAbsolute(entry.at)}>{formatRelative(entry.at)}</span>
               </td>
               <td class="col-actor">
                 <span class="mono small">{entry.actor_kind}:{entry.actor_id}</span>

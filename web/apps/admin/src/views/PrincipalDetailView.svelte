@@ -5,6 +5,7 @@
   import { router } from '../lib/router/router.svelte';
   import Tabs from '../lib/ui/Tabs.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
+  import { formatAbsolute, DATE_TIME_SHORT } from '../lib/format';
 
   // Import qrcode-svg via the CJS interop. Vite handles require-style modules.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -337,12 +338,7 @@
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    });
+    return formatAbsolute(iso, DATE_TIME_SHORT);
   }
 
   function formatBytes(b: number): string {

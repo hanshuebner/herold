@@ -1,6 +1,7 @@
 <script lang="ts">
   import { queueItem } from '../lib/queue/queue-item.svelte';
   import { router } from '../lib/router/router.svelte';
+  import { formatAbsolute, DATE_TIME_WITH_SECONDS } from '../lib/format';
 
   interface Props {
     id: string;
@@ -54,13 +55,7 @@
   }
 
   function formatDate(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
+    return formatAbsolute(iso, DATE_TIME_WITH_SECONDS);
   }
 
   function stateChipClass(state: string): string {

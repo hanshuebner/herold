@@ -1,6 +1,7 @@
 <script lang="ts">
   import { queue, type QueueStateFilter, type QueueItem } from '../lib/queue/queue.svelte';
   import { sortByCreatedAtDesc } from '../lib/queue/sort';
+  import { formatAbsolute, DATE_TIME_SHORT } from '../lib/format';
 
   // Research uses the same queue state singleton but with different UX.
   // Load on mount so the operator can start with a full list.
@@ -38,13 +39,7 @@
   }
 
   function formatDate(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    });
+    return formatAbsolute(iso, DATE_TIME_SHORT);
   }
 
   function stateChipClass(state: string): string {

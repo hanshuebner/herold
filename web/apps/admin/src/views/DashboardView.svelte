@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dashboard } from '../lib/dashboard/dashboard.svelte';
   import { router } from '../lib/router/router.svelte';
+  import { formatRelative } from '../lib/format';
 
   // Load on mount.
   $effect(() => {
@@ -16,19 +17,6 @@
     return () => window.removeEventListener('focus', onFocus);
   });
 
-  function formatRelative(isoDate: string): string {
-    const date = new Date(isoDate);
-    if (isNaN(date.getTime())) return isoDate;
-    const diffMs = Date.now() - date.getTime();
-    const diffSec = Math.floor(diffMs / 1000);
-    if (diffSec < 60) return `${diffSec}s ago`;
-    const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay}d ago`;
-  }
 </script>
 
 <div class="dashboard">
