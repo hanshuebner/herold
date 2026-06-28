@@ -397,6 +397,72 @@ configured in `system.toml` under `[categorise]`; the exact shape
 of that block is documented alongside the categorise feature in
 the relevant architecture document.
 
+### `[translation]` - on-demand message translation (issue #84)
+
+```toml
+[translation]
+enabled = false                 # master switch; feature is off unless this is true.
+provider = "mymemory"           # "mymemory" (default) | "deepl"
+endpoint = "https://api.mymemory.translated.net/get"
+                                # base URL for the provider API; provider default applies when empty.
+api_key_ref = "$HEROLD_TRANSLATION_KEY"
+                                # secret reference ($VAR or file:/path); optional for mymemory,
+                                # required for deepl.
+contact_email = "ops@example.com"
+                                # mymemory only: registers an email address with the API so the
+                                # anonymous 1000-word/day limit is lifted to 50000 words/day.
+                                # Omit if you do not want to share an address with MyMemory.
+default_source_lang = "en"     # optional ISO 639-1 fallback when the client omits source_lang.
+```
+
+The Suite's on-demand translate affordance lets users translate individual
+messages from a foreign language into their active UI language. This block
+opts the server into the feature.
+
+**Operator opt-in posture.** The feature is off by default (`enabled = false`).
+A Suite client that calls `POST /api/v1/translate` on a server with
+`enabled = false` receives `501 Not Implemented` with a JSON problem body
+(type slug `translation_not_configured`). The Suite permanently hides the
+Translate button for the rest of that browser session once it sees a 501,
+so users never see a broken affordance.
+
+**Privacy note.** When enabled and after the user gives one-time in-browser
+consent, the Suite sends the message's plain text body to herold's
+`/api/v1/translate` endpoint (same-origin). Herold proxies the text
+server-side to the configured external translation provider. The browser
+never contacts the external provider directly. No addresses, headers, or
+metadata are included in the translation request. Operators are responsible
+for reviewing the privacy and data-processing implications of their chosen
+provider before enabling this feature.
+
+**Providers.**
+
+- `provider = "mymemory"` (default): MyMemory is a free-tier hosted
+  translation API by Translated.com. The anonymous limit is 1000 words
+  per day per IP; providing `contact_email` raises it to 50000 words/day.
+  No API key required for the free tier.
+  Default endpoint: `https://api.mymemory.translated.net/get`.
+
+- `provider = "deepl"`: DeepL free tier allows 500 000 characters/month;
+  the Pro tier has higher limits and an SLA. An API key is required and
+  must be supplied via `api_key_ref` (no inline secrets -- see STANDARDS).
+  Leave `endpoint` empty to use the free-tier default
+  (`https://api-free.deepl.com/v2/translate`). For a Pro subscription set
+  `endpoint = "https://api.deepl.com/v2/translate"` -- include the
+  `/v2/translate` path; herold POSTs to the endpoint verbatim.
+
+**Secret-ref rule.** `api_key_ref` must be a `$VAR` env-var reference or a
+`file:/absolute/path` file reference. Inline secret values are rejected at
+`herold server config-check` (STANDARDS section 9). Set the referenced env
+var or file before starting herold; the server reads it at startup.
+
+**Binary-before-config rule.** Enabling `[translation]` requires a herold
+binary that implements the endpoint. Applying `enabled = true` to an older
+binary that does not know the `[translation]` block fails with a strict-decode
+error at startup. Deploy the new binary, confirm it starts, then add the
+`[translation]` block. The translation settings are read at startup, so
+restart herold after changing the `[translation]` block.
+
 ### `[server.chat]` - chat ephemeral channel (Phase 2)
 
 ```toml

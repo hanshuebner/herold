@@ -223,6 +223,27 @@ export const de = {
   // ── Thread reader: selbst verfasste Karte ────────────────────────────
   'mail.thread.fromYou': 'Du',
 
+  // ── Auf-Abruf-Übersetzung (issue #84) ───────────────────────────────
+  // Schaltfläche erscheint, wenn die erkannte Sprache des Nachrichtentexts
+  // von der aktiven Benutzeroberflächen-Sprache abweicht.
+  'msg.translate.button': 'Übersetzen',
+  'msg.translate.showOriginal': 'Original anzeigen',
+  'msg.translate.showTranslation': 'Übersetzung anzeigen',
+  'msg.translate.translating': 'Wird übersetzt...',
+  'msg.translate.error.unavailable': 'Übersetzung ist auf diesem Server nicht aktiviert.',
+  'msg.translate.error.tooLong': 'Nachricht ist zu lang zum Übersetzen.',
+  'msg.translate.error.upstream': 'Fehler beim Übersetzungsdienst. Bitte erneut versuchen.',
+  'msg.translate.error.network': 'Übersetzungsdienst nicht erreichbar.',
+  'msg.translate.error.badRequest': 'Übersetzungsanfrage war ungültig.',
+  // Einmaliger Einwilligungshinweis: erklärt, dass der Nachrichtentext über
+  // das herold-Backend an den vom Betreiber konfigurierten externen
+  // Übersetzungsdienst übermittelt wird.
+  'msg.translate.consent.title': 'Nachricht übersetzen?',
+  'msg.translate.consent.body':
+    'Der Nachrichtentext wird an den vom Betreiber konfigurierten externen Übersetzungsdienst übermittelt. Keine weiteren Daten (Adressen, Kopfzeilen, Metadaten) werden gesendet.',
+  'msg.translate.consent.accept': 'Übersetzen',
+  'msg.translate.consent.cancel': 'Abbrechen',
+
   // ── Message-scope strings ────────────────────────────────────────────
   // Siehe re #98: die gesamte per-Nachricht-Aktionsfläche wurde entfernt.
   // Antworten / Weiterleiten leben in der festen Antwortleiste; Konversa-

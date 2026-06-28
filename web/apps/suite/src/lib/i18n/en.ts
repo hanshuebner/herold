@@ -226,6 +226,27 @@ export const en = {
   // one of the user's own identities (Change A / Change B in thread UX).
   'mail.thread.fromYou': 'You',
 
+  // ── On-demand translation (issue #84) ───────────────────────────────
+  // Affordance shown when the message body language differs from the
+  // active UI locale. Translation is server-proxied; the browser only
+  // contacts the same-origin herold backend.
+  'msg.translate.button': 'Translate',
+  'msg.translate.showOriginal': 'Show original',
+  'msg.translate.showTranslation': 'Show translation',
+  'msg.translate.translating': 'Translating...',
+  'msg.translate.error.unavailable': 'Translation is not enabled on this server.',
+  'msg.translate.error.tooLong': 'Message is too long to translate.',
+  'msg.translate.error.upstream': 'Translation service error. Please try again.',
+  'msg.translate.error.network': 'Could not reach the translation service.',
+  'msg.translate.error.badRequest': 'Translation request was invalid.',
+  // First-use consent notice: explains that message text leaves the browser
+  // via the herold backend to the operator-configured external service.
+  'msg.translate.consent.title': 'Translate this message?',
+  'msg.translate.consent.body':
+    'The message text will be sent to the operator-configured external translation service. No other data (addresses, headers, metadata) is sent.',
+  'msg.translate.consent.accept': 'Translate',
+  'msg.translate.consent.cancel': 'Cancel',
+
   // ── Message-scope strings ────────────────────────────────────────────
   // Per re #98 the per-message action surface was removed entirely:
   // reply / reply-all / forward live in the fixed reply bar; thread verbs

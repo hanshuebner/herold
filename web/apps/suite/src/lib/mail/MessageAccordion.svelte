@@ -32,11 +32,13 @@
   import { emlDownloadFilename } from './download-filename';
   import { sanitizeHtml } from './sanitize';
   import { printMessage } from './print-message';
-  import { t, localeTag } from '../i18n/i18n.svelte';
+  import { t, localeTag, i18n } from '../i18n/i18n.svelte';
   import { relativeTimeAgo } from './relative-time';
   import RecipientTrigger from './RecipientTrigger.svelte';
   import { type Address } from './types';
   import { buildSelfEmailSet, isFromSelf } from './identity-match';
+  import TranslateBar from './TranslateBar.svelte';
+  import { htmlToText } from '../translate/html-to-text';
 
   interface Props {
     email: Email;
@@ -107,6 +109,16 @@
   let html = $derived(_htmlFull ?? emailHtmlBody(email));
   let text = $derived(emailTextBody(email));
   let textSplit = $derived(text ? splitQuotedText(text) : null);
+
+  // Plain text extracted from the body for language detection. Prefers the
+  // plain-text part; falls back to stripping HTML. Only computed when expanded
+  // to avoid running franc on every row in the thread list.
+  let bodyTextForDetection = $derived.by<string>(() => {
+    if (!expanded) return '';
+    if (text) return text;
+    if (html) return htmlToText(html);
+    return '';
+  });
   let quotedExpanded = $state(false);
 
   // Per REQ-SEC-05 / REQ-SET-04..05: external images blocked by default;
@@ -635,6 +647,15 @@
 
   {#if expanded}
     <div class="body">
+      <!-- Translation affordance: shown when the body language differs from
+           the active locale; manages its own consent gate and translated
+           body overlay (issue #84). -->
+      <TranslateBar
+        bodyText={bodyTextForDetection}
+        emailText={text ?? htmlToText(html ?? '')}
+        locale={i18n.locale}
+      />
+
       {#if html}
         {#if _htmlFetching}
           <div class="loading-banner" role="status">{t('msg.body.loadingFull')}</div>
