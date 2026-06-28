@@ -19,6 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
 
@@ -310,6 +311,20 @@ type Options struct {
 	// implementation is *imapimport.Pool; wave 5 injects it. When nil the
 	// endpoint returns an empty list (200 OK).
 	IMAPImportStatus IMAPImportStatusProvider
+
+	// Translation is the operator-supplied [translation] sysconfig block
+	// (re #84). When nil or Translation.Enabled is false, the translation
+	// proxy endpoint returns HTTP 501 with the stable machine-readable code
+	// "translation_not_configured" so the SPA can suppress the UI affordance.
+	// The api_key_ref inside this struct is resolved via sysconfig.ResolveSecretStrict
+	// at request time (not at boot) so the env var backing the reference may
+	// be updated without a restart.
+	Translation *sysconfig.TranslationConfig
+
+	// TranslateHTTPClient is the *http.Client used for translation proxy
+	// requests. When nil the handler constructs a default client with a
+	// 10-second timeout. Tests inject an httptest-server-routed client here.
+	TranslateHTTPClient *http.Client
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.

@@ -50,6 +50,12 @@ type Config struct {
 	// the DB (REQ-IMAP-IMP-01); only the instance-wide knobs and OAuth
 	// application registrations belong here.
 	IMAPImport IMAPImportConfig `toml:"imap_import,omitempty"`
+	// Translation configures the operator opt-in server-side translation
+	// proxy (re #84). The feature is disabled by default; enabling it routes
+	// message text to a third-party API so the operator must explicitly
+	// opt in. Supported providers: "mymemory" (free tier, default) and
+	// "deepl" (paid API requiring an api_key_ref).
+	Translation TranslationConfig `toml:"translation,omitempty"`
 }
 
 // PerformanceConfig configures the response-time budget enforced by
@@ -891,6 +897,69 @@ type IMAPImportOAuthProvider struct {
 	//   google:    "https://mail.google.com/"
 	//   microsoft: "https://outlook.office.com/IMAP.AccessAsUser.All"
 	Scope string `toml:"scope,omitempty"`
+}
+
+// TranslationConfig is the [translation] section of system.toml.
+//
+// It enables the operator opt-in server-side translation proxy (re #84).
+// The feature is off by default; enabling it routes message text to a
+// configured third-party API so the operator must consent explicitly.
+// Two providers are supported: "mymemory" (free tier, no API key required
+// though one raises the daily limit) and "deepl" (paid, api_key_ref
+// required).
+//
+// Secrets MUST be supplied as secret references ($VAR or file:/path) per
+// STANDARDS §9 / REQ-OPS-04 / REQ-OPS-161. Inline credentials are
+// rejected at Validate.
+//
+// Example (system.toml):
+//
+//	[translation]
+//	enabled       = true
+//	provider      = "mymemory"                     # "mymemory" (default) | "deepl"
+//	api_key_ref   = "$HEROLD_TRANSLATE_KEY"        # optional for mymemory, required for deepl
+//	contact_email = "admin@example.com"            # mymemory: raises anonymous rate limit
+//	default_source_lang = "en"                     # ISO-639-1 hint used when caller omits source_lang
+type TranslationConfig struct {
+	// Enabled is the master switch for the translation proxy. Default false:
+	// the feature is off unless the operator explicitly opts in, because
+	// enabling it routes user message text through a third-party API.
+	Enabled bool `toml:"enabled,omitempty"`
+	// Provider selects the backend translation API.
+	// "mymemory" (default when enabled) uses the free MyMemory API.
+	// "deepl" uses the DeepL API and requires api_key_ref.
+	// Validated at Validate time when Enabled is true.
+	Provider string `toml:"provider,omitempty"`
+	// Endpoint overrides the provider's canonical base URL. Must be an
+	// absolute HTTPS URL when set. When omitted, the client uses the
+	// provider's documented default:
+	//   mymemory: "https://api.mymemory.translated.net/get"
+	//   deepl:    "https://api-free.deepl.com/v2/translate"
+	Endpoint string `toml:"endpoint,omitempty"`
+	// APIKeyRef is a secret reference ("$VAR" or "file:/path") resolving to
+	// the translation API key. Required when Provider is "deepl" and Enabled
+	// is true. Optional for "mymemory" — when set, it is passed as the "key"
+	// query parameter to raise the registered-user daily limit. Inline values
+	// are rejected at Validate per STANDARDS §9.
+	APIKeyRef string `toml:"api_key_ref,omitempty"`
+	// ContactEmail is the operator contact email forwarded to the MyMemory
+	// API via the "de" query parameter to raise the anonymous daily request
+	// limit. Only meaningful for the "mymemory" provider; ignored for "deepl".
+	// This is a plain config value, not a secret reference.
+	ContactEmail string `toml:"contact_email,omitempty"`
+	// DefaultSourceLang is the ISO-639-1 source language code used when a
+	// translate request omits source_lang. For MyMemory, which always needs a
+	// langpair source, an empty DefaultSourceLang causes the client to use
+	// "autodetect" as the source component of the langpair. For DeepL, an
+	// empty DefaultSourceLang (with no per-request source_lang) omits the
+	// source_lang parameter so DeepL performs automatic detection.
+	DefaultSourceLang string `toml:"default_source_lang,omitempty"`
+}
+
+// TranslationEnabled reports whether the translation proxy feature is
+// enabled. Returns false for a nil receiver or when Enabled is false.
+func (c *TranslationConfig) TranslationEnabled() bool {
+	return c != nil && c.Enabled
 }
 
 // PushConfig configures the deployment-level VAPID key pair the Web
@@ -2381,6 +2450,11 @@ func applyDefaults(c *Config) {
 	// block produces a fully defaulted configuration: allow_password=true,
 	// concurrent_accounts=16, poll_interval=60s.
 	applyIMAPImportDefaults(&c.IMAPImport)
+	// Translation proxy (re #84). When enabled without an explicit provider,
+	// default to "mymemory" so Validate can check provider-specific rules.
+	if c.Translation.Enabled && c.Translation.Provider == "" {
+		c.Translation.Provider = "mymemory"
+	}
 }
 
 // applyClientLogDefaults fills in the documented default values for
@@ -3334,6 +3408,44 @@ func Validate(c *Config) error {
 	// IMAP import (REQ-IMAP-IMP-03, -05, -23, -26).
 	if err := validateIMAPImport(&c.IMAPImport); err != nil {
 		return err
+	}
+	// Translation proxy (re #84).
+	if err := validateTranslation(&c.Translation); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateTranslation checks semantic constraints on the [translation]
+// block (re #84). applyDefaults has already set the default provider so
+// Validate can check provider-specific rules unconditionally.
+func validateTranslation(tc *TranslationConfig) error {
+	// Validate the api_key_ref format even when the feature is disabled, so
+	// a typo in the reference string is caught at config-load time rather
+	// than at first request.
+	if tc.APIKeyRef != "" && !IsSecretReference(tc.APIKeyRef) {
+		return fmt.Errorf("sysconfig: [translation] api_key_ref %q must be \"$VAR\" or \"file:/path\" (STANDARDS §9)",
+			tc.APIKeyRef)
+	}
+	if !tc.Enabled {
+		return nil
+	}
+	switch tc.Provider {
+	case "mymemory", "deepl":
+		// ok
+	default:
+		return fmt.Errorf("sysconfig: [translation] provider %q not recognised (want \"mymemory\" or \"deepl\")",
+			tc.Provider)
+	}
+	if tc.Endpoint != "" {
+		u, err := url.ParseRequestURI(tc.Endpoint)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("sysconfig: [translation] endpoint %q must be an absolute https URL",
+				tc.Endpoint)
+		}
+	}
+	if tc.Provider == "deepl" && tc.APIKeyRef == "" {
+		return errors.New("sysconfig: [translation] provider \"deepl\" requires api_key_ref (STANDARDS §9)")
 	}
 	return nil
 }

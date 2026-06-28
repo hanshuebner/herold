@@ -3550,3 +3550,181 @@ key_file = "/d"
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
+
+// --- Translation proxy config tests (re #84) ---
+
+// minimalCfgWithTranslation is a base config fragment for translation tests.
+const minimalCfgWithTranslation = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+
+func TestTranslation_DisabledByDefault(t *testing.T) {
+	// An absent [translation] block must parse and validate without error;
+	// TranslationEnabled must return false.
+	c, err := Parse([]byte(minimalCfgWithTranslation))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Translation.TranslationEnabled() {
+		t.Error("TranslationEnabled = true for absent block, want false")
+	}
+}
+
+func TestTranslation_ValidMyMemoryBlock(t *testing.T) {
+	// A fully valid mymemory block must parse and validate cleanly.
+	t.Setenv("HEROLD_TRANSLATE_KEY", "some-key")
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled       = true
+provider      = "mymemory"
+api_key_ref   = "$HEROLD_TRANSLATE_KEY"
+contact_email = "admin@example.com"
+default_source_lang = "en"
+`
+	c, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !c.Translation.TranslationEnabled() {
+		t.Error("TranslationEnabled = false, want true")
+	}
+	if c.Translation.Provider != "mymemory" {
+		t.Errorf("Provider = %q, want mymemory", c.Translation.Provider)
+	}
+}
+
+func TestTranslation_DefaultProviderApplied(t *testing.T) {
+	// When enabled without an explicit provider, applyDefaults should set "mymemory".
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled = true
+`
+	c, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Translation.Provider != "mymemory" {
+		t.Errorf("Provider = %q after default, want mymemory", c.Translation.Provider)
+	}
+}
+
+func TestTranslation_UnknownProvider_Rejected(t *testing.T) {
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled  = true
+provider = "google-translate"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "provider") {
+		t.Errorf("error should mention provider, got: %v", err)
+	}
+}
+
+func TestTranslation_DeepLMissingKey_Rejected(t *testing.T) {
+	// DeepL without api_key_ref must fail Validate.
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled  = true
+provider = "deepl"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for deepl without api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "api_key_ref") {
+		t.Errorf("error should mention api_key_ref, got: %v", err)
+	}
+}
+
+func TestTranslation_InlineAPIKey_Rejected(t *testing.T) {
+	// Inline api_key_ref values (not $VAR or file:/path) must fail Validate.
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled    = true
+provider   = "mymemory"
+api_key_ref = "my-literal-key"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for inline api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "STANDARDS") {
+		t.Errorf("error should cite STANDARDS, got: %v", err)
+	}
+}
+
+func TestTranslation_NonHTTPSEndpoint_Rejected(t *testing.T) {
+	// An http:// endpoint must fail Validate when the feature is enabled.
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled  = true
+provider = "mymemory"
+endpoint = "http://example.com/translate"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for non-https endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error should mention https, got: %v", err)
+	}
+}
+
+func TestTranslation_ValidHTTPSEndpoint_Accepted(t *testing.T) {
+	// An https:// endpoint must pass Validate.
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled  = true
+provider = "mymemory"
+endpoint = "https://translate.example.com/api"
+`
+	_, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestTranslation_DeepLWithKey_Valid(t *testing.T) {
+	// DeepL with a valid secret reference must pass Validate.
+	t.Setenv("HEROLD_DEEPL_KEY", "deepl-key-value")
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled     = true
+provider    = "deepl"
+api_key_ref = "$HEROLD_DEEPL_KEY"
+`
+	_, err := Parse([]byte(cfg))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestTranslation_InlineKeyDisabledBlock_AlsoRejected(t *testing.T) {
+	// An inline api_key_ref must be rejected even when enabled=false,
+	// because we validate the reference format unconditionally.
+	cfg := minimalCfgWithTranslation + `
+[translation]
+enabled     = false
+api_key_ref = "literal-not-a-ref"
+`
+	_, err := Parse([]byte(cfg))
+	if err == nil {
+		t.Fatal("expected error for inline api_key_ref in disabled block, got nil")
+	}
+}

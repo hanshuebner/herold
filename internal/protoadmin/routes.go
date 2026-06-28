@@ -232,6 +232,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// self-service set (RegisterSelfServiceRoutes).
 	mux.HandleFunc("POST /api/v1/spam-feedback", auth1(s.handleSpamFeedback))
 
+	// Translation proxy (re #84). Operator opt-in: when [translation].enabled
+	// is false in system.toml the handler returns HTTP 501 with the stable
+	// machine-readable code "translation_not_configured" so the Suite SPA can
+	// detect support and suppress the translation UI affordance. No store
+	// access — the handler is a stateless proxy to the configured third-party
+	// translation API. Self-service: any authenticated principal may call it.
+	// Registered here AND in RegisterSelfServiceRoutes so both the admin and
+	// public listeners expose it.
+	mux.HandleFunc("POST /api/v1/translate", auth1(s.handleTranslate))
+
 	// Client-log ingest (REQ-OPS-200..207, REQ-OPS-215..218).
 	// Authenticated endpoint: requires valid session/API-key.
 	mux.HandleFunc("POST /api/v1/clientlog", auth1(s.handleClientLogAuth))
@@ -309,6 +319,13 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// the operator can surface the signal for tuning. Per-handler
 	// ownership check: the caller must own the referenced email.
 	mux.HandleFunc("POST /api/v1/spam-feedback", auth1(s.handleSpamFeedback))
+
+	// Translation proxy (re #84). Returns 501 "translation_not_configured"
+	// when [translation].enabled is false so the Suite SPA can suppress the
+	// translation affordance. Any authenticated principal may call it;
+	// registered here so the public listener exposes it alongside the admin
+	// listener registration in registerRoutes.
+	mux.HandleFunc("POST /api/v1/translate", auth1(s.handleTranslate))
 
 	// External SMTP submission per-Identity credentials
 	// (REQ-AUTH-EXT-SUBMIT-04). All four endpoints are scoped to the

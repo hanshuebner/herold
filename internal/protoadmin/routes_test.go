@@ -72,6 +72,8 @@ func TestRegisterSelfServiceRoutes_ExpectedPathsArePresent(t *testing.T) {
 		{"DELETE", "/api/v1/principals/1/oidc-links/someprovider"},
 		// Spam-classifier feedback signal (Wave 3.15).
 		{"POST", "/api/v1/spam-feedback"},
+		// Translation proxy (re #84). Returns 501 when disabled, but the route is present.
+		{"POST", "/api/v1/translate"},
 		// Tagged-address dismissals + Convert-to-Sieve (REQ-TAG-50..62).
 		{"POST", "/api/v1/tagged-address-dismissals"},
 		{"GET", "/api/v1/tagged-address-dismissals"},

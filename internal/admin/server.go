@@ -815,6 +815,12 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		},
 		IMAPImportDataKey: imapImportDataKey,
 		IMAPImportStatus:  imapImportPoolStatusAdapter{pool: imapImportPool},
+		// Translation proxy (re #84): operator opt-in [translation] block.
+		// When absent or disabled, POST /api/v1/translate returns 501 with
+		// the stable "translation_not_configured" code and the Suite hides
+		// the Translate affordance. The HTTP client is left nil so the
+		// handler applies its bounded default timeout.
+		Translation: &cfg.Translation,
 	}
 	if prebuiltExtSubmitter != nil {
 		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
