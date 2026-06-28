@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -85,6 +87,9 @@ func isSyntheticDefault(identityID string) bool {
 // Returns the submission config for the identity without any credential
 // material (REQ-AUTH-EXT-SUBMIT-04). Gated by requireSelfOnly: the caller
 // must own the identity.
+//
+// Always includes available_oauth_providers (server-level, identity-independent)
+// and domain_authoritative (identity-specific) in the response (re #73, #74).
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	identityID := r.PathValue("id")
 	if identityID == "" {
@@ -93,23 +98,34 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	caller, callerOK := principalFrom(r.Context())
 
+	// Provider list is identity-independent: compute once and include in all
+	// response paths so the Suite can gate OAuth buttons without a separate
+	// request (re #73).
+	providers := s.sortedConfiguredOAuthProviders()
+
 	// Synthesised default identity ("default" id, no row in
 	// jmap_identities). It always reports as not configured: the
 	// FK in identity_submission references jmap_identities so the
 	// default cannot persist a submission row. Returning 200
 	// {configured:false} (instead of a 404) lets the SPA render the
-	// per-row badge without polling forever.
+	// per-row badge without polling forever. Domain authoritativeness
+	// is left false because there is no email to inspect.
 	if isSyntheticDefault(identityID) {
 		if !callerOK {
 			writeProblem(w, r, http.StatusUnauthorized, "unauthenticated", "session required", "")
 			return
 		}
 		_ = caller
-		writeJSON(w, http.StatusOK, submissionGetResponse{Configured: false})
+		writeJSON(w, http.StatusOK, submissionGetResponse{
+			Configured:              false,
+			AvailableOAuthProviders: providers,
+		})
 		return
 	}
 
-	ownerID, err := resolveIdentityOwner(r.Context(), s.store.Meta(), identityID)
+	// Resolve the full identity (not just the owner id) so we have
+	// identity.Email for the domain_authoritative check (re #74).
+	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
@@ -118,14 +134,25 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if !requireSelfOnly(w, r, caller, ownerID) {
+	if !requireSelfOnly(w, r, caller, identity.PrincipalID) {
+		return
+	}
+
+	// Determine whether the identity's domain is locally authoritative.
+	authoritative, err := s.isDomainAuthoritative(r.Context(), emailDomainOf(identity.Email))
+	if err != nil {
+		s.writeStoreError(w, r, err)
 		return
 	}
 
 	sub, err := s.store.Meta().GetIdentitySubmission(r.Context(), identityID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusOK, submissionGetResponse{Configured: false})
+			writeJSON(w, http.StatusOK, submissionGetResponse{
+				Configured:              false,
+				AvailableOAuthProviders: providers,
+				DomainAuthoritative:     authoritative,
+			})
 			return
 		}
 		s.writeStoreError(w, r, err)
@@ -133,13 +160,60 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, submissionGetResponse{
-		Configured:       true,
-		SubmitHost:       sub.SubmitHost,
-		SubmitPort:       sub.SubmitPort,
-		SubmitSecurity:   sub.SubmitSecurity,
-		SubmitAuthMethod: sub.SubmitAuthMethod,
-		State:            string(sub.State),
+		Configured:              true,
+		SubmitHost:              sub.SubmitHost,
+		SubmitPort:              sub.SubmitPort,
+		SubmitSecurity:          sub.SubmitSecurity,
+		SubmitAuthMethod:        sub.SubmitAuthMethod,
+		State:                   string(sub.State),
+		AvailableOAuthProviders: providers,
+		DomainAuthoritative:     authoritative,
 	})
+}
+
+// sortedConfiguredOAuthProviders returns the sorted list of OAuth provider ids
+// whose ClientSecret is non-empty. The list reflects server-level configuration
+// and is identity-independent: the same value is returned for every caller.
+// The returned slice is never nil (an empty or unconfigured provider map yields []).
+func (s *Server) sortedConfiguredOAuthProviders() []string {
+	ids := make([]string, 0, len(s.opts.OAuthProviders))
+	for id, p := range s.opts.OAuthProviders {
+		if p.ClientSecret != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// emailDomainOf extracts the domain part of an RFC 5321 addr-spec. Returns an
+// empty string when the address does not contain an "@" separator.
+func emailDomainOf(email string) string {
+	_, domain, ok := strings.Cut(email, "@")
+	if !ok {
+		return ""
+	}
+	return domain
+}
+
+// isDomainAuthoritative reports whether domain is one the server is authoritative
+// for (an IsLocal==true row in the domains table). The comparison is
+// case-insensitive per RFC 5321. An empty domain always returns false.
+func (s *Server) isDomainAuthoritative(ctx context.Context, domain string) (bool, error) {
+	if domain == "" {
+		return false, nil
+	}
+	locals, err := s.store.Meta().ListLocalDomains(ctx)
+	if err != nil {
+		return false, err
+	}
+	lc := strings.ToLower(domain)
+	for _, d := range locals {
+		if strings.ToLower(d.Name) == lc {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // handlePutSubmission implements PUT /api/v1/identities/{id}/submission.

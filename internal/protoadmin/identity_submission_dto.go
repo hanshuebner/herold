@@ -21,6 +21,15 @@ type submissionGetResponse struct {
 	SubmitAuthMethod string `json:"submit_auth_method,omitempty"`
 	// State is the current health state per REQ-AUTH-EXT-SUBMIT-07.
 	State string `json:"state,omitempty"`
+	// AvailableOAuthProviders is the sorted list of OAuth provider ids that
+	// are configured on this server (ClientSecret non-empty). The Suite
+	// renders one OAuth sign-in button per id. The list is identity-independent
+	// and present in every response (re #73).
+	AvailableOAuthProviders []string `json:"available_oauth_providers"`
+	// DomainAuthoritative is true when the identity's email domain is locally
+	// authoritative on this server. The Suite uses this to recommend external
+	// submission over the local server when false (re #74).
+	DomainAuthoritative bool `json:"domain_authoritative"`
 }
 
 // submissionPutRequest is the wire form accepted by

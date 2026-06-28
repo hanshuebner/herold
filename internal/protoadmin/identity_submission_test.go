@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,6 +36,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
@@ -685,6 +688,233 @@ func TestRequireSelfOnly_AllVerbs(t *testing.T) {
 		if res.StatusCode != http.StatusForbidden {
 			t.Errorf("%s by other user: expected 403, got %d: %s", tc.method, res.StatusCode, buf)
 		}
+	}
+}
+
+// submissionBackend is a named (store, clock) pair used by dual-backend tests.
+type submissionBackend struct {
+	name string
+	fs   store.Store
+	clk  *clock.FakeClock
+}
+
+// openSubmissionBackends returns SQLite and (when HEROLD_PG_DSN is set)
+// Postgres backends for dual-backend submission handler tests. SQLite always
+// runs; the Postgres leg is added only when HEROLD_PG_DSN is exported so
+// local dev without a Postgres instance is not blocked.
+func openSubmissionBackends(t *testing.T) []submissionBackend {
+	t.Helper()
+	clkA := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	result := []submissionBackend{{
+		name: "sqlite",
+		fs:   sqlitetest.Open(t, clkA),
+		clk:  clkA,
+	}}
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		return result
+	}
+	clkB := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	blobDir := t.TempDir()
+	s, err := storepg.Open(context.Background(), dsn, filepath.Join(blobDir, "blobs"), nil, clkB)
+	if err != nil {
+		t.Fatalf("storepg.Open: %v", err)
+	}
+	// Wipe tables so each test begins on a clean Postgres database.
+	type truncator interface{ TruncateAll(context.Context) error }
+	if tr, ok := s.(truncator); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			t.Logf("postgres TruncateAll: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return append(result, submissionBackend{name: "postgres", fs: s, clk: clkB})
+}
+
+// newSubmissionHarnessWithStore creates a submission test harness backed by the
+// provided store and clock. opts overrides individual server options; any zero
+// field receives a sensible default. The caller is responsible for the store's
+// lifecycle; this function does not close it.
+func newSubmissionHarnessWithStore(t *testing.T, fs store.Store, clk *clock.FakeClock, opts protoadmin.Options) *submissionHarness {
+	t.Helper()
+	if opts.BootstrapPerWindow == 0 {
+		opts.BootstrapPerWindow = 1
+	}
+	if opts.BootstrapWindow == 0 {
+		opts.BootstrapWindow = 5 * time.Minute
+	}
+	if opts.RequestsPerMinutePerKey == 0 {
+		opts.RequestsPerMinutePerKey = 100
+	}
+	if len(opts.ExternalSubmissionDataKey) == 0 {
+		opts.ExternalSubmissionDataKey = testDataKey
+	}
+	if opts.ExternalProbe == nil {
+		opts.ExternalProbe = alwaysOKProbe
+	}
+	h, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, opts)
+	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client, base := h.DialAdminByName(context.Background(), "admin")
+	return &submissionHarness{
+		t: t, fs: fs, clk: clk, srv: srv,
+		client: client, baseURL: base,
+	}
+}
+
+// TestGetSubmission_DomainAuthoritative verifies that domain_authoritative is
+// true when the identity's email domain is a configured local domain and false
+// for a foreign domain. Runs on both SQLite and Postgres (re #74).
+func TestGetSubmission_DomainAuthoritative(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			// Register "local.example" as authoritative before bootstrap.
+			if err := be.fs.Meta().InsertDomain(context.Background(), store.Domain{
+				Name:    "local.example",
+				IsLocal: true,
+			}); err != nil {
+				t.Fatalf("InsertDomain: %v", err)
+			}
+
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{})
+			_, adminKey := sh.bootstrap("admin@local.example")
+
+			res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+			}
+			var who struct {
+				PrincipalID uint64 `json:"principal_id"`
+			}
+			if err := json.Unmarshal(buf, &who); err != nil {
+				t.Fatalf("unmarshal whoami: %v", err)
+			}
+			pid := store.PrincipalID(who.PrincipalID)
+
+			// insertNamedIdentity inserts a JMAP identity with a caller-chosen id
+			// so the two identities in this test use distinct ids (insertIdentity
+			// derives the id from principalID alone and would collide on the second
+			// call).
+			insertNamedIdentity := func(id, email string) {
+				t.Helper()
+				if err := sh.fs.Meta().InsertJMAPIdentity(context.Background(), store.JMAPIdentity{
+					ID:          id,
+					PrincipalID: pid,
+					Name:        "Test Identity",
+					Email:       email,
+					MayDelete:   true,
+				}); err != nil {
+					t.Fatalf("InsertJMAPIdentity %s: %v", id, err)
+				}
+			}
+
+			// Identity on a configured local domain: domain_authoritative must be true.
+			const localID = "da-test-local"
+			insertNamedIdentity(localID, "admin@local.example")
+			res2, buf2 := sh.doRequest("GET", "/api/v1/identities/"+localID+"/submission", adminKey, nil)
+			if res2.StatusCode != http.StatusOK {
+				t.Fatalf("GET local identity: %d: %s", res2.StatusCode, buf2)
+			}
+			var local struct {
+				DomainAuthoritative bool `json:"domain_authoritative"`
+			}
+			if err := json.Unmarshal(buf2, &local); err != nil {
+				t.Fatalf("decode local response: %v", err)
+			}
+			if !local.DomainAuthoritative {
+				t.Errorf("local identity: domain_authoritative = false; want true")
+			}
+
+			// Identity on a domain the server is NOT authoritative for.
+			const foreignID = "da-test-foreign"
+			insertNamedIdentity(foreignID, "admin@foreign.example")
+			res3, buf3 := sh.doRequest("GET", "/api/v1/identities/"+foreignID+"/submission", adminKey, nil)
+			if res3.StatusCode != http.StatusOK {
+				t.Fatalf("GET foreign identity: %d: %s", res3.StatusCode, buf3)
+			}
+			var foreign struct {
+				DomainAuthoritative bool `json:"domain_authoritative"`
+			}
+			if err := json.Unmarshal(buf3, &foreign); err != nil {
+				t.Fatalf("decode foreign response: %v", err)
+			}
+			if foreign.DomainAuthoritative {
+				t.Errorf("foreign identity: domain_authoritative = true; want false")
+			}
+		})
+	}
+}
+
+// TestGetSubmission_AvailableOAuthProviders verifies that available_oauth_providers
+// lists exactly the OAuth providers whose ClientSecret is non-empty, in sorted
+// order. Providers with an empty ClientSecret are excluded. Runs on both
+// SQLite and Postgres (re #73).
+func TestGetSubmission_AvailableOAuthProviders(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			// Configure two providers: "gmail" has a secret; "m365" does not.
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{
+				OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
+					"gmail": {
+						ClientID:     "client-id-gmail",
+						ClientSecret: "secret-for-gmail",
+						AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
+						TokenURL:     "https://oauth2.googleapis.com/token",
+						Scopes:       []string{"https://mail.google.com/"},
+					},
+					"m365": {
+						ClientID:     "client-id-m365",
+						ClientSecret: "", // no secret — must not appear in response
+						AuthURL:      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+						TokenURL:     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+						Scopes:       []string{"https://outlook.office365.com/SMTP.Send"},
+					},
+				},
+			})
+
+			_, adminKey := sh.bootstrap("oauth-admin@example.com")
+
+			res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+			}
+			var who struct {
+				PrincipalID uint64 `json:"principal_id"`
+			}
+			if err := json.Unmarshal(buf, &who); err != nil {
+				t.Fatalf("unmarshal whoami: %v", err)
+			}
+
+			identityID := sh.insertIdentity(who.PrincipalID, "oauth-admin@example.com")
+
+			res2, buf2 := sh.doRequest("GET", "/api/v1/identities/"+identityID+"/submission", adminKey, nil)
+			if res2.StatusCode != http.StatusOK {
+				t.Fatalf("GET submission: %d: %s", res2.StatusCode, buf2)
+			}
+			var got struct {
+				AvailableOAuthProviders []string `json:"available_oauth_providers"`
+			}
+			if err := json.Unmarshal(buf2, &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+
+			// Only "gmail" (with a secret) should appear; "m365" (no secret) must not.
+			if len(got.AvailableOAuthProviders) != 1 || got.AvailableOAuthProviders[0] != "gmail" {
+				t.Errorf("available_oauth_providers = %v; want [\"gmail\"]", got.AvailableOAuthProviders)
+			}
+		})
 	}
 }
 
