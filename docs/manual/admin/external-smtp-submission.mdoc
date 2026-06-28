@@ -26,11 +26,6 @@ for the external provider (for example, a Gmail app password or an OAuth token)
 into herold so herold can send mail on their behalf. Herold encrypts those
 credentials at rest using a data key before writing them to the database.
 
-The data key must be 32 bytes (256 bits) and must be configured before
-enabling the feature. `[server.secrets].data_key_ref` in `system.toml` holds
-the reference to the key material; the config entry names an environment
-variable or file path where the key lives, not the key bytes themselves.
-
 Generate a key:
 
 ```

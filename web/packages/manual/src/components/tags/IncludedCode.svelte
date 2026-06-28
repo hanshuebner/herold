@@ -46,10 +46,10 @@
 <style>
   .code-block {
     margin: var(--spacing-05) 0;
-    border: 1px solid var(--border-subtle-01);
+    border: 1px solid var(--border-strong-01);
     border-radius: var(--radius-md);
     overflow: hidden;
-    background: var(--layer-01);
+    background: var(--layer-02);
   }
 
   .code-block__header {
@@ -58,7 +58,7 @@
     gap: var(--spacing-03);
     padding: var(--spacing-02) var(--spacing-04);
     background: var(--layer-03);
-    border-bottom: 1px solid var(--border-subtle-01);
+    border-bottom: 1px solid var(--border-strong-01);
     font-size: var(--type-code-01-size);
     line-height: var(--type-code-01-line);
   }
