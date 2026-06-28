@@ -55,10 +55,15 @@
     } finally {
       submitting = false;
     }
-    // Refocus AFTER finally so the input is enabled when focus() is called.
-    // tick() waits for Svelte to flush the submitting=false update and
-    // re-enable the input before we attempt to focus it (re #29).
-    if (refocusTotp && auth.needsStepUp) {
+    // Focus the TOTP input AFTER finally so the input is enabled when
+    // focus() is called. tick() waits for Svelte to flush the pending DOM
+    // updates — the submitting=false re-enables the input, and on the
+    // initial step-up transition the {#if auth.needsStepUp} block renders
+    // the input for the first time (setting totpInputEl via bind:this).
+    // The native autofocus attribute is not processed for elements that are
+    // dynamically inserted by a {#if} block in all browsers (re #68), so
+    // we focus programmatically here for both the initial and refocus paths.
+    if (auth.needsStepUp && (!wasStepUp || refocusTotp)) {
       await tick();
       totpInputEl?.focus();
     }
@@ -119,7 +124,6 @@
       {#if auth.needsStepUp}
         <div class="field">
           <label for="totp-code" class="label">{t('login.totpCode')}</label>
-          <!-- svelte-ignore a11y_autofocus -->
           <input
             id="totp-code"
             type="text"
@@ -129,7 +133,6 @@
             autocomplete="one-time-code"
             pattern="[0-9]*"
             placeholder={t('login.totpPlaceholder')}
-            autofocus
             bind:value={totpCode}
             bind:this={totpInputEl}
             oninput={onTotpInput}

@@ -19,7 +19,7 @@
    * is a plain string of 0..6 digits.
    */
 
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
 
   interface Props {
     /** Assembled 0..6-digit code. Bindable. */
@@ -51,13 +51,7 @@
 
   onMount(() => {
     if (autofocus) {
-      // Use tick() to flush all pending Svelte effects (including the
-      // bind:this assignments inside the {#each digits} block) before
-      // calling .focus(). Without the flush, inputs[0] can still be null
-      // when onMount fires because bind:this inside a keyed {#each} that
-      // iterates a $derived value runs via a render effect that may not
-      // have completed yet in all browsers at the synchronous onMount call.
-      void tick().then(() => inputs[0]?.focus());
+      inputs[0]?.focus();
     }
   });
 

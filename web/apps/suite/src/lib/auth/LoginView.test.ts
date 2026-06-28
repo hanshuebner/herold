@@ -1,6 +1,6 @@
 /**
- * LoginView.svelte — empty-field validation (re #53) and TOTP step-up
- * error-message gating (re #29).
+ * LoginView.svelte — empty-field validation (re #53), TOTP step-up
+ * error-message gating (re #29), and TOTP autofocus (re #68).
  *
  * Verifies that submitting the sign-in form with an empty field:
  *   1. Does NOT call auth.login (no network request is sent).
@@ -12,6 +12,9 @@
  *      NO error message.
  *   5. When a submitted TOTP code is rejected, the wrong-code message appears.
  *   6. When a correct TOTP code is submitted, login() is called with no error.
+ *
+ * And TOTP autofocus (re #68):
+ *   7. The TOTP input is focused after a rejected code (tick()+focus() path).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -219,5 +222,25 @@ describe('LoginView — TOTP step-up error gating (re #29)', () => {
       expect(mockLogin).toHaveBeenCalledOnce();
     });
     expect(document.querySelector('.error')).toBeNull();
+  });
+
+  it('focuses the TOTP input after a submitted code is rejected', async () => {
+    // Render with step-up already active so the TOTP input is in the DOM.
+    // After auth.login() rejects, doLogin() calls tick() then focus().
+    // This exercises the same tick()+focus() code path as the initial
+    // step-up transition; the initial-transition case (where the {#if}
+    // block renders the TOTP input for the first time) is verified via the
+    // puppeteer browser test against a live instance (re #68).
+    mockAuth.needsStepUp = true;
+    mockLogin.mockRejectedValueOnce(new Error('Invalid TOTP code.'));
+    const { container } = render(LoginView);
+    // The mock auth is not reactive, so the TOTP input rendered on mount
+    // (needsStepUp was true at render time). Submit to trigger doLogin().
+    await submitForm();
+    await waitFor(() => {
+      const totpInput = container.querySelector<HTMLInputElement>('#totp-code');
+      expect(totpInput).not.toBeNull();
+      expect(document.activeElement).toBe(totpInput);
+    });
   });
 });
