@@ -765,6 +765,7 @@ export const en = {
   'settings.about': 'About',
   'settings.notifications': 'Notifications',
   'settings.apiKeys': 'API keys',
+  'settings.sessions': 'Active sessions',
   'settings.privacy.heading': 'Privacy',
   'settings.categories.heading': 'Categories',
   'settings.filters.heading': 'Filters',
@@ -981,6 +982,25 @@ export const en = {
   'settings.apiKeys.scope.calWrite': 'Calendar: write',
   'settings.apiKeys.scope.contactsRead': 'Contacts: read',
   'settings.apiKeys.scope.contactsWrite': 'Contacts: write',
+
+  // ── Settings: active sessions panel (REQ-AS-30..34, re #80) ─────────
+  'settings.sessions.heading': 'Active sessions',
+  'settings.sessions.empty': 'No active sessions found.',
+  'settings.sessions.loadingAria': 'Loading sessions',
+  'settings.sessions.thisSession': 'This session',
+  'settings.sessions.device': 'Device',
+  'settings.sessions.lastSeen': 'Last seen',
+  'settings.sessions.createdAt': 'Signed in',
+  'settings.sessions.ip': 'IP address',
+  'settings.sessions.revoke': 'Revoke',
+  'settings.sessions.signOut': 'Sign out',
+  'settings.sessions.revokeAll': 'Revoke all other sessions',
+  'settings.sessions.revokeAllConfirm': 'Sign out all other sessions? They will be signed out immediately.',
+  'settings.sessions.signOutConfirm': 'Sign out this session? You will be signed out immediately.',
+  'settings.sessions.revoked': 'Session revoked.',
+  'settings.sessions.allRevoked': 'All other sessions revoked.',
+  'settings.sessions.error': 'Could not load sessions.',
+  'settings.sessions.revokeError': 'Could not revoke session.',
 
   // ── Diagnostics form (re #97) ───────────────────────────────────────
   'settings.diagnostics.saveError': 'Could not save setting.',

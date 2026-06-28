@@ -371,6 +371,11 @@ func Run(t *testing.T, f Factory) {
 		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
 		{"Session_ClearExpiredLivetail", testSessionClearExpiredLivetail},
 		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},
+		// -- Session list + tombstone (REQ-AUTH-77, issue #80) -------------
+		{"Session_ListByPrincipal", testSessionListByPrincipal},
+		{"Session_ListByPrincipal_Empty", testSessionListByPrincipalEmpty},
+		{"Session_Tombstone", testSessionTombstone},
+		{"Session_Tombstone_NotFound", testSessionTombstoneNotFound},
 		// -- Elevation (session_elevations table, REQ-AUTH-74, issue #79) --
 		{"Elevation_UpsertGet_Roundtrip", testElevationUpsertGetRoundtrip},
 		{"Elevation_Get_Expired_ReturnsNotFound", testElevationGetExpiredReturnsNotFound},

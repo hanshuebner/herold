@@ -58,16 +58,18 @@ func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.Sess
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT session_id, principal_id, created_at_us, expires_at_us,
 		       last_seen_at_us, user_agent, last_seen_ip,
-		       clientlog_telemetry_enabled, clientlog_livetail_until_us
+		       clientlog_telemetry_enabled, clientlog_livetail_until_us,
+		       revoked_at_us
 		  FROM sessions
 		 WHERE session_id = ?`, sessionID)
 	var s store.SessionRow
 	var principalID int64
 	var createdUs, expiresUs, lastSeenUs int64
 	var telemetryInt int64
-	var livetailUs sql.NullInt64
+	var livetailUs, revokedUs sql.NullInt64
 	err := row.Scan(&s.SessionID, &principalID, &createdUs, &expiresUs,
-		&lastSeenUs, &s.UserAgent, &s.LastSeenIP, &telemetryInt, &livetailUs)
+		&lastSeenUs, &s.UserAgent, &s.LastSeenIP, &telemetryInt, &livetailUs,
+		&revokedUs)
 	if err != nil {
 		return store.SessionRow{}, mapErr(err)
 	}
@@ -80,6 +82,7 @@ func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.Sess
 		t := fromMicros(livetailUs.Int64)
 		s.ClientlogLivetailUntil = &t
 	}
+	s.Tombstoned = revokedUs.Valid
 	return s, nil
 }
 
@@ -166,4 +169,71 @@ func (m *metadata) ClearExpiredLivetail(ctx context.Context, nowMicros int64) (i
 		return nil
 	})
 	return cleared, err
+}
+
+func (m *metadata) ListSessionsByPrincipal(ctx context.Context, principalID store.PrincipalID, nowMicros int64) ([]store.SessionRow, error) {
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT session_id, principal_id, created_at_us, expires_at_us,
+		       last_seen_at_us, user_agent, last_seen_ip,
+		       clientlog_telemetry_enabled, clientlog_livetail_until_us,
+		       revoked_at_us
+		  FROM sessions
+		 WHERE principal_id = ?
+		   AND expires_at_us > ?
+		   AND revoked_at_us IS NULL
+		 ORDER BY created_at_us DESC`,
+		int64(principalID), nowMicros)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var result []store.SessionRow
+	for rows.Next() {
+		var s store.SessionRow
+		var pid int64
+		var createdUs, expiresUs, lastSeenUs int64
+		var telemetryInt int64
+		var livetailUs, revokedUs sql.NullInt64
+		if err := rows.Scan(&s.SessionID, &pid, &createdUs, &expiresUs,
+			&lastSeenUs, &s.UserAgent, &s.LastSeenIP, &telemetryInt, &livetailUs,
+			&revokedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		s.PrincipalID = store.PrincipalID(pid)
+		s.CreatedAt = fromMicros(createdUs)
+		s.ExpiresAt = fromMicros(expiresUs)
+		s.LastSeenAt = fromMicros(lastSeenUs)
+		s.ClientlogTelemetryEnabled = telemetryInt != 0
+		if livetailUs.Valid {
+			t := fromMicros(livetailUs.Int64)
+			s.ClientlogLivetailUntil = &t
+		}
+		s.Tombstoned = revokedUs.Valid
+		result = append(result, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return result, nil
+}
+
+func (m *metadata) TombstoneSession(ctx context.Context, sessionID string, principalID store.PrincipalID, nowMicros int64, tombstoneTTLMicros int64) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE sessions
+			   SET revoked_at_us = ?,
+			       expires_at_us = ?
+			 WHERE session_id   = ?
+			   AND principal_id = ?
+			   AND revoked_at_us IS NULL`,
+			nowMicros, nowMicros+tombstoneTTLMicros, sessionID, int64(principalID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 }

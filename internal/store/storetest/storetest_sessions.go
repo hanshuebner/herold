@@ -463,6 +463,170 @@ func testSessionClearExpiredLivetail(t *testing.T, s store.Store) {
 	}
 }
 
+// testSessionListByPrincipal verifies that ListSessionsByPrincipal returns
+// only active (non-expired, non-tombstoned) rows for the requested principal.
+func testSessionListByPrincipal(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-list@example.test").ID
+	other := mustInsertPrincipal(t, s, "session-list-other@example.test").ID
+
+	epoch := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	future := epoch.Add(24 * time.Hour)
+	past := epoch.Add(-1 * time.Hour)
+
+	// two active sessions for pid
+	a1 := store.SessionRow{SessionID: "list-a1", PrincipalID: pid,
+		CreatedAt: epoch.Add(-2 * time.Hour), ExpiresAt: future}
+	a2 := store.SessionRow{SessionID: "list-a2", PrincipalID: pid,
+		CreatedAt: epoch.Add(-1 * time.Hour), ExpiresAt: future}
+	// expired session for pid — must not appear
+	expired := store.SessionRow{SessionID: "list-exp", PrincipalID: pid,
+		CreatedAt: epoch.Add(-25 * time.Hour), ExpiresAt: past}
+	// session for another principal — must not appear
+	foreign := store.SessionRow{SessionID: "list-foreign", PrincipalID: other,
+		CreatedAt: epoch, ExpiresAt: future}
+
+	for _, r := range []store.SessionRow{a1, a2, expired, foreign} {
+		if err := s.Meta().UpsertSession(ctx, r); err != nil {
+			t.Fatalf("UpsertSession %s: %v", r.SessionID, err)
+		}
+	}
+
+	list, err := s.Meta().ListSessionsByPrincipal(ctx, pid, epoch.UnixMicro())
+	if err != nil {
+		t.Fatalf("ListSessionsByPrincipal: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListSessionsByPrincipal returned %d rows; want 2", len(list))
+	}
+	// Most-recent first (a2 created later than a1).
+	if list[0].SessionID != "list-a2" {
+		t.Errorf("list[0].SessionID = %q; want list-a2", list[0].SessionID)
+	}
+	if list[1].SessionID != "list-a1" {
+		t.Errorf("list[1].SessionID = %q; want list-a1", list[1].SessionID)
+	}
+	if list[0].Tombstoned || list[1].Tombstoned {
+		t.Error("active sessions should not be tombstoned")
+	}
+}
+
+// testSessionListByPrincipalEmpty verifies that ListSessionsByPrincipal
+// returns an empty slice (not ErrNotFound) when the principal has no sessions.
+func testSessionListByPrincipalEmpty(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-list-empty@example.test").ID
+
+	list, err := s.Meta().ListSessionsByPrincipal(ctx, pid, time.Now().UnixMicro())
+	if err != nil {
+		t.Fatalf("ListSessionsByPrincipal: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("ListSessionsByPrincipal: got %d rows; want 0", len(list))
+	}
+}
+
+// testSessionTombstone verifies that TombstoneSession marks revoked_at_us,
+// that the session no longer appears in ListSessionsByPrincipal, and that
+// GetSession still returns the row with Tombstoned = true until eviction.
+func testSessionTombstone(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-tomb@example.test").ID
+
+	epoch := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	row := store.SessionRow{SessionID: "tomb-1", PrincipalID: pid,
+		CreatedAt: epoch.Add(-1 * time.Hour), ExpiresAt: epoch.Add(24 * time.Hour)}
+	if err := s.Meta().UpsertSession(ctx, row); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	const ttl = int64(10 * 60 * 1e6) // 10 minutes in microseconds
+	if err := s.Meta().TombstoneSession(ctx, row.SessionID, pid, epoch.UnixMicro(), ttl); err != nil {
+		t.Fatalf("TombstoneSession: %v", err)
+	}
+
+	// GetSession should still find the row but with Tombstoned = true.
+	got, err := s.Meta().GetSession(ctx, row.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after tombstone: %v", err)
+	}
+	if !got.Tombstoned {
+		t.Error("Tombstoned = false after TombstoneSession; want true")
+	}
+	// expires_at should have been shortened to epoch + ttl.
+	want := epoch.Add(10 * time.Minute)
+	if !got.ExpiresAt.Equal(want) {
+		t.Errorf("ExpiresAt after tombstone = %v; want %v", got.ExpiresAt, want)
+	}
+
+	// The session must not appear in the active list.
+	list, err := s.Meta().ListSessionsByPrincipal(ctx, pid, epoch.UnixMicro())
+	if err != nil {
+		t.Fatalf("ListSessionsByPrincipal after tombstone: %v", err)
+	}
+	for _, r := range list {
+		if r.SessionID == row.SessionID {
+			t.Error("tombstoned session appeared in ListSessionsByPrincipal; want excluded")
+		}
+	}
+
+	// After tombstone TTL elapses the row should be evicted.
+	afterTTL := epoch.Add(11 * time.Minute).UnixMicro()
+	deleted, err := s.Meta().EvictExpiredSessions(ctx, afterTTL)
+	if err != nil {
+		t.Fatalf("EvictExpiredSessions: %v", err)
+	}
+	if deleted == 0 {
+		t.Error("EvictExpiredSessions: expected at least 1 row evicted (tombstoned session)")
+	}
+	if _, err := s.Meta().GetSession(ctx, row.SessionID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetSession after eviction: got %v; want ErrNotFound", err)
+	}
+}
+
+// testSessionTombstoneNotFound verifies that TombstoneSession returns
+// ErrNotFound when the session_id does not exist, already belongs to a
+// different principal, or has already been tombstoned.
+func testSessionTombstoneNotFound(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-tomb-nf@example.test").ID
+	other := mustInsertPrincipal(t, s, "session-tomb-nf-other@example.test").ID
+
+	epoch := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	row := store.SessionRow{SessionID: "tomb-nf-1", PrincipalID: pid,
+		CreatedAt: epoch.Add(-1 * time.Hour), ExpiresAt: epoch.Add(24 * time.Hour)}
+	if err := s.Meta().UpsertSession(ctx, row); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	const ttl = int64(10 * 60 * 1e6)
+
+	// Wrong principal.
+	err := s.Meta().TombstoneSession(ctx, row.SessionID, other, epoch.UnixMicro(), ttl)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("TombstoneSession wrong principal: got %v; want ErrNotFound", err)
+	}
+
+	// Nonexistent session.
+	err = s.Meta().TombstoneSession(ctx, "no-such-session", pid, epoch.UnixMicro(), ttl)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("TombstoneSession nonexistent: got %v; want ErrNotFound", err)
+	}
+
+	// Tombstone once, then attempt again — second call must return ErrNotFound.
+	if err := s.Meta().TombstoneSession(ctx, row.SessionID, pid, epoch.UnixMicro(), ttl); err != nil {
+		t.Fatalf("first TombstoneSession: %v", err)
+	}
+	err = s.Meta().TombstoneSession(ctx, row.SessionID, pid, epoch.UnixMicro(), ttl)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("TombstoneSession already tombstoned: got %v; want ErrNotFound", err)
+	}
+}
+
 // testSessionCascadeOnPrincipalDelete verifies that deleting a principal
 // removes its session rows (ON DELETE CASCADE).
 func testSessionCascadeOnPrincipalDelete(t *testing.T, s store.Store) {

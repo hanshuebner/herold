@@ -417,7 +417,17 @@ const CurrentBackupVersion = 1
 //	the principal's admin flag.  The row is created by POST
 //	/api/v1/auth/step-up and expires after the operator-configured
 //	elevation_ttl (default 15 minutes).
-const CurrentSchemaVersion = 67
+//
+// 68 — 0068_sessions_tombstone.sql (REQ-AUTH-77, issue #80). Adds
+//
+//	revoked_at_us to the sessions table (NULL for active sessions,
+//	non-NULL for tombstoned/revoked sessions).  Revocation via DELETE
+//	/api/v1/auth/sessions/{id} sets this column rather than deleting
+//	the row, so the next request on the revoked cookie receives
+//	{"type": "session_revoked"} (REQ-AUTH-76, REQ-AS-13).  The row
+//	expires naturally via EvictExpiredSessions once the short tombstone
+//	TTL elapses.
+const CurrentSchemaVersion = 68
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

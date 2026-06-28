@@ -18,6 +18,7 @@
   import AddIdentityWizard from './settings/AddIdentityWizard.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
+  import SessionsForm from './settings/SessionsForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
   import SieveForm from './settings/SieveForm.svelte';
   import CategoriesForm from './settings/CategoriesForm.svelte';
@@ -50,11 +51,12 @@
   // Hydrate the sounds toggle from localStorage on mount.
   sounds.hydrate();
 
-  // Section order: Account, Security, Appearance, Mail, Categories, Filters,
+  // Section order: Account, Security, Sessions, Appearance, Mail, Categories, Filters,
   // Notifications, API keys, Privacy, Shared files, Diagnostics, About.
   type Section =
     | 'account'
     | 'security'
+    | 'sessions'
     | 'appearance'
     | 'mail'
     | 'categories'
@@ -78,6 +80,7 @@
     const result: { id: Section; label: string }[] = [
       { id: 'account', label: t('settings.account') },
       { id: 'security', label: t('settings.security') },
+      { id: 'sessions', label: t('settings.sessions') },
       { id: 'appearance', label: t('settings.appearance') },
       { id: 'mail', label: t('settings.mail') },
     ];
@@ -669,6 +672,10 @@
     {:else if activeSection === 'api-keys'}
       <h2>{t('settings.apiKeys')}</h2>
       <ApiKeysForm />
+
+    {:else if activeSection === 'sessions'}
+      <h2>{t('settings.sessions.heading')}</h2>
+      <SessionsForm />
 
     {:else if activeSection === 'privacy'}
       <h2>{t('settings.privacy.heading')}</h2>

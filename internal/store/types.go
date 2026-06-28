@@ -1004,6 +1004,12 @@ type SessionRow struct {
 	// admin live-tail session (REQ-OPS-211 / REQ-ADM-232). A nil value
 	// means live-tail is inactive for this session.
 	ClientlogLivetailUntil *time.Time
+	// Tombstoned is true when revoked_at_us IS NOT NULL on the row.
+	// A tombstoned session returns 401 {"type": "session_revoked"} on
+	// the next authenticated request (REQ-AUTH-76, REQ-AUTH-77, issue #80).
+	// The row remains in the DB until the EvictExpiredSessions sweep
+	// removes it after the short tombstone TTL elapses.
+	Tombstoned bool
 }
 
 // ElevationRow is one row in the session_elevations table. It records a

@@ -286,6 +286,13 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 			return store.Principal{}, nil, "", false
 		}
+		// Tombstone check (REQ-AUTH-76, REQ-AUTH-77, issue #80): a revoked
+		// session has revoked_at_us set. Reject immediately with a typed slug
+		// so the client can display "signed out from another device".
+		if row.Tombstoned {
+			observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
+			return store.Principal{}, nil, "session_revoked", false
+		}
 		now := s.clk.Now()
 		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > s.opts.Session.IdleTTL {
 			// Idle gate trips: drop the row so the same cookie cannot

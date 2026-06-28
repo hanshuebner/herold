@@ -1,0 +1,22 @@
+-- 0068_sessions_tombstone.sql -- revoked_at_us column for session tombstoning
+-- (REQ-AUTH-77, issue #80).
+--
+-- When a principal revokes a session via DELETE /api/v1/auth/sessions/{id},
+-- the session row is not immediately deleted; instead revoked_at_us is set to
+-- the current time.  The next authenticated request carrying that session cookie
+-- reads a tombstoned row and receives 401 {"type": "session_revoked"} rather
+-- than a generic 401, which the Suite displays as "signed out from another
+-- device" (REQ-AS-13).
+--
+-- The revocation also sets expires_at_us to a short tombstone TTL (e.g. now +
+-- 10 minutes) so the periodic EvictExpiredSessions sweep removes the row
+-- quickly without a separate tombstone-eviction path.
+--
+-- revoked_at_us  INTEGER  -- unix-micros instant the session was revoked.
+--                            NULL for active sessions.  Non-NULL means the
+--                            session is tombstoned and all auth must fail with
+--                            session_revoked rather than unauthorized.
+--
+-- Forward-only.  Mirrors storepg 0068.
+
+ALTER TABLE sessions ADD COLUMN revoked_at_us INTEGER;

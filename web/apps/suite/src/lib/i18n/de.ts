@@ -775,6 +775,7 @@ export const de = {
   'settings.about': 'Über',
   'settings.notifications': 'Benachrichtigungen',
   'settings.apiKeys': 'API-Schlüssel',
+  'settings.sessions': 'Aktive Sitzungen',
   'settings.privacy.heading': 'Datenschutz',
   'settings.categories.heading': 'Kategorien',
   'settings.filters.heading': 'Filter',
@@ -996,6 +997,26 @@ export const de = {
   'settings.apiKeys.scope.calWrite': 'Kalender: schreiben',
   'settings.apiKeys.scope.contactsRead': 'Kontakte: lesen',
   'settings.apiKeys.scope.contactsWrite': 'Kontakte: schreiben',
+
+  // ── Einstellungen: aktive Sitzungen (REQ-AS-30..34, re #80) ─────────
+  'settings.sessions.heading': 'Aktive Sitzungen',
+  'settings.sessions.empty': 'Keine aktiven Sitzungen gefunden.',
+  'settings.sessions.loadingAria': 'Sitzungen werden geladen',
+  'settings.sessions.thisSession': 'Diese Sitzung',
+  'settings.sessions.device': 'Gerät',
+  'settings.sessions.lastSeen': 'Zuletzt aktiv',
+  'settings.sessions.createdAt': 'Angemeldet',
+  'settings.sessions.ip': 'IP-Adresse',
+  'settings.sessions.revoke': 'Widerrufen',
+  'settings.sessions.signOut': 'Abmelden',
+  'settings.sessions.revokeAll': 'Alle anderen Sitzungen widerrufen',
+  'settings.sessions.revokeAllConfirm':
+    'Alle anderen Sitzungen abmelden? Diese werden sofort beendet.',
+  'settings.sessions.signOutConfirm': 'Diese Sitzung abmelden? Sie werden sofort abgemeldet.',
+  'settings.sessions.revoked': 'Sitzung widerrufen.',
+  'settings.sessions.allRevoked': 'Alle anderen Sitzungen wurden widerrufen.',
+  'settings.sessions.error': 'Sitzungen konnten nicht geladen werden.',
+  'settings.sessions.revokeError': 'Sitzung konnte nicht widerrufen werden.',
 
   // ── Diagnose-Formular (re #97) ───────────────────────────────────────
   'settings.diagnostics.saveError': 'Einstellung konnte nicht gespeichert werden.',

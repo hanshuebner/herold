@@ -2127,6 +2127,23 @@ type Metadata interface {
 	// cosmetic cleanup only (REQ-OPS-211).
 	ClearExpiredLivetail(ctx context.Context, nowMicros int64) (cleared int, err error)
 
+	// -- REQ-AUTH-77 / issue #80: session list + revocation -------------
+
+	// ListSessionsByPrincipal returns all active (non-tombstoned,
+	// non-expired) session rows for the given principal, ordered by
+	// created_at_us descending (most-recent first).  Returns an empty
+	// slice (not ErrNotFound) when the principal has no sessions.
+	ListSessionsByPrincipal(ctx context.Context, principalID PrincipalID, nowMicros int64) ([]SessionRow, error)
+
+	// TombstoneSession marks the session as revoked by setting
+	// revoked_at_us = nowMicros and shortening expires_at_us to
+	// nowMicros + tombstoneTTLMicros (so the periodic sweeper cleans it
+	// up quickly).  Returns ErrNotFound when the session does not exist
+	// or does not belong to principalID.  The caller should also call
+	// DeleteElevation for the same sessionID so step-up tokens can no
+	// longer be replayed.
+	TombstoneSession(ctx context.Context, sessionID string, principalID PrincipalID, nowMicros int64, tombstoneTTLMicros int64) error
+
 	// -- REQ-AUTH-74 / issue #79: step-up elevation rows ----------------
 
 	// UpsertElevation inserts or replaces the elevation row for

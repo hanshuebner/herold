@@ -55,6 +55,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/logout", auth1(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/whoami", auth1(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/v1/auth/me", auth1(s.handleAuthMe))
+	// Session listing and revocation (REQ-AUTH-77, issue #80). Self-service:
+	// principals list and revoke their own sessions. Admin variants on the
+	// /api/v1/admin/... namespace (require elevation).
+	mux.HandleFunc("GET /api/v1/auth/sessions", auth1(s.handleListSessions))
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{session_id}", auth1(s.handleRevokeSession))
+	mux.HandleFunc("GET /api/v1/admin/principals/{pid}/sessions", authAdmin(s.handleAdminListSessions))
+	mux.HandleFunc("DELETE /api/v1/admin/principals/{pid}/sessions/{session_id}", authAdmin(s.handleAdminRevokeSession))
 
 	// OIDC callback (unauth).
 	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)
@@ -262,6 +269,11 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// Health (unauth) — useful for public-listener liveness probes.
 	mux.HandleFunc("GET /api/v1/healthz/live", s.handleHealthLive)
 	mux.HandleFunc("GET /api/v1/healthz/ready", s.handleHealthReady)
+
+	// Session listing and revocation (REQ-AUTH-77, issue #80). Self-service
+	// subset only (no admin variants on the public listener).
+	mux.HandleFunc("GET /api/v1/auth/sessions", auth1(s.handleListSessions))
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{session_id}", auth1(s.handleRevokeSession))
 
 	// Principal self-service: a non-admin principal may only access their
 	// own row; requireSelfOrAdmin inside each handler enforces this.
