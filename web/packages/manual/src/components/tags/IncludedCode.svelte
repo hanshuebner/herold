@@ -98,6 +98,7 @@
     overflow-x: auto;
     font-family: var(--font-mono);
     font-size: var(--type-code-02-size);
+    font-weight: var(--type-code-02-weight);
     line-height: var(--type-code-02-line);
     color: var(--text-primary);
   }

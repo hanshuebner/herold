@@ -1050,6 +1050,9 @@ body.manual-page {
 .manual-content code {
   font-family: var(--font-mono);
   font-size: 0.88em;
+  font-weight: var(--type-code-01-weight);
+  line-height: 1;
+  vertical-align: 0.1em;
   background: var(--layer-02);
   padding: 0.1em 0.3em;
   border-radius: var(--radius-xs);
@@ -1058,6 +1061,7 @@ body.manual-page {
 .manual-content pre {
   font-family: var(--font-mono);
   font-size: 0.88em;
+  font-weight: var(--type-code-02-weight);
   background: var(--layer-02);
   padding: var(--spacing-05);
   border-radius: var(--radius-md);
