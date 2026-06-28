@@ -1,14 +1,19 @@
 package emailsubmission
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // mapResolver lets the per-test code map IdentityIDs to email
@@ -32,13 +37,7 @@ func (r mapResolver) IdentityEmail(_ context.Context, _ store.Principal, id stri
 func TestEmailSubmission_Set_Gate_VerifiedHostedDomain(t *testing.T) {
 	h, st, p, _, mid, sub := newSetup(t)
 	ctx := context.Background()
-	// Mark example.test as a hosted (local) domain so the
-	// REQ-IDENT-62 external-domain branch is skipped.
-	if err := st.Meta().InsertDomain(ctx, store.Domain{
-		Name: "example.test", IsLocal: true,
-	}); err != nil {
-		t.Fatalf("InsertDomain: %v", err)
-	}
+	// example.test is already registered as a local domain by newSetup.
 	// Insert a verified persistent identity for the principal whose
 	// email matches the principal's canonical address (so the
 	// sendpolicy ownership check passes without an alias row).
@@ -180,13 +179,8 @@ func TestEmailSubmission_Set_Gate_UnverifiedIdentityRejected(t *testing.T) {
 func TestEmailSubmission_Set_Gate_ExternalDomainNoSubmissionRejected(t *testing.T) {
 	h, st, p, _, mid, sub := newSetup(t)
 	ctx := context.Background()
-	// Mark example.test as local so we can distinguish: the identity
-	// lives in gmail.com which is NOT local.
-	if err := st.Meta().InsertDomain(ctx, store.Domain{
-		Name: "example.test", IsLocal: true,
-	}); err != nil {
-		t.Fatalf("InsertDomain: %v", err)
-	}
+	// example.test is already local (registered by newSetup). The identity
+	// lives in gmail.com which is NOT local, so the REQ-IDENT-62 gate fires.
 	const idID = "id-extdom-nosubmit"
 	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
 		ID:           idID,
@@ -253,12 +247,8 @@ func TestEmailSubmission_Set_Gate_ExternalDomainWithSubmissionSucceeds(t *testin
 		Diagnostic: "accepted",
 	})
 	ctx := context.Background()
-	// Hosted-domain marker so the gate sees gmail.com as external.
-	if err := st.Meta().InsertDomain(ctx, store.Domain{
-		Name: "example.test", IsLocal: true,
-	}); err != nil {
-		t.Fatalf("InsertDomain: %v", err)
-	}
+	// example.test is already local (registered by newExternalSetup), so the
+	// gate sees gmail.com as external.
 	const idID = "id-extdom-with-submit"
 	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
 		ID:           idID,
@@ -325,4 +315,361 @@ func TestEmailSubmission_Set_Gate_ExternalDomainWithSubmissionSucceeds(t *testin
 	if len(subs) != 1 || !subs[0].External {
 		t.Fatalf("expected 1 external submission row, got %+v", subs)
 	}
+}
+
+// -- re #74: local-queue foreign-domain gate (new check) -----------------
+
+// testLocalQueueForeignDomainRejected is the backend-agnostic body of
+// TestEmailSubmission_Set_Gate_LocalQueueForeignDomain_Rejected_*.
+//
+// It exercises the structural invariant added at the local-queue boundary:
+// an identity whose domain is NOT authoritative on this server must be
+// rejected with forbiddenFrom even when it carries an IdentitySubmission
+// row (which satisfies REQ-IDENT-62) but the externalRouter is absent or
+// returns HasExternalSubmission=false. The local queue must not be reached.
+func testLocalQueueForeignDomainRejected(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	body := "From: alice@gmail.com\r\nTo: bob@example.test\r\nSubject: test\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref, Size: int64(len(body)),
+		Envelope: store.Envelope{Subject: "test", From: "alice@gmail.com", To: "bob@example.test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	const idID = "id-lq-foreign"
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: idID, PrincipalID: p.ID, Name: "Foreign",
+		Email: "alice@gmail.com", MayDelete: true, VerifiedAtUs: 1,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	// IdentitySubmission row present so the REQ-IDENT-62 gate passes.
+	// The test scenario is: external router is nil (disabled), so the
+	// request falls through to the new local-queue domain gate.
+	if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+		IdentityID: idID, SubmitHost: "smtp.gmail.com", SubmitPort: 587,
+		SubmitSecurity: "starttls", SubmitAuthMethod: "password",
+		PasswordCT: []byte("v1:fake"),
+	}); err != nil {
+		t.Fatalf("UpsertIdentitySubmission: %v", err)
+	}
+
+	sub := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:    st,
+		queue:    sub,
+		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity: mapResolver{m: map[string]string{idID: "alice@gmail.com"}},
+		// externalRouter intentionally nil: external submission configured
+		// in DB but router absent, so falls through to local-queue gate.
+	}
+	t.Cleanup(func() { h.Wait() })
+
+	// Admin flag lets sendpolicy accept alice@gmail.com as a from
+	// address for the principal, so the sendpolicy check does not fire
+	// before the new local-queue gate.
+	pAdmin := p
+	pAdmin.Flags |= store.PrincipalFlagAdmin
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{"identityId": idID, "emailId": renderEmailID(mid)},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(pAdmin, args)
+	if mErr != nil {
+		t.Fatalf("unexpected method error: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if len(sresp.Created) != 0 {
+		t.Fatalf("expected no created entries, got %d", len(sresp.Created))
+	}
+	se, ok := sresp.NotCreated["k1"]
+	if !ok {
+		t.Fatalf("expected notCreated[k1]")
+	}
+	if se.Type != "forbiddenFrom" {
+		t.Fatalf("expected type=forbiddenFrom, got %q", se.Type)
+	}
+	if len(se.Properties) == 0 || se.Properties[0] != "identityId" {
+		t.Fatalf("expected properties=[identityId], got %v", se.Properties)
+	}
+	// The local queue must not have been reached.
+	if len(sub.calls) != 0 {
+		t.Fatalf("expected 0 queue submits, got %d", len(sub.calls))
+	}
+	// No submission row persisted.
+	rows, _ := st.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{Limit: 10})
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 submission rows, got %d", len(rows))
+	}
+}
+
+// TestEmailSubmission_Set_Gate_LocalQueueForeignDomain_Rejected confirms (1):
+// a foreign-domain identity that falls through to the local queue is rejected
+// with forbiddenFrom and does not enqueue.
+func TestEmailSubmission_Set_Gate_LocalQueueForeignDomain_Rejected(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testLocalQueueForeignDomainRejected(t, st)
+}
+
+// TestEmailSubmission_Set_Gate_LocalQueueForeignDomain_Rejected_Postgres
+// runs the same assertion against the Postgres backend. Skips when
+// HEROLD_PG_DSN is not set.
+func TestEmailSubmission_Set_Gate_LocalQueueForeignDomain_Rejected_Postgres(t *testing.T) {
+	testLocalQueueForeignDomainRejected(t, openPostgresStore(t))
+}
+
+// testLocalDomainLocalQueueSucceeds is the backend-agnostic body of
+// TestEmailSubmission_Set_Gate_LocalDomainLocalQueue_Succeeds_*. It
+// confirms (2): an identity on an authoritative domain is not blocked
+// by the local-queue domain gate and submits successfully.
+func testLocalDomainLocalQueueSucceeds(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	body := "From: alice@example.test\r\nTo: bob@remote.test\r\nSubject: test\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref, Size: int64(len(body)),
+		Envelope: store.Envelope{Subject: "test", From: "alice@example.test", To: "bob@remote.test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	sub := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:    st,
+		queue:    sub,
+		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity: stubResolver{email: "alice@example.test"},
+	}
+	t.Cleanup(func() { h.Wait() })
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{"identityId": "default", "emailId": renderEmailID(mid)},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if len(sresp.Created) != 1 {
+		t.Fatalf("expected 1 created entry, got %d", len(sresp.Created))
+	}
+	if len(sresp.NotCreated) != 0 {
+		js, _ := json.Marshal(sresp.NotCreated)
+		t.Fatalf("expected no notCreated, got %s", js)
+	}
+	if len(sub.calls) != 1 {
+		t.Fatalf("expected 1 local queue submit, got %d", len(sub.calls))
+	}
+}
+
+// TestEmailSubmission_Set_Gate_LocalDomainLocalQueue_Succeeds confirms (2):
+// a local/authoritative-domain identity submits via the local queue.
+func TestEmailSubmission_Set_Gate_LocalDomainLocalQueue_Succeeds(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testLocalDomainLocalQueueSucceeds(t, st)
+}
+
+// TestEmailSubmission_Set_Gate_LocalDomainLocalQueue_Succeeds_Postgres
+// runs the same assertion against the Postgres backend. Skips when
+// HEROLD_PG_DSN is not set.
+func TestEmailSubmission_Set_Gate_LocalDomainLocalQueue_Succeeds_Postgres(t *testing.T) {
+	testLocalDomainLocalQueueSucceeds(t, openPostgresStore(t))
+}
+
+// testForeignDomainExternalRouterNotRejected is the backend-agnostic body of
+// TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected_*.
+//
+// It confirms (3): a foreign-domain identity WITH external submission
+// configured routes through processCreateExternal and is never blocked by the
+// local-queue domain gate. The gate only guards the queue.Submit fall-through.
+func testForeignDomainExternalRouterNotRejected(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	body := "From: alice@gmail.com\r\nTo: bob@remote.test\r\nSubject: test\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref, Size: int64(len(body)),
+		Envelope: store.Envelope{Subject: "test", From: "alice@gmail.com", To: "bob@remote.test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	const idID = "id-foreign-ext-router"
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: idID, PrincipalID: p.ID, Name: "Foreign",
+		Email: "alice@gmail.com", MayDelete: true, VerifiedAtUs: 1,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+		IdentityID: idID, SubmitHost: "smtp.gmail.com", SubmitPort: 587,
+		SubmitSecurity: "starttls", SubmitAuthMethod: "password",
+		PasswordCT: []byte("v1:fake"),
+	}); err != nil {
+		t.Fatalf("UpsertIdentitySubmission: %v", err)
+	}
+
+	extSub := &fakeExternalSubmitter{outcome: extsubmit.Outcome{
+		State: extsubmit.OutcomeOK, Diagnostic: "accepted",
+	}}
+	extRouter := &fakeExternalRouter{has: true}
+	sub := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:          st,
+		queue:          sub,
+		clk:            clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity:       mapResolver{m: map[string]string{idID: "alice@gmail.com"}},
+		externalSubmit: extSub,
+		externalRouter: extRouter,
+	}
+	t.Cleanup(func() { h.Wait() })
+
+	// Admin flag lets sendpolicy accept alice@gmail.com.
+	pAdmin := p
+	pAdmin.Flags |= store.PrincipalFlagAdmin
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{"identityId": idID, "emailId": renderEmailID(mid)},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(pAdmin, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if len(sresp.Created) != 1 {
+		js, _ := json.Marshal(sresp)
+		t.Fatalf("expected 1 created entry, got %d (resp=%s)", len(sresp.Created), js)
+	}
+	if len(sresp.NotCreated) != 0 {
+		js, _ := json.Marshal(sresp.NotCreated)
+		t.Fatalf("expected no notCreated, got %s", js)
+	}
+	// External submitter was used; local queue was bypassed.
+	if len(extSub.calls) != 1 {
+		t.Fatalf("expected 1 external submit, got %d", len(extSub.calls))
+	}
+	if len(sub.calls) != 0 {
+		t.Fatalf("expected 0 local queue submits (external route taken), got %d", len(sub.calls))
+	}
+}
+
+// TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected
+// confirms (3): a foreign-domain identity with external submission configured
+// routes externally and is not blocked by the local-queue domain gate.
+func TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testForeignDomainExternalRouterNotRejected(t, st)
+}
+
+// TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected_Postgres
+// runs the same assertion against the Postgres backend. Skips when
+// HEROLD_PG_DSN is not set.
+func TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected_Postgres(t *testing.T) {
+	testForeignDomainExternalRouterNotRejected(t, openPostgresStore(t))
 }

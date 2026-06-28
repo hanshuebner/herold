@@ -70,6 +70,9 @@ func newExternalSetup(t *testing.T, outcome extsubmit.Outcome) (
 		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain example.test: %v", err)
+	}
 	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
 	})

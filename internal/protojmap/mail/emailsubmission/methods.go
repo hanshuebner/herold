@@ -975,6 +975,29 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, rc, threadID, now, sendAtUs)
 	}
 
+	// REQ-PROTO-42 / re #74: the local queue only carries mail for
+	// authoritative domains. An identity on a foreign domain that was not
+	// handled by processCreateExternal above (external submission disabled
+	// or HasExternalSubmission returned false) is rejected here so that
+	// non-authoritative mail can never reach the local queue regardless of
+	// router or config state. DKIM/DMARC alignment would fail at every
+	// recipient MTA for such mail.
+	{
+		dom := domainOf(identityEmail)
+		localDom, domErr := s.h.isLocalDomain(ctx, dom)
+		if domErr != nil {
+			return jmapEmailSubmission{}, &setError{Type: "serverFail",
+				Description: fmt.Sprintf("local-domain lookup: %s", domErr)}
+		}
+		if !localDom {
+			return jmapEmailSubmission{}, &setError{
+				Type:        "forbiddenFrom",
+				Description: "identity domain is not authoritative on this server; configure external submission to use this identity",
+				Properties:  []string{"identityId"},
+			}
+		}
+	}
+
 	pid := p.ID
 	envID, err := s.h.queue.Submit(ctx, queue.Submission{
 		PrincipalID:   &pid,
