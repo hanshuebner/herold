@@ -352,18 +352,16 @@ async function jmapEmailSetSeen(emailId) {
 // ── App open helper ────────────────────────────────────────────────────────
 
 /**
- * Focus an existing suite tab at the given path, or open a new one.
+ * Open the suite at the given path in a new browser window.
+ *
+ * self.clients.openWindow() is guaranteed by the browser to make the new
+ * window the active window. client.focus() on an existing window is not
+ * reliable: the OS does not guarantee that a cross-window focus() call
+ * will surface the browser window from behind an unrelated foreground app.
+ * Notification body clicks therefore always open a new window so the user
+ * sees the message without having to hunt for a background tab.
  */
 async function openApp(path) {
-  const clients = await self.clients.matchAll({ type: 'window' });
-  for (const client of clients) {
-    if ('focus' in client) {
-      await client.focus();
-      client.postMessage({ type: 'navigate', path });
-      return;
-    }
-  }
-  // No open window — open a new one.
   await self.clients.openWindow(path);
 }
 
