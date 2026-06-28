@@ -208,6 +208,25 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("redirect_uri", callbackURL)
 	authURL.RawQuery = q.Encode()
 
+	// When the caller signals it can accept JSON (i.e. a fetch call carrying
+	// X-CSRF-Token), return the auth URL in the response body so the client
+	// can navigate there via window.location.href without a form submit.
+	// A native form submit cannot carry custom request headers, so it cannot
+	// satisfy the CSRF middleware; this JSON path is the correct fix for
+	// cookie-authenticated callers (REQ-AUTH-CSRF).
+	//
+	// When Accept does not include application/json the handler falls back to
+	// the original 302 redirect so that Bearer-authenticated API callers and
+	// existing test harnesses continue to work unchanged.
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(struct {
+			AuthURL string `json:"auth_url"`
+		}{AuthURL: authURL.String()})
+		return
+	}
+
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
 

@@ -9,11 +9,13 @@
  *   POST   /api/v1/identities/{id}/submission/oauth/start
  *
  * Credentials never appear in any response shape (REQ-MAIL-SUBMIT-08).
- * The OAuth start helper redirects the browser via window.location.href
- * so the server's 302 carries the user to the provider's auth page.
+ * The OAuth start helper POSTs with X-CSRF-Token (via client.post()), reads
+ * the provider authorization URL from the JSON response body, and navigates
+ * window.location.href to it so the browser completes the OAuth redirect
+ * chain.
  */
 
-import { get, put, del, ApiError } from './client';
+import { get, post, put, del } from './client';
 
 /** Security mode for the external SMTP connection. */
 export type SubmitSecurity = 'implicit_tls' | 'starttls' | 'none';
@@ -105,15 +107,19 @@ export function deleteSubmission(identityId: string): Promise<void> {
 }
 
 /**
- * Start an OAuth flow for the given provider by redirecting the browser to the
- * server's start endpoint. The server returns 302 to the provider's auth URL;
- * the browser follows it; the provider redirects back to the server's callback
- * which persists the tokens and redirects to the suite settings page.
+ * Start an OAuth flow for the given provider.
  *
  * POST /api/v1/identities/{id}/submission/oauth/start?provider=<provider>
  *
- * The suite never holds OAuth client credentials (REQ-MAIL-SUBMIT-02);
- * the redirect is browser-level so the auth URL is never visible to JS.
+ * The server returns the provider's authorization URL as JSON
+ * (`{"auth_url":"https://..."}`) when Accept: application/json is sent.
+ * The client POSTs with the X-CSRF-Token header (via client.post(), the same
+ * mechanism used by all other Suite mutations) then navigates the top-level
+ * frame to the returned URL so the OAuth redirect chain continues in the
+ * browser (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-04, REQ-AUTH-CSRF).
+ *
+ * A native form submit cannot carry custom headers, so the previous
+ * form-submit approach could not satisfy the server's CSRF middleware.
  *
  * If the server returns 503 (provider not configured by the operator), the
  * Promise rejects with an ApiError (status 503); the caller surfaces an
@@ -123,81 +129,10 @@ export async function startOAuth(
   identityId: string,
   provider: OAuthProvider,
 ): Promise<void> {
-  // Use a form POST so the browser follows the server's 302 natively,
-  // carrying the session cookie with it. A fetch() call would intercept
-  // the redirect and lose the cookie attachment semantics for the OAuth
-  // provider leg.
-  //
-  // We submit a hidden form to POST the endpoint, which lets the server
-  // issue a 302 that the browser follows. The session cookie attaches
-  // automatically (same-origin, credentials: include).
   const url = `/api/v1/identities/${identityId}/submission/oauth/start?provider=${encodeURIComponent(provider)}`;
-
-  // Read the CSRF token from the cookie (same logic as client.ts).
-  const csrfToken = readCsrfToken();
-
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = url;
-
-  if (csrfToken) {
-    const csrfInput = document.createElement('input');
-    csrfInput.type = 'hidden';
-    csrfInput.name = 'x-csrf-token';
-    csrfInput.value = csrfToken;
-    form.appendChild(csrfInput);
-  }
-
-  // Before submitting the form, do a preflight fetch to detect 503
-  // (provider not configured) without leaving the page.
-  // If the server returns 503, surface the error without a page navigation.
-  const preflight = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      Accept: 'application/json',
-      'X-CSRF-Token': csrfToken,
-      // Signal to the server that we want a JSON error instead of a
-      // redirect on failure, so we can stay on the page.
-      'X-Preflight': '1',
-    },
-    redirect: 'manual',
-  });
-
-  // A `redirect: 'manual'` fetch returns type 'opaqueredirect' on 302.
-  // That means the server redirected — the OAuth flow is starting.
-  if (preflight.type === 'opaqueredirect' || preflight.redirected || preflight.status === 0) {
-    // Server is redirecting us; follow with a real browser navigation.
-    document.body.appendChild(form);
-    form.submit();
-    return;
-  }
-
-  if (!preflight.ok) {
-    let msg = `HTTP ${preflight.status}`;
-    let detail: { type?: string; message?: string; error?: string } | null = null;
-    try {
-      detail = (await preflight.json()) as { type?: string; message?: string; error?: string };
-      msg = detail?.message ?? detail?.error ?? msg;
-    } catch {
-      // ignore JSON parse error
-    }
-    throw new ApiError(preflight.status, msg, detail);
-  }
-
-  // 200 OK from preflight means the server accepted it without redirecting.
-  // Fall through to a real form submit which will follow the redirect.
-  document.body.appendChild(form);
-  form.submit();
-}
-
-function readCsrfToken(): string {
-  const pairs = document.cookie.split(';');
-  for (const pair of pairs) {
-    const [name, value] = pair.trim().split('=');
-    if (name === 'herold_public_csrf' && value !== undefined) {
-      return decodeURIComponent(value);
-    }
-  }
-  return '';
+  // post() from client.ts sends Accept: application/json and the
+  // X-CSRF-Token header from the herold_public_csrf cookie, satisfying
+  // the server's CSRF middleware for cookie-authenticated callers.
+  const { auth_url } = await post<{ auth_url: string }>(url);
+  window.location.href = auth_url;
 }

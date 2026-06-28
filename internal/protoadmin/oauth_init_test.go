@@ -220,6 +220,62 @@ func TestOAuthStart_RedirectsToProvider(t *testing.T) {
 	}
 }
 
+// TestOAuthStart_JSONResponse verifies that when Accept: application/json is
+// set the start endpoint returns 200 with a JSON body containing auth_url
+// rather than a 302 redirect. This is the path taken by the Suite SPA's
+// fetch-based call which carries X-CSRF-Token as a header (re #72).
+func TestOAuthStart_JSONResponse(t *testing.T) {
+	oh := newOAuthHarness(t)
+	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauthjson@example.com")
+
+	req, err := http.NewRequest("POST",
+		oh.baseURL+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail",
+		nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	res, err := oh.client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	buf, _ := io.ReadAll(res.Body)
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, buf)
+	}
+	ct := res.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q; want application/json", ct)
+	}
+	var body struct {
+		AuthURL string `json:"auth_url"`
+	}
+	if err := json.Unmarshal(buf, &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if body.AuthURL == "" {
+		t.Fatal("auth_url is empty")
+	}
+	u, err := url.Parse(body.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth_url: %v", err)
+	}
+	q := u.Query()
+	if q.Get("state") == "" {
+		t.Error("state param missing from auth_url")
+	}
+	if q.Get("code_challenge") == "" {
+		t.Error("code_challenge param missing from auth_url")
+	}
+	if !strings.Contains(u.Host, "accounts.google.com") {
+		t.Errorf("auth_url host = %q; want accounts.google.com", u.Host)
+	}
+}
+
 // TestOAuthCallback_ExchangesAndPersists verifies that after a start, the
 // callback handler exchanges the code at the fake token endpoint, seals the
 // tokens, and persists the row.
