@@ -14,10 +14,10 @@ outbound queue and others through external providers.
 
 Inbound mail is independent of external SMTP submission. Herold has an IMAP
 client mode that fetches mail from external providers, configured separately
-from outbound submission. You can also configure forwarding at the provider
-(Gmail "Forwarding and POP/IMAP", the Microsoft 365 mailbox forwarding rule,
-or equivalent); mail forwarded to herold's receiving address arrives through
-the normal inbound pipeline.
+from outbound submission. Forwarding at the provider is also an option. Configure it using the
+provider's own mechanism (Gmail "Forwarding and POP/IMAP", the Microsoft 365
+mailbox forwarding rule, or equivalent); mail forwarded to herold's receiving
+address arrives through the normal inbound pipeline.
 
 ## Prerequisite: secrets data key
 
@@ -26,10 +26,10 @@ for the external provider (for example, a Gmail app password or an OAuth token)
 into herold so herold can send mail on their behalf. Herold encrypts those
 credentials at rest using a data key before writing them to the database.
 
-A 32-byte (256-bit) data key must be present before enabling the feature. The
-key is referenced by `[server.secrets].data_key_ref` in `system.toml`; herold
-reads the key at startup and refuses to start if the reference is absent or
-resolves to fewer than 32 bytes.
+The data key must be 32 bytes (256 bits) and must be configured before
+enabling the feature. `[server.secrets].data_key_ref` in `system.toml` holds
+the reference to the key material; the config entry names an environment
+variable or file path where the key lives, not the key bytes themselves.
 
 Generate a key:
 
@@ -37,8 +37,9 @@ Generate a key:
 openssl rand -hex 64 | head -c 64
 ```
 
-Store the result where herold's operating user can read it at startup. Two
-reference forms are accepted:
+Store the key material where herold's operating user can read it at startup,
+then set `[server.secrets].data_key_ref` in `system.toml` to point to it.
+Two reference forms are accepted:
 
 **Environment variable:**
 
@@ -98,7 +99,7 @@ Microsoft account without creating application passwords -- they authorize via
 OAuth instead. The one-click "Sign in with Google" or "Sign in with Microsoft"
 flow appears in the suite's Identity settings when a matching provider is
 configured. Without a registered provider, users fall back to manual SMTP
-credential entry; the feature works either way.
+credential entry.
 
 The redirect URI is the same for all Identities on your deployment:
 
