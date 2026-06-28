@@ -5,6 +5,17 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
       "env": {}
+    },
+    "forgejo": {
+      "type": "stdio",
+      "command": "/Users/hans/Development/privat/forgejo-mcp/forgejo-mcp",
+      "args": [],
+      "env": {
+        "FORGEJO_HOST": "https://code.netzhansa.com",
+        "FORGEJO_TOKEN": "${FORGEJO_TOKEN}",
+        "FORGEJO_OWNER": "herold",
+        "FORGEJO_REPO": "herold"
+      }
     }
   }
 }
