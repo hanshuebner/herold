@@ -68,6 +68,12 @@ type WorkerStatus struct {
 	// for IDLE, second for FETCH+writeback), or "" (not yet decided).
 	ConnMode string
 
+	// WatchMode is the active event-delivery strategy: "notify" (NOTIFY+IDLE,
+	// all personal mailboxes watched), "idle" (INBOX-only IDLE), or "poll"
+	// (NOOP-poll fallback). Empty until the running loop has decided.
+	// REQ-IMAP-IMP-27/29.
+	WatchMode string
+
 	// Connected is true when at least one authenticated connection to the
 	// upstream is open.
 	Connected bool
@@ -137,6 +143,7 @@ type workerStatus struct {
 	phase         string
 	currentFolder string
 	connMode      string
+	watchMode     string
 	connected     bool
 	phaseSince    time.Time
 	lastSyncAt    *time.Time
@@ -160,6 +167,7 @@ func (ws *workerStatus) snapshot() WorkerStatus {
 		Phase:               ws.phase,
 		CurrentFolder:       ws.currentFolder,
 		ConnMode:            ws.connMode,
+		WatchMode:           ws.watchMode,
 		Connected:           ws.connected,
 		PhaseSince:          ws.phaseSince,
 		ConsecutiveFailures: ws.consFailures,
@@ -208,12 +216,21 @@ func (ws *workerStatus) setConnMode(mode string) {
 	ws.mu.Unlock()
 }
 
+// setWatchMode records the active event-delivery strategy: "notify", "idle",
+// or "poll". REQ-IMAP-IMP-29.
+func (ws *workerStatus) setWatchMode(mode string) {
+	ws.mu.Lock()
+	ws.watchMode = mode
+	ws.mu.Unlock()
+}
+
 // setConnected records whether at least one upstream connection is open.
 func (ws *workerStatus) setConnected(connected bool) {
 	ws.mu.Lock()
 	ws.connected = connected
 	if !connected {
 		ws.connMode = ""
+		ws.watchMode = ""
 	}
 	ws.mu.Unlock()
 }

@@ -8,6 +8,10 @@ package imapimport
 //     INBOX (REQ-IMAP-IMP-20).  Any unsolicited update (EXISTS / EXPUNGE /
 //     FETCH) wakes the loop; a sync round runs on the second connection when
 //     available (REQ-IMAP-IMP-21), then IDLE is re-armed.
+//   - When the upstream advertises both NOTIFY (RFC 5465) and IDLE, the
+//     worker issues NOTIFY SET for SELECTED + PERSONAL before entering IDLE
+//     so events from all personal mailboxes wake the loop (REQ-IMAP-IMP-27).
+//     Watch-mode preference: NOTIFY+IDLE > IDLE (INBOX-only) > NOOP-poll.
 //   - If the upstream did NOT advertise IDLE (RFC 2177 not in CAPABILITY),
 //     the worker falls back to NOOP-poll every cfg.PollInterval
 //     (REQ-IMAP-IMP-23).
@@ -24,6 +28,7 @@ package imapimport
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -45,9 +50,18 @@ const defaultPollInterval = 60 * time.Second
 // that is never advanced never trip it.
 const stateRecheckInterval = 30 * time.Second
 
+// errNotifyRejected is returned by Conn.EnableNotify when the server responds
+// to NOTIFY SET with NO or BAD. The caller falls back to INBOX-only IDLE and
+// logs once; the worker does not flip to errored. REQ-IMAP-IMP-27.
+var errNotifyRejected = errors.New("imapimport: NOTIFY SET rejected by server (NO/BAD)")
+
 // runIDLELoop is the durable "running" phase entered after attempt() has
 // completed an initial full syncAllFolders. It holds IDLE (or NOOP-polls)
 // on the primary connection until ctx is cancelled or a fatal error occurs.
+//
+// Watch-mode preference order (REQ-IMAP-IMP-27/29):
+//
+//	NOTIFY+IDLE > IDLE (INBOX-only) > NOOP-poll
 //
 // primary is the already-authenticated, already-synced primary connection.
 // Returns non-nil on a fatal error (connection drop, etc.) so the caller
@@ -58,6 +72,7 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 
 	caps := primary.Caps()
 	supportsIDLE := caps.Has(imap.CapIdle)
+	supportsNOTIFY := caps.Has(imap.CapNotify)
 
 	// Try to establish a second connection for concurrent FETCH.
 	// REQ-IMAP-IMP-21.
@@ -112,17 +127,27 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 	log.Info("imapimport: entering running loop",
 		slog.String("account_id", account.ID),
 		slog.Bool("idle", supportsIDLE),
+		slog.Bool("notify", supportsNOTIFY),
 		slog.Bool("single_conn", useSingleConn),
 	)
 
-	if supportsIDLE {
+	// Watch-mode selection (REQ-IMAP-IMP-27/29): NOTIFY+IDLE > IDLE > poll.
+	switch {
+	case supportsIDLE && supportsNOTIFY:
+		// notifyIdleLoop sets the watch mode internally ("notify" on success,
+		// "idle" on fallback after a rejected SET).
+		return w.notifyIdleLoop(ctx, primary, syncConn, useSingleConn)
+	case supportsIDLE:
+		w.status.setWatchMode("idle")
 		return w.idleLoop(ctx, primary, syncConn, useSingleConn)
+	default:
+		w.status.setWatchMode("poll")
+		return w.noopPollLoop(ctx, primary, syncConn, useSingleConn)
 	}
-	return w.noopPollLoop(ctx, primary, syncConn, useSingleConn)
 }
 
 // idleLoop drives the primary connection in a repeating IDLE → wake → sync
-// cycle.  On IDLE support from the upstream.  REQ-IMAP-IMP-20.
+// cycle when the upstream advertises IDLE but not NOTIFY. REQ-IMAP-IMP-20.
 func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
 	account := w.opts.account
 	log := w.opts.log
@@ -138,6 +163,61 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 			slog.String("error", err.Error()),
 		)
 	}
+
+	return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+}
+
+// notifyIdleLoop drives the primary connection with NOTIFY+IDLE so events from
+// all personal mailboxes wake the sync loop (REQ-IMAP-IMP-27). It SELECTs
+// INBOX, issues NOTIFY SET, then runs the same IDLE wake→sync cycle as
+// idleLoopCore. On a server NO/BAD rejection it falls back to idleLoopCore
+// (watch mode "idle") and logs once; the worker does not flip to errored.
+func (w *accountWorker) notifyIdleLoop(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+	account := w.opts.account
+	log := w.opts.log
+
+	// SELECT INBOX so IDLE delivers INBOX events (same as idleLoop).
+	if _, err := primary.Select(ctx, "INBOX"); err != nil {
+		log.Debug("imapimport: INBOX SELECT before NOTIFY+IDLE failed (non-fatal)",
+			slog.String("account_id", account.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	// Issue NOTIFY SET for SELECTED (all events) + PERSONAL (core events).
+	if err := primary.EnableNotify(ctx); err != nil {
+		if errors.Is(err, errNotifyRejected) {
+			// The server advertised NOTIFY but rejected the SET command.
+			// Fall back to INBOX-only IDLE and log once (REQ-IMAP-IMP-27).
+			log.Info("imapimport: NOTIFY SET rejected by server; falling back to INBOX-only IDLE",
+				slog.String("account_id", account.ID),
+			)
+			w.status.setWatchMode("idle")
+			return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+		}
+		// Connection-level error; surface to the caller for reconnect/backoff.
+		return err
+	}
+
+	w.status.setWatchMode("notify")
+	log.Info("imapimport: NOTIFY+IDLE active; watching all personal mailboxes",
+		slog.String("account_id", account.ID),
+	)
+
+	// The UnilateralDataHandler callbacks (Mailbox, Expunge, Fetch,
+	// NotificationOverflow) are all wired to signalNotify() at dial time, so
+	// events from any watched mailbox — and NOTIFICATIONOVERFLOW — wake the
+	// loop through the same notify channel (REQ-IMAP-IMP-28). No change to the
+	// core IDLE cycle is needed.
+	return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+}
+
+// idleLoopCore is the repeating IDLE → wake → sync inner loop shared by
+// idleLoop and notifyIdleLoop. It assumes the mailbox is already selected and
+// (for NOTIFY mode) NOTIFY SET has already been issued.
+func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+	account := w.opts.account
+	log := w.opts.log
 
 	for {
 		if ctx.Err() != nil {

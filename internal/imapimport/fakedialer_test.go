@@ -73,6 +73,15 @@ func (d *fakeDialer) Dial(_ context.Context, p dialParams) (Conn, error) {
 				default:
 				}
 			},
+			// Mirror the production dialer: NOTIFICATIONOVERFLOW signals
+			// the same notify channel so an overflow wakes the idle loop
+			// just like any other server event (REQ-IMAP-IMP-28).
+			NotificationOverflow: func() {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
 		},
 	}
 
@@ -190,6 +199,12 @@ func (d *xoauthFakeDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 		},
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(_ *imapclient.UnilateralDataMailbox) {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			},
+			NotificationOverflow: func() {
 				select {
 				case notify <- struct{}{}:
 				default:

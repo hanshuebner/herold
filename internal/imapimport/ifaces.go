@@ -187,6 +187,19 @@ type Conn interface {
 	// calling; the behaviour on servers that don't advertise IDLE is
 	// undefined. REQ-IMAP-IMP-20/23.
 	Idle(ctx context.Context) (idleHandle, error)
+
+	// EnableNotify issues NOTIFY SET to watch all personal mailboxes:
+	// SELECTED (full event set) plus PERSONAL (MessageNew, MessageExpunge,
+	// FlagChange). The server will then push events for every watched
+	// mailbox during IDLE, so new mail, expunges, and flag changes in
+	// non-INBOX folders wake the sync loop at the same latency as INBOX
+	// (REQ-IMAP-IMP-27).
+	//
+	// Returns errNotifyRejected (the package-level sentinel) when the
+	// server responds with NO or BAD; the caller falls back to INBOX-only
+	// IDLE and logs once, without flipping the worker to errored.
+	// Any other error is a connection-level failure.
+	EnableNotify(ctx context.Context) error
 }
 
 // Dialer establishes an authenticated IMAP connection to an upstream

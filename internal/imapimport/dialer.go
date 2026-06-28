@@ -3,6 +3,7 @@ package imapimport
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -57,9 +58,10 @@ func (d *productionDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 		// only enabled via a separate debug flag and must redact auth
 		// payloads (REQ-IMAP-IMP-71).
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
-			Mailbox: func(_ *imapclient.UnilateralDataMailbox) { signalNotify() },
-			Expunge: func(_ uint32) { signalNotify() },
-			Fetch:   func(_ *imapclient.FetchMessageData) { signalNotify() },
+			Mailbox:              func(_ *imapclient.UnilateralDataMailbox) { signalNotify() },
+			Expunge:              func(_ uint32) { signalNotify() },
+			Fetch:                func(_ *imapclient.FetchMessageData) { signalNotify() },
+			NotificationOverflow: func() { signalNotify() }, // REQ-IMAP-IMP-28
 		},
 	}
 
@@ -483,6 +485,44 @@ func (c *prodConn) UIDExpunge(_ context.Context, uid imap.UID) error {
 func (c *prodConn) Noop(_ context.Context) error {
 	if err := c.client.Noop().Wait(); err != nil {
 		return fmt.Errorf("imapimport: NOOP: %w", err)
+	}
+	return nil
+}
+
+// EnableNotify issues NOTIFY SET (SELECTED) (PERSONAL (MessageNew MessageExpunge
+// FlagChange)) so the server pushes events for all personal mailboxes during
+// IDLE (REQ-IMAP-IMP-27). Returns errNotifyRejected when the server replies NO
+// or BAD so the caller can fall back gracefully; any other error is a
+// connection-level failure.
+func (c *prodConn) EnableNotify(_ context.Context) error {
+	opts := &imap.NotifyOptions{
+		Items: []imap.NotifyItem{
+			{
+				// SELECTED with no Events means all events (RFC 5465 §6).
+				MailboxSpec: imap.NotifyMailboxSpecSelected,
+			},
+			{
+				MailboxSpec: imap.NotifyMailboxSpecPersonal,
+				Events: []imap.NotifyEvent{
+					imap.NotifyEventMessageNew,
+					imap.NotifyEventMessageExpunge,
+					imap.NotifyEventFlagChange,
+				},
+			},
+		},
+	}
+	cmd, err := c.client.Notify(opts)
+	if err != nil {
+		return fmt.Errorf("imapimport: NOTIFY SET: %w", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		var imapErr *imap.Error
+		if errors.As(err, &imapErr) &&
+			(imapErr.Type == imap.StatusResponseTypeNo ||
+				imapErr.Type == imap.StatusResponseTypeBad) {
+			return errNotifyRejected
+		}
+		return fmt.Errorf("imapimport: NOTIFY SET: %w", err)
 	}
 	return nil
 }

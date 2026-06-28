@@ -38,10 +38,13 @@ type noIDLEConn struct {
 
 func (c *noIDLEConn) Caps() imap.CapSet {
 	real := c.Conn.Caps()
-	// Return a copy without IDLE.
+	// Return a copy without IDLE or IMAP4rev2.  IMAP4rev2 must also be
+	// removed because CapSet.Has(CapIdle) returns true whenever IMAP4rev2
+	// is present (it is listed in imap4rev2Caps), which would defeat the
+	// purpose of this wrapper.
 	out := make(imap.CapSet, len(real))
 	for k, v := range real {
-		if k != imap.CapIdle {
+		if k != imap.CapIdle && k != imap.CapIMAP4rev2 {
 			out[k] = v
 		}
 	}
@@ -187,6 +190,12 @@ func TestNoopPollFallback(t *testing.T) {
 		done <- w.attempt(ctx)
 	}()
 
+	// noIDLEDialer now genuinely suppresses IDLE (by also stripping
+	// CapIMAP4rev2, which would otherwise imply IDLE), so the worker enters
+	// noopPollLoop.  noopPollLoop waits on the injected fake clock; pump it so
+	// poll ticks fire promptly without a real-time sleep.
+	pumpFakeClock(t, ha)
+
 	// Wait for the worker to complete the initial sync.
 	time.Sleep(200 * time.Millisecond)
 
@@ -196,7 +205,7 @@ func TestNoopPollFallback(t *testing.T) {
 	appendToServer(t, ts, "noop1", "pw", "INBOX", raw, nil, d)
 
 	// Wait for a poll tick to fire and sync the message.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if n := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); n == 1 {
 			cancel()
@@ -208,7 +217,7 @@ func TestNoopPollFallback(t *testing.T) {
 
 	cancel()
 	<-done
-	t.Error("message not synced via NOOP poll within 5s")
+	t.Error("message not synced via NOOP poll within 10s")
 }
 
 // --------------------------------------------------------------------------

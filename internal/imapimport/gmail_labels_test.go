@@ -162,6 +162,7 @@ func (c *fakeLabelsConn) UIDMove(context.Context, imap.UID, string) error { retu
 func (c *fakeLabelsConn) UIDExpunge(context.Context, imap.UID) error      { return nil }
 func (c *fakeLabelsConn) Noop(context.Context) error                      { return nil }
 func (c *fakeLabelsConn) Idle(context.Context) (idleHandle, error)        { return nil, nil }
+func (c *fakeLabelsConn) EnableNotify(context.Context) error              { return nil }
 
 var _ Conn = (*fakeLabelsConn)(nil)
 
