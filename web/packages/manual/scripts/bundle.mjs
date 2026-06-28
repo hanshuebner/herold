@@ -1050,13 +1050,10 @@ body.manual-page {
 .manual-content code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  font-weight: 600;
+  font-weight: var(--type-code-01-weight);
   line-height: 1;
   vertical-align: 0.1em;
-  background: var(--layer-01);
-  border: 1px solid var(--border-subtle-01);
-  padding: 0.1em 0.3em;
-  border-radius: var(--radius-sm);
+  color: var(--text-code);
 }
 
 .manual-content pre {
@@ -1071,9 +1068,8 @@ body.manual-page {
 }
 
 .manual-content pre code {
-  background: none;
-  padding: 0;
   font-size: inherit;
+  color: inherit;
 }
 
 .manual-content ul,

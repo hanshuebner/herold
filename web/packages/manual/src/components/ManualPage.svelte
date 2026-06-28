@@ -207,14 +207,10 @@
   .manual-page :global(.inline-code) {
     font-family: var(--font-mono);
     font-size: var(--type-code-01-size);
-    font-weight: 600;
+    font-weight: var(--type-code-01-weight);
     line-height: 1;
     vertical-align: 0.1em;
-    background: var(--layer-01);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-sm);
-    padding: 0.1em var(--spacing-02);
-    color: var(--text-primary);
+    color: var(--text-code);
   }
 
   .manual-page :global(blockquote) {

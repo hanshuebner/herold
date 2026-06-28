@@ -48,11 +48,11 @@
 
   --type-code-01-size: 12px;
   --type-code-01-line: 16px;
-  --type-code-01-weight: 500;
+  --type-code-01-weight: 600;
 
   --type-code-02-size: 14px;
   --type-code-02-line: 20px;
-  --type-code-02-weight: 500;
+  --type-code-02-weight: 600;
 
   /* Spacing — Carbon 8pt grid + half-step */
   --spacing-01: 2px;
@@ -113,6 +113,10 @@
   --support-warning: #f1c21b;
   --support-info: #4589ff;
 
+  /* Inline code text color: Carbon Teal-40. Distinguishes monospace code
+     from surrounding prose without reading as a link (blue) or error (red). */
+  --text-code: #3ddbd9;
+
   /* Presence dots want a louder, more saturated palette than the
      muted Carbon support- tokens; the chat dots are tiny and need to
      read at a glance against the avatar. emerald-500 reads as more
@@ -149,6 +153,9 @@
   --support-warning: #f1c21b;
   --support-info: #0043ce;
 
+  /* Inline code text color: Carbon Teal-70. Contrast 6.8:1 on white. */
+  --text-code: #005d5d;
+
   --presence-online: #059669;
   --presence-away: #d97706;
   --presence-offline: #94a3b8;
@@ -179,6 +186,9 @@
     --support-success: #198038;
     --support-warning: #f1c21b;
     --support-info: #0043ce;
+
+    /* Inline code text color: Carbon Teal-70. Contrast 6.8:1 on white. */
+    --text-code: #005d5d;
 
     --presence-online: #059669;
     --presence-away: #d97706;
