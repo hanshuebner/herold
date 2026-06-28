@@ -440,6 +440,14 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trigger retry for any submissions parked during the broken auth
+	// window. The call is best-effort: individual submission failures are
+	// logged inside RetryForIdentity and never prevent the 204 response
+	// (re #70, REQ-AUTH-EXT-SUBMIT-05).
+	if s.opts.ExternalRetryer != nil {
+		s.opts.ExternalRetryer.RetryForIdentity(r.Context(), identityID, sub)
+	}
+
 	s.appendAudit(r.Context(), "identity.submission.set",
 		fmt.Sprintf("identity:%s", identityID),
 		store.OutcomeSuccess, "",

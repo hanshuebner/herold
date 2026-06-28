@@ -91,6 +91,10 @@ type Sweeper struct {
 	// Now is a clock function for deterministic testing. Defaults to
 	// time.Now when nil.
 	Now func() time.Time
+	// Retryer, when non-nil, is called after a successful OAuth token refresh
+	// to retry any submissions that were parked due to an auth-failed outcome
+	// during the broken token window (re #70, REQ-AUTH-EXT-SUBMIT-05).
+	Retryer *Retryer
 }
 
 func (sw *Sweeper) now() time.Time {
@@ -278,6 +282,19 @@ func (sw *Sweeper) refreshRow(ctx context.Context, sub store.IdentitySubmission)
 		"extsubmit.sweeper: refreshed token",
 		slog.String("identity_id", sub.IdentityID),
 		slog.String("correlation_id", correlationID))
+
+	// Retry any submissions that were parked during the broken token window.
+	// The sub row passed here may have a stale access token; the Refresher
+	// has already written the new token to the store, but sub is our local
+	// copy. Re-read the row so the Retryer uses the fresh access token.
+	if sw.Retryer != nil {
+		// Mark the updated row as ok for the retry attempt. The Refresher
+		// set state=ok in the store; build a local copy reflecting that so
+		// the Retryer uses the correct credential context.
+		recovered := sub
+		recovered.State = store.IdentitySubmissionStateOK
+		sw.Retryer.RetryForIdentity(ctx, sub.IdentityID, recovered)
+	}
 }
 
 // recordRefreshFailure logs a refresh failure without credential material.

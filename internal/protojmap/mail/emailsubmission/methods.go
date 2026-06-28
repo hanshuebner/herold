@@ -1042,6 +1042,11 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 	return rowToJMAP(rows, in.IdentityID, in.EmailID, threadID), nil
 }
 
+// holdWindowDefault is the maximum duration a parked external submission is
+// held waiting for auth recovery before being abandoned (re #70). Matches
+// extsubmit.DefaultHoldWindow.
+const holdWindowDefault = extsubmit.DefaultHoldWindow
+
 // processCreateExternal handles the external-submission fork of processCreate.
 // It allocates a synthetic "ext:<hex>" EnvelopeID, calls extsubmit.Submitter,
 // maps the outcome to JMAP deliveryStatus / undoStatus, and persists the row
@@ -1049,10 +1054,11 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 //
 // Outcomes:
 //   - ok          → undoStatus=final, delivered=yes for every recipient
-//   - auth-failed → undoStatus=final, delivered=no; JMAPStateKindIdentity bumped
+//   - auth-failed → undoStatus=pending, held_for_reauth=true; the Retryer
+//     retries when the identity returns to ok (re #70, REQ-AUTH-EXT-SUBMIT-05)
 //   - unreachable → undoStatus=final, delivered=no; JMAPStateKindIdentity bumped
 //   - permanent   → undoStatus=final, delivered=no
-//   - transient   → undoStatus=final, delivered=no (no local retry in v1)
+//   - transient   → undoStatus=final, delivered=no
 func (h *handlerSet) processCreateExternal(
 	ctx context.Context,
 	p store.Principal,
@@ -1096,10 +1102,6 @@ func (h *handlerSet) processCreateExternal(
 		_ = h.externalRouter.BumpIdentityPushState(ctx, p.ID)
 	}
 
-	// Map outcome to undoStatus. All external outcomes are final — there
-	// is no undo once the wire transaction has completed or been attempted.
-	udoSt := string(undoStatusFinal)
-
 	extState := string(outcome.State)
 	extDiag := outcome.Diagnostic
 
@@ -1111,18 +1113,32 @@ func (h *handlerSet) processCreateExternal(
 	}
 	propsJSON, _ := json.Marshal(props)
 
+	// On auth-failed: park the submission rather than marking it final.
+	// The Retryer will re-attempt delivery when the identity recovers.
+	// All other non-ok outcomes map directly to final/delivered=no
+	// (re #70, REQ-AUTH-EXT-SUBMIT-05).
+	heldForReauth := outcome.State == extsubmit.OutcomeAuthFailed
+	udoSt := string(undoStatusFinal)
+	var holdDeadlineUs int64
+	if heldForReauth {
+		udoSt = string(undoStatusPending)
+		holdDeadlineUs = now.Add(holdWindowDefault).UnixMicro()
+	}
+
 	row := store.EmailSubmissionRow{
-		ID:          renderSubmissionID(envID),
-		EnvelopeID:  envID,
-		PrincipalID: p.ID,
-		IdentityID:  identityID,
-		EmailID:     emailMsgID,
-		ThreadID:    threadID,
-		SendAtUs:    sendAtUs,
-		CreatedAtUs: now.UnixMicro(),
-		UndoStatus:  udoSt,
-		Properties:  propsJSON,
-		External:    true,
+		ID:             renderSubmissionID(envID),
+		EnvelopeID:     envID,
+		PrincipalID:    p.ID,
+		IdentityID:     identityID,
+		EmailID:        emailMsgID,
+		ThreadID:       threadID,
+		SendAtUs:       sendAtUs,
+		CreatedAtUs:    now.UnixMicro(),
+		UndoStatus:     udoSt,
+		Properties:     propsJSON,
+		External:       true,
+		HeldForReauth:  heldForReauth,
+		HoldDeadlineUs: holdDeadlineUs,
 	}
 	if err := h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
 		return jmapEmailSubmission{}, &setError{Type: "serverFail",

@@ -427,7 +427,19 @@ const CurrentBackupVersion = 1
 //	{"type": "session_revoked"} (REQ-AUTH-76, REQ-AS-13).  The row
 //	expires naturally via EvictExpiredSessions once the short tombstone
 //	TTL elapses.
-const CurrentSchemaVersion = 68
+//
+// 69 — 0069_ext_submission_held_reauth.sql (re #70,
+//
+//	REQ-AUTH-EXT-SUBMIT-05). Adds held_for_reauth and hold_deadline_us
+//	to jmap_email_submissions so external submissions that fail with
+//	OutcomeAuthFailed can be parked and retried automatically when the
+//	identity's OAuth token is recovered. held_for_reauth INTEGER NOT NULL
+//	DEFAULT 0 (SQLite) / BOOLEAN NOT NULL DEFAULT FALSE (Postgres);
+//	hold_deadline_us INTEGER NULL (SQLite) / BIGINT NULL (Postgres) stores
+//	the epoch-microsecond expiry. Partial index on (identity_id,
+//	hold_deadline_us) WHERE held_for_reauth speeds the Retryer's list
+//	scan. Column-only migration.
+const CurrentSchemaVersion = 69
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -16,6 +16,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
@@ -264,6 +265,13 @@ type Options struct {
 	// names to client credentials, sourced from sysconfig at boot
 	// (REQ-AUTH-EXT-SUBMIT-03). Used by the OAuth start/callback endpoints.
 	OAuthProviders map[string]OAuthProviderOptions
+
+	// ExternalRetryer, when non-nil, is called after a successful OAuth
+	// token exchange persists a recovered identity (re #70,
+	// REQ-AUTH-EXT-SUBMIT-05). It retries any submissions that were
+	// parked during the broken auth window. Production wires
+	// *extsubmit.Retryer; tests leave it nil (no-op).
+	ExternalRetryer *extsubmit.Retryer
 
 	// VerificationResender drives POST /api/v1/identities/{id}/verify-request
 	// (REQ-IDENT-36, REQ-IDENT-41 resend surface). It rotates the

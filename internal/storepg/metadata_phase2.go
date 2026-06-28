@@ -1541,30 +1541,39 @@ func scanEmailSubmissionPG(row pgx.Row) (store.EmailSubmissionRow, error) {
 		sendAtUs, createdAtUs                       int64
 		props                                       []byte
 		external                                    bool
+		heldForReauth                               bool
+		holdDeadlineUs                              *int64
 	)
 	err := row.Scan(&id, &envID, &principalID, &identityID, &emailID,
-		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external)
+		&threadID, &sendAtUs, &createdAtUs, &undoStatus, &props, &external,
+		&heldForReauth, &holdDeadlineUs)
 	if err != nil {
 		return store.EmailSubmissionRow{}, mapErr(err)
 	}
-	return store.EmailSubmissionRow{
-		ID:          id,
-		EnvelopeID:  store.EnvelopeID(envID),
-		PrincipalID: store.PrincipalID(principalID),
-		IdentityID:  identityID,
-		EmailID:     store.MessageID(emailID),
-		ThreadID:    threadID,
-		SendAtUs:    sendAtUs,
-		CreatedAtUs: createdAtUs,
-		UndoStatus:  undoStatus,
-		Properties:  props,
-		External:    external,
-	}, nil
+	r := store.EmailSubmissionRow{
+		ID:            id,
+		EnvelopeID:    store.EnvelopeID(envID),
+		PrincipalID:   store.PrincipalID(principalID),
+		IdentityID:    identityID,
+		EmailID:       store.MessageID(emailID),
+		ThreadID:      threadID,
+		SendAtUs:      sendAtUs,
+		CreatedAtUs:   createdAtUs,
+		UndoStatus:    undoStatus,
+		Properties:    props,
+		External:      external,
+		HeldForReauth: heldForReauth,
+	}
+	if holdDeadlineUs != nil {
+		r.HoldDeadlineUs = *holdDeadlineUs
+	}
+	return r, nil
 }
 
 const emailSubmissionSelectColumnsPG = `
 	id, envelope_id, principal_id, identity_id, email_id, thread_id,
-	send_at_us, created_at_us, undo_status, properties, external`
+	send_at_us, created_at_us, undo_status, properties, external,
+	held_for_reauth, hold_deadline_us`
 
 func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSubmissionRow) error {
 	if row.ID == "" {
@@ -1581,15 +1590,22 @@ func (m *metadata) InsertEmailSubmission(ctx context.Context, row store.EmailSub
 	if props == nil {
 		props = []byte{}
 	}
+	var holdDeadlineArg *int64
+	if row.HoldDeadlineUs != 0 {
+		v := row.HoldDeadlineUs
+		holdDeadlineArg = &v
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO jmap_email_submissions
 			  (id, envelope_id, principal_id, identity_id, email_id, thread_id,
-			   send_at_us, created_at_us, undo_status, properties, external)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			   send_at_us, created_at_us, undo_status, properties, external,
+			   held_for_reauth, hold_deadline_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 			row.ID, string(row.EnvelopeID), int64(row.PrincipalID),
 			row.IdentityID, int64(row.EmailID), row.ThreadID,
-			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, row.External)
+			row.SendAtUs, row.CreatedAtUs, row.UndoStatus, props, row.External,
+			row.HeldForReauth, holdDeadlineArg)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -1701,6 +1717,48 @@ func (m *metadata) DeleteEmailSubmission(ctx context.Context, id string) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM jmap_email_submissions WHERE id = $1`, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (m *metadata) ListEmailSubmissionsHeldForReauth(ctx context.Context, identityID string) ([]store.EmailSubmissionRow, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT `+emailSubmissionSelectColumnsPG+`
+		  FROM jmap_email_submissions
+		 WHERE held_for_reauth = TRUE AND identity_id = $1
+		 ORDER BY send_at_us ASC, id ASC`,
+		identityID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.EmailSubmissionRow
+	for rows.Next() {
+		r, err := scanEmailSubmissionPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) UpdateEmailSubmissionHeld(ctx context.Context, id string, heldForReauth bool, undoStatus string, properties []byte) error {
+	if properties == nil {
+		properties = []byte{}
+	}
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE jmap_email_submissions
+			   SET held_for_reauth = $1, undo_status = $2, properties = $3
+			 WHERE id = $4`,
+			heldForReauth, undoStatus, properties, id)
 		if err != nil {
 			return mapErr(err)
 		}

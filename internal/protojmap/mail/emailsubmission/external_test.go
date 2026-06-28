@@ -192,8 +192,9 @@ func TestEmailSubmission_External_OKOutcome(t *testing.T) {
 }
 
 // TestEmailSubmission_External_AuthFailedOutcome verifies that an auth-failed
-// outcome produces delivered=no, bumps JMAPStateKindIdentity, and the
-// submission row is persisted with External=true.
+// outcome parks the submission (undoStatus=pending, HeldForReauth=true,
+// delivered=queued / smtpReply="pending re-authentication") and bumps
+// JMAPStateKindIdentity (re #70, REQ-AUTH-EXT-SUBMIT-05).
 func TestEmailSubmission_External_AuthFailedOutcome(t *testing.T) {
 	h, st, p, mid, _, extRouter := newExternalSetup(t, extsubmit.Outcome{
 		State:      extsubmit.OutcomeAuthFailed,
@@ -225,18 +226,22 @@ func TestEmailSubmission_External_AuthFailedOutcome(t *testing.T) {
 		t.Fatalf("bumped wrong principal: got %v want %v", extRouter.bumped[0], p.ID)
 	}
 
-	// /get reflects delivered=no and the diagnostic.
+	// /get reflects delivered=queued and "pending re-authentication" smtpReply
+	// (not "no" — the submission is parked for retry, not finally failed).
 	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
 	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
 	gjs, _ := json.Marshal(getResp)
-	if !strings.Contains(string(gjs), `"no"`) {
-		t.Fatalf("expected delivered=no in /get response: %s", gjs)
+	if !strings.Contains(string(gjs), `"queued"`) {
+		t.Fatalf("expected delivered=queued in /get response: %s", gjs)
 	}
-	if !strings.Contains(string(gjs), "535") {
-		t.Fatalf("expected diagnostic in /get response: %s", gjs)
+	if !strings.Contains(string(gjs), "pending re-authentication") {
+		t.Fatalf("expected 'pending re-authentication' smtpReply in /get response: %s", gjs)
+	}
+	if strings.Contains(string(gjs), `"no"`) {
+		t.Fatalf("unexpected delivered=no in /get response (submission should be parked): %s", gjs)
 	}
 
-	// The store row carries External=true and undoStatus=final.
+	// The store row carries External=true, undoStatus=pending, HeldForReauth=true.
 	ctx := context.Background()
 	subs, _ := st.Meta().ListEmailSubmissions(ctx, p.ID, store.EmailSubmissionFilter{Limit: 10})
 	if len(subs) != 1 {
@@ -244,6 +249,15 @@ func TestEmailSubmission_External_AuthFailedOutcome(t *testing.T) {
 	}
 	if !subs[0].External {
 		t.Fatal("expected External=true")
+	}
+	if subs[0].UndoStatus != string(undoStatusPending) {
+		t.Fatalf("undoStatus = %q, want pending (row is parked)", subs[0].UndoStatus)
+	}
+	if !subs[0].HeldForReauth {
+		t.Fatal("HeldForReauth = false, want true")
+	}
+	if subs[0].HoldDeadlineUs == 0 {
+		t.Fatal("HoldDeadlineUs is zero, want a future timestamp")
 	}
 }
 

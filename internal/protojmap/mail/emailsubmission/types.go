@@ -144,8 +144,10 @@ type externalSubmissionProperties struct {
 // externalRowToJMAP converts an External=true EmailSubmissionRow into the
 // wire-form jmapEmailSubmission without consulting the queue. The
 // deliveryStatus for every recipient is synthesised from the stored outcome:
-// "ok" maps to delivered=yes, all other states to delivered=no with the
-// diagnostic as the smtpReply.
+//   - ok           → delivered=yes, smtpReply="250 ok"
+//   - held-for-reauth → delivered=queued, smtpReply="pending re-authentication";
+//     undoStatus=pending (re #70, REQ-AUTH-EXT-SUBMIT-05)
+//   - all others   → delivered=no, smtpReply=diagnostic or ExtState
 func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
 	var props externalSubmissionProperties
 	if len(r.Properties) > 0 {
@@ -177,10 +179,17 @@ func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
 		for _, rcpt := range props.RcptTo {
 			var ds jmapDeliveryStatus
 			ds.Displayed = "unknown"
-			if props.ExtState == "ok" {
+			switch {
+			case r.HeldForReauth:
+				// Submission is parked waiting for the identity to recover.
+				// Expose queued/pending so clients know delivery is in progress
+				// rather than silently failed (re #70).
+				ds.Delivered = "queued"
+				ds.SMTPReply = "pending re-authentication"
+			case props.ExtState == "ok":
 				ds.Delivered = "yes"
 				ds.SMTPReply = "250 ok"
-			} else {
+			default:
 				ds.Delivered = "no"
 				ds.SMTPReply = props.ExtDiag
 				if ds.SMTPReply == "" {

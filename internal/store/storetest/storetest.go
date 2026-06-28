@@ -136,6 +136,9 @@ func Run(t *testing.T, f Factory) {
 		{"EmailSubmission_UpdateUndoStatus_Reflected_OnGet", testEmailSubmissionUpdateUndoStatus},
 		{"EmailSubmission_Delete_NotFoundAfter", testEmailSubmissionDeleteNotFoundAfter},
 		{"EmailSubmission_External_Flag_Roundtrip", testEmailSubmissionExternalFlagRoundtrip},
+		// -- re #70: hold-and-retry for external auth-failed submissions ------
+		{"EmailSubmission_HeldForReauth_ListAndUpdate", testEmailSubmissionHeldForReauthListAndUpdate},
+		{"EmailSubmission_HeldForReauth_IdentityIsolation", testEmailSubmissionHeldForReauthIdentityIsolation},
 		{"JMAPIdentity_InsertGet_Roundtrip", testJMAPIdentityInsertGetRoundtrip},
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
@@ -4796,6 +4799,159 @@ func testEmailSubmissionExternalFlagRoundtrip(t *testing.T, s store.Store) {
 	}
 	if !extFound || !intFound {
 		t.Fatalf("list: extFound=%v intFound=%v", extFound, intFound)
+	}
+}
+
+// testEmailSubmissionHeldForReauthListAndUpdate verifies:
+//   - ListEmailSubmissionsHeldForReauth returns only rows whose held_for_reauth
+//     flag is set for the requested identity.
+//   - UpdateEmailSubmissionHeld clears the flag and updates undoStatus +
+//     properties atomically; the cleared row no longer appears in the list.
+//
+// re #70, REQ-AUTH-EXT-SUBMIT-05.
+func testEmailSubmissionHeldForReauthListAndUpdate(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "held-reauth@example.com")
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	// Insert a held submission for identity "ident-1".
+	held := store.EmailSubmissionRow{
+		ID:             "ext-h-001",
+		EnvelopeID:     store.EnvelopeID("ext-h-001"),
+		PrincipalID:    p.ID,
+		IdentityID:     "ident-1",
+		EmailID:        store.MessageID(200),
+		ThreadID:       "Th1",
+		SendAtUs:       now.UnixMicro(),
+		CreatedAtUs:    now.UnixMicro(),
+		UndoStatus:     "pending",
+		External:       true,
+		HeldForReauth:  true,
+		HoldDeadlineUs: now.Add(72 * time.Hour).UnixMicro(),
+		Properties:     []byte(`{"rcptTo":["a@b.com"],"mailFrom":"from@example.com"}`),
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, held); err != nil {
+		t.Fatalf("InsertEmailSubmission (held): %v", err)
+	}
+
+	// Insert a non-held submission for the same identity — must NOT appear in list.
+	notHeld := store.EmailSubmissionRow{
+		ID:          "ext-h-002",
+		EnvelopeID:  store.EnvelopeID("ext-h-002"),
+		PrincipalID: p.ID,
+		IdentityID:  "ident-1",
+		EmailID:     store.MessageID(201),
+		SendAtUs:    now.UnixMicro(),
+		CreatedAtUs: now.UnixMicro(),
+		UndoStatus:  "final",
+		External:    true,
+	}
+	if err := s.Meta().InsertEmailSubmission(ctx, notHeld); err != nil {
+		t.Fatalf("InsertEmailSubmission (not held): %v", err)
+	}
+
+	// List: only the held row should appear.
+	list, err := s.Meta().ListEmailSubmissionsHeldForReauth(ctx, "ident-1")
+	if err != nil {
+		t.Fatalf("ListEmailSubmissionsHeldForReauth: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list len = %d, want 1; rows = %+v", len(list), list)
+	}
+	if list[0].ID != "ext-h-001" {
+		t.Fatalf("list[0].ID = %q, want ext-h-001", list[0].ID)
+	}
+	if !list[0].HeldForReauth {
+		t.Fatalf("list[0].HeldForReauth = false, want true")
+	}
+	if list[0].HoldDeadlineUs == 0 {
+		t.Fatalf("list[0].HoldDeadlineUs is zero")
+	}
+
+	// UpdateEmailSubmissionHeld: clear the flag (finalise).
+	newProps := []byte(`{"rcptTo":["a@b.com"],"extState":"ok","mailFrom":"from@example.com"}`)
+	if err := s.Meta().UpdateEmailSubmissionHeld(ctx, "ext-h-001", false, "final", newProps); err != nil {
+		t.Fatalf("UpdateEmailSubmissionHeld: %v", err)
+	}
+
+	// Row is no longer in the held list.
+	list2, err := s.Meta().ListEmailSubmissionsHeldForReauth(ctx, "ident-1")
+	if err != nil {
+		t.Fatalf("ListEmailSubmissionsHeldForReauth after update: %v", err)
+	}
+	if len(list2) != 0 {
+		t.Fatalf("list after clear: len = %d, want 0; rows = %+v", len(list2), list2)
+	}
+
+	// GetEmailSubmission reflects the new undo_status and properties.
+	got, err := s.Meta().GetEmailSubmission(ctx, "ext-h-001")
+	if err != nil {
+		t.Fatalf("GetEmailSubmission after update: %v", err)
+	}
+	if got.UndoStatus != "final" {
+		t.Fatalf("undoStatus = %q, want final", got.UndoStatus)
+	}
+	if string(got.Properties) != string(newProps) {
+		t.Fatalf("properties = %q, want %q", got.Properties, newProps)
+	}
+	if got.HeldForReauth {
+		t.Fatalf("HeldForReauth = true after clear, want false")
+	}
+}
+
+// testEmailSubmissionHeldForReauthIdentityIsolation verifies that
+// ListEmailSubmissionsHeldForReauth only returns rows for the requested
+// identity, not for other identities of the same principal.
+func testEmailSubmissionHeldForReauthIdentityIsolation(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "held-iso@example.com")
+	now := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+
+	insert := func(id, identity string) {
+		t.Helper()
+		err := s.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
+			ID:             id,
+			EnvelopeID:     store.EnvelopeID(id),
+			PrincipalID:    p.ID,
+			IdentityID:     identity,
+			EmailID:        store.MessageID(300),
+			SendAtUs:       now.UnixMicro(),
+			CreatedAtUs:    now.UnixMicro(),
+			UndoStatus:     "pending",
+			External:       true,
+			HeldForReauth:  true,
+			HoldDeadlineUs: now.Add(72 * time.Hour).UnixMicro(),
+		})
+		if err != nil {
+			t.Fatalf("InsertEmailSubmission %s: %v", id, err)
+		}
+	}
+	insert("iso-a", "ident-A")
+	insert("iso-b", "ident-B")
+
+	listA, err := s.Meta().ListEmailSubmissionsHeldForReauth(ctx, "ident-A")
+	if err != nil {
+		t.Fatalf("ListEmailSubmissionsHeldForReauth(A): %v", err)
+	}
+	if len(listA) != 1 || listA[0].ID != "iso-a" {
+		t.Fatalf("listA: got %+v, want [{ID:iso-a}]", listA)
+	}
+
+	listB, err := s.Meta().ListEmailSubmissionsHeldForReauth(ctx, "ident-B")
+	if err != nil {
+		t.Fatalf("ListEmailSubmissionsHeldForReauth(B): %v", err)
+	}
+	if len(listB) != 1 || listB[0].ID != "iso-b" {
+		t.Fatalf("listB: got %+v, want [{ID:iso-b}]", listB)
+	}
+
+	// Unknown identity: empty list, no error.
+	listC, err := s.Meta().ListEmailSubmissionsHeldForReauth(ctx, "ident-NONE")
+	if err != nil {
+		t.Fatalf("ListEmailSubmissionsHeldForReauth(NONE): %v", err)
+	}
+	if len(listC) != 0 {
+		t.Fatalf("listC: got %d rows, want 0", len(listC))
 	}
 }
 

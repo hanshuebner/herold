@@ -1147,6 +1147,15 @@ type EmailSubmissionRow struct {
 	// EmailSubmission/set { destroy } returns cannotUnsend for external rows
 	// because the wire transaction has already completed.
 	External bool
+	// HeldForReauth is true when the submission was parked because the
+	// external submission attempt returned OutcomeAuthFailed (re #70). The
+	// extsubmit.Retryer retries it when the identity transitions back to ok.
+	// JMAP /get renders undoStatus=pending and delivered=queued while true.
+	HeldForReauth bool
+	// HoldDeadlineUs is the unix-micros instant after which the Retryer
+	// abandons the parked submission and marks it final/delivered=no.
+	// Zero when HeldForReauth is false. Default hold window: 72 hours.
+	HoldDeadlineUs int64
 }
 
 // EmailSubmissionFilter narrows a ListEmailSubmissions read per RFC 8621

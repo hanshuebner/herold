@@ -1053,6 +1053,18 @@ type Metadata interface {
 	// gate destroys on UndoStatus.
 	DeleteEmailSubmission(ctx context.Context, id string) error
 
+	// ListEmailSubmissionsHeldForReauth returns rows where
+	// held_for_reauth = true and identity_id = identityID. Used by the
+	// extsubmit.Retryer when an identity transitions from auth-failed to
+	// ok (re #70, REQ-AUTH-EXT-SUBMIT-05).
+	ListEmailSubmissionsHeldForReauth(ctx context.Context, identityID string) ([]EmailSubmissionRow, error)
+
+	// UpdateEmailSubmissionHeld atomically clears (or re-sets) the
+	// held_for_reauth flag, updates undo_status, and replaces the
+	// properties blob. Used by the extsubmit.Retryer after each retry
+	// attempt. Returns ErrNotFound when the row is missing.
+	UpdateEmailSubmissionHeld(ctx context.Context, id string, heldForReauth bool, undoStatus string, properties []byte) error
+
 	// -- Phase 2 JMAP Identity overlay -------------------------------
 
 	// InsertJMAPIdentity persists a new identity overlay row. The
