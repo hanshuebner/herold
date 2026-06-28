@@ -67,7 +67,33 @@ jobs:
       - name: prep web placeholders
         run: make prep-web
       - name: pre-commit run --all-files
-        run: pre-commit run --all-files --show-diff-on-failure --color always
+        # pre-commit installs each hook's environment lazily on first run, and
+        # that cold install depends on third-party infrastructure that can fail
+        # transiently: the gitleaks hook builds from source via
+        # `go install ./...` against proxy.golang.org, which once returned an
+        # HTTP/2 INTERNAL_ERROR mid-download and failed the whole job (run #235)
+        # even though the tree was clean. Real hook findings (gofmt, secrets,
+        # etc.) print "Failed" and must fail the build; only the
+        # environment-install/exception class ("An unexpected error has
+        # occurred") is retried, so a genuine hygiene break is never masked.
+        # Once an environment installs it is cached, so the retry converges.
+        run: |
+          for i in 1 2 3; do
+            if out="$(pre-commit run --all-files --show-diff-on-failure --color always 2>&1)"; then
+              printf '%s\n' "$out"
+              exit 0
+            fi
+            printf '%s\n' "$out"
+            if printf '%s\n' "$out" | grep -qi 'An unexpected error has occurred'; then
+              echo ">>> attempt $i failed during hook-environment install (transient); retrying in 5s..."
+              sleep 5
+              continue
+            fi
+            echo ">>> pre-commit reported real findings; not retrying."
+            exit 1
+          done
+          echo ">>> pre-commit failed with a transient hook-environment error on all 3 attempts."
+          exit 1
 
   lint:
     name: lint
@@ -410,7 +436,7 @@ jobs:
     name: docker (build + publish to code.netzhansa.com registry)
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
-    needs: [lint, web, test]
+    needs: [pre-commit, lint, web, test]
     # On PRs we build both platforms (linux/amd64 and linux/arm64) without
     # pushing so that a broken amd64 leg fails CI before it reaches the
     # registry. On pushes to main and on git tags we additionally push a
@@ -556,7 +582,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
-    needs: [lint, web, test]
+    needs: [pre-commit, lint, web, test]
     strategy:
       fail-fast: false
       matrix:
@@ -618,7 +644,7 @@ jobs:
     # no runner left this job perpetually unschedulable and cancelled; use the
     # same `netzhansa` pool every other job (and html-scrabble's deploy) uses.
     runs-on: [self-hosted, netzhansa, amd64]
-    needs: [test, binaries]
+    needs: [pre-commit, test, binaries]
     # Only deploy on pushes to the default branch, never on PRs or tags.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
