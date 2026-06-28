@@ -92,6 +92,16 @@
   <div class="login-card">
     <h1 class="wordmark">Herold</h1>
 
+    {#if auth.forcedLoginReason === 'expired'}
+      <p class="session-notice" role="status">
+        {t('login.sessionExpired')}
+      </p>
+    {:else if auth.forcedLoginReason === 'revoked'}
+      <p class="session-notice session-notice--revoked" role="status">
+        {t('login.sessionRevoked')}
+      </p>
+    {/if}
+
     <form class="form" onsubmit={handleSubmit} novalidate>
       <div class="field">
         <label for="email" class="label">{t('login.email')}</label>
@@ -222,6 +232,22 @@
   .input:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .session-notice {
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
+    color: var(--text-secondary);
+    margin: 0 0 var(--spacing-05);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-warning) 12%, transparent);
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--support-warning);
+  }
+  .session-notice--revoked {
+    background: color-mix(in srgb, var(--support-error) 10%, transparent);
+    border-left-color: var(--support-error);
+    color: var(--support-error);
   }
 
   .error {

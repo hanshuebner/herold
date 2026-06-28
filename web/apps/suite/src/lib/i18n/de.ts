@@ -1010,6 +1010,8 @@ export const de = {
   'login.signIn': 'Anmelden',
   'login.signInFailed': 'Anmeldung fehlgeschlagen.',
   'login.fieldsRequired': 'Bitte E-Mail-Adresse und Passwort eingeben.',
+  'login.sessionExpired': 'Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.',
+  'login.sessionRevoked': 'Ihre Sitzung wurde auf einem anderen Gerät beendet. Bitte melden Sie sich erneut an.',
 
   // ── Chat-Ansicht (re #97) ────────────────────────────────────────────
   'chat.unavailable': 'Chat ist auf diesem Server nicht konfiguriert',

@@ -17,6 +17,8 @@
 
 /** RFC 7807 problem detail body, as returned by herold. */
 export interface ProblemDetail {
+  /** The problem type URI, e.g. "https://netzhansa.com/problems/session_expired". */
+  type?: string;
   error?: string;
   message?: string;
   [key: string]: unknown;
@@ -24,9 +26,17 @@ export interface ProblemDetail {
 
 export class UnauthenticatedError extends Error {
   readonly status = 401;
-  constructor(message = 'Session expired. Please sign in again.') {
+  /**
+   * The RFC 7807 type URI from the problem detail body, when present.
+   * Known values: "https://netzhansa.com/problems/session_expired",
+   * "https://netzhansa.com/problems/session_revoked".
+   * Null when the server did not emit a typed problem (generic 401).
+   */
+  readonly problemType: string | null;
+  constructor(message = 'Session expired. Please sign in again.', problemType: string | null = null) {
     super(message);
     this.name = 'UnauthenticatedError';
+    this.problemType = problemType;
   }
 }
 
@@ -51,13 +61,25 @@ export class ApiError extends Error {
 
 /**
  * Optional callback invoked whenever the REST client receives a 401.
+ * The problemType argument carries the RFC 7807 type URI from the
+ * problem detail body, or null for a generic (untyped) 401.
  * Register once at application boot (auth.svelte.ts) so the auth state
  * machine can transition to 'unauthenticated' without a circular import.
  */
-let _onUnauthenticated: (() => void) | null = null;
+let _onUnauthenticated: ((problemType: string | null) => void) | null = null;
 
-export function setOnUnauthenticated(fn: () => void): void {
+export function setOnUnauthenticated(fn: (problemType: string | null) => void): void {
   _onUnauthenticated = fn;
+}
+
+/**
+ * Invoke the registered unauthenticated callback, if any.
+ * Used by fetch wrappers (e.g. identity-verify.ts) that handle
+ * their own response parsing but still need to escalate 401s to
+ * the global auth state machine (REQ-AS-10, re #77).
+ */
+export function notifyUnauthenticated(problemType: string | null = null): void {
+  _onUnauthenticated?.(problemType);
 }
 
 /** Parse the herold_public_csrf cookie value from document.cookie. */
@@ -104,14 +126,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (response.status === 401) {
     let msg = 'Session expired. Please sign in again.';
+    let problemType: string | null = null;
     try {
       const b = (await response.json()) as ProblemDetail;
       if (b.message) msg = b.message;
+      if (typeof b.type === 'string' && b.type !== 'about:blank') {
+        problemType = b.type;
+      }
     } catch {
       // ignore
     }
-    _onUnauthenticated?.();
-    throw new UnauthenticatedError(msg);
+    _onUnauthenticated?.(problemType);
+    throw new UnauthenticatedError(msg, problemType);
   }
 
   if (response.status === 403) {

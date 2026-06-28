@@ -50,14 +50,27 @@ interface AuthMeResponse {
   email: string;
   scopes: string[];
   /**
-   * Absolute session deadline as an RFC 3339 UTC timestamp. The SPA arms a
-   * setTimeout against this so the LoginView appears the moment the cookie
-   * expires, instead of only on the user's next interaction. Optional in
-   * the type because older server builds (and the pre-fix wire format) omit
-   * it; when absent the SPA falls back to its reactive 401 handler.
+   * Absolute session deadline as an RFC 3339 UTC timestamp. Kept for
+   * backward-compat with old server builds; the SPA now prefers
+   * session_idle_deadline (REQ-AUTH-75, re #77).
    */
   session_expires_at?: string;
+  /**
+   * Rolling idle deadline as an RFC 3339 UTC timestamp. The SPA arms a
+   * setTimeout against this so the LoginView appears the moment the idle
+   * window closes, instead of only on the user's next interaction. Replaces
+   * the prior use of session_expires_at (absolute) which was useless in the
+   * idle-only session model (REQ-AUTH-75, REQ-AS-11, re #77). Optional
+   * because older server builds omit it; when absent the SPA falls back to
+   * session_expires_at, then to the reactive 401 handler.
+   */
+  session_idle_deadline?: string;
 }
+
+/** Problem type URI suffix for a session_expired 401 (REQ-AUTH-76, re #77). */
+const SESSION_EXPIRED_TYPE = 'https://netzhansa.com/problems/session_expired';
+/** Problem type URI suffix for a session_revoked 401 (REQ-AUTH-76, re #80). */
+const SESSION_REVOKED_TYPE = 'https://netzhansa.com/problems/session_revoked';
 
 class Auth {
   status = $state<AuthStatus>('idle');
@@ -81,12 +94,24 @@ class Auth {
   needsStepUp = $state(false);
 
   /**
-   * Absolute session deadline reported by the server (from the login
-   * response or from GET /auth/me). Drives the expiry timer below. Null
-   * when the server build omits the field — in that case the SPA falls
-   * back to its reactive 401 handler.
+   * Rolling idle deadline reported by the server (from the login response
+   * or from GET /auth/me). The SPA schedules a setTimeout at this deadline
+   * to proactively transition to forced-login state before the next request
+   * fails. Null when the server build omits session_idle_deadline — in that
+   * case the SPA falls back to session_expires_at, then to the reactive 401
+   * handler (REQ-AUTH-75, REQ-AS-11, re #77).
    */
-  sessionExpiresAt = $state<Date | null>(null);
+  sessionIdleDeadline = $state<Date | null>(null);
+
+  /**
+   * Reason for the most recent forced-login transition, or null when no
+   * forced-login has occurred this session or after successful re-login.
+   * 'expired' — idle window closed (timer or first 401 with session_expired).
+   * 'revoked' — session was tombstoned remotely (session_revoked, re #80).
+   * null — initial load / explicit logout / no forced-login this session.
+   * Used by LoginView to render the appropriate context message (REQ-AS-13).
+   */
+  forcedLoginReason = $state<'expired' | 'revoked' | null>(null);
 
   /**
    * Handle for the pending expiry timer. setTimeout returns `number` in the
@@ -96,31 +121,36 @@ class Auth {
   #expiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Arm a setTimeout that calls signalUnauthenticated() exactly when the
-   * session cookie expires. Idempotent: calling twice cancels the previous
-   * timer. If the deadline is already in the past we transition immediately;
-   * if expiresAt is null we just clear any pending timer (used by logout
-   * and by the no-session_expires_at fallback).
+   * Arm a setTimeout that calls signalUnauthenticated('expired') exactly
+   * when the idle deadline passes. Idempotent: calling twice cancels the
+   * previous timer. If the deadline is already in the past the transition
+   * fires immediately. A null deadline just clears any pending timer (used
+   * on logout and when no deadline is available from the server).
+   *
+   * The timer fires proactively so the forced-login overlay appears without
+   * waiting for the user's next network interaction (REQ-AS-11, re #77).
    *
    * setTimeout's effective maximum is 2^31-1 ms (~24.8 days); one week is
    * comfortably below that.
    */
-  #scheduleSessionExpiry(expiresAt: Date | null): void {
+  #scheduleIdleExpiry(deadline: Date | null): void {
     if (this.#expiryTimer !== null) {
       clearTimeout(this.#expiryTimer);
       this.#expiryTimer = null;
     }
-    if (expiresAt === null) {
+    if (deadline === null) {
       return;
     }
-    const delayMs = expiresAt.getTime() - Date.now();
-    if (delayMs <= 0) {
-      this.signalUnauthenticated();
-      return;
-    }
+    // Always go through setTimeout so the signal is deferred to the next
+    // event-loop tick. A synchronous call here would fire during bootstrap()
+    // or login() and be overridden by the subsequent `status = 'ready'`
+    // assignment. Past deadlines use delay 0 (fires immediately after the
+    // current call stack unwinds) and are also caught by the visibilitychange
+    // listener for tabs returning from background (REQ-AS-11, re #77).
+    const delayMs = Math.max(0, deadline.getTime() - Date.now());
     this.#expiryTimer = setTimeout(() => {
       this.#expiryTimer = null;
-      this.signalUnauthenticated();
+      this.signalUnauthenticated('expired');
     }, delayMs);
   }
 
@@ -138,31 +168,35 @@ class Auth {
       // uint64 values (> 2^53 rounds to the wrong integer).
       this.principalId = String(me.principal_id);
       this.scopes = me.scopes ?? [];
-      this.#applyExpiry(me.session_expires_at);
+      // Prefer the rolling idle deadline; fall back to the absolute one
+      // for backward-compat with old server builds (re #77).
+      this.#applyIdleDeadline(me.session_idle_deadline ?? me.session_expires_at);
     } catch {
       // Non-fatal: security forms degrade gracefully when principalId is null.
     }
   }
 
   /**
-   * Parse an optional RFC 3339 timestamp from the server and arm (or clear)
-   * the expiry timer. Invalid or missing timestamps clear any pending timer
-   * and leave sessionExpiresAt at null so the reactive 401 path takes over.
+   * Parse an optional RFC 3339 timestamp from the server, arm (or clear)
+   * the idle-expiry timer, and re-evaluate immediately if the deadline is
+   * already past (handles returning from a long background tab).
+   * Invalid or missing timestamps clear any pending timer and leave
+   * sessionIdleDeadline at null so the reactive 401 path takes over.
    */
-  #applyExpiry(raw: string | undefined): void {
+  #applyIdleDeadline(raw: string | undefined): void {
     if (!raw) {
-      this.sessionExpiresAt = null;
-      this.#scheduleSessionExpiry(null);
+      this.sessionIdleDeadline = null;
+      this.#scheduleIdleExpiry(null);
       return;
     }
     const parsed = new Date(raw);
     if (Number.isNaN(parsed.getTime())) {
-      this.sessionExpiresAt = null;
-      this.#scheduleSessionExpiry(null);
+      this.sessionIdleDeadline = null;
+      this.#scheduleIdleExpiry(null);
       return;
     }
-    this.sessionExpiresAt = parsed;
-    this.#scheduleSessionExpiry(parsed);
+    this.sessionIdleDeadline = parsed;
+    this.#scheduleIdleExpiry(parsed);
   }
 
   /**
@@ -238,17 +272,20 @@ class Auth {
 
     if (response.status === 200) {
       this.needsStepUp = false;
-      // Capture principal_id, scopes, and session_expires_at from the login
-      // response body. The expiry handler arms the timer that triggers the
-      // UI transition without waiting for the user's next interaction.
+      // Capture principal_id, scopes, and the session idle deadline from the
+      // login response body. The idle-expiry timer arms immediately so the
+      // forced-login overlay appears without waiting for a 401 (REQ-AS-11).
       try {
         const body = (await response.json()) as AuthMeResponse;
         this.principalId = String(body.principal_id);
         this.scopes = body.scopes ?? [];
-        this.#applyExpiry(body.session_expires_at);
+        // Prefer rolling idle deadline; fall back to absolute for old servers.
+        this.#applyIdleDeadline(body.session_idle_deadline ?? body.session_expires_at);
       } catch {
         // Ignore parse errors; loadMe() in bootstrap() will populate it.
       }
+      // Clear any prior forced-login reason on successful re-login.
+      this.forcedLoginReason = null;
       // Reset per-account store state before bootstrapping under the new
       // account. The session may still refer to the previous account at
       // this point, which is intentional: account-scoped localStorage
@@ -317,19 +354,25 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
-    this.sessionExpiresAt = null;
-    this.#scheduleSessionExpiry(null);
+    this.sessionIdleDeadline = null;
+    this.forcedLoginReason = null;
+    this.#scheduleIdleExpiry(null);
     this.status = 'unauthenticated';
   }
 
   /**
    * Tell the auth state machine that the session was rejected by the
-   * server. Callers in non-bootstrap code paths (e.g. settings panels
-   * that hit /api/v1/...) use this when they catch UnauthenticatedError
-   * so the LoginView re-prompts instead of leaving the user with a
-   * scary inline banner. Idempotent.
+   * server, or that the local idle timer fired. Sets `forcedLoginReason`
+   * so the LoginView can present the correct context message (REQ-AS-13).
+   *
+   * reason:
+   *   'expired' — idle timer fired proactively, or typed 401 session_expired.
+   *   'revoked' — typed 401 session_revoked (remote revocation, re #80).
+   *   null      — initial bootstrap 401 or untyped error; no context message.
+   *
+   * Idempotent: repeated calls while already unauthenticated are no-ops.
    */
-  signalUnauthenticated(): void {
+  signalUnauthenticated(reason: 'expired' | 'revoked' | null = null): void {
     if (this.status === 'unauthenticated') return;
     // Reset per-account store state while the session is still set so
     // account-scoped localStorage keys resolve to the departing account.
@@ -337,8 +380,9 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
-    this.sessionExpiresAt = null;
-    this.#scheduleSessionExpiry(null);
+    this.sessionIdleDeadline = null;
+    this.forcedLoginReason = reason;
+    this.#scheduleIdleExpiry(null);
     this.status = 'unauthenticated';
   }
 
@@ -360,7 +404,7 @@ class Auth {
       this.session = session;
     } catch (err) {
       if (err instanceof UnauthenticatedError) {
-        this.signalUnauthenticated();
+        this.signalUnauthenticated(null);
         return;
       }
       // Non-fatal: keep using the existing session descriptor.
@@ -375,8 +419,29 @@ export const auth = new Auth();
 // causing AuthGate to replace the application shell with LoginView.
 // Registered here once at module init to avoid circular imports (the clients
 // cannot import auth; auth imports the clients).
-setOnUnauthenticated(() => auth.signalUnauthenticated());
-setJmapOnUnauthenticated(() => auth.signalUnauthenticated());
+setOnUnauthenticated((problemType) => {
+  // Map the RFC 7807 type URI to the forced-login reason (REQ-AS-13, re #77).
+  let reason: 'expired' | 'revoked' | null = null;
+  if (problemType === SESSION_EXPIRED_TYPE) reason = 'expired';
+  else if (problemType === SESSION_REVOKED_TYPE) reason = 'revoked';
+  auth.signalUnauthenticated(reason);
+});
+setJmapOnUnauthenticated(() => auth.signalUnauthenticated(null));
+
+// Proactive idle-expiry check on tab visibility change (REQ-AS-11, re #77).
+// When the tab returns from background after the idle deadline has passed,
+// transition to forced-login state immediately rather than waiting for the
+// next network request to fail with a 401.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && auth.status === 'ready') {
+      const deadline = auth.sessionIdleDeadline;
+      if (deadline !== null && Date.now() >= deadline.getTime()) {
+        auth.signalUnauthenticated('expired');
+      }
+    }
+  });
+}
 
 // ── Account-change reset callbacks ────────────────────────────────────────
 //

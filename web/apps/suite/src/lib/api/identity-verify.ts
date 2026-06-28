@@ -19,7 +19,7 @@
  * surface the 404 directly so the caller can degrade gracefully.
  */
 
-import { ApiError, UnauthenticatedError, ForbiddenError, type ProblemDetail } from './client';
+import { ApiError, UnauthenticatedError, ForbiddenError, notifyUnauthenticated, type ProblemDetail } from './client';
 
 /**
  * Custom request wrapper for the verify-request endpoint so we can
@@ -50,13 +50,21 @@ async function postWithRetryAfter(path: string): Promise<{ retryAfter: number | 
 
   if (response.status === 401) {
     let msg = 'Session expired. Please sign in again.';
+    let problemType: string | null = null;
     try {
       const b = (await response.json()) as ProblemDetail;
       if (b.message) msg = b.message;
+      if (typeof b.type === 'string' && b.type !== 'about:blank') {
+        problemType = b.type;
+      }
     } catch {
       // ignore
     }
-    throw new UnauthenticatedError(msg);
+    // Escalate to the global auth state machine (REQ-AS-10, re #77):
+    // the verify-request path uses its own fetch, so the central
+    // client.ts 401 handler would not fire without this call.
+    notifyUnauthenticated(problemType);
+    throw new UnauthenticatedError(msg, problemType);
   }
 
   if (response.status === 403) {
@@ -125,7 +133,18 @@ export async function postVerifyCode(identityId: string, code: string): Promise<
   if (response.status === 204 || response.status === 200) return;
 
   if (response.status === 401) {
-    throw new UnauthenticatedError();
+    let problemType: string | null = null;
+    try {
+      const b = (await response.json()) as ProblemDetail;
+      if (typeof b.type === 'string' && b.type !== 'about:blank') {
+        problemType = b.type;
+      }
+    } catch {
+      // ignore
+    }
+    // Escalate to the global auth state machine (REQ-AS-10, re #77).
+    notifyUnauthenticated(problemType);
+    throw new UnauthenticatedError('Session expired. Please sign in again.', problemType);
   }
   if (response.status === 403) {
     throw new ForbiddenError();

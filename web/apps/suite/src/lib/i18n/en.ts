@@ -995,6 +995,10 @@ export const en = {
   'login.signIn': 'Sign in',
   'login.signInFailed': 'Sign-in failed.',
   'login.fieldsRequired': 'Please enter your e-mail address and password.',
+  /** REQ-AS-13: forced-login copy for idle expiry. */
+  'login.sessionExpired': 'Your session has expired. Please sign in to continue.',
+  /** REQ-AS-13: forced-login copy for remote revocation (re #80). */
+  'login.sessionRevoked': 'Your session was signed out from another device. Please sign in to continue.',
 
   // ── Chat view (re #97) ──────────────────────────────────────────────
   'chat.unavailable': 'Chat is not configured on this server',

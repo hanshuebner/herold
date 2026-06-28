@@ -88,7 +88,10 @@
       pwConfirm = '';
     } catch (err) {
       if (err instanceof UnauthenticatedError) {
-        pwError = t('settings.security.currentPasswordWrong');
+        // Session expired or revoked. The global auth handler in client.ts has
+        // already called auth.signalUnauthenticated(), so the LoginView will
+        // replace the page. No inline error is shown here (REQ-AS-10, re #77).
+        auth.signalUnauthenticated();
       } else {
         pwError = errorMessage(err);
       }
