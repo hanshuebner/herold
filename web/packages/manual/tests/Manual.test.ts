@@ -363,6 +363,64 @@ describe('ManualPage', () => {
     expect(screen.getByText('First steps')).toBeInTheDocument();
   });
 
+  it('renders fenced code block (pre node from default Markdoc transform) as a code block', async () => {
+    // When the bundle is produced WITHOUT the custom fence node schema,
+    // Markdoc emits `pre` nodes with `data-language` attributes.  The `pre`
+    // fallback handler in ManualPage must render them as proper code blocks.
+    const { default: ManualPage } = await import('../src/components/ManualPage.svelte');
+    const codeBundle = makeBundle('user', [
+      {
+        slug: 'code',
+        title: 'Code',
+        // makeBundle uses Markdoc.transform with empty config, so `fence`
+        // nodes become `pre` nodes -- exactly the old-bundle scenario.
+        src: '# Code\n\n```bash\nopenssl rand -hex 64\n```\n',
+      },
+    ]);
+    const chapter = codeBundle.chapters[0]!;
+    const { container } = render(ManualPage, { props: { chapter, t: (key: string) => key } });
+
+    // The code content should appear inside a pre element (from IncludedCode).
+    const preEl = container.querySelector('pre');
+    expect(preEl).toBeInTheDocument();
+    expect(preEl?.textContent).toContain('openssl rand -hex 64');
+  });
+
+  it('renders fenced code block (fence node from custom schema) as a code block', async () => {
+    // When the bundle is produced WITH the custom fence node schema (the
+    // production path after this fix), nodes are named `fence` and carry
+    // `language` + `content` attributes.  The `fence` branch must handle them.
+    const { default: ManualPage } = await import('../src/components/ManualPage.svelte');
+    // Build a chapter AST directly using the Tag plain-object shape that
+    // isTag() in render.ts accepts ($$mdtype === 'Tag' discriminator).
+    // Use `as unknown` to avoid TypeScript namespace issues with the Markdoc
+    // default import which TypeScript resolves as a type, not a namespace.
+    const fenceChapter = {
+      slug: 'fencecode',
+      title: 'Fence Code',
+      source: 'user/fencecode.mdoc',
+      ast: {
+        $$mdtype: 'Tag',
+        name: 'article',
+        attributes: {},
+        children: [
+          {
+            $$mdtype: 'Tag',
+            name: 'fence',
+            attributes: { language: 'toml', content: '[server]\nbind = "0.0.0.0"\n' },
+            children: [],
+          },
+        ],
+      } as unknown as import('@markdoc/markdoc').RenderableTreeNode,
+      outline: [] as Array<{ id: string; level: 2 | 3; text: string }>,
+    };
+    const { container } = render(ManualPage, { props: { chapter: fenceChapter, t: (key: string) => key } });
+
+    const preEl = container.querySelector('pre');
+    expect(preEl).toBeInTheDocument();
+    expect(preEl?.textContent).toContain('[server]');
+  });
+
   it('does not use innerHTML injection', async () => {
     const { default: ManualPage } = await import('../src/components/ManualPage.svelte');
     // Craft a chapter where if innerHTML were used the script would run.

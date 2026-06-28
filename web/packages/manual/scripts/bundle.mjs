@@ -332,8 +332,33 @@ function buildSsrTagSchemas(M) {
 
 const allowedTagNames = new Set(Object.keys(tags));
 
+/**
+ * Custom fence node schema for the JSON bundler.
+ *
+ * Markdoc's default fence transform produces `pre`/`code` HTML nodes.
+ * This override keeps the node named `fence` in the serialised bundle so
+ * ManualPage.svelte's `fence` branch reaches IncludedCode correctly.
+ *
+ * @type {import('@markdoc/markdoc').Schema}
+ */
+const fenceNode = {
+  render: 'fence',
+  children: ['inline'],
+  attributes: {
+    language: { type: String },
+    content: { type: String },
+    process: { type: Boolean },
+  },
+  transform(node, _config) {
+    return new Markdoc.Tag('fence', {
+      language: node.attributes['language'] ?? 'text',
+      content: node.attributes['content'] ?? '',
+    });
+  },
+};
+
 /** @type {import('@markdoc/markdoc').Config} */
-const markdocConfig = { tags };
+const markdocConfig = { tags, nodes: { fence: fenceNode } };
 
 // ---------------------------------------------------------------------------
 // Validation helpers

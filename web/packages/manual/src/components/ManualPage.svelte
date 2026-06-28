@@ -70,6 +70,10 @@
       {@const lang = attr<string>(n, 'language') ?? 'text'}
       {@const content = attr<string>(n, 'content') ?? nodeChildren(n).filter(isText).join('')}
       <IncludedCode file="" {lang} {content} {t} />
+    {:else if n.name === 'pre'}
+      {@const lang = attr<string>(n, 'data-language') ?? 'text'}
+      {@const content = nodeChildren(n).filter(isText).join('')}
+      <IncludedCode file="" {lang} {content} {t} />
     {:else if n.name === 'blockquote'}
       <blockquote>{#each nodeChildren(n) as child}{@render node(child)}{/each}</blockquote>
     {:else if n.name === 'ul'}

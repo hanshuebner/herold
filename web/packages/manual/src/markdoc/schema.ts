@@ -94,6 +94,33 @@ const include: Schema = {
   },
 };
 
+/**
+ * Fence (fenced code block) node.
+ *
+ * Overrides Markdoc's default transform, which converts `fence` AST nodes
+ * into `pre`/`code` HTML nodes.  By registering a custom node schema here
+ * we keep the node name as `fence` in the serialised bundle, so
+ * ManualPage.svelte's `fence` branch reaches IncludedCode correctly.
+ *
+ * ManualPage.svelte also has a `pre` fallback handler for bundles produced
+ * without this override.
+ */
+const fenceNode: Schema = {
+  render: 'fence',
+  children: ['inline'],
+  attributes: {
+    language: { type: String },
+    content: { type: String },
+    process: { type: Boolean },
+  },
+  transform(node, _config) {
+    return new Tag('fence', {
+      language: (node.attributes['language'] as string) ?? 'text',
+      content: (node.attributes['content'] as string) ?? '',
+    });
+  },
+};
+
 /** Requirement cross-reference.  `id` is a REQ-* identifier. */
 const req: Schema = {
   render: 'Req',
@@ -143,6 +170,9 @@ export const markdocConfig: Config = {
     include,
     req,
     kbd,
+  },
+  nodes: {
+    fence: fenceNode,
   },
 };
 

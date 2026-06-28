@@ -12,16 +12,24 @@ herold handles storage, search, and the suite UI. The configuration is
 per-Identity: a user with multiple Identities can route some through herold's
 outbound queue and others through external providers.
 
-Inbound mail is independent. Herold does not fetch mail from external
-providers. To make externally-delivered mail appear in herold, configure
-forwarding at the provider (Gmail "Forwarding and POP/IMAP", the Microsoft 365
-mailbox forwarding rule, or equivalent); mail forwarded to herold's receiving
-address arrives through the normal inbound pipeline.
+Inbound mail is independent of external SMTP submission. Herold has an IMAP
+client mode that fetches mail from external providers, configured separately
+from outbound submission. You can also configure forwarding at the provider
+(Gmail "Forwarding and POP/IMAP", the Microsoft 365 mailbox forwarding rule,
+or equivalent); mail forwarded to herold's receiving address arrives through
+the normal inbound pipeline.
 
 ## Prerequisite: secrets data key
 
-External submission credentials are stored encrypted. A 32-byte data key must
-be present before enabling the feature.
+When a user configures external SMTP submission, they enter their credentials
+for the external provider (for example, a Gmail app password or an OAuth token)
+into herold so herold can send mail on their behalf. Herold encrypts those
+credentials at rest using a data key before writing them to the database.
+
+A 32-byte (256-bit) data key must be present before enabling the feature. The
+key is referenced by `[server.secrets].data_key_ref` in `system.toml`; herold
+reads the key at startup and refuses to start if the reference is absent or
+resolves to fewer than 32 bytes.
 
 Generate a key:
 
@@ -85,10 +93,12 @@ sysconfig: [server.external_submission] enabled requires [server.secrets].data_k
 
 ## OAuth providers (optional)
 
-Registering an OAuth provider enables the one-click "Sign in with Google" or
-"Sign in with Microsoft" flow in the suite's Identity settings. Without a
-registered provider, users fall back to manual SMTP credential entry; the
-feature works either way.
+Registering an OAuth provider lets users send on behalf of their Google or
+Microsoft account without creating application passwords -- they authorize via
+OAuth instead. The one-click "Sign in with Google" or "Sign in with Microsoft"
+flow appears in the suite's Identity settings when a matching provider is
+configured. Without a registered provider, users fall back to manual SMTP
+credential entry; the feature works either way.
 
 The redirect URI is the same for all Identities on your deployment:
 
@@ -98,7 +108,7 @@ https://<your-herold-hostname>/api/v1/oauth/external-submission/callback
 
 ### Gmail and Google Workspace
 
-1. Open `console.cloud.google.com` and create or select a project.
+1. Open [console.cloud.google.com](https://console.cloud.google.com) and create or select a project.
 
 2. Enable the Gmail API under "APIs & Services" > "Library".
 

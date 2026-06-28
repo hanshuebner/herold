@@ -129,6 +129,26 @@ describe('bundle happy path', () => {
     expect(astStr).toContain('herold');
   });
 
+  it('fenced code blocks produce fence nodes (not pre nodes) in the AST', () => {
+    // The custom fence node schema must override Markdoc's default transform,
+    // which would emit `pre`/`code` HTML nodes.  After the fix, the bundler
+    // emits Tag nodes named `fence` carrying `language` and `content` attrs.
+    const raw = readFileSync(join(outDir, 'user.json'), 'utf8');
+    const bundle = JSON.parse(raw) as {
+      chapters: Array<{ slug: string; ast: Record<string, unknown> }>;
+    };
+    const tagsChapter = bundle.chapters.find((c) => c.slug === 'tags');
+    expect(tagsChapter).toBeDefined();
+    const astStr = JSON.stringify(tagsChapter!.ast);
+    // Must contain fence nodes (custom schema output).
+    expect(astStr).toContain('"name":"fence"');
+    // Must NOT contain pre nodes emitted by Markdoc's default fence transform.
+    expect(astStr).not.toContain('"name":"pre"');
+    // fence nodes must carry language and content attributes.
+    expect(astStr).toContain('"language"');
+    expect(astStr).toContain('"content"');
+  });
+
   it('source field is a relative path', () => {
     const raw = readFileSync(join(outDir, 'user.json'), 'utf8');
     const bundle = JSON.parse(raw) as {
