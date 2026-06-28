@@ -15,8 +15,9 @@
  *   - Dark-mode stroke is lighter than the light-mode stroke.
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { svgFor } from './mail-favicon';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { svgFor, _internals_forTest } from './mail-favicon';
+import type { RasterizeFn } from './mail-favicon';
 
 // Restore any matchMedia mock between tests.
 afterEach(() => {
@@ -133,5 +134,96 @@ describe('svgFor: dark-mode stroke flip', () => {
     const svg = svgFor(32, 0);
     expect(svg).toContain('#e9ecef');
     expect(svg).not.toContain('#222a3d');
+  });
+});
+
+// ── Latest-wins race protection (re #71) ──────────────────────────────────
+//
+// setMailFaviconWith is the injectable-rasterizer form of setMailFavicon.
+// These tests verify that when two calls overlap, only the most-recent
+// result reaches the DOM. The rasterizer is replaced with a manually-
+// controlled mock so the test can hold a call mid-flight while a second
+// call completes, then release the first and confirm its result is dropped.
+//
+// canvas.toDataURL is not available in happy-dom so the real rasterize()
+// function cannot be used here; that is why _internals_forTest exposes
+// setMailFaviconWith with a pluggable rasterizer.
+
+describe('setMailFavicon: latest-wins race protection', () => {
+  // Helpers to build rasterizers with controlled timing.
+
+  // A rasterizer whose calls never resolve until resolveAll() is called.
+  function deferredRasterizer(): {
+    rasterizeFn: RasterizeFn;
+    resolveAll: () => void;
+  } {
+    const pending: Array<() => void> = [];
+    return {
+      rasterizeFn: (size, _count) =>
+        new Promise<{ size: number; url: string } | null>((resolve) => {
+          pending.push(() => resolve({ size, url: `data:image/png;tag=stale` }));
+        }),
+      resolveAll(): void {
+        pending.forEach((r) => r());
+      },
+    };
+  }
+
+  // A rasterizer that resolves immediately with a tagged URL.
+  function immediateRasterizer(tag: string): RasterizeFn {
+    return (size, _count) => Promise.resolve({ size, url: `data:image/png;tag=${tag}` });
+  }
+
+  function iconHrefs(): string[] {
+    return [...document.querySelectorAll("link[rel~='icon']")].map(
+      (l) => (l as HTMLLinkElement).href,
+    );
+  }
+
+  beforeEach(() => {
+    _internals_forTest.resetSeq();
+    // Remove any icon links left over from a previous test.
+    document.querySelectorAll("link[rel~='icon']").forEach((l) => l.remove());
+  });
+
+  it('applies a single call normally', async () => {
+    await _internals_forTest.setMailFaviconWith(3, immediateRasterizer('only'));
+    const hrefs = iconHrefs();
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.every((h) => h.includes('only'))).toBe(true);
+  });
+
+  it('discards a stale in-flight result when a newer call completes first', async () => {
+    // Start a slow call (count=1); it rasterizes but does not resolve yet.
+    const { rasterizeFn: slowFn, resolveAll } = deferredRasterizer();
+    const stalePromise = _internals_forTest.setMailFaviconWith(1, slowFn);
+
+    // Start and complete a faster call (count=2).
+    await _internals_forTest.setMailFaviconWith(2, immediateRasterizer('fresh'));
+
+    // favicon should show the fresh (count=2) result.
+    expect(iconHrefs().every((h) => h.includes('fresh'))).toBe(true);
+
+    // Now release the stale (count=1) rasterization.
+    resolveAll();
+    await stalePromise;
+
+    // The stale result must have been dropped — DOM still reflects fresh.
+    const hrefs = iconHrefs();
+    expect(hrefs.every((h) => !h.includes('stale'))).toBe(true);
+    expect(hrefs.some((h) => h.includes('fresh'))).toBe(true);
+  });
+
+  it('last call wins when both resolve in rapid succession', async () => {
+    // Both calls are immediate but run concurrently.
+    const first = _internals_forTest.setMailFaviconWith(1, immediateRasterizer('first'));
+    const second = _internals_forTest.setMailFaviconWith(2, immediateRasterizer('second'));
+    await Promise.all([first, second]);
+
+    // The second call incremented the seq counter, so the first's DOM write
+    // was guarded out. Only the second's hrefs should appear.
+    const hrefs = iconHrefs();
+    expect(hrefs.every((h) => !h.includes('first'))).toBe(true);
+    expect(hrefs.some((h) => h.includes('second'))).toBe(true);
   });
 });

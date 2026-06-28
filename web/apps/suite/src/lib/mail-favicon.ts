@@ -12,6 +12,12 @@
  * The envelope stroke flips between dark (#222a3d) and light (#e9ecef) based on
  * the OS prefers-color-scheme so the icon stays visible on both light and dark
  * browser chrome.
+ *
+ * Race safety: rasterization is asynchronous (SVG → Image → canvas → PNG).
+ * If setMailFavicon is called again before a prior call's rasterization
+ * completes, the stale result is discarded. Only the most-recent call's result
+ * is applied to the DOM. This keeps the favicon badge in sync with the
+ * document.title update, which is synchronous (re #71).
  */
 
 interface SizeDesign {
@@ -72,6 +78,12 @@ export function svgFor(size: 16 | 32, count: number): string {
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' + body + '</svg>';
 }
 
+// Rasterizer function type. Exported for unit tests that inject a mock.
+export type RasterizeFn = (
+  size: 16 | 32,
+  count: number,
+) => Promise<{ size: number; url: string } | null>;
+
 function rasterize(size: 16 | 32, count: number): Promise<{ size: number; url: string } | null> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -92,17 +104,24 @@ function rasterize(size: 16 | 32, count: number): Promise<{ size: number; url: s
   });
 }
 
+// Sequence counter: incremented on every setMailFavicon call. The DOM-write
+// phase checks that it has not advanced while rasterization was in flight;
+// stale results (seq !== _seq) are silently dropped so the most-recent call
+// always wins (re #71).
+let _seq = 0;
+
 /**
- * Update the document favicon to show the given unread count as a badge.
- *
- * - count === 0: plain envelope, no badge
- * - count > 99: renders "99+"
- * - Replaces all existing link[rel~='icon'] tags with fresh PNG data-URL entries
- *   for 16px and 32px.
+ * Core implementation of setMailFavicon; accepts a rasterizer so unit tests
+ * can inject a synchronous or controlled mock without needing a real canvas.
  */
-export async function setMailFavicon(count: number): Promise<void> {
+async function setMailFaviconWith(count: number, rasterizeFn: RasterizeFn): Promise<void> {
   const safeCount = Math.max(0, Math.trunc(count));
-  const results = await Promise.all([rasterize(16, safeCount), rasterize(32, safeCount)]);
+  const seq = ++_seq;
+
+  const results = await Promise.all([rasterizeFn(16, safeCount), rasterizeFn(32, safeCount)]);
+
+  // A newer call started while we were rasterizing — our result is stale.
+  if (seq !== _seq) return;
 
   const links = document.querySelectorAll("link[rel~='icon']");
   links.forEach((l) => l.parentNode?.removeChild(l));
@@ -117,3 +136,27 @@ export async function setMailFavicon(count: number): Promise<void> {
     document.head.appendChild(link);
   }
 }
+
+/**
+ * Update the document favicon to show the given unread count as a badge.
+ *
+ * - count === 0: plain envelope, no badge
+ * - count > 99: renders "99+"
+ * - Replaces all existing link[rel~='icon'] tags with fresh PNG data-URL entries
+ *   for 16px and 32px.
+ * - Latest-wins: if called again before the previous rasterization completes,
+ *   the stale result is discarded and only the most-recent count is applied.
+ */
+export async function setMailFavicon(count: number): Promise<void> {
+  return setMailFaviconWith(count, rasterize);
+}
+
+/**
+ * Internals exported only for unit tests. Not part of the public API.
+ */
+export const _internals_forTest = {
+  setMailFaviconWith,
+  resetSeq(): void {
+    _seq = 0;
+  },
+};
