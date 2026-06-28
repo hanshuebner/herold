@@ -5,10 +5,12 @@
    * Renders:
    *   - A radio toggle: "Use this server (recommended)" vs
    *     "Use an external SMTP server" (REQ-MAIL-SUBMIT-01).
-   *   - OAuth one-click buttons (Gmail / Microsoft 365) when visible
-   *     (REQ-MAIL-SUBMIT-02). The suite defaults to showing both;
-   *     if the server returns 503 (provider not configured by operator),
-   *     an inline error is shown instead of navigating away.
+   *     When the identity's domain is not authoritative on this server
+   *     (domain_authoritative=false per re #74), the local-server option is
+   *     omitted and external submission is required.
+   *   - OAuth one-click buttons for each provider id listed in
+   *     available_oauth_providers from the server (re #73). When the list
+   *     is empty, no OAuth buttons are rendered.
    *   - Manual entry form: host, port, security, auth method, credential
    *     (REQ-MAIL-SUBMIT-03).
    *   - Inline probe-failure error from 422 responses (REQ-MAIL-SUBMIT-03).
@@ -50,16 +52,37 @@
     void handle.load();
   });
 
+  // ── Derived server capabilities ───────────────────────────────────────────
+
+  /**
+   * True when the identity's domain is locally authoritative. Defaults to
+   * true before the data loads so the UI shows a radio group, not the
+   * forced-external notice, during the brief loading state.
+   */
+  let domainAuthoritative = $derived(handle.data?.domain_authoritative ?? true);
+
+  /**
+   * Sorted list of OAuth provider ids configured on this server. Empty
+   * until the data loads, or when the operator has configured none (re #73).
+   */
+  let availableOAuthProviders = $derived(handle.data?.available_oauth_providers ?? []);
+
   // ── Local form state ─────────────────────────────────────────────────────
 
   /**
    * Whether the user has toggled "Use an external SMTP server".
-   * Initialised from handle.data.configured once loaded.
+   * Initialised from handle.data once loaded. When domain_authoritative
+   * is false the value is forced to true and the toggle is hidden (re #74).
    */
   let useExternal = $state(false);
   $effect(() => {
     if (handle.status === 'ready' && handle.data) {
-      useExternal = handle.data.configured;
+      if (!handle.data.domain_authoritative) {
+        // External submission is required for non-authoritative domains.
+        useExternal = true;
+      } else {
+        useExternal = handle.data.configured;
+      }
     }
   });
 
@@ -89,7 +112,7 @@
   let saveError = $state<string | null>(null);
   /** OAuth button-specific error (e.g. 503 provider not configured). */
   let oauthError = $state<string | null>(null);
-  let oauthStarting = $state<OAuthProvider | null>(null);
+  let oauthStarting = $state<string | null>(null);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -160,7 +183,9 @@
     try {
       await deleteSubmission(identity.id);
       submissionStore.evict(identity.id);
-      useExternal = false;
+      if (domainAuthoritative) {
+        useExternal = false;
+      }
       host = '';
       port = 587;
       security = 'starttls';
@@ -178,12 +203,12 @@
     }
   }
 
-  async function startOAuthFlow(provider: OAuthProvider): Promise<void> {
+  async function startOAuthFlow(provider: string): Promise<void> {
     if (oauthStarting) return;
     oauthError = null;
     oauthStarting = provider;
     try {
-      await startOAuth(identity.id, provider);
+      await startOAuth(identity.id, provider as OAuthProvider);
       // The browser navigates away; we only reach here if startOAuth threw
       // (e.g. 503 provider not configured).
     } catch (err) {
@@ -212,8 +237,15 @@
     }
   }
 
-  function providerLabel(provider: OAuthProvider): string {
+  function providerLabel(provider: string): string {
     return provider === 'gmail' ? 'Gmail' : 'Microsoft 365';
+  }
+
+  /** Label for the OAuth sign-in button for a given provider id. */
+  function providerSigninLabel(provider: string): string {
+    if (provider === 'gmail') return t('settings.submission.signinGoogle');
+    if (provider === 'm365') return t('settings.submission.signinMicrosoft');
+    return provider;
   }
 
   let isConfigured = $derived(handle.data?.configured === true);
@@ -228,60 +260,66 @@
   {:else if handle.status === 'error'}
     <p class="form-error" role="alert">{handle.error}</p>
   {:else}
-    <!-- Toggle -->
-    <div class="radio-group" role="radiogroup" aria-label={t('settings.submission.radioGroup')}>
-      <label class="radio-label">
-        <input
-          type="radio"
-          name="submission-mode-{identity.id}"
-          checked={!useExternal}
-          onchange={() => onToggle(false)}
-          disabled={saving || removing}
-        />
-        <span>
-          {t('settings.submission.useThisServer')} <span class="recommended">{t('settings.submission.recommended')}</span>
-        </span>
-      </label>
-      <label class="radio-label">
-        <input
-          type="radio"
-          name="submission-mode-{identity.id}"
-          checked={useExternal}
-          onchange={() => onToggle(true)}
-          disabled={saving || removing}
-        />
-        <span>{t('settings.submission.useExternal')}</span>
-      </label>
-    </div>
+    {#if domainAuthoritative}
+      <!-- Toggle (only shown when this server can handle the domain) -->
+      <div class="radio-group" role="radiogroup" aria-label={t('settings.submission.radioGroup')}>
+        <label class="radio-label">
+          <input
+            type="radio"
+            name="submission-mode-{identity.id}"
+            checked={!useExternal}
+            onchange={() => onToggle(false)}
+            disabled={saving || removing}
+          />
+          <span>
+            {t('settings.submission.useThisServer')} <span class="recommended">{t('settings.submission.recommended')}</span>
+          </span>
+        </label>
+        <label class="radio-label">
+          <input
+            type="radio"
+            name="submission-mode-{identity.id}"
+            checked={useExternal}
+            onchange={() => onToggle(true)}
+            disabled={saving || removing}
+          />
+          <span>{t('settings.submission.useExternal')}</span>
+        </label>
+      </div>
+    {:else}
+      <!-- Foreign domain: external submission is required (re #74). -->
+      <div class="foreign-domain-notice" role="note">
+        {t('settings.submission.foreignDomainNotice')}
+      </div>
+    {/if}
 
     {#if useExternal}
       <!-- External config panel -->
       <div class="external-panel">
 
-        <!-- OAuth one-click buttons -->
-        <div class="oauth-section">
-          <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
-          <div class="oauth-buttons">
-            <Button
-              variant="secondary"
-              onclick={() => void startOAuthFlow('gmail')}
-              disabled={oauthStarting !== null || saving}
-            >
-              {oauthStarting === 'gmail' ? t('settings.submission.starting') : t('settings.submission.signinGoogle')}
-            </Button>
-            <Button
-              variant="secondary"
-              onclick={() => void startOAuthFlow('m365')}
-              disabled={oauthStarting !== null || saving}
-            >
-              {oauthStarting === 'm365' ? t('settings.submission.starting') : t('settings.submission.signinMicrosoft')}
-            </Button>
+        <!-- OAuth one-click buttons (only for server-configured providers, re #73) -->
+        {#if availableOAuthProviders.length > 0}
+          <div class="oauth-section">
+            <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
+            <div class="oauth-buttons">
+              {#each availableOAuthProviders as provider (provider)}
+                <Button
+                  variant="secondary"
+                  onclick={() => void startOAuthFlow(provider)}
+                  disabled={oauthStarting !== null || saving}
+                >
+                  {oauthStarting === provider ? t('settings.submission.starting') : providerSigninLabel(provider)}
+                </Button>
+              {/each}
+            </div>
+            {#if oauthError}
+              <p class="form-error" role="alert">{oauthError}</p>
+            {/if}
+            <p class="or-divider">{t('settings.submission.orManual')}</p>
           </div>
-          {#if oauthError}
-            <p class="form-error" role="alert">{oauthError}</p>
-          {/if}
-          <p class="or-divider">{t('settings.submission.orManual')}</p>
-        </div>
+        {:else if oauthError}
+          <p class="form-error" role="alert">{oauthError}</p>
+        {/if}
 
         <!-- Manual entry form -->
         <form class="manual-form" onsubmit={save} novalidate>
@@ -401,7 +439,7 @@
         </form>
       </div>
     {:else if isConfigured}
-      <!-- Was configured but user toggled back -->
+      <!-- Was configured but user toggled back (only reachable when domainAuthoritative) -->
       <div class="revert-hint">
         <p class="hint">{t('settings.submission.revertHint')}</p>
       </div>
@@ -461,6 +499,17 @@
   .recommended {
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Foreign-domain notice (re #74) */
+  .foreign-domain-notice {
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-warning) 12%, transparent);
+    border-left: 3px solid var(--support-warning);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
   }
 
   .external-panel {

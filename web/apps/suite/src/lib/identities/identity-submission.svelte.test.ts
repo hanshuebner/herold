@@ -178,6 +178,8 @@ describe('IdentitySubmissionStore._entry — state_unsafe_mutation regression', 
       submit_security: 'starttls' as const,
       submit_auth_method: 'password' as const,
       state: 'ok' as const,
+      available_oauth_providers: [] as string[],
+      domain_authoritative: true,
     };
     vi.mocked(getSubmission).mockResolvedValueOnce(status);
 

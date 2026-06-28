@@ -29,6 +29,10 @@ export type SubmissionState = 'ok' | 'auth-failed' | 'unreachable';
 /**
  * GET /api/v1/identities/{id}/submission response body.
  * No credential material is ever returned here (REQ-MAIL-SUBMIT-08).
+ *
+ * The server always includes `available_oauth_providers` and
+ * `domain_authoritative` regardless of whether `configured` is true or
+ * false (re #73, re #74).
  */
 export interface SubmissionStatus {
   configured: boolean;
@@ -37,6 +41,18 @@ export interface SubmissionStatus {
   submit_security?: SubmitSecurity;
   submit_auth_method?: SubmitAuthMethod;
   state?: SubmissionState;
+  /**
+   * Sorted list of OAuth provider ids that are fully configured on this
+   * server (non-empty ClientSecret). The Suite renders one OAuth sign-in
+   * button per entry. Empty when no OAuth providers are configured (re #73).
+   */
+  available_oauth_providers: string[];
+  /**
+   * True when the identity's email domain is authoritative on this server.
+   * False means the domain is external: DKIM signing and DMARC alignment
+   * are unavailable, so external SMTP submission is required (re #74).
+   */
+  domain_authoritative: boolean;
 }
 
 /**
