@@ -1050,19 +1050,20 @@ body.manual-page {
 .manual-content code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  font-weight: var(--type-code-01-weight);
+  font-weight: 600;
   line-height: 1;
   vertical-align: 0.1em;
-  background: var(--layer-02);
+  background: var(--layer-01);
+  border: 1px solid var(--border-subtle-01);
   padding: 0.1em 0.3em;
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-sm);
 }
 
 .manual-content pre {
   font-family: var(--font-mono);
   font-size: 0.88em;
   font-weight: var(--type-code-02-weight);
-  background: var(--layer-02);
+  background: var(--layer-01);
   padding: var(--spacing-05);
   border-radius: var(--radius-md);
   overflow-x: auto;

@@ -49,7 +49,7 @@
     border: 1px solid var(--border-strong-01);
     border-radius: var(--radius-md);
     overflow: hidden;
-    background: var(--layer-02);
+    background: var(--layer-01);
   }
 
   .code-block__header {
