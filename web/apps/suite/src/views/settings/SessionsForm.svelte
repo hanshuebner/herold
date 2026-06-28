@@ -205,32 +205,31 @@
   .session-list {
     list-style: none;
     padding: 0;
-    margin: 0 0 var(--space-4) 0;
+    margin: 0 0 var(--spacing-05) 0;
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--spacing-03);
   }
 
   .session-row {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-3);
-    border: 1px solid var(--color-border);
+    gap: var(--spacing-04);
+    padding: var(--spacing-04);
+    border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
-    background: var(--color-surface);
+    background: var(--layer-01);
   }
 
   .session-row.current {
-    border-color: var(--color-accent);
-    background: var(--color-accent-subtle, var(--color-surface));
+    border-color: var(--interactive);
   }
 
   .session-info {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--spacing-02);
     min-width: 0;
   }
 
@@ -238,29 +237,29 @@
     font-weight: 600;
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--spacing-03);
     flex-wrap: wrap;
   }
 
   .chip {
     display: inline-block;
-    padding: 1px var(--space-2);
-    border-radius: var(--radius-full, 9999px);
-    font-size: var(--text-xs);
+    padding: 1px var(--spacing-03);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
     font-weight: 500;
   }
 
   .current-chip {
-    background: var(--color-accent);
-    color: var(--color-on-accent, #fff);
+    background: var(--interactive);
+    color: var(--text-on-color);
   }
 
   .session-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
-    color: var(--color-text-secondary);
+    gap: var(--spacing-03);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
   }
 
   .session-actions {
@@ -268,14 +267,14 @@
   }
 
   .bulk-actions {
-    margin-top: var(--space-4);
+    margin-top: var(--spacing-05);
   }
 
   .muted {
-    color: var(--color-text-secondary);
+    color: var(--text-secondary);
   }
 
   .error {
-    color: var(--color-error);
+    color: var(--support-error);
   }
 </style>
