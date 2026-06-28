@@ -1,31 +1,3 @@
-From 3380a8ece93fc64d14ab44cba629cbffc0032a18 Mon Sep 17 00:00:00 2001
-From: Hans Hubner <hans@huebner.org>
-Date: Sat, 27 Jun 2026 14:32:05 +0200
-Subject: [PATCH] imapclient: add X-GM-LABELS (X-GM-EXT-1) FETCH support
-
-Gmail's IMAP server advertises X-GM-EXT-1 and exposes each message's set of
-labels via the X-GM-LABELS FETCH data item. The client previously hard-errored
-on this msg-att ("unsupported msg-att name") in handleFetch, breaking any
-FETCH that requested it.
-
-Add first-class support:
-
-  - imap.FetchOptions.GmailLabels requests the item; writeFetchItems emits the
-    X-GM-LABELS atom.
-  - handleFetch parses the parenthesised label list (backslash-prefixed system
-    labels such as \\Inbox / \\Sent, and astring user labels which may be
-    quoted and modified-UTF-7 encoded) into FetchItemDataGmailLabels.
-  - FetchMessageBuffer.GmailLabels is populated by Collect via populateItemData.
-
-A scripted-server unit test covers the round-trip (mixed system and quoted
-user labels, including a label with a space and one with a slash).
----
- fetch.go                       |   1 +
- imapclient/fetch.go            |  66 ++++++++++++++++++-
- imapclient/fetch_gmail_test.go | 117 +++++++++++++++++++++++++++++++++
- 3 files changed, 183 insertions(+), 1 deletion(-)
- create mode 100644 imapclient/fetch_gmail_test.go
-
 diff --git a/fetch.go b/fetch.go
 index f146c89..a2d8073 100644
 --- a/fetch.go
@@ -39,7 +11,7 @@ index f146c89..a2d8073 100644
  	ChangedSince uint64 // requires CONDSTORE
  }
 diff --git a/imapclient/fetch.go b/imapclient/fetch.go
-index 309825c..45a262e 100644
+index 912b22a..8e9fac6 100644
 --- a/imapclient/fetch.go
 +++ b/imapclient/fetch.go
 @@ -57,6 +57,7 @@ func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *i
@@ -280,6 +252,74 @@ index 0000000..6841418
 +		t.Errorf("UID = %d, want 42", msgs[0].UID)
 +	}
 +}
--- 
-2.47.3
-
+diff --git a/imapserver/imapmemserver/message.go b/imapserver/imapmemserver/message.go
+index d558045..97cb3c8 100644
+--- a/imapserver/imapmemserver/message.go
++++ b/imapserver/imapmemserver/message.go
+@@ -154,7 +154,7 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria) bool {
+ 		return false
+ 	}
+ 
+-	header := mail.Header{msg.reader().Header}
++	header := mail.Header{Header: msg.reader().Header}
+ 
+ 	for _, fieldCriteria := range criteria.Header {
+ 		if !matchHeaderFields(header.FieldsByKey(fieldCriteria.Key), fieldCriteria.Value) {
+diff --git a/imapserver/message.go b/imapserver/message.go
+index 9650e08..942ae61 100644
+--- a/imapserver/message.go
++++ b/imapserver/message.go
+@@ -85,7 +85,7 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
+ 
+ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (string, textproto.Header, io.Reader) {
+ 	// First part of non-multipart message refers to the message itself
+-	msgHeader := gomessage.Header{header}
++	msgHeader := gomessage.Header{Header: header}
+ 	mediaType, _, _ := msgHeader.ContentType()
+ 	if !strings.HasPrefix(mediaType, "multipart/") && len(partPath) > 0 && partPath[0] == 1 {
+ 		partPath = partPath[1:]
+@@ -97,7 +97,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
+ 
+ 		header, body = openMessagePart(header, body, parentMediaType)
+ 
+-		msgHeader := gomessage.Header{header}
++		msgHeader := gomessage.Header{Header: header}
+ 		mediaType, typeParams, _ := msgHeader.ContentType()
+ 		if !strings.HasPrefix(mediaType, "multipart/") {
+ 			if partNum != 1 {
+@@ -131,7 +131,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
+ }
+ 
+ func openMessagePart(header textproto.Header, body io.Reader, parentMediaType string) (textproto.Header, io.Reader) {
+-	msgHeader := gomessage.Header{header}
++	msgHeader := gomessage.Header{Header: header}
+ 	mediaType, _, _ := msgHeader.ContentType()
+ 	if !msgHeader.Has("Content-Type") && parentMediaType == "multipart/digest" {
+ 		mediaType = "message/rfc822"
+@@ -177,7 +177,7 @@ func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte
+ 		return nil
+ 	}
+ 
+-	part, err := gomessage.New(gomessage.Header{header}, body)
++	part, err := gomessage.New(gomessage.Header{Header: header}, body)
+ 	if err != nil {
+ 		return nil
+ 	}
+@@ -208,7 +208,7 @@ func ExtractBinarySectionSize(r io.Reader, item *imap.FetchItemBinarySectionSize
+ //
+ // It can be used by server backends to implement Session.Fetch.
+ func ExtractEnvelope(h textproto.Header) *imap.Envelope {
+-	mh := mail.Header{gomessage.Header{h}}
++	mh := mail.Header{Header: gomessage.Header{Header: h}}
+ 	date, _ := mh.Date()
+ 	subject, _ := mh.Subject()
+ 	inReplyTo, _ := mh.MsgIDList("In-Reply-To")
+@@ -255,7 +255,7 @@ func ExtractBodyStructure(r io.Reader) imap.BodyStructure {
+ }
+ 
+ func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStructure {
+-	header := gomessage.Header{rawHeader}
++	header := gomessage.Header{Header: rawHeader}
+ 
+ 	mediaType, typeParams, _ := header.ContentType()
+ 	primaryType, subType, _ := strings.Cut(mediaType, "/")

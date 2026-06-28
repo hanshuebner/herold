@@ -1,7 +1,9 @@
 repo:   https://github.com/emersion/go-imap
-tag:    v2.0.0-beta.8
-commit: 7ac47a9cfd9a06ff5f3bdee52d7420137f023a1e
+branch: v2
+commit: 3fda9fc0aafa1421191bfe8b14440b7f0783a79d
 
-This is a permanent in-tree fork. Run `make imap-upstream-diff` to review
-upstream commits since the base and cherry-pick relevant parser or robustness
-fixes.
+This is a permanent in-tree fork. The base above is an untagged commit on the
+upstream v2 branch (five commits past v2.0.0-beta.8), harvested for the NOTIFY
+client support and the client error-wrapping and server robustness fixes. Run
+`make imap-upstream-diff` to review upstream commits since the base and
+cherry-pick relevant parser or robustness fixes.
