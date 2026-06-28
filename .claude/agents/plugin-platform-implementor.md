@@ -1,7 +1,7 @@
 ---
 name: plugin-platform-implementor
 description: Owns internal/plugin (supervisor + JSON-RPC client + manifest validator), the plugin Go SDK, and the first-party plugins under plugins/ (dns-cloudflare, dns-route53, dns-hetzner, dns-manual, spam-llm, events-nats).
-tools: Read, Edit, Write, Bash, Grep, Glob
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
 model: sonnet
 ---
 

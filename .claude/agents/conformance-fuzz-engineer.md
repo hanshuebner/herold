@@ -1,7 +1,7 @@
 ---
 name: conformance-fuzz-engineer
 description: Owns external wire-protocol conformance suites (imaptest, scripted SMTP vs Postfix/Exim, Pigeonhole, DKIM/DMARC/ARC vectors), fuzz target coverage, deterministic test harness, and the load/chaos scenarios. Required reviewer on wire-parser PRs.
-tools: Read, Edit, Write, Bash, Grep, Glob
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
 model: sonnet
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: http-api-implementor
 description: Owns the admin REST API (internal/protoadmin), HTTP send API (internal/protosend), mail-arrival webhooks (internal/protowebhook), and the event dispatcher that fans events into event-publisher plugins (internal/protoevents).
-tools: Read, Edit, Write, Bash, Grep, Glob
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
 model: sonnet
 ---
 

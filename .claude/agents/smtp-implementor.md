@@ -1,7 +1,7 @@
 ---
 name: smtp-implementor
 description: Implements the SMTP inbound (relay + submission) and outbound state machines and ESMTP extensions in internal/protosmtp. Use whenever SMTP wire behavior, SASL, PIPELINING, BDAT, SMTPUTF8, DSN, REQUIRETLS, or SIZE is being changed.
-tools: Read, Edit, Write, Bash, Grep, Glob
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
 model: sonnet
 ---
 
