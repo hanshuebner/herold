@@ -224,6 +224,12 @@ jobs:
         run: pnpm --dir web run build
       - name: check (svelte-check etc)
         run: pnpm --dir web run check
+      # check-css-tokens verifies every var(--x) without a fallback in
+      # web/apps/{suite,admin}/src resolves against the canonical tokens.css.
+      # var(--undefined) silently falls back in CSS and was previously the
+      # source of invisible chips and collapsed field spacing (#80).
+      - name: check CSS token references
+        run: node scripts/check-css-tokens.mjs
       # `test` and `lint` are no-ops today (no package defines them);
       # `pnpm --recursive --if-present` keeps that future-proof.
       - name: test

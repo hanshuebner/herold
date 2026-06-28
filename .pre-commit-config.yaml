@@ -179,5 +179,18 @@ repos:
         pass_filenames: false
         files: ^web/.*\.(svelte|ts|tsx|js|json)$
 
+      # css-tokens checks that every var(--x) without a fallback in
+      # web/apps/{suite,admin}/src resolves against the canonical design-
+      # system tokens.css. Silent CSS fallback bugs (var(--undefined) falls
+      # back silently) have shipped before (#80, fixed 5ca36b0e); this gate
+      # prevents recurrence. Fires when any web .svelte, .css, or .ts file
+      # changes; a Go-only commit pays nothing.
+      - id: css-tokens
+        name: CSS token references vs design-system
+        entry: node scripts/check-css-tokens.mjs
+        language: system
+        pass_filenames: false
+        files: ^web/.*\.(svelte|css|ts)$
+
 default_language_version:
   python: python3

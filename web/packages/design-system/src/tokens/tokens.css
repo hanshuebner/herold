@@ -46,6 +46,15 @@
   --type-heading-03-line: 28px;
   --type-heading-03-weight: 400;
 
+  /* heading-compact-02: 16px semibold — compact paired headings, modal titles */
+  --type-heading-compact-02-size: 16px;
+  --type-heading-compact-02-line: 22px;
+  --type-heading-compact-02-weight: 600;
+
+  /* helper-text-01: 12px — field helper copy, captions */
+  --type-helper-text-01-size: 12px;
+  --type-helper-text-01-line: 16px;
+
   --type-code-01-size: 12px;
   --type-code-01-line: 16px;
   --type-code-01-weight: 600;
@@ -97,16 +106,22 @@
   --layer-03: #525252;
 
   --border-subtle-01: #393939;
+  --border-subtle-02: #525252;
   --border-strong-01: #6f6f6f;
+
+  --field-01: #262626;
 
   --text-primary: #f4f4f4;
   --text-secondary: #c6c6c6;
   --text-helper: #8d8d8d;
   --text-on-color: #ffffff;
   --text-disabled: #6f6f6f;
+  --text-placeholder: #6f6f6f;
 
   --interactive: #4589ff;
+  --interactive-hover: #74b1ff;
   --focus: #ffffff;
+  --focus-inverse: #0f62fe;
 
   --support-error: #fa4d56;
   --support-success: #42be65;
@@ -137,16 +152,22 @@
   --layer-03: #f4f4f4;
 
   --border-subtle-01: #e0e0e0;
+  --border-subtle-02: #c6c6c6;
   --border-strong-01: #8d8d8d;
+
+  --field-01: #f4f4f4;
 
   --text-primary: #161616;
   --text-secondary: #525252;
   --text-helper: #6f6f6f;
   --text-on-color: #ffffff;
   --text-disabled: #c6c6c6;
+  --text-placeholder: #a8a8a8;
 
   --interactive: #0f62fe;
+  --interactive-hover: #0050e6;
   --focus: #0f62fe;
+  --focus-inverse: #ffffff;
 
   --support-error: #da1e28;
   --support-success: #198038;
@@ -171,16 +192,22 @@
     --layer-03: #f4f4f4;
 
     --border-subtle-01: #e0e0e0;
+    --border-subtle-02: #c6c6c6;
     --border-strong-01: #8d8d8d;
+
+    --field-01: #f4f4f4;
 
     --text-primary: #161616;
     --text-secondary: #525252;
     --text-helper: #6f6f6f;
     --text-on-color: #ffffff;
     --text-disabled: #c6c6c6;
+    --text-placeholder: #a8a8a8;
 
     --interactive: #0f62fe;
+    --interactive-hover: #0050e6;
     --focus: #0f62fe;
+    --focus-inverse: #ffffff;
 
     --support-error: #da1e28;
     --support-success: #198038;

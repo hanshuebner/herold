@@ -14,7 +14,7 @@ FUZZTIME ?= 30s
         test-short lint vet staticcheck vulncheck \
         fmt fmt-check fuzz-short tidy ci-local clean docker \
         interop interop-bulk interop-imaptest interop-jmaptest interop-clean \
-        precommit precommit-all install-hooks check-schema-version \
+        precommit precommit-all install-hooks check-schema-version check-css-tokens \
         imap-upstream-diff
 
 all: build
@@ -203,6 +203,13 @@ install-hooks:
 # pre-commit; available standalone for ad-hoc verification.
 check-schema-version:
 	./scripts/check-schema-version.sh
+
+# check-css-tokens verifies that every var(--x) reference without a fallback
+# in web/apps/{suite,admin}/src resolves against the canonical design-system
+# tokens.css or an inline style= attribute definition. Wired into pre-commit
+# and the web CI job; available standalone for ad-hoc verification.
+check-css-tokens:
+	node scripts/check-css-tokens.mjs
 
 # precommit runs the same chain a pre-commit hook would (changed files
 # only when invoked through `git commit`; --all-files when invoked via
