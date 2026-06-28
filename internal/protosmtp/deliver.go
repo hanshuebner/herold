@@ -401,8 +401,8 @@ func (sess *session) deliverOne(
 	if tagHit {
 		outcome = tagEffect.applyTaggedFilterPreSieve(outcome)
 	}
-	// Decide target mailboxes.
-	targets, discarded, rejected, rejectReason := resolveSieveTargets(outcome)
+	// Decide target mailboxes and redirect addresses.
+	targets, redirectAddrs, discarded, rejected, rejectReason := resolveSieveTargets(outcome)
 
 	// REQ-TAG-22: a Sieve `discard` still wins. If Sieve discards AND
 	// produced no fileinto, the tag-filter's filing is dropped along
@@ -425,11 +425,30 @@ func (sess *session) deliverOne(
 			slog.String("reason", rejectReason))
 		return true, nil
 	}
+
+	// Queue Sieve redirect actions (RFC 5228 §4.2, re #63). Redirect is
+	// independent of local delivery; :copy allows both in parallel. Each
+	// queueSieveRedirect call returns true when the submission was
+	// accepted, false when suppressed (loop guard, no queue, queue error).
+	var anyRedirectQueued bool
+	for _, addr := range redirectAddrs {
+		if sess.queueSieveRedirect(ctx, rc, addr, finalBytes) {
+			anyRedirectQueued = true
+		}
+	}
+
 	if discarded && len(targets) == 0 {
-		// Successfully consumed.
+		// Discard with no fileinto; redirects already queued above.
 		return true, nil
 	}
 	if len(targets) == 0 {
+		if anyRedirectQueued {
+			// redirect without :copy consumed the message per RFC 5228
+			// §2.10.1 — no local delivery. Redirects already queued.
+			return true, nil
+		}
+		// No redirect was queued (loop guard, no queue wired, or queue
+		// error). Fall back to implicit keep so the message is not lost.
 		targets = []string{"INBOX"}
 	}
 
@@ -923,10 +942,12 @@ func (sess *session) runSieve(
 }
 
 // resolveSieveTargets flattens a sieve.Outcome into the mailbox-name
-// list the delivery code acts on. discarded is true when discard was
-// taken and no fileinto folder was chosen; rejected + reason map the
-// Sieve reject action to the operator-visible log.
-func resolveSieveTargets(out sieve.Outcome) (targets []string, discarded, rejected bool, reason string) {
+// list and redirect addresses the delivery code acts on. discarded is
+// true when discard was taken and no fileinto folder was chosen;
+// rejected + reason map the Sieve reject action to the operator-visible
+// log. redirects contains one entry per ActionRedirect in the outcome;
+// each is queued by the caller via queueSieveRedirect (re #63).
+func resolveSieveTargets(out sieve.Outcome) (targets []string, redirects []string, discarded, rejected bool, reason string) {
 	if out.ImplicitKeep {
 		targets = append(targets, "INBOX")
 	}
@@ -946,11 +967,12 @@ func resolveSieveTargets(out sieve.Outcome) (targets []string, discarded, reject
 			rejected = true
 			reason = a.Reason
 		case sieve.ActionRedirect:
-			// Phase 1: redirect is recorded but not queued; the
-			// outbound queue lands in Phase 2.
+			if a.Address != "" {
+				redirects = append(redirects, a.Address)
+			}
 		}
 	}
-	return targets, discarded, rejected, reason
+	return targets, redirects, discarded, rejected, reason
 }
 
 // sieveFlagsFromOutcome maps Sieve setflag / addflag actions onto the
@@ -1453,6 +1475,96 @@ func parseDSNRet(ret string) store.DSNRet {
 	default:
 		return store.DSNRetUnspecified
 	}
+}
+
+// maxSieveRedirectHops caps the number of Received: headers a message
+// may carry before a Sieve redirect is suppressed. RFC 5321 §6.3
+// recommends 100 as the forwarding-loop limit; 25 matches the
+// Postfix/Exim practical default and leaves headroom before the hard cap.
+const maxSieveRedirectHops = 25
+
+// countReceivedHeaders returns the number of RFC 5322 Received: header
+// fields in raw. Only the header block (up to the first blank line) is
+// scanned; folded continuation lines (starting with whitespace) are not
+// counted. Used by queueSieveRedirect to detect forwarding loops.
+func countReceivedHeaders(raw []byte) int {
+	end := len(raw)
+	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+		end = i
+	} else if i := bytes.Index(raw, []byte("\n\n")); i >= 0 {
+		end = i
+	}
+	n := 0
+	for _, line := range bytes.Split(raw[:end], []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 || line[0] == ' ' || line[0] == '\t' {
+			continue // blank or folded continuation
+		}
+		// "Received:" is 9 bytes; EqualFold handles case normalisation.
+		if len(line) >= 9 && bytes.EqualFold(line[:9], []byte("received:")) {
+			n++
+		}
+	}
+	return n
+}
+
+// queueSieveRedirect submits one Sieve redirect target to the outbound
+// queue (RFC 5228 §4.2, re #63). Returns true when the submission was
+// accepted by the queue, false when suppressed (no queue wired, loop
+// guard tripped, or queue error). On false the caller may fall back to
+// local mailbox delivery so the message is not silently lost.
+//
+// DSN ownership follows the queue's normal handling: the queue emits a
+// failure DSN to the original MAIL FROM (preserved as MailFrom) when
+// permanent delivery failure occurs, matching RFC 5228's recommendation
+// that the envelope sender be preserved across a redirect.
+func (sess *session) queueSieveRedirect(
+	ctx context.Context,
+	rc rcptEntry,
+	redirectAddr string,
+	finalBytes []byte,
+) bool {
+	q := sess.srv.subQueue
+	if q == nil {
+		sess.log.WarnContext(ctx, "sieve redirect: outbound queue not wired; redirect dropped",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("recipient", rc.addr),
+			slog.String("redirect_target", redirectAddr))
+		return false
+	}
+	// Loop guard: count Received: headers in the stored message. Each hop
+	// adds one; when the count reaches maxSieveRedirectHops the chain is
+	// suppressed to prevent forwarding loops (RFC 5321 §6.3, re #63).
+	if countReceivedHeaders(finalBytes) >= maxSieveRedirectHops {
+		sess.log.WarnContext(ctx, "sieve redirect: hop limit exceeded; redirect suppressed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("recipient", rc.addr),
+			slog.String("redirect_target", redirectAddr),
+			slog.Int("hop_limit", maxSieveRedirectHops))
+		return false
+	}
+	envID, err := q.Submit(ctx, queue.Submission{
+		PrincipalID: nil,                    // forwarding path; no authenticated submitter
+		MailFrom:    sess.envelope.mailFrom, // RFC 5228: preserve original envelope sender
+		Recipients:  []string{redirectAddr},
+		Body:        bytes.NewReader(finalBytes),
+		Sign:        false,                  // do not re-sign a forwarded message
+		DSNNotify:   store.DSNNotifyFailure, // notify sender on permanent delivery failure
+	})
+	if err != nil {
+		sess.log.WarnContext(ctx, "sieve redirect: queue.Submit failed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("recipient", rc.addr),
+			slog.String("redirect_target", redirectAddr),
+			slog.String("err", err.Error()))
+		return false
+	}
+	sess.log.InfoContext(ctx, "sieve redirect queued",
+		slog.String("activity", observe.ActivitySystem),
+		slog.String("recipient", rc.addr),
+		slog.String("redirect_target", redirectAddr),
+		slog.String("envelope_id", string(envID)))
+	return true
 }
 
 // tlsVersionName returns a readable name for a tls.Version constant.
