@@ -27,20 +27,26 @@ func (m *metadata) UpsertSession(ctx context.Context, s store.SessionRow) error 
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions
 			  (session_id, principal_id, created_at_us, expires_at_us,
-			   last_seen_at_us,
+			   last_seen_at_us, user_agent, last_seen_ip,
 			   clientlog_telemetry_enabled, clientlog_livetail_until_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_id) DO UPDATE SET
 			  principal_id                = excluded.principal_id,
 			  expires_at_us               = excluded.expires_at_us,
 			  last_seen_at_us             = excluded.last_seen_at_us,
 			  clientlog_telemetry_enabled = excluded.clientlog_telemetry_enabled,
 			  clientlog_livetail_until_us = excluded.clientlog_livetail_until_us`,
+			// user_agent and last_seen_ip are intentionally excluded from
+			// the ON CONFLICT SET: user_agent is set once at login and must
+			// not be overwritten; last_seen_ip is updated via
+			// UpdateSessionLastSeen on every subsequent request touch.
 			s.SessionID,
 			int64(s.PrincipalID),
 			usMicros(s.CreatedAt),
 			usMicros(s.ExpiresAt),
 			usMicros(lastSeenAt),
+			s.UserAgent,
+			s.LastSeenIP,
 			boolToInt(s.ClientlogTelemetryEnabled),
 			livetailUs,
 		)
@@ -51,7 +57,7 @@ func (m *metadata) UpsertSession(ctx context.Context, s store.SessionRow) error 
 func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.SessionRow, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT session_id, principal_id, created_at_us, expires_at_us,
-		       last_seen_at_us,
+		       last_seen_at_us, user_agent, last_seen_ip,
 		       clientlog_telemetry_enabled, clientlog_livetail_until_us
 		  FROM sessions
 		 WHERE session_id = ?`, sessionID)
@@ -61,7 +67,7 @@ func (m *metadata) GetSession(ctx context.Context, sessionID string) (store.Sess
 	var telemetryInt int64
 	var livetailUs sql.NullInt64
 	err := row.Scan(&s.SessionID, &principalID, &createdUs, &expiresUs,
-		&lastSeenUs, &telemetryInt, &livetailUs)
+		&lastSeenUs, &s.UserAgent, &s.LastSeenIP, &telemetryInt, &livetailUs)
 	if err != nil {
 		return store.SessionRow{}, mapErr(err)
 	}
@@ -110,13 +116,14 @@ func (m *metadata) UpdateSessionTelemetry(ctx context.Context, sessionID string,
 	})
 }
 
-func (m *metadata) UpdateSessionLastSeen(ctx context.Context, sessionID string, atMicros int64) error {
+func (m *metadata) UpdateSessionLastSeen(ctx context.Context, sessionID string, atMicros int64, ip string) error {
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE sessions
-			   SET last_seen_at_us = ?
+			   SET last_seen_at_us = ?,
+			       last_seen_ip    = ?
 			 WHERE session_id = ?`,
-			atMicros, sessionID)
+			atMicros, ip, sessionID)
 		if err != nil {
 			return mapErr(err)
 		}

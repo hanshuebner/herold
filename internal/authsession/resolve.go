@@ -9,6 +9,7 @@ package authsession
 // subsystem gets cookie validation without depending on a server struct.
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/hanshuebner/herold/internal/auth"
@@ -37,7 +38,7 @@ func ResolveSession(r *http.Request, cfg SessionConfig, st store.Store, clk cloc
 //   - DecodeSession validates the HMAC and the cookie is not expired,
 //   - the principal exists in st and PrincipalFlagDisabled is clear,
 //   - if cfg.IdleTTL > 0, the session row's LastSeenAt is within the
-//     idle window (REQ-AUTH-72, issue #12 slice 3).
+//     idle window (REQ-AUTH-72, REQ-AUTH-73, issue #78).
 //
 // Returns (0, nil, false) in every other case. The scope set is the value
 // stamped at login time; it is immutable for the cookie's lifetime
@@ -50,14 +51,16 @@ func ResolveSession(r *http.Request, cfg SessionConfig, st store.Store, clk cloc
 //   - When (now - row.LastSeenAt) > cfg.IdleTTL the session is
 //     rejected and the row is deleted so the cookie cannot be revived
 //     by simply resending it.
-//   - Otherwise the row is touched via UpdateSessionLastSeen(now),
-//     sliding the idle deadline forward. The touch is best-effort:
-//     a touch failure does NOT reject the request (logged-out vs
-//     just-took-a-bit-longer would be indistinguishable to the user).
+//   - Otherwise the row is touched via UpdateSessionLastSeen(now, ip),
+//     sliding the idle deadline forward and recording the caller's IP.
+//     The touch is best-effort: a touch failure does NOT reject the
+//     request (logged-out vs just-took-a-bit-longer would be
+//     indistinguishable to the user).
 //
-// When cfg.IdleTTL == 0 (the public-listener default) the resolver
-// behaves exactly as before: no row lookup, no touch — the HMAC and
-// absolute-expiry check on the cookie are sufficient.
+// Production wiring sets cfg.IdleTTL = sysconfig.SessionTTL (default 7d)
+// so both admin and end-user sessions are governed by idle-only expiry
+// (REQ-AUTH-72, issue #78). Callers that pass IdleTTL=0 skip the row
+// lookup entirely and rely solely on the HMAC + absolute-expiry check.
 //
 // The function is pure in the sense that it takes store and clock as
 // parameters rather than capturing server state, so it can be used from any
@@ -96,7 +99,11 @@ func ResolveSessionWithScope(r *http.Request, cfg SessionConfig, st store.Store,
 		}
 		// Touch is best-effort; a transient store failure does not
 		// reject the in-flight request.
-		_ = st.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro())
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+		_ = st.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro(), ip)
 	}
 
 	return sess.PrincipalID, sess.Scopes, true

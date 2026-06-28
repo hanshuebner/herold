@@ -999,65 +999,19 @@ func TestSessionAuth_NoIdleGate_WhenIdleTTLZero(t *testing.T) {
 	}
 }
 
-// TestSessionAuth_AdminTTL_ShorterThanSessionTTL asserts that an admin
-// login with ScopeAdmin uses AdminTTL (not Session.TTL) for the cookie
-// expiry (B-1 regression guard, re #58).
-//
-// The test harness sets Session.TTL = 24 h and leaves AdminTTL = 0 (which
-// defaults to 8 h in handleLogin). The session_expires_at in the login
-// response MUST be ~8 h from now, not ~24 h.
-func TestSessionAuth_AdminTTL_ShorterThanSessionTTL(t *testing.T) {
+// TestSessionAuth_AdminSession_UsesSessionTTL asserts that an admin login
+// uses Session.TTL for the cookie expiry, not a shorter admin-specific TTL.
+// In idle-only mode (Session.TTL = 0), the session_expires_at in the login
+// response must be approximately 365 days from now (REQ-AUTH-72, issue #78).
+func TestSessionAuth_AdminSession_UsesSessionTTL(t *testing.T) {
 	t.Parallel()
-	sh := newSessionHarness(t) // Session.TTL = 24 h; AdminTTL = 0 → default 8 h
-	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-ttl@example.com")
-
-	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
-	if code != http.StatusOK {
-		t.Fatalf("admin login: status=%d body=%v", code, body)
-	}
-
-	// The response carries session_expires_at.
-	expiresAtStr, _ := body["session_expires_at"].(string)
-	if expiresAtStr == "" {
-		t.Fatalf("session_expires_at missing from login response: %v", body)
-	}
-	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
-	if err != nil {
-		t.Fatalf("session_expires_at parse: %v", err)
-	}
-
-	ttl := expiresAt.Sub(sh.clk.Now())
-
-	// Admin sessions must use AdminTTL (default 8 h when zero), NOT
-	// Session.TTL (24 h in the harness). Allow a small margin for code
-	// execution time inside the server.
-	const adminDefault = 8 * time.Hour
-	const sessionTTL = 24 * time.Hour
-	if ttl >= sessionTTL {
-		t.Errorf("admin session TTL %s >= Session.TTL %s; expected ~AdminTTL (%s)",
-			ttl, sessionTTL, adminDefault)
-	}
-	// Lower bound: must be at least 7 hours (allows ~1 h of test overhead).
-	if ttl < 7*time.Hour {
-		t.Errorf("admin session TTL %s < 7h; expected ~AdminTTL (%s)", ttl, adminDefault)
-	}
-}
-
-// TestSessionAuth_AdminIdleTTL_EnforcedViaAdminIdleTTLOption asserts that
-// Options.AdminIdleTTL is honoured for admin-scoped sessions when
-// Session.IdleTTL is zero. This is the per-scope idle gate (B-1, re #58).
-func TestSessionAuth_AdminIdleTTL_EnforcedViaAdminIdleTTLOption(t *testing.T) {
-	t.Parallel()
-	const adminIdleTTL = 30 * time.Minute
-
+	// Build a harness with TTL=0 (idle-only mode) so we can verify the 365d
+	// fallback applies to admin sessions as well as end-user sessions.
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fs := sqlitetest.Open(t, clk)
 	th, _ := testharness.Start(t, testharness.Options{
-		Store: fs,
-		Clock: clk,
-		Listeners: []testharness.ListenerSpec{
-			{Name: "admin", Protocol: "http"},
-		},
+		Store: fs, Clock: clk,
+		Listeners: []testharness.ListenerSpec{{Name: "admin", Protocol: "http"}},
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
@@ -1069,53 +1023,158 @@ func TestSessionAuth_AdminIdleTTL_EnforcedViaAdminIdleTTLOption(t *testing.T) {
 			SigningKey:     testSigningKey,
 			CookieName:     "herold_public_session",
 			CSRFCookieName: "herold_public_csrf",
-			TTL:            24 * time.Hour,
-			IdleTTL:        0, // not set — non-admin sessions have no idle gate
+			TTL:            0, // idle-only mode: 365d fallback
+			IdleTTL:        7 * 24 * time.Hour,
 			SecureCookies:  false,
 		},
-		AdminIdleTTL: adminIdleTTL, // admin sessions: 30-minute idle gate
 	})
 	if err := th.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
 		t.Fatalf("AttachAdmin: %v", err)
 	}
-	_, base := th.DialAdminByName(context.Background(), "admin")
-
+	baseClient, base := th.DialAdminByName(context.Background(), "admin")
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
-		Transport: &http.Transport{},
-		Jar:       jar,
+	cookieClient := &http.Client{Transport: baseClient.Transport, Jar: jar,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
-		},
-	}
-	// Re-use the base transport from the test harness.
-	baseClient, _ := th.DialAdminByName(context.Background(), "admin")
-	client.Transport = baseClient.Transport
-
+		}}
 	sh := &sessionHarness{
 		harness:         &harness{t: t, h: th, srv: srv, client: baseClient, baseURL: base, clk: clk, dir: dir, rp: rp},
 		cookieJar:       jar,
-		cookieJarClient: client,
+		cookieJarClient: cookieClient,
 	}
 
-	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-idle@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-ttl-unified@example.com")
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
+	if code != http.StatusOK {
+		t.Fatalf("admin login: status=%d body=%v", code, body)
+	}
+
+	expiresAtStr, _ := body["session_expires_at"].(string)
+	if expiresAtStr == "" {
+		t.Fatalf("session_expires_at missing from login response: %v", body)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		t.Fatalf("session_expires_at parse: %v", err)
+	}
+	ttl := expiresAt.Sub(clk.Now())
+
+	// With idle-only mode (Session.TTL=0), the session's ExpiresAt must be
+	// the 365d fallback — the idle gate is the real expiry, not this value.
+	const want = 365 * 24 * time.Hour
+	if ttl < want-time.Hour || ttl > want+time.Hour {
+		t.Errorf("admin session TTL with idle-only mode = %s; want ~365d", ttl)
+	}
+}
+
+// TestSessionAuth_IdleGate_AdminSession asserts the idle gate applies to
+// admin-scoped sessions via Session.IdleTTL (REQ-AUTH-72, issue #78).
+func TestSessionAuth_IdleGate_AdminSession(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 30 * time.Minute
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-idle-unified@example.com")
 
 	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("admin login: status=%d", loginCode)
 	}
 
-	// Inside the idle window the admin cookie works.
-	clk.Advance(adminIdleTTL - time.Minute)
+	// Inside the idle window, the admin cookie still works.
+	sh.clk.Advance(idleTTL - time.Minute)
 	code, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
 	if code != http.StatusOK {
 		t.Fatalf("admin GET inside idle window: status=%d, want 200", code)
 	}
 
-	// Past the idle window the gate trips.
-	clk.Advance(adminIdleTTL + time.Minute)
+	// Past the idle window, the gate trips for admin sessions too.
+	sh.clk.Advance(idleTTL + time.Minute)
 	staleCode, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
 	if staleCode != http.StatusUnauthorized {
 		t.Fatalf("admin GET past idle window: status=%d, want 401", staleCode)
+	}
+}
+
+// TestSessionAuth_SessionRecord_DeviceContext asserts that a session row is
+// persisted at login with UserAgent and LastSeenIP populated, and that
+// UpdateSessionLastSeen slides LastSeenIP forward on subsequent requests
+// (REQ-AUTH-72, issue #78, issue #80).
+func TestSessionAuth_SessionRecord_DeviceContext(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 7 * 24 * time.Hour
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("devctx@example.com")
+
+	// Set a recognisable UA on the login request via a custom request.
+	const wantUA = "TestBrowser/1.0"
+	loginBody, _ := json.Marshal(func() map[string]any {
+		code, err := otpGenerateCode(secret, sh.clk.Now())
+		if err != nil {
+			t.Fatalf("otpGenerateCode: %v", err)
+		}
+		sh.clk.Advance(time.Second)
+		return map[string]any{"email": email, "password": password, "totp_code": code}
+	}())
+	loginReq, _ := http.NewRequest("POST", sh.baseURL+"/api/v1/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("User-Agent", wantUA)
+	loginRes, err := sh.cookieJarClient.Do(loginReq)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer loginRes.Body.Close()
+	if loginRes.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(loginRes.Body)
+		t.Fatalf("login: status=%d body=%s", loginRes.StatusCode, raw)
+	}
+
+	// The CSRF cookie value is the session ID in the sessions table.
+	sessID := sh.csrfToken()
+	if sessID == "" {
+		t.Fatal("CSRF token not set after login")
+	}
+
+	row, err := sh.h.Store.Meta().GetSession(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if row.UserAgent != wantUA {
+		t.Errorf("UserAgent = %q; want %q", row.UserAgent, wantUA)
+	}
+	if row.LastSeenIP == "" {
+		t.Error("LastSeenIP is empty after login")
+	}
+}
+
+// TestSessionAuth_Logout_DeletesSessionRow asserts that handleLogout deletes
+// the server-side session row so the idle gate rejects any future request
+// carrying the same cookie (REQ-AUTH-72, issue #78).
+func TestSessionAuth_Logout_DeletesSessionRow(t *testing.T) {
+	t.Parallel()
+	const idleTTL = 7 * 24 * time.Hour
+	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("logout-row@example.com")
+
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
+	if loginCode != http.StatusOK {
+		t.Fatalf("login: status=%d", loginCode)
+	}
+	sessID := sh.csrfToken()
+
+	// Session row must exist immediately after login.
+	if _, err := sh.h.Store.Meta().GetSession(context.Background(), sessID); err != nil {
+		t.Fatalf("GetSession before logout: %v", err)
+	}
+
+	// Logout.
+	csrf := sh.csrfToken()
+	if code, _ := sh.doWithCookie("POST", "/api/v1/auth/logout", nil, csrf); code != http.StatusNoContent {
+		t.Fatalf("logout: status=%d, want 204", code)
+	}
+
+	// Session row must be gone after logout.
+	_, err := sh.h.Store.Meta().GetSession(context.Background(), sessID)
+	if err == nil {
+		t.Error("GetSession after logout: expected ErrNotFound, got nil")
 	}
 }

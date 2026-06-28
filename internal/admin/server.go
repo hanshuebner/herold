@@ -801,13 +801,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		ServerVersion: "0.1.0",
 		Health:        health,
 		// The admin REST surface is served on the public listener (re #58).
-		// Use the public session cookie config (herold_public_session) for the
-		// shared cookie; admin-scoped sessions get the shorter AdminTTL and
-		// AdminIdleTTL so the risk window for a captured admin cookie stays
-		// bounded (REQ-AUTH-72). Non-admin sessions use Session.TTL (7 days).
+		// All web sessions (Suite and admin UI) share the public session cookie
+		// (herold_public_session) and are governed by the unified idle-only
+		// lifetime configured in publicSessionCookieConfig (REQ-AUTH-72, issue #78).
 		Session:                   publicSessionCookieConfig(cfg, logger),
-		AdminTTL:                  cfg.Server.UI.AdminAbsoluteTTL.AsDuration(),
-		AdminIdleTTL:              cfg.Server.UI.AdminIdleTTL.AsDuration(),
 		ExternalSubmissionDataKey: extSubmitDataKey,
 		OAuthProviders:            adminOAuthProviders,
 		DKIMKeyManager:            adminDKIMManager,
@@ -3122,8 +3119,13 @@ func publicSessionCookieConfig(cfg *sysconfig.Config, logger *slog.Logger) auths
 		SigningKey:     signingKey,
 		CookieName:     cookieName,
 		CSRFCookieName: csrfName,
-		TTL:            cfg.Server.UI.SessionTTL.AsDuration(),
-		SecureCookies:  secure,
+		// IdleTTL is the inactivity window for all web sessions. TTL=0
+		// disables the absolute cap; idle-only expiry is the sole mechanism
+		// (REQ-AUTH-72, REQ-AUTH-73, issue #78). SessionAbsoluteTTL
+		// optionally adds a hard cap; default 0 = no cap.
+		IdleTTL:       cfg.Server.UI.SessionTTL.AsDuration(),
+		TTL:           cfg.Server.UI.SessionAbsoluteTTL.AsDuration(),
+		SecureCookies: secure,
 	}
 }
 

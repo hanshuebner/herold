@@ -367,6 +367,7 @@ func Run(t *testing.T, f Factory) {
 		{"Session_UpsertSetsLastSeen", testSessionUpsertSetsLastSeen},
 		{"Session_UpdateLastSeen_Advances", testSessionUpdateLastSeenAdvances},
 		{"Session_UpdateLastSeen_NotFound", testSessionUpdateLastSeenNotFound},
+		{"Session_DeviceContextRoundtrip", testSessionDeviceContextRoundtrip},
 		{"Session_EvictExpired_RemovesExpiredLeavesAlive", testSessionEvictExpired},
 		{"Session_ClearExpiredLivetail", testSessionClearExpiredLivetail},
 		{"Session_CascadeOnPrincipalDelete", testSessionCascadeOnPrincipalDelete},

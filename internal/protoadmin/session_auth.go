@@ -105,10 +105,11 @@ type whoamiResponse struct {
 // via authsession.WriteSessionCookie and returns 200 with {principal_id,
 // email, scopes}. See REQ-AUTH-SESSION-REST and REQ-AUTH-CSRF.
 //
-// Session lifetime: admin-scoped sessions (ScopeAdmin) use Options.AdminTTL
-// (default 8 h, max 12 h) to enforce a shorter absolute lifetime than
-// end-user sessions (Options.Session.TTL, default 7 days). The gap
-// reduces the risk window on a captured admin cookie (REQ-AUTH-72, re #58).
+// Session lifetime: all sessions (admin and end-user) are governed by the
+// idle-only lifetime configured in Options.Session.IdleTTL (default 7 days).
+// There is no separate shorter TTL for admin sessions. The session cookie's
+// MaxAge is set to a 365-day fallback when TTL=0 (idle-only mode); the
+// server-side idle gate is the sole expiry mechanism (REQ-AUTH-72, issue #78).
 //
 // TOTP step-up (REQ-AUTH-SCOPE-03): if the principal has TOTP enrolled
 // and totp_code is absent or wrong, the response is 401 with
@@ -244,21 +245,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		sessScopes = auth.NewScopeSet(auth.AllEndUserScopes...)
 	}
 
-	// Session lifetime: admin-scoped sessions use the shorter AdminTTL
-	// (default 8 h, ceiling 12 h) to limit the risk window from a captured
-	// cookie. End-user sessions use the longer Session.TTL (default 7 days)
-	// because they carry no elevated privilege (REQ-AUTH-72, re #58).
-	var ttl time.Duration
-	if sessScopes.Has(auth.ScopeAdmin) {
-		ttl = s.opts.AdminTTL
-		if ttl <= 0 {
-			ttl = 8 * time.Hour
-		}
-	} else {
-		ttl = s.opts.Session.TTL
-		if ttl <= 0 {
-			ttl = 7 * 24 * time.Hour
-		}
+	// Session lifetime: all sessions use the idle-only model. When
+	// Session.TTL=0 (no absolute cap), ExpiresAt is set to now+365d so
+	// DecodeSession never rejects the cookie on time; server-side
+	// LastSeenAt + Session.IdleTTL is the sole expiry mechanism
+	// (REQ-AUTH-72, REQ-AUTH-73, issue #78).
+	ttl := s.opts.Session.TTL
+	if ttl <= 0 {
+		ttl = 365 * 24 * time.Hour
 	}
 	sess := authsession.Session{
 		PrincipalID: pid,
@@ -271,7 +265,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	authsession.WriteSessionCookie(w, cfg, sess)
 
 	// Persist a session row so TelemetryGate.IsEnabled can answer
-	// without a principal lookup on the clientlog hot path (REQ-OPS-208).
+	// without a principal lookup on the clientlog hot path (REQ-OPS-208),
+	// and to record device context (user-agent, login IP) for session
+	// listing and idle-gate enforcement (REQ-AUTH-72, issue #78, issue #80).
 	// The effective telemetry flag is resolved here and cached on the row.
 	// defaultTelemetryEnabled is true until task #8 wires the sysconfig block.
 	const defaultTelemetryEnabled = true
@@ -280,6 +276,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		PrincipalID:               pid,
 		CreatedAt:                 s.clk.Now(),
 		ExpiresAt:                 sess.ExpiresAt,
+		UserAgent:                 r.Header.Get("User-Agent"),
+		LastSeenIP:                remoteHost(r.RemoteAddr),
 		ClientlogTelemetryEnabled: directory.EffectiveTelemetry(p, defaultTelemetryEnabled),
 	}
 	if err := s.store.Meta().UpsertSession(ctx, sessionRow); err != nil {
@@ -442,17 +440,21 @@ func formatAdminRFC3339Millis(t time.Time) string {
 // handleLogout handles POST /api/v1/auth/logout.
 //
 // Clears the session and CSRF cookies by issuing expired Set-Cookie
-// headers and returns 204. The endpoint accepts both cookie and Bearer
-// authentication; a caller who is already logged out (no cookies, no
-// Bearer) just gets 401 from requireAuth, which is consistent with the
-// "nothing to do" case being a no-op.
+// headers, deletes the server-side session row so the idle gate cannot
+// be tripped by a replayed cookie, and returns 204.
 //
-// Sessions are stateless HMAC-signed cookies (REQ-AUTH-JSON-LOGOUT);
-// logout invalidates the client-side cookies only. There is no
-// server-side revocation list -- residual sessions on a stolen device
-// expire when the cookie's TTL elapses.
+// The endpoint accepts both cookie and Bearer authentication; a caller
+// who is already logged out (no cookies, no Bearer) gets 401 from
+// requireAuth, which is consistent with "nothing to do" being a no-op.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cfg := s.sessionConfig()
+	// Delete the server-side session row so the idle gate rejects any
+	// future request carrying the same cookie (REQ-AUTH-72, issue #78).
+	// Best-effort: a missing row (already evicted or API-key-only caller)
+	// is not an error.
+	if sessID := s.sessionIDFromRequest(r); sessID != "" {
+		_ = s.store.Meta().DeleteSession(r.Context(), sessID)
+	}
 	authsession.ClearSessionCookies(w, cfg)
 	subject := ""
 	if p, ok := principalFrom(r.Context()); ok {

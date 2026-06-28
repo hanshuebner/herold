@@ -1264,23 +1264,29 @@ type UIConfig struct {
 	// CSRFCookieName overrides the CSRF cookie name (default
 	// "herold_ui_csrf").
 	CSRFCookieName string `toml:"csrf_cookie_name,omitempty"`
-	// SessionTTL bounds session lifetime; zero applies the default
-	// of one week (168h). Sliding renewal extends the deadline on each
-	// authenticated request. Consumed by the public-listener login
-	// path (internal/protologin). The admin listener uses
-	// AdminIdleTTL + AdminAbsoluteTTL instead (REQ-AUTH-72).
+	// SessionTTL is the idle timeout for all web sessions (Suite and admin
+	// UI). A session is rejected when (now - last_seen_at) > SessionTTL.
+	// Zero applies the default of one week (168h). The idle window slides
+	// forward on every authenticated request so a continuously active
+	// session never expires (REQ-AUTH-72, REQ-AUTH-73, issue #78).
 	SessionTTL Duration `toml:"session_ttl,omitempty"`
-	// AdminIdleTTL is the inactivity window for admin-listener
-	// sessions (REQ-AUTH-72, issue #12). When the time since the
-	// session's last authenticated request exceeds this value the
-	// next request is rejected and the cookie cleared. Zero applies
-	// the default of 1 hour. Capped at 12 hours; Validate rejects a
-	// larger value. AdminIdleTTL MUST NOT exceed AdminAbsoluteTTL.
+	// SessionAbsoluteTTL is an optional hard cap on session lifetime,
+	// measured from first login. Zero (the default) disables the cap so
+	// the idle window is the sole expiry mechanism. When non-zero every
+	// session issued after the cap exceeds the idle window is also bounded
+	// by the absolute TTL (REQ-AUTH-72). Set this only when your security
+	// policy requires a forced re-login interval regardless of activity.
+	SessionAbsoluteTTL Duration `toml:"session_absolute_ttl,omitempty"`
+	// AdminIdleTTL is accepted for backward-compatibility but no longer
+	// has any effect. Admin and end-user sessions share the SessionTTL
+	// idle window as of issue #78. Validate still enforces the 12-hour
+	// ceiling so existing config files do not silently carry surprising
+	// values. Remove this key from your config at your next convenience.
 	AdminIdleTTL Duration `toml:"admin_idle_ttl,omitempty"`
-	// AdminAbsoluteTTL is the maximum lifetime of an admin-listener
-	// session, irrespective of activity (REQ-AUTH-72, issue #12).
-	// Zero applies the default of 8 hours. Capped at 12 hours;
-	// Validate rejects a larger value.
+	// AdminAbsoluteTTL is accepted for backward-compatibility but no
+	// longer has any effect. See AdminIdleTTL. Validate still enforces
+	// the 12-hour ceiling. Remove this key from your config at your next
+	// convenience.
 	AdminAbsoluteTTL Duration `toml:"admin_absolute_ttl,omitempty"`
 	// SecureCookies, when nil, applies the secure-by-default policy
 	// (true). Set explicitly to false only for development.

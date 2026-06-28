@@ -18,7 +18,10 @@ func WriteSessionCookie(w http.ResponseWriter, cfg SessionConfig, sess Session) 
 	encoded := encodeSession(sess, cfg.SigningKey)
 	maxAge := int(cfg.TTL.Seconds())
 	if maxAge <= 0 {
-		maxAge = 1
+		// TTL=0 means idle-only mode (no absolute cap). Set the cookie to
+		// expire in 365 days so the browser keeps it as long as the idle
+		// window allows; server-side LastSeenAt is the sole expiry mechanism.
+		maxAge = 365 * 24 * 60 * 60
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     cfg.CookieName,

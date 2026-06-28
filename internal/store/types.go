@@ -980,15 +980,21 @@ type SessionRow struct {
 	// not-found.
 	ExpiresAt time.Time
 	// LastSeenAt is the timestamp of the most recent authenticated
-	// request that resolved this session (REQ-AUTH-72, issue #12 slice
-	// 3). Backs the admin listener's idle-timeout enforcement: the
-	// session resolver compares (now - LastSeenAt) against
-	// SessionConfig.IdleTTL on every accepted request and rejects the
-	// session when the gap exceeds the configured window. The same
-	// resolver path also bumps LastSeenAt forward, sliding the deadline.
-	// Public-listener sessions write the column but never consult it
-	// because their SessionConfig.IdleTTL is zero (no idle gate).
+	// request that resolved this session (REQ-AUTH-72). The session
+	// resolver compares (now - LastSeenAt) against SessionConfig.IdleTTL
+	// on every accepted request and rejects the session when the gap
+	// exceeds the configured window. The same resolver path also bumps
+	// LastSeenAt forward, sliding the idle deadline.
 	LastSeenAt time.Time
+	// UserAgent is the HTTP User-Agent header from the login request.
+	// Set once at session creation; not updated on touch. Surfaced by
+	// the session-list endpoint (REQ-AUTH-77, issue #80).
+	UserAgent string
+	// LastSeenIP is the client IP address of the most recent
+	// authenticated request that resolved this session. Updated on every
+	// touch alongside LastSeenAt. Surfaced by the session-list endpoint
+	// (REQ-AUTH-77, issue #80).
+	LastSeenIP string
 	// ClientlogTelemetryEnabled is the effective resolved telemetry flag
 	// at session creation / last refresh. Always non-nil (computed from
 	// the principal's override and the system default passed by the

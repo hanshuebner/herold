@@ -246,7 +246,7 @@ func testSessionUpdateLastSeenAdvances(t *testing.T, s store.Store) {
 	}
 
 	later := born.Add(45 * time.Minute)
-	if err := s.Meta().UpdateSessionLastSeen(ctx, row.SessionID, later.UnixMicro()); err != nil {
+	if err := s.Meta().UpdateSessionLastSeen(ctx, row.SessionID, later.UnixMicro(), "10.0.0.2"); err != nil {
 		t.Fatalf("UpdateSessionLastSeen: %v", err)
 	}
 	got, err := s.Meta().GetSession(ctx, row.SessionID)
@@ -271,9 +271,59 @@ func testSessionUpdateLastSeenAdvances(t *testing.T, s store.Store) {
 func testSessionUpdateLastSeenNotFound(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
-	err := s.Meta().UpdateSessionLastSeen(ctx, "no-such-session-lastseen", 0)
+	err := s.Meta().UpdateSessionLastSeen(ctx, "no-such-session-lastseen", 0, "")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("UpdateSessionLastSeen unknown: got %v; want ErrNotFound", err)
+	}
+}
+
+// testSessionDeviceContextRoundtrip verifies that user_agent and last_seen_ip
+// are stored at creation and that UpdateSessionLastSeen advances last_seen_ip.
+func testSessionDeviceContextRoundtrip(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "session-devctx@example.test").ID
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	row := store.SessionRow{
+		SessionID:                 "csrf-devctx-1",
+		PrincipalID:               pid,
+		CreatedAt:                 now,
+		ExpiresAt:                 now.Add(24 * time.Hour),
+		UserAgent:                 "Mozilla/5.0 (test)",
+		LastSeenIP:                "203.0.113.10",
+		ClientlogTelemetryEnabled: true,
+	}
+	if err := s.Meta().UpsertSession(ctx, row); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.Meta().GetSession(ctx, row.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.UserAgent != row.UserAgent {
+		t.Errorf("UserAgent = %q; want %q", got.UserAgent, row.UserAgent)
+	}
+	if got.LastSeenIP != row.LastSeenIP {
+		t.Errorf("LastSeenIP = %q; want %q", got.LastSeenIP, row.LastSeenIP)
+	}
+
+	// UpdateSessionLastSeen should update last_seen_ip.
+	newIP := "203.0.113.99"
+	later := now.Add(10 * time.Minute)
+	if err := s.Meta().UpdateSessionLastSeen(ctx, row.SessionID, later.UnixMicro(), newIP); err != nil {
+		t.Fatalf("UpdateSessionLastSeen: %v", err)
+	}
+	got2, err := s.Meta().GetSession(ctx, row.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after touch: %v", err)
+	}
+	if got2.LastSeenIP != newIP {
+		t.Errorf("LastSeenIP after touch = %q; want %q", got2.LastSeenIP, newIP)
+	}
+	// user_agent must remain unchanged.
+	if got2.UserAgent != row.UserAgent {
+		t.Errorf("UserAgent changed on touch: got %q; want %q", got2.UserAgent, row.UserAgent)
 	}
 }
 

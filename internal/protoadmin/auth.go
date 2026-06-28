@@ -261,18 +261,10 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
-	// Idle-timeout gate (REQ-AUTH-72, issue #12 slice 3). Admin-scoped
-	// sessions use Options.AdminIdleTTL when set; all other sessions use
-	// Session.IdleTTL. Zero on the effective TTL disables the gate —
-	// public-listener non-admin callers leave both at zero and skip the
-	// row lookup entirely. Production wiring sets AdminIdleTTL=1h via
-	// sysconfig so admin sessions have a tighter inactivity window than
-	// end-user sessions (re #58).
-	idleTTL := s.opts.Session.IdleTTL
-	if scopes.Has(auth.ScopeAdmin) && s.opts.AdminIdleTTL > 0 {
-		idleTTL = s.opts.AdminIdleTTL
-	}
-	if idleTTL > 0 {
+	// Idle-timeout gate (REQ-AUTH-72, REQ-AUTH-73, issue #78). All sessions
+	// — admin and end-user alike — use Session.IdleTTL. Zero disables the
+	// gate; production wiring sets IdleTTL=7d via sysconfig.SessionTTL.
+	if s.opts.Session.IdleTTL > 0 {
 		row, err := s.store.Meta().GetSession(ctx, sess.CSRFToken)
 		if err != nil {
 			// Row missing => session was deleted (logout) or evicted.
@@ -280,7 +272,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 			return store.Principal{}, nil, false
 		}
 		now := s.clk.Now()
-		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > idleTTL {
+		if !row.LastSeenAt.IsZero() && now.Sub(row.LastSeenAt) > s.opts.Session.IdleTTL {
 			// Drop the row so the same cookie can't resurrect the
 			// session on a later request.
 			_ = s.store.Meta().DeleteSession(ctx, sess.CSRFToken)
@@ -289,7 +281,7 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		}
 		// Best-effort touch; failures are logged but don't reject the
 		// in-flight request.
-		if err := s.store.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro()); err != nil {
+		if err := s.store.Meta().UpdateSessionLastSeen(ctx, sess.CSRFToken, now.UnixMicro(), remoteHost(r.RemoteAddr)); err != nil {
 			s.loggerFrom(ctx).Warn("protoadmin.auth.session_touch_failed",
 				"activity", observe.ActivityInternal,
 				"err", err)
