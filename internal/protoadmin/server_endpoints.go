@@ -184,10 +184,12 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 	var callerID uint64
 	var callerEmail string
 	var callerScopes []auth.Scope
+	var callerRoles []string
 	if ac := auth.FromContext(r.Context()); ac != nil {
 		callerID = uint64(caller.ID)
 		callerEmail = caller.CanonicalEmail
 		callerScopes = ac.Scopes.Slice()
+		callerRoles = principalRoles(caller)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        s.opts.ServerVersion,
@@ -198,6 +200,7 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 		"store_backend":  storeBackendName(s.store),
 		"principal_id":   callerID,
 		"email":          callerEmail,
+		"roles":          callerRoles,
 		"scopes":         callerScopes,
 	})
 }

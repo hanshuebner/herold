@@ -258,6 +258,12 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOnly(w, r, caller, identity.PrincipalID) {
 		return
 	}
+	// Gate on TOTP step-up when the caller has TOTP enrolled (REQ-AUTH-78,
+	// issue #79). handlePutSubmission is always self-service (requireSelfOnly
+	// above already rejects admin-for-other), so the gate applies unconditionally.
+	if !s.requireSelfServiceElevation(w, r, caller) {
+		return
+	}
 
 	var req submissionPutRequest
 	if !decodeJSONBody(w, r, &req) {

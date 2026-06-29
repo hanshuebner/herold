@@ -87,6 +87,14 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
+	// Self-service path: gate on TOTP step-up when the caller is disabling
+	// their own TOTP and has it enrolled (REQ-AUTH-78, issue #79).
+	// Admin-disabling-for-other is not gated here.
+	if caller.ID == pid {
+		if !s.requireSelfServiceElevation(w, r, caller) {
+			return
+		}
+	}
 	var req totpDisableRequest
 	if !decodeJSONBody(w, r, &req) {
 		return

@@ -436,6 +436,65 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal
 	return false
 }
 
+// requireSelfServiceElevation gates a sensitive self-service operation behind
+// TOTP step-up when the caller has TOTP enrolled (REQ-AUTH-78, issue #79).
+//
+// Bearer API-key callers (Authorization header present) are exempt entirely:
+// API keys are long-lived credentials managed outside the browser TOTP flow,
+// and TOTP step-up is a session-interactive mechanism.
+//
+// When TOTP is not enrolled the gate returns true unconditionally. There is
+// no enroll_required path on the self-service gate; that requirement is
+// admin-only.
+//
+// When TOTP is enrolled and no active elevation record exists for the current
+// session, the method writes 403 with {"step_up_required":true,
+// "elevation_scope":"self-service"} and returns false. The handler must
+// return immediately in that case.
+//
+// A single elevation record (created by POST /api/v1/auth/step-up) satisfies
+// both the admin gate (requireElevation) and this self-service gate.
+func (s *Server) requireSelfServiceElevation(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
+	// Bearer callers have no persistent session and are exempt.
+	if r.Header.Get("Authorization") != "" {
+		return true
+	}
+	// If TOTP is not enrolled, no elevation is needed for self-service ops.
+	if !caller.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		return true
+	}
+	// TOTP is enrolled: require a live elevation record for the session.
+	sessID := s.sessionIDFromRequest(r)
+	if sessID == "" {
+		// No session ID after requireAuth is a defensive edge case (e.g.
+		// no session signing key in test). Treat as unauthenticated.
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "authentication required", "")
+		return false
+	}
+	_, err := s.store.Meta().GetActiveElevation(r.Context(), sessID, s.clk.Now().UnixMicro())
+	if err != nil {
+		s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.self_service_elevation_required",
+			"activity", observe.ActivityAudit,
+			"actor_id", caller.ID,
+			"method", r.Method,
+			"path", r.URL.Path)
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":             "about:blank",
+			"title":            "Step-up elevation required",
+			"status":           http.StatusForbidden,
+			"detail":           "This operation requires a current TOTP step-up. POST /api/v1/auth/step-up with your TOTP code.",
+			"step_up_required": true,
+			"elevation_scope":  "self-service",
+			"step_up_url":      "/api/v1/auth/step-up",
+		})
+		return false
+	}
+	return true
+}
+
 // requireElevation is the admin-route guard for the step-up elevation
 // model (REQ-AUTH-SCOPE-02, REQ-AUTH-74, issue #79).
 //

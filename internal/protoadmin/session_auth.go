@@ -57,6 +57,12 @@ type loginResponse struct {
 	PrincipalID uint64 `json:"principal_id"`
 	// Email is the principal's canonical email address.
 	Email string `json:"email"`
+	// Roles is the principal's role set (REQ-AUTH-60, REQ-AUTH-75).
+	// Values: "end-user", "admin". The client uses this to gate the
+	// admin entry point's visibility (web REQ-AS-26) without a second
+	// whoami round-trip. Admin scope is never carried in the cookie
+	// (REQ-AUTH-SCOPE-01); roles is the authoritative signal.
+	Roles []string `json:"roles"`
 	// Scopes is the scope set encoded into the issued session cookie
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
@@ -95,6 +101,10 @@ type whoamiResponse struct {
 	PrincipalID uint64 `json:"principal_id"`
 	// Email is the principal's canonical email address.
 	Email string `json:"email"`
+	// Roles is the principal's role set (REQ-AUTH-60, REQ-AUTH-75).
+	// Values: "end-user", "admin". The admin SPA gates the admin
+	// entry point's visibility on this field (web REQ-AS-26).
+	Roles []string `json:"roles"`
 	// Scopes is the scope set carried by the session or API key
 	// (REQ-AUTH-SCOPE-01). The SPA uses this to gate UI surfaces.
 	Scopes []auth.Scope `json:"scopes"`
@@ -111,6 +121,19 @@ type whoamiResponse struct {
 	// livetail_until and telemetry_enabled without a separate round-trip
 	// (REQ-CLOG-05, REQ-CLOG-12).
 	Clientlog clientlogSessionMeta `json:"clientlog"`
+}
+
+// principalRoles returns the role strings for a principal (REQ-AUTH-60,
+// REQ-AUTH-75). The role set is separate from the session scope set: scopes
+// are baked into the cookie and govern API access; roles are derived from
+// PrincipalFlags on every response so the SPA can gate UI surfaces without
+// a separate lookup. Currently only "admin" and "end-user" are defined;
+// "superadmin" requires a future schema addition.
+func principalRoles(p store.Principal) []string {
+	if p.Flags.Has(store.PrincipalFlagAdmin) {
+		return []string{"admin"}
+	}
+	return []string{"end-user"}
 }
 
 // handleLogin handles POST /api/v1/auth/login.
@@ -265,6 +288,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(loginResponse{
 		PrincipalID:         uint64(p.ID),
 		Email:               p.CanonicalEmail,
+		Roles:               principalRoles(p),
 		Scopes:              sessScopes.Slice(),
 		SessionExpiresAt:    sess.ExpiresAt.UTC().Format(time.RFC3339),
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
@@ -276,8 +300,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // use a single type for both the login response and the page-reload
 // session probe (REQ-ADM-203).
 type authMeResponse struct {
-	PrincipalID         uint64       `json:"principal_id"`
-	Email               string       `json:"email"`
+	PrincipalID uint64 `json:"principal_id"`
+	Email       string `json:"email"`
+	// Roles is the principal's role set (REQ-AUTH-60, REQ-AUTH-75).
+	Roles               []string     `json:"roles"`
 	Scopes              []auth.Scope `json:"scopes"`
 	SessionExpiresAt    string       `json:"session_expires_at,omitempty"`
 	SessionIdleDeadline string       `json:"session_idle_deadline,omitempty"`
@@ -323,6 +349,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, authMeResponse{
 		PrincipalID:         uint64(p.ID),
 		Email:               p.CanonicalEmail,
+		Roles:               principalRoles(p),
 		Scopes:              scopes,
 		SessionExpiresAt:    sessionExpiresAt,
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
@@ -358,6 +385,7 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, whoamiResponse{
 		PrincipalID:         uint64(p.ID),
 		Email:               p.CanonicalEmail,
+		Roles:               principalRoles(p),
 		Scopes:              scopes,
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
 		ElevationExpiresAt:  s.activeElevationExpiry(r),

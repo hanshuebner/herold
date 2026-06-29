@@ -364,6 +364,13 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	isSelf := caller.ID == pid
 	isAdmin := caller.Flags.Has(store.PrincipalFlagAdmin)
+	// Self-service path: gate on TOTP step-up when the caller is changing
+	// their own password and has TOTP enrolled (REQ-AUTH-78, issue #79).
+	if isSelf {
+		if !s.requireSelfServiceElevation(w, r, caller) {
+			return
+		}
+	}
 	if isSelf {
 		if req.CurrentPassword == "" {
 			writeProblem(w, r, http.StatusBadRequest, "validation_failed",

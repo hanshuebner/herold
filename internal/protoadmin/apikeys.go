@@ -95,6 +95,14 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
+	// Self-service path: gate on TOTP step-up when the caller is creating
+	// their own key and has TOTP enrolled (REQ-AUTH-78, issue #79).
+	// Admin-creating-for-other is not gated here.
+	if caller.ID == pid {
+		if !s.requireSelfServiceElevation(w, r, caller) {
+			return
+		}
+	}
 	var req createAPIKeyRequest
 	if !decodeJSONBody(w, r, &req) {
 		return
