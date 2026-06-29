@@ -209,7 +209,6 @@
     font-size: var(--type-code-01-size);
     font-weight: var(--type-code-01-weight);
     line-height: 1;
-    vertical-align: 0.1em;
     color: var(--text-code);
   }
 
