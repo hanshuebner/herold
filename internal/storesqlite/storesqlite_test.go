@@ -594,3 +594,102 @@ func TestRejectNewerSchema(t *testing.T) {
 		t.Fatal("expected Open to reject newer schema, got nil")
 	}
 }
+
+// TestMigration0070RethreadSameMsgid seeds a minimal messages table with
+// a fragmented thread (two rows sharing the same env_message_id but with
+// different effective thread_ids) and verifies that migration 0070 converges
+// them. (re #88, REQ-STORE-40)
+func TestMigration0070RethreadSameMsgid(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/meta.db"
+
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	defer raw.Close()
+
+	// Minimal messages table: only the columns the migration references.
+	if _, err := raw.Exec(`CREATE TABLE messages (
+		  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		  principal_id   INTEGER NOT NULL,
+		  env_message_id TEXT    NOT NULL DEFAULT '',
+		  thread_id      INTEGER NOT NULL DEFAULT 0
+		) STRICT`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	// Seed a fragmented thread: pid=1, root message-id "root@test".
+	// Row 1: first copy, thread_id=0 (effective = 1).
+	// Row 2: second copy, thread_id=0 (effective = 2) — fragmented.
+	// Row 3: reply, thread_id=1 (correct — already in the root thread).
+	// Row 4: unrelated message with different message-id.
+	seeds := []struct {
+		pid, threadID int64
+		msgID         string
+	}{
+		{pid: 1, msgID: "root@test", threadID: 0},
+		{pid: 1, msgID: "root@test", threadID: 0},
+		{pid: 1, msgID: "reply@test", threadID: 1},
+		{pid: 1, msgID: "other@test", threadID: 0},
+	}
+	for _, s := range seeds {
+		if _, err := raw.Exec(
+			`INSERT INTO messages(principal_id, env_message_id, thread_id) VALUES (?, ?, ?)`,
+			s.pid, s.msgID, s.threadID,
+		); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Apply migration 0070.
+	if _, err := raw.Exec(storesqlite.Migration0070SQL); err != nil {
+		t.Fatalf("apply migration 0070: %v", err)
+	}
+
+	// Collect results.
+	rows, err := raw.Query(`SELECT id, env_message_id, thread_id FROM messages ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	type row struct {
+		id, threadID int64
+		msgID        string
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.msgID, &r.threadID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	effThread := func(r row) int64 {
+		if r.threadID == 0 {
+			return r.id
+		}
+		return r.threadID
+	}
+
+	// Row 1 (first root copy): effective thread = 1. thread_id may stay 0 or be set to 1.
+	if effThread(got[0]) != 1 {
+		t.Errorf("row 1 effective thread = %d, want 1", effThread(got[0]))
+	}
+	// Row 2 (second root copy): must share effective thread = 1.
+	if effThread(got[1]) != 1 {
+		t.Errorf("row 2 effective thread = %d, want 1 (must converge with row 1)", effThread(got[1]))
+	}
+	// Row 3 (reply, already thread_id=1): must remain in effective thread 1.
+	if effThread(got[2]) != 1 {
+		t.Errorf("row 3 effective thread = %d, want 1", effThread(got[2]))
+	}
+	// Row 4 (unrelated, single copy): must be its own singleton thread.
+	if effThread(got[3]) != got[3].id {
+		t.Errorf("row 4 effective thread = %d, want self id %d", effThread(got[3]), got[3].id)
+	}
+}

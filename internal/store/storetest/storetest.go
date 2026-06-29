@@ -45,6 +45,9 @@ func Run(t *testing.T, f Factory) {
 		{"CountMessages", testCountMessages},
 		{"InsertMessages_SkipThreading", testInsertMessagesSkipThreading},
 		{"RethreadPrincipal", testRethreadPrincipal},
+		// re #88, REQ-STORE-40: duplicate message-id copies share one thread.
+		{"InsertMessage_DuplicateMessageID_SameThread", testInsertMessage_DuplicateMessageID_SameThread},
+		{"RethreadPrincipal_DuplicateMessageID", testRethreadPrincipal_DuplicateMessageID},
 		{"ListPrincipalBlobHashes", testListPrincipalBlobHashes},
 		{"UpdateFlagsBumpsModSeq", testUpdateFlagsBumpsModSeq},
 		{"UpdateFlagsUnchangedSince", testUpdateFlagsUnchangedSince},
@@ -1021,6 +1024,172 @@ func testRethreadPrincipal(t *testing.T, s store.Store) {
 	}
 	if orphanRow.ThreadID != uint64(orphanRow.ID) {
 		t.Errorf("orphan thread_id = %d, want self id %d", orphanRow.ThreadID, orphanRow.ID)
+	}
+}
+
+// testInsertMessage_DuplicateMessageID_SameThread verifies the ingest-time
+// same-message-id convergence fix (re #88, REQ-STORE-40): when two rows share
+// the same env_message_id (the Sent copy and the delivered copy of a self-sent
+// message), both copies must end up with the same effective thread key, as
+// must any replies to those copies.
+func testInsertMessage_DuplicateMessageID_SameThread(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "selfmail@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+
+	ref := putBlob(t, s, "root-body")
+	insert := func(mb store.Mailbox, msgID, inReplyTo string) store.Message {
+		t.Helper()
+		uid, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:  p.ID,
+			Blob:         ref,
+			Size:         ref.Size,
+			InternalDate: time.Unix(1000, 0).UTC(),
+			ReceivedAt:   time.Unix(1000, 0).UTC(),
+			Envelope:     store.Envelope{MessageID: msgID, InReplyTo: inReplyTo},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1000, WithEnvelope: true})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range msgs {
+			if m.UID == uid {
+				return m
+			}
+		}
+		t.Fatalf("inserted message UID=%d not found", uid)
+		return store.Message{}
+	}
+
+	// Root message: two copies with same Message-ID, no InReplyTo.
+	root1 := insert(sent, "<root@self.test>", "")
+	root2 := insert(inbox, "<root@self.test>", "")
+
+	// Reply: two copies with same Message-ID, InReplyTo=root.
+	reply1 := insert(sent, "<reply@self.test>", "<root@self.test>")
+	reply2 := insert(inbox, "<reply@self.test>", "<root@self.test>")
+
+	// All four must share one effective thread.
+	k := threadKey(root1)
+	for _, m := range []store.Message{root2, reply1, reply2} {
+		if threadKey(m) != k {
+			t.Errorf("message id=%d threadKey=%d, want %d (all must share one thread)", m.ID, threadKey(m), k)
+		}
+	}
+}
+
+// testRethreadPrincipal_DuplicateMessageID verifies the RethreadPrincipal
+// same-message-id convergence fix (re #88, REQ-STORE-40): when rows inserted
+// with SkipThreading share a Message-ID, RethreadPrincipal must converge them
+// into one thread along with their replies.
+func testRethreadPrincipal_DuplicateMessageID(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rethreaddup@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	threadKey := func(m store.Message) uint64 {
+		if m.ThreadID != 0 {
+			return m.ThreadID
+		}
+		return uint64(m.ID)
+	}
+
+	ref := putBlob(t, s, "rt-dup-body")
+	items := []store.InsertMessageItem{
+		// Root copy 1 (Sent).
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(1000, 0).UTC(),
+				ReceivedAt:   time.Unix(1000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "root@dup.test"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: sent.ID}},
+		},
+		// Root copy 2 (Inbox).
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(1001, 0).UTC(),
+				ReceivedAt:   time.Unix(1001, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "root@dup.test"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: inbox.ID}},
+		},
+		// Reply copy 1 (Sent).
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(2000, 0).UTC(),
+				ReceivedAt:   time.Unix(2000, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "reply@dup.test", InReplyTo: "<root@dup.test>"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: sent.ID}},
+		},
+		// Reply copy 2 (Inbox).
+		{
+			Message: store.Message{
+				PrincipalID:  p.ID,
+				Blob:         ref,
+				Size:         ref.Size,
+				InternalDate: time.Unix(2001, 0).UTC(),
+				ReceivedAt:   time.Unix(2001, 0).UTC(),
+				Envelope:     store.Envelope{MessageID: "reply@dup.test", InReplyTo: "<root@dup.test>"},
+			},
+			Targets: []store.MessageMailbox{{MailboxID: inbox.ID}},
+		},
+	}
+
+	if _, err := s.Meta().InsertMessages(ctx, items, store.InsertMessagesOptions{SkipThreading: true}); err != nil {
+		t.Fatalf("InsertMessages: %v", err)
+	}
+
+	n, err := s.Meta().RethreadPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("RethreadPrincipal: %v", err)
+	}
+	// All 4 rows have thread_id=0 initially; all 4 should be updated.
+	if n != 4 {
+		t.Errorf("RethreadPrincipal n = %d, want 4", n)
+	}
+
+	// Collect all messages from both mailboxes.
+	var all []store.Message
+	for _, mb := range []store.Mailbox{sent, inbox} {
+		msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		all = append(all, msgs...)
+	}
+	if len(all) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(all))
+	}
+
+	// All four must share one effective thread.
+	k := threadKey(all[0])
+	for i, m := range all[1:] {
+		if threadKey(m) != k {
+			t.Errorf("all[%d] id=%d threadKey=%d, want %d", i+1, m.ID, threadKey(m), k)
+		}
 	}
 }
 

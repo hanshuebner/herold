@@ -439,7 +439,17 @@ const CurrentBackupVersion = 1
 //	the epoch-microsecond expiry. Partial index on (identity_id,
 //	hold_deadline_us) WHERE held_for_reauth speeds the Retryer's list
 //	scan. Column-only migration.
-const CurrentSchemaVersion = 69
+//
+// 70 — 0070_rethread_same_msgid.sql (re #88, REQ-STORE-40). Repairs
+//
+//	fragmented threads caused by self-sent messages: each self-sent
+//	message is stored twice (a Sent copy and a delivered copy) sharing
+//	the same Message-ID header. The old thread assignment treated each
+//	copy as an independent message, giving them different thread_id
+//	values. The migration sets every row in a same-MessageID group to
+//	the effective thread of the group's first (lowest id) row. Data-only
+//	migration; no schema change.
+const CurrentSchemaVersion = 70
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

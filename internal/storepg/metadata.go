@@ -847,6 +847,29 @@ func (m *metadata) insertMessageTx(
 		if msg.Envelope.MessageID != "" {
 			msg.Envelope.MessageID = mailparse.NormalizeMessageID(msg.Envelope.MessageID)
 		}
+		// Same-message-id convergence: if any existing row for this principal
+		// already carries the same env_message_id, inherit its thread. This
+		// joins duplicate copies (e.g. Sent + delivered) into one thread even
+		// when In-Reply-To/References are absent. (re #88, REQ-STORE-40)
+		if msg.ThreadID == 0 && !skipThreading && msg.Envelope.MessageID != "" {
+			var existingID, existingThread int64
+			sameErr := tx.QueryRow(ctx, `
+				SELECT id, thread_id
+				  FROM messages
+				 WHERE principal_id = $1
+				   AND env_message_id = $2
+				 LIMIT 1`,
+				pid, msg.Envelope.MessageID).Scan(&existingID, &existingThread)
+			if sameErr == nil {
+				if existingThread != 0 {
+					msg.ThreadID = uint64(existingThread)
+				} else {
+					msg.ThreadID = uint64(existingID)
+				}
+			} else if !errors.Is(sameErr, pgx.ErrNoRows) {
+				return fmt.Errorf("storepg: same-message-id thread lookup: %w", sameErr)
+			}
+		}
 		// Thread resolution using principal_id directly (post-migration 0024).
 		// RFC 5256 sec 2.2 and RFC 8621 sec 8.1: check both In-Reply-To
 		// and References headers. References lists the full ancestry chain
@@ -1003,10 +1026,15 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 	}
 	rs.Close()
 
+	// Build (env_message_id -> row index): first occurrence only so that
+	// duplicate copies of the same message (e.g., Sent + delivered) all
+	// resolve to the same anchor row. (re #88, REQ-STORE-40)
 	byID := make(map[string]int, len(rows))
 	for i, r := range rows {
 		if r.messageID != "" {
-			byID[r.messageID] = i
+			if _, exists := byID[r.messageID]; !exists {
+				byID[r.messageID] = i
+			}
 		}
 	}
 
@@ -1019,25 +1047,41 @@ func (m *metadata) RethreadPrincipal(ctx context.Context, pid store.PrincipalID)
 			continue
 		}
 		var resolved int64
-		all := mailparse.ParseReferences(r.inReplyTo)
-		seen := make(map[string]struct{}, len(all))
-		for _, ref := range all {
-			seen[ref] = struct{}{}
-		}
-		for _, ref := range mailparse.ParseReferences(r.refs) {
-			if _, dup := seen[ref]; !dup {
-				all = append(all, ref)
-				seen[ref] = struct{}{}
+
+		// Same-message-id convergence: a later copy of the same message
+		// inherits the thread already assigned to the first copy.
+		if r.messageID != "" {
+			if first := byID[r.messageID]; first != i {
+				if newThread[first] != 0 {
+					resolved = newThread[first]
+				} else {
+					resolved = rows[first].id
+				}
 			}
 		}
-		for _, ref := range all {
-			if idx, ok := byID[ref]; ok && idx != i {
-				if newThread[idx] != 0 {
-					resolved = newThread[idx]
-				} else {
-					resolved = rows[idx].id
+
+		// InReplyTo / References resolution.
+		if resolved == 0 {
+			all := mailparse.ParseReferences(r.inReplyTo)
+			seen := make(map[string]struct{}, len(all))
+			for _, ref := range all {
+				seen[ref] = struct{}{}
+			}
+			for _, ref := range mailparse.ParseReferences(r.refs) {
+				if _, dup := seen[ref]; !dup {
+					all = append(all, ref)
+					seen[ref] = struct{}{}
 				}
-				break
+			}
+			for _, ref := range all {
+				if idx, ok := byID[ref]; ok && idx != i {
+					if newThread[idx] != 0 {
+						resolved = newThread[idx]
+					} else {
+						resolved = rows[idx].id
+					}
+					break
+				}
 			}
 		}
 		if resolved == 0 {

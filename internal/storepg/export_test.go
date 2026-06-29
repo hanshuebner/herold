@@ -12,6 +12,16 @@ var Migration0005SQL = func() string {
 	return string(body)
 }()
 
+// Migration0070SQL is the verbatim 0070_rethread_same_msgid.sql body,
+// re-exported for the migration test in storepg_test.go.
+var Migration0070SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0070_rethread_same_msgid.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()
+
 // TruncateAll moved to testseam.go (regular build) so external test
 // packages (e.g. test/e2e/fixtures) can call it across package
 // boundaries. _test.go files are not visible to importers.

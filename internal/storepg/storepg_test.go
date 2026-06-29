@@ -313,3 +313,126 @@ func TestMaterializeDefaultIdentity_ConcurrentRace(t *testing.T) {
 		t.Errorf("jmap_identities default rows = %d; want exactly 1", rowCount)
 	}
 }
+
+// TestMigration0070RethreadSameMsgid seeds a minimal messages table with
+// a fragmented thread (two rows sharing the same env_message_id but with
+// different effective thread_ids) and verifies that migration 0070 converges
+// them. (re #88, REQ-STORE-40)
+func TestMigration0070RethreadSameMsgid(t *testing.T) {
+	dsn, ok := getDSN(t)
+	if !ok {
+		t.Skip("HEROLD_PG_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgx pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Run inside a transaction that is rolled back so we don't disturb
+	// the schema for other tests sharing the CI database.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Drop and recreate a minimal messages table for this test.
+	if _, err := tx.Exec(ctx, `DROP TABLE IF EXISTS messages`); err != nil {
+		t.Fatalf("drop messages: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE messages (
+		  id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		  principal_id   BIGINT NOT NULL,
+		  env_message_id TEXT   NOT NULL DEFAULT '',
+		  thread_id      BIGINT NOT NULL DEFAULT 0
+		)`); err != nil {
+		t.Fatalf("create minimal messages: %v", err)
+	}
+
+	// Seed a fragmented thread:
+	//   Row 1: first copy of root (env_message_id="root@test", thread_id=0)
+	//   Row 2: second copy of root (same env_message_id, thread_id=0) — fragmented
+	//   Row 3: unrelated singleton (different env_message_id, thread_id=0)
+	// We do not pre-set thread_id to a non-zero value here because the Postgres
+	// IDENTITY sequence may not start at 1 in a shared CI database. The migration
+	// must converge the two "root@test" rows to the same effective thread regardless
+	// of what their auto-generated ids are.
+	for _, msgID := range []string{"root@test", "root@test", "other@test"} {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO messages(principal_id, env_message_id) VALUES ($1, $2)`,
+			1, msgID,
+		); err != nil {
+			t.Fatalf("seed %q: %v", msgID, err)
+		}
+	}
+
+	// Query the auto-assigned ids before the migration.
+	pgrows, err := tx.Query(ctx, `SELECT id, env_message_id, thread_id FROM messages ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("pre-migration query: %v", err)
+	}
+	type row struct {
+		id, threadID int64
+		msgID        string
+	}
+	var before []row
+	for pgrows.Next() {
+		var r row
+		if err := pgrows.Scan(&r.id, &r.msgID, &r.threadID); err != nil {
+			pgrows.Close()
+			t.Fatalf("pre-migration scan: %v", err)
+		}
+		before = append(before, r)
+	}
+	pgrows.Close()
+	if len(before) != 3 {
+		t.Fatalf("expected 3 seed rows, got %d", len(before))
+	}
+
+	if _, err := tx.Exec(ctx, storepg.Migration0070SQL); err != nil {
+		t.Fatalf("apply migration 0070: %v", err)
+	}
+
+	pgrows, err = tx.Query(ctx, `SELECT id, env_message_id, thread_id FROM messages ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("post-migration query: %v", err)
+	}
+	var got []row
+	for pgrows.Next() {
+		var r row
+		if err := pgrows.Scan(&r.id, &r.msgID, &r.threadID); err != nil {
+			pgrows.Close()
+			t.Fatalf("post-migration scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	pgrows.Close()
+	if len(got) != 3 {
+		t.Fatalf("expected 3 rows after migration, got %d", len(got))
+	}
+
+	effThread := func(r row) int64 {
+		if r.threadID == 0 {
+			return r.id
+		}
+		return r.threadID
+	}
+
+	// The anchor is the effective thread of the first root copy (lowest id with "root@test").
+	anchor := before[0].id // first row auto-id; its effective thread = anchor
+
+	// Row 0 (first root copy): effective thread must equal anchor.
+	if effThread(got[0]) != anchor {
+		t.Errorf("row[0] effective thread = %d, want %d", effThread(got[0]), anchor)
+	}
+	// Row 1 (second root copy): must converge to anchor.
+	if effThread(got[1]) != anchor {
+		t.Errorf("row[1] effective thread = %d, want %d (must converge with row[0])", effThread(got[1]), anchor)
+	}
+	// Row 2 (unrelated singleton, only one row with that message_id): must stay its own thread.
+	if effThread(got[2]) != got[2].id {
+		t.Errorf("row[2] effective thread = %d, want self id %d", effThread(got[2]), got[2].id)
+	}
+}
