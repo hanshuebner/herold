@@ -339,7 +339,10 @@ func TestMigration0070RethreadSameMsgid(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Drop and recreate a minimal messages table for this test.
-	if _, err := tx.Exec(ctx, `DROP TABLE IF EXISTS messages`); err != nil {
+	// CASCADE drops dependent objects (message_mailboxes, blob_refs, etc.)
+	// inside the transaction; all of it is rolled back at the end so the
+	// production schema is restored.
+	if _, err := tx.Exec(ctx, `DROP TABLE IF EXISTS messages CASCADE`); err != nil {
 		t.Fatalf("drop messages: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `CREATE TABLE messages (
