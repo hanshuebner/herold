@@ -1391,14 +1391,11 @@ export const en = {
     'The {provider} provider is not configured on this server. Use manual ' +
     'entry instead.',
   /**
-   * Shown in place of the radio toggle when domain_authoritative is false
-   * (re #74). External SMTP submission is required for foreign domains.
+   * Section hint when domain_authoritative is false (re #74).
+   * Replaces the optional-routing hint; no mention of DKIM/DMARC internals.
    */
-  'settings.submission.foreignDomainNotice':
-    "This domain is not managed by this server. Because DKIM signing and " +
-    "DMARC alignment cannot be provided for an external domain, sending " +
-    "through the local queue is blocked. Configure an external SMTP server " +
-    "below.",
+  'settings.submission.foreignDomainHint':
+    'Enter the SMTP server credentials for this address.',
 
   // identity import section (IdentityImportSection.svelte)
   // REQ-SET-IMAPIMP-01..04

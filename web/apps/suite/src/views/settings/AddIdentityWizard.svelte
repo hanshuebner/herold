@@ -348,9 +348,11 @@
     <h3 id="wizard-title" class="dialog-title">
       {t('settings.identityWizard.title')}
     </h3>
-    <span class="step-indicator" data-testid="identity-wizard-step-indicator">
-      {step}/{showStep3 ? 3 : 2}
-    </span>
+    {#if step > 1}
+      <span class="step-indicator" data-testid="identity-wizard-step-indicator">
+        {step}/{showStep3 ? 3 : 2}
+      </span>
+    {/if}
     <button
       type="button"
       class="close"

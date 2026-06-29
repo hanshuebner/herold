@@ -253,7 +253,11 @@
 
 <div class="submission-section">
   <h4 class="section-title">{t('settings.submission.title')}</h4>
-  <p class="section-hint">{t('settings.submission.hint')}</p>
+  <p class="section-hint">
+    {domainAuthoritative
+      ? t('settings.submission.hint')
+      : t('settings.submission.foreignDomainHint')}
+  </p>
 
   {#if handle.status === 'loading' || handle.status === 'idle'}
     <div class="spinner" role="status" aria-label={t('settings.submission.loadingAriaLabel')}></div>
@@ -285,11 +289,6 @@
           />
           <span>{t('settings.submission.useExternal')}</span>
         </label>
-      </div>
-    {:else}
-      <!-- Foreign domain: external submission is required (re #74). -->
-      <div class="foreign-domain-notice" role="note">
-        {t('settings.submission.foreignDomainNotice')}
       </div>
     {/if}
 
@@ -499,17 +498,6 @@
   .recommended {
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
-  }
-
-  /* Foreign-domain notice (re #74) */
-  .foreign-domain-notice {
-    padding: var(--spacing-03) var(--spacing-04);
-    background: color-mix(in srgb, var(--support-warning) 12%, transparent);
-    border-left: 3px solid var(--support-warning);
-    border-radius: var(--radius-md);
-    color: var(--text-primary);
-    font-size: var(--type-body-compact-01-size);
-    line-height: var(--type-body-compact-01-line);
   }
 
   .external-panel {

@@ -1412,14 +1412,11 @@ export const de = {
     'Der Anbieter {provider} ist auf diesem Server nicht konfiguriert. ' +
     'Verwenden Sie stattdessen die manuelle Eingabe.',
   /**
-   * Angezeigt anstelle des Umschalters, wenn domain_authoritative false ist
-   * (re #74). Für fremde Domains ist ein externer SMTP-Server erforderlich.
+   * Abschnittshinweis, wenn domain_authoritative false ist (re #74).
+   * Ersetzt den optionalen Routing-Hinweis; keine Erwähnung von DKIM/DMARC.
    */
-  'settings.submission.foreignDomainNotice':
-    'Diese Domain wird von diesem Server nicht verwaltet. Da DKIM-Signierung ' +
-    'und DMARC-Ausrichtung für externe Domains nicht möglich sind, steht die ' +
-    'lokale Sendewarteschlange nicht zur Verfügung. Bitte richten Sie unten ' +
-    'einen externen SMTP-Server ein.',
+  'settings.submission.foreignDomainHint':
+    'Geben Sie die SMTP-Zugangsdaten für diese Adresse ein.',
 
   // identity import section (IdentityImportSection.svelte)
   'settings.import.sectionTitle': 'Empfang (IMAP-Import)',

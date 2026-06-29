@@ -224,16 +224,15 @@ describe('IdentitySubmissionSection', () => {
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
   });
 
-  it('#74: when domain_authoritative is false, a notice about the foreign domain is shown', async () => {
+  it('#74: when domain_authoritative is false, no explanatory notice is shown', async () => {
     _mockHandle.data.domain_authoritative = false;
 
     render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
 
-    // The foreign domain notice should be rendered with role="note".
-    expect(screen.getByRole('note')).toBeInTheDocument();
-    // The notice should mention external SMTP or DKIM.
-    const notice = screen.getByRole('note');
-    expect(notice.textContent).toMatch(/DKIM/);
+    // No role="note" element — the DKIM/DMARC notice was removed (re #74 comment 911).
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    // No DKIM text anywhere.
+    expect(screen.queryByText(/DKIM/)).not.toBeInTheDocument();
   });
 
   it('#74: when domain_authoritative is false, the external panel is shown directly', async () => {
