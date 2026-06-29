@@ -24,6 +24,7 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
+  import { watchRegistration, activateWaiting } from './lib/sw-update';
   // Side-effect: registers a sync.on('InternalizeStatus') handler that
   // refreshes the session descriptor whenever the background internalize-
   // worker bumps the count (REQ-EXTIMG-BG-INTERNAL-30).
@@ -302,17 +303,52 @@
   }
 
   // ── Web Push: SW update notification (REQ-PUSH-72 / REQ-MOB-75) ──────────
+  //
+  // The correct lifecycle is install -> WAITING -> activating.  We watch the
+  // registration for a waiting worker and show the banner while the user is
+  // still on the OLD version.  The Reload button posts SKIP_WAITING to the
+  // waiting worker; once the new worker activates (controllerchange fires),
+  // we do exactly one location.reload().  The _reloading guard in sw-update.ts
+  // prevents a second reload if controllerchange fires unexpectedly again.
+  //
+  // Do NOT show the banner on first install: watchRegistration() and
+  // shouldShowBanner() both guard on navigator.serviceWorker.controller being
+  // non-null.
 
   let showSwUpdateBanner = $state(false);
+  // Holds the registration for use in reloadAfterSwUpdate().
+  let swRegistration: ServiceWorkerRegistration | null = null;
 
   $effect(() => {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      untrack(() => {
-        showSwUpdateBanner = true;
+    // register() is idempotent: returns the existing registration if already
+    // registered (push-subscription.svelte.ts also calls register).  Registering
+    // here ensures update detection works for all users, not only those who have
+    // enabled push notifications (REQ-MOB-74: SW is registered for both PWA
+    // installability and push).
+    void navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .then((reg) => {
+        swRegistration = reg;
+        watchRegistration(
+          reg,
+          () => navigator.serviceWorker.controller,
+          () => untrack(() => { showSwUpdateBanner = true; }),
+        );
+      })
+      .catch(() => {
+        // SW registration failed (e.g. insecure context in dev) — update
+        // detection is unavailable, which is acceptable in that environment.
       });
-    });
   });
+
+  function reloadAfterSwUpdate(): void {
+    activateWaiting(
+      swRegistration?.waiting ?? null,
+      (cb) => navigator.serviceWorker.addEventListener('controllerchange', cb),
+      () => location.reload(),
+    );
+  }
 
   // Re-sync mailbox counters when the tab regains visibility so the
   // favicon badge and title stay accurate after the tab was hidden (re #36).
@@ -371,7 +407,7 @@
 {#if showSwUpdateBanner}
   <div class="sw-update-banner" role="status" aria-live="polite">
     <span>{t('app.swUpdate.text')}</span>
-    <button type="button" onclick={() => location.reload()}>{t('app.swUpdate.reload')}</button>
+    <button type="button" onclick={reloadAfterSwUpdate}>{t('app.swUpdate.reload')}</button>
     <button type="button" aria-label="Dismiss" onclick={() => (showSwUpdateBanner = false)}>
       &#10005;
     </button>

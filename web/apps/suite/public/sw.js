@@ -23,14 +23,30 @@
 
 // ── Install / activate ─────────────────────────────────────────────────────
 
-self.addEventListener('install', (event) => {
-  // Skip waiting so a new SW activates immediately for the push-only use case.
-  self.skipWaiting();
+// eslint-disable-next-line no-unused-vars
+self.addEventListener('install', (_event) => {
+  // Do not call skipWaiting() here.  Letting the SW enter the WAITING state
+  // gives the SPA the chance to show the "A new version is available" prompt
+  // while the user is still on the old version (REQ-PUSH-72 / REQ-MOB-75).
+  // The SPA posts {type:'SKIP_WAITING'} when the user clicks Reload, which
+  // triggers the message handler below.
 });
 
 self.addEventListener('activate', (event) => {
-  // Claim all clients so the new SW serves push events immediately.
+  // Claim all clients so the new SW serves push events immediately after
+  // the user has confirmed the reload.
   event.waitUntil(self.clients.claim());
+});
+
+// ── Message: SKIP_WAITING ──────────────────────────────────────────────────
+
+// The SPA sends this after the user clicks Reload on the "new version
+// available" banner.  Only then do we skip the waiting state and activate,
+// triggering a controllerchange event on every controlled client.
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 // ── Push event ─────────────────────────────────────────────────────────────
