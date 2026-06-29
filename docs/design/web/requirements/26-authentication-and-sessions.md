@@ -1,6 +1,6 @@
 # 26 — Authentication and sessions
 
-How the suite handles session lifecycle, expired-session recovery, admin step-up authorization, and session management. Server-side counterparts: `../../server/requirements/02-identity-and-auth.md` REQ-AUTH-72..77, REQ-AUTH-SCOPE-01..03, REQ-AUTH-JSON-LOGIN, REQ-AUTH-JSON-LOGOUT, REQ-AUTH-JSON-WHOAMI.
+How the suite handles session lifecycle, expired-session recovery, admin step-up authorization, and session management. Server-side counterparts: `../../server/requirements/02-identity-and-auth.md` REQ-AUTH-72..78, REQ-AUTH-SCOPE-01..04, REQ-AUTH-JSON-LOGIN, REQ-AUTH-JSON-LOGOUT, REQ-AUTH-JSON-WHOAMI.
 
 ## Forced re-login on session expiry
 
@@ -16,7 +16,7 @@ A session expires when the idle deadline elapses (REQ-AUTH-72). The suite proact
 
 ## TOTP step-up for admin and destructive operations
 
-Entering the admin UI or performing a mutating admin operation requires an active elevation record on the server (REQ-AUTH-74, REQ-AUTH-SCOPE-03). The suite presents a TOTP-only modal on demand; it never re-prompts for password.
+Entering the admin UI or performing a mutating admin operation requires an active elevation record on the server (REQ-AUTH-74, REQ-AUTH-SCOPE-03). The suite presents a TOTP-only modal on demand; it never re-prompts for password. These client requirements (REQ-AS-20..25) apply equally to the consumer suite (`web/apps/suite`) and the operator admin SPA (`web/apps/admin`) served at `/admin/`: a `403 step_up_required` from any endpoint MUST drive the TOTP modal, never a re-login prompt or a raw error rendered into page content. The same modal also satisfies the self-service step-up of REQ-AUTH-78.
 
 | ID | Requirement |
 |----|-------------|
@@ -26,6 +26,22 @@ Entering the admin UI or performing a mutating admin operation requires an activ
 | REQ-AS-23 | On correct TOTP code the suite POSTs to `POST /api/v1/auth/step-up`. On success (200) it updates `elevation_expires_at` in application state from the response body, closes the modal, and resubmits any queued action (REQ-AS-22). On wrong code (401) the modal re-renders with an inline error ("Incorrect code — try again"). After five consecutive wrong codes within the lockout window the server returns 429 and the modal renders the lockout countdown (formatted as "Try again in X:XX") with the code input disabled. |
 | REQ-AS-24 | When `elevation_expires_at` is present and the remaining time is under 5 minutes, the suite renders a small countdown chip at a consistent location in the chrome (near the user-avatar menu, or in the admin-UI top bar). The chip shows the remaining time in `M:SS` format and disappears when the elevation expires. When the elevation expires between requests, the next admin or destructive action re-triggers the modal per REQ-AS-20. |
 | REQ-AS-25 | When `403 step_up_required` carries `enroll_required: true` (REQ-AUTH-44), the step-up modal is replaced by an enrollment prompt: "Admin access requires two-factor authentication. Set up TOTP now?" with "Set up now" (routes to TOTP enrollment in Settings) and "Cancel". |
+
+## Admin entry-point visibility
+
+The admin UI is reachable only by principals who hold an admin role. Because `admin` is no longer carried as a session-cookie scope (REQ-AUTH-SCOPE-01), the client decides visibility from the principal's `roles` (REQ-AUTH-75), not from scopes.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AS-26 | The admin entry point (the admin link in the suite's burger/avatar menu, and any in-suite admin navigation affordance) is shown only when the most recent `GET /api/v1/auth/whoami` response's `roles` includes `admin` or `superadmin`. Visibility is gated on role membership, not on the cookie scope set (which never carries `admin`) and not on the current elevation state: the link is shown to admin-capable principals whether or not a step-up elevation is active, and activating it triggers step-up per REQ-AS-21. Principals whose `roles` contain neither `admin` nor `superadmin` never see the admin entry point. The suite reads `roles` from the `whoami` (REQ-AS-11) it already issues on load, and from the `POST /api/v1/auth/login` response (REQ-AUTH-JSON-LOGIN) so the entry point renders correctly immediately after sign-in. |
+
+## Self-service step-up
+
+Operations that mint or change a long-lived credential or security setting on the principal's own account are gated by step-up when the principal has TOTP (server REQ-AUTH-78).
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AS-27 | API-key creation, app-password creation, external-submission-credential creation/update, password change, and TOTP disable use the standard mutating-request step-up flow (REQ-AS-22): on a `403 step_up_required` the request is queued, the TOTP modal is presented, and on success the action is resubmitted once. When the server permits the operation without elevation (the principal has no TOTP enrolled, server REQ-AUTH-78), the operation succeeds on the first request and no modal appears. The client does not pre-gate these on TOTP-enrollment state; it reacts to the server's `403 step_up_required` so the enrolled/not-enrolled decision stays server-authoritative. |
 
 ## Session management
 
