@@ -188,38 +188,84 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data ?? {};
   const action = event.action;
 
-  event.waitUntil(handleNotificationClick(data, action, event));
+  // Resolve the navigation path SYNCHRONOUSLY before the first await.
+  //
+  // clients.openWindow() is gated on the transient user activation granted by
+  // the notificationclick event.  On macOS (Chrome and Safari), that activation
+  // can expire after the first microtask yield even when event.waitUntil() is
+  // in use, so any intermediate async function boundary before the openWindow()
+  // call can silently prevent the window from opening.
+  //
+  // The fix: determine the path here (synchronous), then pass it directly to
+  // event.waitUntil(openApp(path)) so that clients.openWindow() executes as
+  // the very first async step in the waitUntil promise chain.
+  //
+  // Pure JMAP background actions (archive, mark_read) do not open a window and
+  // are dispatched through a separate waitUntil path that does not call openApp.
+  const path = resolveNotificationPath(data, action);
+
+  if (path !== null) {
+    event.waitUntil(openApp(path));
+  } else {
+    event.waitUntil(handleBackgroundAction(data, action, event));
+  }
 });
 
-async function handleNotificationClick(data, action, event) {
+/**
+ * Return the app path to open for this notification click, or null when the
+ * action is a background JMAP operation that does not open a window.
+ *
+ * This function is intentionally synchronous so the result can be passed
+ * directly to event.waitUntil(openApp(path)) without an intermediate await.
+ */
+function resolveNotificationPath(data, action) {
+  // Archive and mark_read are background JMAP calls specific to mail notifications.
+  // Chat mark_read has no server-side SW handler; the app re-syncs on open,
+  // so those clicks fall through and open the conversation.
+  if (data.kind === 'mail' && (action === 'archive' || action === 'mark_read')) return null;
+
   const kind = data.kind;
 
   switch (kind) {
-    case 'mail':
-      await handleMailAction(data, action, event);
-      break;
-    case 'chat':
-      await handleChatAction(data, action, event);
-      break;
-    case 'calendar-invite':
-      // Open app at the thread/email; Accept/Decline is handled in-app (v1).
-      await openApp(`/mail/thread/${encodeURIComponent(data.emailId ?? '')}`);
-      break;
-    case 'call':
-      // Open app for call signaling — SW cannot drive WebRTC (REQ-PUSH-67).
-      await openApp(
-        data.conversationId
-          ? `/chat/${encodeURIComponent(data.conversationId)}`
-          : '/',
-      );
-      break;
+    case 'mail': {
+      if (action === 'reply' || action === 'retry_archive' || action === 'retry_read') {
+        return `/mail/compose?inReplyTo=${encodeURIComponent(data.emailId ?? '')}&quick=1`;
+      }
+      // Body click — open the thread.
+      return data.threadId
+        ? `/mail/thread/${encodeURIComponent(data.threadId)}`
+        : '/mail';
+    }
+    case 'chat': {
+      // Open the mail view with the openChat deep-link overlay so the
+      // conversation appears without navigating away from whatever the user
+      // was doing.  The full-screen /chat/* route is reachable from the rail.
+      return data.conversationId
+        ? `/#/mail?openChat=${encodeURIComponent(data.conversationId)}`
+        : '/#/mail';
+    }
+    case 'calendar-invite': {
+      // Accept/Decline is handled in-app (v1).
+      return `/mail/thread/${encodeURIComponent(data.emailId ?? '')}`;
+    }
+    case 'call': {
+      // SW cannot drive WebRTC (REQ-PUSH-67) — open the app for call signaling.
+      return data.conversationId
+        ? `/chat/${encodeURIComponent(data.conversationId)}`
+        : '/';
+    }
     default:
-      await openApp('/');
-      break;
+      return '/';
   }
 }
 
-async function handleMailAction(data, action, event) {
+/**
+ * Handle a background JMAP action (archive or mark_read) that does not open
+ * a window.  Called only when resolveNotificationPath() returns null.
+ */
+async function handleBackgroundAction(data, action, event) {
+  if (data.kind !== 'mail') return;
+
   if (action === 'archive') {
     const ok = await jmapEmailSetArchive(data.emailId, data.inboxMailboxId);
     if (!ok) {
@@ -227,7 +273,6 @@ async function handleMailAction(data, action, event) {
       await self.registration.showNotification(
         event.notification.title + ' — failed to archive',
         {
-          ...event.notification,
           body: event.notification.body,
           tag: event.notification.tag,
           data: event.notification.data,
@@ -253,37 +298,6 @@ async function handleMailAction(data, action, event) {
     }
     return;
   }
-
-  if (action === 'reply' || action === 'retry_archive' || action === 'retry_read') {
-    await openApp(
-      `/mail/compose?inReplyTo=${encodeURIComponent(data.emailId ?? '')}&quick=1`,
-    );
-    return;
-  }
-
-  // Body click — open the thread.
-  if (data.threadId) {
-    await openApp(`/mail/thread/${encodeURIComponent(data.threadId)}`);
-  } else {
-    await openApp('/mail');
-  }
-}
-
-async function handleChatAction(data, action, event) {
-  if (action === 'mark_read') {
-    // Mark read is best-effort from the SW; the app can re-sync on open.
-    // We open the app at the conversation to let the user see the update.
-  }
-  // Open the mail route with the openChat deep-link parameter so the
-  // conversation appears as a floating overlay rather than navigating away
-  // from whatever the user was doing.  The overlay path is friendlier when
-  // the user is mid-mail; the fullscreen /chat/* route can still be reached
-  // from the rail.
-  await openApp(
-    data.conversationId
-      ? `/#/mail?openChat=${encodeURIComponent(data.conversationId)}`
-      : '/#/mail',
-  );
 }
 
 // ── JMAP action helpers ─────────────────────────────────────────────────────
@@ -368,17 +382,35 @@ async function jmapEmailSetSeen(emailId) {
 // ── App open helper ────────────────────────────────────────────────────────
 
 /**
- * Open the suite at the given path in a new browser window.
+ * Open the suite at the given path.
  *
- * self.clients.openWindow() is guaranteed by the browser to make the new
- * window the active window. client.focus() on an existing window is not
- * reliable: the OS does not guarantee that a cross-window focus() call
- * will surface the browser window from behind an unrelated foreground app.
- * Notification body clicks therefore always open a new window so the user
- * sees the message without having to hunt for a background tab.
+ * clients.openWindow() is called first.  On platforms where it succeeds (the
+ * common case), the browser opens a new tab/window and brings it to the
+ * foreground.  On macOS, some browser versions return null from openWindow()
+ * when the browser is not the active application (macOS focus-stealing
+ * prevention blocks the window from coming to the front, and the browser
+ * silently declines to open it).  In that case we fall back to focusing the
+ * nearest existing window client and posting a navigate message so the user
+ * can find the message when they switch to the browser.
+ *
+ * IMPORTANT: this function must be called as the first async step within
+ * event.waitUntil() — with no intermediate await before the call — so that
+ * clients.openWindow() executes while Chrome's transient user activation is
+ * still in effect (see the notificationclick handler comment above).
  */
 async function openApp(path) {
-  await self.clients.openWindow(path);
+  const win = await self.clients.openWindow(path);
+  if (win !== null) return;
+
+  // Fallback: focus an existing window and navigate it to the target path.
+  const clients = await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    if ('focus' in client) {
+      await client.focus();
+      client.postMessage({ type: 'navigate', path });
+      return;
+    }
+  }
 }
 
 // ── Notification close ─────────────────────────────────────────────────────
