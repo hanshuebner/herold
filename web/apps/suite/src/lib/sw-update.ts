@@ -43,9 +43,17 @@ export function watchRegistration(
   reg: ServiceWorkerRegistration,
   getController: () => ServiceWorker | null,
   onShow: () => void,
+  options?: { suppressInitialWaiting?: boolean },
 ): void {
   // Case 1: already waiting when the page loaded.
-  if (shouldShowBanner(reg.waiting, getController())) {
+  //
+  // Skipped for one load right after a user-accepted update reload
+  // (suppressInitialWaiting). When the user clicks Reload, the SPA posts
+  // SKIP_WAITING and reloads on controllerchange; on the reloaded page the
+  // just-activated worker can still surface transiently as `reg.waiting`, which
+  // would immediately re-announce the version the user just applied. Case 2
+  // still fires for a genuinely new worker that installs after this load.
+  if (!options?.suppressInitialWaiting && shouldShowBanner(reg.waiting, getController())) {
     onShow();
   }
 

@@ -330,10 +330,22 @@
       .register('/sw.js', { scope: '/' })
       .then((reg) => {
         swRegistration = reg;
+        // One-shot: right after a user-accepted update reload we set a session
+        // flag so the version we just activated is not re-announced as "new".
+        let suppressInitialWaiting = false;
+        try {
+          if (sessionStorage.getItem('herold-sw-reloaded') === '1') {
+            sessionStorage.removeItem('herold-sw-reloaded');
+            suppressInitialWaiting = true;
+          }
+        } catch {
+          // sessionStorage unavailable (private mode / sandbox) — ignore.
+        }
         watchRegistration(
           reg,
           () => navigator.serviceWorker.controller,
           () => untrack(() => { showSwUpdateBanner = true; }),
+          { suppressInitialWaiting },
         );
       })
       .catch(() => {
@@ -343,10 +355,22 @@
   });
 
   function reloadAfterSwUpdate(): void {
+    // Hide the banner immediately; the reload follows once the new worker
+    // takes control (controllerchange).
+    showSwUpdateBanner = false;
     activateWaiting(
       swRegistration?.waiting ?? null,
       (cb) => navigator.serviceWorker.addEventListener('controllerchange', cb),
-      () => location.reload(),
+      () => {
+        // Mark this as a user-accepted update reload so the reloaded page does
+        // not immediately re-announce the version we just activated.
+        try {
+          sessionStorage.setItem('herold-sw-reloaded', '1');
+        } catch {
+          // sessionStorage unavailable — the worst case is a single re-prompt.
+        }
+        location.reload();
+      },
     );
   }
 

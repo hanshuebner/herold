@@ -140,6 +140,42 @@ describe('watchRegistration: already-waiting case', () => {
 
     expect(onShow).not.toHaveBeenCalled();
   });
+
+  it('suppresses the initial already-waiting prompt right after an update reload', () => {
+    const onShow = vi.fn();
+    const controller = mockSw();
+    const reg = makeRegistration({ waiting: mockSw() });
+
+    watchRegistration(
+      reg as unknown as ServiceWorkerRegistration,
+      () => controller,
+      onShow,
+      { suppressInitialWaiting: true },
+    );
+
+    // The version we just activated is not re-announced.
+    expect(onShow).not.toHaveBeenCalled();
+  });
+
+  it('still announces a NEW worker (updatefound) even when initial waiting is suppressed', () => {
+    const onShow = vi.fn();
+    const controller = mockSw();
+    const installing = makeInstalling();
+    const reg = makeRegistration({ waiting: mockSw(), installing });
+
+    watchRegistration(
+      reg as unknown as ServiceWorkerRegistration,
+      () => controller,
+      onShow,
+      { suppressInitialWaiting: true },
+    );
+    expect(onShow).not.toHaveBeenCalled();
+
+    // A genuinely new worker installs after this load -> Case 2 fires.
+    reg.dispatchUpdateFound();
+    installing.dispatchStateChange('installed');
+    expect(onShow).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── watchRegistration — updatefound -> statechange ────────────────────────
