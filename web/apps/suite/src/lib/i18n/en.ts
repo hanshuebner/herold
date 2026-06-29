@@ -790,6 +790,7 @@ export const en = {
   'settings.privacy.heading': 'Privacy',
   'settings.categories.heading': 'Categories',
   'settings.filters.heading': 'Filters',
+  'settings.sharedFiles.heading': 'Shared files',
 
   // ── Settings: account section (re #97) ───────────────────────────────
   'settings.account.signedInAs': 'Signed in as',
@@ -1493,6 +1494,8 @@ export const en = {
   'settings.identityEdit.removeFailed': 'Could not remove identity',
 
   // shared files form (SharedFilesForm.svelte)
+  'settings.sharedFiles.hint':
+    'Files you have shared as links. Active shares can be revoked at any time. Download counts update when you refresh this view.',
   'settings.sharedFiles.quotaLabel': 'Share storage',
   'settings.sharedFiles.quotaUsed': '{used} of {max} used',
   'settings.sharedFiles.filterLabel': 'Filter',

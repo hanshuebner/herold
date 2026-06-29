@@ -92,7 +92,7 @@
     result.push({ id: 'notifications', label: t('settings.notifications') });
     result.push({ id: 'api-keys', label: t('settings.apiKeys') });
     result.push({ id: 'privacy', label: t('settings.privacy.heading') });
-    if (hasSharedFiles) result.push({ id: 'shared-files', label: 'Shared files' });
+    if (hasSharedFiles) result.push({ id: 'shared-files', label: t('settings.sharedFiles.heading') });
     result.push({ id: 'diagnostics', label: t('settings.diagnostics.heading') });
     result.push({ id: 'about', label: t('settings.about') });
     return result;
@@ -735,11 +735,8 @@
       <PrivacyForm />
 
     {:else if activeSection === 'shared-files'}
-      <h2>Shared files</h2>
-      <p class="hint">
-        Files you have shared as links. Active shares can be revoked at any time.
-        Download counts reflect the last time this view was loaded (REQ-ATT-73).
-      </p>
+      <h2>{t('settings.sharedFiles.heading')}</h2>
+      <p class="hint">{t('settings.sharedFiles.hint')}</p>
       <SharedFilesForm />
 
     {:else if activeSection === 'diagnostics'}

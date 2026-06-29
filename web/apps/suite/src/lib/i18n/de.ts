@@ -800,6 +800,7 @@ export const de = {
   'settings.privacy.heading': 'Datenschutz',
   'settings.categories.heading': 'Kategorien',
   'settings.filters.heading': 'Filter',
+  'settings.sharedFiles.heading': 'Geteilte Dateien',
 
   // ── Einstellungen: Konto-Bereich (re #97) ────────────────────────────
   'settings.account.signedInAs': 'Angemeldet als',
@@ -1515,6 +1516,8 @@ export const de = {
   'settings.identityEdit.removeFailed': 'Identität konnte nicht entfernt werden',
 
   // shared files form (SharedFilesForm.svelte)
+  'settings.sharedFiles.hint':
+    'Dateien, die Sie als Links freigegeben haben. Aktive Freigaben können jederzeit widerrufen werden. Download-Zähler aktualisieren sich beim Laden dieser Seite.',
   'settings.sharedFiles.quotaLabel': 'Freigegebener Speicher',
   'settings.sharedFiles.quotaUsed': '{used} von {max} verwendet',
   'settings.sharedFiles.filterLabel': 'Filter',
