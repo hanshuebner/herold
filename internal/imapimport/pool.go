@@ -5,12 +5,19 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
+
+// poolPollInterval is how often Run re-queries the store for newly-enabled
+// accounts. Long-running workers are not affected: they persist across ticks.
+// 10 s gives prompt startup for accounts created after the pool launches
+// without meaningful extra load on the store.
+const poolPollInterval = 10 * time.Second
 
 // Pool is the per-instance supervisor for IMAP import workers. It starts
 // one accountWorker goroutine per enabled IMAPImportAccount, bounded by
@@ -19,13 +26,14 @@ import (
 //
 // Construct with NewPool; call Run to start.
 type Pool struct {
-	st          store.Store
-	dataKey     []byte
-	categoriser Categoriser
-	cfg         sysconfig.IMAPImportConfig
-	log         *slog.Logger
-	clk         clock.Clock
-	dialer      Dialer
+	st           store.Store
+	dataKey      []byte
+	categoriser  Categoriser
+	cfg          sysconfig.IMAPImportConfig
+	log          *slog.Logger
+	clk          clock.Clock
+	dialer       Dialer
+	pollInterval time.Duration
 
 	// registry guards the live worker map. Workers register on launch and
 	// deregister on return. Snapshot reads it under the same mutex so that
@@ -59,6 +67,10 @@ type PoolOptions struct {
 	// Dialer is the IMAP connection factory. Pass nil to use the
 	// production dialer. Tests inject a fakeDialer.
 	Dialer Dialer
+	// PollInterval overrides poolPollInterval. Zero uses the default.
+	// Tests inject a short interval so the dynamic account pickup path
+	// can be exercised without waiting 10 s.
+	PollInterval time.Duration
 }
 
 // NewPool constructs a Pool from opts. Run has not been called yet;
@@ -74,23 +86,30 @@ func NewPool(opts PoolOptions) *Pool {
 	if d == nil {
 		d = newProductionDialer(opts.Config)
 	}
+	poll := opts.PollInterval
+	if poll <= 0 {
+		poll = poolPollInterval
+	}
 	return &Pool{
-		st:          opts.Store,
-		dataKey:     opts.DataKey,
-		categoriser: cat,
-		cfg:         opts.Config,
-		log:         opts.Logger.With(slog.String("activity", "imap-import")),
-		clk:         opts.Clock,
-		dialer:      d,
-		registry:    make(map[string]*accountWorker),
+		st:           opts.Store,
+		dataKey:      opts.DataKey,
+		categoriser:  cat,
+		cfg:          opts.Config,
+		log:          opts.Logger.With(slog.String("activity", "imap-import")),
+		clk:          opts.Clock,
+		dialer:       d,
+		pollInterval: poll,
+		registry:     make(map[string]*accountWorker),
 	}
 }
 
-// Run starts one accountWorker per enabled account, bounded by the
-// ConcurrentAccounts semaphore. It blocks until ctx is cancelled and
-// all workers have returned. Safe to call from one goroutine only.
-// Returns nil on clean shutdown (ctx cancel). Only returns a non-nil
-// error when a fatal setup failure occurs.
+// Run supervises IMAP import workers for every enabled account. It scans the
+// store at startup and then every poolPollInterval, launching one
+// accountWorker goroutine per enabled account that does not already have a
+// running worker. The pool is bounded by the ConcurrentAccounts semaphore.
+//
+// Run blocks until ctx is cancelled, then waits for all workers to return
+// before returning nil. Only returns a non-nil error on a fatal setup failure.
 //
 // REQ-IMAP-IMP-26.
 func (p *Pool) Run(ctx context.Context) error {
@@ -99,37 +118,34 @@ func (p *Pool) Run(ctx context.Context) error {
 		return nil
 	}
 
-	accounts, err := p.st.Meta().ListEnabledIMAPImportAccounts(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return err
-	}
-	if len(accounts) == 0 {
-		p.log.Info("imapimport: pool started with no enabled accounts; waiting for context cancel")
-		<-ctx.Done()
-		return nil
-	}
-
 	concurrency := p.cfg.ConcurrentAccounts
 	if concurrency < 1 {
 		concurrency = 16
 	}
 
-	// sem bounds the number of concurrently running workers.
+	// sem bounds the number of concurrently running workers across all
+	// poll ticks.
 	sem := make(chan struct{}, concurrency)
 
 	var wg sync.WaitGroup
-launch:
-	for _, acct := range accounts {
-		select {
-		case <-ctx.Done():
-			break launch
-		default:
+
+	// startWorker launches a worker for acct when no worker is already in
+	// the registry. It skips the launch if the semaphore is at capacity;
+	// the next poll tick will retry.
+	startWorker := func(acct store.IMAPImportAccount) {
+		p.registryMu.Lock()
+		_, running := p.registry[acct.ID]
+		p.registryMu.Unlock()
+		if running {
+			return
 		}
-		sem <- struct{}{} // acquire
-		wg.Add(1)
+		// Non-blocking acquire: skip if all slots are taken; the next tick
+		// retries. This avoids blocking the poll loop inside the ticker case.
+		select {
+		case sem <- struct{}{}:
+		default:
+			return
+		}
 		w := newAccountWorker(accountWorkerOpts{
 			account:     acct,
 			store:       p.st,
@@ -143,6 +159,7 @@ launch:
 			clk:    p.clk,
 			dialer: p.dialer,
 		})
+		wg.Add(1)
 		// Register before launching so Snapshot sees the worker immediately.
 		p.registryMu.Lock()
 		p.registry[acct.ID] = w
@@ -159,8 +176,43 @@ launch:
 			w.run(ctx)
 		}(w, acct.ID)
 	}
-	wg.Wait()
-	return nil
+
+	// scan queries enabled accounts and starts workers for any that are not
+	// already running.
+	scan := func() {
+		accounts, err := p.st.Meta().ListEnabledIMAPImportAccounts(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			p.log.Warn("imapimport: error listing accounts",
+				slog.String("error", err.Error()))
+			return
+		}
+		for _, acct := range accounts {
+			if ctx.Err() != nil {
+				return
+			}
+			startWorker(acct)
+		}
+	}
+
+	// Initial scan: start workers for any accounts that exist at boot.
+	scan()
+
+	ticker := time.NewTicker(p.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Drain all workers before returning.
+			wg.Wait()
+			return nil
+		case <-ticker.C:
+			scan()
+		}
+	}
 }
 
 // Snapshot returns a point-in-time copy of every live worker's status,

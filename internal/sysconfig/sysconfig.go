@@ -777,6 +777,10 @@ type IMAPImportConfig struct {
 	// RFC 2177 IDLE (REQ-IMAP-IMP-23). Default 60s. Must be > 0. Has no
 	// effect when the upstream supports IDLE.
 	PollInterval Duration `toml:"poll_interval,omitempty"`
+	// InsecureSkipTLSVerify disables TLS certificate verification for all
+	// upstream IMAP connections. Intended only for development instances
+	// with self-signed certificates. Never enable in production.
+	InsecureSkipTLSVerify bool `toml:"insecure_skip_tls_verify,omitempty"`
 	// OAuth maps provider names (e.g. "google", "microsoft") to their OAuth
 	// 2.0 application credentials. Provider names are normalised to lowercase
 	// at parse time. These entries are required when any per-account

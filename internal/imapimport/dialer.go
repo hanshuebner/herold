@@ -52,8 +52,12 @@ func (d *productionDialer) Dial(ctx context.Context, p dialParams) (Conn, error)
 		default:
 		}
 	}
+	tlsCfg := &tls.Config{ServerName: p.Host}
+	if d.cfg.InsecureSkipTLSVerify {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec // dev-only; operator-acknowledged via explicit config
+	}
 	opts := &imapclient.Options{
-		TLSConfig: &tls.Config{ServerName: p.Host},
+		TLSConfig: tlsCfg,
 		// DebugWriter intentionally left nil — wire-level tracing is
 		// only enabled via a separate debug flag and must redact auth
 		// payloads (REQ-IMAP-IMP-71).

@@ -540,6 +540,78 @@ func TestCleanShutdown_CtxCancel(t *testing.T) {
 	}
 }
 
+// TestPool_DynamicAccountPickup verifies that the pool starts a worker for an
+// account created after Run was called with an empty store. REQ-IMAP-IMP-26.
+func TestPool_DynamicAccountPickup(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("ivan", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	tr := true
+	pool := NewPool(PoolOptions{
+		Store:   ha.Store,
+		DataKey: testDataKey(t),
+		Config: sysconfig.IMAPImportConfig{
+			AllowPassword:      &tr,
+			ConcurrentAccounts: 4,
+		},
+		Logger:       newTestLogger(t),
+		Clock:        ha.Clock,
+		Dialer:       &fakeDialer{ts: ts},
+		PollInterval: 50 * time.Millisecond, // fast tick for test
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pool.Run(ctx)
+	}()
+
+	// Give the pool one tick to confirm no workers started yet.
+	time.Sleep(100 * time.Millisecond)
+	snap := pool.Snapshot()
+	if len(snap) != 0 {
+		t.Fatalf("expected 0 workers before account creation, got %d", len(snap))
+	}
+
+	// Create the account now — the pool should pick it up on the next tick.
+	acc := makeAccount(t, ha.Store, accountCfg{
+		email:               "ivan@example.test",
+		host:                "127.0.0.1",
+		port:                993,
+		tlsMode:             store.IMAPImportTLSModeImplicit,
+		username:            "ivan",
+		authMethod:          store.IMAPImportAuthMethodPassword,
+		credentialPlaintext: "pw",
+	})
+	_ = acc
+
+	// Wait up to 2 s for the pool to pick up the new account.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if snap := pool.Snapshot(); len(snap) > 0 {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Pool.Run returned error: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Pool.Run did not return after ctx cancel")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Fatal("pool did not start a worker for the dynamically-added account within 2 s")
+}
+
 // TestBackoffDuration verifies the backoff duration formula stays in bounds.
 func TestBackoffDuration(t *testing.T) {
 	for n := 1; n <= 30; n++ {
