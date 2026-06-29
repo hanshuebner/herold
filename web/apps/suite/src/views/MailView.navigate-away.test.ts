@@ -1,16 +1,25 @@
 /**
- * Issue #29 (round 3): thread reader auto-navigate-away.
+ * Issue #29 (round 3) + issue #88 FIX B: thread reader auto-navigate-away.
  *
  * When the user is viewing a thread from a folder (e.g. Trash) and a
  * Restore-from-Trash or Move-To-Mailbox operation removes all thread emails
  * from that folder, MailView should navigate back to the folder list
- * automatically.
+ * automatically (re #29).
  *
- * The effect runs whenever mail.threadEmails() or the folder mailbox id
- * changes. These tests render MailView in the thread-reader route with
- * the thread emails already reflecting the post-move state (i.e. no
- * email belongs to the current folder's mailbox) and assert that
- * router.navigate is called with the correct folder URL.
+ * FIX B (#88): the effect must NOT bounce a thread on initial render when
+ * folder membership appears false. Navigation is only triggered when
+ * membership transitions from confirmed-true to false while the user is
+ * already reading the thread. On initial render (confirmedFolderKey not yet
+ * set), the guard does not fire even if stillInFolder is false — this
+ * prevents the bounce that plagued self-sent threads before the mailboxIds
+ * union (FIX A).
+ *
+ * Because the component tracks `confirmedFolderKey` in a plain (non-reactive)
+ * let variable, the transition case cannot be verified by mutating the mock
+ * between renders in a unit test. The transition behaviour is verified by
+ * the puppeteer integration test. The unit tests here cover:
+ *   - Initial-render guards that must NOT navigate (FIX B assertions).
+ *   - Unchanged guards that correctly skip virtual / search / loading states.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -105,6 +114,7 @@ const { mailMock, routerParts, navigate, TRASH_MAILBOX_ID, INBOX_MAILBOX_ID } = 
     bulkMoveToMailbox: vi.fn().mockResolvedValue(undefined),
     bulkSetLabel: vi.fn().mockResolvedValue(undefined),
     loadThread: vi.fn().mockResolvedValue(undefined),
+    threadDedupeCount: vi.fn().mockReturnValue(0),
   };
 
   const navigate = vi.fn();
@@ -189,7 +199,7 @@ vi.mock('../lib/mail/ThreadReader.svelte', () => ({
 
 import MailView from './MailView.svelte';
 
-describe('MailView: auto-navigate away when thread email leaves current folder (re #29)', () => {
+describe('MailView: auto-navigate away when thread email leaves current folder (re #29, re #88)', () => {
   beforeEach(() => {
     navigate.mockClear();
     mailMock.threadEmails.mockClear();
@@ -198,20 +208,26 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
     mailMock.listLoadStatus = 'ready';
   });
 
-  it('navigates to the trash folder when no thread email is in trash anymore', () => {
+  // FIX B (#88): on initial render the guard must NOT fire even when the
+  // email appears not to be in the current folder. `confirmedFolderKey` has
+  // not been set yet (no prior "in-folder" confirmation), so the effect
+  // skips the navigate call. This prevents the bounce that afflicted
+  // self-sent threads where the Inbox copy was deduplicated away.
+  it('does NOT navigate on initial render even when email appears to have left trash (FIX B re #88)', () => {
     mailMock.listFolder = 'trash';
     mailMock.threadEmails.mockReturnValue([
       {
         id: 'email-1',
         threadId: 'thread-1',
-        mailboxIds: { [INBOX_MAILBOX_ID]: true }, // moved to inbox, no longer in trash
+        mailboxIds: { [INBOX_MAILBOX_ID]: true }, // no longer in trash (as seen on first render)
         keywords: { $seen: true },
       } as unknown as Email,
     ]);
 
     render(MailView);
 
-    expect(navigate).toHaveBeenCalledWith('/mail/folder/trash');
+    // No navigation on first render — confirmedFolderKey was never set.
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('does NOT navigate when the thread email is still in trash', () => {
@@ -239,20 +255,23 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('navigates to inbox (at /mail) when viewing inbox and email leaves', () => {
+  // FIX B (#88): same as the trash case — initial render with email NOT in inbox
+  // must not bounce.
+  it('does NOT navigate on initial render when viewing inbox and email appears to be elsewhere (FIX B re #88)', () => {
     mailMock.listFolder = 'inbox';
     mailMock.threadEmails.mockReturnValue([
       {
         id: 'email-1',
         threadId: 'thread-1',
-        mailboxIds: { [TRASH_MAILBOX_ID]: true }, // moved to trash, not in inbox
+        mailboxIds: { [TRASH_MAILBOX_ID]: true }, // not in inbox on first render
         keywords: { $seen: true },
       } as unknown as Email,
     ]);
 
     render(MailView);
 
-    expect(navigate).toHaveBeenCalledWith('/mail');
+    // confirmedFolderKey was never set for 'thread-1:inbox' → no navigate.
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('does NOT navigate for the "all" virtual folder even if email mailboxIds change', () => {
@@ -271,20 +290,22 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('navigates to a custom folder URL when viewing a custom mailbox', () => {
+  // FIX B (#88): same as trash/inbox — no navigate on initial render for custom mailbox.
+  it('does NOT navigate on initial render for a custom folder when email is not in it (FIX B re #88)', () => {
     mailMock.listFolder = 'mbx-work';
     mailMock.threadEmails.mockReturnValue([
       {
         id: 'email-1',
         threadId: 'thread-1',
-        mailboxIds: { [INBOX_MAILBOX_ID]: true }, // not in 'mbx-work'
+        mailboxIds: { [INBOX_MAILBOX_ID]: true }, // not in mbx-work
         keywords: { $seen: true },
       } as unknown as Email,
     ]);
 
     render(MailView);
 
-    expect(navigate).toHaveBeenCalledWith('/mail/folder/mbx-work');
+    // confirmedFolderKey never set for 'thread-1:mbx-work' → no navigate.
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   // Regression: clicking a search-result whose thread lives outside
@@ -331,4 +352,12 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
 
     expect(navigate).not.toHaveBeenCalled();
   });
+
+  // FIX B transition: when the thread IS in the folder on first evaluation
+  // (confirmedFolderKey is set), and then mailboxIds change to exclude the
+  // folder, the navigate-away fires. This transition cannot be tested in a
+  // unit test because `confirmedFolderKey` is a plain let variable inside
+  // the component and the mocked store is not reactive (changing the mock
+  // return value does not re-trigger the Svelte effect). The transition is
+  // verified by the puppeteer integration test for re #88 / re #29.
 });

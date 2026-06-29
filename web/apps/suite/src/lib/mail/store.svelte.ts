@@ -1738,23 +1738,47 @@ class MailStore {
   }
 
   /**
-   * Resolved thread emails in display order.
+   * Resolved thread emails in display order, with Message-ID deduplication
+   * and mailboxIds/keywords union across same-Message-ID copies (re #88).
    *
    * Uses the committed snapshot (`committedThreadEmailIds`) rather than the
    * live `Thread.emailIds` so that newly-arrived emails are only shown after
    * the user accepts them via the banner ("Neue Antwort anzeigen"). Falls
    * back to the live thread for threads that are not yet in the committed
    * map (should not happen in normal operation, but defensive).
+   *
+   * The returned Email objects for deduplicated pairs are synthetic: their
+   * `mailboxIds` and `keywords` are the union of all same-Message-ID copies.
+   * This allows the MailView navigate-away check to correctly identify folder
+   * membership for self-sent threads without requiring the exact physical copy
+   * that holds the Inbox membership.
    */
   threadEmails(threadId: string): Email[] {
     const committed = this.committedThreadEmailIds.get(threadId);
     if (committed !== undefined) {
-      return resolveThreadEmails(committed, this.emails);
+      return resolveDeduplicatedThreadEmails(committed, this.emails);
     }
     // Fallback: thread loaded but committed snapshot not yet set.
     const thread = this.threads.get(threadId);
     if (!thread) return [];
-    return resolveThreadEmails(thread.emailIds, this.emails);
+    return resolveDeduplicatedThreadEmails(thread.emailIds, this.emails);
+  }
+
+  /**
+   * Deduplicated logical-message count for the thread badge.
+   *
+   * Uses the committed snapshot length when the thread has been cold-loaded
+   * (the committed list is already deduplicated by Message-ID, so its length
+   * equals the number of distinct logical messages). Falls back to the raw
+   * Thread.emailIds length for threads that have not yet been opened in the
+   * reader — which may overcount self-sent threads until first view, but is
+   * the best available approximation without loading every thread member's
+   * messageId header at list time.
+   */
+  threadDedupeCount(threadId: string): number {
+    const committed = this.committedThreadEmailIds.get(threadId);
+    if (committed !== undefined) return committed.length;
+    return this.threads.get(threadId)?.emailIds.length ?? 0;
   }
 
   // ── Optimistic actions ────────────────────────────────────────────────
@@ -3385,6 +3409,97 @@ export function resolveThreadEmails(emailIds: string[], emails: Map<string, Emai
 }
 
 /**
+ * Resolve a thread's email-id list with Message-ID deduplication and
+ * mailboxIds/keywords union (re #88).
+ *
+ * For self-sent messages herold stores a Sent-mailbox copy and an
+ * Inbox-delivery copy as separate JMAP Email objects that share the same
+ * Message-ID. This function collapses such pairs into a single
+ * representative Email (the first occurrence in emailIds order) while
+ * UNIONING the mailboxIds and keywords from every same-Message-ID copy.
+ * The resulting synthetic Email therefore reports membership in BOTH
+ * Sent and Inbox, which allows the MailView navigate-away guard and
+ * ThreadReader to correctly identify folder membership without relying
+ * on which physical copy the JMAP query happened to return first.
+ *
+ * Rules:
+ * - Raw id duplicates (same string appearing twice) are silently dropped
+ *   as before (issue #40 defence).
+ * - Emails without a messageId are included as-is and never merged with
+ *   anything (cannot deduplicate without the header).
+ * - Among emails with a messageId, only the first occurrence of each
+ *   normalised message-id is kept as representative.
+ * - The representative's mailboxIds is the UNION of all same-mid copies.
+ * - The representative's keywords union uses truthy-wins: a keyword
+ *   present (true) in any copy is present in the merged email.
+ * - Other fields of the representative are not modified; the synthetic
+ *   Email is not persisted and does not affect the emails cache.
+ */
+export function resolveDeduplicatedThreadEmails(
+  emailIds: readonly string[],
+  emails: ReadonlyMap<string, Email>,
+): Email[] {
+  // Build groups keyed by a normalised message-id string (or a unique per-id
+  // fallback for emails that have no messageId). Groups are accumulated in
+  // first-occurrence order via `orderOfKeys`.
+  const groups = new Map<string, Email[]>();
+  const orderOfKeys: string[] = [];
+  const seenRawIds = new Set<string>();
+
+  for (const id of emailIds) {
+    if (seenRawIds.has(id)) continue; // raw-id dedup (issue #40)
+    seenRawIds.add(id);
+    const e = emails.get(id);
+    if (!e) continue;
+
+    let key: string;
+    if (e.messageId && e.messageId.length > 0) {
+      const mid = normalizeMessageId(e.messageId[0]!);
+      key = mid !== null ? `mid:${mid}` : `id:${id}`;
+    } else {
+      key = `id:${id}`;
+    }
+
+    const g = groups.get(key);
+    if (g === undefined) {
+      groups.set(key, [e]);
+      orderOfKeys.push(key);
+    } else {
+      g.push(e);
+    }
+  }
+
+  // Emit one Email per group in first-occurrence order. Groups with more
+  // than one member get a synthetic merged Email (unioned mailboxIds/keywords).
+  const out: Email[] = [];
+  for (const key of orderOfKeys) {
+    const group = groups.get(key)!;
+    const rep = group[0]!;
+    if (group.length === 1) {
+      out.push(rep);
+    } else {
+      // Union mailboxIds: message is considered to be in a mailbox if ANY copy is.
+      const mergedMailboxIds: Record<string, true> = {};
+      for (const ge of group) {
+        for (const mbxId of Object.keys(ge.mailboxIds)) {
+          mergedMailboxIds[mbxId] = true;
+        }
+      }
+      // Union keywords: a keyword is set in the merged email if ANY copy has it.
+      const mergedKeywords: Record<string, true | undefined> = {};
+      for (const ge of group) {
+        for (const [kw, val] of Object.entries(ge.keywords)) {
+          if (val !== undefined) mergedKeywords[kw] = val;
+        }
+      }
+      out.push({ ...rep, mailboxIds: mergedMailboxIds, keywords: mergedKeywords });
+    }
+  }
+
+  return out;
+}
+
+/**
  * Normalise an RFC 2822 Message-ID token for deduplication. Strips the
  * angle-bracket delimiters mandated by RFC 5322 §3.6.4, trims whitespace,
  * and lowercases. Returns null for empty or whitespace-only input.
@@ -3550,6 +3665,7 @@ export const _internals_forTest = {
   errMessage,
   allVisibleSelected,
   resolveThreadEmails,
+  resolveDeduplicatedThreadEmails,
   expandToThreadIds,
   setErrorToUserMessage,
   mergeEmailListFetch,

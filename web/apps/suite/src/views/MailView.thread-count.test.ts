@@ -128,6 +128,13 @@ const { mailMock, routerState } = vi.hoisted(() => {
     threadStatus: vi.fn().mockReturnValue('idle'),
     threadError: vi.fn().mockReturnValue(null),
     loadThread: vi.fn().mockResolvedValue(undefined),
+    // threadDedupeCount returns the raw thread emailIds length for threads that
+    // have not been opened (no committed snapshot). This matches the store's
+    // fallback behaviour.
+    threadDedupeCount: vi.fn((threadId: string) => {
+      const t = threadsMap.get(threadId);
+      return t ? t.emailIds.length : 0;
+    }),
   };
 
   return { mailMock, routerState };

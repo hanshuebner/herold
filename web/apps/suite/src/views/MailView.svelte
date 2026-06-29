@@ -471,6 +471,23 @@
   //
   // Virtual folders (all, important, snoozed) are skipped: a message remains
   // valid to view in those contexts regardless of its mailbox membership.
+  //
+  // Defense-in-depth (re #88): only navigate away when we have previously
+  // CONFIRMED that the thread belongs to the current folder (i.e. the
+  // membership check was true on at least one earlier evaluation). This
+  // prevents a false bounce on the initial render when the mailboxIds union
+  // across self-sent copies has not yet been computed, or when the thread
+  // is opened directly by URL into a folder it does not literally live in.
+  //
+  // `confirmedFolderKey` is a plain variable (not reactive), so writing it
+  // inside the $effect does not trigger a re-run. The key encodes both the
+  // threadId and the current folder so that navigating to a different thread
+  // or switching folders resets the tracking automatically.
+
+  // Track the last thread+folder combination for which we have confirmed
+  // the thread IS in the folder. Plain let — intentionally not $state.
+  let confirmedFolderKey = '';
+
   $effect(() => {
     if (!threadId) return;
 
@@ -516,8 +533,23 @@
     // While the thread is still loading, emails is empty — don't navigate yet.
     if (emails.length === 0) return;
 
+    const key = `${threadId}:${currentFolder}`;
     const stillInFolder = emails.some((e) => Boolean(e.mailboxIds[mailboxId!]));
-    if (!stillInFolder) {
+
+    if (stillInFolder) {
+      // Record that we have positively confirmed this thread in this folder.
+      // Written outside untrack intentionally: it is a plain variable, not
+      // reactive, so this assignment does not trigger the effect to re-run.
+      confirmedFolderKey = key;
+      return;
+    }
+
+    // Thread is not currently in the folder. Only navigate away when we
+    // have previously confirmed it was here — that is, the user moved /
+    // archived the thread while reading it (re #29). On the first render
+    // where membership is already false (e.g. self-sent dedup edge case
+    // or direct URL open), do not bounce.
+    if (confirmedFolderKey === key) {
       untrack(() => {
         router.navigate(folderHref(currentFolder));
       });
@@ -651,13 +683,15 @@
   }
 
   /**
-   * Returns the number of messages in the thread containing this email,
-   * or 0 when the thread data has not been loaded yet.
-   * Used to show a count badge next to the sender name for multi-message
-   * threads (issue #64).
+   * Returns the deduplicated logical-message count for the thread containing
+   * this email, or 0 when thread data has not been loaded yet. Uses the
+   * committed snapshot length when available (after the thread has been
+   * opened) so self-sent threads with Sent + Inbox copies show the logical
+   * count (3) rather than the raw storage count (6) (re #88). Falls back
+   * to the raw Thread.emailIds length before first open (issue #64).
    */
   function threadMessageCount(email: Email): number {
-    return mail.threads?.get(email.threadId)?.emailIds.length ?? 0;
+    return mail.threadDedupeCount(email.threadId);
   }
 
   function formatDate(iso: string): string {

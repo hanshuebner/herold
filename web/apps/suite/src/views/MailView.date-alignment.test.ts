@@ -121,6 +121,7 @@ const { mailMock } = vi.hoisted(() => {
     threadStatus: vi.fn().mockReturnValue('idle'),
     threadError: vi.fn().mockReturnValue(null),
     loadThread: vi.fn().mockResolvedValue(undefined),
+    threadDedupeCount: vi.fn().mockReturnValue(0),
   };
 
   return { mailMock };
