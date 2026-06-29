@@ -7,24 +7,25 @@
    * the step-up singleton (step-up.svelte.ts).
    *
    * Variants:
-   *  - Normal: 6-digit code input + Confirm/Cancel (REQ-AS-20).
+   *  - Normal: segmented 6-digit code input + Confirm/Cancel (REQ-AS-20).
    *  - Enrollment required: "Set up TOTP now?" prompt (REQ-AS-25).
    *  - Lockout: countdown chip + disabled input (REQ-AS-23).
    */
   import { stepUp } from './step-up.svelte';
   import { t } from '../i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import CodeInput from '../identities/CodeInput.svelte';
 
   let code = $state('');
-  let inputEl = $state<HTMLInputElement | null>(null);
   let lockoutSeconds = $state(0);
   let lockoutInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Focus the code input when the modal opens.
+  // Reset the code when the modal opens; CodeInput handles autofocus via its
+  // autofocus prop (it is inside the {#if stepUp.visible} block and remounts
+  // on each open).
   $effect(() => {
     if (stepUp.visible && !stepUp.enrollRequired) {
       code = '';
-      requestAnimationFrame(() => inputEl?.focus());
     }
   });
 
@@ -88,12 +89,6 @@
     if (code.length !== 6 || stepUp.submitting || lockoutSeconds > 0) return;
     void stepUp.submitCode(code);
   }
-
-  function handleCodeInput(e: Event): void {
-    const v = (e.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6);
-    code = v;
-    (e.target as HTMLInputElement).value = v;
-  }
 </script>
 
 {#if stepUp.visible}
@@ -131,21 +126,14 @@
 
         <form onsubmit={handleSubmit} class="form" novalidate>
           <div class="field">
-            <label for="stepup-code" class="label">{t('stepup.code.label')}</label>
-            <input
-              bind:this={inputEl}
-              id="stepup-code"
-              type="text"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength={6}
-              placeholder={t('stepup.code.placeholder')}
-              value={code}
-              oninput={handleCodeInput}
+            <span class="label">{t('stepup.code.label')}</span>
+            <CodeInput
+              bind:value={code}
               disabled={stepUp.submitting || lockoutSeconds > 0}
-              aria-invalid={stepUp.error !== null}
-              aria-describedby={stepUp.error ? 'stepup-error' : undefined}
-              class="code-input"
+              invalid={stepUp.error !== null}
+              ariaLabel={t('stepup.code.label')}
+              testid="stepup-code"
+              autofocus
             />
             {#if stepUp.error}
               <p id="stepup-error" class="error-text" role="alert" aria-live="polite">
@@ -248,37 +236,6 @@
     font-weight: var(--type-body-compact-01-weight);
     line-height: var(--type-body-compact-01-line);
     color: var(--text-secondary);
-  }
-
-  .code-input {
-    font-family: var(--font-mono);
-    font-size: var(--type-heading-02-size);
-    font-weight: 400;
-    letter-spacing: 0.25em;
-    text-align: center;
-    width: 100%;
-    padding: var(--spacing-03) var(--spacing-04);
-    border: 1px solid var(--border-strong-01);
-    border-radius: var(--radius-md);
-    background: var(--field-01);
-    color: var(--text-primary);
-    transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
-    box-sizing: border-box;
-  }
-
-  .code-input:focus {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
-    border-color: var(--focus);
-  }
-
-  .code-input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .code-input[aria-invalid='true'] {
-    border-color: var(--support-error);
   }
 
   .error-text {

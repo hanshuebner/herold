@@ -13,20 +13,21 @@
    */
   import { auth } from './auth.svelte';
   import { adminStepUp } from './step-up.svelte';
+  import CodeInput from '../ui/CodeInput.svelte';
 
   let isBootstrap = $derived(auth.status === 'step_up_pending');
   let visible = $derived(isBootstrap || adminStepUp.visible);
 
   let code = $state('');
-  let inputEl = $state<HTMLInputElement | null>(null);
   let lockoutSeconds = $state(0);
   let lockoutInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Focus the code input when the modal opens.
+  // Reset the code when the modal opens; CodeInput handles autofocus via its
+  // autofocus prop (it is inside the {#if visible} block and remounts on
+  // each open).
   $effect(() => {
     if (visible && !adminStepUp.enrollRequired) {
       code = '';
-      requestAnimationFrame(() => inputEl?.focus());
     }
   });
 
@@ -89,12 +90,6 @@
     if (code.length !== 6 || adminStepUp.submitting || lockoutSeconds > 0) return;
     void adminStepUp.submitCode(code, isBootstrap);
   }
-
-  function handleCodeInput(e: Event): void {
-    const v = (e.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6);
-    code = v;
-    (e.target as HTMLInputElement).value = v;
-  }
 </script>
 
 {#if visible}
@@ -132,21 +127,14 @@
 
         <form onsubmit={handleSubmit} class="form" novalidate>
           <div class="field">
-            <label for="su-code" class="label">Authenticator code</label>
-            <input
-              bind:this={inputEl}
-              id="su-code"
-              type="text"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength={6}
-              placeholder="6-digit code"
-              value={code}
-              oninput={handleCodeInput}
+            <span class="label">Authenticator code</span>
+            <CodeInput
+              bind:value={code}
               disabled={adminStepUp.submitting || lockoutSeconds > 0}
-              aria-invalid={adminStepUp.error !== null}
-              aria-describedby={adminStepUp.error ? 'su-error' : undefined}
-              class="code-input"
+              invalid={adminStepUp.error !== null}
+              ariaLabel="Authenticator code"
+              testid="su-code"
+              autofocus
             />
             {#if adminStepUp.error}
               <p id="su-error" class="error-text" role="alert" aria-live="polite">
@@ -249,37 +237,6 @@
     font-weight: var(--type-body-compact-01-weight);
     line-height: var(--type-body-compact-01-line);
     color: var(--text-secondary);
-  }
-
-  .code-input {
-    font-family: var(--font-mono);
-    font-size: var(--type-heading-02-size);
-    font-weight: 400;
-    letter-spacing: 0.25em;
-    text-align: center;
-    width: 100%;
-    padding: var(--spacing-03) var(--spacing-04);
-    border: 1px solid var(--border-strong-01);
-    border-radius: var(--radius-md);
-    background: var(--field-01);
-    color: var(--text-primary);
-    transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
-    box-sizing: border-box;
-  }
-
-  .code-input:focus {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
-    border-color: var(--focus);
-  }
-
-  .code-input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .code-input[aria-invalid='true'] {
-    border-color: var(--support-error);
   }
 
   .error-text {
