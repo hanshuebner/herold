@@ -10,9 +10,18 @@
  * cookie, REQ-AUTH-CSRF).
  *
  * Error hierarchy:
- *   UnauthenticatedError -- 401: session expired or never established.
- *   ForbiddenError       -- 403: session valid but insufficient scope.
- *   ApiError             -- other non-2xx: carries status + RFC 7807 body.
+ *   UnauthenticatedError   -- 401: session expired or never established.
+ *   ForbiddenError         -- 403: session valid but insufficient scope.
+ *   StepUpCancelledError   -- 403 step_up_required, user cancelled the modal.
+ *   ApiError               -- other non-2xx: carries status + RFC 7807 body.
+ *
+ * 403 step_up_required handling (REQ-AS-20..23, re #79):
+ *   When a 403 carries step_up_required:true the client calls the registered
+ *   _onStepUpRequired callback (set by step-up.svelte.ts at module init).
+ *   The callback presents the TOTP modal and resolves when elevation is
+ *   granted, or rejects when the user cancels. On resolve the original
+ *   request is retried once (_retry flag prevents infinite loops). On reject
+ *   a StepUpCancelledError propagates to the caller.
  */
 
 /** RFC 7807 problem detail body, as returned by herold. */
@@ -21,6 +30,12 @@ export interface ProblemDetail {
   type?: string;
   error?: string;
   message?: string;
+  /** Present on 403 when the server requires TOTP elevation (REQ-AUTH-74). */
+  step_up_required?: boolean;
+  /** Present on 400 from the step-up endpoint when TOTP is not enrolled. */
+  enroll_required?: boolean;
+  /** Scope the elevation applies to: "admin" or "self-service". */
+  elevation_scope?: string;
   [key: string]: unknown;
 }
 
@@ -45,6 +60,21 @@ export class ForbiddenError extends Error {
   constructor(message = 'Insufficient permissions.') {
     super(message);
     this.name = 'ForbiddenError';
+  }
+}
+
+/**
+ * Thrown when a 403 step_up_required was intercepted and the user cancelled
+ * the TOTP modal rather than completing elevation (REQ-AS-22).
+ * Callers that catch generic errors will receive the human-readable message
+ * "Action cancelled — authentication required." Callers that need to suppress
+ * their own error UI can check instanceof StepUpCancelledError.
+ */
+export class StepUpCancelledError extends Error {
+  readonly status = 403;
+  constructor() {
+    super('Action cancelled — authentication required.');
+    this.name = 'StepUpCancelledError';
   }
 }
 
@@ -73,6 +103,22 @@ export function setOnUnauthenticated(fn: (problemType: string | null) => void): 
 }
 
 /**
+ * Optional async callback invoked whenever the REST client receives a 403
+ * with step_up_required:true. The callback presents the TOTP modal and
+ * returns a Promise<void> that resolves when elevation is granted, or
+ * rejects with StepUpCancelledError when the user cancels.
+ *
+ * Register once at application boot (step-up.svelte.ts) to avoid a circular
+ * import: step-up imports auth; auth imports client; client cannot import
+ * step-up. The callback pattern breaks the cycle (REQ-AS-20..23, re #79).
+ */
+let _onStepUpRequired: (() => Promise<void>) | null = null;
+
+export function setOnStepUpRequired(fn: () => Promise<void>): void {
+  _onStepUpRequired = fn;
+}
+
+/**
  * Invoke the registered unauthenticated callback, if any.
  * Used by fetch wrappers (e.g. identity-verify.ts) that handle
  * their own response parsing but still need to escalate 401s to
@@ -83,7 +129,7 @@ export function notifyUnauthenticated(problemType: string | null = null): void {
 }
 
 /** Parse the herold_public_csrf cookie value from document.cookie. */
-function readCsrfToken(): string {
+export function readCsrfToken(): string {
   const pairs = document.cookie.split(';');
   for (const pair of pairs) {
     const [name, value] = pair.trim().split('=');
@@ -96,7 +142,12 @@ function readCsrfToken(): string {
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * Core request function. The _retry flag is set to true on the automatic
+ * retry that follows a successful step-up elevation so that a second 403
+ * does not trigger another modal (it throws ForbiddenError instead).
+ */
+async function request<T>(method: string, path: string, body?: unknown, _retry = false): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
@@ -141,13 +192,26 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   if (response.status === 403) {
-    let msg = 'Insufficient permissions.';
+    let detail: ProblemDetail | null = null;
     try {
-      const b = (await response.json()) as ProblemDetail;
-      if (b.message) msg = b.message;
+      detail = (await response.json()) as ProblemDetail;
     } catch {
       // ignore
     }
+
+    // Step-up required: present modal and retry once (REQ-AS-20..23, re #79).
+    if (detail?.step_up_required && !_retry && _onStepUpRequired) {
+      try {
+        await _onStepUpRequired();
+      } catch {
+        // User cancelled the modal.
+        throw new StepUpCancelledError();
+      }
+      // Elevation granted; retry the original request exactly once.
+      return request<T>(method, path, body, true);
+    }
+
+    const msg = detail?.message ?? 'Insufficient permissions.';
     throw new ForbiddenError(msg);
   }
 

@@ -2,13 +2,17 @@
  * Auth state machine for the admin SPA.
  *
  * States:
- *   idle -> bootstrapping -> ready         (session cookie already valid)
- *                         -> unauthenticated (no valid session)
- *                         -> error          (server unreachable)
+ *   idle -> bootstrapping -> ready              (active elevation present)
+ *                         -> step_up_pending    (authenticated, no elevation)
+ *                         -> unauthenticated    (no valid session)
+ *                         -> error              (server unreachable)
  *
- * Bootstrap probes GET /api/v1/server/status with credentials:'include'.
- * A 200 means the admin session cookie is present and valid. A 401 means
- * the user must log in.
+ * Bootstrap probes GET /api/v1/auth/me (no elevation required) to confirm
+ * session validity and read roles + elevation_expires_at. Based on those values:
+ *   - No session (401) -> unauthenticated
+ *   - Non-admin role   -> unauthenticated
+ *   - Admin role, active elevation -> fetch server/status, then ready
+ *   - Admin role, no elevation     -> step_up_pending (REQ-AS-21, re #79)
  *
  * Login posts to POST /api/v1/auth/login (landed by http-api-implementor).
  * The server issues a herold_admin_session cookie plus a herold_admin_csrf
@@ -25,6 +29,7 @@ export type AuthStatus =
   | 'idle'
   | 'bootstrapping'
   | 'unauthenticated'
+  | 'step_up_pending'
   | 'ready';
 
 export interface Principal {
@@ -36,6 +41,16 @@ export interface Principal {
 interface ClientlogBlock {
   telemetry_enabled?: boolean;
   livetail_until?: string | null;
+}
+
+interface AuthMeResponse {
+  principal_id: string;
+  email: string;
+  scopes: string[];
+  /** Role memberships; 'admin' or 'superadmin' grants access to the admin SPA. */
+  roles?: string[];
+  /** RFC 3339 timestamp when current TOTP elevation expires, or null. */
+  elevation_expires_at?: string | null;
 }
 
 interface ServerStatusResponse {
@@ -56,6 +71,8 @@ interface LoginRequest {
 interface LoginResponse {
   principal_id: string;
   scopes: string[];
+  roles?: string[];
+  elevation_expires_at?: string | null;
 }
 
 interface LoginErrorResponse {
@@ -73,6 +90,16 @@ class Auth {
   status = $state<AuthStatus>('idle');
   principal = $state<Principal | null>(null);
   errorMessage = $state<string | null>(null);
+  /**
+   * Role memberships for the current principal.
+   * 'admin' or 'superadmin' grants access to the admin SPA.
+   */
+  roles = $state<string[]>([]);
+  /**
+   * When the current TOTP elevation expires, or null when no elevation is
+   * active. Updated by updateElevation() after a successful step-up.
+   */
+  elevationExpiresAt = $state<Date | null>(null);
 
   // clientlog predicates read by the clientlog wrapper in main.ts.
   // Defaults: telemetry enabled, no live-tail. Updated after a successful
@@ -80,10 +107,29 @@ class Auth {
   clientlogTelemetryEnabled = $state(true);
   clientlogLivetailUntil = $state<number | null>(null);
 
+  /** Parse an RFC 3339 elevation_expires_at into a Date or null. */
+  #parseElevation(raw: string | null | undefined): Date | null {
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /** True when elevationExpiresAt is set and is in the future. */
+  #hasActiveElevation(): boolean {
+    const exp = this.elevationExpiresAt;
+    return exp !== null && exp.getTime() > Date.now();
+  }
+
   /**
-   * Probe the session by hitting GET /api/v1/server/status.
-   * A 200 means the herold_admin_session cookie is valid.
-   * A 401 means the user must authenticate.
+   * Bootstrap the admin SPA session.
+   *
+   * Calls GET /api/v1/auth/me (no elevation required) to verify session
+   * and read roles + elevation_expires_at. Based on those values:
+   *   - No session (401) -> unauthenticated
+   *   - Non-admin role   -> unauthenticated
+   *   - Admin role, active elevation -> fetch server/status, then ready
+   *   - Admin role, no elevation     -> step_up_pending (REQ-AS-21)
+   *
    * Idempotent: subsequent calls while bootstrapping or ready are no-ops.
    */
   async bootstrap(): Promise<void> {
@@ -91,24 +137,49 @@ class Auth {
     this.status = 'bootstrapping';
     this.errorMessage = null;
     try {
-      const response = await fetch('/api/v1/server/status', {
+      const response = await fetch('/api/v1/auth/me', {
         method: 'GET',
         credentials: 'include',
         headers: { Accept: 'application/json' },
       });
-      if (response.status === 200) {
-        const body = (await response.json()) as ServerStatusResponse;
-        this.principal = {
-          id: body.principal_id,
-          email: body.email,
-          scopes: body.scopes,
-        };
-        this._applyClientlogBlock(body.clientlog);
-        this.status = 'ready';
+
+      if (response.status === 401) {
+        this.status = 'unauthenticated';
         return;
       }
-      // 401 or any other non-200: force login.
-      this.status = 'unauthenticated';
+
+      if (response.status !== 200) {
+        this.status = 'unauthenticated';
+        this.errorMessage = `Unexpected response: HTTP ${response.status}`;
+        return;
+      }
+
+      const me = (await response.json()) as AuthMeResponse;
+      const roles = me.roles ?? [];
+      const isAdmin = roles.includes('admin') || roles.includes('superadmin');
+
+      if (!isAdmin) {
+        // Authenticated but not an admin principal — the admin SPA is not
+        // accessible to end-user principals.
+        this.status = 'unauthenticated';
+        return;
+      }
+
+      this.roles = roles;
+      this.elevationExpiresAt = this.#parseElevation(me.elevation_expires_at);
+      this.principal = {
+        id: me.principal_id,
+        email: me.email,
+        scopes: me.scopes,
+      };
+
+      if (this.#hasActiveElevation()) {
+        // Elevation is live; fetch server/status for clientlog block.
+        await this.#fetchServerStatus();
+      } else {
+        // Need to elevate before showing admin content (REQ-AS-21, re #79).
+        this.status = 'step_up_pending';
+      }
     } catch (err) {
       // Network error: treat as unauthenticated rather than crashing; the
       // login page will surface the connectivity problem on the next attempt.
@@ -118,9 +189,71 @@ class Auth {
   }
 
   /**
+   * Fetch GET /api/v1/server/status (requires authAdmin) and apply
+   * clientlog config. Transitions to 'ready' on success.
+   * Called after bootstrap confirms active elevation, and after step-up.
+   */
+  async #fetchServerStatus(): Promise<void> {
+    try {
+      const response = await fetch('/api/v1/server/status', {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      if (response.status === 200) {
+        const body = (await response.json()) as ServerStatusResponse;
+        // Update principal from status response (may have fresher scopes).
+        this.principal = {
+          id: body.principal_id,
+          email: body.email,
+          scopes: body.scopes,
+        };
+        this._applyClientlogBlock(body.clientlog);
+        this.status = 'ready';
+        return;
+      }
+      // If server/status returns 403 after we thought elevation was active,
+      // the elevation has just expired — fall back to step_up_pending.
+      if (response.status === 403) {
+        this.elevationExpiresAt = null;
+        this.status = 'step_up_pending';
+        return;
+      }
+      this.status = 'unauthenticated';
+    } catch {
+      this.status = 'unauthenticated';
+    }
+  }
+
+  /**
+   * Called by AdminStepUpModal after a successful POST /api/v1/auth/step-up.
+   * Fetches server/status to confirm elevation and transitions to 'ready'.
+   * REQ-AS-21, re #79.
+   */
+  async afterStepUp(): Promise<void> {
+    await this.#fetchServerStatus();
+    // If the status is now 'ready', navigate to dashboard if at root.
+    if (this.status === 'ready') {
+      const cur = router.current;
+      if (!cur || cur === '/' || cur === '/login') {
+        router.replace('/dashboard');
+      }
+    }
+  }
+
+  /**
+   * Update elevationExpiresAt after a successful step-up response.
+   * Called by the step-up store with the elevation_expires_at value from
+   * the POST /api/v1/auth/step-up response (REQ-AS-23, re #79).
+   */
+  updateElevation(raw: string | null): void {
+    this.elevationExpiresAt = this.#parseElevation(raw);
+  }
+
+  /**
    * Submit credentials to POST /api/v1/auth/login.
    * On success the server sets the session + CSRF cookies; we read the
-   * principal from the response body and transition to 'ready'.
+   * principal from the response body and transition via bootstrap.
    * On TOTP step-up required the result carries stepUpRequired: true.
    */
   async login(req: LoginRequest): Promise<LoginResult> {
@@ -138,16 +271,18 @@ class Auth {
 
       if (response.status === 200) {
         const body = (await response.json()) as LoginResponse;
+        this.roles = body.roles ?? [];
+        this.elevationExpiresAt = this.#parseElevation(body.elevation_expires_at);
         this.principal = {
           id: body.principal_id,
           email: req.email,
           scopes: body.scopes,
         };
-        this.status = 'ready';
-        router.replace('/dashboard');
+        // Re-bootstrap from idle to fetch server/status + clientlog.
+        this.status = 'idle';
+        await this.bootstrap();
         return { ok: true, stepUpRequired: false, errorMessage: null };
       }
-
 
       if (response.status === 401) {
         let stepUpRequired = false;
@@ -193,6 +328,8 @@ class Auth {
       // Swallow network errors: we are logging out regardless.
     }
     this.principal = null;
+    this.roles = [];
+    this.elevationExpiresAt = null;
     this.status = 'unauthenticated';
     router.replace('/login');
   }
@@ -202,8 +339,10 @@ class Auth {
    * Transitions to unauthenticated and routes to /login.
    */
   handleUnauthorized(): void {
-    if (this.status === 'ready') {
+    if (this.status === 'ready' || this.status === 'step_up_pending') {
       this.principal = null;
+      this.roles = [];
+      this.elevationExpiresAt = null;
       this.status = 'unauthenticated';
       router.replace('/login');
     }
@@ -213,7 +352,7 @@ class Auth {
    * Apply the optional clientlog block from the session response.
    * Updates the predicates read by the clientlog wrapper (REQ-OPS-208/211).
    */
-  private _applyClientlogBlock(block: ClientlogBlock | undefined): void {
+  _applyClientlogBlock(block: ClientlogBlock | undefined): void {
     if (!block) return;
     if (typeof block.telemetry_enabled === 'boolean') {
       this.clientlogTelemetryEnabled = block.telemetry_enabled;

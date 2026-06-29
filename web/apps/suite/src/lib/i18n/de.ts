@@ -1575,4 +1575,18 @@ export const de = {
     '"{name}" — bereits gesendete Nachrichten mit diesem Link zeigen dann einen toten Link.',
   'settings.sharedFiles.confirmRevoke.confirm': 'Widerrufen',
   'settings.sharedFiles.confirmRevoke.cancel': 'Abbrechen',
+
+  // ── TOTP step-up (REQ-AS-20..27, re #79) ───────────────────────────────
+  'stepup.title': 'Identität bestätigen',
+  'stepup.prompt': 'Identität bestätigen, um fortzufahren — Authentifizierungscode eingeben.',
+  'stepup.code.label': 'Authentifizierungscode',
+  'stepup.code.placeholder': '6-stelliger Code',
+  'stepup.confirm': 'Bestätigen',
+  'stepup.cancel': 'Abbrechen',
+  'stepup.error.incorrect': 'Falscher Code — bitte erneut versuchen.',
+  'stepup.error.lockout': 'Zu viele Versuche. Erneut versuchen in {remaining}.',
+  'stepup.enroll.prompt':
+    'Für den Admin-Zugang ist Zwei-Faktor-Authentifizierung erforderlich. TOTP jetzt einrichten?',
+  'stepup.enroll.setup': 'Jetzt einrichten',
+  'stepup.cancelled': 'Aktion abgebrochen — Authentifizierung erforderlich.',
 } as const;

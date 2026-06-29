@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from './auth.svelte';
   import LoginView from '../../views/LoginView.svelte';
+  import AdminStepUpModal from './AdminStepUpModal.svelte';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -20,7 +21,7 @@
 {:else if auth.status === 'unauthenticated'}
   <LoginView />
 {:else}
-  <!-- bootstrapping: show centered spinner -->
+  <!-- bootstrapping / step_up_pending: show centered spinner -->
   <div class="splash" role="status" aria-live="polite">
     <div class="card">
       <h1 class="wordmark">Herold admin</h1>
@@ -29,6 +30,11 @@
     </div>
   </div>
 {/if}
+
+<!-- AdminStepUpModal is always mounted so the step-up store registers its
+     callback with the API client at module init. Visibility is gated inside
+     the component on auth.status === 'step_up_pending' or adminStepUp.visible. -->
+<AdminStepUpModal />
 
 <style>
   .splash {

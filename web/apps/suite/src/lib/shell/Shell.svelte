@@ -12,6 +12,7 @@
   import ConfirmDialog from '../dialog/ConfirmDialog.svelte';
   import PromptDialog from '../dialog/PromptDialog.svelte';
   import LabelDialog from '../dialog/LabelDialog.svelte';
+  import StepUpModal from '../auth/StepUpModal.svelte';
   import ChatOverlayHost from '../chat/ChatOverlayHost.svelte';
   import NewChatPicker from '../chat/NewChatPicker.svelte';
   import RecipientHoverCard from '../mail/RecipientHoverCard.svelte';
@@ -58,6 +59,7 @@
   <ConfirmDialog />
   <PromptDialog />
   <LabelDialog />
+  <StepUpModal />
   <NewChatPicker />
   <RecipientHoverCard />
 

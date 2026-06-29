@@ -6,12 +6,12 @@
  *   - Dropdown is hidden when closed; visible when open.
  *   - aria-expanded reflects internal state.
  *   - currentApp entry is omitted from the menu.
- *   - Entries are gated on capabilities and scopes.
+ *   - Entries are gated on capabilities and roles (REQ-AS-26).
  *   - Each visible entry has target="_blank" and rel="noopener".
  *   - Pressing Escape while open closes the menu.
  *   - Clicking outside closes the menu.
  *
- * REQ-UI-13k..n.
+ * REQ-UI-13k..n, REQ-AS-26.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -23,7 +23,7 @@ vi.mock('../auth/auth.svelte', () => {
   const auth = {
     status: 'ready' as string,
     session: null as null | { capabilities: Record<string, unknown> },
-    scopes: [] as string[],
+    roles: [] as string[],
   };
   return { auth, registerAccountResetCallback: vi.fn() };
 });
@@ -40,13 +40,13 @@ import type { SessionResource } from '../jmap/types';
 
 function setAuth(opts: {
   capabilities?: Record<string, unknown>;
-  scopes?: string[];
+  roles?: string[];
 }): void {
   auth.status = 'ready';
   // Only the `capabilities` field matters for the switcher; cast to satisfy
   // the full SessionResource shape without listing every property.
   auth.session = { capabilities: opts.capabilities ?? {} } as SessionResource;
-  auth.scopes = opts.scopes ?? [];
+  auth.roles = opts.roles ?? [];
 }
 
 function renderSwitcher(currentApp: 'mail' | 'calendar' | 'contacts' | 'chat' | 'admin') {
@@ -134,8 +134,8 @@ describe('AppSwitcherMenu — entry visibility', () => {
     expect(labels).toContain('app.chat');
   });
 
-  it('omits admin entry when admin scope is absent', async () => {
-    setAuth({ scopes: [] });
+  it('omits admin entry when admin role is absent (REQ-AS-26)', async () => {
+    setAuth({ roles: [] });
     renderSwitcher('mail');
     await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));
     const items = screen.queryAllByRole('menuitem');
@@ -143,13 +143,31 @@ describe('AppSwitcherMenu — entry visibility', () => {
     expect(labels).not.toContain('app.admin');
   });
 
-  it('shows admin entry when admin scope is present', async () => {
-    setAuth({ scopes: ['admin'] });
+  it('shows admin entry when admin role is present (REQ-AS-26)', async () => {
+    setAuth({ roles: ['admin'] });
     renderSwitcher('mail');
     await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));
     const items = screen.queryAllByRole('menuitem');
     const labels = items.map((el) => el.textContent?.trim());
     expect(labels).toContain('app.admin');
+  });
+
+  it('shows admin entry when superadmin role is present (REQ-AS-26)', async () => {
+    setAuth({ roles: ['superadmin'] });
+    renderSwitcher('mail');
+    await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));
+    const items = screen.queryAllByRole('menuitem');
+    const labels = items.map((el) => el.textContent?.trim());
+    expect(labels).toContain('app.admin');
+  });
+
+  it('omits admin entry when user only has non-admin roles', async () => {
+    setAuth({ roles: ['end-user'] });
+    renderSwitcher('mail');
+    await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));
+    const items = screen.queryAllByRole('menuitem');
+    const labels = items.map((el) => el.textContent?.trim());
+    expect(labels).not.toContain('app.admin');
   });
 
   it('omits calendar entry when calendar capability is absent', async () => {
@@ -170,14 +188,14 @@ describe('AppSwitcherMenu — entry visibility', () => {
     expect(labels).toContain('app.calendar');
   });
 
-  it('shows all non-current entries with full capabilities and admin scope', async () => {
+  it('shows all non-current entries with full capabilities and admin role', async () => {
     setAuth({
       capabilities: {
         'urn:ietf:params:jmap:calendars': {},
         'urn:ietf:params:jmap:contacts': {},
         'https://netzhansa.com/jmap/chat': {},
       },
-      scopes: ['admin'],
+      roles: ['admin'],
     });
     renderSwitcher('mail');
     await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));
@@ -195,7 +213,7 @@ describe('AppSwitcherMenu — link attributes', () => {
   it('every entry has target="_blank" and rel="noopener"', async () => {
     setAuth({
       capabilities: { 'https://netzhansa.com/jmap/chat': {} },
-      scopes: ['admin'],
+      roles: ['admin'],
     });
     renderSwitcher('mail');
     await fireEvent.click(screen.getByRole('button', { name: 'app.switch' }));

@@ -18,6 +18,10 @@
  * the wire type is uint64 and JS Number loses precision past 2^53. It is only
  * used for URL construction (e.g. /api/v1/principals/{pid}), never for
  * arithmetic.
+ *
+ * Phase 5 (re #79) adds roles and elevationExpiresAt for TOTP step-up gating.
+ * The admin entry point is gated on roles (not scopes); elevation expiry drives
+ * the countdown chip (REQ-AS-24) and the step-up modal pre-check (REQ-AS-21).
  */
 
 import { jmap, setJmapOnUnauthenticated } from '../jmap/client';
@@ -49,6 +53,19 @@ interface AuthMeResponse {
   principal_id: number;
   email: string;
   scopes: string[];
+  /**
+   * Role memberships for the principal. Used to gate admin-visible UI
+   * (REQ-AS-26, re #79): the admin entry requires 'admin' or 'superadmin'
+   * in roles, not the 'admin' scope (which is no longer carried in the
+   * session cookie per REQ-AUTH-SCOPE-01).
+   */
+  roles?: string[];
+  /**
+   * RFC 3339 UTC timestamp at which the current TOTP elevation expires, or
+   * null when no elevation is active. Drives the countdown chip (REQ-AS-24)
+   * and the pre-navigation check for admin routes (REQ-AS-21).
+   */
+  elevation_expires_at?: string | null;
   /**
    * Absolute session deadline as an RFC 3339 UTC timestamp. Kept for
    * backward-compat with old server builds; the SPA now prefers
@@ -84,11 +101,22 @@ class Auth {
   principalId = $state<string | null>(null);
   /**
    * Scopes granted to the current principal. Populated by loadMe() and
-   * by login(). Used to gate admin-visible UI (e.g. the app-switcher
-   * admin entry requires the 'admin' scope). Empty array until bootstrap
-   * completes or when unauthenticated.
+   * by login(). Empty array until bootstrap completes or when unauthenticated.
    */
   scopes = $state<string[]>([]);
+  /**
+   * Role memberships for the current principal. Used by AppSwitcherMenu to
+   * gate the admin entry point on 'admin' or 'superadmin' role membership
+   * rather than on scopes (REQ-AS-26, re #79).
+   * Empty array until bootstrap completes or when unauthenticated.
+   */
+  roles = $state<string[]>([]);
+  /**
+   * When the current TOTP elevation expires, or null when no elevation is
+   * active. Populated from login and loadMe responses. Drives the countdown
+   * chip (REQ-AS-24) and the pre-navigation check for admin routes (REQ-AS-21).
+   */
+  elevationExpiresAt = $state<Date | null>(null);
   /** True after a /api/v1/auth/login 401 with step_up_required; the LoginView
    *  uses this to reveal the TOTP-code field. */
   needsStepUp = $state(false);
@@ -154,6 +182,13 @@ class Auth {
     }, delayMs);
   }
 
+  /** Parse an RFC 3339 elevation_expires_at into a Date or null. */
+  #parseElevation(raw: string | null | undefined): Date | null {
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
   /**
    * Resolve the current principal's ID from GET /api/v1/auth/me.
    *
@@ -168,6 +203,8 @@ class Auth {
       // uint64 values (> 2^53 rounds to the wrong integer).
       this.principalId = String(me.principal_id);
       this.scopes = me.scopes ?? [];
+      this.roles = me.roles ?? [];
+      this.elevationExpiresAt = this.#parseElevation(me.elevation_expires_at);
       // Prefer the rolling idle deadline; fall back to the absolute one
       // for backward-compat with old server builds (re #77).
       this.#applyIdleDeadline(me.session_idle_deadline ?? me.session_expires_at);
@@ -272,13 +309,17 @@ class Auth {
 
     if (response.status === 200) {
       this.needsStepUp = false;
-      // Capture principal_id, scopes, and the session idle deadline from the
-      // login response body. The idle-expiry timer arms immediately so the
-      // forced-login overlay appears without waiting for a 401 (REQ-AS-11).
+      // Capture principal_id, scopes, roles, elevation, and session idle
+      // deadline from the login response body. The idle-expiry timer arms
+      // immediately so the forced-login overlay appears without waiting for
+      // a 401 (REQ-AS-11). Roles are needed immediately for the admin link
+      // (REQ-AS-26, re #79).
       try {
         const body = (await response.json()) as AuthMeResponse;
         this.principalId = String(body.principal_id);
         this.scopes = body.scopes ?? [];
+        this.roles = body.roles ?? [];
+        this.elevationExpiresAt = this.#parseElevation(body.elevation_expires_at);
         // Prefer rolling idle deadline; fall back to absolute for old servers.
         this.#applyIdleDeadline(body.session_idle_deadline ?? body.session_expires_at);
       } catch {
@@ -354,6 +395,8 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
+    this.roles = [];
+    this.elevationExpiresAt = null;
     this.sessionIdleDeadline = null;
     this.forcedLoginReason = null;
     this.#scheduleIdleExpiry(null);
@@ -380,10 +423,23 @@ class Auth {
     this.session = null;
     this.principalId = null;
     this.scopes = [];
+    this.roles = [];
+    this.elevationExpiresAt = null;
     this.sessionIdleDeadline = null;
     this.forcedLoginReason = reason;
     this.#scheduleIdleExpiry(null);
     this.status = 'unauthenticated';
+  }
+
+  /**
+   * Update elevation_expires_at after a successful TOTP step-up
+   * (POST /api/v1/auth/step-up response). Called by the step-up store
+   * (step-up.svelte.ts) after receiving a 200 from the step-up endpoint.
+   * Triggers UI updates: countdown chip (REQ-AS-24) and admin-link
+   * visibility (REQ-AS-26, re #79).
+   */
+  updateElevation(raw: string | null): void {
+    this.elevationExpiresAt = this.#parseElevation(raw);
   }
 
   /**

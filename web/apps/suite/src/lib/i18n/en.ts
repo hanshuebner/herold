@@ -1553,4 +1553,18 @@ export const en = {
     '"{name}" — any already-sent message linking this share will show a dead link.',
   'settings.sharedFiles.confirmRevoke.confirm': 'Revoke',
   'settings.sharedFiles.confirmRevoke.cancel': 'Cancel',
+
+  // ── TOTP step-up (REQ-AS-20..27, re #79) ───────────────────────────────
+  'stepup.title': 'Confirm your identity',
+  'stepup.prompt': 'Confirm your identity to continue — enter your authenticator code.',
+  'stepup.code.label': 'Authenticator code',
+  'stepup.code.placeholder': '6-digit code',
+  'stepup.confirm': 'Confirm',
+  'stepup.cancel': 'Cancel',
+  'stepup.error.incorrect': 'Incorrect code — try again.',
+  'stepup.error.lockout': 'Too many attempts. Try again in {remaining}.',
+  'stepup.enroll.prompt':
+    'Admin access requires two-factor authentication. Set up TOTP now?',
+  'stepup.enroll.setup': 'Set up now',
+  'stepup.cancelled': 'Action cancelled — authentication required.',
 } as const;

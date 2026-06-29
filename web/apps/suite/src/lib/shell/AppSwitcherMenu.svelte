@@ -3,8 +3,8 @@
   suite components the user has access to.
 
   REQ-UI-13k: burger icon at the left of the brand-mark row.
-  REQ-UI-13l: fixed-order entries, each gated on its capability/scope.
-  REQ-UI-13m: admin entry gated on the 'admin' scope.
+  REQ-UI-13l: fixed-order entries, each gated on its capability/role.
+  REQ-UI-13m: admin entry gated on the 'admin' or 'superadmin' role (REQ-AS-26).
   REQ-UI-13n: closes on entry click, Escape, or click-outside.
 -->
 <script lang="ts">
@@ -30,23 +30,26 @@
   let buttonEl = $state<HTMLButtonElement | null>(null);
   let menuEl = $state<HTMLUListElement | null>(null);
 
-  // Capability and scope gates derived from auth state.
+  // Capability and role gates derived from auth state.
   let capabilities = $derived(
     auth.status === 'ready' && auth.session
       ? auth.session.capabilities
       : ({} as Record<string, unknown>),
   );
-  let scopes = $derived(auth.scopes);
 
   // Per REQ-UI-13l: calendar and contacts are cut for v1 (capability not
   // advertised yet), so we gate on the presence of the JMAP capability URIs
-  // in the session. Chat is gated on HeroldChat. Admin on 'admin' scope.
+  // in the session. Chat is gated on HeroldChat.
+  // Admin entry is gated on roles (REQ-AS-26, re #79): the server carries
+  // admin membership in roles, not in scopes (REQ-AUTH-SCOPE-01).
   let hasChatCap = $derived(Capability.HeroldChat in capabilities);
   // Calendar / Contacts capabilities: gate on RFC 8620 standard URIs.
   // Currently not advertised for v1; the entries will be hidden in practice.
   let hasCalendarCap = $derived(Capability.Calendars in capabilities);
   let hasContactsCap = $derived(Capability.Contacts in capabilities);
-  let hasAdminScope = $derived(scopes.includes('admin'));
+  let hasAdminRole = $derived(
+    auth.roles.includes('admin') || auth.roles.includes('superadmin'),
+  );
 
   interface AppEntry {
     id: AppId;
@@ -75,7 +78,7 @@
       case 'chat':
         return hasChatCap;
       case 'admin':
-        return hasAdminScope;
+        return hasAdminRole;
       default:
         return false;
     }

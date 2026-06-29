@@ -11,6 +11,10 @@
  * On 401 from any /api/v1/ call the auth singleton transitions to
  * 'unauthenticated' and the router redirects to /login. We import auth
  * lazily to avoid a circular dependency at module init.
+ *
+ * On 403 with step_up_required:true the client calls the registered
+ * _onStepUpRequired callback (set by step-up.svelte.ts at module init),
+ * waits for elevation, then retries the request once (REQ-AS-20..23, re #79).
  */
 
 export interface ApiResponse<T> {
@@ -21,7 +25,7 @@ export interface ApiResponse<T> {
 }
 
 /** Parse the herold_admin_csrf cookie value from document.cookie. */
-function readCsrfToken(): string {
+export function readAdminCsrfToken(): string {
   const pairs = document.cookie.split(';');
   for (const pair of pairs) {
     const [name, value] = pair.trim().split('=');
@@ -32,10 +36,28 @@ function readCsrfToken(): string {
   return '';
 }
 
+/**
+ * Optional async callback invoked when a 403 carries step_up_required:true.
+ * Resolves when elevation is granted, rejects when the user cancels.
+ * Registered by step-up.svelte.ts at module init (REQ-AS-20, re #79).
+ */
+let _onStepUpRequired: (() => Promise<void>) | null = null;
+
+export function setAdminOnStepUpRequired(fn: () => Promise<void>): void {
+  _onStepUpRequired = fn;
+}
+
+/**
+ * Core request function.
+ *
+ * _retry is set to true on the automatic retry after step-up elevation so
+ * that a second 403 does not trigger another modal — it returns an error.
+ */
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  _retry = false,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -44,7 +66,7 @@ async function request<T>(
 
   const isMutating = method === 'POST' || method === 'PATCH' || method === 'DELETE' || method === 'PUT';
   if (isMutating) {
-    const token = readCsrfToken();
+    const token = readAdminCsrfToken();
     if (token) {
       headers['X-CSRF-Token'] = token;
     }
@@ -79,6 +101,44 @@ async function request<T>(
       data: null,
       errorMessage: 'Session expired. Please sign in again.',
     };
+  }
+
+  if (response.status === 403) {
+    // Peek at the body to detect step_up_required (REQ-AS-20, re #79).
+    type ForbiddenDetail = {
+      step_up_required?: boolean;
+      message?: string;
+      title?: string;
+      detail?: string;
+    };
+    let detail: ForbiddenDetail | null = null;
+    try {
+      detail = (await response.json()) as ForbiddenDetail;
+    } catch {
+      // ignore
+    }
+
+    if (detail?.step_up_required && !_retry && _onStepUpRequired) {
+      try {
+        await _onStepUpRequired();
+        // Elevation granted; retry exactly once.
+        return request<T>(method, path, body, true);
+      } catch {
+        return {
+          ok: false,
+          status: 403,
+          data: null,
+          errorMessage: 'Action cancelled — authentication required.',
+        };
+      }
+    }
+
+    const parts: string[] = [];
+    if (detail?.title) parts.push(detail.title);
+    if (detail?.detail) parts.push(detail.detail);
+    if (parts.length === 0 && detail?.message) parts.push(detail.message);
+    const errorMessage = parts.length > 0 ? parts.join(': ') : 'Insufficient permissions.';
+    return { ok: false, status: 403, data: null, errorMessage };
   }
 
   if (!response.ok) {
