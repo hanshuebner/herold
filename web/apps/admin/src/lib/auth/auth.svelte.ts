@@ -15,8 +15,9 @@
  *   - Admin role, no elevation     -> step_up_pending (REQ-AS-21, re #79)
  *
  * Login posts to POST /api/v1/auth/login (landed by http-api-implementor).
- * The server issues a herold_admin_session cookie plus a herold_admin_csrf
- * non-HttpOnly cookie; the client reads the CSRF token via document.cookie
+ * The server issues a herold_public_session cookie plus a herold_public_csrf
+ * non-HttpOnly cookie (the admin SPA is served on the public listener, re #58);
+ * the client reads the CSRF token via document.cookie
  * and sends X-CSRF-Token on every mutating request (see src/lib/api/client.ts).
  *
  * On 401 from any /api/v1/ call (surfaced by client.ts via handleUnauthorized),

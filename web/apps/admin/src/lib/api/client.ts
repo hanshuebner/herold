@@ -1,11 +1,13 @@
 /**
  * Typed REST helper for the admin SPA.
  *
- * All requests go to the same-origin admin listener at /api/v1/...
- * with credentials:'include' so the herold_admin_session cookie attaches.
+ * All requests go to the same-origin public listener at /api/v1/...
+ * with credentials:'include' so the herold_public_session cookie attaches.
+ * Since the admin SPA is served at /admin/ on the public listener (re #58),
+ * all web sessions share the public cookie set (REQ-AUTH-COOKIE-PATH).
  *
  * Mutating verbs (POST, PATCH, DELETE) also send the X-CSRF-Token header
- * whose value is read from the herold_admin_csrf non-HttpOnly cookie
+ * whose value is read from the herold_public_csrf non-HttpOnly cookie
  * (issued by the session-create endpoint alongside the session cookie).
  *
  * On 401 from any /api/v1/ call the auth singleton transitions to
@@ -24,12 +26,12 @@ export interface ApiResponse<T> {
   errorMessage: string | null;
 }
 
-/** Parse the herold_admin_csrf cookie value from document.cookie. */
+/** Parse the herold_public_csrf cookie value from document.cookie. */
 export function readAdminCsrfToken(): string {
   const pairs = document.cookie.split(';');
   for (const pair of pairs) {
     const [name, value] = pair.trim().split('=');
-    if (name === 'herold_admin_csrf' && value !== undefined) {
+    if (name === 'herold_public_csrf' && value !== undefined) {
       return decodeURIComponent(value);
     }
   }
