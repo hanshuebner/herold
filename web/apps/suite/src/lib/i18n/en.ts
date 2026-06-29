@@ -1017,6 +1017,7 @@ export const en = {
   'settings.sessions.revoke': 'Revoke',
   'settings.sessions.signOut': 'Sign out',
   'settings.sessions.revokeAll': 'Revoke all other sessions',
+  'settings.sessions.revokeConfirm': 'Revoke this session? It will be signed out immediately.',
   'settings.sessions.revokeAllConfirm': 'Sign out all other sessions? They will be signed out immediately.',
   'settings.sessions.signOutConfirm': 'Sign out this session? You will be signed out immediately.',
   'settings.sessions.revoked': 'Session revoked.',

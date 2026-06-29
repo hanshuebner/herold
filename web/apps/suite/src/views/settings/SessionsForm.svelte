@@ -69,10 +69,7 @@
       title: isCurrent ? t('settings.sessions.signOut') : t('settings.sessions.revoke'),
       message: isCurrent
         ? t('settings.sessions.signOutConfirm')
-        : t('settings.sessions.revokeAllConfirm').replace(
-            'All other sessions',
-            t('settings.sessions.revoke'),
-          ),
+        : t('settings.sessions.revokeConfirm'),
       confirmLabel: isCurrent ? t('settings.sessions.signOut') : t('settings.sessions.revoke'),
       cancelLabel: t('common.cancel'),
       kind: 'danger',
@@ -157,7 +154,7 @@
 </script>
 
 {#if loading}
-  <p aria-label={t('settings.sessions.loadingAria')} class="muted">Loading...</p>
+  <p aria-label={t('settings.sessions.loadingAria')} class="muted">{t('common.loading')}</p>
 {:else if loadError}
   <p class="error">{loadError}</p>
 {:else if sessions.length === 0}

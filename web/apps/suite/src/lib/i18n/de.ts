@@ -1032,6 +1032,7 @@ export const de = {
   'settings.sessions.revoke': 'Widerrufen',
   'settings.sessions.signOut': 'Abmelden',
   'settings.sessions.revokeAll': 'Alle anderen Sitzungen widerrufen',
+  'settings.sessions.revokeConfirm': 'Diese Sitzung widerrufen? Sie wird sofort abgemeldet.',
   'settings.sessions.revokeAllConfirm':
     'Alle anderen Sitzungen abmelden? Diese werden sofort beendet.',
   'settings.sessions.signOutConfirm': 'Diese Sitzung abmelden? Sie werden sofort abgemeldet.',
