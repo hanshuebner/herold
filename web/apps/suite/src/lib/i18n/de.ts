@@ -1029,17 +1029,17 @@ export const de = {
   'settings.sessions.lastSeen': 'Zuletzt aktiv',
   'settings.sessions.createdAt': 'Angemeldet',
   'settings.sessions.ip': 'IP-Adresse',
-  'settings.sessions.revoke': 'Widerrufen',
+  'settings.sessions.revoke': 'Abmelden',
   'settings.sessions.signOut': 'Abmelden',
-  'settings.sessions.revokeAll': 'Alle anderen Sitzungen widerrufen',
-  'settings.sessions.revokeConfirm': 'Diese Sitzung widerrufen? Sie wird sofort abgemeldet.',
+  'settings.sessions.revokeAll': 'Alle anderen Sitzungen abmelden',
+  'settings.sessions.revokeConfirm': 'Diese Sitzung abmelden? Sie wird sofort abgemeldet.',
   'settings.sessions.revokeAllConfirm':
     'Alle anderen Sitzungen abmelden? Diese werden sofort beendet.',
   'settings.sessions.signOutConfirm': 'Diese Sitzung abmelden? Sie werden sofort abgemeldet.',
-  'settings.sessions.revoked': 'Sitzung widerrufen.',
-  'settings.sessions.allRevoked': 'Alle anderen Sitzungen wurden widerrufen.',
+  'settings.sessions.revoked': 'Sitzung abgemeldet.',
+  'settings.sessions.allRevoked': 'Alle anderen Sitzungen wurden abgemeldet.',
   'settings.sessions.error': 'Sitzungen konnten nicht geladen werden.',
-  'settings.sessions.revokeError': 'Sitzung konnte nicht widerrufen werden.',
+  'settings.sessions.revokeError': 'Sitzung konnte nicht abgemeldet werden.',
 
   // ── Diagnose-Formular (re #97) ───────────────────────────────────────
   'settings.diagnostics.saveError': 'Einstellung konnte nicht gespeichert werden.',
