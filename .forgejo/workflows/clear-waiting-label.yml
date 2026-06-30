@@ -1,0 +1,39 @@
+name: clear waiting-for-feedback on comment
+
+# Drop the `waiting-for-feedback` label from an issue as soon as a new comment
+# arrives, so the label always reflects an outstanding question.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  unlabel:
+    # Only issues carry this label; issue_comment also fires for PRs, which
+    # have a `pull_request` member on the issue payload.
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: [self-hosted, netzhansa, amd64]
+    steps:
+      - name: remove waiting-for-feedback if present
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          LABEL="waiting-for-feedback"
+          NUM="${{ github.event.issue.number }}"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+
+          # Act only when the label is actually set, so the common case (a
+          # comment on an unlabelled issue) is a no-op rather than a 404.
+          present=$(curl -fsS -H "${AUTH}" \
+            "${API}/repos/${REPO}/issues/${NUM}/labels" \
+            | jq -r --arg l "${LABEL}" 'any(.[]; .name == $l)')
+
+          if [ "${present}" = "true" ]; then
+            curl -fsS -X DELETE -H "${AUTH}" \
+              "${API}/repos/${REPO}/issues/${NUM}/labels/${LABEL}"
+            echo "cleared ${LABEL} on #${NUM}"
+          else
+            echo "${LABEL} not set on #${NUM}; nothing to do"
+          fi
