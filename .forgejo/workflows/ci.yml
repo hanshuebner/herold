@@ -650,7 +650,21 @@ jobs:
     # no runner left this job perpetually unschedulable and cancelled; use the
     # same `netzhansa` pool every other job (and html-scrabble's deploy) uses.
     runs-on: [self-hosted, netzhansa, amd64]
-    needs: [pre-commit, test, binaries]
+    # Deploy only after every build, lint, and test job has passed. A failure
+    # in any of them (web-e2e, conformance, jmaptest, docker, ...) blocks the
+    # deploy rather than shipping a binary the suite never validated.
+    needs:
+      - pre-commit
+      - lint
+      - confidence-x86
+      - web
+      - web-e2e
+      - test
+      - fuzz-short
+      - conformance
+      - docker
+      - jmaptest
+      - binaries
     # Only deploy on pushes to the default branch, never on PRs or tags.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
