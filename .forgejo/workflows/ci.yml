@@ -43,7 +43,7 @@ jobs:
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           go install honnef.co/go/tools/cmd/staticcheck@latest
-          echo "$(go env GOPATH)/bin" >> "$GITEA_PATH"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The bake snapshot ships pre-commit at /usr/local/bin/pre-commit
       # (set up by the runner-bakery provision.sh in netzhansa-infra, in
       # an isolated venv at /opt/pre-commit), plus python3.12, pip, and
@@ -491,8 +491,8 @@ jobs:
             ver="${GITEA_REF#refs/tags/}"
             tags="${tags},${image}:${ver},${image}:latest"
           fi
-          echo "tags=${tags}" >> "${GITEA_OUTPUT}"
-          echo "image=${image}" >> "${GITEA_OUTPUT}"
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
       # Step 1: build the native image for THIS runner's arch (amd64; see
       # the [self-hosted, netzhansa, amd64] label above) and load it into
       # the local daemon so the smoke-test runs it natively, with no
@@ -682,9 +682,9 @@ jobs:
         run: |
           if [ -z "${DEPLOY_SSH_KEY}" ]; then
             echo "DEPLOY_SSH_KEY is not set; skipping deploy"
-            echo "enabled=false" >> "${GITEA_OUTPUT}"
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
           else
-            echo "enabled=true" >> "${GITEA_OUTPUT}"
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
           fi
 
       # Download the linux/amd64 binary produced by the binaries job.
@@ -702,7 +702,7 @@ jobs:
         run: |
           set -euo pipefail
           REF="ci-${GITEA_SHA::10}"
-          echo "REF=${REF}" >> "${GITEA_ENV}"
+          echo "REF=${REF}" >> "${GITHUB_ENV}"
 
           # Lay out a bare `herold` binary at the archive root so that
           # `tar -C releases/<ref> -xzf herold-<ref>.tar.gz` produces
@@ -780,7 +780,7 @@ jobs:
           # printf '%s' drops it; printf '%s\n' restores it (matches the
           # proven html-scrabble deploy).
           printf '%s\n' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
-          echo "KEY_FILE=${KEY_FILE}" >> "${GITEA_ENV}"
+          echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
 
       - name: trigger host activation
         if: steps.guard.outputs.enabled == 'true'
