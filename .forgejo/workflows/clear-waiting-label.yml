@@ -17,10 +17,12 @@ jobs:
     # have a `pull_request` member on the issue payload.
     if: ${{ !github.event.issue.pull_request }}
     runs-on: [self-hosted, netzhansa, amd64]
+    permissions:
+      issues: write
     steps:
       - name: remove waiting-for-feedback if reply post-dates the label
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TOKEN: ${{ github.token }}
           NUM: ${{ github.event.issue.number }}
           COMMENT_AT: ${{ github.event.comment.created_at }}
         run: |
@@ -29,7 +31,7 @@ jobs:
           REPO="herold/herold"
           LABEL="waiting-for-feedback"
           GRACE=120   # seconds a comment must trail the label-add to count as a reply
-          AUTH="Authorization: token ${RELEASE_TOKEN}"
+          AUTH="Authorization: token ${TOKEN}"
 
           # Fast path: nothing to do unless the label is currently set.
           present=$(curl -fsS -H "${AUTH}" \
