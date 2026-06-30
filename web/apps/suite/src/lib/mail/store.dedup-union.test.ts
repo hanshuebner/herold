@@ -12,10 +12,12 @@
  *   4. Leave normal (non-self-sent) threads entirely unchanged.
  *   5. Preserve the issue #40 raw-id dedup as a second line of defence.
  *
- * The store's `threadDedupeCount` is also tested via the committed-snapshot
- * length path: after `loadThread` sets `committedThreadEmailIds` to the
- * deduplicated list (3 entries for a 6-row self-sent thread), the count
- * returned must be 3.
+ * `loadThread` now stores ALL email IDs in the committed snapshot (both
+ * Sent and Inbox copies for self-sent messages). `threadDedupeCount` then
+ * calls `resolveDeduplicatedThreadEmails(committed, emails).length` so the
+ * badge shows the logical count (3) rather than the raw storage count (6).
+ * This is verified below via the store singleton after directly seeding
+ * `committedThreadEmailIds` with all-copies IDs.
  */
 
 import { describe, it, expect } from 'vitest';

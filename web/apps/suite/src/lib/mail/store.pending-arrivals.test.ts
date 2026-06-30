@@ -251,25 +251,24 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     expect(mail.gatedEmailIds.get('tid-1')?.has('e-new')).toBe(true);
   });
 
-  it('acceptPendingArrivals deduplicates by Message-ID against committed snapshot', async () => {
+  it('acceptPendingArrivals admits both copies of a same-Message-ID pair into committed (re #88)', async () => {
     const { mail } = await import('./store.svelte');
-    mail.emails.set(
-      'e-sent',
-      makeEmail({ id: 'e-sent', threadId: 'tid-1', messageId: ['<msg1@host>'] }),
-    );
-    mail.emails.set(
-      'e-inbox',
-      makeEmail({ id: 'e-inbox', threadId: 'tid-1', messageId: ['<msg1@host>'] }),
-    );
-    // e-sent is already committed; e-inbox shares the same Message-ID.
+    const eSent = makeEmail({ id: 'e-sent', threadId: 'tid-1', messageId: ['<msg1@host>'] });
+    const eInbox = makeEmail({ id: 'e-inbox', threadId: 'tid-1', messageId: ['<msg1@host>'] });
+    mail.emails.set('e-sent', eSent);
+    mail.emails.set('e-inbox', eInbox);
+    // e-sent is already committed; e-inbox shares the same Message-ID but
+    // a different raw ID. The committed snapshot stores all copies so that
+    // resolveDeduplicatedThreadEmails() can union their mailboxIds at read
+    // time. Raw-ID dedup only: e-inbox must be ADDED, not dropped.
     mail.committedThreadEmailIds = new Map([['tid-1', ['e-sent']]]);
     mail.pendingArrivals = new Map([['tid-1', new Set(['e-inbox'])]]);
 
     const added = mail.acceptPendingArrivals('tid-1');
-    // Duplicate: nothing added to committed snapshot.
-    expect(added).toEqual([]);
-    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-sent']);
-    // The pending id is still gated so it won't re-trigger the banner.
+    // e-inbox is a new raw ID: added to committed so the mailboxIds union works.
+    expect(added.map((e) => e.id)).toEqual(['e-inbox']);
+    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-sent', 'e-inbox']);
+    // Both IDs gated so the banner is not re-triggered.
     expect(mail.gatedEmailIds.get('tid-1')?.has('e-inbox')).toBe(true);
   });
 
@@ -524,5 +523,72 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     // e-external is in thread.emailIds but also in gatedEmailIds, so it
     // must NOT appear in pendingArrivals.
     expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// threadDedupeCount with all-copies committed snapshot (re #88)
+// ---------------------------------------------------------------------------
+
+describe('mail store: threadDedupeCount with all-copies committed snapshot (re #88)', () => {
+  beforeEach(() => {
+    syncHandlers.clear();
+    batch.mockReset();
+    vi.resetModules();
+  });
+
+  it('returns the logical-message count (3) when committed snapshot holds all 6 rows of a self-sent thread', async () => {
+    const { mail } = await import('./store.svelte');
+
+    const SENT = 'mbx-sent';
+    const INBOX = 'mbx-inbox';
+
+    // Six email rows: 3 logical messages, each as Sent + Inbox copy.
+    for (const [id, mbx, mid] of [
+      ['s1', SENT, '<m1@h>'],
+      ['d1', INBOX, '<m1@h>'],
+      ['s2', SENT, '<m2@h>'],
+      ['d2', INBOX, '<m2@h>'],
+      ['s3', SENT, '<m3@h>'],
+      ['d3', INBOX, '<m3@h>'],
+    ] as [string, string, string][]) {
+      mail.emails.set(id, makeEmail({ id, threadId: 'tid-self', messageId: [mid], mailboxIds: { [mbx]: true } as Record<string, true> }));
+    }
+
+    // Seed committed snapshot with ALL 6 IDs — the new loadThread behaviour.
+    mail.committedThreadEmailIds = new Map([
+      ['tid-self', ['s1', 'd1', 's2', 'd2', 's3', 'd3']],
+    ]);
+
+    // threadDedupeCount must group same-Message-ID copies and return 3.
+    expect(mail.threadDedupeCount('tid-self')).toBe(3);
+  });
+
+  it('threadEmails with all-copies committed snapshot unions mailboxIds for each logical message', async () => {
+    const { mail } = await import('./store.svelte');
+
+    const SENT = 'mbx-sent';
+    const INBOX = 'mbx-inbox';
+
+    for (const [id, mbx, mid] of [
+      ['s1', SENT, '<m1@h>'],
+      ['d1', INBOX, '<m1@h>'],
+      ['s2', SENT, '<m2@h>'],
+      ['d2', INBOX, '<m2@h>'],
+    ] as [string, string, string][]) {
+      mail.emails.set(id, makeEmail({ id, threadId: 'tid-self', messageId: [mid], mailboxIds: { [mbx]: true } as Record<string, true> }));
+    }
+
+    mail.committedThreadEmailIds = new Map([
+      ['tid-self', ['s1', 'd1', 's2', 'd2']],
+    ]);
+
+    const emails = mail.threadEmails('tid-self');
+    // Two logical messages, each representative has both mailboxIds.
+    expect(emails).toHaveLength(2);
+    for (const e of emails) {
+      expect(e.mailboxIds[SENT]).toBe(true);
+      expect(e.mailboxIds[INBOX]).toBe(true);
+    }
   });
 });

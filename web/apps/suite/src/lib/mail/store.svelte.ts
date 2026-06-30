@@ -515,13 +515,21 @@ class MailStore {
 
   /**
    * Advance the committed snapshot for `threadId` by adding `newIds`,
-   * deduplicating against existing entries by normalized Message-ID.
+   * filtering out raw-ID duplicates already in the snapshot.
    * No-ops when the committed map has no entry for the thread.
+   *
+   * The committed snapshot stores ALL copies of each logical message
+   * (both Sent and Inbox for self-sent messages), so deduplication here
+   * is by raw email ID only — not by Message-ID. The collapse to one
+   * rendered accordion happens at read time in threadEmails() via
+   * resolveDeduplicatedThreadEmails(). Using Message-ID dedup here would
+   * drop the Inbox copy, breaking the mailboxIds union (re #88).
    */
   #advanceCommittedSnapshot(threadId: string, newIds: string[]): void {
     const existing = this.committedThreadEmailIds.get(threadId);
     if (existing === undefined) return;
-    const toAdd = dedupeArrivalsByMessageId(newIds, existing, this.emails);
+    const existingSet = new Set(existing);
+    const toAdd = newIds.filter((id) => !existingSet.has(id));
     if (toAdd.length === 0) return;
     const next = new Map(this.committedThreadEmailIds);
     next.set(threadId, [...existing, ...toAdd]);
@@ -582,14 +590,18 @@ class MailStore {
     const ids = this.pendingArrivals.get(threadId);
     const newIds = ids ? [...ids] : [];
     const existing = this.committedThreadEmailIds.get(threadId) ?? [];
-    const toAdd = dedupeArrivalsByMessageId(newIds, existing, this.emails);
+    // Raw-ID dedup: the committed snapshot stores all copies of each
+    // logical message, so the only dedup needed is against raw email IDs
+    // already present. Visual dedup to one-per-message happens at read
+    // time in threadEmails() via resolveDeduplicatedThreadEmails().
+    const existingSet = new Set(existing);
+    const toAdd = newIds.filter((id) => !existingSet.has(id));
     if (toAdd.length > 0) {
       const next = new Map(this.committedThreadEmailIds);
       next.set(threadId, [...existing, ...toAdd]);
       this.committedThreadEmailIds = next;
     }
-    // Mark all pending ids as gated (including duplicates that were dropped
-    // by dedup) so the banner is not re-triggered for any of them.
+    // Mark all pending ids as gated so the banner is not re-triggered.
     if (newIds.length > 0) {
       const nextGated = new Map(this.gatedEmailIds);
       const existingGated = nextGated.get(threadId) ?? new Set<string>();
@@ -1629,16 +1641,18 @@ class MailStore {
       for (const e of emailResult.list) nextEmails.set(e.id, e);
       this.emails = nextEmails;
 
-      // Initialise the committed snapshot from the cold-load Thread/get
-      // response. Apply Message-ID deduplication so that a Sent copy and
-      // an Inbox copy of the same physical message (both in thread.emailIds
-      // when the backend records them as separate Email objects) collapse
-      // into a single rendered accordion on first view.
-      const initialCommitted = dedupeArrivalsByMessageId(
-        thread.emailIds,
-        [],
-        nextEmails,
-      );
+      // Initialise the committed snapshot with ALL email IDs from the
+      // Thread/get response. Deduplication to one-per-logical-message
+      // happens at read time in threadEmails() / threadDedupeCount() via
+      // resolveDeduplicatedThreadEmails(), which groups same-Message-ID
+      // copies and unions their mailboxIds. Storing all copies here is
+      // necessary so that the union step can see both the Sent copy and
+      // the Inbox copy of a self-sent message; if only one copy were kept
+      // (as the old dedupeArrivalsByMessageId init did), the union would
+      // be a no-op and the merged email would lack Inbox membership,
+      // causing the navigate-away guard in MailView.svelte to bounce
+      // the thread reader back to the folder list (re #88).
+      const initialCommitted = [...thread.emailIds];
       const nextCommitted = new Map(this.committedThreadEmailIds);
       nextCommitted.set(thread.id, initialCommitted);
       this.committedThreadEmailIds = nextCommitted;
@@ -1767,17 +1781,20 @@ class MailStore {
   /**
    * Deduplicated logical-message count for the thread badge.
    *
-   * Uses the committed snapshot length when the thread has been cold-loaded
-   * (the committed list is already deduplicated by Message-ID, so its length
-   * equals the number of distinct logical messages). Falls back to the raw
-   * Thread.emailIds length for threads that have not yet been opened in the
-   * reader — which may overcount self-sent threads until first view, but is
-   * the best available approximation without loading every thread member's
-   * messageId header at list time.
+   * When the thread has been cold-loaded, computes the count from the
+   * committed snapshot via resolveDeduplicatedThreadEmails() — which
+   * collapses same-Message-ID copies (Sent + Inbox of a self-sent
+   * message) into one logical message. Falls back to the raw
+   * Thread.emailIds length for threads that have not yet been opened in
+   * the reader, which may overcount self-sent threads until first view
+   * but is the best available approximation without loading every thread
+   * member's messageId header at list time.
    */
   threadDedupeCount(threadId: string): number {
     const committed = this.committedThreadEmailIds.get(threadId);
-    if (committed !== undefined) return committed.length;
+    if (committed !== undefined) {
+      return resolveDeduplicatedThreadEmails(committed, this.emails).length;
+    }
     return this.threads.get(threadId)?.emailIds.length ?? 0;
   }
 
