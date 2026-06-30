@@ -25,6 +25,7 @@
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
   import { watchRegistration, activateWaiting } from './lib/sw-update';
+  import { handleSwNavigateMessage } from './lib/push/sw-navigate';
   // Side-effect: registers a sync.on('InternalizeStatus') handler that
   // refreshes the session descriptor whenever the background internalize-
   // worker bumps the count (REQ-EXTIMG-BG-INTERNAL-30).
@@ -373,6 +374,24 @@
       },
     );
   }
+
+  // ── Web Push: SW → SPA navigate fallback (REQ-PUSH-70..73) ─────────────────
+  //
+  // When clients.openWindow() returns null on macOS (focus-stealing prevention
+  // blocks the new window), the SW's openApp() falls back to
+  // client.postMessage({ type: 'navigate', path }).  We handle that message
+  // here so the already-open tab navigates to the correct thread even when the
+  // browser does not come to the foreground.
+  $effect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handler = (event: MessageEvent) => {
+      handleSwNavigateMessage(event.data, (path) =>
+        untrack(() => router.navigate(path)),
+      );
+    };
+    navigator.serviceWorker.addEventListener('message', handler);
+    return () => navigator.serviceWorker.removeEventListener('message', handler);
+  });
 
   // Re-sync mailbox counters when the tab regains visibility so the
   // favicon badge and title stay accurate after the tab was hidden (re #36).

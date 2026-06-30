@@ -1,10 +1,12 @@
 /**
- * Unit tests for the service worker notificationclick path resolver.
+ * Unit tests for the service worker notificationclick path resolver and
+ * the openApp open-window/fallback function.
  *
  * sw.js lives in public/ and is not a module, so we cannot import it
  * directly.  We evaluate its source in a controlled context with the SW
  * global mocked to silence event registrations, then extract and call the
- * pure resolveNotificationPath function, which has no dependency on SW APIs.
+ * pure resolveNotificationPath function, which has no dependency on SW APIs,
+ * and the async openApp function, which uses self.clients.
  *
  * REQ-PUSH-70..73, REQ-MOB-74.
  */
@@ -12,12 +14,17 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // Resolve the path to sw.js relative to this test file.
 // test: src/lib/push/  →  ../../../public/sw.js
 const __dir = dirname(fileURLToPath(import.meta.url));
 const swSource = readFileSync(resolve(__dir, '../../../public/sw.js'), 'utf-8');
+
+// ── resolveNotificationPath fixture ─────────────────────────────────────────
+//
+// resolveNotificationPath makes no SW API calls, so a minimal self mock is
+// sufficient.
 
 // Minimal SW global mock.  resolveNotificationPath itself makes no SW calls,
 // but the module-level self.addEventListener() calls at the top of sw.js need
@@ -41,6 +48,34 @@ const { resolveNotificationPath } = factory(selfMock) as {
     action: string,
   ) => string | null;
 };
+
+// ── openApp fixture ──────────────────────────────────────────────────────────
+//
+// openApp calls self.clients.openWindow and self.clients.matchAll, so each
+// test creates a fresh SW evaluation with the specific client mock it needs.
+
+type ClientMock = {
+  focus: () => Promise<void>;
+  postMessage: (msg: unknown) => void;
+};
+
+function makeOpenApp(clientsMock: {
+  openWindow: (path: string) => Promise<ClientMock | null>;
+  matchAll?: () => Promise<ClientMock[]>;
+}): (path: string) => Promise<void> {
+  const mock = {
+    addEventListener: () => {},
+    clients: {
+      matchAll: async (): Promise<ClientMock[]> => [],
+      ...clientsMock,
+    },
+    registration: { scope: 'http://localhost/' },
+    skipWaiting: () => {},
+  };
+  // eslint-disable-next-line no-new-func
+  const f = new Function('self', `${swSource}\nreturn { openApp };`);
+  return (f(mock) as { openApp: (path: string) => Promise<void> }).openApp;
+}
 
 // ── Background JMAP actions (must return null — no window to open) ──────────
 
@@ -73,12 +108,12 @@ describe('resolveNotificationPath — background actions', () => {
 // ── Mail body click ──────────────────────────────────────────────────────────
 
 describe('resolveNotificationPath — mail body click', () => {
-  it('returns /mail/thread/<threadId> when threadId is present', () => {
+  it('returns /#/mail/thread/<threadId> when threadId is present', () => {
     const path = resolveNotificationPath(
       { kind: 'mail', threadId: 'T1234', emailId: 'e1' },
       '',
     );
-    expect(path).toBe('/mail/thread/T1234');
+    expect(path).toBe('/#/mail/thread/T1234');
   });
 
   it('encodes special characters in threadId', () => {
@@ -86,12 +121,12 @@ describe('resolveNotificationPath — mail body click', () => {
       { kind: 'mail', threadId: 'T abc/+=' },
       '',
     );
-    expect(path).toBe('/mail/thread/T%20abc%2F%2B%3D');
+    expect(path).toBe('/#/mail/thread/T%20abc%2F%2B%3D');
   });
 
-  it('falls back to /mail when threadId is absent', () => {
+  it('falls back to /#/mail when threadId is absent', () => {
     expect(resolveNotificationPath({ kind: 'mail', emailId: 'e1' }, '')).toBe(
-      '/mail',
+      '/#/mail',
     );
   });
 });
@@ -104,7 +139,7 @@ describe('resolveNotificationPath — mail open-window actions', () => {
       { kind: 'mail', emailId: 'e42' },
       'reply',
     );
-    expect(path).toBe('/mail/compose?inReplyTo=e42&quick=1');
+    expect(path).toBe('/#/mail/compose?inReplyTo=e42&quick=1');
   });
 
   it('returns compose path for retry_archive action', () => {
@@ -112,7 +147,7 @@ describe('resolveNotificationPath — mail open-window actions', () => {
       { kind: 'mail', emailId: 'e42' },
       'retry_archive',
     );
-    expect(path).toBe('/mail/compose?inReplyTo=e42&quick=1');
+    expect(path).toBe('/#/mail/compose?inReplyTo=e42&quick=1');
   });
 
   it('returns compose path for retry_read action', () => {
@@ -120,7 +155,7 @@ describe('resolveNotificationPath — mail open-window actions', () => {
       { kind: 'mail', emailId: 'e42' },
       'retry_read',
     );
-    expect(path).toBe('/mail/compose?inReplyTo=e42&quick=1');
+    expect(path).toBe('/#/mail/compose?inReplyTo=e42&quick=1');
   });
 
   it('encodes emailId in compose path', () => {
@@ -133,7 +168,7 @@ describe('resolveNotificationPath — mail open-window actions', () => {
 
   it('uses empty string for missing emailId in compose path', () => {
     const path = resolveNotificationPath({ kind: 'mail' }, 'reply');
-    expect(path).toBe('/mail/compose?inReplyTo=&quick=1');
+    expect(path).toBe('/#/mail/compose?inReplyTo=&quick=1');
   });
 });
 
@@ -174,37 +209,37 @@ describe('resolveNotificationPath — chat', () => {
 // ── Calendar invite ──────────────────────────────────────────────────────────
 
 describe('resolveNotificationPath — calendar-invite', () => {
-  it('returns mail thread path for emailId', () => {
+  it('returns /#/mail thread path for emailId', () => {
     const path = resolveNotificationPath(
       { kind: 'calendar-invite', emailId: 'e99' },
       '',
     );
-    expect(path).toBe('/mail/thread/e99');
+    expect(path).toBe('/#/mail/thread/e99');
   });
 
   it('uses empty string for missing emailId', () => {
     const path = resolveNotificationPath({ kind: 'calendar-invite' }, '');
-    expect(path).toBe('/mail/thread/');
+    expect(path).toBe('/#/mail/thread/');
   });
 
-  it('returns mail thread path for accept action (handled in-app)', () => {
+  it('returns /#/mail thread path for accept action (handled in-app)', () => {
     const path = resolveNotificationPath(
       { kind: 'calendar-invite', emailId: 'e99' },
       'accept',
     );
-    expect(path).toBe('/mail/thread/e99');
+    expect(path).toBe('/#/mail/thread/e99');
   });
 });
 
 // ── Call ─────────────────────────────────────────────────────────────────────
 
 describe('resolveNotificationPath — call', () => {
-  it('returns /chat/<conversationId> when conversationId is present', () => {
+  it('returns /#/chat/<conversationId> when conversationId is present', () => {
     const path = resolveNotificationPath(
       { kind: 'call', conversationId: 'room-7' },
       '',
     );
-    expect(path).toBe('/chat/room-7');
+    expect(path).toBe('/#/chat/room-7');
   });
 
   it('falls back to / when conversationId is absent', () => {
@@ -226,5 +261,112 @@ describe('resolveNotificationPath — unknown kind', () => {
   it('returns / for archive action on unknown kind (not a mail background action)', () => {
     // The background-action gate is mail-specific; unknown kind falls to default.
     expect(resolveNotificationPath({ kind: 'unknown' }, 'archive')).toBe('/');
+  });
+});
+
+// ── openApp ──────────────────────────────────────────────────────────────────
+//
+// openApp is the definitive test the maintainer asked for (issue #83 comment
+// 2026-06-29): verify that clients.openWindow() is called first and that the
+// focus+navigate fallback fires only when openWindow() returns null (macOS
+// focus-stealing prevention).
+
+describe('openApp — openWindow succeeds', () => {
+  it('calls clients.openWindow with the given path', async () => {
+    const mockWindow = { url: 'http://localhost/', postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue(mockWindow);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(openWindow).toHaveBeenCalledWith('/#/mail/thread/T1');
+  });
+
+  it('does not call matchAll when openWindow returns a window', async () => {
+    const mockWindow = { url: 'http://localhost/' };
+    const openWindow = vi.fn().mockResolvedValue(mockWindow);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(matchAll).not.toHaveBeenCalled();
+  });
+
+  it('does not call focus or postMessage when openWindow returns a window', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(mockClient.focus).not.toHaveBeenCalled();
+    expect(mockClient.postMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('openApp — openWindow returns null (macOS fallback)', () => {
+  it('calls matchAll to find existing window clients', async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(matchAll).toHaveBeenCalled();
+  });
+
+  it('calls focus and postMessage on the first window client', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(mockClient.focus).toHaveBeenCalled();
+    expect(mockClient.postMessage).toHaveBeenCalledWith({
+      type: 'navigate',
+      path: '/#/mail/thread/T1',
+    });
+  });
+
+  it('posts the exact path string to postMessage', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail?openChat=conv-abc');
+
+    expect(mockClient.postMessage).toHaveBeenCalledWith({
+      type: 'navigate',
+      path: '/#/mail?openChat=conv-abc',
+    });
+  });
+
+  it('completes without error when no window clients exist', async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+
+  it('uses only the first focusable client and does not call others', async () => {
+    const client1 = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const client2 = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([client1, client2]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(client1.focus).toHaveBeenCalled();
+    expect(client1.postMessage).toHaveBeenCalled();
+    expect(client2.focus).not.toHaveBeenCalled();
+    expect(client2.postMessage).not.toHaveBeenCalled();
   });
 });

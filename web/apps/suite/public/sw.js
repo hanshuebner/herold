@@ -229,12 +229,12 @@ function resolveNotificationPath(data, action) {
   switch (kind) {
     case 'mail': {
       if (action === 'reply' || action === 'retry_archive' || action === 'retry_read') {
-        return `/mail/compose?inReplyTo=${encodeURIComponent(data.emailId ?? '')}&quick=1`;
+        return `/#/mail/compose?inReplyTo=${encodeURIComponent(data.emailId ?? '')}&quick=1`;
       }
       // Body click — open the thread.
       return data.threadId
-        ? `/mail/thread/${encodeURIComponent(data.threadId)}`
-        : '/mail';
+        ? `/#/mail/thread/${encodeURIComponent(data.threadId)}`
+        : '/#/mail';
     }
     case 'chat': {
       // Open the mail view with the openChat deep-link overlay so the
@@ -246,12 +246,12 @@ function resolveNotificationPath(data, action) {
     }
     case 'calendar-invite': {
       // Accept/Decline is handled in-app (v1).
-      return `/mail/thread/${encodeURIComponent(data.emailId ?? '')}`;
+      return `/#/mail/thread/${encodeURIComponent(data.emailId ?? '')}`;
     }
     case 'call': {
       // SW cannot drive WebRTC (REQ-PUSH-67) — open the app for call signaling.
       return data.conversationId
-        ? `/chat/${encodeURIComponent(data.conversationId)}`
+        ? `/#/chat/${encodeURIComponent(data.conversationId)}`
         : '/';
     }
     default:
