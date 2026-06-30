@@ -11,6 +11,7 @@
    * Mounted once in AuthGate.svelte so it is always available regardless of
    * auth state.
    */
+  import { untrack } from 'svelte';
   import { auth } from './auth.svelte';
   import { adminStepUp } from './step-up.svelte';
   import CodeInput from '../ui/CodeInput.svelte';
@@ -77,6 +78,21 @@
     };
     document.addEventListener('keydown', onKey, { capture: true });
     return () => document.removeEventListener('keydown', onKey, { capture: true });
+  });
+
+  // Auto-submit when all six digits are entered (re #79).
+  // Reads `code` as a reactive dep so the effect fires on each digit change.
+  // The submit action and the code clear are untracked to prevent the write
+  // back to `code` from scheduling an extra effect run.
+  $effect(() => {
+    const currentCode = code;
+    if (currentCode.length !== 6) return;
+    untrack(() => {
+      if (!adminStepUp.submitting && lockoutSeconds <= 0) {
+        code = '';
+        void adminStepUp.submitCode(currentCode, isBootstrap);
+      }
+    });
   });
 
   function formatCountdown(secs: number): string {
@@ -156,13 +172,6 @@
               disabled={adminStepUp.submitting}
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              class="btn btn-primary"
-              disabled={code.length !== 6 || adminStepUp.submitting || lockoutSeconds > 0}
-            >
-              {adminStepUp.submitting ? 'Confirming...' : 'Confirm'}
             </button>
           </div>
         </form>
@@ -295,13 +304,5 @@
     filter: brightness(0.95);
   }
 
-  .btn-primary {
-    background: var(--interactive);
-    color: var(--text-on-color);
-  }
 
-  .btn-primary:hover:not(:disabled) {
-    background: var(--interactive);
-    filter: brightness(0.92);
-  }
 </style>

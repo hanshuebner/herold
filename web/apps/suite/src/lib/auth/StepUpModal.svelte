@@ -11,6 +11,7 @@
    *  - Enrollment required: "Set up TOTP now?" prompt (REQ-AS-25).
    *  - Lockout: countdown chip + disabled input (REQ-AS-23).
    */
+  import { untrack } from 'svelte';
   import { stepUp } from './step-up.svelte';
   import { t } from '../i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
@@ -76,6 +77,21 @@
     };
     document.addEventListener('keydown', onKey, { capture: true });
     return () => document.removeEventListener('keydown', onKey, { capture: true });
+  });
+
+  // Auto-submit when all six digits are entered (re #79).
+  // Reads `code` as a reactive dep so the effect fires on each digit change.
+  // The submit action and the code clear are untracked to prevent the write
+  // back to `code` from scheduling an extra effect run.
+  $effect(() => {
+    const currentCode = code;
+    if (currentCode.length !== 6) return;
+    untrack(() => {
+      if (!stepUp.submitting && lockoutSeconds <= 0) {
+        code = '';
+        void stepUp.submitCode(currentCode);
+      }
+    });
   });
 
   function formatCountdown(secs: number): string {
@@ -155,13 +171,6 @@
               disabled={stepUp.submitting}
             >
               {t('stepup.cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              type="submit"
-              disabled={code.length !== 6 || stepUp.submitting || lockoutSeconds > 0}
-            >
-              {t('stepup.confirm')}
             </Button>
           </div>
         </form>
