@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { clientlog } from '../lib/clientlog/clientlog.svelte';
-  import { formatRelative, formatAbsolute } from '../lib/format';
+  import { formatRelative, formatAbsolute, DATE_TIME_WITH_SECONDS } from '../lib/format';
 
   // Load on mount; reload when filters change via Apply button.
   $effect(() => {
@@ -319,11 +319,11 @@
           </div>
           <div class="detail-row">
             <dt>Server time</dt>
-            <dd class="mono">{row.server_ts}</dd>
+            <dd class="mono" title={row.server_ts}>{formatAbsolute(row.server_ts, DATE_TIME_WITH_SECONDS)}</dd>
           </div>
           <div class="detail-row">
             <dt>Client time</dt>
-            <dd class="mono">{row.client_ts}</dd>
+            <dd class="mono" title={row.client_ts}>{formatAbsolute(row.client_ts, DATE_TIME_WITH_SECONDS)}</dd>
           </div>
           <div class="detail-row">
             <dt>Clock skew</dt>
@@ -427,7 +427,7 @@
               {#each row.payload.raw.breadcrumbs as bc, i (i)}
                 <li class="breadcrumb-item">
                   <span class="mono small bc-kind">{bc.kind}</span>
-                  <span class="mono small bc-ts">{bc.ts}</span>
+                  <span class="mono small bc-ts" title={bc.ts}>{formatAbsolute(bc.ts, DATE_TIME_WITH_SECONDS)}</span>
                   {#if bc.kind === 'route' && bc.route}
                     <!-- REQ-OPS-218: route as plain text, no href -->
                     <span class="mono small bc-detail">{bc.route}</span>
@@ -473,7 +473,7 @@
               <ol class="timeline-list">
                 {#each clientlog.timelineEntries as entry, i (i)}
                   <li class="timeline-item">
-                    <span class="mono small tl-ts">{entry.effective_ts}</span>
+                    <span class="mono small tl-ts" title={entry.effective_ts}>{formatAbsolute(entry.effective_ts, DATE_TIME_WITH_SECONDS)}</span>
                     <span class="tl-source chip {entry.source === 'client' ? 'chip-blue' : 'chip-grey'}">
                       {entry.source}
                     </span>
