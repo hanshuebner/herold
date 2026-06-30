@@ -11,7 +11,7 @@
  * a `$state`-backed getter/setter pair so two-way binding works.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import CodeInput from './CodeInput.svelte';
@@ -166,6 +166,125 @@ describe('CodeInput', () => {
     // The active element should not be one of the code input boxes.
     const b = boxes(container);
     expect(b).not.toContain(document.activeElement);
+    stop();
+  });
+});
+
+describe('CodeInput — oncomplete and reset path (re #93)', () => {
+  it('calls oncomplete when the sixth digit is entered', async () => {
+    const oncomplete = vi.fn();
+    let value = $state('');
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      const r = render(CodeInput, {
+        props: {
+          get value() { return value; },
+          set value(v: string) { value = v; },
+          oncomplete,
+        },
+      });
+      container = r.container;
+    });
+    const b = boxes(container);
+
+    // Enter first five digits — oncomplete must not fire yet.
+    for (let i = 0; i < 5; i++) {
+      b[i]!.focus();
+      b[i]!.value = String(i + 1);
+      await fireEvent.input(b[i]!);
+      await tick();
+    }
+    expect(oncomplete).not.toHaveBeenCalled();
+
+    // Enter the sixth digit — oncomplete must fire with the full code.
+    b[5]!.focus();
+    b[5]!.value = '6';
+    await fireEvent.input(b[5]!);
+    await tick();
+    expect(oncomplete).toHaveBeenCalledOnce();
+    expect(oncomplete).toHaveBeenCalledWith('123456');
+
+    stop();
+  });
+
+  it('calls oncomplete when a full six-digit code is pasted', async () => {
+    const oncomplete = vi.fn();
+    let value = $state('');
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      const r = render(CodeInput, {
+        props: {
+          get value() { return value; },
+          set value(v: string) { value = v; },
+          oncomplete,
+        },
+      });
+      container = r.container;
+    });
+    const b = boxes(container);
+
+    const dt = new DataTransfer();
+    dt.setData('text', '987654');
+    await fireEvent.paste(b[0]!, { clipboardData: dt });
+    await tick();
+
+    expect(oncomplete).toHaveBeenCalledOnce();
+    expect(oncomplete).toHaveBeenCalledWith('987654');
+
+    stop();
+  });
+
+  it('does not call oncomplete for a partial paste (fewer than six digits)', async () => {
+    const oncomplete = vi.fn();
+    let value = $state('');
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      const r = render(CodeInput, {
+        props: {
+          get value() { return value; },
+          set value(v: string) { value = v; },
+          oncomplete,
+        },
+      });
+      container = r.container;
+    });
+    const b = boxes(container);
+
+    const dt = new DataTransfer();
+    dt.setData('text', '123');
+    await fireEvent.paste(b[0]!, { clipboardData: dt });
+    await tick();
+
+    expect(oncomplete).not.toHaveBeenCalled();
+
+    stop();
+  });
+
+  it('focuses the first box when value is cleared to empty from the outside', async () => {
+    let value = $state('123456');
+    let container!: HTMLElement;
+    const stop = $effect.root(() => {
+      const r = render(CodeInput, {
+        props: {
+          get value() { return value; },
+          set value(v: string) { value = v; },
+        },
+      });
+      container = r.container;
+    });
+    await tick();
+
+    const b = boxes(container);
+    // Focus the last box to ensure the reset genuinely moves focus.
+    b[5]!.focus();
+    expect(document.activeElement).toBe(b[5]);
+
+    // Parent clears the code (simulates a wrong-code 400 response).
+    value = '';
+    await tick();
+
+    expect(document.activeElement).toBe(b[0]);
+
     stop();
   });
 });

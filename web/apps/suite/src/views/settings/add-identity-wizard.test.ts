@@ -494,12 +494,8 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
+    // oncomplete fires on the sixth digit; no Verify button click needed.
     await typeWizardCode(container, '654321');
-    await fireEvent.click(
-      container.querySelector(
-        '[data-testid="identity-wizard-verify"]',
-      ) as HTMLButtonElement,
-    );
     await vi.waitFor(() => {
       expect(
         container.querySelector('[data-testid="identity-wizard-step-3"]'),
@@ -549,12 +545,8 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
+    // oncomplete fires on the sixth digit; no Verify button click needed.
     await typeWizardCode(container, '654321');
-    await fireEvent.click(
-      container.querySelector(
-        '[data-testid="identity-wizard-verify"]',
-      ) as HTMLButtonElement,
-    );
     await vi.waitFor(() => {
       expect(
         container.querySelector('[data-testid="identity-wizard-step-3"]'),

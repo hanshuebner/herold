@@ -215,7 +215,7 @@
   let resendDisabled = $derived(resending || cooldown > 0);
 
   async function onVerify(): Promise<void> {
-    if (!createdIdentity) return;
+    if (!createdIdentity || verifying) return;
     codeError = null;
     if (!isValidCode(code)) {
       codeError = t('settings.identityWizard.codeInvalid');
@@ -246,7 +246,12 @@
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 400) {
+        // Wrong code: clear the boxes for re-entry and surface the error.
+        // Setting code='' before codeAtError lets the $effect preserve the
+        // error until the user begins typing the corrected code (re #93).
+        // CodeInput's reset path focuses box 0 automatically.
         codeError = t('settings.identityWizard.codeWrong');
+        code = '';
       } else {
         codeError = err instanceof Error ? err.message : String(err);
       }
@@ -454,6 +459,7 @@
             <span class="label-text">{t('settings.identityWizard.codeLabel')}</span>
             <CodeInput
               bind:value={code}
+              oncomplete={() => void onVerify()}
               disabled={verifying}
               invalid={!!codeError}
               ariaLabel={t('settings.identityWizard.codeLabel')}

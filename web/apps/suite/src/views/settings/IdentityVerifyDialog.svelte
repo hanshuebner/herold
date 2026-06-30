@@ -68,6 +68,7 @@
   }
 
   async function onVerifyClick(): Promise<void> {
+    if (verifying) return;
     codeError = null;
     if (!isValidCode(code)) {
       codeError = t('settings.identityWizard.codeInvalid');
@@ -90,8 +91,12 @@
       close();
     } catch (err) {
       if (err instanceof ApiError && (err.status === 400)) {
-        // Wrong / expired code — surface inline, keep the dialog open.
+        // Wrong code: clear the boxes for re-entry and surface the error.
+        // Setting code='' before codeAtError lets the $effect preserve the
+        // error until the user begins typing the corrected code (re #93).
+        // CodeInput's reset path focuses box 0 automatically.
         codeError = t('settings.identityWizard.codeWrong');
+        code = '';
       } else {
         codeError = err instanceof Error ? err.message : String(err);
       }
@@ -199,6 +204,7 @@
         </span>
         <CodeInput
           bind:value={code}
+          oncomplete={() => void onVerifyClick()}
           disabled={verifying}
           invalid={!!codeError}
           ariaLabel={t('settings.identityVerify.codeLabel')}

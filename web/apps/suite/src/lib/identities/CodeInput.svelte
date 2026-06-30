@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Six-box single-digit verification-code input (re #21).
+   * Six-box single-digit verification-code input (re #21, re #93).
    *
    * Renders six distinct single-digit boxes instead of one wide text
    * field. Behaviour:
@@ -13,6 +13,12 @@
    *     (capped at six) and focuses the next empty box.
    *   - autofocus: when true, the first box receives focus on mount so
    *     the user can type immediately without clicking.
+   *   - oncomplete: called with the assembled 6-digit code when the
+   *     sixth digit is entered or a full 6-digit code is pasted;
+   *     covers both digit-at-a-time entry and paste-and-complete.
+   *   - reset path: when `value` is cleared to `''` from the outside
+   *     (e.g. after a wrong-code error), the first box is focused so
+   *     the user can retype without touching the mouse.
    *
    * The assembled value is exposed via the bindable `value` prop. The
    * parent keeps its existing validation / submit semantics: `value`
@@ -34,6 +40,13 @@
     testid?: string;
     /** When true, the first digit box receives focus after mount. */
     autofocus?: boolean;
+    /**
+     * Called with the assembled code when all six digits are present.
+     * Covers both one-at-a-time digit entry and paste-and-complete.
+     * The parent can wire this directly to its verify handler to
+     * auto-submit without an explicit button click (re #93).
+     */
+    oncomplete?: (code: string) => void;
   }
 
   let {
@@ -43,6 +56,7 @@
     ariaLabel,
     testid = 'code-input',
     autofocus = false,
+    oncomplete,
   }: Props = $props();
 
   const SIZE = 6;
@@ -53,6 +67,20 @@
     if (autofocus) {
       inputs[0]?.focus();
     }
+  });
+
+  // Reset path (re #93): when value is cleared to '' from the outside
+  // (e.g. parent clears code after a wrong-code 400 response), focus
+  // the first box so the user can retype without touching the mouse.
+  // Uses a plain variable (not $state) so only `value` is tracked as
+  // a reactive dependency; no loop risk from the write inside the effect.
+  let prevValueLen = 0;
+  $effect(() => {
+    const v = value; // tracked dep
+    if (v === '' && prevValueLen > 0) {
+      focusBox(0);
+    }
+    prevValueLen = v.length;
   });
 
   /** Per-box digit derived from the assembled value. */
@@ -86,6 +114,8 @@
     parts[i] = d;
     el.value = d;
     assemble(parts);
+    // Fire oncomplete when the sixth digit completes the code (re #93).
+    if (value.length === SIZE) oncomplete?.(value);
     if (d !== '' && i < SIZE - 1) focusBox(i + 1);
   }
 
@@ -131,6 +161,8 @@
     // Fill from the start (a pasted code always replaces the whole value).
     for (let k = 0; k < pasted.length; k++) parts[k] = pasted[k]!;
     assemble(parts);
+    // Fire oncomplete when a full six-digit code is pasted (re #93).
+    if (value.length === SIZE) oncomplete?.(value);
     // Focus the box after the last filled digit, or the last box.
     focusBox(Math.min(pasted.length, SIZE - 1));
   }
