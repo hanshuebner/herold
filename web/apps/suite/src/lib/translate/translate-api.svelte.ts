@@ -11,6 +11,8 @@
  * automatically when the value changes.
  */
 
+import { post, ApiError } from '../api/client';
+
 /** Per-session availability flag. Set to false on 501; persists until page reload. */
 let _available = $state(true);
 
@@ -52,49 +54,44 @@ export interface TranslateFailure {
 }
 
 /**
- * POST /api/v1/translate (same-origin).
+ * POST /api/v1/translate (same-origin) via the shared REST client.
+ *
+ * Uses client.post() so the herold_public_csrf cookie is automatically read
+ * and sent as X-CSRF-Token — required for all cookie-authenticated POST
+ * requests (REQ-AUTH-CSRF, re #84).
  *
  * On 501: marks the feature as permanently unavailable for this session and
  * returns { ok: false, kind: 'unavailable' }.
  * On 413: returns { ok: false, kind: 'tooLong' }.
  * On 502: returns { ok: false, kind: 'upstreamError' }.
  * On 400: returns { ok: false, kind: 'badRequest' }.
- * On network failure: returns { ok: false, kind: 'networkError' }.
+ * On network failure or other error: returns { ok: false, kind: 'networkError' }.
  */
 export async function callTranslateApi(
   req: TranslateRequest,
 ): Promise<TranslateResult | TranslateFailure> {
   try {
-    const res = await fetch('/api/v1/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    });
-
-    if (res.status === 501) {
-      _available = false;
-      return { ok: false, kind: 'unavailable' };
-    }
-
-    if (res.status === 413) {
-      return { ok: false, kind: 'tooLong' };
-    }
-
-    if (res.status === 502) {
-      return { ok: false, kind: 'upstreamError' };
-    }
-
-    if (res.status === 400) {
-      return { ok: false, kind: 'badRequest' };
-    }
-
-    if (!res.ok) {
-      return { ok: false, kind: 'networkError', message: `HTTP ${res.status}` };
-    }
-
-    const data = (await res.json()) as TranslateResponse;
+    const data = await post<TranslateResponse>('/api/v1/translate', req);
     return { ok: true, data };
   } catch (err) {
+    if (err instanceof ApiError) {
+      switch (err.status) {
+        case 501:
+          _available = false;
+          return { ok: false, kind: 'unavailable' };
+        case 413:
+          return { ok: false, kind: 'tooLong' };
+        case 502:
+          return { ok: false, kind: 'upstreamError' };
+        case 400:
+          return { ok: false, kind: 'badRequest' };
+        default:
+          return { ok: false, kind: 'networkError', message: `HTTP ${err.status}` };
+      }
+    }
+    // UnauthenticatedError (401) and ForbiddenError (403) from client.post()
+    // fire their own global callbacks (_onUnauthenticated) before throwing.
+    // Surface them as networkError so TranslateBar shows its generic error UI.
     return { ok: false, kind: 'networkError', message: String(err) };
   }
 }
