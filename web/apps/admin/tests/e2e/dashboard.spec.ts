@@ -5,10 +5,18 @@
  *   - Three cards (Queue, Recent activity, Domains) render with primary stats
  *   - "View all" links are present for each card
  *   - Partial failure: one card shows inline error while others render
+ *   - Client logs card: Ring buffer column values stay inside the card boundary
  */
 
 import { test, expect } from '@playwright/test';
 import { installAdminSession } from './fixtures/auth';
+
+/** Seed data for the Client logs card. */
+const CLIENTLOG_STATS = {
+  received_total: { 'auth/suite/vital': 14, 'public/admin/vital': 3 },
+  dropped_total: {},
+  ring_buffer_rows: { 'auth/suite/vital': 7, 'public/admin/vital': 1 },
+};
 
 test.describe('dashboard', () => {
   test('renders queue, activity, and domains cards with stats and view-all links', async ({ page }) => {
@@ -119,5 +127,60 @@ test.describe('dashboard', () => {
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
     await page.getByRole('button', { name: 'View all' }).first().click();
     await expect(page.getByRole('heading', { name: 'Queue' })).toBeVisible();
+  });
+
+  test('client logs card: Ring buffer column values stay inside card boundary', async ({ page }) => {
+    installAdminSession(page);
+
+    await page.route('/api/v1/queue/stats', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ queued: 0 }) }),
+    );
+    await page.route('/api/v1/audit*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
+    );
+    await page.route('/api/v1/domains*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
+    );
+    await page.route('/api/v1/admin/clientlog/stats', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(CLIENTLOG_STATS),
+      }),
+    );
+
+    await page.goto('/admin/');
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+
+    // Wait for the Client logs card and its two sub-columns to appear.
+    const clientlogsCard = page
+      .locator('.card')
+      .filter({ has: page.getByRole('heading', { name: 'Client logs' }) });
+    await expect(clientlogsCard).toBeVisible();
+    await expect(clientlogsCard.getByText('Ring buffer')).toBeVisible();
+
+    // Save a screenshot so the maintainer can visually inspect the layout.
+    await page.screenshot({ path: '/tmp/herold-clientlog-card.png' });
+
+    // The right edge of every Ring buffer stat value must not exceed the
+    // right edge of the card container (i.e. no horizontal overflow).
+    const cardBox = await clientlogsCard.boundingBox();
+    expect(cardBox).toBeTruthy();
+    const cardRight = cardBox!.x + cardBox!.width;
+
+    const ringBufferCol = clientlogsCard.locator('.stat-col').last();
+    const ringBufferValues = ringBufferCol.locator('.stat-val');
+    const count = await ringBufferValues.count();
+    expect(count).toBeGreaterThan(0);
+
+    for (let i = 0; i < count; i++) {
+      const valBox = await ringBufferValues.nth(i).boundingBox();
+      expect(valBox).toBeTruthy();
+      const valRight = valBox!.x + valBox!.width;
+      expect(
+        valRight,
+        `Ring buffer stat value [${i}] right edge (${valRight}px) must not exceed card right edge (${cardRight}px)`,
+      ).toBeLessThanOrEqual(cardRight);
+    }
   });
 });

@@ -379,12 +379,33 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--spacing-04);
+    /* Prevent the grid from expanding its flex-item minimum width beyond the
+       card content box. Without min-width: 0 the browser uses auto, which
+       computes to the sum of both columns' min-content widths and lets the
+       second column overflow the card's right padding edge. */
+    min-width: 0;
   }
 
   .stat-col {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-02);
+    /* min-width: 0 ensures the grid cell respects its track size rather than
+       expanding to its content's intrinsic minimum width. overflow: hidden
+       clips any content (long key text) that would otherwise escape the cell
+       and push siblings outside the card boundary. */
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* Within the two-column layout, stat-key labels can be wider than the
+     narrow column track. Truncate with ellipsis so the stat-val on the
+     right stays visible and inside the column. */
+  .stat-col .stat-key {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   .stat-col-title {
