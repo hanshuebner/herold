@@ -353,11 +353,6 @@
     <h3 id="wizard-title" class="dialog-title">
       {t('settings.identityWizard.title')}
     </h3>
-    {#if step > 1}
-      <span class="step-indicator" data-testid="identity-wizard-step-indicator">
-        {step}/{showStep3 ? 3 : 2}
-      </span>
-    {/if}
     <button
       type="button"
       class="close"
@@ -696,14 +691,6 @@
     line-height: var(--type-heading-compact-02-line);
     font-weight: var(--type-heading-compact-02-weight);
     color: var(--text-primary);
-  }
-
-  .step-indicator {
-    color: var(--text-helper);
-    font-size: var(--type-body-compact-01-size);
-    background: var(--layer-01);
-    border-radius: var(--radius-pill);
-    padding: 2px var(--spacing-03);
   }
 
   .close {

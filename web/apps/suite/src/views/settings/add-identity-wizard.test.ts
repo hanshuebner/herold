@@ -266,6 +266,36 @@ describe('AddIdentityWizard', () => {
     ).toBeNull();
   });
 
+  it('never renders a step-progress indicator on any step (re #94)', async () => {
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    // Step 1: no indicator.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-step-indicator"]'),
+    ).toBeNull();
+
+    // Advance to Step 2.
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    // Step 2: still no indicator.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-step-indicator"]'),
+    ).toBeNull();
+  });
+
   it('advances to Step 2 on successful create (hosted domain)', async () => {
     const { container } = render(AddIdentityWizard, {
       props: { hostedDomains: HOSTED, onclose: vi.fn() },
