@@ -15,19 +15,19 @@ jobs:
   unlabel:
     # Only issues carry this label; issue_comment also fires for PRs, which
     # have a `pull_request` member on the issue payload.
-    if: ${{ !github.event.issue.pull_request }}
+    if: ${{ !gitea.event.issue.pull_request }}
     runs-on: [self-hosted, netzhansa, amd64]
     permissions:
       issues: write
     steps:
       - name: remove waiting-for-feedback if reply post-dates the label
         env:
-          TOKEN: ${{ github.token }}
-          NUM: ${{ github.event.issue.number }}
-          COMMENT_AT: ${{ github.event.comment.created_at }}
+          TOKEN: ${{ gitea.token }}
+          NUM: ${{ gitea.event.issue.number }}
+          COMMENT_AT: ${{ gitea.event.comment.created_at }}
         run: |
           set -euo pipefail
-          API="${GITHUB_SERVER_URL}/api/v1"
+          API="${GITEA_SERVER_URL}/api/v1"
           REPO="herold/herold"
           LABEL="waiting-for-feedback"
           GRACE=120   # seconds a comment must trail the label-add to count as a reply

@@ -31,9 +31,9 @@ jobs:
       - id: gate
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ gitea.event_name }}" = "workflow_dispatch" ]; then
             echo "manual dispatch -- running nightly"
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "should_run=true" >> "$GITEA_OUTPUT"
             exit 0
           fi
           last=$(git log -1 --format=%ct)
@@ -43,10 +43,10 @@ jobs:
           # just after last night's run is never falsely skipped.
           if [ "${age}" -gt 90000 ]; then
             echo "HEAD is ${age}s old (no commits in the last ~24h) -- skipping nightly"
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "should_run=false" >> "$GITEA_OUTPUT"
           else
             echo "HEAD is ${age}s old -- running nightly"
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "should_run=true" >> "$GITEA_OUTPUT"
           fi
 
   fuzz-long:
