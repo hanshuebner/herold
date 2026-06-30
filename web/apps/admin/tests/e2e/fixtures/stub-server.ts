@@ -194,7 +194,34 @@ export class StubServer {
     });
   }
 
-  /** Install GET /api/v1/server/status (used by auth.bootstrap()). */
+  /**
+   * Install GET /api/v1/auth/me (the first bootstrap probe since commit
+   * 2607cb46). Returns admin role with an active elevation when authenticated
+   * is true and activeElevation is true; 401 otherwise.
+   */
+  installAuthMeEndpoint(authenticated = true, activeElevation = true): void {
+    this.on('GET', '/api/v1/auth/me', (_req, res) => {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not authenticated' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          principal_id: '1',
+          email: 'admin@example.com',
+          scopes: ['admin'],
+          roles: ['admin'],
+          elevation_expires_at: activeElevation
+            ? new Date(Date.now() + 3_600_000).toISOString()
+            : null,
+        }),
+      );
+    });
+  }
+
+  /** Install GET /api/v1/server/status (fetched by bootstrap after elevation is confirmed). */
   installStatusEndpoint(authenticated = true): void {
     this.on('GET', '/api/v1/server/status', (_req, res) => {
       if (!authenticated) {

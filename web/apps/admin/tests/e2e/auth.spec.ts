@@ -2,13 +2,26 @@
  * auth.spec.ts
  *
  * Covers:
- *   - Login happy path (correct credentials -> dashboard redirect)
+ *   - Login page renders email and password fields (session absent)
  *   - Wrong credentials show error inline
  *   - TOTP step-up: password triggers TOTP field on second submit
  *   - Logout clears session and routes to /login
+ *   - Happy-path login: correct credentials -> dashboard redirect
+ *
+ * All tests mock GET /api/v1/auth/me because that is now the first call in
+ * bootstrap(). Tests that exercise the unauthenticated state return 401 from
+ * auth/me; the logout and happy-path tests return an admin principal with an
+ * active elevation so bootstrap reaches status='ready'.
+ *
+ * The happy-path login test uses page.route() with { times: 1 } to return 401
+ * on the initial bootstrap (so the login form is displayed) and then 200 with
+ * admin + elevation on the post-login bootstrap (so the dashboard renders).
+ * Routes registered later take priority (LIFO), so the single-use 401 handler
+ * is registered after the permanent 200 handler.
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession, ADMIN_PRINCIPAL_ID, ADMIN_EMAIL } from './fixtures/auth';
 
 async function loginWith(
   page: import('@playwright/test').Page,
@@ -22,8 +35,8 @@ async function loginWith(
 
 test.describe('auth', () => {
   test('login page renders email and password fields', async ({ page }) => {
-    // Bootstrap returns 401 so we stay on login.
-    await page.route('/api/v1/server/status', (route) =>
+    // Bootstrap probes auth/me first; 401 -> unauthenticated -> login form.
+    await page.route('/api/v1/auth/me', (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'not authenticated' }) }),
     );
     await page.goto('/admin/');
@@ -34,7 +47,7 @@ test.describe('auth', () => {
   });
 
   test('wrong credentials shows inline error', async ({ page }) => {
-    await page.route('/api/v1/server/status', (route) =>
+    await page.route('/api/v1/auth/me', (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'not authenticated' }) }),
     );
     await page.route('/api/v1/auth/login', (route) =>
@@ -52,7 +65,7 @@ test.describe('auth', () => {
   });
 
   test('TOTP step-up shows authenticator code field', async ({ page }) => {
-    await page.route('/api/v1/server/status', (route) =>
+    await page.route('/api/v1/auth/me', (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'not authenticated' }) }),
     );
     await page.route('/api/v1/auth/login', (route) =>
@@ -68,31 +81,68 @@ test.describe('auth', () => {
   });
 
   test('happy path login navigates to dashboard', async ({ page }) => {
-    // First bootstrap returns 401 so SPA shows login form.
-    await page.route('/api/v1/server/status', (route) =>
-      route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'not authenticated' }) }),
+    // Register the permanent 200 handler first (lower priority due to LIFO).
+    // After the single-use 401 fires and is removed, this handler takes over
+    // for the post-login bootstrap call to auth/me.
+    void page.route('/api/v1/auth/me', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          principal_id: ADMIN_PRINCIPAL_ID,
+          email: ADMIN_EMAIL,
+          scopes: ['admin'],
+          roles: ['admin'],
+          elevation_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      }),
+    );
+    // Register the single-use 401 handler last (higher priority). It fires for
+    // the initial bootstrap on page load and is then removed.
+    void page.route(
+      '/api/v1/auth/me',
+      (route) =>
+        route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'not authenticated' }),
+        }),
+      { times: 1 },
     );
 
-    await page.route('/api/v1/auth/login', (route) =>
+    // After the post-login bootstrap confirms elevation, it calls server/status.
+    void page.route('/api/v1/server/status', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ principal_id: ADMIN_PRINCIPAL_ID, email: ADMIN_EMAIL, scopes: ['admin'] }),
+      }),
+    );
+
+    void page.route('/api/v1/auth/login', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
         headers: {
           'Set-Cookie': 'herold_admin_csrf=test-csrf-token; Path=/',
         },
-        body: JSON.stringify({ principal_id: '1', scopes: ['admin'] }),
+        body: JSON.stringify({
+          principal_id: ADMIN_PRINCIPAL_ID,
+          scopes: ['admin'],
+          roles: ['admin'],
+          elevation_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
       }),
     );
 
-    // After login succeeds the SPA calls router.replace('/dashboard') and
-    // DashboardView mounts, which fires its data fetches.
-    await page.route('/api/v1/queue/stats', (route) =>
+    // DashboardView fetches these on mount.
+    void page.route('/api/v1/queue/stats', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ queued: 3, deferred: 1 }) }),
     );
-    await page.route('/api/v1/audit*', (route) =>
+    void page.route('/api/v1/audit*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
     );
-    await page.route('/api/v1/domains*', (route) =>
+    void page.route('/api/v1/domains*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
     );
 
@@ -104,20 +154,16 @@ test.describe('auth', () => {
   });
 
   test('logout posts to /api/v1/auth/logout and routes to /login', async ({ page }) => {
-    await page.route('/api/v1/server/status', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-      }),
-    );
-    await page.route('/api/v1/queue/stats', (route) =>
+    // Start authenticated so the dashboard is rendered immediately.
+    installAdminSession(page);
+
+    void page.route('/api/v1/queue/stats', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ queued: 0 }) }),
     );
-    await page.route('/api/v1/audit*', (route) =>
+    void page.route('/api/v1/audit*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
     );
-    await page.route('/api/v1/domains*', (route) =>
+    void page.route('/api/v1/domains*', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
     );
 

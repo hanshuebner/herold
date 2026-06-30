@@ -12,6 +12,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 const NOW = '2024-06-01T12:00:00Z';
 
@@ -21,19 +22,9 @@ const PRINCIPALS = [
   { id: '3', email: 'bob@example.com', display_name: 'Bob', flags: 4, created_at: NOW },
 ];
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
-
 test.describe('principals', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     // Use a regex so the route catches both the list (/api/v1/principals?...) and
     // all sub-paths (/api/v1/principals/:id, /api/v1/principals/:id/api-keys, etc.).
     // Playwright glob '*' does not cross '/' so a regex is required here.

@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 const NOW = '2024-06-01T00:00:00Z';
 
@@ -28,19 +29,9 @@ const ALIASES = [
 
 const ALIASES_RESP = { items: ALIASES, next: null };
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
-
 test.describe('domains', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
   });
 
   test('domain list renders all domains', async ({ page }) => {
@@ -169,7 +160,7 @@ test.describe('domains', () => {
 
     // Set CSRF cookie.
     await page.context().addCookies([
-      { name: 'herold_admin_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
+      { name: 'herold_public_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
     ]);
 
     await page.goto('/admin/');
@@ -211,7 +202,7 @@ test.describe('domains', () => {
     });
 
     await page.context().addCookies([
-      { name: 'herold_admin_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
+      { name: 'herold_public_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
     ]);
 
     await page.goto('/admin/');

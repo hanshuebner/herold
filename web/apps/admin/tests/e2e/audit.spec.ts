@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 const AUDIT_PAGE1 = Array.from({ length: 10 }, (_, i) => ({
   id: `a${i}`,
@@ -33,19 +34,9 @@ const AUDIT_PAGE2 = Array.from({ length: 5 }, (_, i) => ({
   message: null,
 }));
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
-
 test.describe('audit', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
   });
 
   test('audit list renders entries with all columns', async ({ page }) => {

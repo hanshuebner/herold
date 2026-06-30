@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 // ---------------------------------------------------------------------------
 // Fixture bundle
@@ -57,19 +58,7 @@ const FIXTURE_BUNDLE = {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Install auth routes so the SPA considers the session authenticated and
- * routes to /dashboard on startup.
- */
-function installAuthRoutes(page: import('@playwright/test').Page): void {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
+// installAdminSession is imported from ./fixtures/auth and used directly.
 
 /**
  * Install the dashboard data routes expected by DashboardView on mount.
@@ -105,7 +94,7 @@ function installBundleRoute(page: import('@playwright/test').Page): void {
 
 test.describe('help', () => {
   test('clicking Help nav item shows the manual chapter list', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
     installBundleRoute(page);
 
@@ -122,7 +111,7 @@ test.describe('help', () => {
   });
 
   test('deep-link to #/help/install renders the installation chapter heading', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
     installBundleRoute(page);
 
@@ -134,7 +123,7 @@ test.describe('help', () => {
   });
 
   test('TOC navigation switches chapters', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
     installBundleRoute(page);
 
@@ -151,7 +140,7 @@ test.describe('help', () => {
   });
 
   test('shows error message when bundle fails to load', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
 
     // Bundle endpoint returns 404.
@@ -171,7 +160,7 @@ test.describe('help', () => {
   });
 
   test('keyboard shortcut g h navigates to /help from any view', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
     installBundleRoute(page);
 
@@ -188,7 +177,7 @@ test.describe('help', () => {
   });
 
   test('help route remains accessible when navigating away and back', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     installDashboardRoutes(page);
     installBundleRoute(page);
 

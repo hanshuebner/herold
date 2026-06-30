@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 const ITEMS = [
   {
@@ -58,19 +59,9 @@ const MORE_ITEMS = [
   },
 ];
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
-
 test.describe('research', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
   });
 
   test('research page renders queue items in a searchable table', async ({ page }) => {

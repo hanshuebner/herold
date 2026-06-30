@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 const NOW = new Date(Date.now() + 5 * 60_000).toISOString(); // 5 min from now
 
@@ -51,21 +52,11 @@ const QUEUE_ITEMS = [
 
 const QUEUE_RESP = { items: QUEUE_ITEMS, next: null };
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
-
 test.describe('queue', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     await page.context().addCookies([
-      { name: 'herold_admin_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
+      { name: 'herold_public_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
     ]);
   });
 

@@ -20,6 +20,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { installAdminSession } from './fixtures/auth';
 
 // ---------------------------------------------------------------------------
 // Fixture data
@@ -135,19 +136,7 @@ const STATS = {
 // Auth stub helper
 // ---------------------------------------------------------------------------
 
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        principal_id: '1',
-        email: 'admin@example.com',
-        scopes: ['admin'],
-      }),
-    }),
-  );
-}
+// installAdminSession is imported from ./fixtures/auth and used in beforeEach.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -155,7 +144,7 @@ function installAuthRoutes(page: import('@playwright/test').Page) {
 
 test.describe('clientlog viewer', () => {
   test.beforeEach(async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
 
     // Stub the stats endpoint (loaded by DashboardView; suppress 404 noise).
     void page.route('/api/v1/admin/clientlog/stats', (route) =>

@@ -8,20 +8,11 @@
  */
 
 import { test, expect } from '@playwright/test';
-
-function installAuthRoutes(page: import('@playwright/test').Page) {
-  void page.route('/api/v1/server/status', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ principal_id: '1', email: 'admin@example.com', scopes: ['admin'] }),
-    }),
-  );
-}
+import { installAdminSession } from './fixtures/auth';
 
 test.describe('dashboard', () => {
   test('renders queue, activity, and domains cards with stats and view-all links', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
 
     await page.route('/api/v1/queue/stats', (route) =>
       route.fulfill({
@@ -84,7 +75,7 @@ test.describe('dashboard', () => {
   });
 
   test('queue card shows inline error when stats endpoint fails', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
 
     await page.route('/api/v1/queue/stats', (route) =>
       route.fulfill({
@@ -110,7 +101,7 @@ test.describe('dashboard', () => {
   });
 
   test('clicking queue View all navigates to /queue', async ({ page }) => {
-    installAuthRoutes(page);
+    installAdminSession(page);
     await page.route('/api/v1/queue/stats', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ queued: 0 }) }),
     );
