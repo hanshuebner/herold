@@ -1,15 +1,20 @@
 /**
  * Locale-aware formatting helpers for the admin SPA.
  *
- * All formatters resolve locale and time zone from the browser's configured
- * environment via the Intl APIs (no hardcoded locale string or time zone
- * identifier). Passing undefined as the locale argument tells Intl to use
- * the browser's default locale.
+ * All formatters use ADMIN_LOCALE for locale-sensitive output. Time zone is
+ * always browser-resolved (no timeZone key in any format options object).
  */
 
 /**
- * Format an ISO 8601 timestamp as a relative time string using the browser's
- * locale (e.g. "3 minutes ago", "in 2 hours", "yesterday").
+ * The locale used by all admin SPA formatters. German (de-DE) is the default
+ * because the operator audience is German-speaking. Centralised here so the
+ * default can be changed in one place.
+ */
+export const ADMIN_LOCALE = 'de-DE';
+
+/**
+ * Format an ISO 8601 timestamp as a relative time string using the admin
+ * locale (e.g. "vor 3 Minuten", "in 2 Stunden", "gestern").
  *
  * Returns an empty string for null/undefined input. Returns the raw value if
  * parsing fails.
@@ -22,7 +27,7 @@ export function formatRelative(iso: string | null | undefined): string {
   const diffMs = d.getTime() - Date.now();
   const absMs = Math.abs(diffMs);
 
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const rtf = new Intl.RelativeTimeFormat(ADMIN_LOCALE, { numeric: 'auto' });
 
   if (absMs < 60_000) {
     return rtf.format(Math.round(diffMs / 1000), 'second');
@@ -73,7 +78,7 @@ export const DATE_ONLY: Intl.DateTimeFormatOptions = {
 
 /**
  * Format an ISO 8601 timestamp as an absolute date/time string using the
- * browser's locale and time zone.
+ * admin locale and the browser's time zone.
  *
  * @param iso    ISO 8601 string, or null/undefined.
  * @param opts   Intl.DateTimeFormatOptions. Defaults to DATE_TIME_WITH_SECONDS.
@@ -88,12 +93,12 @@ export function formatAbsolute(
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, opts);
+  return d.toLocaleString(ADMIN_LOCALE, opts);
 }
 
 /**
- * Format an ISO 8601 timestamp as a date-only string using the browser's
- * locale and time zone (e.g. "Jun 28, 2026").
+ * Format an ISO 8601 timestamp as a date-only string using the admin locale
+ * and the browser's time zone (e.g. "28.06.2026").
  *
  * Returns an empty string for null/undefined input. Returns the raw value if
  * parsing fails.
@@ -102,5 +107,5 @@ export function formatDateOnly(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, DATE_ONLY);
+  return d.toLocaleDateString(ADMIN_LOCALE, DATE_ONLY);
 }

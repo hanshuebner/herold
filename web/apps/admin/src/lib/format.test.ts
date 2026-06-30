@@ -2,13 +2,12 @@
  * Tests for the locale-aware formatting helpers in format.ts.
  *
  * These tests run in a happy-dom environment where Intl is provided by Node's
- * built-in ICU data. The locale is fixed to en-US by setting the TZ and
- * process.env.LANG equivalents via vi.stubEnv / vi.setSystemTime so results
- * are deterministic across CI environments.
+ * built-in ICU data. Because all formatters use ADMIN_LOCALE ('de-DE'), the
+ * output is deterministic regardless of the CI environment's system locale.
  *
  * Relative-time assertions use pattern matching rather than exact strings
  * because Intl.RelativeTimeFormat output can vary by ICU version (e.g.
- * "3 minutes ago" vs "3 min. ago"). We verify structural correctness:
+ * "vor 3 Minuten" vs "vor 3 Min."). We verify structural correctness:
  * the number appears and the output is non-empty.
  */
 
@@ -19,6 +18,7 @@ import {
   formatDateOnly,
   DATE_TIME_SHORT,
   DATE_TIME_WITH_SECONDS,
+  ADMIN_LOCALE,
 } from './format';
 
 // Pin time so relative-time calculations are deterministic.
@@ -80,10 +80,13 @@ describe('formatRelative', () => {
   it('returns a non-empty string for a past timestamp in days', () => {
     vi.useFakeTimers();
     vi.setSystemTime(FIXED_NOW);
-    const twoDaysAgo = new Date(FIXED_NOW - 2 * 86_400_000).toISOString();
-    const result = formatRelative(twoDaysAgo);
+    // Use 5 days so de-DE produces "vor 5 Tagen" rather than collapsing to
+    // the special word "vorgestern" (which numeric:'auto' emits for exactly 2
+    // days in German).
+    const fiveDaysAgo = new Date(FIXED_NOW - 5 * 86_400_000).toISOString();
+    const result = formatRelative(fiveDaysAgo);
     expect(result.length).toBeGreaterThan(0);
-    expect(result).toMatch(/2/);
+    expect(result).toMatch(/5/);
   });
 
   it('returns a non-empty string for a future timestamp', () => {
@@ -107,8 +110,21 @@ describe('formatRelative', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ADMIN_LOCALE
+// ---------------------------------------------------------------------------
+
+describe('ADMIN_LOCALE', () => {
+  it('is de-DE', () => {
+    expect(ADMIN_LOCALE).toBe('de-DE');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatAbsolute
 // ---------------------------------------------------------------------------
+
+// Use a noon-UTC timestamp so the calendar date is stable in any time zone.
+const ISO_NOON_UTC = '2026-06-28T12:00:00.000Z';
 
 describe('formatAbsolute', () => {
   it('returns empty string for null', () => {
@@ -124,23 +140,35 @@ describe('formatAbsolute', () => {
   });
 
   it('returns a non-empty string for a valid ISO timestamp', () => {
-    const result = formatAbsolute('2026-06-28T12:00:00.000Z');
+    const result = formatAbsolute(ISO_NOON_UTC);
     expect(result.length).toBeGreaterThan(0);
   });
 
   it('includes the year in the default output', () => {
-    const result = formatAbsolute('2026-06-28T12:00:00.000Z');
+    const result = formatAbsolute(ISO_NOON_UTC);
     expect(result).toContain('2026');
   });
 
+  it('uses de-DE locale: German month name for June (Juni)', () => {
+    // In de-DE with month: 'short', Intl uses the full German month name.
+    // en-US would produce "Jun 28, 2026" — de-DE produces "28. Juni 2026".
+    const result = formatAbsolute(ISO_NOON_UTC, DATE_TIME_SHORT);
+    expect(result).toContain('Juni');
+  });
+
+  it('uses de-DE locale: no AM/PM marker (24-hour clock)', () => {
+    const result = formatAbsolute(ISO_NOON_UTC, DATE_TIME_WITH_SECONDS);
+    expect(result).not.toMatch(/AM|PM/i);
+  });
+
   it('accepts custom format options (DATE_TIME_SHORT)', () => {
-    const result = formatAbsolute('2026-06-28T12:00:00.000Z', DATE_TIME_SHORT);
+    const result = formatAbsolute(ISO_NOON_UTC, DATE_TIME_SHORT);
     expect(result.length).toBeGreaterThan(0);
     expect(result).toContain('2026');
   });
 
   it('accepts custom format options (DATE_TIME_WITH_SECONDS)', () => {
-    const result = formatAbsolute('2026-06-28T12:00:00.000Z', DATE_TIME_WITH_SECONDS);
+    const result = formatAbsolute(ISO_NOON_UTC, DATE_TIME_WITH_SECONDS);
     expect(result.length).toBeGreaterThan(0);
     expect(result).toContain('2026');
   });
@@ -164,12 +192,35 @@ describe('formatDateOnly', () => {
   });
 
   it('returns a non-empty string for a valid ISO date', () => {
-    const result = formatDateOnly('2026-06-28T00:00:00.000Z');
+    const result = formatDateOnly(ISO_NOON_UTC);
     expect(result.length).toBeGreaterThan(0);
   });
 
   it('includes the year in the output', () => {
-    const result = formatDateOnly('2026-06-28T00:00:00.000Z');
+    const result = formatDateOnly(ISO_NOON_UTC);
     expect(result).toContain('2026');
+  });
+
+  it('uses de-DE locale: German month name for June (Juni)', () => {
+    // en-US with month: 'short' produces "Jun 28, 2026" — de-DE produces
+    // "28. Juni 2026".
+    const result = formatDateOnly(ISO_NOON_UTC);
+    expect(result).toContain('Juni');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatRelative — de-DE locale check
+// ---------------------------------------------------------------------------
+
+describe('formatRelative de-DE locale', () => {
+  it('uses German words for past events (vor)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    const fiveMinutesAgo = new Date(FIXED_NOW - 5 * 60_000).toISOString();
+    const result = formatRelative(fiveMinutesAgo);
+    // de-DE Intl.RelativeTimeFormat produces "vor N Minuten"; en-US produces
+    // "N minutes ago". Assert the German prefix.
+    expect(result).toContain('vor');
   });
 });
