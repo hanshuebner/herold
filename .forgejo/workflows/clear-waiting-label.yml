@@ -1,7 +1,12 @@
 name: clear waiting-for-feedback on comment
 
-# Drop the `waiting-for-feedback` label from an issue as soon as a new comment
-# arrives, so the label always reflects an outstanding question.
+# Drop the `waiting-for-feedback` label from an issue when a reply arrives that
+# post-dates the label, so the label always reflects an outstanding question.
+#
+# The label is added together with an accompanying comment (the feedback
+# request). That comment must not clear the label it was posted alongside, so a
+# comment is only treated as a reply once it is more than GRACE seconds newer
+# than the moment the label was last added.
 on:
   issue_comment:
     types: [created]
@@ -13,27 +18,58 @@ jobs:
     if: ${{ !github.event.issue.pull_request }}
     runs-on: [self-hosted, netzhansa, amd64]
     steps:
-      - name: remove waiting-for-feedback if present
+      - name: remove waiting-for-feedback if reply post-dates the label
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          NUM: ${{ github.event.issue.number }}
+          COMMENT_AT: ${{ github.event.comment.created_at }}
         run: |
           set -euo pipefail
           API="${GITHUB_SERVER_URL}/api/v1"
           REPO="herold/herold"
           LABEL="waiting-for-feedback"
-          NUM="${{ github.event.issue.number }}"
+          GRACE=120   # seconds a comment must trail the label-add to count as a reply
           AUTH="Authorization: token ${RELEASE_TOKEN}"
 
-          # Act only when the label is actually set, so the common case (a
-          # comment on an unlabelled issue) is a no-op rather than a 404.
+          # Fast path: nothing to do unless the label is currently set.
           present=$(curl -fsS -H "${AUTH}" \
             "${API}/repos/${REPO}/issues/${NUM}/labels" \
             | jq -r --arg l "${LABEL}" 'any(.[]; .name == $l)')
-
-          if [ "${present}" = "true" ]; then
-            curl -fsS -X DELETE -H "${AUTH}" \
-              "${API}/repos/${REPO}/issues/${NUM}/labels/${LABEL}"
-            echo "cleared ${LABEL} on #${NUM}"
-          else
+          if [ "${present}" != "true" ]; then
             echo "${LABEL} not set on #${NUM}; nothing to do"
+            exit 0
           fi
+
+          # Find when the label was most recently added. Timeline label events
+          # carry body "1" for an add and ""/null for a remove; pages are
+          # chronological, so the last page with a match holds the latest add.
+          added_at=""
+          page=1
+          while :; do
+            batch=$(curl -fsS -H "${AUTH}" \
+              "${API}/repos/${REPO}/issues/${NUM}/timeline?limit=50&page=${page}")
+            n=$(echo "${batch}" | jq 'length')
+            [ "${n}" -eq 0 ] && break
+            latest=$(echo "${batch}" | jq -r --arg l "${LABEL}" '
+              map(select(.type == "label" and .label.name == $l and .body == "1"))
+              | (max_by(.created_at).created_at) // empty')
+            [ -n "${latest}" ] && added_at="${latest}"
+            [ "${n}" -lt 50 ] && break
+            page=$((page + 1))
+          done
+          if [ -z "${added_at}" ]; then
+            echo "no add event found for ${LABEL} on #${NUM}; leaving as-is"
+            exit 0
+          fi
+
+          added_epoch=$(date -d "${added_at}" +%s)
+          comment_epoch=$(date -d "${COMMENT_AT}" +%s)
+          delta=$((comment_epoch - added_epoch))
+          if [ "${delta}" -lt "${GRACE}" ]; then
+            echo "comment is ${delta}s after label-add (< ${GRACE}s grace); keeping ${LABEL} on #${NUM}"
+            exit 0
+          fi
+
+          curl -fsS -X DELETE -H "${AUTH}" \
+            "${API}/repos/${REPO}/issues/${NUM}/labels/${LABEL}"
+          echo "cleared ${LABEL} on #${NUM} (reply ${delta}s after add)"
