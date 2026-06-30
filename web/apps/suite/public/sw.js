@@ -1,6 +1,8 @@
 /**
  * Herold suite service worker — REQ-PUSH-70..73, REQ-MOB-74.
  *
+ * Build: __SW_BUILD__
+ *
  * Responsibilities:
  *   - Receive Web Push notifications and display them via the Notifications API.
  *   - Handle notificationclick: dispatch action buttons or open the app.

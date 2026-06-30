@@ -97,6 +97,18 @@ cp -R "${SUITE_SRC}/." "${SUITE_DST}/"
 
 echo "build-web.sh: suite SPA installed at ${SUITE_DST}/"
 
+# 4b. Stamp the service worker with the current commit SHA so the browser's
+#     byte-comparison update check detects a new worker on every deploy and
+#     fires updatefound -> "new version available" banner (REQ-PUSH-72).
+#     Without this, sw.js is identical across builds and the browser never
+#     triggers an SW update even when new app assets are available.
+_SW_FILE="${SUITE_DST}/sw.js"
+_SW_BUILD="${GITHUB_SHA:+${GITHUB_SHA:0:7}}"
+_SW_BUILD="${_SW_BUILD:-dev}"
+_SW_TMP=$(mktemp)
+sed "s/__SW_BUILD__/${_SW_BUILD}/" "${_SW_FILE}" > "${_SW_TMP}" && mv "${_SW_TMP}" "${_SW_FILE}"
+echo "build-web.sh: sw.js stamped with build ${_SW_BUILD}"
+
 # 5. Build the admin SPA. Vite emits to web/apps/admin/dist/.
 echo ">>> pnpm --filter @herold/admin build"
 pnpm --dir web --filter @herold/admin build
