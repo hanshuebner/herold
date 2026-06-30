@@ -71,11 +71,13 @@ coverage.html
 /web/packages/manual/dist-data/
 /web/packages/manual/dist-dev/
 
-# Claude Code per-project state. Track the shared subagent roster and
-# project settings; ignore personal overrides (settings.local.json) and
-# path-keyed local session/memory state under projects/.
+# Claude Code per-project state. Track the shared subagent roster, slash
+# commands, and project settings; ignore personal overrides
+# (settings.local.json) and path-keyed local session/memory state under
+# projects/.
 /.claude/*
 !/.claude/agents/
+!/.claude/commands/
 !/.claude/settings.json
 
 # Python bytecode
