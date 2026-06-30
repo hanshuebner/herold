@@ -137,4 +137,57 @@ describe('keyboard engine', () => {
     expect(ev.defaultPrevented).toBe(true);
     pop();
   });
+
+  it("fires the Space binding on plain space", () => {
+    const action = vi.fn();
+    const pop = keyboard.pushLayer([{ key: ' ', action }]);
+    press({ key: ' ' });
+    expect(action).toHaveBeenCalledOnce();
+    pop();
+  });
+
+  it("fires Shift+Space as a binding distinct from plain Space", () => {
+    const spaceAction = vi.fn();
+    const shiftSpaceAction = vi.fn();
+    const pop = keyboard.pushLayer([
+      { key: ' ', action: spaceAction },
+      { key: 'Shift+ ', action: shiftSpaceAction },
+    ]);
+    press({ key: ' ', shift: true });
+    expect(shiftSpaceAction).toHaveBeenCalledOnce();
+    expect(spaceAction).not.toHaveBeenCalled();
+    pop();
+  });
+
+  it("plain Space does not fire the Shift+Space binding", () => {
+    const shiftSpaceAction = vi.fn();
+    const pop = keyboard.pushLayer([{ key: 'Shift+ ', action: shiftSpaceAction }]);
+    press({ key: ' ' });
+    expect(shiftSpaceAction).not.toHaveBeenCalled();
+    pop();
+  });
+
+  it("Space binding is suppressed when focus is in an input", () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    const action = vi.fn();
+    const pop = keyboard.pushLayer([{ key: ' ', action }]);
+    press({ key: ' ', target: input });
+    expect(action).not.toHaveBeenCalled();
+    pop();
+    input.remove();
+  });
+
+  it("Shift+Space binding is suppressed when focus is in a textarea", () => {
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    textarea.focus();
+    const action = vi.fn();
+    const pop = keyboard.pushLayer([{ key: 'Shift+ ', action }]);
+    press({ key: ' ', shift: true, target: textarea });
+    expect(action).not.toHaveBeenCalled();
+    pop();
+    textarea.remove();
+  });
 });

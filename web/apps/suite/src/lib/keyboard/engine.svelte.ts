@@ -136,8 +136,10 @@ class Engine {
     if (e.altKey) parts.push('Alt');
     // For special keys (multi-char e.key), shift becomes an explicit modifier.
     // For single-char keys, shift is folded into the key value already
-    // ('R' vs 'r', '?' vs '/').
-    if (e.shiftKey && e.key.length > 1) parts.push('Shift');
+    // ('R' vs 'r', '?' vs '/'). Exception: Space (' ') does not change
+    // its key value when Shift is held, so we add the Shift prefix
+    // explicitly so ' ' and Shift+' ' canonicalize to distinct strings.
+    if (e.shiftKey && (e.key.length > 1 || e.key === ' ')) parts.push('Shift');
     parts.push(e.key);
     return parts.join('+');
   }

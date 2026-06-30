@@ -76,6 +76,34 @@
   }
 
   /**
+   * Pager-style scroll bindings: Space scrolls the thread down by ~one
+   * viewport height; Shift+Space scrolls back up. Suppressed automatically
+   * by the engine's focus carve-out when an input or compose surface has
+   * focus (re #89).
+   */
+  $effect(() => {
+    const pop = keyboard.pushLayer([
+      {
+        key: ' ',
+        description: 'Weiter scrollen',
+        action: () => {
+          const el = scrollContainerEl;
+          if (el) el.scrollBy({ top: el.clientHeight * 0.9, behavior: 'smooth' });
+        },
+      },
+      {
+        key: 'Shift+ ',
+        description: 'Zurück scrollen',
+        action: () => {
+          const el = scrollContainerEl;
+          if (el) el.scrollBy({ top: -(el.clientHeight * 0.9), behavior: 'smooth' });
+        },
+      },
+    ]);
+    return pop;
+  });
+
+  /**
    * While a new-reply banner is up, push an `n` shortcut that triggers
    * "Neue Antwort anzeigen" (issue #118 open questions). The binding lives
    * in a dedicated layer so it disappears the moment the banner is dismissed
