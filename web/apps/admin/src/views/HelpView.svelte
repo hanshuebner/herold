@@ -13,10 +13,10 @@
    *                              there is no double-hash and the router parses
    *                              it cleanly).
    *
-   * i18n: The admin SPA does not yet have an i18n system. The identity-fallback
-   * `t = (k) => k` is passed so the Manual component uses its built-in English
-   * strings via defaultT. This is acceptable per docs/design/web/notes/adr-0001.
-   * When i18n is added to the admin SPA, wire the real t() function here.
+   * i18n: The admin SPA does not yet have an i18n system. The `t` prop is omitted
+   * so the Manual component falls back to its built-in `defaultT` function, which
+   * returns the correct English strings for all `manual.*` keys. When i18n is
+   * added to the admin SPA, import and pass the real t() function here.
    *
    * Fallback: if admin.json fails to load (e.g. the bundle step was not run),
    * an inline error is displayed instead of crashing the SPA.
@@ -24,11 +24,6 @@
   import Manual from '@herold/manual';
   import type { ManualBundle } from '@herold/manual';
   import { router } from '../lib/router/router.svelte';
-
-  // Identity-fallback translator: passes keys straight through so the Manual
-  // component resolves them via defaultT (its built-in English strings).
-  // See i18n note in the header comment above.
-  const t = (key: string): string => key;
 
   // parts: ['help'] | ['help', slug] | ['help', slug, headingId]
   const slug = $derived(router.parts[1] ?? null);
@@ -94,7 +89,6 @@
       {slug}
       hash={activeHash}
       onNavigate={handleNavigate}
-      {t}
     />
   {/if}
 </div>

@@ -110,6 +110,22 @@ test.describe('help', () => {
     await expect(page.getByRole('button', { name: 'Operating Herold' })).toBeVisible();
   });
 
+  test('search input shows real placeholder text, not a raw i18n key', async ({ page }) => {
+    // Regression guard for the bug where HelpView passed an identity-function
+    // `t` prop to Manual, bypassing defaultT and leaking raw keys as UI text.
+    installAdminSession(page);
+    installDashboardRoutes(page);
+    installBundleRoute(page);
+
+    await page.goto('/admin/#/help');
+    await expect(page.getByRole('button', { name: 'Welcome' })).toBeVisible();
+
+    // The search input must show the real defaultT string, not the key itself.
+    const searchInput = page.getByRole('searchbox');
+    await expect(searchInput).toBeVisible();
+    await expect(searchInput).toHaveAttribute('placeholder', 'Search topics...');
+  });
+
   test('deep-link to #/help/install renders the installation chapter heading', async ({ page }) => {
     installAdminSession(page);
     installDashboardRoutes(page);
