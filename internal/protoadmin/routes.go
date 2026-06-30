@@ -172,7 +172,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// operators register one redirect URI with their OAuth provider (Google /
 	// Microsoft perform exact-match validation). The identity id travels in
 	// the opaque state token. REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03.
-	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
+	//
+	// Unauthenticated: the browser arrives here via a cross-site top-level
+	// redirect from the OAuth provider. Session cookies with SameSite=Strict
+	// are not sent on cross-site navigations, so requireAuth would reject
+	// the request before any code exchange runs (re #95). Authorization
+	// comes solely from the opaque state token (CSPRNG, 128 bits,
+	// single-use, 5-min TTL, bound to a specific IdentityID) — the same
+	// trust model used by the OIDC callback at POST /api/v1/oidc/callback.
+	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", s.handleOAuthCallback)
 
 	// Identity verification (REQ-IDENT-40..43).
 	// The code POST is self-only and CSRF-checked. The link callback
@@ -340,7 +348,10 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03).
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
 	// Fixed callback path — no identity id in URL (identity id in state token).
-	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", auth1(s.handleOAuthCallback))
+	// Unauthenticated for the same reason as the admin-listener registration
+	// in registerRoutes (re #95): SameSite=Strict cookies are absent on
+	// cross-site top-level redirects from the OAuth provider.
+	mux.HandleFunc("GET /api/v1/oauth/external-submission/callback", s.handleOAuthCallback)
 
 	// Identity verification (REQ-IDENT-40..43).
 	//

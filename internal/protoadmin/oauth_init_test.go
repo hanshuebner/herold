@@ -407,6 +407,103 @@ func TestOAuthStart_UnknownProvider(t *testing.T) {
 	}
 }
 
+// TestOAuthCallback_NoCookieSucceeds verifies that the callback endpoint
+// succeeds when called with a valid state token but NO session cookie and NO
+// Authorization header. This is the real-world case: the browser arrives at
+// the callback via a cross-site top-level redirect from Google and
+// SameSite=Strict cookies are not sent.
+//
+// Before the fix (re #95) the route was gated by requireAuth, which would
+// reject the cookieless request with 401 before any code exchange ran.
+func TestOAuthCallback_NoCookieSucceeds(t *testing.T) {
+	oh := newOAuthHarness(t)
+	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauth-nocookie@example.com")
+
+	// Start flow to get the state token. This call IS authenticated (apiKey
+	// bearer) — the start endpoint retains its auth+requireSelfOnly gate.
+	startRes, _ := oh.doRequest("POST",
+		"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail",
+		apiKey, nil)
+	if startRes.StatusCode != http.StatusFound {
+		t.Fatalf("start: expected 302, got %d", startRes.StatusCode)
+	}
+	loc := startRes.Header.Get("Location")
+	u, _ := url.Parse(loc)
+	stateTok := u.Query().Get("state")
+	if stateTok == "" {
+		t.Fatal("no state in redirect")
+	}
+
+	// Call the callback with NO authorization header and NO cookie — simulating
+	// the cross-site browser redirect from Google (SameSite=Strict means no
+	// session cookie is sent, re #95).
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=fake-code",
+		url.QueryEscape(stateTok))
+	req, err := http.NewRequest("GET", oh.baseURL+callbackPath, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	// Deliberately omit Authorization header and send no cookies.
+	res, err := oh.client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("callback without cookie: expected 204, got %d: %s", res.StatusCode, body)
+	}
+
+	// Verify the row was persisted (same as the authenticated path).
+	sub, err := oh.fs.Meta().GetIdentitySubmission(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission: %v", err)
+	}
+	if sub.SubmitAuthMethod != "oauth2" {
+		t.Errorf("SubmitAuthMethod = %q; want oauth2", sub.SubmitAuthMethod)
+	}
+	// OAuthClientID must equal the identity's email address (not the now-absent
+	// caller.CanonicalEmail, re #95).
+	if sub.OAuthClientID != "oauth-nocookie@example.com" {
+		t.Errorf("OAuthClientID = %q; want oauth-nocookie@example.com", sub.OAuthClientID)
+	}
+}
+
+// TestOAuthCallback_InvalidStateNoAuth verifies that a missing or forged state
+// token is rejected with 400 oauth_state_invalid even when the route is
+// unauthenticated. A bad actor who discovers the unauth route cannot complete
+// a flow without a valid CSPRNG state token.
+func TestOAuthCallback_InvalidStateNoAuth(t *testing.T) {
+	oh := newOAuthHarness(t)
+	oh.bootstrapAndIdentity("oauth-badstate@example.com")
+
+	// Call with a forged / unknown state token and no credential of any kind.
+	callbackPath := "/api/v1/oauth/external-submission/callback?state=forged-token-xxxxx&code=x"
+	req, err := http.NewRequest("GET", oh.baseURL+callbackPath, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	// No Authorization header, no cookie.
+	res, err := oh.client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("forged state: expected 400, got %d: %s", res.StatusCode, body)
+	}
+	var prob struct {
+		Type string `json:"type"`
+	}
+	json.Unmarshal(body, &prob)
+	if !strings.Contains(prob.Type, "oauth_state_invalid") {
+		t.Errorf("type = %q; want to contain oauth_state_invalid", prob.Type)
+	}
+}
+
 // TestOAuthStart_MissingClientSecret verifies that a provider whose
 // ClientSecret is empty returns 503 oauth_provider_not_configured.
 func TestOAuthStart_MissingClientSecret(t *testing.T) {

@@ -308,11 +308,17 @@ func exchangeCode(ctx context.Context, httpClient *http.Client, tokenURL, client
 // redirect URI is registered with OAuth providers so exact-match validation
 // works across all identities.
 //
-// Gated by requireSelfOnly: the caller must own the identity recovered from
-// the state token.
+// Intentionally unauthenticated (re #95): the browser arrives here via a
+// cross-site top-level redirect from the OAuth provider. Session cookies
+// with SameSite=Strict are not sent on such navigations, so a requireAuth
+// gate would reject every real callback before the code exchange runs.
+//
+// Authorization comes from the opaque state token alone (CSPRNG, 128 bits,
+// single-use, 5-min TTL, bound to a specific IdentityID) — the same trust
+// model used by POST /api/v1/oidc/callback. The start endpoint
+// (handleOAuthStart) retains its auth+requireSelfOnly gate, so only the
+// owning principal can ever generate a state token for a given identity.
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	caller, _ := principalFrom(r.Context())
-
 	stateTok := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 
@@ -329,7 +335,9 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Recover the identity id and verify the caller owns it.
+	// Recover the identity from the state token. Ownership is established by
+	// the fact that only handleOAuthStart (which is auth1+requireSelfOnly
+	// gated) can create a valid state token for this IdentityID.
 	identityID := entry.IdentityID
 	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
@@ -341,9 +349,6 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ownerID := identity.PrincipalID
-	if !requireSelfOnly(w, r, caller, ownerID) {
-		return
-	}
 
 	prov, ok := s.opts.OAuthProviders[entry.Provider]
 	if !ok {
@@ -396,8 +401,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		SubmitAuthMethod:   "oauth2",
 		OAuthAccessCT:      atCT,
 		OAuthTokenEndpoint: prov.TokenURL,
-		OAuthClientID:      caller.CanonicalEmail,
-		State:              store.IdentitySubmissionStateOK,
+		// Use identity.Email as the XOAUTH2 user identifier: this is the
+		// address the OAuth grant is for. The session principal is not
+		// available here (unauthenticated callback, re #95).
+		OAuthClientID: identity.Email,
+		State:         store.IdentitySubmissionStateOK,
 	}
 
 	if tr.RefreshToken != "" {
@@ -452,7 +460,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("identity:%s", identityID),
 		store.OutcomeSuccess, "",
 		map[string]string{
-			"principal_id": fmt.Sprintf("%d", caller.ID),
+			"principal_id": fmt.Sprintf("%d", ownerID),
 			"identity_id":  identityID,
 			"auth_method":  "oauth2",
 			"provider":     entry.Provider,

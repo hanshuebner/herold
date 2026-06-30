@@ -125,7 +125,7 @@ export function deleteSubmission(identityId: string): Promise<void> {
 /**
  * Start an OAuth flow for the given provider.
  *
- * POST /api/v1/identities/{id}/submission/oauth/start?provider=<provider>
+ * POST /api/v1/identities/{id}/submission/oauth/start?provider=<provider>&return_url=<url>
  *
  * The server returns the provider's authorization URL as JSON
  * (`{"auth_url":"https://..."}`) when Accept: application/json is sent.
@@ -137,6 +137,10 @@ export function deleteSubmission(identityId: string): Promise<void> {
  * A native form submit cannot carry custom headers, so the previous
  * form-submit approach could not satisfy the server's CSRF middleware.
  *
+ * The current page URL is passed as `return_url` so the server embeds it in
+ * the opaque state token and redirects back here after the callback succeeds,
+ * instead of returning a bare 204 on a blank callback page (re #95).
+ *
  * If the server returns 503 (provider not configured by the operator), the
  * Promise rejects with an ApiError (status 503); the caller surfaces an
  * inline error.
@@ -145,7 +149,8 @@ export async function startOAuth(
   identityId: string,
   provider: OAuthProvider,
 ): Promise<void> {
-  const url = `/api/v1/identities/${identityId}/submission/oauth/start?provider=${encodeURIComponent(provider)}`;
+  const returnUrl = encodeURIComponent(window.location.href);
+  const url = `/api/v1/identities/${identityId}/submission/oauth/start?provider=${encodeURIComponent(provider)}&return_url=${returnUrl}`;
   // post() from client.ts sends Accept: application/json and the
   // X-CSRF-Token header from the herold_public_csrf cookie, satisfying
   // the server's CSRF middleware for cookie-authenticated callers.
