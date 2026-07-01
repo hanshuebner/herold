@@ -243,7 +243,6 @@
     if (codeError && code !== codeAtError) codeError = null;
   });
 
-  let verifyDisabled = $derived(verifying || !isValidCode(code));
   let resendDisabled = $derived(resending || cooldown > 0);
 
   async function onVerify(): Promise<void> {
@@ -509,16 +508,6 @@
               onclick={requestCancel}
             >
               {t('settings.identityWizard.cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              type="submit"
-              disabled={verifyDisabled}
-              testid="identity-wizard-verify"
-            >
-              {verifying
-                ? t('settings.identityWizard.verifying')
-                : t('settings.identityWizard.verify')}
             </Button>
           </div>
         </form>

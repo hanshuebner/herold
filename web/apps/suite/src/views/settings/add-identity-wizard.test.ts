@@ -472,12 +472,8 @@ describe('AddIdentityWizard', () => {
         container.querySelector('[data-testid="identity-wizard-step-2"]'),
       ).not.toBeNull();
     });
+    // oncomplete fires on the sixth digit; no Verify button click needed.
     await typeWizardCode(container, '123456');
-    await fireEvent.click(
-      container.querySelector(
-        '[data-testid="identity-wizard-verify"]',
-      ) as HTMLButtonElement,
-    );
     await vi.waitFor(() => {
       expect(vi.mocked(postVerifyCode)).toHaveBeenCalledWith('new-identity', '123456');
     });

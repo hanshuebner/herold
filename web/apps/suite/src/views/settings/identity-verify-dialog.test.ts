@@ -120,22 +120,6 @@ describe('IdentityVerifyDialog', () => {
     expect(intro?.textContent).toContain('pending@example.local');
   });
 
-  it('disables the Verify button until 6 digits are entered', async () => {
-    const { container } = render(IdentityVerifyDialog, {
-      props: { identity: PENDING, onclose: vi.fn() },
-    });
-    const verifyBtn = container.querySelector(
-      '[data-testid="identity-verify-submit"]',
-    ) as HTMLButtonElement;
-    expect(verifyBtn.disabled).toBe(true);
-
-    await typeCode(container, '123');
-    expect(verifyBtn.disabled).toBe(true);
-
-    await typeCode(container, '123456');
-    expect(verifyBtn.disabled).toBe(false);
-  });
-
   it('fills every box from a pasted six-digit code', async () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose: vi.fn() },
@@ -158,11 +142,8 @@ describe('IdentityVerifyDialog', () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose },
     });
+    // oncomplete fires on the sixth digit; no Verify button click needed.
     await typeCode(container, '123456');
-    const verifyBtn = container.querySelector(
-      '[data-testid="identity-verify-submit"]',
-    ) as HTMLButtonElement;
-    await fireEvent.click(verifyBtn);
     await vi.waitFor(() => {
       expect(vi.mocked(postVerifyCode)).toHaveBeenCalledWith('3', '123456');
     });
@@ -181,11 +162,8 @@ describe('IdentityVerifyDialog', () => {
     const { container } = render(IdentityVerifyDialog, {
       props: { identity: PENDING, onclose },
     });
+    // oncomplete fires on the sixth digit; no Verify button click needed.
     await typeCode(container, '999999');
-    const verifyBtn = container.querySelector(
-      '[data-testid="identity-verify-submit"]',
-    ) as HTMLButtonElement;
-    await fireEvent.click(verifyBtn);
     await vi.waitFor(() => {
       const err = container.querySelector('[data-testid="identity-verify-code-error"]');
       expect(err?.textContent).toContain('did not match');

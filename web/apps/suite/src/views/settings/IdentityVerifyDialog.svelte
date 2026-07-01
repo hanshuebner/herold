@@ -151,7 +151,6 @@
   }
 
   let resendDisabled = $derived(resending || cooldown > 0);
-  let verifyDisabled = $derived(verifying || !isValidCode(code));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -226,16 +225,6 @@
           testid="identity-verify-cancel"
         >
           {t('settings.identityVerify.cancel')}
-        </Button>
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={verifyDisabled}
-          testid="identity-verify-submit"
-        >
-          {verifying
-            ? t('settings.identityVerify.verifying')
-            : t('settings.identityVerify.verify')}
         </Button>
       </div>
     </form>
