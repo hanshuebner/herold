@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: ci-${{ gitea.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -467,28 +467,28 @@ jobs:
       # isn't set so a fresh fork still gets a green CI on the
       # build-only path.
       - name: log in to code.netzhansa.com registry
-        if: gitea.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
+        if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         uses: docker/login-action@v3
         with:
           registry: code.netzhansa.com
-          username: ${{ gitea.actor }}
+          username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: derive image tags
         id: tags
         run: |
           # Lower-case the image owner because OCI registries reject
-          # uppercase repository segments and gitea.repository preserves
+          # uppercase repository segments and GITHUB_REPOSITORY preserves
           # the case the user typed.
-          repo="${GITEA_REPOSITORY,,}"
+          repo="${GITHUB_REPOSITORY,,}"
           image="code.netzhansa.com/${repo}"
-          tags="${image}:sha-${GITEA_SHA::12}"
-          if [ "${GITEA_EVENT_NAME}" = "push" ] && [ "${GITEA_REF}" = "refs/heads/main" ]; then
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             tags="${tags},${image}:main,${image}:latest"
           fi
-          if [ "${GITEA_EVENT_NAME}" = "push" ] && [[ "${GITEA_REF}" == refs/tags/v* ]]; then
-            ver="${GITEA_REF#refs/tags/}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
             tags="${tags},${image}:${ver},${image}:latest"
           fi
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
@@ -525,7 +525,7 @@ jobs:
       # layers from the native build above (Step 1). Runs only after
       # smoke passes and only when the REGISTRY_TOKEN secret is available.
       - name: build + push multi-arch image (linux/amd64 + linux/arm64)
-        if: gitea.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
+        if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN != ''
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         uses: docker/build-push-action@v6
@@ -542,7 +542,7 @@ jobs:
       # registry. No load (multi-platform + load is unsupported), but
       # the build itself exercises the full Dockerfile for both arches.
       - name: build multi-arch image (PR validation, no push)
-        if: gitea.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -553,7 +553,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           provenance: false
       - name: warn if REGISTRY_TOKEN is missing
-        if: gitea.event_name != 'pull_request' && env.REGISTRY_TOKEN == ''
+        if: github.event_name != 'pull_request' && env.REGISTRY_TOKEN == ''
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
@@ -584,7 +584,7 @@ jobs:
     # dispatches. PR CI runs are gated for correctness by the test and
     # web jobs above; cross-compiling every PR commit doubles runner
     # load with no consumer.
-    if: gitea.event_name != 'pull_request'
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     needs: [pre-commit, lint, web, test]
@@ -665,7 +665,7 @@ jobs:
       - jmaptest
       - binaries
     # Only deploy on pushes to the default branch, never on PRs or tags.
-    if: gitea.event_name == 'push' && gitea.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
     timeout-minutes: 10
@@ -701,7 +701,7 @@ jobs:
         if: steps.guard.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          REF="ci-${GITEA_SHA::10}"
+          REF="ci-${GITHUB_SHA::10}"
           echo "REF=${REF}" >> "${GITHUB_ENV}"
 
           # Lay out a bare `herold` binary at the archive root so that
@@ -721,7 +721,7 @@ jobs:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          API="${GITEA_SERVER_URL}/api/v1"
+          API="${GITHUB_SERVER_URL}/api/v1"
           REPO="herold/herold"
           AUTH="Authorization: token ${RELEASE_TOKEN}"
 
@@ -744,7 +744,7 @@ jobs:
           # top-level release id.
           RELEASE_ID=$(curl -fsSL -X POST "${API}/repos/${REPO}/releases" \
             -H "${AUTH}" -H "Content-Type: application/json" \
-            -d "$(jq -nc --arg t "${REF}" --arg c "${GITEA_SHA}" \
+            -d "$(jq -nc --arg t "${REF}" --arg c "${GITHUB_SHA}" \
                   '{tag_name:$t, target_commitish:$c, name:$t, prerelease:true, draft:false}')" \
             | jq -r '.id')
 

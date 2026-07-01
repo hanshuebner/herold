@@ -31,7 +31,7 @@ jobs:
       - id: gate
         run: |
           set -euo pipefail
-          if [ "${{ gitea.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "manual dispatch -- running nightly"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
