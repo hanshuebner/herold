@@ -21,14 +21,14 @@ import { describe, expect, it, vi } from 'vitest';
 const __dir = dirname(fileURLToPath(import.meta.url));
 const swSource = readFileSync(resolve(__dir, '../../../public/sw.js'), 'utf-8');
 
-// ── resolveNotificationPath fixture ─────────────────────────────────────────
+// ── resolveNotificationPath + buildNotificationOptions fixture ───────────────
 //
-// resolveNotificationPath makes no SW API calls, so a minimal self mock is
-// sufficient.
+// Both functions make no SW API calls, so a minimal self mock is sufficient.
 
-// Minimal SW global mock.  resolveNotificationPath itself makes no SW calls,
-// but the module-level self.addEventListener() calls at the top of sw.js need
-// something callable so evaluation does not throw.
+// Minimal SW global mock.  Neither resolveNotificationPath nor
+// buildNotificationOptions makes SW API calls, but the module-level
+// self.addEventListener() calls at the top of sw.js need something callable so
+// evaluation does not throw.
 const selfMock = {
   addEventListener: () => {},
   clients: {},
@@ -36,17 +36,29 @@ const selfMock = {
   skipWaiting: () => {},
 };
 
+type NotificationOptions = {
+  title: string;
+  body: string;
+  tag: string | undefined;
+  badge?: string;
+  data: Record<string, unknown>;
+  actions?: { action: string; title: string }[];
+};
+
 // Evaluate sw.js and return its internal functions under test.
 // eslint-disable-next-line no-new-func
 const factory = new Function(
   'self',
-  `${swSource}\nreturn { resolveNotificationPath };`,
+  `${swSource}\nreturn { resolveNotificationPath, buildNotificationOptions };`,
 );
-const { resolveNotificationPath } = factory(selfMock) as {
+const { resolveNotificationPath, buildNotificationOptions } = factory(selfMock) as {
   resolveNotificationPath: (
     data: Record<string, unknown>,
     action: string,
   ) => string | null;
+  buildNotificationOptions: (
+    payload: Record<string, unknown>,
+  ) => NotificationOptions | null;
 };
 
 // ── openApp fixture ──────────────────────────────────────────────────────────
@@ -217,9 +229,12 @@ describe('resolveNotificationPath — calendar-invite', () => {
     expect(path).toBe('/#/mail/thread/e99');
   });
 
-  it('uses empty string for missing emailId', () => {
+  it('falls back to /#/mail when emailId is absent', () => {
+    // When the server cannot link a calendar event to an invite email, emailId
+    // is absent.  The route should fall back to the inbox rather than generating
+    // an invalid /#/mail/thread/ path with an empty ID.
     const path = resolveNotificationPath({ kind: 'calendar-invite' }, '');
-    expect(path).toBe('/#/mail/thread/');
+    expect(path).toBe('/#/mail');
   });
 
   it('returns /#/mail thread path for accept action (handled in-app)', () => {
@@ -261,6 +276,190 @@ describe('resolveNotificationPath — unknown kind', () => {
   it('returns / for archive action on unknown kind (not a mail background action)', () => {
     // The background-action gate is mail-specific; unknown kind falls to default.
     expect(resolveNotificationPath({ kind: 'unknown' }, 'archive')).toBe('/');
+  });
+});
+
+// ── buildNotificationOptions ─────────────────────────────────────────────────
+//
+// These tests verify that buildNotificationOptions correctly processes the
+// server's push payload format (after the server-side fix that adds kind,
+// threadId, emailId, inboxMailboxId, body fields).  They also document the
+// contract between the server's BuildPayload output and the SW's notification
+// rendering.
+
+describe('buildNotificationOptions — email (server payload format)', () => {
+  // A payload shaped like the server's emailPayload struct after the fix.
+  const emailPayload = {
+    '@type': 'StateChange',
+    changed: { a1: { Email: '100' } },
+    kind: 'mail',
+    type: 'email',
+    from: 'Bob Smith <bob@example.test>',
+    body: 'Re: Project discussion',
+    subject: 'Re: Project discussion',
+    mailbox: 'INBOX',
+    emailId: '42',
+    msgid: '42',
+    threadId: 'T123',
+    inboxMailboxId: '5',
+  };
+
+  it('returns non-null options for kind=mail payload', () => {
+    expect(buildNotificationOptions(emailPayload)).not.toBeNull();
+  });
+
+  it('uses from as the notification title', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.title).toBe('Bob Smith <bob@example.test>');
+  });
+
+  it('uses body as the notification body', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.body).toBe('Re: Project discussion');
+  });
+
+  it('stores kind=mail in notification data', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.data['kind']).toBe('mail');
+  });
+
+  it('stores threadId from payload into notification data', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.data['threadId']).toBe('T123');
+  });
+
+  it('stores emailId from payload into notification data', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.data['emailId']).toBe('42');
+  });
+
+  it('stores inboxMailboxId from payload into notification data', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.data['inboxMailboxId']).toBe('5');
+  });
+
+  it('sets tag to threadId when threadId is present', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    expect(opts.tag).toBe('T123');
+  });
+
+  it('sets tag to emailId when threadId is absent', () => {
+    const p = { ...emailPayload, threadId: undefined };
+    const opts = buildNotificationOptions(p)!;
+    expect(opts.tag).toBe('42');
+  });
+
+  it('data.threadId flows through resolveNotificationPath to thread route', () => {
+    const opts = buildNotificationOptions(emailPayload)!;
+    const path = resolveNotificationPath(
+      opts.data as Record<string, unknown>,
+      '',
+    );
+    expect(path).toBe('/#/mail/thread/T123');
+  });
+
+  it('falls back to /#/mail route when threadId absent in notification data', () => {
+    const p = { ...emailPayload, threadId: undefined };
+    const opts = buildNotificationOptions(p)!;
+    const path = resolveNotificationPath(
+      opts.data as Record<string, unknown>,
+      '',
+    );
+    expect(path).toBe('/#/mail');
+  });
+
+  it('returns null for payload without kind (old server format, type=email only)', () => {
+    const oldPayload = {
+      '@type': 'StateChange',
+      type: 'email',
+      from: 'Bob',
+      subject: 'Hello',
+      msgid: '42',
+    };
+    expect(buildNotificationOptions(oldPayload)).toBeNull();
+  });
+
+  it('returns null for unrecognised kind', () => {
+    expect(buildNotificationOptions({ kind: 'unknown' })).toBeNull();
+  });
+
+  it('returns null for empty payload', () => {
+    expect(buildNotificationOptions({})).toBeNull();
+  });
+});
+
+describe('buildNotificationOptions — chat (server payload format)', () => {
+  const chatPayload = {
+    '@type': 'StateChange',
+    changed: { a1: { Message: '200' } },
+    kind: 'chat',
+    type: 'chat',
+    from: 'Carol',
+    body: 'Hello team!',
+    conversationId: 'C99',
+    text: 'Hello team!',
+  };
+
+  it('returns non-null options for kind=chat payload', () => {
+    expect(buildNotificationOptions(chatPayload)).not.toBeNull();
+  });
+
+  it('stores conversationId in notification data', () => {
+    const opts = buildNotificationOptions(chatPayload)!;
+    expect(opts.data['conversationId']).toBe('C99');
+  });
+
+  it('uses body as the notification body', () => {
+    const opts = buildNotificationOptions(chatPayload)!;
+    expect(opts.body).toBe('Hello team!');
+  });
+
+  it('data.conversationId flows to chat deep-link route', () => {
+    const opts = buildNotificationOptions(chatPayload)!;
+    const path = resolveNotificationPath(
+      opts.data as Record<string, unknown>,
+      '',
+    );
+    expect(path).toBe('/#/mail?openChat=C99');
+  });
+});
+
+describe('buildNotificationOptions — calendar-invite (server payload format)', () => {
+  const calPayload = {
+    '@type': 'StateChange',
+    changed: { a1: { CalendarEvent: '300' } },
+    kind: 'calendar-invite',
+    type: 'calendar',
+    from: 'Dana',
+    eventSummary: 'Team standup',
+    body: 'Team standup',
+    eventUID: 'uid-abc',
+    uid: 'uid-abc',
+  };
+
+  it('returns non-null options for kind=calendar-invite payload', () => {
+    expect(buildNotificationOptions(calPayload)).not.toBeNull();
+  });
+
+  it('uses eventSummary in title when from is present', () => {
+    const opts = buildNotificationOptions(calPayload)!;
+    expect(opts.title).toContain('Team standup');
+  });
+
+  it('sets tag to eventUID', () => {
+    const opts = buildNotificationOptions(calPayload)!;
+    expect(opts.tag).toBe('uid-abc');
+  });
+
+  it('routes to /#/mail when emailId is absent in notification data', () => {
+    const opts = buildNotificationOptions(calPayload)!;
+    const path = resolveNotificationPath(
+      opts.data as Record<string, unknown>,
+      '',
+    );
+    // emailId is not sent by the server for calendar events; sw.js should
+    // fall back to the inbox rather than generating an empty-ID thread route.
+    expect(path).toBe('/#/mail');
   });
 });
 

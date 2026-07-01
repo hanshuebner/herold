@@ -97,12 +97,32 @@ func stateValueForKind(ev store.StateChange) string {
 
 type emailPayload struct {
 	stateChangeBase
-	Type    string `json:"type"`
-	From    string `json:"from,omitempty"`
+	// Kind is the SW dispatch key consumed by buildNotificationOptions in sw.js.
+	// Value is always "mail" for email events. The legacy field "type" is kept
+	// alongside for external JMAP clients that may consume the herold-specific
+	// preview envelope.
+	Kind string `json:"kind"`
+	Type string `json:"type"`
+	From string `json:"from,omitempty"`
+	// Body is the OS notification body text (= email subject). SW reads
+	// payload.body to populate the notification body field; Subject is kept as a
+	// legacy alias.
+	Body    string `json:"body,omitempty"`
 	Subject string `json:"subject,omitempty"`
 	Preview string `json:"preview,omitempty"`
 	Mailbox string `json:"mailbox,omitempty"`
+	// EmailID is the JMAP email ID used by the SW's Archive and Mark-Read action
+	// handlers (jmapEmailSetArchive / jmapEmailSetSeen). MsgID is kept as a
+	// legacy alias.
+	EmailID string `json:"emailId,omitempty"`
 	MsgID   string `json:"msgid,omitempty"`
+	// ThreadID is the JMAP thread ID used by the SW to navigate to the specific
+	// thread when the notification body is clicked.
+	ThreadID string `json:"threadId,omitempty"`
+	// InboxMailboxID is the JMAP mailbox ID of the inbox containing this message.
+	// The SW's Archive action issues Email/set {mailboxIds/<inboxMailboxId>: null}
+	// to remove the message from the inbox.
+	InboxMailboxID string `json:"inboxMailboxId,omitempty"`
 }
 
 func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange) (buildPayloadResult, error) {
@@ -120,13 +140,24 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 		// enough envelope data on its own.
 		mbox = store.Mailbox{Name: ""}
 	}
+	subj := truncateUTF8(msg.Envelope.Subject, PayloadCapBytes)
+	msgIDStr := fmt.Sprintf("%d", msg.ID)
 	out := emailPayload{
 		stateChangeBase: newStateChangeBase(ev.PrincipalID, "Email", stateValueForKind(ev)),
+		Kind:            "mail",
 		Type:            "email",
 		From:            truncateUTF8(msg.Envelope.From, PayloadCapBytes),
-		Subject:         truncateUTF8(msg.Envelope.Subject, PayloadCapBytes),
+		Body:            subj,
+		Subject:         subj,
 		Mailbox:         mbox.Name,
-		MsgID:           fmt.Sprintf("%d", msg.ID),
+		EmailID:         msgIDStr,
+		MsgID:           msgIDStr,
+	}
+	if msg.ThreadID != 0 {
+		out.ThreadID = fmt.Sprintf("%d", msg.ThreadID)
+	}
+	if msg.MailboxID != 0 {
+		out.InboxMailboxID = fmt.Sprintf("%d", msg.MailboxID)
 	}
 	// REQ-PROTO-125 / Wave 3.8c spec resolution: build the 80-byte
 	// preview by re-walking the blob inline via mailparse. This is the
@@ -156,10 +187,17 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 
 type chatPayload struct {
 	stateChangeBase
-	Type           string `json:"type"`
-	From           string `json:"from,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	Text           string `json:"text,omitempty"`
+	// Kind is the SW dispatch key. Value is always "chat" for chat events.
+	Kind string `json:"kind"`
+	Type string `json:"type"`
+	From string `json:"from,omitempty"`
+	// Body is the OS notification body text (= message excerpt). SW reads
+	// payload.body to populate the notification body field.
+	Body string `json:"body,omitempty"`
+	// ConversationID is camelCase to match what sw.js reads as payload.conversationId.
+	ConversationID string `json:"conversationId,omitempty"`
+	// Text is kept as a legacy alias for Body.
+	Text string `json:"text,omitempty"`
 }
 
 func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange) (buildPayloadResult, error) {
@@ -177,6 +215,7 @@ func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange)
 	}
 	out := chatPayload{
 		stateChangeBase: newStateChangeBase(ev.PrincipalID, "Message", stateValueForKind(ev)),
+		Kind:            "chat",
 		Type:            "chat",
 		ConversationID:  fmt.Sprintf("%d", msg.ConversationID),
 	}
@@ -199,6 +238,8 @@ func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange)
 	default:
 		out.Text = ""
 	}
+	// Body mirrors Text so sw.js can read payload.body for the OS notification body.
+	out.Body = out.Text
 	js, err := json.Marshal(out)
 	if err != nil {
 		return buildPayloadResult{}, fmt.Errorf("webpush: marshal chat payload: %w", err)
@@ -209,12 +250,23 @@ func buildChatPayload(ctx context.Context, st store.Store, ev store.StateChange)
 
 type calendarPayload struct {
 	stateChangeBase
-	Type     string `json:"type"`
-	Title    string `json:"title,omitempty"`
+	// Kind is the SW dispatch key. Value is "calendar-invite" to match the
+	// case label in buildNotificationOptions (sw.js).
+	Kind string `json:"kind"`
+	Type string `json:"type"`
+	// EventSummary is the event title consumed by sw.js's title formatter:
+	// "${from} invited you to ${eventSummary}". Title is kept as a legacy alias.
+	EventSummary string `json:"eventSummary,omitempty"`
+	Title        string `json:"title,omitempty"`
+	// Body is the OS notification body text (= event title). SW reads payload.body.
+	Body     string `json:"body,omitempty"`
 	From     string `json:"from,omitempty"`
 	Start    string `json:"start,omitempty"`
 	End      string `json:"end,omitempty"`
 	Location string `json:"location,omitempty"`
+	// EventUID is the iCalendar UID consumed by sw.js for the notification tag.
+	// UID is kept as a legacy alias.
+	EventUID string `json:"eventUID,omitempty"`
 	UID      string `json:"uid,omitempty"`
 }
 
@@ -227,10 +279,15 @@ func buildCalendarEventPayload(ctx context.Context, st store.Store, ev store.Sta
 	if err != nil {
 		return buildPayloadResult{}, fmt.Errorf("webpush: get calendar event %d: %w", id, err)
 	}
+	summary := truncateUTF8(cev.Summary, PayloadCapBytes)
 	out := calendarPayload{
 		stateChangeBase: newStateChangeBase(ev.PrincipalID, "CalendarEvent", stateValueForKind(ev)),
+		Kind:            "calendar-invite",
 		Type:            "calendar",
-		Title:           truncateUTF8(cev.Summary, PayloadCapBytes),
+		EventSummary:    summary,
+		Title:           summary,
+		Body:            summary,
+		EventUID:        cev.UID,
 		UID:             cev.UID,
 		From:            cev.OrganizerEmail,
 	}

@@ -247,8 +247,12 @@ function resolveNotificationPath(data, action) {
         : '/#/mail';
     }
     case 'calendar-invite': {
-      // Accept/Decline is handled in-app (v1).
-      return `/#/mail/thread/${encodeURIComponent(data.emailId ?? '')}`;
+      // Accept/Decline is handled in-app (v1). Fall back to the inbox when the
+      // email ID is unknown (the server cannot always link a calendar event back
+      // to its invite email).
+      return data.emailId
+        ? `/#/mail/thread/${encodeURIComponent(data.emailId)}`
+        : '/#/mail';
     }
     case 'call': {
       // SW cannot drive WebRTC (REQ-PUSH-67) — open the app for call signaling.

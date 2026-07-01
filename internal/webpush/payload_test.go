@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,15 +70,100 @@ func TestBuildPayload_Email(t *testing.T) {
 	if err := json.Unmarshal(res.JSON, &got); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
+	// Legacy type field.
 	if got["type"] != "email" {
 		t.Fatalf("type=%v", got["type"])
+	}
+	// SW dispatch key: buildNotificationOptions in sw.js dispatches on kind.
+	if got["kind"] != "mail" {
+		t.Fatalf("kind=%v (want \"mail\")", got["kind"])
 	}
 	subj, _ := got["subject"].(string)
 	if len(subj) > PayloadCapBytes {
 		t.Fatalf("subject %d bytes; cap is %d", len(subj), PayloadCapBytes)
 	}
+	// body must equal subject so the OS notification body is populated.
+	if got["body"] != got["subject"] {
+		t.Fatalf("body=%v subject=%v (must be equal)", got["body"], got["subject"])
+	}
 	if got["mailbox"] != "INBOX" {
 		t.Fatalf("mailbox=%v", got["mailbox"])
+	}
+	// emailId must be present (and match msgid) for SW archive/mark-read actions.
+	if got["emailId"] == nil || got["emailId"] == "" {
+		t.Fatalf("emailId missing or empty: %v", got["emailId"])
+	}
+	if got["emailId"] != got["msgid"] {
+		t.Fatalf("emailId=%v msgid=%v (must be equal)", got["emailId"], got["msgid"])
+	}
+	// inboxMailboxId must be present for the SW archive action.
+	if got["inboxMailboxId"] == nil || got["inboxMailboxId"] == "" {
+		t.Fatalf("inboxMailboxId missing or empty: %v", got["inboxMailboxId"])
+	}
+	// threadId: for a message with ThreadID==0 it is omitted; that is acceptable
+	// (the SW falls back to the inbox). A non-zero ThreadID (set by the threader)
+	// must be present. This test does not set ThreadID so we only verify absence.
+	if _, hasThread := got["threadId"]; hasThread {
+		t.Fatalf("threadId present for msg with ThreadID==0: %v", got["threadId"])
+	}
+}
+
+func TestBuildPayload_EmailWithThread(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+	msg := store.Message{
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         10,
+		Envelope:     store.Envelope{From: "Bob", Subject: "Hello"},
+		Blob:         store.BlobRef{Hash: "abc", Size: 10},
+	}
+	_, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	rows, err := st.Meta().ListMessages(ctx, mbid, store.MessageFilter{Limit: 10, WithEnvelope: true})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list messages: %v %d", err, len(rows))
+	}
+	mid := rows[0].ID
+	// Assign a ThreadID so threadId appears in the payload.
+	const testThreadID = uint64(42)
+	if err := st.Meta().UpdateMessageThreadID(ctx, mid, testThreadID); err != nil {
+		t.Fatalf("UpdateMessageThreadID: %v", err)
+	}
+
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpCreated,
+	}
+	res, err := BuildPayload(ctx, st, ev)
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.JSON, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["kind"] != "mail" {
+		t.Fatalf("kind=%v", got["kind"])
+	}
+	// threadId must be the JMAP string representation of testThreadID.
+	wantThread := fmt.Sprintf("%d", testThreadID)
+	if got["threadId"] != wantThread {
+		t.Fatalf("threadId=%v want %q", got["threadId"], wantThread)
+	}
+	if got["emailId"] == nil || got["emailId"] == "" {
+		t.Fatalf("emailId missing: %v", got["emailId"])
+	}
+	if got["inboxMailboxId"] == nil || got["inboxMailboxId"] == "" {
+		t.Fatalf("inboxMailboxId missing: %v", got["inboxMailboxId"])
 	}
 }
 
@@ -125,14 +211,26 @@ func TestBuildPayload_Calendar(t *testing.T) {
 	if got["type"] != "calendar" {
 		t.Fatalf("type=%v", got["type"])
 	}
+	if got["kind"] != "calendar-invite" {
+		t.Fatalf("kind=%v (want \"calendar-invite\")", got["kind"])
+	}
 	if got["title"] != "Standup" {
 		t.Fatalf("title=%v", got["title"])
+	}
+	if got["eventSummary"] != "Standup" {
+		t.Fatalf("eventSummary=%v (want \"Standup\")", got["eventSummary"])
+	}
+	if got["body"] != "Standup" {
+		t.Fatalf("body=%v (want \"Standup\")", got["body"])
 	}
 	if got["location"] != "Room 5" {
 		t.Fatalf("location=%v", got["location"])
 	}
 	if got["uid"] != "evt-1" {
 		t.Fatalf("uid=%v", got["uid"])
+	}
+	if got["eventUID"] != "evt-1" {
+		t.Fatalf("eventUID=%v (want \"evt-1\")", got["eventUID"])
 	}
 }
 
