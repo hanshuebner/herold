@@ -30,6 +30,8 @@ vi.mock('../../lib/api/identity-submission', () => ({
   deleteSubmission: vi.fn(async () => undefined),
   startOAuth: vi.fn(async () => undefined),
   getSubmission: vi.fn(async () => ({ configured: false })),
+  // Default: detect-provider returns null → code flow unchanged.
+  detectProvider: vi.fn(async () => null),
 }));
 
 vi.mock('../../lib/identities/identity-submission.svelte', () => {
@@ -153,9 +155,12 @@ const { mail, IdentitySetError } = await import('../../lib/mail/store.svelte');
 const { postVerifyCode, postVerifyResend } = await import(
   '../../lib/api/identity-verify'
 );
-const { putSubmission } = await import('../../lib/api/identity-submission');
+const { putSubmission, startOAuth, detectProvider } = await import(
+  '../../lib/api/identity-submission'
+);
 const { ApiError } = await import('../../lib/api/client');
 const { toast } = await import('../../lib/toast/toast.svelte');
+const { hasExternalSubmission } = await import('../../lib/auth/capabilities');
 
 import AddIdentityWizard from './AddIdentityWizard.svelte';
 
@@ -588,6 +593,149 @@ describe('AddIdentityWizard', () => {
     await fireEvent.click(skip);
     expect(onclose).toHaveBeenCalled();
     expect(vi.mocked(putSubmission)).not.toHaveBeenCalled();
+  });
+
+  // ── detect-provider / OAuth routing (re #92) ─────────────────────────────
+
+  it('calls startOAuth with gmail when detect-provider returns google and external submission is enabled', async () => {
+    vi.mocked(detectProvider).mockResolvedValueOnce('google');
+    // startOAuth resolves: browser would navigate away. The wizard does NOT
+    // advance to step 2 (early return in onStep1Submit).
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'gmail');
+    });
+    // Because startOAuth resolved (mock), the wizard returned early and
+    // step 2 is NOT shown.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-step-2"]'),
+    ).toBeNull();
+  });
+
+  it('calls startOAuth with m365 when detect-provider returns microsoft', async () => {
+    vi.mocked(detectProvider).mockResolvedValueOnce('microsoft');
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'm365');
+    });
+    expect(
+      container.querySelector('[data-testid="identity-wizard-step-2"]'),
+    ).toBeNull();
+  });
+
+  it('falls back to the code step when detect-provider returns google but startOAuth returns 503', async () => {
+    vi.mocked(detectProvider).mockResolvedValueOnce('google');
+    vi.mocked(startOAuth).mockRejectedValueOnce(new ApiError(503, 'provider not configured'));
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'gmail');
+    });
+    // startOAuth threw 503: fall through to verification-code step.
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+  });
+
+  it('goes to the code step when detect-provider returns null (no detected provider)', async () => {
+    // detectProvider default mock returns null.
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    expect(vi.mocked(startOAuth)).not.toHaveBeenCalled();
+  });
+
+  it('goes to the code step when detect-provider errors (network failure)', async () => {
+    vi.mocked(detectProvider).mockRejectedValueOnce(new Error('network failure'));
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    expect(vi.mocked(startOAuth)).not.toHaveBeenCalled();
+  });
+
+  it('goes to the code step when detect-provider returns google but external submission is disabled', async () => {
+    vi.mocked(detectProvider).mockResolvedValueOnce('google');
+    vi.mocked(hasExternalSubmission).mockReturnValueOnce(false);
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@example.local' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    expect(vi.mocked(startOAuth)).not.toHaveBeenCalled();
   });
 
   it('renders the Retry-After countdown on a 429 from resend', async () => {

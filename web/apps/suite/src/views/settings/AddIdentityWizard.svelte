@@ -33,7 +33,14 @@
     postVerifyResend,
     retryAfterOf,
   } from '../../lib/api/identity-verify';
-  import { putSubmission } from '../../lib/api/identity-submission';
+  import {
+    putSubmission,
+    startOAuth,
+    detectProvider,
+    type OAuthProvider,
+    type SubmitSecurity,
+    type SubmissionPutBody,
+  } from '../../lib/api/identity-submission';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
   import {
     isValidEmail,
@@ -47,10 +54,6 @@
   import CodeInput from '../../lib/identities/CodeInput.svelte';
   import { IdentitySetError } from '../../lib/mail/store.svelte';
   import type { Identity } from '../../lib/mail/types';
-  import type {
-    SubmitSecurity,
-    SubmissionPutBody,
-  } from '../../lib/api/identity-submission';
 
   interface Props {
     /** Lower-cased set of hosted (local) email domains; used to decide
@@ -161,13 +164,42 @@
     if (!canCreate) return;
     creating = true;
     try {
-      const created = await mail.createIdentity(email, displayName);
+      // Run detect-provider in parallel with identity creation to avoid
+      // adding a serial round-trip to the common code path. Any error
+      // from detectProvider is swallowed and treated as null so that DNS
+      // failures never block identity creation (re #92).
+      const [detected, created] = await Promise.all([
+        detectProvider(email).catch(() => null),
+        mail.createIdentity(email, displayName),
+      ]);
       createdIdentity = created;
       // The store mirrored the row already; show toast and advance.
       toast.show({
         message: t('settings.identityWizard.createdToast', { email: created.email }),
         timeoutMs: 4000,
       });
+
+      // If the MX lookup identified a Google or Microsoft provider and
+      // external submission is enabled on this server, start the OAuth
+      // flow instead of the verification-code step (re #92).
+      if (detected !== null && hasExternalSubmission()) {
+        const oauthProvider: OAuthProvider | null =
+          detected === 'google' ? 'gmail' :
+          detected === 'microsoft' ? 'm365' :
+          null;
+        if (oauthProvider !== null) {
+          try {
+            await startOAuth(created.id, oauthProvider);
+            // startOAuth sets window.location.href; the page is navigating
+            // away. Return here so we do not also advance to step 2.
+            return;
+          } catch {
+            // 503 (provider not configured by the operator) or transient
+            // error; fall through to the verification-code step.
+          }
+        }
+      }
+
       step = 2;
       code = '';
       codeError = null;

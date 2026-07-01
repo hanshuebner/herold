@@ -94,6 +94,35 @@ export interface ProbeProblemDetail {
 export type OAuthProvider = 'gmail' | 'm365';
 
 /**
+ * Provider strings returned by GET /api/v1/identities/detect-provider.
+ * "google" maps to the "gmail" OAuthProvider; "microsoft" maps to "m365".
+ */
+export type DetectedProvider = 'google' | 'microsoft';
+
+/**
+ * GET /api/v1/identities/detect-provider?email=<address>
+ *
+ * Calls the MX-heuristic endpoint to classify the email domain as
+ * Google Workspace/Gmail, Microsoft Entra/M365, or neither. Returns
+ * null when the domain is not recognised, the request fails, or the
+ * endpoint is unavailable; callers fall back to the verification-code
+ * flow in that case (re #92).
+ */
+export async function detectProvider(email: string): Promise<DetectedProvider | null> {
+  try {
+    const resp = await get<{ provider: string | null }>(
+      `/api/v1/identities/detect-provider?email=${encodeURIComponent(email)}`,
+    );
+    if (resp.provider === 'google' || resp.provider === 'microsoft') {
+      return resp.provider;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * GET /api/v1/identities/{id}/submission
  * Returns the submission status for the given identity.
  */
