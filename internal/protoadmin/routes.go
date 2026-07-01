@@ -270,7 +270,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/admin/clientlog", authAdmin(s.handleAdminListClientLog))
 	mux.HandleFunc("GET /api/v1/admin/clientlog/timeline", authAdmin(s.handleAdminClientLogTimeline))
 	mux.HandleFunc("POST /api/v1/admin/clientlog/livetail", authAdmin(s.handleAdminClientLogLivetailSet))
-	mux.HandleFunc("DELETE /api/v1/admin/clientlog/livetail/{session_id}", authAdmin(s.handleAdminClientLogLivetailClear))
+	mux.HandleFunc("DELETE /api/v1/admin/clientlog/livetail/{user_id}", authAdmin(s.handleAdminClientLogLivetailClear))
 	mux.HandleFunc("GET /api/v1/admin/clientlog/stats", authAdmin(s.handleAdminClientLogStats))
 }
 

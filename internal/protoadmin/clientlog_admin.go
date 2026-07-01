@@ -247,21 +247,34 @@ func (s *Server) handleAdminClientLogTimeline(w http.ResponseWriter, r *http.Req
 }
 
 // livetailRequest is the body for POST /api/v1/admin/clientlog/livetail.
+// UserID is the string-encoded PrincipalID from the client-log row's
+// user_id field. The handler resolves the user's active HTTP auth sessions
+// by principal and sets ClientlogLivetailUntil on each one.
 type livetailRequest struct {
-	SessionID string `json:"session_id"`
+	UserID string `json:"user_id"`
 	// Duration is a Go duration string (e.g. "10m"). When empty, the
 	// server uses clientlog.livetail_default_duration.
 	Duration string `json:"duration,omitempty"`
 }
 
-// livetailResponse echoes the new state for the affected session.
+// livetailResponse echoes the new state for the operation.
 type livetailResponse struct {
-	SessionID string `json:"session_id"`
-	Until     string `json:"livetail_until"`
+	UserID string `json:"user_id"`
+	Until  string `json:"livetail_until"`
 }
 
 // handleAdminClientLogLivetailSet implements
 // POST /api/v1/admin/clientlog/livetail (REQ-ADM-232).
+//
+// The request carries user_id (string-encoded PrincipalID from the client-log
+// row). The handler resolves the user's active HTTP auth sessions via
+// ListSessionsByPrincipal and sets ClientlogLivetailUntil on each one so the
+// JMAP session descriptor carries livetail_until on the next poll.
+//
+// The previous implementation passed the client-log row's session_id (a
+// SPA-assigned UUID from sessionStorage) to GetSession, which looks up rows
+// by HTTP auth CSRF token — a different namespace, always returning
+// ErrNotFound.
 func (s *Server) handleAdminClientLogLivetailSet(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
@@ -273,12 +286,20 @@ func (s *Server) handleAdminClientLogLivetailSet(w http.ResponseWriter, r *http.
 			"request body is not valid JSON", err.Error())
 		return
 	}
-	req.SessionID = strings.TrimSpace(req.SessionID)
-	if req.SessionID == "" {
-		writeProblem(w, r, http.StatusBadRequest, "clientlog/missing_session_id",
-			"session_id is required", "")
+	req.UserID = strings.TrimSpace(req.UserID)
+	if req.UserID == "" {
+		writeProblem(w, r, http.StatusBadRequest, "clientlog/missing_user_id",
+			"user_id is required", "")
 		return
 	}
+	uid, err := strconv.ParseUint(req.UserID, 10, 64)
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "clientlog/invalid_user_id",
+			"user_id must be a positive integer string", req.UserID)
+		return
+	}
+	principalID := store.PrincipalID(uid)
+
 	dDefault, dMax := s.clientLogLivetailDurations()
 	d := dDefault
 	if strings.TrimSpace(req.Duration) != "" {
@@ -293,83 +314,102 @@ func (s *Server) handleAdminClientLogLivetailSet(w http.ResponseWriter, r *http.
 	if d > dMax {
 		d = dMax
 	}
-	row, err := s.store.Meta().GetSession(r.Context(), req.SessionID)
+
+	now := s.clk.Now()
+	sessions, err := s.store.Meta().ListSessionsByPrincipal(r.Context(), principalID, now.UnixMicro())
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	now := s.clk.Now()
+
 	until := now.Add(d).UTC()
-	before := ""
-	if row.ClientlogLivetailUntil != nil {
-		before = row.ClientlogLivetailUntil.UTC().Format(rfc3339Millis)
+	activated := 0
+	for _, row := range sessions {
+		wasInactive := row.ClientlogLivetailUntil == nil
+		row.ClientlogLivetailUntil = &until
+		if err := s.store.Meta().UpsertSession(r.Context(), row); err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
+		if wasInactive {
+			activated++
+		}
 	}
-	row.ClientlogLivetailUntil = &until
-	if err := s.store.Meta().UpsertSession(r.Context(), row); err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
+
 	s.appendAudit(r.Context(),
 		"clientlog.livetail.set",
-		"session:"+req.SessionID,
+		"principal:"+req.UserID,
 		store.OutcomeSuccess,
 		"live-tail enabled",
 		map[string]string{
-			"livetail_until_before": before,
-			"livetail_until_after":  until.Format(rfc3339Millis),
-			"duration":              d.String(),
+			"livetail_until_after": until.Format(rfc3339Millis),
+			"duration":             d.String(),
+			"sessions_updated":     strconv.Itoa(len(sessions)),
 		},
 	)
-	if observe.ClientlogLivetailActiveSessions != nil {
-		// Cheap upper-bound update: increment when we transition from
-		// nil → non-nil. We do not maintain an exact count because the
-		// gauge is advisory; the sweeper does not decrement here.
-		observe.ClientlogLivetailActiveSessions.Inc()
+	if observe.ClientlogLivetailActiveSessions != nil && activated > 0 {
+		observe.ClientlogLivetailActiveSessions.Add(float64(activated))
 	}
 	writeJSON(w, http.StatusOK, livetailResponse{
-		SessionID: req.SessionID,
-		Until:     until.Format(rfc3339Millis),
+		UserID: req.UserID,
+		Until:  until.Format(rfc3339Millis),
 	})
 }
 
 // handleAdminClientLogLivetailClear implements
-// DELETE /api/v1/admin/clientlog/livetail/{session_id} (REQ-ADM-232).
+// DELETE /api/v1/admin/clientlog/livetail/{user_id} (REQ-ADM-232).
+//
+// user_id is the string-encoded PrincipalID. The handler clears
+// ClientlogLivetailUntil on all active HTTP auth sessions for that user.
 func (s *Server) handleAdminClientLogLivetailClear(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
 		return
 	}
-	sid := strings.TrimSpace(r.PathValue("session_id"))
-	if sid == "" {
-		writeProblem(w, r, http.StatusBadRequest, "clientlog/missing_session_id",
-			"session_id path parameter is required", "")
+	uidStr := strings.TrimSpace(r.PathValue("user_id"))
+	if uidStr == "" {
+		writeProblem(w, r, http.StatusBadRequest, "clientlog/missing_user_id",
+			"user_id path parameter is required", "")
 		return
 	}
-	row, err := s.store.Meta().GetSession(r.Context(), sid)
+	uid, err := strconv.ParseUint(uidStr, 10, 64)
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "clientlog/invalid_user_id",
+			"user_id must be a positive integer string", uidStr)
+		return
+	}
+	principalID := store.PrincipalID(uid)
+
+	now := s.clk.Now()
+	sessions, err := s.store.Meta().ListSessionsByPrincipal(r.Context(), principalID, now.UnixMicro())
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	before := ""
-	if row.ClientlogLivetailUntil != nil {
-		before = row.ClientlogLivetailUntil.UTC().Format(rfc3339Millis)
+
+	cleared := 0
+	for _, row := range sessions {
+		if row.ClientlogLivetailUntil != nil {
+			cleared++
+		}
+		row.ClientlogLivetailUntil = nil
+		if err := s.store.Meta().UpsertSession(r.Context(), row); err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
 	}
-	row.ClientlogLivetailUntil = nil
-	if err := s.store.Meta().UpsertSession(r.Context(), row); err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
+
 	s.appendAudit(r.Context(),
 		"clientlog.livetail.clear",
-		"session:"+sid,
+		"principal:"+uidStr,
 		store.OutcomeSuccess,
 		"live-tail disabled",
 		map[string]string{
-			"livetail_until_before": before,
+			"sessions_cleared": strconv.Itoa(cleared),
 		},
 	)
-	if observe.ClientlogLivetailActiveSessions != nil && before != "" {
-		observe.ClientlogLivetailActiveSessions.Dec()
+	if observe.ClientlogLivetailActiveSessions != nil && cleared > 0 {
+		observe.ClientlogLivetailActiveSessions.Sub(float64(cleared))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

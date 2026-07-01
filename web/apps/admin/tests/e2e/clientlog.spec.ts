@@ -305,7 +305,7 @@ test.describe('clientlog viewer', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            session_id: 'sess-abc',
+            user_id: 'user-1',
             livetail_until: new Date(Date.now() + 15 * 60_000).toISOString(),
           }),
         });
@@ -374,14 +374,14 @@ test.describe('clientlog viewer', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            session_id: 'sess-abc',
+            user_id: 'user-1',
             livetail_until: new Date(Date.now() + 15 * 60_000).toISOString(),
           }),
         });
       }
       return route.fulfill({ status: 405 });
     });
-    // Register the livetail DELETE route (matches /livetail/sess-abc).
+    // Register the livetail DELETE route (matches /livetail/user-1).
     await page.route('**/clientlog/livetail/**', (route) => {
       const method = route.request().method();
       if (method === 'DELETE') {
@@ -442,7 +442,9 @@ test.describe('clientlog viewer', () => {
     ).toBeVisible({ timeout: 5000 });
 
     expect(deleteRequests.length).toBe(1);
-    expect(deleteRequests[0]).toContain('sess-abc');
+    // The DELETE URL now uses user_id (the PrincipalID string) rather than
+    // session_id; the mock row has user_id='user-1'.
+    expect(deleteRequests[0]).toContain('user-1');
   });
 
   test('load-more appends additional rows', async ({ page }) => {

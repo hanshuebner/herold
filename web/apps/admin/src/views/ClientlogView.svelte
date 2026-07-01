@@ -71,7 +71,7 @@
       <!-- Slice toggle -->
       <div class="filter-field">
         <label class="filter-label" for="cl-slice">Slice</label>
-        <select id="cl-slice" class="select" bind:value={clientlog.filters.slice}>
+        <select id="cl-slice" class="select" bind:value={clientlog.filters.slice} onchange={applyFilters}>
           <option value="auth">auth</option>
           <option value="public">public</option>
         </select>
@@ -80,7 +80,7 @@
       <!-- App filter -->
       <div class="filter-field">
         <label class="filter-label" for="cl-app">App</label>
-        <select id="cl-app" class="select" bind:value={clientlog.filters.app}>
+        <select id="cl-app" class="select" bind:value={clientlog.filters.app} onchange={applyFilters}>
           <option value="">all</option>
           <option value="suite">suite</option>
           <option value="admin">admin</option>
@@ -90,7 +90,7 @@
       <!-- Kind filter -->
       <div class="filter-field">
         <label class="filter-label" for="cl-kind">Kind</label>
-        <select id="cl-kind" class="select" bind:value={clientlog.filters.kind}>
+        <select id="cl-kind" class="select" bind:value={clientlog.filters.kind} onchange={applyFilters}>
           <option value="">all</option>
           <option value="error">error</option>
           <option value="log">log</option>
@@ -101,7 +101,7 @@
       <!-- Level filter -->
       <div class="filter-field">
         <label class="filter-label" for="cl-level">Level</label>
-        <select id="cl-level" class="select" bind:value={clientlog.filters.level}>
+        <select id="cl-level" class="select" bind:value={clientlog.filters.level} onchange={applyFilters}>
           <option value="">all</option>
           <option value="trace">trace</option>
           <option value="debug">debug</option>
@@ -296,6 +296,41 @@
           </button>
         </div>
 
+        <!-- Live-tail toggle (only when user_id is present, i.e. auth-slice rows).
+             Placed at the top of the detail pane so it is visible without
+             scrolling — the previous position (bottom of pane) required
+             scrolling past all metadata, stack, breadcrumbs, and timeline. -->
+        {#if row.user_id}
+          <div class="action-section action-section-top">
+            <h3 class="section-title">Live-tail</h3>
+            {#if clientlog.livetailStatus === 'active' && clientlog.livetailUntil}
+              <p class="livetail-countdown">
+                Active -- {livetailCountdown(clientlog.livetailUntil)}
+              </p>
+              <button
+                type="button"
+                class="btn-danger"
+                onclick={() => void clientlog.disableLivetail()}
+                disabled={(clientlog.livetailStatus as string) === 'pending'}
+              >
+                {(clientlog.livetailStatus as string) === 'pending' ? 'Working...' : 'Disable live-tail'}
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="btn-secondary"
+                onclick={() => void clientlog.enableLivetail('15m')}
+                disabled={clientlog.livetailStatus === 'pending'}
+              >
+                {clientlog.livetailStatus === 'pending' ? 'Working...' : 'Enable live-tail (15 min)'}
+              </button>
+            {/if}
+            {#if clientlog.livetailError}
+              <div class="inline-error">{clientlog.livetailError}</div>
+            {/if}
+          </div>
+        {/if}
+
         <dl class="detail-list">
           <div class="detail-row">
             <dt>ID</dt>
@@ -426,6 +461,7 @@
             <ol class="breadcrumb-list">
               {#each row.payload.raw.breadcrumbs as bc, i (i)}
                 <li class="breadcrumb-item">
+                  <span class="bc-seq mono">{i + 1}</span>
                   <span class="mono small bc-kind">{bc.kind}</span>
                   <span class="mono small bc-ts" title={bc.ts}>{formatAbsolute(bc.ts, DATE_TIME_WITH_SECONDS)}</span>
                   {#if bc.kind === 'route' && bc.route}
@@ -492,39 +528,6 @@
           {/if}
         {/if}
 
-        <!-- Live-tail toggle (only when session_id is present) -->
-        {#if row.session_id}
-          <div class="action-section">
-            <h3 class="section-title">Live-tail</h3>
-            {#if clientlog.livetailStatus === 'active' && clientlog.livetailUntil}
-              <p class="livetail-countdown">
-                Active -- {livetailCountdown(clientlog.livetailUntil)}
-              </p>
-              <!-- Disable button: cast breaks TypeScript narrowing so 'pending'
-                   check remains valid during the brief transition. -->
-              <button
-                type="button"
-                class="btn-danger"
-                onclick={() => void clientlog.disableLivetail()}
-                disabled={(clientlog.livetailStatus as string) === 'pending'}
-              >
-                {(clientlog.livetailStatus as string) === 'pending' ? 'Working...' : 'Disable live-tail'}
-              </button>
-            {:else}
-              <button
-                type="button"
-                class="btn-secondary"
-                onclick={() => void clientlog.enableLivetail('15m')}
-                disabled={clientlog.livetailStatus === 'pending'}
-              >
-                {clientlog.livetailStatus === 'pending' ? 'Working...' : 'Enable live-tail (15 min)'}
-              </button>
-            {/if}
-            {#if clientlog.livetailError}
-              <div class="inline-error">{clientlog.livetailError}</div>
-            {/if}
-          </div>
-        {/if}
       </div>
     {/if}
   </div>
@@ -649,6 +652,8 @@
     flex: 1;
     min-width: 0;
     transition: flex var(--duration-moderate-01) var(--easing-productive-enter);
+    overflow-y: auto;
+    max-height: 80vh;
   }
 
   .list-panel-narrow {
@@ -706,7 +711,7 @@
   }
 
   .col-when { width: 8%; white-space: nowrap; }
-  .col-app { width: 6%; }
+  .col-app { width: 8%; white-space: nowrap; }
   .col-kind { width: 7%; }
   .col-level { width: 7%; }
   .col-route { width: 20%; }
@@ -944,6 +949,14 @@
     border-radius: var(--radius-md);
   }
 
+  .bc-seq {
+    color: var(--text-helper);
+    font-size: calc(var(--type-code-01-size) * 0.8);
+    min-width: 22px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
   .bc-kind {
     color: var(--text-secondary);
     min-width: 50px;
@@ -1026,6 +1039,16 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-03);
+  }
+
+  /* Variant for the live-tail section placed at the top of the detail pane:
+     uses a bottom border instead of a top border to visually separate it
+     from the metadata section below. */
+  .action-section-top {
+    border-top: none;
+    border-bottom: 1px solid var(--border-subtle-01);
+    padding-top: 0;
+    padding-bottom: var(--spacing-04);
   }
 
   .livetail-countdown {

@@ -178,10 +178,17 @@ func TestAdminClientlogTimeline(t *testing.T) {
 
 // TestAdminClientlogLivetailLifecycle exercises the POST + DELETE livetail
 // endpoints, the duration clamp, the audit-log entry, and the session row.
+//
+// The livetail API uses user_id (string-encoded PrincipalID) to locate the
+// user's active HTTP auth sessions via ListSessionsByPrincipal. The prior
+// session_id (SPA-assigned UUID from sessionStorage) is a different namespace
+// from the CSRF-token-keyed sessions table, so using it always returned
+// ErrNotFound.
 func TestAdminClientlogLivetailLifecycle(t *testing.T) {
 	h, apiKey := newClientlogHarness(t)
 
-	// Seed a session row to flip live-tail on.
+	// Seed a session row for principal 1 (the bootstrapped admin principal).
+	// PrincipalID 1 is created by newClientlogHarness via bootstrap.
 	sid := "session-abc"
 	now := h.clk.Now().UTC()
 	if err := h.fs.Meta().UpsertSession(context.Background(), store.SessionRow{
@@ -189,21 +196,22 @@ func TestAdminClientlogLivetailLifecycle(t *testing.T) {
 		PrincipalID:               1,
 		CreatedAt:                 now,
 		ExpiresAt:                 now.Add(24 * time.Hour),
+		LastSeenAt:                now,
 		ClientlogTelemetryEnabled: true,
 	}); err != nil {
 		t.Fatalf("UpsertSession: %v", err)
 	}
 
-	// Set live-tail with an explicit short duration; assert response.
-	body := map[string]any{"session_id": sid, "duration": "2m"}
+	// Set live-tail via user_id (the PrincipalID as a string).
+	body := map[string]any{"user_id": "1", "duration": "2m"}
 	res, respBody := h.postWithKey("/api/v1/admin/clientlog/livetail", body, apiKey)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("set: %d body=%s", res.StatusCode, respBody)
 	}
 	var setResp map[string]any
 	_ = json.Unmarshal(respBody, &setResp)
-	if setResp["session_id"] != sid {
-		t.Fatalf("set: unexpected session_id: %v", setResp["session_id"])
+	if setResp["user_id"] != "1" {
+		t.Fatalf("set: unexpected user_id in response: %v", setResp["user_id"])
 	}
 	if !strings.HasPrefix(setResp["livetail_until"].(string), "2026-") {
 		t.Fatalf("set: unexpected livetail_until: %v", setResp["livetail_until"])
@@ -231,7 +239,7 @@ func TestAdminClientlogLivetailLifecycle(t *testing.T) {
 	}
 
 	// Duration clamp: request 24h, default max is 60m.
-	body2 := map[string]any{"session_id": sid, "duration": "24h"}
+	body2 := map[string]any{"user_id": "1", "duration": "24h"}
 	res2, _ := h.postWithKey("/api/v1/admin/clientlog/livetail", body2, apiKey)
 	if res2.StatusCode != http.StatusOK {
 		t.Fatalf("clamp: %d", res2.StatusCode)
@@ -242,14 +250,28 @@ func TestAdminClientlogLivetailLifecycle(t *testing.T) {
 	}
 
 	// Bad duration string → 400.
-	bad := map[string]any{"session_id": sid, "duration": "banana"}
+	bad := map[string]any{"user_id": "1", "duration": "banana"}
 	res3, _ := h.postWithKey("/api/v1/admin/clientlog/livetail", bad, apiKey)
 	if res3.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad duration: want 400, got %d", res3.StatusCode)
 	}
 
-	// Clear via DELETE.
-	delRes := h.adminDelete("/api/v1/admin/clientlog/livetail/"+sid, apiKey)
+	// Missing user_id → 400.
+	noUID := map[string]any{"duration": "5m"}
+	res4, _ := h.postWithKey("/api/v1/admin/clientlog/livetail", noUID, apiKey)
+	if res4.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing user_id: want 400, got %d", res4.StatusCode)
+	}
+
+	// Invalid user_id (not a number) → 400.
+	badUID := map[string]any{"user_id": "not-a-number"}
+	res5, _ := h.postWithKey("/api/v1/admin/clientlog/livetail", badUID, apiKey)
+	if res5.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid user_id: want 400, got %d", res5.StatusCode)
+	}
+
+	// Clear via DELETE /api/v1/admin/clientlog/livetail/{user_id}.
+	delRes := h.adminDelete("/api/v1/admin/clientlog/livetail/1", apiKey)
 	if delRes.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: want 204, got %d", delRes.StatusCode)
 	}

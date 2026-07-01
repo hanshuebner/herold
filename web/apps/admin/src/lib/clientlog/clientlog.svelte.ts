@@ -287,13 +287,13 @@ class ClientlogState {
   // ---------------------------------------------------------------------------
 
   async enableLivetail(durationStr = '15m'): Promise<void> {
-    if (this.selected === null || !this.selected.session_id) return;
+    if (this.selected === null || !this.selected.user_id) return;
     this.livetailStatus = 'pending';
     this.livetailError = null;
 
-    const result = await apiPost<{ session_id: string; livetail_until: string }>(
+    const result = await apiPost<{ user_id: string; livetail_until: string }>(
       '/api/v1/admin/clientlog/livetail',
-      { session_id: this.selected.session_id, duration: durationStr },
+      { user_id: this.selected.user_id, duration: durationStr },
     );
 
     if (!result.ok || result.data === null) {
@@ -307,12 +307,12 @@ class ClientlogState {
   }
 
   async disableLivetail(): Promise<void> {
-    if (this.selected === null || !this.selected.session_id) return;
+    if (this.selected === null || !this.selected.user_id) return;
     this.livetailStatus = 'pending';
     this.livetailError = null;
 
     const result = await apiDelete<null>(
-      `/api/v1/admin/clientlog/livetail/${encodeURIComponent(this.selected.session_id)}`,
+      `/api/v1/admin/clientlog/livetail/${encodeURIComponent(this.selected.user_id)}`,
     );
 
     if (!result.ok) {
