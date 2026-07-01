@@ -3945,6 +3945,9 @@ func testQueueCompleteSuccessVsFailure(t *testing.T, s store.Store) {
 	if gotOK.State != store.QueueStateDone {
 		t.Fatalf("ok state = %v, want done", gotOK.State)
 	}
+	if gotOK.Attempts != 1 {
+		t.Fatalf("ok attempts = %d, want 1 (CompleteQueueItem must increment attempts)", gotOK.Attempts)
+	}
 	gotFail, err := s.Meta().GetQueueItem(ctx, idFail)
 	if err != nil {
 		t.Fatalf("Get FAIL: %v", err)
@@ -3954,6 +3957,9 @@ func testQueueCompleteSuccessVsFailure(t *testing.T, s store.Store) {
 	}
 	if gotFail.LastError == "" {
 		t.Fatalf("LastError empty")
+	}
+	if gotFail.Attempts != 1 {
+		t.Fatalf("fail attempts = %d, want 1 (CompleteQueueItem must increment attempts)", gotFail.Attempts)
 	}
 	if err := s.Meta().CompleteQueueItem(ctx, store.QueueItemID(99999), true, ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Complete absent = %v, want ErrNotFound", err)

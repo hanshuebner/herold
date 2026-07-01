@@ -137,7 +137,7 @@
             <th class="col-state">State</th>
             <th class="col-from">Sender</th>
             <th class="col-to">Recipient</th>
-            <th class="col-attempts">Att.</th>
+            <th class="col-attempts">Tries</th>
             <th class="col-created">Created</th>
           </tr>
         </thead>
@@ -156,12 +156,8 @@
               <td class="col-state">
                 <span class="chip {stateChipClass(item.state)}">{item.state}</span>
               </td>
-              <td class="col-from">
-                <span class="mono small">{item.mail_from}</span>
-              </td>
-              <td class="col-to">
-                <span class="mono small">{item.rcpt_to}</span>
-              </td>
+              <td class="col-from">{item.mail_from}</td>
+              <td class="col-to">{item.rcpt_to}</td>
               <td class="col-attempts">{item.attempts}</td>
               <td class="col-created">
                 <span class="time-text">{formatDate(item.created_at)}</span>
@@ -362,11 +358,12 @@
   }
 
   .col-expand { width: 28px; }
+  .table .col-expand { padding-left: var(--spacing-02); padding-right: var(--spacing-02); }
   .col-state { width: 9%; }
   .col-from { width: 26%; }
   .col-to { width: 26%; }
   .col-attempts { width: 6%; text-align: center; }
-  .col-created { width: 15%; white-space: nowrap; }
+  .col-created { width: 15%; white-space: nowrap; text-align: right; }
 
   .expand-indicator {
     font-size: 10px;

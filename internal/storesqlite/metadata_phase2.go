@@ -211,7 +211,8 @@ func (m *metadata) CompleteQueueItem(ctx context.Context, id store.QueueItemID, 
 			newState = store.QueueStateFailed
 		}
 		res, err := tx.ExecContext(ctx, `
-			UPDATE queue SET state = ?, last_error = ?, last_attempt_at_us = ?
+			UPDATE queue SET state = ?, last_error = ?, last_attempt_at_us = ?,
+			                attempts = attempts + 1
 			 WHERE id = ?`,
 			int64(newState), errMsg, usMicros(now), int64(id))
 		if err != nil {
