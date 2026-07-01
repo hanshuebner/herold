@@ -633,7 +633,7 @@
     right: 0;
     z-index: 300;
     min-width: 160px;
-    background: var(--layer-02);
+    background: var(--background);
     border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
