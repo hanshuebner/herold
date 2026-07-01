@@ -24,7 +24,7 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
-  import { watchRegistration, activateWaiting } from './lib/sw-update';
+  import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from './lib/sw-update';
   import { handleSwNavigateMessage } from './lib/push/sw-navigate';
   // Side-effect: registers a sync.on('InternalizeStatus') handler that
   // refreshes the session descriptor whenever the background internalize-
@@ -348,6 +348,13 @@
           () => untrack(() => { showSwUpdateBanner = true; }),
           { suppressInitialWaiting },
         );
+        // Poll for an updated sw.js every hour so the "new version available"
+        // banner appears while the user is on the old version, without requiring
+        // a manual reload.  A SPA with hash-based routing has no real navigations
+        // after the initial page load, so the browser would otherwise not
+        // byte-compare sw.js until the next reload or its 24-hour check interval
+        // (REQ-MOB-75 / REQ-PUSH-72).
+        startPeriodicUpdateCheck(reg, 60 * 60 * 1000);
       })
       .catch(() => {
         // SW registration failed (e.g. insecure context in dev) — update

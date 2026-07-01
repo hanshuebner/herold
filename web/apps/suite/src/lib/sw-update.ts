@@ -100,10 +100,39 @@ export function activateWaiting(
   waiting.postMessage({ type: 'SKIP_WAITING' });
 }
 
+/**
+ * Starts a periodic service worker update check.
+ *
+ * The browser checks for an updated sw.js on navigation events and at most
+ * once per 24 hours by its own heuristic.  A SPA with hash-based routing
+ * (e.g. /#/mail) generates no real navigations after the initial page load,
+ * so the browser may not detect a new SW for up to 24 hours.  Calling
+ * reg.update() on an interval ensures the browser byte-compares the
+ * registered sw.js against the server copy and fires updatefound within
+ * intervalMs of a new deploy.  The watchRegistration() listener handles
+ * the rest (banner, Reload).
+ *
+ * @returns A cleanup function that cancels the interval.
+ */
+export function startPeriodicUpdateCheck(
+  reg: ServiceWorkerRegistration,
+  intervalMs: number,
+): () => void {
+  const id = setInterval(() => {
+    reg.update().catch(() => {
+      // update() rejects when the network is unavailable or the server
+      // returns a non-OK status.  This is expected in offline / degraded
+      // conditions; the next tick fires another attempt.
+    });
+  }, intervalMs);
+  return () => clearInterval(id);
+}
+
 export const _internals_forTest = {
   shouldShowBanner,
   watchRegistration,
   activateWaiting,
+  startPeriodicUpdateCheck,
   get reloading(): boolean {
     return _reloading;
   },

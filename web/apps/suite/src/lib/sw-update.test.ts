@@ -9,13 +9,14 @@
  *     calls onReload exactly once via the controllerchange guard.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { _internals_forTest } from './sw-update';
 
 const {
   shouldShowBanner,
   watchRegistration,
   activateWaiting,
+  startPeriodicUpdateCheck,
   resetReloading,
 } = _internals_forTest;
 
@@ -312,5 +313,73 @@ describe('activateWaiting', () => {
     listeners[0]?.();
 
     expect(onReload).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── startPeriodicUpdateCheck ──────────────────────────────────────────────
+
+describe('startPeriodicUpdateCheck', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not call reg.update() before the first interval', () => {
+    const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
+
+    startPeriodicUpdateCheck(reg, 1000);
+
+    vi.advanceTimersByTime(999);
+    expect(reg.update).not.toHaveBeenCalled();
+  });
+
+  it('calls reg.update() after the first interval elapses', () => {
+    const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
+
+    startPeriodicUpdateCheck(reg, 1000);
+
+    vi.advanceTimersByTime(1000);
+    expect(reg.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls reg.update() on each subsequent interval tick', () => {
+    const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
+
+    startPeriodicUpdateCheck(reg, 1000);
+
+    vi.advanceTimersByTime(3000);
+    expect(reg.update).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns a cleanup function that stops the interval', () => {
+    const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
+
+    const stop = startPeriodicUpdateCheck(reg, 1000);
+    vi.advanceTimersByTime(1000);
+    expect(reg.update).toHaveBeenCalledTimes(1);
+
+    stop();
+    vi.advanceTimersByTime(5000);
+    // No further calls after cleanup.
+    expect(reg.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows update() rejections without propagating', async () => {
+    const reg = {
+      update: vi.fn().mockRejectedValue(new Error('network error')),
+    } as unknown as ServiceWorkerRegistration;
+
+    startPeriodicUpdateCheck(reg, 1000);
+    vi.advanceTimersByTime(1000);
+
+    // Flush microtasks so the .catch() handler inside startPeriodicUpdateCheck
+    // can settle before we assert.  A single Promise.resolve() turn is enough.
+    await Promise.resolve();
+
+    // The rejection was caught; no unhandled rejection, and the interval ran.
+    expect(reg.update).toHaveBeenCalledTimes(1);
   });
 });
