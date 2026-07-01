@@ -334,6 +334,66 @@ func TestOAuthCallback_ExchangesAndPersists(t *testing.T) {
 	}
 }
 
+// TestOAuthCallback_MarksIdentityVerified asserts that after a successful
+// OAuth callback the identity row's VerifiedAtUs is set (i.e. MarkIdentityVerified
+// was called). This is the acceptance criterion from #92 that was missing before
+// the fix in re #99: UpsertIdentitySubmission was called but MarkIdentityVerified
+// was not, so verified_at_us stayed NULL and the identity showed "Nicht verifiziert"
+// on every subsequent JMAP fetch.
+func TestOAuthCallback_MarksIdentityVerified(t *testing.T) {
+	oh := newOAuthHarness(t)
+	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauth-verify@example.com")
+
+	// Confirm the identity starts unverified.
+	before, err := oh.fs.Meta().GetJMAPIdentity(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity before: %v", err)
+	}
+	if before.VerifiedAtUs != 0 {
+		t.Fatalf("VerifiedAtUs before callback = %d; want 0 (unverified)", before.VerifiedAtUs)
+	}
+
+	// Run a complete start -> callback flow via the stubbed token endpoint.
+	startRes, _ := oh.doRequest("POST",
+		"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail",
+		apiKey, nil)
+	if startRes.StatusCode != http.StatusFound {
+		t.Fatalf("start: expected 302, got %d", startRes.StatusCode)
+	}
+	loc := startRes.Header.Get("Location")
+	u, _ := url.Parse(loc)
+	stateTok := u.Query().Get("state")
+	if stateTok == "" {
+		t.Fatal("no state in redirect")
+	}
+
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=fake-code",
+		url.QueryEscape(stateTok))
+	cbRes, cbBody := oh.doRequest("GET", callbackPath, apiKey, nil)
+	if cbRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("callback: expected 204, got %d: %s", cbRes.StatusCode, cbBody)
+	}
+
+	// The identity must now be marked verified.
+	after, err := oh.fs.Meta().GetJMAPIdentity(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity after: %v", err)
+	}
+	if after.VerifiedAtUs == 0 {
+		t.Fatal("VerifiedAtUs is still 0 after successful OAuth callback; MarkIdentityVerified was not called")
+	}
+
+	// The submission row must also be present (regression guard for the
+	// existing behaviour tested in TestOAuthCallback_ExchangesAndPersists).
+	sub, err := oh.fs.Meta().GetIdentitySubmission(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission: %v", err)
+	}
+	if sub.SubmitAuthMethod != "oauth2" {
+		t.Errorf("SubmitAuthMethod = %q; want oauth2", sub.SubmitAuthMethod)
+	}
+}
+
 // TestOAuthCallback_BadState verifies that an unknown or expired state token
 // returns 400 with type oauth_state_invalid.
 func TestOAuthCallback_BadState(t *testing.T) {

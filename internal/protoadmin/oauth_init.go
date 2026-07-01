@@ -448,6 +448,19 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mark the identity verified: the OAuth grant proves ownership of the
+	// email address, so verified_at_us must be set atomically with the
+	// submission record. Without this call, verified_at_us stays NULL and
+	// the identity reads as unverified on every subsequent JMAP fetch
+	// (re #99, acceptance criterion from #92).
+	if err := s.store.Meta().MarkIdentityVerified(r.Context(), identityID); err != nil {
+		s.loggerFrom(r.Context()).Error("protoadmin.oauth_callback.mark_verified_failed",
+			"activity", observe.ActivityInternal, "err", err,
+			"identity_id", identityID)
+		s.writeStoreError(w, r, err)
+		return
+	}
+
 	// Trigger retry for any submissions parked during the broken auth
 	// window. The call is best-effort: individual submission failures are
 	// logged inside RetryForIdentity and never prevent the 204 response
