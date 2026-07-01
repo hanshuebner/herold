@@ -157,6 +157,7 @@ class MailStore {
    */
   committedThreadEmailIds = $state(new Map<string, string[]>());
 
+
   /**
    * Per-thread set of email ids that have already passed through the
    * arrival gate (either accepted via "Neue Antwort anzeigen" or dismissed
@@ -763,11 +764,23 @@ class MailStore {
         );
         // Fetch thread membership so search results can show per-thread message
         // counts (issue #64).
-        b.call(
+        const tg = b.call(
           'Thread/get',
           {
             accountId,
             '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
+        // Fetch all thread member emails in the same request so
+        // threadDedupeCount can deduplicate self-sent threads without a
+        // separate round-trip (re #88). Mirrors the same step in loadFolder.
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': tg.ref('/list/*/emailIds'),
+            properties: EMAIL_LIST_PROPERTIES,
           },
           [Capability.Mail],
         );
@@ -777,9 +790,11 @@ class MailStore {
       const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
       const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
+      const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
 
       const nextThreads = new Map(this.threads);
@@ -1535,11 +1550,27 @@ class MailStore {
         );
         // Fetch thread membership so the list can show per-thread message counts
         // (issue #64). The wildcard path extracts all threadIds from the email list.
-        b.call(
+        const tg = b.call(
           'Thread/get',
           {
             accountId,
             '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
+        // Fetch all thread member emails with list properties in the same
+        // request (re #88). The RFC 8620 §3.7.1 wildcard path /list/*/emailIds
+        // is flattened by the server into a single ID list, so this Email/get
+        // receives every member across all fetched threads — including members
+        // in other mailboxes (Sent, Archive) that collapseThreads excluded.
+        // Having all members in the main emails cache before 'ready' is set
+        // makes threadDedupeCount correct on the very first render.
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': tg.ref('/list/*/emailIds'),
+            properties: EMAIL_LIST_PROPERTIES,
           },
           [Capability.Mail],
         );
@@ -1551,9 +1582,14 @@ class MailStore {
         responses[1],
       );
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
+      const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      // Merge thread member emails (non-representative members from other
+      // mailboxes) into the cache so threadDedupeCount can deduplicate by
+      // Message-ID without a separate round-trip (re #88).
+      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
       this.listEmailIds = queryResult.ids;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
@@ -1781,21 +1817,21 @@ class MailStore {
   /**
    * Deduplicated logical-message count for the thread badge.
    *
-   * When the thread has been cold-loaded, computes the count from the
-   * committed snapshot via resolveDeduplicatedThreadEmails() — which
-   * collapses same-Message-ID copies (Sent + Inbox of a self-sent
-   * message) into one logical message. Falls back to the raw
-   * Thread.emailIds length for threads that have not yet been opened in
-   * the reader, which may overcount self-sent threads until first view
-   * but is the best available approximation without loading every thread
-   * member's messageId header at list time.
+   * Deduplicated logical-message count for the thread badge (re #88).
+   *
+   * Uses the committed snapshot when available (after loadThread has run),
+   * falling back to the live Thread.emailIds. In both cases all thread
+   * members are expected to be present in the main emails cache — the
+   * chained Email/get at the end of the loadFolder / runSearch batch
+   * fetches them with list properties before 'ready' is set.
+   * resolveDeduplicatedThreadEmails groups same-Message-ID copies (Sent +
+   * Inbox of a self-sent message) and counts them as one logical message.
    */
   threadDedupeCount(threadId: string): number {
     const committed = this.committedThreadEmailIds.get(threadId);
-    if (committed !== undefined) {
-      return resolveDeduplicatedThreadEmails(committed, this.emails).length;
-    }
-    return this.threads.get(threadId)?.emailIds.length ?? 0;
+    const ids = committed !== undefined ? committed : (this.threads.get(threadId)?.emailIds ?? []);
+    if (ids.length === 0) return 0;
+    return resolveDeduplicatedThreadEmails(ids, this.emails).length;
   }
 
   // ── Optimistic actions ────────────────────────────────────────────────
@@ -3529,6 +3565,45 @@ export function normalizeMessageId(mid: string): string | null {
 }
 
 /**
+ * Count unique logical messages in a thread's email-id list by deduplicating
+ * on Message-ID, drawing messageId data from the main emails cache first and
+ * falling back to the supplemental side-cache for thread members that were
+ * not fetched by the collapsed list query (re #88).
+ *
+ * For each email ID:
+ *   - If the email is in `emails` and has a non-empty messageId, group by
+ *     its normalised Message-ID value.
+ *   - Otherwise, check `memberMessageIds` for a previously-fetched stub.
+ *   - If neither cache has data for the ID, count it as one unique message
+ *     (conservative — may overcount only when the side-cache is incomplete).
+ *
+ * Emails without a messageId header (messageId null/empty) are always
+ * counted individually (cannot deduplicate without the header).
+ */
+export function dedupeCountByMessageId(
+  emailIds: readonly string[],
+  emails: ReadonlyMap<string, Email>,
+  memberMessageIds: ReadonlyMap<string, string[] | null>,
+): number {
+  const seenMessageIds = new Set<string>();
+  let count = 0;
+  for (const id of emailIds) {
+    const cached = emails.get(id);
+    const mids: string[] | null | undefined =
+      cached !== undefined ? cached.messageId : memberMessageIds.get(id);
+    if (mids && mids.length > 0) {
+      const normalised = normalizeMessageId(mids[0]!);
+      if (normalised !== null) {
+        if (seenMessageIds.has(normalised)) continue; // duplicate — skip
+        seenMessageIds.add(normalised);
+      }
+    }
+    count++;
+  }
+  return count;
+}
+
+/**
  * Filter `newIds` to the subset that can be added to a committed thread
  * snapshot without duplicating a physical message already represented there.
  *
@@ -3683,6 +3758,7 @@ export const _internals_forTest = {
   allVisibleSelected,
   resolveThreadEmails,
   resolveDeduplicatedThreadEmails,
+  dedupeCountByMessageId,
   expandToThreadIds,
   setErrorToUserMessage,
   mergeEmailListFetch,

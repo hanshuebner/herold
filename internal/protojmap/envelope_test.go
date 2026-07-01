@@ -121,6 +121,44 @@ func TestGatherCreations_SkipsErrorEntries(t *testing.T) {
 	}
 }
 
+// TestEvalJSONPointer_WildcardFlattening verifies RFC 8620 §3.7.1 one-level
+// flattening: when a wildcard sub-evaluation returns an array (e.g. the
+// emailIds field of a Thread object), its elements are inserted flat into the
+// result instead of being nested. This is the behaviour required for a chained
+// Email/get whose #ids references Thread/get's /list/*/emailIds (re #88).
+func TestEvalJSONPointer_WildcardFlattening(t *testing.T) {
+	// Two Thread objects each with two emailIds.
+	doc := json.RawMessage(`[
+		{"id":"t1","emailIds":["e1","e2"]},
+		{"id":"t2","emailIds":["e3","e4"]}
+	]`)
+
+	got, err := evalJSONPointer(doc, "/*/emailIds")
+	if err != nil {
+		t.Fatalf("evalJSONPointer: %v", err)
+	}
+	// Flattened: all four IDs in a single array, not [[e1,e2],[e3,e4]].
+	want := json.RawMessage(`["e1","e2","e3","e4"]`)
+	if !equalJSON(t, got, want) {
+		t.Errorf("got %s, want %s", string(got), string(want))
+	}
+}
+
+// TestEvalJSONPointer_WildcardScalar confirms that the existing scalar case
+// is unaffected: /list/*/id (where id is a string, not an array) still
+// produces a flat array of strings without double-flattening.
+func TestEvalJSONPointer_WildcardScalar(t *testing.T) {
+	doc := json.RawMessage(`[{"id":"t1"},{"id":"t2"}]`)
+	got, err := evalJSONPointer(doc, "/*/id")
+	if err != nil {
+		t.Fatalf("evalJSONPointer: %v", err)
+	}
+	want := json.RawMessage(`["t1","t2"]`)
+	if !equalJSON(t, got, want) {
+		t.Errorf("got %s, want %s", string(got), string(want))
+	}
+}
+
 func equalJSON(t *testing.T, a, b []byte) bool {
 	t.Helper()
 	var av, bv any

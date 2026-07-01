@@ -353,7 +353,17 @@ func evalPointerTokens(doc json.RawMessage, tokens []string) (json.RawMessage, e
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, v)
+			// RFC 8620 §3.7.1: when the sub-result of a wildcard evaluation
+			// is itself an array, its elements are inserted into the output
+			// flat (one level only) rather than nested. This allows a path
+			// like /list/*/emailIds to collect all thread member IDs from
+			// multiple Thread objects into a single flat ID list.
+			var subArr []json.RawMessage
+			if json.Unmarshal(v, &subArr) == nil {
+				out = append(out, subArr...)
+			} else {
+				out = append(out, v)
+			}
 		}
 		return json.Marshal(out)
 	}
