@@ -196,6 +196,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/identities/{id}/verify-request", auth1(s.handleVerifyIdentityRequest))
 	mux.HandleFunc("GET /verify-identity", s.handleVerifyIdentityLink)
 
+	// Provider detection for the add-identity wizard (re #92).
+	// Side-effect free: performs an MX lookup on the email domain and
+	// returns {"provider":"google"|"microsoft"|null}. The wizard uses
+	// this to route into the existing external-submission OAuth2 flow
+	// instead of the verification-code flow. Registered here AND in
+	// RegisterSelfServiceRoutes so both listeners expose it.
+	mux.HandleFunc("GET /api/v1/identities/detect-provider", auth1(s.handleDetectProvider))
+
 	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
 	// Self-service: the caller may only modify their own flag (enforced
 	// inside the handler by using principalFrom, not a {pid} path param).
@@ -371,6 +379,13 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// publicMux at the same path; the /api/v1/* prefix mount does
 	// NOT cover it.
 	mux.HandleFunc("GET /verify-identity", s.handleVerifyIdentityLink)
+
+	// Provider detection for the add-identity wizard (re #92).
+	// Side-effect free: performs an MX lookup on the email domain and
+	// returns {"provider":"google"|"microsoft"|null}. The wizard uses
+	// this to route into the existing external-submission OAuth2 flow
+	// instead of the verification-code flow.
+	mux.HandleFunc("GET /api/v1/identities/detect-provider", auth1(s.handleDetectProvider))
 
 	// Client-log ingest from the Suite SPA (public listener), both endpoints
 	// (REQ-OPS-200, architecture §Endpoint mounting).

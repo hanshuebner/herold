@@ -325,6 +325,12 @@ type Options struct {
 	// requests. When nil the handler constructs a default client with a
 	// 10-second timeout. Tests inject an httptest-server-routed client here.
 	TranslateHTTPClient *http.Client
+
+	// MXResolver drives GET /api/v1/identities/detect-provider. Defaults
+	// to a net.DefaultResolver wrapper when nil. Tests inject a fake
+	// returning canned MX records so the heuristic is exercised without
+	// network access (re #92).
+	MXResolver MXResolver
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.
@@ -469,6 +475,10 @@ func NewServer(
 	// don't want a real probe), fall back to noopProbe.
 	if opts.ExternalProbe == nil {
 		opts.ExternalProbe = noopProbe
+	}
+	// Default MX resolver for the detect-provider endpoint (re #92).
+	if opts.MXResolver == nil {
+		opts.MXResolver = netMXResolver{}
 	}
 	// Register the admin REST collector set on Server construction.
 	// Idempotent across multiple instances sharing a process Registry.
