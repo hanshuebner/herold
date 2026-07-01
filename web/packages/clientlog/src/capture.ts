@@ -40,6 +40,21 @@ export interface OriginalConsole {
 }
 
 /**
+ * Known-benign synthetic ErrorEvent messages dispatched by the browser when a
+ * ResizeObserver callback causes a layout change that cannot be delivered within
+ * one animation frame. These are not JavaScript exceptions: event.error is null
+ * and the message is a fixed string. Recording them as errors clutters the
+ * client-error log with noise that has no actionable signal.
+ *
+ * Chrome (older): "ResizeObserver loop limit exceeded"
+ * Chrome / Firefox: "ResizeObserver loop completed with undelivered notifications."
+ */
+const BENIGN_WINDOW_ERROR_MESSAGES = new Set([
+  'ResizeObserver loop completed with undelivered notifications.',
+  'ResizeObserver loop limit exceeded',
+]);
+
+/**
  * Materialise an error-like value into msg + optional stack.
  * Intentionally minimal -- we do not touch error.cause chains to avoid
  * accidentally capturing sensitive data (REQ-CLOG-10).
@@ -205,6 +220,12 @@ export function installCapture(
           emit(ev);
           devEcho(orig.error, 'window.error (resource)', [msg]);
         }
+        return;
+      }
+      // Drop known-benign synthetic browser signals. The ResizeObserver family
+      // arrives with event.error === null and a fixed message string. They are
+      // not JavaScript exceptions and have no actionable signal.
+      if (event.error == null && BENIGN_WINDOW_ERROR_MESSAGES.has(event.message)) {
         return;
       }
       // Prefer event.error (a real Error with stack) over event.message.

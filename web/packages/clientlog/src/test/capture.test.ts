@@ -190,4 +190,46 @@ describe('window error listener', () => {
     // breadcrumbs_snapshot is set for error events (may be empty array)
     expect(emitted[0]!.breadcrumbs_snapshot).toBeDefined();
   });
+
+  // ResizeObserver denylist (re #102)
+  it('does not emit the Chrome/Firefox ResizeObserver "undelivered notifications" synthetic error', () => {
+    window.dispatchEvent(
+      new ErrorEvent('error', {
+        message: 'ResizeObserver loop completed with undelivered notifications.',
+        // event.error is absent (null) for synthetic browser signals
+      }),
+    );
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('does not emit the older Chrome ResizeObserver "loop limit exceeded" synthetic error', () => {
+    window.dispatchEvent(
+      new ErrorEvent('error', {
+        message: 'ResizeObserver loop limit exceeded',
+      }),
+    );
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('still emits a genuine ErrorEvent whose error object is non-null (denylist gated on null .error)', () => {
+    const err = new Error('ResizeObserver loop completed with undelivered notifications.');
+    window.dispatchEvent(
+      new ErrorEvent('error', {
+        error: err,
+        message: 'ResizeObserver loop completed with undelivered notifications.',
+      }),
+    );
+    // event.error is a real Error, so the denylist must not suppress it.
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.kind).toBe('error');
+    expect(emitted[0]!.level).toBe('error');
+  });
+
+  it('still emits null-error ErrorEvents whose message is not in the denylist (e.g. "Script error.")', () => {
+    window.dispatchEvent(
+      new ErrorEvent('error', { message: 'Script error.' }),
+    );
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.msg).toBe('Script error.');
+  });
 });
