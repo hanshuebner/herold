@@ -1,11 +1,16 @@
 /**
- * Tests for the window error listener in capture.ts.
+ * Tests for the window error listener and console capture in capture.ts.
  *
- * The handler is registered via addEventListener, which passes a single
- * ErrorEvent (not the five positional args of the window.onerror property).
- * These tests assert that the emitted CapturedEvent carries the real message
- * and stack -- never the useless "[object ErrorEvent]" or "[object Event]"
- * string that a naive String(event) conversion produces.
+ * The window.error handler is registered via addEventListener, which passes a
+ * single ErrorEvent (not the five positional args of the window.onerror
+ * property). Tests assert that the emitted CapturedEvent carries the real
+ * message and stack -- never the useless "[object ErrorEvent]" or "[object
+ * Event]" string that a naive String(event) conversion produces.
+ *
+ * The console.error wrapper uses argsToMsg to serialise arguments. Error
+ * objects have non-enumerable properties, so JSON.stringify produces "{}".
+ * argsToMsg must use extractError for Error instances so the real message
+ * survives into the captured event (re #101).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -22,6 +27,66 @@ function makeCfg(emit: (event: CapturedEvent) => void) {
     emit,
   };
 }
+
+describe('console.error capture with Error arguments', () => {
+  let removeHandlers: () => void;
+  let emitted: CapturedEvent[];
+  let originalConsoleError: typeof console.error;
+
+  beforeEach(() => {
+    emitted = [];
+    _resetBreadcrumbs();
+    originalConsoleError = console.error;
+    ({ removeHandlers } = installCapture(makeCfg((ev) => emitted.push(ev))));
+  });
+
+  afterEach(() => {
+    removeHandlers();
+    // Restore in case removeHandlers didn't run cleanly.
+    console.error = originalConsoleError;
+  });
+
+  it('includes the real Error message, not "{}", when an Error is the second arg', () => {
+    const err = new Error('identity delete failed: forbidden');
+    console.error('removeIdentity failed', err);
+    expect(emitted).toHaveLength(1);
+    const ev = emitted[0]!;
+    expect(ev.kind).toBe('error');
+    expect(ev.msg).toContain('identity delete failed: forbidden');
+    expect(ev.msg).not.toBe('removeIdentity failed {}');
+    expect(ev.msg).not.toContain('{}');
+  });
+
+  it('includes the Error message when the Error is the only argument', () => {
+    const err = new Error('standalone error');
+    console.error(err);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.msg).toBe('standalone error');
+  });
+
+  it('joins label and Error message with a space', () => {
+    const err = new Error('the real message');
+    console.error('label', err);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.msg).toBe('label the real message');
+  });
+
+  it('handles subclasses of Error (e.g. IdentitySetError) correctly', () => {
+    class IdentitySetError extends Error {
+      type: string;
+      constructor(type: string, description?: string) {
+        super(description ?? type);
+        this.name = 'IdentitySetError';
+        this.type = type;
+      }
+    }
+    const err = new IdentitySetError('forbidden', 'cannot delete the default identity');
+    console.error('removeIdentity failed', err);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.msg).toContain('cannot delete the default identity');
+    expect(emitted[0]!.msg).not.toContain('{}');
+  });
+});
 
 describe('window error listener', () => {
   let removeHandlers: () => void;

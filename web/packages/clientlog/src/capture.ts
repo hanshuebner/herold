@@ -108,7 +108,14 @@ export function installCapture(
 
   function argsToMsg(args: unknown[]): string {
     return args
-      .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+      .map((a) => {
+        if (typeof a === 'string') return a;
+        // Error objects have non-enumerable properties (message, stack, name)
+        // that JSON.stringify omits, producing "{}". Use extractError so the
+        // real message survives into the captured event.
+        if (a instanceof Error) return extractError(a).msg;
+        return JSON.stringify(a);
+      })
       .join(' ')
       .slice(0, 4096);
   }
