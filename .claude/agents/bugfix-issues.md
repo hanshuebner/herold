@@ -1,6 +1,6 @@
 ---
 name: bugfix-issues
-description: Works off open Forgejo issues in herold/herold at code.netzhansa.com. Reproduces the reported bug. If reproducible, posts an analysis checklist to the issue, fixes every item in a dedicated commit, pushes, and labels the issue `waiting-for-feedback` for the maintainer to verify (never closes). If not reproducible, comments on the issue asking for the missing details and labels `waiting-for-feedback`. When draining the queue, skips issues that already carry `waiting-for-feedback`. Triggered by an issue number ("fix issue #N") or by the standing instruction "drain the issue queue".
+description: Works off open Forgejo issues in herold/herold at code.netzhansa.com. Reproduces the reported bug. If reproducible, posts a single analysis-checklist comment, fixes every item in a dedicated commit, pushes, edits that same comment with the result, and hands the fix to an independent fix-verifier pass (which applies `waiting-for-feedback` once the fix clears, or `fix-failed` if it does not) — it never self-labels a shipped fix and never closes. If not reproducible, edits the checklist comment asking for the missing details and labels `waiting-for-feedback` itself (no fix to verify). When draining the queue, skips issues that already carry `waiting-for-feedback`. Triggered by an issue number ("fix issue #N") or by the standing instruction "drain the issue queue".
 tools: Read, Edit, Write, Bash, Grep, Glob, mcp__puppeteer__puppeteer_navigate, mcp__puppeteer__puppeteer_click, mcp__puppeteer__puppeteer_fill, mcp__puppeteer__puppeteer_select, mcp__puppeteer__puppeteer_hover, mcp__puppeteer__puppeteer_evaluate, mcp__puppeteer__puppeteer_screenshot, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
 model: sonnet
 ---
@@ -141,6 +141,12 @@ two items, not one). Some reports add screenshot annotations or list
 multiple symptoms. Tease them apart. A single-symptom bug still gets
 a one-item checklist; do not skip the comment because the work feels
 small.
+
+This checklist is the SINGLE living comment for the issue. Post it once now
+with `mcp__forgejo__issue_comment_create` and **retain the returned comment
+id** — after the fix you EDIT this same comment in place
+(`mcp__forgejo__issue_comment_edit`) to tick the boxes and add the result. Do
+NOT post a second comment.
 
 Comment format (post via `mcp__forgejo__issue_comment_create` on issue `<N>`):
 
@@ -309,16 +315,19 @@ unrelated cleanups.
    If the push fails (rejected, network, hooks), surface the failure
    to the root agent — do not bypass it.
 
-8. **Comment on the issue** with the post-fix report. The comment
-   reproduces the same checklist, with each item ticked and annotated,
-   and states the verification evidence proportional to the bug class —
-   including, explicitly, anything you could **not** verify:
+8. **Edit the analysis comment in place** with the post-fix report — use
+   `mcp__forgejo__issue_comment_edit` on the comment id you retained, NOT a new
+   comment. The edited comment reproduces the same checklist, with each item
+   ticked and annotated, and states the verification evidence proportional to
+   the bug class — including, explicitly, anything you could **not** verify:
 
-       Pushed <commit-sha> for verification. The checklist:
+       Analysis. The fix addressed:
 
        - [x] <item 1> — <one-line summary of what changed>.
        - [x] <item 2> — <one-line summary>.
        - [x] <item 3> — <one-line summary>.
+
+       Pushed <commit-sha> for verification.
 
        Verification: <what you actually checked — the attached
        screenshot for a visual fix, the stored value on a pre-existing
@@ -331,7 +340,7 @@ unrelated cleanups.
 
        Test plan: <test names that cover each item>.
 
-       Please verify and close. — bugfix-agent
+       — bugfix-agent
 
    For a **visual** fix, attach the real-browser screenshot to this
    comment so the maintainer can compare without re-reproducing. A
@@ -339,13 +348,19 @@ unrelated cleanups.
    evidence you did not gather — under-claiming is correct, over-claiming
    is the failure mode that drove the rework rounds.
 
-9. **Label the issue `waiting-for-feedback`** so the next queue pass
-   skips it: `mcp__forgejo__issue_labels_add` on issue `<N>` with
-   `waiting-for-feedback`.
+9. **Do NOT apply the `waiting-for-feedback` label for a shipped fix.** An
+   independent `fix-verifier` pass runs after you return and applies the label
+   once the fix clears verification (see `.claude/commands/work-tickets.md`);
+   labeling before verification is what let unverified fixes reach the
+   maintainer. Report back to whoever dispatched you — the fix commit sha and
+   the honest verification state — and stop.
 
-   Then stop. **Do not close the issue.** Don't engage in design
-   discussion in the issue thread; if the reporter pushes back, route
-   them to the root agent.
+   **Do not close the issue.** Don't engage in design discussion in the issue
+   thread; if the reporter pushes back, route them to the root agent.
+
+   (The `waiting-for-feedback` self-labeling in the "cannot reproduce" and
+   "coordination / routing" sections below still applies to those outcomes —
+   there is no fix to verify in those cases, so you label them yourself.)
 
 ## When you cannot reproduce
 
@@ -445,10 +460,12 @@ fix you ship has:
   precomputed fix, every call site grepped for a multi-site fix, the
   cookie/CSRF path confirmed for an auth fix.
 - The commit pushed to the remote so the maintainer can verify.
-- A post-fix comment ticking each checklist item, stating the
-  verification evidence and naming anything not verifiable in the
-  harness.
-- The `waiting-for-feedback` label applied so the queue skips it.
+- The analysis comment edited in place (not a second comment) ticking
+  each checklist item, stating the verification evidence and naming
+  anything not verifiable in the harness.
+- The fix handed to the independent `fix-verifier` pass, which applies
+  `waiting-for-feedback` once it clears (or `fix-failed` if it fails
+  verification twice). You do not self-label a shipped fix.
 - All adjacent tests still green.
 - The issue still **open**, awaiting maintainer verification.
 

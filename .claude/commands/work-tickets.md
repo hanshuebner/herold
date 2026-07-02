@@ -18,52 +18,78 @@ labels for each. If the list is empty, say so and stop.
 
 ## 2. Process each ticket
 
-For each issue in the work-list, in order, dispatch the **bugfix-issues** agent
-via the Agent tool (`subagent_type: "bugfix-issues"`) with a prompt naming the
-specific issue number, e.g. "Work issue #N on herold/herold." The agent
-reproduces the bug, posts an analysis checklist, ships a focused fix-commit
-pushed to `main`, comments the result, and labels the issue
-`waiting-for-feedback`. It never closes issues.
+Process the work-list **one issue at a time, sequentially** — each fix commits
+and pushes to `main`, and concurrent pushes plus shared-working-tree edits race.
+(If you genuinely want parallelism, every agent MUST run with `isolation:
+"worktree"` — but sequential is the default.)
 
-**Hold each fix to its verification gate.** The recurring cause of rework is a
-fix declared "verified" on evidence that cannot see the defect — a green unit
-run, a computed-style read, or a headless pass that never exercised the real
-failure. In the prompt, instruct the agent to classify the bug and clear the
-matching gate before reporting done, and to name anything it could not verify:
+For each issue, run this fix → verify → (retry once) → label cycle:
 
-- **Visual / perceptual** (font, contrast, spacing, alignment, overflow): a
-  real-browser screenshot is mandatory and must be attached to the post-fix
-  comment; a `getComputedStyle` read is not sufficient.
-- **Real-device / OS-integration** (notifications, service-worker lifecycle,
-  clipboard, pointer/scroll, external OAuth round-trips): often not reproducible
-  in headless puppeteer. The agent must add a definitive test or instrumented
-  logging and state plainly what it verified and what needs your device.
-- **Derived / precomputed / cached value** (badge counts, hasAttachment, thread
-  membership, FTS): fix the live path AND backfill the persisted value; verify
-  on a pre-existing row, not just a freshly created one.
-- **Multi-site / i18n / shared-helper**: grep every call site; "applied
-  everywhere" is a grep-backed claim, not an assumption.
-- **Auth / session / CSRF** (especially the `/admin/` public-listener seam):
-  confirm the correct cookie set and the `X-CSRF-Token` path.
+### 2a. Fix
 
-When an agent returns, sanity-check that its post-fix comment carries evidence
-proportional to the bug class. If a visual fix has no attached screenshot, or an
-OS-integration fix claims a headless verification, treat it as not done and send
-the agent back (via SendMessage) to clear the gate before moving on.
+Dispatch the **bugfix-issues** agent (`subagent_type: "bugfix-issues"`) with a
+prompt naming the issue: "Work issue #N on herold/herold." Instruct it to:
 
-Run the agents **sequentially**, not in parallel: each one commits and pushes to
-`main`, and concurrent pushes plus shared-working-tree edits race. (If you do
-want parallelism, every agent MUST run with `isolation: "worktree"` — but
-sequential is the default here.)
+- Read the issue AND every comment, and address the **latest** maintainer
+  feedback (bounced tickets are the norm here — the opening description is often
+  not the current target).
+- **Reproduce/observe the reported failure before touching code.** If the
+  environment cannot exercise the failure (e.g. a dev instance that lacks the
+  flow's config), that is a cannot-reproduce condition — stop and report it, do
+  not ship a speculative fix.
+- Clear the verification gate for the bug's class and name anything it could not
+  verify (the gates are listed in `bugfix-issues.md`; the recurring miss is a
+  "verified" claim on evidence that cannot see the defect — a green unit run, a
+  `getComputedStyle` read, a headless pass over an OS-integration flow).
+- Post the analysis checklist as a SINGLE comment and **edit that same comment**
+  with the results — do NOT post a second comment.
+- Push a focused fix-commit to `main` (`re #N`, never an auto-closing keyword).
+- **NOT apply the `waiting-for-feedback` label** for a shipped fix — the label
+  is applied in step 2c after verification. (For cannot-reproduce or routing
+  outcomes there is nothing to verify: the agent labels `waiting-for-feedback`
+  itself and you skip to the next issue.)
 
-Some tickets are enhancements or deep subsystem work rather than focused
-bug-fixes. If `bugfix-issues` reports that an issue is out of its scope (needs a
-specialist or a design call), note it and move on — do not force a fix. Surface
-those for routing at the end.
+### 2b. Verify (independent)
+
+When bugfix-issues returns having shipped a fix, dispatch the **fix-verifier**
+agent (`subagent_type: "fix-verifier"`) with the issue number and the fix commit
+SHA. It independently checks the fix against the grounding discipline, the
+bug-class gate, and STANDARDS, and returns `VERDICT: PASS | DEVIATIONS` with a
+concrete deviation list. Do not skip this step and do not substitute your own
+glance for it — the independent pass is the point.
+
+### 2c. Retry once, then label
+
+- **PASS** → apply `waiting-for-feedback` (`mcp__forgejo__issue_labels_add`) and
+  move to the next issue.
+- **DEVIATIONS** → send the bugfix-issues agent back **once** (via SendMessage
+  to the same agent) with the verifier's deviation list, to address every item.
+  When it returns, re-run **fix-verifier** on the new state.
+  - If the second verdict is **PASS** → apply `waiting-for-feedback`.
+  - If the second verdict is still **DEVIATIONS** → apply BOTH
+    `waiting-for-feedback` AND `fix-failed`, so the maintainer knows this one
+    did not clear verification and needs investigation. Record the outstanding
+    deviations for the final report.
+
+Only ONE retry round. Do not loop indefinitely; a fix that fails twice gets
+`fix-failed` and is surfaced, not endlessly re-attempted.
+
+### Out of scope
+
+If bugfix-issues reports an issue is out of its scope (needs a specialist or a
+design call), do not force a fix. It labels `waiting-for-feedback`; note the
+issue for routing in the final report and move on.
 
 ## 3. Report
 
-When the queue is drained, summarize: which issues got a pushed fix, which were
-routed/deferred and why, and which (if any) the agent could not reproduce and
-asked the reporter about. Each processed issue should now carry
-`waiting-for-feedback`; confirm the queue would come back empty on a re-run.
+When the queue is drained, summarize:
+
+- Which issues **passed verification** on the first fix.
+- Which needed a **retry**, and whether the retry passed.
+- Which are labeled **`fix-failed`** (failed verification twice) — list the
+  outstanding deviations so the maintainer knows where to look.
+- Which were **routed/deferred** (out of scope) and why.
+- Which the agent **could not reproduce** and asked the reporter about.
+
+Every processed issue should now carry `waiting-for-feedback` (fix-failed ones
+carry both). Confirm the queue would come back empty on a re-run.
