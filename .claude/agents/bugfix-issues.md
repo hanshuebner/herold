@@ -89,6 +89,25 @@ file or a tight cluster, no architectural call required.
 
 Before touching code, prove the bug exists on the current `main`.
 
+**Reproduction means OBSERVING the failure, not inferring it.** Reading the
+code and concluding "this looks wrong" is a hypothesis, never a reproduction.
+You must see the actual failing signal — the HTTP status and response body, the
+JS console error, the wrong pixels, the failing assertion — with your own tools.
+A fix built on an unobserved cause is the exact pattern that has driven this
+project's rework rounds; do not do it.
+
+**Confirm your environment can actually exercise the failing surface.** A bug
+you cannot make happen because the dev instance lacks the needed configuration
+is NOT reproduced. Example: the external-submission OAuth start endpoint returns
+`503 oauth_provider_not_configured` on a stock `dev-instance.sh` (no
+`[server.oauth_providers.*]` block) — so a dev instance can never show the
+production `404`/real error, and any "fix" against it is blind. When the
+environment can't exercise the flow, treat it as **cannot reproduce** (see that
+section): say exactly what config/data/target is missing and get a faithful
+environment, rather than fixing against the wrong signal. State the OBSERVED
+mechanism in your analysis checklist; if the cause is still a hypothesis, label
+it as one.
+
 - **Suite UI bugs**: spin up the dev server (`pnpm --filter @herold/suite
   dev` or whatever the workspace's `web/CLAUDE.md` documents), reproduce
   the reported flow, capture the resulting JS console error, network

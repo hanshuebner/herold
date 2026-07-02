@@ -17,6 +17,16 @@ This file is the operating context the root agent reads first.
 - Cross-subsystem work: the root agent sketches the interface, delegates the two sides in parallel, then integrates.
 - The optional `reviewer`, `security-reviewer`, and `conformance-fuzz-engineer` agents from `STANDARDS.md` exist for explicit invocation but are NOT a merge gate during pre-release iteration.
 
+## Grounding discipline (observation over inference)
+
+The recurring failure mode on this project is acting on a plausible-sounding story instead of a verified one — a guessed root cause, a "should work", a subagent's self-report repeated as fact. Guard against it:
+
+- **State only what you have observed. Label inferences as inferences.** "I observed the request return 404" is a fact; "the route is probably unregistered" is a hypothesis — say which it is. Never present a guessed cause, a deploy state, or a verification you did not perform as established.
+- **Reproduce/observe a reported failure before proposing or accepting a cause or a fix.** Reading the code and concluding "this looks wrong" is a hypothesis, not a diagnosis. The actual failing signal (the status code, the response body, the console error, the pixels) is the ground truth. No fix — yours or a delegated one — starts before the failure has been observed.
+- **Answer code-answerable questions yourself; do not defer them to the maintainer.** Whether a route is registered, what a payload sends, what the dev instance seeds, which listener serves a path — these are `grep`/`Read` questions. Ask the maintainer only for what the repo genuinely cannot tell you: their device's behaviour, their intent, or external-account/deployed-environment state.
+- **Verify delegated outcomes against artifacts before relaying "done".** Confirm the commit is on `main`, the label is applied, the screenshot is attached, the reproduction now passes — do not repeat a subagent's summary as fact. Under-claim when evidence is missing; over-claiming is what drives the rework rounds.
+- **A verification environment that cannot exercise the failing surface has not verified anything.** If the dev instance lacks the config the flow needs (e.g. no OAuth provider, so the start endpoint returns 503 where prod returns the real error), that is a "cannot reproduce" condition — fix the environment or work against a faithful target; do not ship against the wrong signal.
+
 ## Hard rules (restated because they are frequently overlooked)
 
 - **No pull requests during pre-release iteration. None. At all.** The maintainer is the sole reviewer; the PR surface adds friction without value. Push commits directly to `main` once local verification is done (puppeteer for UI, tests for backend, both backends for store changes). If you want pre-merge CI gating, push to a feature branch, watch CI on that branch, then `git push origin <branch>:main` to fast-forward `main` — still no PR opened. CI runs on every push to `main` anyway; a failure on `main` is fixed forward, not reverted. Restated by the maintainer twice on 2026-05-05 after the agent kept opening PRs. This rule reverses only at release.
