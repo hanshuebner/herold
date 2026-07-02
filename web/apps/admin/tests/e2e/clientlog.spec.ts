@@ -570,4 +570,46 @@ test.describe('clientlog viewer', () => {
     const valueText = await valueCell.textContent();
     expect(valueText).not.toMatch(/ms/);
   });
+
+  test('breadcrumbs section shows description and activity entries', async ({ page }) => {
+    // When an error row's detail pane is open, the Breadcrumbs section must
+    // display a human-readable description (defect 6, issue #103) explaining
+    // what the listed entries are, followed by the entries themselves.
+    const rowWithCrumbs = makeRow(1);
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      if (route.request().url().includes('/stats')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(STATS),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [rowWithCrumbs], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByText('Error 1: something went wrong')).toBeVisible({ timeout: 5000 });
+    await page.getByText('Error 1: something went wrong').click();
+    await expect(page.getByRole('heading', { name: 'Detail' })).toBeVisible({ timeout: 3000 });
+
+    // The Breadcrumbs section heading must be present.
+    await expect(page.getByRole('heading', { name: 'Breadcrumbs', level: 3 })).toBeVisible();
+
+    // A description explaining what breadcrumbs are must follow the heading.
+    await expect(page.locator('.breadcrumbs-desc')).toBeVisible();
+    const descText = await page.locator('.breadcrumbs-desc').textContent();
+    expect(descText).toMatch(/ring buffer/i);
+    expect(descText).toMatch(/route/i);
+    expect(descText).toMatch(/console/i);
+
+    // The breadcrumb entries themselves must appear: makeRow includes a route
+    // and a fetch breadcrumb.
+    await expect(page.locator('.breadcrumb-item')).toHaveCount(2);
+  });
 });

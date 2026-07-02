@@ -458,6 +458,11 @@
         {#if row.payload?.raw?.breadcrumbs && row.payload.raw.breadcrumbs.length > 0}
           <div class="breadcrumbs-section">
             <h3 class="section-title">Breadcrumbs</h3>
+            <p class="breadcrumbs-desc">
+              Activity captured in the ring buffer before this error (up to 32 entries, oldest first):
+              route navigations, outbound API requests (method, path, HTTP status), and
+              console.warn / console.error messages.
+            </p>
             <ol class="breadcrumb-list">
               {#each row.payload.raw.breadcrumbs as bc, i (i)}
                 <li class="breadcrumb-item">
@@ -927,6 +932,12 @@
     font-size: var(--type-heading-compact-01-size, 14px);
     font-weight: var(--type-heading-compact-01-weight, 600);
     color: var(--text-primary);
+    margin: 0 0 var(--spacing-03) 0;
+  }
+
+  .breadcrumbs-desc {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
     margin: 0 0 var(--spacing-03) 0;
   }
 
