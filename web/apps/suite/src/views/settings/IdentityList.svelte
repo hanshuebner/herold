@@ -546,7 +546,7 @@
   }
 
   .email {
-    color: var(--text-helper);
+    color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
     word-break: break-all;
   }
