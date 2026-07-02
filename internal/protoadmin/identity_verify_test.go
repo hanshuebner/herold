@@ -250,9 +250,66 @@ func TestVerifyIdentity_Link_IdempotentSecondRedeem(t *testing.T) {
 		t.Errorf("second redeem: expected 400 (failure page); got %d: %s",
 			res2.StatusCode, body)
 	}
+	// The failure message must not instruct an already-verified user
+	// to request a new link; it must acknowledge both cases (re #105).
+	if strings.Contains(string(body), "Please request a new one") {
+		t.Errorf("consumed-token message must not say 'Please request a new one': %s", body)
+	}
+	if !strings.Contains(string(body), "not yet verified") {
+		t.Errorf("consumed-token message must include 'not yet verified' hint: %s", body)
+	}
 	got, _ := sh.fs.Meta().GetJMAPIdentity(context.Background(), identityID)
 	if got.VerifiedAtUs == 0 {
 		t.Errorf("VerifiedAtUs = 0 after first redeem; want > 0")
+	}
+}
+
+// TestVerifyIdentity_Link_ConsumedByOAuth_400HTML verifies that when an
+// OAuth callback calls MarkIdentityVerified (NULLing the token hash) and
+// the user then clicks the emailed verification link, the failure page does
+// not tell an already-verified user to request a new link (re #105).
+func TestVerifyIdentity_Link_ConsumedByOAuth_400HTML(t *testing.T) {
+	sh := newSubmissionHarness(t, alwaysOKProbe)
+	_, adminKey := sh.bootstrap("admin@example.com")
+
+	_, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+	var who struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(buf, &who)
+	identityID := sh.insertIdentity(who.PrincipalID, "admin@gmail.com")
+	const token = "raw-link-token-oauth-consumed"
+	sh.issueVerification(t, identityID, token, "111222", 24*time.Hour)
+
+	// Simulate the OAuth callback calling MarkIdentityVerified, which
+	// NULLs the token/code hash columns (re #99). The link below is now
+	// stale: the hash resolves to ErrNotFound.
+	if err := sh.fs.Meta().MarkIdentityVerified(context.Background(), identityID); err != nil {
+		t.Fatalf("MarkIdentityVerified: %v", err)
+	}
+
+	res := sh.doRequestNoFollow("GET", "/verify-identity?token="+token, nil)
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400; got %d: %s", res.StatusCode, body)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q; want text/html", ct)
+	}
+	// Must NOT say "Please request a new one" — the identity is already
+	// verified; requesting a new link is unnecessary and confusing.
+	if strings.Contains(string(body), "Please request a new one") {
+		t.Errorf("message must not say 'Please request a new one' when already verified: %s", body)
+	}
+	// Must acknowledge that verification may not be needed.
+	if !strings.Contains(string(body), "not yet verified") {
+		t.Errorf("message must include 'not yet verified' hint: %s", body)
+	}
+	// Row must still be verified.
+	got, _ := sh.fs.Meta().GetJMAPIdentity(context.Background(), identityID)
+	if got.VerifiedAtUs == 0 {
+		t.Errorf("VerifiedAtUs = 0 after MarkIdentityVerified; want > 0")
 	}
 }
 

@@ -170,7 +170,7 @@ func (s *Server) handleVerifyIdentityLink(w http.ResponseWriter, r *http.Request
 			s.auditVerify(ctx, r, "", 0, verifyResultInvalidToken, "link",
 				"no identity row matches the supplied token hash")
 			renderVerifyFailure(w,
-				"This verification link is invalid or has already been used. Please request a new one from Settings.")
+				"This verification link is invalid or has already been used. If your email address is not yet verified, you can request a new link from Settings.")
 			return
 		}
 		// Storage failure: log and surface a generic failure page;
