@@ -357,11 +357,16 @@
     vertical-align: middle;
   }
 
-  .col-expand { width: 28px; }
-  .table .col-expand { padding-left: var(--spacing-02); padding-right: var(--spacing-02); }
+  /* 2% keeps the expander column as narrow as the chevron icon (the other
+     columns previously summed to 82%, leaving an 18% residual that auto
+     table layout was assigning to this column). Redistribution: col-from
+     and col-to each gain 8pp of that residual; total across all six
+     columns is 100%, so nothing is left for the browser to hand back. */
+  .col-expand { width: 2%; }
+  .table .col-expand { padding-left: var(--spacing-03); padding-right: var(--spacing-02); }
   .col-state { width: 9%; }
-  .col-from { width: 26%; }
-  .col-to { width: 26%; }
+  .col-from { width: 34%; }
+  .col-to { width: 34%; }
   .col-attempts { width: 6%; text-align: center; }
   .col-created { width: 15%; white-space: nowrap; text-align: right; }
 
@@ -391,7 +396,7 @@
   }
 
   .expand-cell {
-    padding: 0 var(--spacing-05) var(--spacing-04) calc(28px + var(--spacing-04)) !important;
+    padding: 0 var(--spacing-05) var(--spacing-04) var(--spacing-07) !important;
     background: var(--layer-02);
   }
 
