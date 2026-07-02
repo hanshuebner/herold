@@ -102,6 +102,12 @@ class Auth {
    */
   elevationExpiresAt = $state<Date | null>(null);
 
+  /**
+   * Handle for the pending elevation-expiry timer. Cleared on logout,
+   * handleUnauthorized, and whenever the timer fires or is rescheduled.
+   */
+  #elevationTimer: ReturnType<typeof setTimeout> | null = null;
+
   // clientlog predicates read by the clientlog wrapper in main.ts.
   // Defaults: telemetry enabled, no live-tail. Updated after a successful
   // session probe or login when the server returns the clientlog block.
@@ -113,6 +119,50 @@ class Auth {
     if (!raw) return null;
     const d = new Date(raw);
     return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /**
+   * Arm a setTimeout that transitions to 'step_up_pending' when the TOTP
+   * elevation expires. Idempotent: calling twice cancels the previous timer.
+   * A null expiresAt just clears any pending timer.
+   *
+   * Past expiry timestamps use delay 0 so the signal fires after the current
+   * call stack unwinds (not during bootstrap or step-up completion), allowing
+   * `status = 'ready'` to land first.
+   *
+   * The timer fires proactively so the TOTP requestor appears without waiting
+   * for the next API call to return 403 step_up_required (re #106).
+   */
+  #scheduleElevationExpiry(expiresAt: Date | null): void {
+    if (this.#elevationTimer !== null) {
+      clearTimeout(this.#elevationTimer);
+      this.#elevationTimer = null;
+    }
+    if (expiresAt === null) return;
+    const delayMs = Math.max(0, expiresAt.getTime() - Date.now());
+    this.#elevationTimer = setTimeout(() => {
+      this.#elevationTimer = null;
+      if (this.status === 'ready') {
+        this.elevationExpiresAt = null;
+        this.status = 'step_up_pending';
+      }
+    }, delayMs);
+  }
+
+  /**
+   * Proactively check whether the elevation has expired and, if so,
+   * transition to 'step_up_pending'. Called from the visibilitychange
+   * listener when the tab returns from background after a long idle period
+   * (re #106).
+   */
+  checkElevationExpiry(): void {
+    if (this.status !== 'ready') return;
+    const exp = this.elevationExpiresAt;
+    if (exp !== null && Date.now() >= exp.getTime()) {
+      this.#scheduleElevationExpiry(null);
+      this.elevationExpiresAt = null;
+      this.status = 'step_up_pending';
+    }
   }
 
   /** True when elevationExpiresAt is set and is in the future. */
@@ -211,17 +261,23 @@ class Auth {
         };
         this._applyClientlogBlock(body.clientlog);
         this.status = 'ready';
+        // Arm the proactive expiry timer so the TOTP requestor appears
+        // automatically when the elevation window closes (re #106).
+        this.#scheduleElevationExpiry(this.elevationExpiresAt);
         return;
       }
       // If server/status returns 403 after we thought elevation was active,
       // the elevation has just expired — fall back to step_up_pending.
       if (response.status === 403) {
         this.elevationExpiresAt = null;
+        this.#scheduleElevationExpiry(null);
         this.status = 'step_up_pending';
         return;
       }
+      this.#scheduleElevationExpiry(null);
       this.status = 'unauthenticated';
     } catch {
+      this.#scheduleElevationExpiry(null);
       this.status = 'unauthenticated';
     }
   }
@@ -246,9 +302,11 @@ class Auth {
    * Update elevationExpiresAt after a successful step-up response.
    * Called by the step-up store with the elevation_expires_at value from
    * the POST /api/v1/auth/step-up response (REQ-AS-23, re #79).
+   * Reschedules the proactive expiry timer for the new deadline (re #106).
    */
   updateElevation(raw: string | null): void {
     this.elevationExpiresAt = this.#parseElevation(raw);
+    this.#scheduleElevationExpiry(this.elevationExpiresAt);
   }
 
   /**
@@ -331,6 +389,7 @@ class Auth {
     this.principal = null;
     this.roles = [];
     this.elevationExpiresAt = null;
+    this.#scheduleElevationExpiry(null);
     this.status = 'unauthenticated';
     router.replace('/login');
   }
@@ -344,6 +403,7 @@ class Auth {
       this.principal = null;
       this.roles = [];
       this.elevationExpiresAt = null;
+      this.#scheduleElevationExpiry(null);
       this.status = 'unauthenticated';
       router.replace('/login');
     }
@@ -368,3 +428,15 @@ class Auth {
 }
 
 export const auth = new Auth();
+
+// Proactive elevation-expiry check on tab visibility change (re #106).
+// When the tab returns from background after the elevation window has closed,
+// transition to 'step_up_pending' immediately rather than waiting for the
+// next API call to return 403 step_up_required.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      auth.checkElevationExpiry();
+    }
+  });
+}
