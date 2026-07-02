@@ -5,7 +5,8 @@
   "type": "module",
   "description": "SPA client-log wrapper: captures errors, console output, and Web Vitals and batches them to herold's clientlog ingest endpoint.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./sw-update": "./src/sw-update.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -129,6 +129,13 @@ cp -R "${ADMIN_SRC}/." "${ADMIN_DST}/"
 
 echo "build-web.sh: admin SPA installed at ${ADMIN_DST}/"
 
+# 6b. Stamp the admin service worker with the current commit SHA so the
+#     browser's byte-comparison update check detects a new worker on every
+#     deploy (same rationale as step 4b for the suite SW).
+_ADMIN_SW_FILE="${ADMIN_DST}/sw.js"
+sed "s/__SW_BUILD__/${_SW_BUILD}/" "${_ADMIN_SW_FILE}" > "${_SW_TMP}" && mv "${_SW_TMP}" "${_ADMIN_SW_FILE}"
+echo "build-web.sh: admin sw.js stamped with build ${_SW_BUILD}"
+
 # 7. Run the manual bundler in SSR mode to produce per-chapter static
 #    HTML pages for the standalone /manual/{user,admin}/ tree. The
 #    bundler uses Markdoc's renderers.html() directly; no Svelte

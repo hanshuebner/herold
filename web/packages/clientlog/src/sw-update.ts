@@ -7,8 +7,9 @@
  * the waiting worker, the worker activates, and the controllerchange event
  * causes exactly one page reload.
  *
- * These helpers are extracted from App.svelte so the decision logic can be
- * unit-tested with mocked registration objects.
+ * These helpers are shared between the suite and admin SPAs via
+ * @herold/clientlog/sw-update so the update-prompt lifecycle is not
+ * duplicated.
  */
 
 /**

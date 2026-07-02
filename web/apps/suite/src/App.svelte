@@ -24,7 +24,7 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
-  import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from './lib/sw-update';
+  import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from '@herold/clientlog/sw-update';
   import { handleSwNavigateMessage } from './lib/push/sw-navigate';
   // Side-effect: registers a sync.on('InternalizeStatus') handler that
   // refreshes the session descriptor whenever the background internalize-

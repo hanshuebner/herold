@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { _internals_forTest } from './sw-update';
+import { _internals_forTest } from '../sw-update.js';
 
 const {
   shouldShowBanner,
