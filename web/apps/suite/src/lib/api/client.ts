@@ -28,6 +28,8 @@
 export interface ProblemDetail {
   /** The problem type URI, e.g. "https://netzhansa.com/problems/session_expired". */
   type?: string;
+  /** RFC 7807 standard human-readable explanation of the error. */
+  detail?: string;
   error?: string;
   message?: string;
   /** Present on 403 when the server requires TOTP elevation (REQ-AUTH-74). */
@@ -220,7 +222,7 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
     let msg = `HTTP ${response.status}`;
     try {
       detail = (await response.json()) as ProblemDetail;
-      msg = detail.message ?? detail.error ?? msg;
+      msg = detail.detail ?? detail.message ?? detail.error ?? msg;
     } catch {
       // ignore
     }

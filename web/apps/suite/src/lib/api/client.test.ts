@@ -12,7 +12,7 @@
  *      and render the appropriate context message (REQ-AUTH-76, REQ-AS-10, re #77).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { setOnUnauthenticated, UnauthenticatedError, ApiError, get } from './client';
+import { setOnUnauthenticated, UnauthenticatedError, ApiError, get, put } from './client';
 
 // Reset fetch mock before each test.
 beforeEach(() => {
@@ -144,6 +144,38 @@ describe('setOnUnauthenticated / REST client 401 hook', () => {
 
     await expect(get('/api/v1/test')).rejects.toThrow(UnauthenticatedError);
     expect(onUnauthenticated).toHaveBeenCalledWith(null);
+  });
+
+  it('surfaces the RFC 7807 detail field as ApiError.message for non-2xx responses (re #104)', async () => {
+    // This test demonstrates the bug: a 400 response with a problem+json body
+    // whose human-readable text is in the standard `detail` field (as herold
+    // produces) MUST be surfaced as ApiError.message — not collapsed to "HTTP 400".
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            type: 'https://netzhansa.com/problems/invalid_body',
+            title: 'request body could not be parsed',
+            status: 400,
+            detail: 'json: unknown field "auth_method"',
+            instance: '/api/v1/identities/abc/submission',
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+      ),
+    );
+
+    let thrown: unknown;
+    try {
+      await put('/api/v1/identities/abc/submission', { bad_field: 1 });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ApiError);
+    expect((thrown as ApiError).status).toBe(400);
+    // The message must come from the server's `detail` field, not be "HTTP 400".
+    expect((thrown as ApiError).message).toBe('json: unknown field "auth_method"');
   });
 
   it('sets problemType on the thrown UnauthenticatedError for typed 401', async () => {
