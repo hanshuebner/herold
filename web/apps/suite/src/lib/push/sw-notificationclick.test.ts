@@ -571,3 +571,110 @@ describe('openApp — openWindow returns null (macOS fallback)', () => {
     expect(client2.postMessage).not.toHaveBeenCalled();
   });
 });
+
+// ── threadId format regression guard (re #83) ────────────────────────────────
+//
+// Root cause of the "notification opens index page" bug (issue #83):
+//
+//   buildEmailPayload() in internal/webpush/payload.go had a guard:
+//     if msg.ThreadID != 0 { out.ThreadID = fmt.Sprintf(...) }
+//
+//   For standalone (unthreaded) emails, the store sets ThreadID==0, so the
+//   push payload contained NO threadId field.
+//
+//   SW resolveNotificationPath with notification.data.threadId === undefined
+//   returns '/#/mail' (the inbox fallback). The user clicks the notification
+//   and sees the inbox — "the index page" the maintainer reported.
+//
+//   The fix emits threadId unconditionally: "t<threadID>" for threaded
+//   messages and "t<emailID>" for unthreaded ones, matching
+//   threadIDForMessage()'s ThreadID==0 branch in the JMAP handler.
+//
+//   Secondary fix: threaded messages were emitting "42" (bare numeric) instead
+//   of "t42" (JMAP format). Thread/get echoes back the requested ID format, so
+//   bare-numeric queries would still resolve — but the "t" prefix is the
+//   correct wire format and is now asserted here.
+//
+// These tests pin the SW-side path derivation. The companion Go tests
+// TestBuildPayload_Email and TestBuildPayload_EmailWithThread assert the
+// server-side emission.
+
+describe('threadId format — regression guard (re #83)', () => {
+  it('JMAP t-prefix threadId routes openApp to correct thread URL', async () => {
+    // Server now sends threadId: "t42". The SW opens /#/mail/thread/t42.
+    // SPA loadThread("t42") → Thread/get {ids: ["t42"]} → server responds
+    // {id: "t42"} → find((t) => t.id === "t42") succeeds.
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const openApp = makeOpenApp({ openWindow, matchAll: vi.fn().mockResolvedValue([]) });
+
+    await openApp('/#/mail/thread/t42');
+
+    expect(openWindow).toHaveBeenCalledWith('/#/mail/thread/t42');
+  });
+
+  it('bare-numeric threadId (old server format) produces a different path than t-prefix format', () => {
+    // Old server code for threaded messages emitted threadId: "42" (no "t").
+    // Thread/get echoes back the requested ID format, so loadThread("42") would
+    // actually resolve via Thread/get {ids: ["42"]} → {id: "42"}, not cause a
+    // "not found" error. However, bare-numeric is not the correct JMAP wire
+    // format; the server now emits "t42". These assertions document that the
+    // SW routes whatever format it receives and that the paths differ.
+    // The regression is caught at the Go level by TestBuildPayload_EmailWithThread
+    // asserting threadId == "t42".
+    const pathWithOldFormat = resolveNotificationPath({ kind: 'mail', threadId: '42' }, '');
+    const pathWithNewFormat = resolveNotificationPath({ kind: 'mail', threadId: 't42' }, '');
+
+    // Old format produces a non-JMAP path (still functional via echo-back, but incorrect).
+    expect(pathWithOldFormat).toBe('/#/mail/thread/42');
+    // New format produces the correct JMAP thread path.
+    expect(pathWithNewFormat).toBe('/#/mail/thread/t42');
+    // The paths differ — the "t" prefix matters for format correctness.
+    expect(pathWithOldFormat).not.toBe(pathWithNewFormat);
+  });
+
+  it('full pipeline: server-format payload → notification data → correct thread URL', () => {
+    // Simulates the complete push→click flow with the corrected server payload.
+    // 1. Server pushes payload with threadId: "t42" (buildEmailPayload fix).
+    const serverPayload = {
+      kind: 'mail',
+      from: 'Sender',
+      body: 'Subject line',
+      emailId: '42',
+      threadId: 't42',
+      inboxMailboxId: '5',
+    };
+    // 2. SW's buildNotificationOptions stores the thread ID in notification.data.
+    const opts = buildNotificationOptions(serverPayload)!;
+    expect(opts).not.toBeNull();
+    expect(opts.data['threadId']).toBe('t42');
+    // 3. On click, resolveNotificationPath reads notification.data.
+    const path = resolveNotificationPath(opts.data as Record<string, unknown>, '');
+    // 4. The resolved path carries the JMAP-format thread ID.
+    expect(path).toBe('/#/mail/thread/t42');
+    // 5. openApp(path) calls clients.openWindow('/#/mail/thread/t42'); the
+    //    new tab loads the SPA at that hash, which navigates to /mail/thread/t42,
+    //    loadThread("t42") runs Thread/get {ids: ["t42"]}, the server returns
+    //    {id: "t42"}, and the thread renders. (SPA-side load is not exercisable
+    //    in this vitest harness; the Go test covers the payload emission and a
+    //    real-device test is required for the notification-click → thread-load
+    //    path on macOS.)
+  });
+
+  it('full pipeline: unthreaded email uses emailId-derived thread URL', () => {
+    // For unthreaded messages (ThreadID==0 in store), the server now emits
+    // threadId: "t<emailId>" (buildEmailPayload fix). This matches
+    // threadIDForMessage's ThreadID==0 branch in the JMAP handler.
+    const serverPayload = {
+      kind: 'mail',
+      from: 'Sender',
+      body: 'Subject',
+      emailId: '99',
+      threadId: 't99',
+      inboxMailboxId: '3',
+    };
+    const opts = buildNotificationOptions(serverPayload)!;
+    expect(opts.data['threadId']).toBe('t99');
+    const path = resolveNotificationPath(opts.data as Record<string, unknown>, '');
+    expect(path).toBe('/#/mail/thread/t99');
+  });
+});
