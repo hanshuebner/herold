@@ -3494,8 +3494,12 @@ export function resolveThreadEmails(emailIds: string[], emails: Map<string, Emai
  *   as before (issue #40 defence).
  * - Emails without a messageId are included as-is and never merged with
  *   anything (cannot deduplicate without the header).
- * - Among emails with a messageId, only the first occurrence of each
- *   normalised message-id is kept as representative.
+ * - Among emails with a messageId, the copy with the largest `size` is
+ *   used as representative (RFC 8621 §4.1.1 `size` = total message
+ *   octets). The externally-received copy is consistently larger because
+ *   it accrues transit headers (Received:, DKIM-Signature:, ARC-*, etc.)
+ *   that the locally-submitted Sent copy does not carry. When sizes are
+ *   equal or all absent, the first occurrence in thread order wins.
  * - The representative's mailboxIds is the UNION of all same-mid copies.
  * - The representative's keywords union uses truthy-wins: a keyword
  *   present (true) in any copy is present in the merged email.
@@ -3541,7 +3545,12 @@ export function resolveDeduplicatedThreadEmails(
   const out: Email[] = [];
   for (const key of orderOfKeys) {
     const group = groups.get(key)!;
-    const rep = group[0]!;
+    // Pick the copy with the largest size as the representative so that the
+    // externally-received copy (richer due to transit headers) is rendered
+    // in the thread reader rather than the leaner locally-submitted Sent
+    // copy. When sizes are equal or absent, the first occurrence (group[0])
+    // wins because the reduce uses strict > (not >=).
+    const rep = group.reduce((best, e) => (e.size ?? 0) > (best.size ?? 0) ? e : best);
     if (group.length === 1) {
       out.push(rep);
     } else {
@@ -3632,7 +3641,10 @@ export function dedupeCountByMessageId(
  * - IDs whose email has no `messageId` field pass through unconditionally
  *   (can't deduplicate without the header).
  * - IDs whose normalised message-id already appears in `existingIds` are
- *   dropped.
+ *   dropped unless the new arrival's `size` exceeds the largest size among
+ *   all committed copies with the same message-id. Admitting the richer
+ *   copy allows `resolveDeduplicatedThreadEmails` to select it as the
+ *   representative instead of the leaner sent copy.
  * - Among `newIds` themselves, only the first occurrence of each
  *   normalised message-id is kept (thread order is preserved).
  */
@@ -3641,14 +3653,18 @@ export function dedupeArrivalsByMessageId(
   existingIds: readonly string[],
   emails: ReadonlyMap<string, Email>,
 ): string[] {
-  // Build the set of message-ids already present in the committed snapshot.
-  const existingMessageIds = new Set<string>();
+  // Build a map from normalised message-id to the maximum size among all
+  // committed copies. Size defaults to 0 when the property is absent.
+  const existingMessageIdMaxSize = new Map<string, number>();
   for (const id of existingIds) {
     const e = emails.get(id);
     if (e?.messageId) {
       for (const mid of e.messageId) {
         const n = normalizeMessageId(mid);
-        if (n) existingMessageIds.add(n);
+        if (n) {
+          const prev = existingMessageIdMaxSize.get(n) ?? 0;
+          existingMessageIdMaxSize.set(n, Math.max(prev, e.size ?? 0));
+        }
       }
     }
   }
@@ -3666,8 +3682,12 @@ export function dedupeArrivalsByMessageId(
       out.push(id);
       continue;
     }
-    if (existingMessageIds.has(mid) || seenInNew.has(mid)) {
-      continue; // duplicate of an already-committed or already-accepted email
+    if (seenInNew.has(mid)) {
+      continue; // duplicate within newIds
+    }
+    const existingMaxSize = existingMessageIdMaxSize.get(mid);
+    if (existingMaxSize !== undefined && (e.size ?? 0) <= existingMaxSize) {
+      continue; // committed copy is at least as large; drop this arrival
     }
     seenInNew.add(mid);
     out.push(id);

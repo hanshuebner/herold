@@ -188,6 +188,16 @@ export interface Email {
    */
   blobId: string;
   /**
+   * RFC 8621 §4.1.1 — total size of the message in octets. Used as a
+   * tiebreaker when selecting the representative among same-Message-ID
+   * copies: the externally-received copy accrues transit headers
+   * (Received:, DKIM-Signature:, ARC-*, etc.) that the locally-submitted
+   * Sent copy does not, so it is consistently larger and wins.
+   * Optional because the property is only populated when callers include
+   * `'size'` in the requested properties projection.
+   */
+  size?: number;
+  /**
    * Raw header values for list detection (REQ-MAIL-191). The suite
    * fetches `header:List-ID:asText` to determine mailing-list mail.
    */
@@ -270,6 +280,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'references',
   'reactions',
   'blobId',
+  'size',
   'header:List-ID:asText',
   'header:Face:asText',
   'header:X-Face:asText',

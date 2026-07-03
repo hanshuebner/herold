@@ -96,7 +96,7 @@ describe('resolveDeduplicatedThreadEmails', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('representative is the first occurrence in emailIds order', () => {
+  it('representative is the first occurrence when sizes are equal or absent', () => {
     const sent = makeEmail('e-sent', {
       messageId: '<msg@host>',
       mailboxIds: { 'mbx-sent': true },
@@ -110,8 +110,31 @@ describe('resolveDeduplicatedThreadEmails', () => {
       ['e-inbox', inbox],
     ]);
     const result = resolveDeduplicatedThreadEmails(['e-sent', 'e-inbox'], emails);
-    // id of representative must be e-sent (first in the list)
+    // Neither copy has a size; the first in thread order wins.
     expect(result[0]!.id).toBe('e-sent');
+  });
+
+  it('representative is the copy with the larger size (externally-received copy wins)', () => {
+    // Sent copy is stored first (lower in thread order) but has a smaller
+    // size (no transit headers). Inbox copy arrives later but is richer.
+    const sent = makeEmail('e-sent', {
+      messageId: '<msg@host>',
+      mailboxIds: { 'mbx-sent': true },
+    });
+    const inbox = makeEmail('e-inbox', {
+      messageId: '<msg@host>',
+      mailboxIds: { 'mbx-inbox': true },
+    });
+    // Simulate transit-header overhead on the inbound copy.
+    (sent as Email & { size: number }).size = 1200;
+    (inbox as Email & { size: number }).size = 1850;
+    const emails = new Map([
+      ['e-sent', sent],
+      ['e-inbox', inbox],
+    ]);
+    const result = resolveDeduplicatedThreadEmails(['e-sent', 'e-inbox'], emails);
+    // inbox copy (1850) beats sent copy (1200) regardless of thread order.
+    expect(result[0]!.id).toBe('e-inbox');
   });
 
   it('representative mailboxIds is the UNION of all same-Message-ID copies', () => {

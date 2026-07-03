@@ -176,6 +176,31 @@ describe('dedupeArrivalsByMessageId', () => {
     ]);
     expect(dedupeArrivalsByMessageId(['e2'], ['e1'], emails)).toEqual(['e2']);
   });
+
+  it('admits a new arrival whose size exceeds the committed copy of the same Message-ID', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    // e1 is the committed (sent) copy at 1200 bytes.
+    // e2 is the inbound copy at 1850 bytes (transit headers make it larger).
+    const emails = new Map<string, Email>([
+      ['e1', { ...makeEmail({ id: 'e1', threadId: 't1', messageId: ['<msg1@host>'] }), size: 1200 }],
+      ['e2', { ...makeEmail({ id: 'e2', threadId: 't1', messageId: ['<msg1@host>'] }), size: 1850 }],
+    ]);
+    // e2 is richer than the committed e1 — it must be admitted so that
+    // resolveDeduplicatedThreadEmails can select it as representative.
+    expect(dedupeArrivalsByMessageId(['e2'], ['e1'], emails)).toEqual(['e2']);
+  });
+
+  it('drops a same-Message-ID arrival whose size does not exceed the committed copy', async () => {
+    const { _internals_forTest } = await import('./store.svelte');
+    const { dedupeArrivalsByMessageId } = _internals_forTest;
+    const emails = new Map<string, Email>([
+      ['e1', { ...makeEmail({ id: 'e1', threadId: 't1', messageId: ['<msg1@host>'] }), size: 1850 }],
+      ['e2', { ...makeEmail({ id: 'e2', threadId: 't1', messageId: ['<msg1@host>'] }), size: 1200 }],
+    ]);
+    // e2 is smaller than the committed e1 — drop it.
+    expect(dedupeArrivalsByMessageId(['e2'], ['e1'], emails)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
