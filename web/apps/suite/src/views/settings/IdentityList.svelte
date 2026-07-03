@@ -461,7 +461,7 @@
     width: 100%;
     text-align: left;
     background: var(--layer-02);
-    border: 1px solid var(--border-subtle-01);
+    border: 1px solid var(--border-subtle-02);
     border-radius: var(--radius-md);
     cursor: pointer;
     transition:
