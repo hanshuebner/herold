@@ -95,6 +95,18 @@ describe('composeFromGating', () => {
       reason: 'external-no-submission',
     });
   });
+
+  it('allows a hosted identity (domainAuthoritative: true) even when configured: false (re #107)', () => {
+    // A locally-hosted identity has domain_authoritative: true from the
+    // server's GET /api/v1/identities/{id}/submission response. It sends
+    // via herold's outbound queue and must not be gated by the
+    // external-SMTP check.
+    const id = makeIdentity('1', 'a@example.local', {
+      verifiedAt: '2026-01-01T00:00:00Z',
+    });
+    const sub: SubmissionSummary = { configured: false, state: null, domainAuthoritative: true };
+    expect(composeFromGating(id, sub)).toEqual({ allowed: true, reason: null });
+  });
 });
 
 describe('isFromSelectable', () => {

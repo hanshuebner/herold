@@ -106,6 +106,22 @@ describe('isExternalWithoutSubmission', () => {
     const sub: SubmissionSummary = { configured: false, state: null };
     expect(isExternalWithoutSubmission(verified, sub)).toBe(true);
   });
+
+  it('returns false when domainAuthoritative is true even if configured: false (hosted identity)', () => {
+    // This is the bug from #107: a locally-hosted identity has
+    // domain_authoritative: true from the server. The hosted identity
+    // routes through herold's outbound queue — external SMTP is
+    // irrelevant. The row must NOT be disabled.
+    const sub: SubmissionSummary = { configured: false, state: null, domainAuthoritative: true };
+    expect(isExternalWithoutSubmission(verified, sub)).toBe(false);
+  });
+
+  it('returns false when domainAuthoritative is true even if no submission record exists', () => {
+    // domainAuthoritative on an existing record and sub===null (no record)
+    // both mean "local outbound queue"; both should be allowed.
+    const sub: SubmissionSummary = { configured: true, state: null, domainAuthoritative: true };
+    expect(isExternalWithoutSubmission(verified, sub)).toBe(false);
+  });
 });
 
 describe('sortIdentities', () => {

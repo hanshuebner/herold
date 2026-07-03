@@ -146,7 +146,11 @@
     void handle.load();
     const data = handle.data;
     if (!data) return null;
-    return { configured: data.configured === true, state: data.state ?? null };
+    return {
+      configured: data.configured === true,
+      state: data.state ?? null,
+      domainAuthoritative: data.domain_authoritative,
+    };
   }
 
   /** Whether the [ext] cosmetic indicator should render for an identity. */

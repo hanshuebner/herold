@@ -80,6 +80,7 @@
     return {
       configured: data.configured === true,
       state: data.state ?? null,
+      domainAuthoritative: data.domain_authoritative,
     };
   }
 

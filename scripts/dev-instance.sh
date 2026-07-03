@@ -240,6 +240,23 @@ enabled = true
 public_base_url = "${HEROLD_DEV_SHARE_BASE_URL:-https://mail.example.local}"
 EOF
     fi
+
+    # Optional: enable external-submission (SMTP relay for external-domain
+    # identities) for puppeteer verification. A random 32-byte AES data key
+    # is generated and stored under the instance state dir; it is ephemeral
+    # and never persisted across restarts.
+    if [ -n "${HEROLD_DEV_EXTERNAL_SUBMISSION:-}" ]; then
+        local data_key_file="$dir/data/data_key.hex"
+        openssl rand -hex 32 > "$data_key_file"
+        cat >> "$dir/system.toml" <<EOF
+
+[server.secrets]
+data_key_ref = "file:$data_key_file"
+
+[server.external_submission]
+enabled = true
+EOF
+    fi
 }
 
 # Seed the domain + non-admin principals via the admin REST surface.

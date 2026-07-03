@@ -63,21 +63,30 @@ export function canBeDefault(id: Identity): boolean {
  * so a fresh unverified Identity does not gain a working radio just
  * because submission setup is pending.
  *
- * For v1 the suite cannot itself tell whether a domain is hosted on
- * this herold — the server-side capability surface does not yet expose
- * the local-domain list. We therefore treat an Identity as "external"
- * when the per-identity submission record exists AND the
- * `configured` flag is false, OR when the submission probe state is
- * one of the alert states (`auth-failed` / `unreachable`). Verified
- * identities with no submission record at all are NOT considered
- * external — the absence of a record means "send via herold's
- * outbound queue" which is the local path.
+ * The server's GET /api/v1/identities/{id}/submission response carries
+ * `domain_authoritative: true` when the identity's domain is hosted on
+ * this herold instance (re #74). Locally-hosted identities route through
+ * herold's outbound queue and never need external SMTP, so
+ * `domainAuthoritative: true` exempts the row from the disabled treatment
+ * regardless of whether a submission record exists or is configured.
+ *
+ * Verified identities with no submission record at all (sub === null) are
+ * also NOT considered external — absence of a record means "send via the
+ * local outbound queue".
  */
 export interface SubmissionSummary {
   /** Whether a submission record exists with `configured: true`. */
   configured: boolean;
   /** The server's last-known probe state, or null if absent. */
   state: 'ok' | 'auth-failed' | 'unreachable' | null;
+  /**
+   * True when the identity's email domain is authoritative on this server.
+   * When true the identity routes through herold's local outbound queue and
+   * is exempt from the external-SMTP gate regardless of `configured`.
+   * Absent (undefined) is treated as false — callers that do not propagate
+   * the field preserve existing behaviour.
+   */
+  domainAuthoritative?: boolean;
 }
 
 export function isExternalWithoutSubmission(
@@ -91,6 +100,9 @@ export function isExternalWithoutSubmission(
   // No submission record at all → the identity sends via the local
   // outbound queue; not external; not disabled.
   if (sub === null) return false;
+  // Domain is authoritative on this server → sends via the local outbound
+  // queue; external SMTP is irrelevant regardless of `configured`.
+  if (sub.domainAuthoritative) return false;
   // Configured + ok → working external; row is active.
   if (sub.configured && sub.state === 'ok') return false;
   // Configured + alert state → external but broken; treat as disabled.
