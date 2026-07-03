@@ -302,6 +302,9 @@ func TestEmailSubmission_Set_Gate_ExternalDomainWithSubmissionSucceeds(t *testin
 		js, _ := json.Marshal(resp)
 		t.Fatalf("did not expect notCreated entries: %s", js)
 	}
+	// Wait for the relay goroutine to complete before asserting call count.
+	h.Wait()
+
 	// External submitter was called exactly once.
 	if len(extSub.calls) != 1 {
 		t.Fatalf("expected 1 external submit, got %d", len(extSub.calls))
@@ -645,6 +648,9 @@ func testForeignDomainExternalRouterNotRejected(t *testing.T, st store.Store) {
 		js, _ := json.Marshal(sresp.NotCreated)
 		t.Fatalf("expected no notCreated, got %s", js)
 	}
+	// Wait for the relay goroutine to complete before asserting call count.
+	h.Wait()
+
 	// External submitter was used; local queue was bypassed.
 	if len(extSub.calls) != 1 {
 		t.Fatalf("expected 1 external submit, got %d", len(extSub.calls))

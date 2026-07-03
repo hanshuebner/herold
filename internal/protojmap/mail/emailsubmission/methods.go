@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,9 +52,9 @@ type handlerSet struct {
 }
 
 // Wait blocks until every fire-and-forget goroutine the handler
-// launched (currently only the seed-on-send writer) has returned.
-// Tests call this before tearing down the store; production shutdown
-// should follow once the server takes ownership of handler lifecycle.
+// launched (seed-on-send writer and external relay goroutine) has
+// returned. Tests call this before tearing down the store; production
+// shutdown should follow once the server takes ownership of handler lifecycle.
 func (h *handlerSet) Wait() { h.bgWG.Wait() }
 
 // goBackground launches f as a fire-and-forget goroutine tracked by
@@ -936,16 +936,6 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 			}
 		}
 	}
-	// REQ-STORE-17/18 (Phase 1): open a seekable BlobReader and stream it
-	// straight into the queue without materialising the full body in RAM.
-	// queue.Submit accepts io.Reader and pipes it directly into Blobs.Put,
-	// so no full-body allocation occurs here.
-	rc, err := s.h.store.Blobs().Get(ctx, msg.Blob.Hash)
-	if err != nil {
-		return jmapEmailSubmission{}, &setError{Type: "serverFail",
-			Description: fmt.Sprintf("blob read: %s", err)}
-	}
-	defer rc.Close()
 	signingDomain := domainOf(identityEmail)
 	// Format the thread ID as a JMAP Thread ID (RFC 8621 §7.5). The store
 	// uses thread_id = 0 to mean "this message is its own thread root; the
@@ -969,10 +959,11 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 
 	// REQ-AUTH-EXT-SUBMIT-05: when the Identity carries external SMTP
 	// configuration, submit directly via extsubmit.Submitter and skip
-	// the local queue entirely.
+	// the local queue entirely. The blob reader is opened inside the
+	// relay goroutine (re #108).
 	if s.h.externalRouter != nil && s.h.externalSubmit != nil &&
 		s.h.externalRouter.HasExternalSubmission(ctx, p.ID, in.IdentityID) {
-		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, rc, threadID, now, sendAtUs)
+		return s.h.processCreateExternal(ctx, p, in.IdentityID, mid, in.EmailID, mailFrom, recipients, threadID, now, sendAtUs)
 	}
 
 	// REQ-PROTO-42 / re #74: the local queue only carries mail for
@@ -997,6 +988,17 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 			}
 		}
 	}
+
+	// REQ-STORE-17/18 (Phase 1): open a seekable BlobReader and stream it
+	// straight into the queue without materialising the full body in RAM.
+	// queue.Submit accepts io.Reader and pipes it directly into Blobs.Put,
+	// so no full-body allocation occurs here.
+	rc, err := s.h.store.Blobs().Get(ctx, msg.Blob.Hash)
+	if err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("blob read: %s", err)}
+	}
+	defer rc.Close()
 
 	pid := p.ID
 	envID, err := s.h.queue.Submit(ctx, queue.Submission{
@@ -1048,15 +1050,16 @@ func (s setHandler) processCreate(ctx context.Context, p store.Principal, raw js
 const holdWindowDefault = extsubmit.DefaultHoldWindow
 
 // processCreateExternal handles the external-submission fork of processCreate.
-// It allocates a synthetic "ext:<hex>" EnvelopeID, calls extsubmit.Submitter,
-// maps the outcome to JMAP deliveryStatus / undoStatus, and persists the row
-// with External=true. No queue rows are created.
+// It allocates a synthetic "ext:<hex>" EnvelopeID, persists the row with
+// External=true and undoStatus=pending, then launches the relay in a background
+// goroutine so the JMAP method can return within the 1-second deadline (re #108).
 //
-// Outcomes:
+// The relay goroutine (execExternalRelay) calls extsubmit.Submitter.Submit with
+// context.Background() and updates the row with the final outcome:
 //   - ok          → undoStatus=final, delivered=yes for every recipient
 //   - auth-failed → undoStatus=pending, held_for_reauth=true; the Retryer
 //     retries when the identity returns to ok (re #70, REQ-AUTH-EXT-SUBMIT-05)
-//   - unreachable → undoStatus=final, delivered=no; JMAPStateKindIdentity bumped
+//   - unreachable → undoStatus=final, delivered=no; identity push state bumped
 //   - permanent   → undoStatus=final, delivered=no
 //   - transient   → undoStatus=final, delivered=no
 func (h *handlerSet) processCreateExternal(
@@ -1067,7 +1070,6 @@ func (h *handlerSet) processCreateExternal(
 	emailWireID jmapID,
 	mailFrom string,
 	recipients []string,
-	body io.Reader,
 	threadID string,
 	now time.Time,
 	sendAtUs int64,
@@ -1088,11 +1090,106 @@ func (h *handlerSet) processCreateExternal(
 			Description: fmt.Sprintf("ext submission config: %s", err)}
 	}
 
+	submissionID := renderSubmissionID(envID)
+
+	// Build initial properties with the envelope so /get can render the
+	// submission immediately. extState is left empty to signal that the
+	// relay is in progress (externalRowToJMAP renders empty extState as
+	// delivered=queued while the goroutine is running, re #108).
+	initProps := externalSubmissionProperties{
+		RcptTo:   recipients,
+		MailFrom: mailFrom,
+	}
+	initPropsJSON, _ := json.Marshal(initProps)
+
+	// Persist the row immediately with undoStatus=pending so the method
+	// can return within the JMAP deadline. HoldDeadlineUs is set now so
+	// that if the submission ends up held for re-auth the Retryer sees
+	// the correct expiry window (re #70, re #108).
+	row := store.EmailSubmissionRow{
+		ID:             submissionID,
+		EnvelopeID:     envID,
+		PrincipalID:    p.ID,
+		IdentityID:     identityID,
+		EmailID:        emailMsgID,
+		ThreadID:       threadID,
+		SendAtUs:       sendAtUs,
+		CreatedAtUs:    now.UnixMicro(),
+		UndoStatus:     string(undoStatusPending),
+		Properties:     initPropsJSON,
+		External:       true,
+		HeldForReauth:  false,
+		HoldDeadlineUs: now.Add(holdWindowDefault).UnixMicro(),
+	}
+	if err := h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
+		return jmapEmailSubmission{}, &setError{Type: "serverFail",
+			Description: fmt.Sprintf("persist ext submission: %s", err)}
+	}
+
+	// Seed-on-send (REQ-MAIL-11g): fire-and-forget. Drained via
+	// h.Wait() at shutdown / test teardown. Reads the message inside
+	// the goroutine with context.Background() so the deadline context
+	// does not cut it short.
+	h.goBackground(func() {
+		msg, err := h.store.Meta().GetMessage(context.Background(), emailMsgID)
+		if err != nil {
+			return // best-effort; seeding failure is not surfaced
+		}
+		h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
+	})
+
+	// Run the external relay in the background. context.Background()
+	// decouples the SMTP session from the JMAP method deadline (re #108).
+	// The row is updated with the final outcome by execExternalRelay.
+	h.goBackground(func() {
+		h.execExternalRelay(context.Background(), p, emailMsgID, cfg, mailFrom, recipients, submissionID)
+	})
+
+	return externalRowToJMAP(row), nil
+}
+
+// execExternalRelay opens the message blob, calls extsubmit.Submitter.Submit,
+// and writes the outcome back to the persisted EmailSubmission row. It runs as
+// a background goroutine launched by processCreateExternal (re #108), so the
+// SMTP session is not bound to the JMAP method's response deadline.
+//
+// On completion it calls UpdateEmailSubmissionHeld to update the row and
+// IncrementJMAPState to notify JMAP push clients of the final delivery status.
+func (h *handlerSet) execExternalRelay(
+	ctx context.Context,
+	p store.Principal,
+	emailMsgID store.MessageID,
+	cfg store.IdentitySubmission,
+	mailFrom string,
+	recipients []string,
+	submissionID string,
+) {
+	// Re-open the message blob; the caller's blob reader was scoped to
+	// the HTTP request context and must not be reused across goroutines.
+	msg, err := h.store.Meta().GetMessage(ctx, emailMsgID)
+	if err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: get message",
+			"submission_id", submissionID, "err", err)
+		return // row stays pending; client sees delivered=queued
+	}
+	if msg.Blob.Hash == "" {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: empty blob hash",
+			"submission_id", submissionID)
+		return
+	}
+	rc, err := h.store.Blobs().Get(ctx, msg.Blob.Hash)
+	if err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: open blob",
+			"submission_id", submissionID, "err", err)
+		return
+	}
+	defer rc.Close()
+
 	env := extsubmit.Envelope{
 		MailFrom:      mailFrom,
 		RcptTo:        recipients,
-		Body:          body,
-		CorrelationID: renderSubmissionID(envID),
+		Body:          rc,
+		CorrelationID: submissionID,
 	}
 	outcome := h.externalSubmit.Submit(ctx, cfg, env)
 
@@ -1102,58 +1199,32 @@ func (h *handlerSet) processCreateExternal(
 		_ = h.externalRouter.BumpIdentityPushState(ctx, p.ID)
 	}
 
-	extState := string(outcome.State)
-	extDiag := outcome.Diagnostic
+	// Map the outcome to the stored state. On auth-failed: park the row
+	// for the Retryer (re #70, REQ-AUTH-EXT-SUBMIT-05).
+	heldForReauth := outcome.State == extsubmit.OutcomeAuthFailed
+	udoSt := string(undoStatusFinal)
+	if heldForReauth {
+		udoSt = string(undoStatusPending)
+	}
 
 	props := externalSubmissionProperties{
 		RcptTo:   recipients,
-		ExtState: extState,
-		ExtDiag:  extDiag,
 		MailFrom: mailFrom,
+		ExtState: string(outcome.State),
+		ExtDiag:  outcome.Diagnostic,
 	}
 	propsJSON, _ := json.Marshal(props)
 
-	// On auth-failed: park the submission rather than marking it final.
-	// The Retryer will re-attempt delivery when the identity recovers.
-	// All other non-ok outcomes map directly to final/delivered=no
-	// (re #70, REQ-AUTH-EXT-SUBMIT-05).
-	heldForReauth := outcome.State == extsubmit.OutcomeAuthFailed
-	udoSt := string(undoStatusFinal)
-	var holdDeadlineUs int64
-	if heldForReauth {
-		udoSt = string(undoStatusPending)
-		holdDeadlineUs = now.Add(holdWindowDefault).UnixMicro()
+	if err := h.store.Meta().UpdateEmailSubmissionHeld(ctx, submissionID, heldForReauth, udoSt, propsJSON); err != nil {
+		slog.ErrorContext(ctx, "emailsubmission: ext relay: update row",
+			"submission_id", submissionID, "err", err)
+		return
 	}
-
-	row := store.EmailSubmissionRow{
-		ID:             renderSubmissionID(envID),
-		EnvelopeID:     envID,
-		PrincipalID:    p.ID,
-		IdentityID:     identityID,
-		EmailID:        emailMsgID,
-		ThreadID:       threadID,
-		SendAtUs:       sendAtUs,
-		CreatedAtUs:    now.UnixMicro(),
-		UndoStatus:     udoSt,
-		Properties:     propsJSON,
-		External:       true,
-		HeldForReauth:  heldForReauth,
-		HoldDeadlineUs: holdDeadlineUs,
+	// Notify push clients of the state transition.
+	if _, err := h.store.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmailSubmission); err != nil {
+		slog.WarnContext(ctx, "emailsubmission: ext relay: bump jmap state",
+			"submission_id", submissionID, "err", err)
 	}
-	if err := h.store.Meta().InsertEmailSubmission(ctx, row); err != nil {
-		return jmapEmailSubmission{}, &setError{Type: "serverFail",
-			Description: fmt.Sprintf("persist ext submission: %s", err)}
-	}
-
-	// Seed-on-send (REQ-MAIL-11g): fire-and-forget. Drained via
-	// h.Wait() at shutdown / test teardown.
-	if msg, mErr := h.store.Meta().GetMessage(ctx, emailMsgID); mErr == nil {
-		h.goBackground(func() {
-			h.seedRecipientsOnSend(context.Background(), p, msg, recipients)
-		})
-	}
-
-	return externalRowToJMAP(row), nil
 }
 
 func (s setHandler) processUpdate(ctx context.Context, p store.Principal, id jmapID, raw json.RawMessage) *setError {

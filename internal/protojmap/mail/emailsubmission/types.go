@@ -186,6 +186,14 @@ func externalRowToJMAP(r store.EmailSubmissionRow) jmapEmailSubmission {
 				// rather than silently failed (re #70).
 				ds.Delivered = "queued"
 				ds.SMTPReply = "pending re-authentication"
+			case props.ExtState == "":
+				// Relay goroutine has not yet reported an outcome (re #108):
+				// the row was inserted by processCreateExternal before the
+				// background Submit call completes. Show "queued" so the client
+				// knows delivery is in progress and does not treat the
+				// submission as failed.
+				ds.Delivered = "queued"
+				ds.SMTPReply = "queued"
 			case props.ExtState == "ok":
 				ds.Delivered = "yes"
 				ds.SMTPReply = "250 ok"
