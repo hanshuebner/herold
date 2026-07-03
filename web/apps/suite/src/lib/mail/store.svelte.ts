@@ -1160,7 +1160,20 @@ class MailStore {
    * because `verifiedAt` is null on a freshly-created row, and
    * `verificationPendingSince` is set by the server.
    */
-  async createIdentity(email: string, name: string): Promise<Identity> {
+  async createIdentity(
+    email: string,
+    name: string,
+    opts?: {
+      /**
+       * When true, the server skips the verification-email trigger.
+       * Pass this only when an OAuth flow will immediately verify
+       * ownership (e.g. adding a Gmail or Microsoft 365 identity
+       * where the wizard will call startOAuth right after creation).
+       * re #105.
+       */
+      skipVerificationEmail?: boolean;
+    },
+  ): Promise<Identity> {
     const accountId = this.mailAccountId;
     if (!accountId) throw new Error('No Mail account on this session');
 
@@ -1173,6 +1186,7 @@ class MailStore {
     // The server treats name as optional; empty-string falls back to
     // the local-part on the wire.
     if (trimmedName !== '') props.name = trimmedName;
+    if (opts?.skipVerificationEmail) props['skipVerificationEmail'] = true;
 
     const { responses } = await jmap.batch((b) => {
       b.call(

@@ -47,9 +47,33 @@
   import { ApiError } from '../lib/api/client';
   import { toast } from '../lib/toast/toast.svelte';
   import type { Identity } from '../lib/mail/types';
+  import { OAUTH_PENDING_KEY } from '../lib/api/identity-submission';
 
   // Hydrate the sounds toggle from localStorage on mount.
   sounds.hydrate();
+
+  // Detect return from an OAuth flow and show a confirmation toast (re #105).
+  // startOAuth() stores the pending context in sessionStorage before navigating
+  // to the provider; the OAuth callback redirects back here. We read and clear
+  // the key once to show the toast exactly once per completed OAuth flow.
+  $effect(() => {
+    const raw = sessionStorage.getItem(OAUTH_PENDING_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(OAUTH_PENDING_KEY);
+    try {
+      const { provider } = JSON.parse(raw) as { provider?: string };
+      const providerLabel =
+        provider === 'gmail' ? 'Google' :
+        provider === 'm365' ? 'Microsoft' :
+        provider ?? '';
+      toast.show({
+        message: t('settings.submission.oauthAuthorized', { provider: providerLabel }),
+        timeoutMs: 5000,
+      });
+    } catch {
+      // malformed sessionStorage value — ignore silently
+    }
+  });
 
   // Section order: Account, Security, Sessions, Appearance, Mail, Categories, Filters,
   // Notifications, API keys, Privacy, Shared files, Diagnostics, About.

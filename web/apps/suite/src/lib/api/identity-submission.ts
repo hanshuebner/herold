@@ -178,6 +178,13 @@ export function deleteSubmission(identityId: string): Promise<void> {
  * Promise rejects with an ApiError (status 503); the caller surfaces an
  * inline error.
  */
+/**
+ * Key used to persist the in-flight OAuth context across the page reload
+ * caused by the OAuth redirect. SettingsView reads this on mount to show
+ * an "Already authorized" toast (re #105).
+ */
+export const OAUTH_PENDING_KEY = 'herold_oauth_pending';
+
 export async function startOAuth(
   identityId: string,
   provider: OAuthProvider,
@@ -188,5 +195,14 @@ export async function startOAuth(
   // X-CSRF-Token header from the herold_public_csrf cookie, satisfying
   // the server's CSRF middleware for cookie-authenticated callers.
   const { auth_url } = await post<{ auth_url: string }>(url);
+  // Persist the pending OAuth context so SettingsView can show a
+  // success toast after the redirect returns (re #105). The key is
+  // cleared by the toast handler; any stale value from an aborted
+  // flow is also harmless because the identityId check filters it.
+  try {
+    sessionStorage.setItem(OAUTH_PENDING_KEY, JSON.stringify({ identityId, provider }));
+  } catch {
+    // sessionStorage unavailable (e.g. private-browsing quota); skip.
+  }
   window.location.href = auth_url;
 }

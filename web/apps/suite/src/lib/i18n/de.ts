@@ -1410,6 +1410,13 @@ export const de = {
   'settings.submission.probe.permanent': 'Vom externen Server abgelehnt',
   'settings.submission.probe.transient': 'Vorübergehender Fehler',
   'settings.submission.probe.default': 'Verbindungstest fehlgeschlagen',
+  /** Button label for re-testing an existing OAuth2 connection (re #105). */
+  'settings.submission.testConnection': 'Verbindung testen',
+  /**
+   * Toast shown after returning from a completed OAuth flow (re #105).
+   * {provider} is substituted with "Google" or "Microsoft".
+   */
+  'settings.submission.oauthAuthorized': 'Mit {provider} autorisiert.',
   'settings.submission.oauthError.notConfigured':
     'Der Anbieter {provider} ist auf diesem Server nicht konfiguriert. ' +
     'Verwenden Sie stattdessen die manuelle Eingabe.',

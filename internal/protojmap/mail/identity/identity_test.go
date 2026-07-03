@@ -413,6 +413,42 @@ func TestIdentity_Set_Create_FiresVerificationTrigger(t *testing.T) {
 	}
 }
 
+// TestIdentity_Set_Create_SkipVerificationEmail verifies that when the
+// skipVerificationEmail extension field is true the verification trigger is
+// NOT called, while the identity row is still created successfully. This
+// supports the OAuth fast-path in the add-identity wizard (re #105): the
+// client sets skipVerificationEmail=true when it knows an OAuth flow will
+// immediately verify ownership, avoiding the confusing verification email.
+func TestIdentity_Set_Create_SkipVerificationEmail(t *testing.T) {
+	h, _, p := newHandlers(t)
+	triggerFired := false
+	h.verificationTrigger = func(_ context.Context, _ store.JMAPIdentity) error {
+		triggerFired = true
+		return nil
+	}
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"oauth": map[string]any{
+				"name":                  "Alice Gmail",
+				"email":                 "alice.gmail@example.test",
+				"skipVerificationEmail": true,
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set create: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if _, ok := sresp.Created["oauth"]; !ok {
+		t.Fatalf("expected create success: notCreated = %+v", sresp.NotCreated)
+	}
+	if triggerFired {
+		t.Fatal("expected verification trigger NOT to fire when skipVerificationEmail=true")
+	}
+}
+
 // TestIdentity_Set_Create_AllowAllExternalDomain verifies REQ-IDENT-20:
 // when the policy hook permits the external domain, Identity/set { create }
 // accepts the row even though the domain is not in ListLocalDomains.

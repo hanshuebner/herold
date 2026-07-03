@@ -249,6 +249,36 @@
   }
 
   let isConfigured = $derived(handle.data?.configured === true);
+
+  /**
+   * True when the current submission config uses OAuth2 tokens stored by a
+   * previous OAuth flow. In this state the "Mit Google/Microsoft anmelden"
+   * initial-setup CTA is hidden (not needed) and a dedicated
+   * "Verbindung testen" button re-runs the OAuth flow to re-authorise and
+   * verify connectivity (re #105).
+   */
+  let isOAuthConfigured = $derived(isConfigured && handle.data?.submit_auth_method === 'oauth2');
+
+  /**
+   * Maps a known SMTP submission host back to its OAuth provider id.
+   * Returns null for custom or unknown hosts.
+   */
+  function providerFromHost(host: string): string | null {
+    if (host === 'smtp.gmail.com') return 'gmail';
+    if (host === 'smtp.office365.com') return 'm365';
+    return null;
+  }
+
+  /**
+   * The OAuth provider id inferred from the stored submit_host, or null when
+   * the host is unknown or the submission is not oauth2-configured.
+   * Used to wire the "Verbindung testen" button for oauth2 submissions.
+   */
+  let oauthConfiguredProvider = $derived(
+    isOAuthConfigured && handle.data?.submit_host
+      ? providerFromHost(handle.data.submit_host)
+      : null,
+  );
 </script>
 
 <div class="submission-section">
@@ -296,8 +326,11 @@
       <!-- External config panel -->
       <div class="external-panel">
 
-        <!-- OAuth one-click buttons (only for server-configured providers, re #73) -->
-        {#if availableOAuthProviders.length > 0}
+        <!-- OAuth one-click buttons: shown for initial setup only, hidden when
+             oauth2 is already configured (re #105). When already configured,
+             a "Verbindung testen" button in the form-actions section re-runs
+             the OAuth flow instead. -->
+        {#if availableOAuthProviders.length > 0 && !isOAuthConfigured}
           <div class="oauth-section">
             <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
             <div class="oauth-buttons">
@@ -424,16 +457,33 @@
               </Button>
             {/if}
             <span class="spacer"></span>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={saving || removing || authMethod === 'oauth2'}
-              title={authMethod === 'oauth2'
-                ? t('settings.submission.oauth2Title')
-                : ''}
-            >
-              {saving ? t('settings.submission.saving') : t('settings.submission.saveAndTest')}
-            </Button>
+            {#if isOAuthConfigured && oauthConfiguredProvider !== null}
+              <!-- For oauth2-configured identities, "Verbindung testen"
+                   re-runs the OAuth flow: the provider re-issues tokens and
+                   herold re-probes the SMTP connection. For already-consented
+                   providers (Gmail, Microsoft) this usually completes
+                   instantly without user interaction (re #105). -->
+              <Button
+                variant="primary"
+                onclick={() => void startOAuthFlow(oauthConfiguredProvider!)}
+                disabled={oauthStarting !== null || removing}
+              >
+                {oauthStarting === oauthConfiguredProvider
+                  ? t('settings.submission.starting')
+                  : t('settings.submission.testConnection')}
+              </Button>
+            {:else}
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={saving || removing || authMethod === 'oauth2'}
+                title={authMethod === 'oauth2'
+                  ? t('settings.submission.oauth2Title')
+                  : ''}
+              >
+                {saving ? t('settings.submission.saving') : t('settings.submission.saveAndTest')}
+              </Button>
+            {/if}
           </div>
         </form>
       </div>

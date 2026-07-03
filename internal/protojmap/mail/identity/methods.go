@@ -291,6 +291,12 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			// AvatarBlobId and XFaceEnabled are herold extensions (REQ-SET-03b).
 			AvatarBlobId *string `json:"avatarBlobId,omitempty"`
 			XFaceEnabled bool    `json:"xFaceEnabled,omitempty"`
+			// SkipVerificationEmail suppresses the post-create verification
+			// trigger for identities whose ownership will be proven via an
+			// OAuth round-trip instead (e.g. Gmail, Microsoft 365). When
+			// true, the verification trigger is not fired; the OAuth callback
+			// calls MarkIdentityVerified on success (re #105).
+			SkipVerificationEmail bool `json:"skipVerificationEmail,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &in); err != nil {
 			if resp.NotCreated == nil {
@@ -400,7 +406,12 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// failures are logged and we still report the create as
 		// successful — the suite surfaces a Resend affordance
 		// (REQ-IDENT-41) for users to retry.
-		if s.h.verificationTrigger != nil {
+		//
+		// The trigger is skipped when skipVerificationEmail is true:
+		// that flag signals that the client will immediately start an
+		// OAuth flow which will call MarkIdentityVerified on success,
+		// so the verification email is not needed (re #105).
+		if s.h.verificationTrigger != nil && !in.SkipVerificationEmail {
 			row := recordToPersisted(created)
 			row.VerifiedAtUs = 0
 			if err := s.h.verificationTrigger(ctx, row); err != nil {

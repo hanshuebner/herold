@@ -164,14 +164,29 @@
     if (!canCreate) return;
     creating = true;
     try {
-      // Run detect-provider in parallel with identity creation to avoid
-      // adding a serial round-trip to the common code path. Any error
-      // from detectProvider is swallowed and treated as null so that DNS
-      // failures never block identity creation (re #92).
-      const [detected, created] = await Promise.all([
-        detectProvider(email).catch(() => null),
-        mail.createIdentity(email, displayName),
-      ]);
+      // Detect the mail provider before creating the identity so we can
+      // skip the verification email when OAuth will prove ownership (re
+      // #105). DNS failures are caught and treated as null so the wizard
+      // never blocks on a slow or broken resolver.
+      let detected: Awaited<ReturnType<typeof detectProvider>> = null;
+      try {
+        detected = await detectProvider(email);
+      } catch {
+        detected = null;
+      }
+
+      // Determine whether we will use OAuth. If so, suppress the
+      // verification email: the OAuth callback marks the identity
+      // verified, making the email noise for the user.
+      const oauthProvider: OAuthProvider | null =
+        detected === 'google' ? 'gmail' :
+        detected === 'microsoft' ? 'm365' :
+        null;
+      const willUseOAuth = oauthProvider !== null && hasExternalSubmission();
+
+      const created = await mail.createIdentity(email, displayName,
+        willUseOAuth ? { skipVerificationEmail: true } : undefined,
+      );
       createdIdentity = created;
       // The store mirrored the row already; show toast and advance.
       toast.show({
@@ -182,20 +197,22 @@
       // If the MX lookup identified a Google or Microsoft provider and
       // external submission is enabled on this server, start the OAuth
       // flow instead of the verification-code step (re #92).
-      if (detected !== null && hasExternalSubmission()) {
-        const oauthProvider: OAuthProvider | null =
-          detected === 'google' ? 'gmail' :
-          detected === 'microsoft' ? 'm365' :
-          null;
-        if (oauthProvider !== null) {
+      if (willUseOAuth && oauthProvider !== null) {
+        try {
+          await startOAuth(created.id, oauthProvider);
+          // startOAuth stores OAuth state in sessionStorage and sets
+          // window.location.href; the page is navigating away. Return
+          // here so we do not also advance to step 2.
+          return;
+        } catch {
+          // 503 (provider not configured by the operator) or transient
+          // error. We suppressed the verification email on create (re
+          // #105), so trigger a resend so the user has a code to enter.
           try {
-            await startOAuth(created.id, oauthProvider);
-            // startOAuth sets window.location.href; the page is navigating
-            // away. Return here so we do not also advance to step 2.
-            return;
+            await postVerifyResend(created.id);
           } catch {
-            // 503 (provider not configured by the operator) or transient
-            // error; fall through to the verification-code step.
+            // Resend failure is not fatal; the user can click Resend
+            // in step 2.
           }
         }
       }

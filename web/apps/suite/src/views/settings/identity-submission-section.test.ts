@@ -66,6 +66,10 @@ const submissionModule = await import('../../lib/identities/identity-submission.
     data: {
       configured: boolean;
       state?: string;
+      submit_host?: string;
+      submit_port?: number;
+      submit_security?: string;
+      submit_auth_method?: string;
       available_oauth_providers: string[];
       domain_authoritative: boolean;
     };
@@ -372,5 +376,69 @@ describe('IdentitySubmissionSection', () => {
     const alerts = screen.queryAllByRole('alert');
     const hasProviderError = alerts.some((a) => a.textContent?.includes('not configured'));
     expect(hasProviderError).toBe(true);
+  });
+
+  // ── OAuth2-configured state (re #105) ─────────────────────────────────────
+
+  it('hides OAuth sign-in buttons when submission is already configured with oauth2', async () => {
+    // Simulate an existing oauth2 submission for smtp.gmail.com.
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.gmail.com',
+      submit_port: 465,
+      submit_security: 'implicit_tls',
+      submit_auth_method: 'oauth2',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: false, // external domain forces external mode
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // The OAuth "Sign in with Google" button must NOT appear when oauth2 is
+    // already configured — it is only shown for initial setup (re #105).
+    expect(screen.queryByText('Sign in with Google')).not.toBeInTheDocument();
+  });
+
+  it('shows "Test connection" button when submission is already configured with oauth2 and provider is known', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.gmail.com',
+      submit_port: 465,
+      submit_security: 'implicit_tls',
+      submit_auth_method: 'oauth2',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: false,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // A "Test connection" button must appear to re-run the OAuth flow (re #105).
+    expect(screen.getByText('Test connection')).toBeInTheDocument();
+    // The disabled "Save and test connection" submit button must NOT appear.
+    expect(screen.queryByText('Save and test connection')).not.toBeInTheDocument();
+  });
+
+  it('calls startOAuth when "Test connection" is clicked for an oauth2-configured submission', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.gmail.com',
+      submit_port: 465,
+      submit_security: 'implicit_tls',
+      submit_auth_method: 'oauth2',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: false,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const testBtn = screen.getByText('Test connection');
+    await fireEvent.click(testBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(startOAuth)).toHaveBeenCalledWith(IDENTITY.id, 'gmail');
+    });
   });
 });

@@ -1389,6 +1389,13 @@ export const en = {
   'settings.submission.probe.permanent': 'Rejected by external server',
   'settings.submission.probe.transient': 'Temporary failure',
   'settings.submission.probe.default': 'Probe failed',
+  /** Button label for re-testing an existing OAuth2 connection (re #105). */
+  'settings.submission.testConnection': 'Test connection',
+  /**
+   * Toast shown after returning from a completed OAuth flow (re #105).
+   * {provider} is substituted with "Google" or "Microsoft".
+   */
+  'settings.submission.oauthAuthorized': 'Authorized with {provider}.',
   'settings.submission.oauthError.notConfigured':
     'The {provider} provider is not configured on this server. Use manual ' +
     'entry instead.',

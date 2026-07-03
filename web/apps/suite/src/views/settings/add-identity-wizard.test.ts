@@ -318,9 +318,12 @@ describe('AddIdentityWizard', () => {
     ) as HTMLButtonElement;
     await fireEvent.click(next);
     await vi.waitFor(() => {
+      // detectProvider returns null (mock default) so no OAuth path;
+      // the third opts argument is undefined for the non-OAuth case.
       expect(vi.mocked(mail.createIdentity)).toHaveBeenCalledWith(
         'alice2@example.local',
         'Alice 2',
+        undefined,
       );
     });
     await vi.waitFor(() => {
@@ -612,6 +615,12 @@ describe('AddIdentityWizard', () => {
     await vi.waitFor(() => {
       expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'gmail');
     });
+    // skipVerificationEmail must be true when OAuth will prove ownership (re #105).
+    expect(vi.mocked(mail.createIdentity)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      { skipVerificationEmail: true },
+    );
     // Because startOAuth resolved (mock), the wizard returned early and
     // step 2 is NOT shown.
     expect(
@@ -636,6 +645,11 @@ describe('AddIdentityWizard', () => {
     await vi.waitFor(() => {
       expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'm365');
     });
+    expect(vi.mocked(mail.createIdentity)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      { skipVerificationEmail: true },
+    );
     expect(
       container.querySelector('[data-testid="identity-wizard-step-2"]'),
     ).toBeNull();
@@ -658,6 +672,11 @@ describe('AddIdentityWizard', () => {
     );
     await vi.waitFor(() => {
       expect(vi.mocked(startOAuth)).toHaveBeenCalledWith('new-identity', 'gmail');
+    });
+    // skipVerificationEmail was true; startOAuth 503 → postVerifyResend called
+    // so the user has a code to enter in step 2 (re #105).
+    await vi.waitFor(() => {
+      expect(vi.mocked(postVerifyResend)).toHaveBeenCalledWith('new-identity');
     });
     // startOAuth threw 503: fall through to verification-code step.
     await vi.waitFor(() => {
