@@ -52,6 +52,18 @@ interface AuthMeResponse {
   roles?: string[];
   /** RFC 3339 timestamp when current TOTP elevation expires, or null. */
   elevation_expires_at?: string | null;
+  /**
+   * Rolling idle deadline as an RFC 3339 UTC timestamp. The SPA arms a
+   * setTimeout against this so the login page appears the moment the idle
+   * window closes, without waiting for the next user-initiated API call.
+   * Preferred over session_expires_at (re #106).
+   */
+  session_idle_deadline?: string;
+  /**
+   * Absolute session deadline as an RFC 3339 UTC timestamp. Used as a fallback
+   * when session_idle_deadline is absent (re #106).
+   */
+  session_expires_at?: string;
 }
 
 interface ServerStatusResponse {
@@ -108,17 +120,36 @@ class Auth {
    */
   #elevationTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * Handle for the pending session-expiry timer. Fires when the session idle
+   * deadline (or, as a fallback, the hard session deadline) passes, transitioning
+   * to 'unauthenticated' and routing to /login (re #106).
+   */
+  #sessionTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The session deadline currently armed in #sessionTimer, or null when no
+   * timer is pending. Stored so checkSessionExpiry() can compare the current
+   * time against it without re-parsing the server response.
+   */
+  #sessionDeadline: Date | null = null;
+
   // clientlog predicates read by the clientlog wrapper in main.ts.
   // Defaults: telemetry enabled, no live-tail. Updated after a successful
   // session probe or login when the server returns the clientlog block.
   clientlogTelemetryEnabled = $state(true);
   clientlogLivetailUntil = $state<number | null>(null);
 
-  /** Parse an RFC 3339 elevation_expires_at into a Date or null. */
-  #parseElevation(raw: string | null | undefined): Date | null {
+  /** Parse an RFC 3339 timestamp string into a Date or null. */
+  #parseDate(raw: string | null | undefined): Date | null {
     if (!raw) return null;
     const d = new Date(raw);
     return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /** Parse an RFC 3339 elevation_expires_at into a Date or null. */
+  #parseElevation(raw: string | null | undefined): Date | null {
+    return this.#parseDate(raw);
   }
 
   /**
@@ -162,6 +193,48 @@ class Auth {
       this.#scheduleElevationExpiry(null);
       this.elevationExpiresAt = null;
       this.status = 'step_up_pending';
+    }
+  }
+
+  /**
+   * Arm a setTimeout that calls handleUnauthorized() when the session idle
+   * deadline passes, transitioning the SPA to 'unauthenticated' and routing
+   * to /login without waiting for the next user-initiated API call (re #106).
+   * Idempotent: calling twice cancels the previous timer.
+   * A null deadline just clears any pending timer (used on logout and 401).
+   *
+   * Past deadlines use delay 0 so the signal fires after the current call
+   * stack unwinds.
+   */
+  #scheduleSessionExpiry(deadline: Date | null): void {
+    if (this.#sessionTimer !== null) {
+      clearTimeout(this.#sessionTimer);
+      this.#sessionTimer = null;
+    }
+    this.#sessionDeadline = deadline;
+    if (deadline === null) return;
+    const delayMs = Math.max(0, deadline.getTime() - Date.now());
+    this.#sessionTimer = setTimeout(() => {
+      this.#sessionTimer = null;
+      this.#sessionDeadline = null;
+      // handleUnauthorized() checks status and routes to /login only when
+      // we are in an authenticated state; it is a no-op otherwise.
+      this.handleUnauthorized();
+    }, delayMs);
+  }
+
+  /**
+   * Proactively check whether the session deadline has passed and, if so,
+   * transition to 'unauthenticated' and route to /login. Called from the
+   * visibilitychange listener when the tab returns from background after a
+   * long idle period (re #106).
+   */
+  checkSessionExpiry(): void {
+    if (this.status !== 'ready' && this.status !== 'step_up_pending') return;
+    const deadline = this.#sessionDeadline;
+    if (deadline !== null && Date.now() >= deadline.getTime()) {
+      this.#scheduleSessionExpiry(null);
+      this.handleUnauthorized();
     }
   }
 
@@ -223,6 +296,12 @@ class Auth {
         email: me.email,
         scopes: me.scopes,
       };
+
+      // Arm the proactive session-expiry timer. Prefer the rolling idle
+      // deadline over the absolute hard deadline (re #106).
+      this.#scheduleSessionExpiry(
+        this.#parseDate(me.session_idle_deadline ?? me.session_expires_at),
+      );
 
       if (this.#hasActiveElevation()) {
         // Elevation is live; fetch server/status for clientlog block.
@@ -390,12 +469,14 @@ class Auth {
     this.roles = [];
     this.elevationExpiresAt = null;
     this.#scheduleElevationExpiry(null);
+    this.#scheduleSessionExpiry(null);
     this.status = 'unauthenticated';
     router.replace('/login');
   }
 
   /**
-   * Called by client.ts when any /api/v1/ call returns 401.
+   * Called by client.ts when any /api/v1/ call returns 401, and by the
+   * proactive session-expiry timer when the session deadline passes.
    * Transitions to unauthenticated and routes to /login.
    */
   handleUnauthorized(): void {
@@ -404,6 +485,7 @@ class Auth {
       this.roles = [];
       this.elevationExpiresAt = null;
       this.#scheduleElevationExpiry(null);
+      this.#scheduleSessionExpiry(null);
       this.status = 'unauthenticated';
       router.replace('/login');
     }
@@ -429,14 +511,14 @@ class Auth {
 
 export const auth = new Auth();
 
-// Proactive elevation-expiry check on tab visibility change (re #106).
-// When the tab returns from background after the elevation window has closed,
-// transition to 'step_up_pending' immediately rather than waiting for the
-// next API call to return 403 step_up_required.
+// Proactive expiry checks on tab visibility change (re #106).
+// When the tab returns from background after the elevation or session window
+// has closed, transition immediately rather than waiting for the next API call.
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       auth.checkElevationExpiry();
+      auth.checkSessionExpiry();
     }
   });
 }
