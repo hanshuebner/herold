@@ -402,6 +402,113 @@ func TestEmailSubmission_External_LocalFallbackWhenNoRouter(t *testing.T) {
 	}
 }
 
+// TestEmailSubmission_External_RelayBlobMissing verifies that when the blob
+// backing the submitted message is unreadable (e.g. removed from the store
+// before the relay goroutine runs), execExternalRelay transitions the row to
+// a terminal failure state (undoStatus=final, delivered=no) rather than
+// leaving it stuck as undoStatus=pending indefinitely (re #108).
+func TestEmailSubmission_External_RelayBlobMissing(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	ctx := context.Background()
+	_ = st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true})
+	p, _ := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	mb, _ := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	body := "From: alice@example.test\r\nTo: bob@remote.test\r\nSubject: hi\r\n\r\nbody.\r\n"
+	ref, _ := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	uid, _, _ := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref,
+		Size: int64(len(body)),
+		Envelope: store.Envelope{
+			Subject: "hi",
+			From:    "alice@example.test",
+			To:      "bob@remote.test",
+		},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	// Delete the underlying blob file so that Blobs().Get() in execExternalRelay
+	// returns ErrNotFound. GetMessage still succeeds (the message row references
+	// the hash via blob_refs FK), but the blob content is gone.
+	if err := st.Blobs().Delete(ctx, ref.Hash); err != nil {
+		t.Fatalf("Blobs().Delete: %v", err)
+	}
+
+	extSub := &fakeExternalSubmitter{outcome: extsubmit.Outcome{State: extsubmit.OutcomeOK}}
+	h := &handlerSet{
+		store:          st,
+		queue:          &fakeSubmitter{store: st},
+		clk:            clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity:       stubResolver{email: "alice@example.test"},
+		externalSubmit: extSub,
+		externalRouter: &fakeExternalRouter{has: true},
+	}
+	t.Cleanup(func() {
+		h.Wait()
+		_ = st.Close()
+	})
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+			},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if len(sresp.Created) == 0 {
+		t.Fatal("no created entries")
+	}
+	var subID string
+	for _, v := range sresp.Created {
+		subID = v.ID
+	}
+
+	// Wait for the relay goroutine to complete.
+	h.Wait()
+
+	// The row must be finalized as a permanent failure, not stuck as pending.
+	subRow, getErr := st.Meta().GetEmailSubmission(ctx, subID)
+	if getErr != nil {
+		t.Fatalf("GetEmailSubmission: %v", getErr)
+	}
+	if subRow.UndoStatus != string(undoStatusFinal) {
+		t.Fatalf("undoStatus = %q, want final (blob was deleted)", subRow.UndoStatus)
+	}
+
+	// /get must reflect delivered=no.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": protojmap.AccountIDForPrincipal(p.ID)})
+	getResp, _ := getHandler{h: h}.executeAs(p, getArgs)
+	gjs, _ := json.Marshal(getResp)
+	if !strings.Contains(string(gjs), `"no"`) {
+		t.Fatalf("expected delivered=no in /get response after missing blob: %s", gjs)
+	}
+
+	// Submit must not have been called — the blob failure precedes it.
+	if len(extSub.calls) != 0 {
+		t.Fatalf("expected 0 Submit calls when blob is missing, got %d", len(extSub.calls))
+	}
+}
+
 // TestEmailSubmission_External_RelayAsync verifies that the external relay runs
 // asynchronously and does not block the JMAP method beyond the deadline (re #108).
 //

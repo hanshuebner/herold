@@ -1164,23 +1164,48 @@ func (h *handlerSet) execExternalRelay(
 	recipients []string,
 	submissionID string,
 ) {
+	// failRow transitions the submission to a terminal failure state (re #108).
+	// Called when a setup error prevents the relay from being attempted so
+	// the client sees a definite outcome rather than a permanent "queued".
+	failRow := func(diag string) {
+		props := externalSubmissionProperties{
+			RcptTo:   recipients,
+			MailFrom: mailFrom,
+			ExtState: string(extsubmit.OutcomePermanent),
+			ExtDiag:  diag,
+		}
+		propsJSON, _ := json.Marshal(props)
+		if err := h.store.Meta().UpdateEmailSubmissionHeld(ctx, submissionID, false, string(undoStatusFinal), propsJSON); err != nil {
+			slog.ErrorContext(ctx, "emailsubmission: ext relay: fail row",
+				"submission_id", submissionID, "err", err)
+			return
+		}
+		if _, err := h.store.Meta().IncrementJMAPState(ctx, p.ID, store.JMAPStateKindEmailSubmission); err != nil {
+			slog.WarnContext(ctx, "emailsubmission: ext relay: bump jmap state after fail",
+				"submission_id", submissionID, "err", err)
+		}
+	}
+
 	// Re-open the message blob; the caller's blob reader was scoped to
 	// the HTTP request context and must not be reused across goroutines.
 	msg, err := h.store.Meta().GetMessage(ctx, emailMsgID)
 	if err != nil {
 		slog.ErrorContext(ctx, "emailsubmission: ext relay: get message",
 			"submission_id", submissionID, "err", err)
-		return // row stays pending; client sees delivered=queued
+		failRow(fmt.Sprintf("internal error: message not readable: %s", err))
+		return
 	}
 	if msg.Blob.Hash == "" {
 		slog.ErrorContext(ctx, "emailsubmission: ext relay: empty blob hash",
 			"submission_id", submissionID)
+		failRow("internal error: message body not available")
 		return
 	}
 	rc, err := h.store.Blobs().Get(ctx, msg.Blob.Hash)
 	if err != nil {
 		slog.ErrorContext(ctx, "emailsubmission: ext relay: open blob",
 			"submission_id", submissionID, "err", err)
+		failRow(fmt.Sprintf("internal error: message body not readable: %s", err))
 		return
 	}
 	defer rc.Close()
