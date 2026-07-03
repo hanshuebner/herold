@@ -100,11 +100,16 @@ func TestBuildPayload_Email(t *testing.T) {
 	if got["inboxMailboxId"] == nil || got["inboxMailboxId"] == "" {
 		t.Fatalf("inboxMailboxId missing or empty: %v", got["inboxMailboxId"])
 	}
-	// threadId: for a message with ThreadID==0 it is omitted; that is acceptable
-	// (the SW falls back to the inbox). A non-zero ThreadID (set by the threader)
-	// must be present. This test does not set ThreadID so we only verify absence.
-	if _, hasThread := got["threadId"]; hasThread {
-		t.Fatalf("threadId present for msg with ThreadID==0: %v", got["threadId"])
+	// threadId must be present as "t<emailId>" for unthreaded messages
+	// (ThreadID==0 in the store). The JMAP convention treats each unthreaded
+	// email as its own thread with key "t<emailID>" (see threadIDForMessage
+	// in internal/protojmap/mail/email/render.go). The "t" prefix is required
+	// so that loadThread(threadId) in the SPA matches the Thread/get response's
+	// {id: "t42"} field correctly (bare "42" would find nothing).
+	emailId, _ := got["emailId"].(string)
+	wantThread := "t" + emailId
+	if got["threadId"] != wantThread {
+		t.Fatalf("threadId=%v want %q", got["threadId"], wantThread)
 	}
 }
 
@@ -154,8 +159,12 @@ func TestBuildPayload_EmailWithThread(t *testing.T) {
 	if got["kind"] != "mail" {
 		t.Fatalf("kind=%v", got["kind"])
 	}
-	// threadId must be the JMAP string representation of testThreadID.
-	wantThread := fmt.Sprintf("%d", testThreadID)
+	// threadId must be the JMAP thread-id wire form "t<threadID>" — matching
+	// renderThreadID() in internal/protojmap/mail/thread/methods.go. The bare
+	// numeric "42" that was sent before the fix caused loadThread("42") in the
+	// SPA to fail because Thread/get responds with {id: "t42"} and the
+	// find((t) => t.id === "42") equality check returned undefined.
+	wantThread := fmt.Sprintf("t%d", testThreadID)
 	if got["threadId"] != wantThread {
 		t.Fatalf("threadId=%v want %q", got["threadId"], wantThread)
 	}

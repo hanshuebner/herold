@@ -153,8 +153,23 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 		EmailID:         msgIDStr,
 		MsgID:           msgIDStr,
 	}
+	// ThreadID is the JMAP thread-id in wire form, matching threadIDForMessage()
+	// in internal/protojmap/mail/email/render.go and renderThreadID() in
+	// internal/protojmap/mail/thread/methods.go: always "t<n>".
+	//
+	// Without the "t" prefix, the SPA's loadThread() call sends
+	// Thread/get {ids: ["42"]}, the server responds with {id: "t42"},
+	// find((t) => t.id === "42") fails, and the thread panel errors
+	// silently — the user sees the inbox instead of the notification message.
+	//
+	// We always emit threadId (even for unthreaded messages where
+	// ThreadID==0) so the SW can navigate directly to the thread. For
+	// unthreaded messages, JMAP treats the email as its own thread with
+	// key "t<emailID>", matching threadIDForMessage's ThreadID==0 branch.
 	if msg.ThreadID != 0 {
-		out.ThreadID = fmt.Sprintf("%d", msg.ThreadID)
+		out.ThreadID = fmt.Sprintf("t%d", msg.ThreadID)
+	} else {
+		out.ThreadID = fmt.Sprintf("t%d", msg.ID)
 	}
 	if msg.MailboxID != 0 {
 		out.InboxMailboxID = fmt.Sprintf("%d", msg.MailboxID)

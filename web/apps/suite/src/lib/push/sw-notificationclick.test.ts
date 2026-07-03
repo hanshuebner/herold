@@ -288,7 +288,9 @@ describe('resolveNotificationPath — unknown kind', () => {
 // rendering.
 
 describe('buildNotificationOptions — email (server payload format)', () => {
-  // A payload shaped like the server's emailPayload struct after the fix.
+  // A payload shaped like the server's emailPayload struct.
+  // threadId uses the JMAP wire form "t<n>" (lowercase "t") matching
+  // renderThreadID() in internal/protojmap/mail/thread/methods.go.
   const emailPayload = {
     '@type': 'StateChange',
     changed: { a1: { Email: '100' } },
@@ -300,7 +302,7 @@ describe('buildNotificationOptions — email (server payload format)', () => {
     mailbox: 'INBOX',
     emailId: '42',
     msgid: '42',
-    threadId: 'T123',
+    threadId: 't123',
     inboxMailboxId: '5',
   };
 
@@ -325,7 +327,7 @@ describe('buildNotificationOptions — email (server payload format)', () => {
 
   it('stores threadId from payload into notification data', () => {
     const opts = buildNotificationOptions(emailPayload)!;
-    expect(opts.data['threadId']).toBe('T123');
+    expect(opts.data['threadId']).toBe('t123');
   });
 
   it('stores emailId from payload into notification data', () => {
@@ -340,7 +342,7 @@ describe('buildNotificationOptions — email (server payload format)', () => {
 
   it('sets tag to threadId when threadId is present', () => {
     const opts = buildNotificationOptions(emailPayload)!;
-    expect(opts.tag).toBe('T123');
+    expect(opts.tag).toBe('t123');
   });
 
   it('sets tag to emailId when threadId is absent', () => {
@@ -355,7 +357,7 @@ describe('buildNotificationOptions — email (server payload format)', () => {
       opts.data as Record<string, unknown>,
       '',
     );
-    expect(path).toBe('/#/mail/thread/T123');
+    expect(path).toBe('/#/mail/thread/t123');
   });
 
   it('falls back to /#/mail route when threadId absent in notification data', () => {
