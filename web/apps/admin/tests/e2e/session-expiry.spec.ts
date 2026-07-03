@@ -109,5 +109,10 @@ test.describe('session expiry', () => {
     await expect(page.getByRole('heading', { name: 'Dashboard' })).not.toBeVisible();
     // The login form must be visible (email field is the canonical sentinel).
     await expect(page.locator('input[type="email"]')).toBeVisible();
+
+    // Save a screenshot for the issue comment. The image shows the login form
+    // on screen with no dashboard content visible — the proactive session-expiry
+    // transition fired without any user interaction (re #106).
+    await page.screenshot({ path: '/tmp/herold-session-expiry-locked.png', fullPage: false });
   });
 });
