@@ -58,8 +58,13 @@ export interface SubmissionStatus {
 /**
  * Body for PUT /api/v1/identities/{id}/submission.
  *
+ * Field names match `submissionPutRequest` in
+ * `internal/protoadmin/identity_submission_dto.go` exactly. The server uses
+ * strict JSON decoding (`DisallowUnknownFields`), so all keys must match.
+ *
  * For `password` mode, supply `password`.
- * For `oauth2` mode, supply the `oauth` object.
+ * For `oauth2` mode, supply `oauth_access_token` (and optionally
+ * `oauth_refresh_token`, `oauth_token_endpoint`, `oauth_client_id`).
  * The server runs `extsubmit.Submitter.Probe` before persisting;
  * a 422 is returned on probe failure with a ProblemDetail body
  * carrying `type: "external_submission_probe_failed"`,
@@ -67,17 +72,16 @@ export interface SubmissionStatus {
  * and `diagnostic: <text>`.
  */
 export interface SubmissionPutBody {
-  auth_method: SubmitAuthMethod;
-  host: string;
-  port: number;
-  security: SubmitSecurity;
+  submit_auth_method: SubmitAuthMethod;
+  submit_host: string;
+  submit_port: number;
+  submit_security: SubmitSecurity;
   password?: string;
-  oauth?: {
-    access_token: string;
-    refresh_token: string;
-    expires_at: string;
-    token_endpoint: string;
-  };
+  oauth_access_token?: string;
+  oauth_refresh_token?: string;
+  oauth_token_endpoint?: string;
+  oauth_client_id?: string;
+  auth_user?: string;
 }
 
 /**

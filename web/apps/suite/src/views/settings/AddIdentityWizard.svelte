@@ -338,10 +338,10 @@
     smtpSaving = true;
     try {
       const body: SubmissionPutBody = {
-        auth_method: 'password',
-        host: smtpHost.trim(),
-        port: smtpPort,
-        security: smtpSecurity,
+        submit_auth_method: 'password',
+        submit_host: smtpHost.trim(),
+        submit_port: smtpPort,
+        submit_security: smtpSecurity,
         password: smtpPassword,
       };
       await putSubmission(createdIdentity.id, body);

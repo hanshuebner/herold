@@ -138,10 +138,10 @@
     }
     saving = true;
     const body: SubmissionPutBody = {
-      auth_method: authMethod,
-      host: host.trim(),
-      port,
-      security,
+      submit_auth_method: authMethod,
+      submit_host: host.trim(),
+      submit_port: port,
+      submit_security: security,
       ...(authMethod === 'password' ? { password } : {}),
     };
     try {

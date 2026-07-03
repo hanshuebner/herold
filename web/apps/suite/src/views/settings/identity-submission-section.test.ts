@@ -284,8 +284,8 @@ describe('IdentitySubmissionSection', () => {
     await fireEvent.click(saveBtn);
 
     expect(putSubmission).toHaveBeenCalledWith('ident-1', expect.objectContaining({
-      auth_method: 'password',
-      host: 'smtp.example.com',
+      submit_auth_method: 'password',
+      submit_host: 'smtp.example.com',
     }));
   });
 
