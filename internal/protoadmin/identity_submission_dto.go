@@ -32,6 +32,20 @@ type submissionGetResponse struct {
 	DomainAuthoritative bool `json:"domain_authoritative"`
 }
 
+// submissionTestRequest is the optional wire form accepted by
+// POST /api/v1/identities/{id}/submission/test (re #122).
+//
+// When the body is absent or empty, the handler defaults to the identity's
+// own address as both MAIL FROM and RCPT TO (the original self-addressed
+// probe behaviour). When To is non-empty it overrides the RCPT TO, allowing
+// the caller to direct the test message to a different address — typically
+// the user's own primary inbox.
+type submissionTestRequest struct {
+	// To is the RFC 5321 addr-spec to use as RCPT TO. Optional: when absent
+	// or empty the handler falls back to the identity's own email address.
+	To string `json:"to,omitempty"`
+}
+
 // submissionPutRequest is the wire form accepted by
 // PUT /api/v1/identities/{id}/submission. The credential fields are
 // consumed exactly once: the server seals and stores them, then discards

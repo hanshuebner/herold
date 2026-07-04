@@ -562,12 +562,26 @@ func (s *Server) handleTestSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a small self-addressed test message. The identity's own address is
-	// both sender and recipient so the probe never injects mail to a third
-	// party (REQ-AUTH-EXT-SUBMIT-11 — send-capability without leakage).
+	// Parse the optional request body to allow the caller to specify a
+	// recipient address (re #122). When absent or empty the endpoint
+	// defaults to the identity's own address so callers that send no body
+	// (e.g. the existing e2e testConnection helper) are unaffected.
+	var testReq submissionTestRequest
+	if !decodeOptionalJSONBody(w, r, &testReq) {
+		return
+	}
+
+	// Build a small test message. The identity's own address is always the
+	// MAIL FROM. The RCPT TO is the caller-supplied address when non-empty,
+	// and falls back to the identity's own address otherwise so the probe
+	// never injects mail to an unintended third party.
 	from := identity.Email
+	rcptTo := testReq.To
+	if rcptTo == "" {
+		rcptTo = from
+	}
 	body := "From: " + from + "\r\n" +
-		"To: " + from + "\r\n" +
+		"To: " + rcptTo + "\r\n" +
 		"Subject: herold external submission test\r\n" +
 		"Message-ID: <conn-test-" + newRequestID() + "@herold>\r\n" +
 		"\r\n" +
@@ -575,7 +589,7 @@ func (s *Server) handleTestSubmission(w http.ResponseWriter, r *http.Request) {
 		"external submission server for this identity.\r\n"
 	env := extsubmit.Envelope{
 		MailFrom:      from,
-		RcptTo:        []string{from},
+		RcptTo:        []string{rcptTo},
 		Body:          strings.NewReader(body),
 		CorrelationID: "conn-test:" + identityID,
 	}

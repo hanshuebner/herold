@@ -59,6 +59,15 @@ vi.mock('../../lib/toast/toast.svelte', () => ({
   },
 }));
 
+vi.mock('../../lib/auth/auth.svelte', () => ({
+  auth: {
+    session: {
+      username: 'alice@example.local',
+    },
+    status: 'ready',
+  },
+}));
+
 const { startOAuth, putSubmission, testSubmission } = await import('../../lib/api/identity-submission');
 const submissionModule = await import('../../lib/identities/identity-submission.svelte') as unknown as {
   submissionStore: { forIdentity: ReturnType<typeof vi.fn>; evict: ReturnType<typeof vi.fn> };
@@ -592,7 +601,34 @@ describe('IdentitySubmissionSection', () => {
     expect(screen.queryByText('Send test message')).not.toBeInTheDocument();
   });
 
-  it('clicking "Send test message" calls testSubmission and shows success result', async () => {
+  it('clicking "Send test message" shows inline prompt before sending', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: [],
+      domain_authoritative: true,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const btn = screen.getByText('Send test message');
+    await fireEvent.click(btn);
+
+    // Prompt is shown with the recipient input pre-filled with the user's
+    // primary email (from mocked auth.session.username = 'alice@example.local').
+    const recipientInput = screen.getByLabelText('Recipient address') as HTMLInputElement;
+    expect(recipientInput).toBeInTheDocument();
+    expect(recipientInput.value).toBe('alice@example.local');
+
+    // testSubmission must NOT have been called yet (prompt is still open).
+    expect(vi.mocked(testSubmission)).not.toHaveBeenCalled();
+  });
+
+  it('clicking "Send test message" calls testSubmission with recipient and shows success result', async () => {
     _mockHandle.data = {
       configured: true,
       submit_host: 'smtp.example.com',
@@ -611,18 +647,27 @@ describe('IdentitySubmissionSection', () => {
 
     render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
 
+    // Step 1: click the button to open the prompt.
     const btn = screen.getByText('Send test message');
     await fireEvent.click(btn);
 
+    // Step 2: confirm by clicking the "Send" button in the prompt.
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    await fireEvent.click(sendBtn);
+
+    // testSubmission is called with the identity id and the recipient.
     await vi.waitFor(() => {
-      expect(vi.mocked(testSubmission)).toHaveBeenCalledWith(IDENTITY.id);
+      expect(vi.mocked(testSubmission)).toHaveBeenCalledWith(
+        IDENTITY.id,
+        { to: 'alice@example.local' },
+      );
     });
 
-    // Success message renders inline.
+    // Success message renders inline with the recipient address.
     await vi.waitFor(() => {
       const status = screen.queryByRole('status');
       expect(status).toBeTruthy();
-      expect(status!.textContent).toContain('test message was sent to your inbox');
+      expect(status!.textContent).toContain('alice@example.local');
     });
   });
 
@@ -645,11 +690,15 @@ describe('IdentitySubmissionSection', () => {
 
     render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
 
+    // Step 1: open the prompt.
     const btn = screen.getByText('Send test message');
     await fireEvent.click(btn);
 
+    // Step 2: confirm send.
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    await fireEvent.click(sendBtn);
+
     await vi.waitFor(() => {
-      const alert = screen.queryByRole('alert');
       // There should be an alert that is the test-result failure (distinct from
       // any probeError alert which would say 'Authentication failed' without the
       // 'Connection failed:' prefix).
@@ -680,8 +729,11 @@ describe('IdentitySubmissionSection', () => {
 
     render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
 
+    // Open prompt, then confirm send.
     const btn = screen.getByText('Send test message');
     await fireEvent.click(btn);
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    await fireEvent.click(sendBtn);
 
     await vi.waitFor(() => {
       expect(screen.queryByRole('status')).toBeTruthy();

@@ -130,4 +130,38 @@ describe('testSubmission', () => {
     expect(url).toBe('/api/v1/identities/abc-123/submission/test');
     expect(init.method).toBe('POST');
   });
+
+  it('includes "to" in the request body when the option is provided', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, detail: '' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+
+    await testSubmission('abc-456', { to: 'primary@example.local' });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ to: 'primary@example.local' });
+  });
+
+  it('sends no body when no options are provided', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, detail: '' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+
+    await testSubmission('abc-789');
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    // body should be absent or empty when no options are passed
+    expect(init.body).toBeFalsy();
+  });
 });

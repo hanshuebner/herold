@@ -1424,11 +1424,13 @@ export const en = {
   'settings.submission.probe.default': 'Probe failed',
   /** Button label for re-testing an existing OAuth2 connection (re #105). */
   'settings.submission.testConnection': 'Test connection',
-  /** On-demand SMTP probe button that delivers a test message to the inbox (re #113, re #115). */
+  /** On-demand SMTP probe button that delivers a test message to a chosen recipient (re #113, re #115, re #122). */
   'settings.submission.sendTest': 'Send test message',
   'settings.submission.sendTestPending': 'Sending...',
+  'settings.submission.sendTestRecipientLabel': 'Recipient address',
+  'settings.submission.sendTestConfirm': 'Send',
   'settings.submission.sendTestOk':
-    'Connection OK — a test message was sent to your inbox.',
+    'Connection OK — a test message was sent to {to}.',
   'settings.submission.sendTestFail': 'Connection failed: {detail}',
   /**
    * Toast shown after returning from a completed OAuth flow (re #105).

@@ -1,7 +1,9 @@
 package protoadmin
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
@@ -77,6 +79,31 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // writes a 400 problem if decoding fails; the caller simply returns.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_body",
+			"request body could not be parsed", err.Error())
+		return false
+	}
+	return true
+}
+
+// decodeOptionalJSONBody reads the request body into dst. If the body is
+// absent or empty (possibly just whitespace) the function returns true
+// without modifying dst, so the caller may use dst's zero value as the
+// default. Returns false and writes a 400 only when the body is non-empty
+// but malformed or contains unknown fields.
+func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_body",
+			"could not read request body", err.Error())
+		return false
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return true // no body; leave dst at its zero value
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_body",

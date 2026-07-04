@@ -38,6 +38,7 @@
   import type { Identity } from '../../lib/mail/types';
   import Button from '@herold/design-system/Button.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import { auth } from '../../lib/auth/auth.svelte';
 
   interface Props {
     identity: Identity;
@@ -135,6 +136,25 @@
    * resets it.
    */
   let testSmtpResult = $state<TestSubmissionResult | null>(null);
+  /**
+   * The recipient address for the test message (re #122). Shown in the
+   * inline prompt that appears when the user clicks "Send test message".
+   * Pre-filled with the user's own primary email (auth.session.username),
+   * falling back to the identity's address.
+   */
+  let testRecipient = $state('');
+  /**
+   * True while the inline recipient-address prompt is visible. The prompt
+   * is shown when the user clicks "Send test message" and dismissed after
+   * sending or cancelling.
+   */
+  let showTestPrompt = $state(false);
+  /**
+   * The recipient address used in the most recent SMTP test. Retained so
+   * the success message can name the address without adding a `to` field
+   * to TestSubmissionResult.
+   */
+  let lastTestRecipient = $state('');
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -144,6 +164,7 @@
     saveError = null;
     oauthError = null;
     testSmtpResult = null;
+    showTestPrompt = false;
     if (!value && handle.data?.configured) {
       // The user toggled back to "Use this server" with an existing config.
       // Offer to remove it (handled by the Remove button; this just reflects UI).
@@ -156,6 +177,7 @@
     probeError = null;
     saveError = null;
     testSmtpResult = null;
+    showTestPrompt = false;
     if (!host.trim()) {
       saveError = t('settings.submission.hostRequired');
       return;
@@ -249,20 +271,32 @@
   }
 
   /**
-   * Run the on-demand SMTP probe (re #113, re #115).
-   *
-   * POSTs to /api/v1/identities/{id}/submission/test and renders the result
-   * inline. Distinct from the save-probe (PUT) and from the OAuth re-auth
-   * button: this exercises the configured SMTP credentials without modifying
-   * them and, on success, delivers a self-addressed test message to the
-   * user's inbox.
+   * Open the inline recipient-address prompt (re #122). Pre-fills testRecipient
+   * with the user's own primary email (auth.session.username), falling back to
+   * the identity's address when the session is not yet available.
    */
-  async function runSmtpTest(): Promise<void> {
+  function openTestPrompt(): void {
+    testRecipient = auth.session?.username ?? identity.email;
+    showTestPrompt = true;
+    testSmtpResult = null;
+  }
+
+  /**
+   * Run the on-demand SMTP probe (re #113, re #115, re #122).
+   *
+   * POSTs to /api/v1/identities/{id}/submission/test with the recipient
+   * address the user confirmed in the inline prompt. Distinct from the
+   * save-probe (PUT) and from the OAuth re-auth button: this exercises the
+   * configured SMTP credentials without modifying them.
+   */
+  async function runSmtpTest(recipient: string): Promise<void> {
     if (testingSmtp) return;
+    showTestPrompt = false;
+    lastTestRecipient = recipient;
     testingSmtp = true;
     testSmtpResult = null;
     try {
-      testSmtpResult = await testSubmission(identity.id);
+      testSmtpResult = await testSubmission(identity.id, { to: recipient });
     } finally {
       testingSmtp = false;
     }
@@ -519,14 +553,15 @@
             {/if}
             <span class="spacer"></span>
             {#if isConfigured}
-              <!-- On-demand SMTP probe button (re #113, re #115).
+              <!-- On-demand SMTP probe button (re #113, re #115, re #122).
                    Distinct from the save-probe (PUT/submit) and from the OAuth
                    re-auth button: exercises stored credentials without changing
-                   them and delivers a self-addressed test message on success. -->
+                   them and delivers a test message to a recipient the user
+                   chooses in the inline prompt. -->
               <Button
                 variant="secondary"
-                onclick={() => void runSmtpTest()}
-                disabled={testingSmtp || saving || removing}
+                onclick={() => openTestPrompt()}
+                disabled={testingSmtp || saving || removing || showTestPrompt}
               >
                 {testingSmtp
                   ? t('settings.submission.sendTestPending')
@@ -562,13 +597,52 @@
             {/if}
           </div>
 
+          {#if showTestPrompt}
+            <!-- Inline recipient-address prompt (re #122). Shown when the user
+                 clicks "Send test message"; allows them to confirm or change
+                 the destination before the test is sent. -->
+            <div class="test-prompt">
+              <div class="field">
+                <label for="test-recipient-{identity.id}" class="field-label">
+                  {t('settings.submission.sendTestRecipientLabel')}
+                </label>
+                <input
+                  id="test-recipient-{identity.id}"
+                  type="email"
+                  class="input"
+                  bind:value={testRecipient}
+                  disabled={testingSmtp}
+                  spellcheck="false"
+                  autocomplete="email"
+                />
+              </div>
+              <div class="test-prompt-actions">
+                <Button
+                  variant="primary"
+                  onclick={() => void runSmtpTest(testRecipient)}
+                  disabled={testingSmtp || !testRecipient.trim()}
+                >
+                  {t('settings.submission.sendTestConfirm')}
+                </Button>
+                <button
+                  type="button"
+                  class="cancel-link"
+                  onclick={() => { showTestPrompt = false; }}
+                  disabled={testingSmtp}
+                >
+                  {t('settings.submission.confirmRemoveCancel')}
+                </button>
+              </div>
+            </div>
+          {/if}
+
           {#if testSmtpResult !== null}
             <div
               class={testSmtpResult.ok ? 'test-result-ok' : 'probe-error'}
               role={testSmtpResult.ok ? 'status' : 'alert'}
             >
               {#if testSmtpResult.ok}
-                {t('settings.submission.sendTestOk')}
+                {t('settings.submission.sendTestOk', { to: lastTestRecipient })}
               {:else}
                 {t('settings.submission.sendTestFail', { detail: testSmtpResult.detail })}
               {/if}
@@ -759,6 +833,39 @@
   .muted {
     color: var(--text-helper);
     font-weight: 400;
+  }
+
+  /* Inline recipient-address prompt (re #122). */
+  .test-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+
+  .test-prompt-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+  }
+
+  .cancel-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .cancel-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   /* On-demand SMTP probe result — success */

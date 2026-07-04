@@ -26,6 +26,7 @@ import (
 	"net/http/cookiejar"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -1128,4 +1129,170 @@ func TestAuditEntries_NoCredentialMaterial(t *testing.T) {
 			}
 		}
 	})
+}
+
+// capturedEnvelope records the most recent Envelope passed to a fake
+// ExternalTestSender so tests can assert on the RCPT TO address.
+type capturedEnvelope struct {
+	mu  sync.Mutex
+	env extsubmit.Envelope
+	set bool
+}
+
+func (c *capturedEnvelope) sender() protoadmin.ExternalTestSender {
+	return func(_ context.Context, _ store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.env = env
+		c.set = true
+		return extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "test ok"}
+	}
+}
+
+func (c *capturedEnvelope) rcptTo() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.env.RcptTo
+}
+
+// newSubmissionHarnessWithSender creates a harness where ExternalTestSender
+// is wired to the provided sender (in addition to the probe).
+func newSubmissionHarnessWithSender(t *testing.T, sender protoadmin.ExternalTestSender) *submissionHarness {
+	t.Helper()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+		BootstrapPerWindow:        1,
+		BootstrapWindow:           5 * time.Minute,
+		RequestsPerMinutePerKey:   100,
+		ExternalSubmissionDataKey: testDataKey,
+		ExternalProbe:             alwaysOKProbe,
+		ExternalTestSender:        sender,
+	})
+	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client, base := h.DialAdminByName(context.Background(), "admin")
+	return &submissionHarness{
+		t: t, fs: fs, clk: clk, srv: srv,
+		client: client, baseURL: base,
+	}
+}
+
+// TestTestSubmission_DefaultsToSelf verifies that when no body is sent, the
+// RCPT TO defaults to the identity's own address (re #122).
+func TestTestSubmission_DefaultsToSelf(t *testing.T) {
+	cap := &capturedEnvelope{}
+	sh := newSubmissionHarnessWithSender(t, cap.sender())
+
+	_, adminKey := sh.bootstrap("self@example.com")
+
+	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+	}
+	var who struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(buf, &who)
+	identityID := sh.insertIdentity(who.PrincipalID, "self@example.com")
+
+	// First PUT a submission so the identity has a row.
+	res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, putSubmissionBody())
+	if res2.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
+	}
+
+	// POST /submission/test with no body — should default RCPT TO to the identity address.
+	res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityID+"/submission/test", adminKey, nil)
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("POST submission/test: %d: %s", res3.StatusCode, buf3)
+	}
+
+	rcpt := cap.rcptTo()
+	if len(rcpt) != 1 || rcpt[0] != "self@example.com" {
+		t.Errorf("RCPT TO = %v; want [self@example.com]", rcpt)
+	}
+}
+
+// TestTestSubmission_HonorsToField verifies that when a JSON body with a
+// non-empty "to" field is sent, the RCPT TO is the specified address (re #122).
+func TestTestSubmission_HonorsToField(t *testing.T) {
+	cap := &capturedEnvelope{}
+	sh := newSubmissionHarnessWithSender(t, cap.sender())
+
+	_, adminKey := sh.bootstrap("sender@example.com")
+
+	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+	}
+	var who struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(buf, &who)
+	identityID := sh.insertIdentity(who.PrincipalID, "sender@example.com")
+
+	// PUT a submission row first.
+	res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, putSubmissionBody())
+	if res2.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
+	}
+
+	// POST /submission/test with a "to" body field.
+	res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityID+"/submission/test", adminKey,
+		map[string]string{"to": "primary@example.com"})
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("POST submission/test with to: %d: %s", res3.StatusCode, buf3)
+	}
+
+	rcpt := cap.rcptTo()
+	if len(rcpt) != 1 || rcpt[0] != "primary@example.com" {
+		t.Errorf("RCPT TO = %v; want [primary@example.com]", rcpt)
+	}
+}
+
+// TestTestSubmission_EmptyToDefaultsToSelf verifies that an explicit empty
+// "to" field is treated the same as an absent body (falls back to self).
+func TestTestSubmission_EmptyToDefaultsToSelf(t *testing.T) {
+	cap := &capturedEnvelope{}
+	sh := newSubmissionHarnessWithSender(t, cap.sender())
+
+	_, adminKey := sh.bootstrap("owner@example.com")
+
+	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+	}
+	var who struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(buf, &who)
+	identityID := sh.insertIdentity(who.PrincipalID, "owner@example.com")
+
+	res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, putSubmissionBody())
+	if res2.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
+	}
+
+	// POST with an explicit empty "to" — must still default to the identity address.
+	res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityID+"/submission/test", adminKey,
+		map[string]string{"to": ""})
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("POST submission/test with empty to: %d: %s", res3.StatusCode, buf3)
+	}
+
+	rcpt := cap.rcptTo()
+	if len(rcpt) != 1 || rcpt[0] != "owner@example.com" {
+		t.Errorf("RCPT TO = %v; want [owner@example.com]", rcpt)
+	}
 }

@@ -201,8 +201,8 @@ export interface TestSubmissionResult {
  *
  * Runs an on-demand SMTP probe against the identity's configured external
  * submission without changing any stored credentials. On success the server
- * delivers a self-addressed test message to the user's inbox
- * (re #113, re #115).
+ * delivers a test message to the specified recipient address (re #122).
+ * When `to` is omitted, the server defaults to the identity's own address.
  *
  * The endpoint returns HTTP 200 with {ok: false, detail: "..."} for probe
  * failures, and HTTP 4xx/5xx with a problem+json body for configuration or
@@ -210,9 +210,16 @@ export interface TestSubmissionResult {
  * errors are converted to {ok: false, detail: "..."} so callers can
  * display the diagnostic uniformly.
  */
-export async function testSubmission(identityId: string): Promise<TestSubmissionResult> {
+export async function testSubmission(
+  identityId: string,
+  options?: { to?: string },
+): Promise<TestSubmissionResult> {
   try {
-    return await post<TestSubmissionResult>(`/api/v1/identities/${identityId}/submission/test`);
+    const body = options?.to ? { to: options.to } : undefined;
+    return await post<TestSubmissionResult>(
+      `/api/v1/identities/${identityId}/submission/test`,
+      body,
+    );
   } catch (err) {
     if (err instanceof ApiError) {
       const d = err.detail as {
