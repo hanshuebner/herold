@@ -42,6 +42,7 @@
     "@tsconfig/svelte": "^5.0.4",
     "@types/node": "22.19.17",
     "@vitest/coverage-v8": "^4.1.5",
+    "fake-indexeddb": "^6.0.0",
     "happy-dom": "^20.9.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",

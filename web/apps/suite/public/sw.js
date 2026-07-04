@@ -79,6 +79,138 @@ function swLog(msg, payload) {
   } catch { /* never throw */ }
 }
 
+// ── Device-local debug ring (IndexedDB, inline helper) ─────────────────────
+//
+// The ring is the primary, reliable trace for diagnosing notification-click
+// failures (issue #83).  It stores both SW events (always, regardless of the
+// enabled flag) and page events (when enabled).
+//
+// The "enabled" flag gates only page-level verbose capture; the SW always
+// writes its own sw.* events because they are rare (one per click) and are
+// exactly what is needed to diagnose failures on the maintainer's real device.
+//
+// DB: herold-debug (v1), stores: events (autoIncrement), meta (kv).
+// The page-side counterpart lives at src/lib/debug-ring/debug-ring.ts and
+// reads the same DB so the Diagnostics form can display the merged trace.
+
+const _DEBUG_DB = 'herold-debug';
+const _DEBUG_STORE = 'events';
+const _DEBUG_META = 'meta';
+const _DEBUG_CAP = 1000;
+
+// In-memory cache of the debug-enabled flag.  SW events are written
+// unconditionally; this flag would control future page-event relay if the SW
+// were to bridge page log calls.
+let _debugEnabled = false;
+
+function _dbOpen() {
+  return new Promise(function (resolve, reject) {
+    const req = indexedDB.open(_DEBUG_DB, 1);
+    req.onupgradeneeded = function (e) {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(_DEBUG_STORE)) {
+        db.createObjectStore(_DEBUG_STORE, { autoIncrement: true, keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(_DEBUG_META)) {
+        db.createObjectStore(_DEBUG_META);
+      }
+    };
+    req.onsuccess = function (e) { resolve(e.target.result); };
+    req.onerror = function (e) { reject(e.target.error); };
+  });
+}
+
+/**
+ * Write a record to the IDB ring, pruning the oldest entry when the cap is
+ * reached.  Never throws.
+ */
+async function _swRingAppend(ctx, level, msg, payload) {
+  try {
+    const db = await _dbOpen();
+    let payloadStr;
+    if (payload !== undefined) {
+      try {
+        payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      } catch { /* ignore serialisation errors */ }
+    }
+    await new Promise(function (resolve) {
+      const tx = db.transaction([_DEBUG_STORE], 'readwrite');
+      tx.oncomplete = function () { db.close(); resolve(); };
+      tx.onerror = function () { db.close(); resolve(); };
+      const store = tx.objectStore(_DEBUG_STORE);
+      const countReq = store.count();
+      countReq.onsuccess = function () {
+        const record = { ts: new Date().toISOString(), ctx: ctx, level: level, msg: msg };
+        if (payloadStr !== undefined) record.payload = payloadStr;
+        if (countReq.result >= _DEBUG_CAP) {
+          // Delete the oldest record (lowest auto-increment key) before adding.
+          const cursorReq = store.openCursor();
+          cursorReq.onsuccess = function (e) {
+            const cursor = e.target.result;
+            if (cursor) {
+              cursor.delete();
+              store.add(record);
+            }
+          };
+        } else {
+          store.add(record);
+        }
+      };
+    });
+  } catch { /* never throw */ }
+}
+
+/**
+ * Read the debug-enabled flag from the IDB meta store.  Returns false on any
+ * error or when absent.
+ */
+async function _readDebugEnabled() {
+  try {
+    const db = await _dbOpen();
+    return new Promise(function (resolve) {
+      const tx = db.transaction([_DEBUG_META], 'readonly');
+      const req = tx.objectStore(_DEBUG_META).get('enabled');
+      req.onsuccess = function (e) { db.close(); resolve(e.target.result === true); };
+      req.onerror = function () { db.close(); resolve(false); };
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the debug-enabled flag to the IDB meta store.  Never throws.
+ */
+async function _writeDebugEnabled(enabled) {
+  try {
+    const db = await _dbOpen();
+    await new Promise(function (resolve) {
+      const tx = db.transaction([_DEBUG_META], 'readwrite');
+      tx.oncomplete = function () { db.close(); resolve(); };
+      tx.onerror = function () { db.close(); resolve(); };
+      tx.objectStore(_DEBUG_META).put(enabled, 'enabled');
+    });
+  } catch { /* never throw */ }
+}
+
+/**
+ * Write a ring record.
+ *
+ * SW events (ctx='sw') are always written regardless of the enabled flag.
+ * In tests, self._ringWrite is injected to capture calls synchronously
+ * without touching IndexedDB; in production the IDB path is used.
+ */
+function swRingWrite(ctx, level, msg, payload) {
+  if (typeof self._ringWrite === 'function') {
+    // Test injection: capture calls synchronously without IDB.
+    self._ringWrite(ctx, level, msg, payload);
+    return;
+  }
+  // Production: write to the IndexedDB ring.  SW events always go in;
+  // page-level relay would be gated on _debugEnabled but is not yet used here.
+  _swRingAppend(ctx, level, msg, payload).catch(function () {});
+}
+
 // ── Install / activate ─────────────────────────────────────────────────────
 
 // eslint-disable-next-line no-unused-vars
@@ -92,18 +224,32 @@ self.addEventListener('install', (_event) => {
 
 self.addEventListener('activate', (event) => {
   // Claim all clients so the new SW serves push events immediately after
-  // the user has confirmed the reload.
-  event.waitUntil(self.clients.claim());
+  // the user has confirmed the reload.  Also read the persisted debug-enabled
+  // flag so we have the correct initial state without waiting for a message.
+  event.waitUntil(
+    Promise.all([
+      self.clients.claim(),
+      _readDebugEnabled().then(function (enabled) { _debugEnabled = enabled; }),
+    ]),
+  );
 });
 
-// ── Message: SKIP_WAITING ──────────────────────────────────────────────────
+// ── Message: SKIP_WAITING / herold-debug ───────────────────────────────────
 
-// The SPA sends this after the user clicks Reload on the "new version
+// The SPA sends SKIP_WAITING after the user clicks Reload on the "new version
 // available" banner.  Only then do we skip the waiting state and activate,
 // triggering a controllerchange event on every controlled client.
+//
+// The SPA sends herold-debug when the user toggles the debug-logging switch
+// in Settings > Diagnostics so the SW can update its in-memory flag without
+// waiting for the next IDB read.
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+  if (event.data && event.data.type === 'herold-debug') {
+    _debugEnabled = event.data.enabled === true;
+    _writeDebugEnabled(_debugEnabled).catch(function () {});
   }
 });
 
@@ -120,7 +266,9 @@ self.addEventListener('push', (event) => {
     return;
   }
 
-  swLog('sw.push', { kind: payload.kind, hasThreadId: payload.threadId !== undefined });
+  const pushInfo = { kind: payload.kind, hasThreadId: payload.threadId !== undefined };
+  swLog('sw.push', pushInfo);
+  swRingWrite('sw', 'info', 'sw.push', pushInfo);
 
   const options = buildNotificationOptions(payload);
   if (!options) return;
@@ -248,11 +396,13 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data ?? {};
   const action = event.action;
 
-  swLog('sw.notificationclick', {
+  const clickInfo = {
     action,
     kind: data.kind,
     hasThreadId: data.threadId !== undefined,
-  });
+  };
+  swLog('sw.notificationclick', clickInfo);
+  swRingWrite('sw', 'info', 'sw.notificationclick', clickInfo);
 
   // Resolve the navigation path SYNCHRONOUSLY before the first await.
   // Pure JMAP background actions (archive, mark_read) do not open a window and
@@ -454,10 +604,10 @@ async function jmapEmailSetSeen(emailId) {
  *   2. InvalidAccessError: openWindow throws when transient activation has
  *      expired (which can happen after any microtask yield on macOS).
  *
- * Focus-existing-first avoids both: the postMessage path reliably drives the
- * router in the already-open tab (App.svelte's SW message listener calls
- * handleSwNavigateMessage → router.navigate), and the openWindow branch is
- * only reached when no window exists at all.
+ * Navigate message is posted BEFORE focus() is called.  WindowClient.focus()
+ * can throw InvalidAccessError when transient activation is absent; if the
+ * throw happened before postMessage the navigation would be lost.  Posting
+ * first guarantees the open tab routes to the thread even if focus is denied.
  *
  * The openWindow call is wrapped in try/catch so an InvalidAccessError in
  * the no-existing-window case is swallowed rather than rejecting the
@@ -465,23 +615,37 @@ async function jmapEmailSetSeen(emailId) {
  */
 async function openApp(path) {
   const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  swRingWrite('sw', 'info', 'sw.openApp.matchAll', { count: wins.length, path });
+
   if (wins.length > 0) {
-    swLog('sw.openApp.focus', { windowCount: wins.length, path });
-    await wins[0].focus();
+    // Post the navigate message BEFORE calling focus() so the route change
+    // is always delivered even when focus() subsequently throws.
     wins[0].postMessage({ type: 'navigate', path });
+    swRingWrite('sw', 'info', 'sw.openApp.postNavigate', { path });
+    swLog('sw.openApp.postNavigate', { windowCount: wins.length, path });
+
+    try {
+      await wins[0].focus();
+      swRingWrite('sw', 'info', 'sw.openApp.focus.ok');
+    } catch (err) {
+      const name = (err && err.name) ? err.name : 'unknown';
+      swRingWrite('sw', 'warn', 'sw.openApp.focus.threw', { name });
+      swLog('sw.openApp.focus.threw', { name, path });
+    }
     return;
   }
 
   // No existing window: open a new one.
+  swRingWrite('sw', 'info', 'sw.openApp.openWindow', { path });
   swLog('sw.openApp.openWindow', { path });
   try {
     await self.clients.openWindow(path);
+    swRingWrite('sw', 'info', 'sw.openApp.openWindow.opened', { path });
     swLog('sw.openApp.openWindow.opened', { path });
   } catch (err) {
-    swLog('sw.openApp.openWindow.threw', {
-      name: (err && err.name) ? err.name : 'unknown',
-      path,
-    });
+    const name = (err && err.name) ? err.name : 'unknown';
+    swRingWrite('sw', 'warn', 'sw.openApp.openWindow.threw', { name, path });
+    swLog('sw.openApp.openWindow.threw', { name, path });
   }
 }
 

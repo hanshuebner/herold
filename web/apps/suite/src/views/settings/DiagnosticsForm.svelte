@@ -1,25 +1,40 @@
 <script lang="ts">
   /**
-   * DiagnosticsForm — per-user telemetry opt-in checkbox (REQ-CLOG-06) and
-   * admin-only diagnostic log copy affordance (issue #83).
+   * DiagnosticsForm — per-user telemetry opt-in, device-local debug ring,
+   * and admin server-log readback.
    *
-   * Telemetry toggle:
+   * Telemetry toggle (REQ-CLOG-06):
    *   Reads the current value from the JMAP session descriptor capability
    *   "urn:netzhansa:params:jmap:clientlog". Persists changes via
    *   PUT /api/v1/me/clientlog/telemetry_enabled with body {enabled: bool|null}.
    *
-   * Admin log copy:
-   *   When the signed-in user has the 'admin' or 'superadmin' role, shows a
-   *   "Load log" button that fetches recent entries from the anonymous
-   *   client-log ring buffer (GET /api/v1/admin/clientlog?slice=public&app=suite).
-   *   Renders them as plain text in a read-only textarea with a Copy button,
-   *   newest last, so the maintainer can paste the service-worker notification
-   *   trace directly when debugging issues.
+   * Device-local debug log (issue #83):
+   *   Reads the shared IndexedDB ring (herold-debug) that both the page and
+   *   the service worker write to.  The toggle writes the enabled flag to IDB
+   *   and postMessages the controlling SW so it updates immediately.  The SW
+   *   always records its own sw.* events regardless of the toggle; the toggle
+   *   governs verbose page-level capture only.  No auth, no network, no TOTP.
+   *
+   * Admin server log (admin-only):
+   *   Fetches recent entries from the server-side clientlog ring buffer via
+   *   GET /api/v1/admin/clientlog.  Clearly labelled "(server, admin)" so it
+   *   is not confused with the device-local ring.  Note: the server endpoint
+   *   currently returns the "public" slice (anonymous); the authenticated
+   *   self-readback endpoint is a follow-up.
    */
 
   import { auth } from '../../lib/auth/auth.svelte';
   import { get, put } from '../../lib/api/client';
   import { t } from '../../lib/i18n/i18n.svelte';
+  import {
+    readAll,
+    clear as clearRing,
+    getEnabled,
+    setEnabled,
+    notifySW,
+    formatRecord,
+    type DebugRecord,
+  } from '../../lib/debug-ring/debug-ring';
 
   const CAP_CLIENTLOG = 'urn:netzhansa:params:jmap:clientlog';
 
@@ -50,6 +65,8 @@
     rows: ClientLogRow[];
     next_cursor: string;
   }
+
+  // ── Telemetry toggle ───────────────────────────────────────────────────────
 
   /** Current server-side value from the JMAP session descriptor. */
   let serverValue = $derived.by<boolean>(() => {
@@ -90,7 +107,47 @@
     }
   }
 
-  // ── Admin log copy ─────────────────────────────────────────────────────────
+  // ── Device-local debug ring ────────────────────────────────────────────────
+
+  let devLogEnabled = $state(false);
+  let devLogEntries = $state<DebugRecord[]>([]);
+  let devLogCopied = $state(false);
+
+  // Load the current enabled flag and initial entries on mount.
+  $effect(() => {
+    void getEnabled().then((v) => { devLogEnabled = v; });
+    void loadDevLog();
+  });
+
+  async function loadDevLog(): Promise<void> {
+    devLogEntries = await readAll();
+  }
+
+  async function handleDevLogToggle(e: Event): Promise<void> {
+    const next = (e.currentTarget as HTMLInputElement).checked;
+    devLogEnabled = next;
+    await setEnabled(next);
+    notifySW(next);
+  }
+
+  async function copyDevLog(): Promise<void> {
+    if (devLogEntries.length === 0) return;
+    const text = devLogEntries.map(formatRecord).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      devLogCopied = true;
+      setTimeout(() => { devLogCopied = false; }, 2000);
+    } catch {
+      // Clipboard write failed; textarea text remains selectable manually.
+    }
+  }
+
+  async function clearDevLog(): Promise<void> {
+    await clearRing();
+    devLogEntries = [];
+  }
+
+  // ── Admin server log ───────────────────────────────────────────────────────
 
   let hasAdminRole = $derived(
     auth.roles.includes('admin') || auth.roles.includes('superadmin'),
@@ -156,6 +213,50 @@
   </label>
   {#if errorMessage}
     <p class="error-text" role="alert">{errorMessage}</p>
+  {/if}
+</div>
+
+<!-- Device-local debug ring: no auth, no network, no TOTP required. -->
+<div class="log-copy-section">
+  <h3 class="section-heading">{t('settings.diagnostics.devLog.heading')}</h3>
+  <label class="switch-row" for="dev-log-enabled">
+    <span class="label-text">{t('settings.diagnostics.devLog.toggle.label')}</span>
+    <label class="switch" aria-label={t('settings.diagnostics.devLog.toggle.label')}>
+      <input
+        id="dev-log-enabled"
+        type="checkbox"
+        checked={devLogEnabled}
+        onchange={handleDevLogToggle}
+      />
+      <span class="track" aria-hidden="true"></span>
+    </label>
+  </label>
+  <p class="hint">{t('settings.diagnostics.devLog.toggle.hint')}</p>
+  <div class="log-actions">
+    <button type="button" class="btn-secondary" onclick={loadDevLog}>
+      {t('settings.diagnostics.devLog.refreshBtn')}
+    </button>
+    {#if devLogEntries.length > 0}
+      <button type="button" class="btn-secondary" onclick={copyDevLog}>
+        {devLogCopied
+          ? t('settings.diagnostics.devLog.copiedBtn')
+          : t('settings.diagnostics.devLog.copyBtn')}
+      </button>
+      <button type="button" class="btn-secondary" onclick={clearDevLog}>
+        {t('settings.diagnostics.devLog.clearBtn')}
+      </button>
+    {/if}
+  </div>
+  {#if devLogEntries.length === 0}
+    <p class="hint">{t('settings.diagnostics.devLog.empty')}</p>
+  {:else}
+    <textarea
+      readonly
+      value={devLogEntries.map(formatRecord).join('\n')}
+      rows={12}
+      class="log-textarea"
+      aria-label={t('settings.diagnostics.devLog.heading')}
+    ></textarea>
   {/if}
 </div>
 

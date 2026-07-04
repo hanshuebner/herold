@@ -709,10 +709,21 @@ export const en = {
   'settings.diagnostics.heading': 'Diagnostics',
   'settings.diagnostics.telemetry.label':
     'Send anonymous diagnostic logs to my mail-server operator',
-  // Admin-only diagnostic log copy affordance (issue #83).
-  'settings.diagnostics.logCopy.heading': 'Recent service-worker log',
+  // Device-local debug ring (issue #83): always visible, no auth/TOTP needed.
+  'settings.diagnostics.devLog.heading': 'Client debug log (this device)',
+  'settings.diagnostics.devLog.toggle.label': 'Verbose page debug logging',
+  'settings.diagnostics.devLog.toggle.hint':
+    'Captures page-level events to the device-local ring. Service-worker events (push, ' +
+    'notification click) are always captured regardless of this toggle.',
+  'settings.diagnostics.devLog.refreshBtn': 'Refresh',
+  'settings.diagnostics.devLog.copyBtn': 'Copy',
+  'settings.diagnostics.devLog.copiedBtn': 'Copied',
+  'settings.diagnostics.devLog.clearBtn': 'Clear',
+  'settings.diagnostics.devLog.empty': 'No entries yet.',
+  // Admin-only server-side log readback (issue #83).
+  'settings.diagnostics.logCopy.heading': 'Server log (server, admin)',
   'settings.diagnostics.logCopy.hint':
-    'Fetches the most recent anonymous client-log entries (service-worker events, admin only).',
+    'Reads recent anonymous client-log entries from the server-side ring buffer (admin only).',
   'settings.diagnostics.logCopy.fetchBtn': 'Load log',
   'settings.diagnostics.logCopy.loading': 'Loading...',
   'settings.diagnostics.logCopy.copyBtn': 'Copy',
