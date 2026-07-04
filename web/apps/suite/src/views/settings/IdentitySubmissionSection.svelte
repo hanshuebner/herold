@@ -24,10 +24,12 @@
     putSubmission,
     deleteSubmission,
     startOAuth,
+    testSubmission,
     type SubmissionPutBody,
     type SubmitSecurity,
     type SubmitAuthMethod,
     type OAuthProvider,
+    type TestSubmissionResult,
   } from '../../lib/api/identity-submission';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
   import { ApiError } from '../../lib/api/client';
@@ -114,6 +116,15 @@
   let oauthError = $state<string | null>(null);
   let oauthStarting = $state<string | null>(null);
 
+  /** Pending state for the on-demand SMTP probe button (re #113, re #115). */
+  let testingSmtp = $state(false);
+  /**
+   * Most recent result of the on-demand SMTP probe. Null until the user
+   * has clicked "Send test message" at least once, or after a toggle/save
+   * resets it.
+   */
+  let testSmtpResult = $state<TestSubmissionResult | null>(null);
+
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   function onToggle(value: boolean): void {
@@ -121,6 +132,7 @@
     probeError = null;
     saveError = null;
     oauthError = null;
+    testSmtpResult = null;
     if (!value && handle.data?.configured) {
       // The user toggled back to "Use this server" with an existing config.
       // Offer to remove it (handled by the Remove button; this just reflects UI).
@@ -132,6 +144,7 @@
     if (saving) return;
     probeError = null;
     saveError = null;
+    testSmtpResult = null;
     if (!host.trim()) {
       saveError = t('settings.submission.hostRequired');
       return;
@@ -219,6 +232,26 @@
       }
     } finally {
       oauthStarting = null;
+    }
+  }
+
+  /**
+   * Run the on-demand SMTP probe (re #113, re #115).
+   *
+   * POSTs to /api/v1/identities/{id}/submission/test and renders the result
+   * inline. Distinct from the save-probe (PUT) and from the OAuth re-auth
+   * button: this exercises the configured SMTP credentials without modifying
+   * them and, on success, delivers a self-addressed test message to the
+   * user's inbox.
+   */
+  async function runSmtpTest(): Promise<void> {
+    if (testingSmtp) return;
+    testingSmtp = true;
+    testSmtpResult = null;
+    try {
+      testSmtpResult = await testSubmission(identity.id);
+    } finally {
+      testingSmtp = false;
     }
   }
 
@@ -457,6 +490,21 @@
               </Button>
             {/if}
             <span class="spacer"></span>
+            {#if isConfigured}
+              <!-- On-demand SMTP probe button (re #113, re #115).
+                   Distinct from the save-probe (PUT/submit) and from the OAuth
+                   re-auth button: exercises stored credentials without changing
+                   them and delivers a self-addressed test message on success. -->
+              <Button
+                variant="secondary"
+                onclick={() => void runSmtpTest()}
+                disabled={testingSmtp || saving || removing}
+              >
+                {testingSmtp
+                  ? t('settings.submission.sendTestPending')
+                  : t('settings.submission.sendTest')}
+              </Button>
+            {/if}
             {#if isOAuthConfigured && oauthConfiguredProvider !== null}
               <!-- For oauth2-configured identities, "Verbindung testen"
                    re-runs the OAuth flow: the provider re-issues tokens and
@@ -485,6 +533,19 @@
               </Button>
             {/if}
           </div>
+
+          {#if testSmtpResult !== null}
+            <div
+              class={testSmtpResult.ok ? 'test-result-ok' : 'probe-error'}
+              role={testSmtpResult.ok ? 'status' : 'alert'}
+            >
+              {#if testSmtpResult.ok}
+                {t('settings.submission.sendTestOk')}
+              {:else}
+                {t('settings.submission.sendTestFail', { detail: testSmtpResult.detail })}
+              {/if}
+            </div>
+          {/if}
         </form>
       </div>
     {:else if isConfigured}
@@ -670,6 +731,17 @@
   .muted {
     color: var(--text-helper);
     font-weight: 400;
+  }
+
+  /* On-demand SMTP probe result — success */
+  .test-result-ok {
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-success) 10%, transparent);
+    border-left: 3px solid var(--support-success);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
   }
 
   /* Probe failure */
