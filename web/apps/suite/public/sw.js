@@ -200,15 +200,32 @@ async function _writeDebugEnabled(enabled) {
  * In tests, self._ringWrite is injected to capture calls synchronously
  * without touching IndexedDB; in production the IDB path is used.
  */
+let _ringPending = [];
+
 function swRingWrite(ctx, level, msg, payload) {
   if (typeof self._ringWrite === 'function') {
     // Test injection: capture calls synchronously without IDB.
     self._ringWrite(ctx, level, msg, payload);
-    return;
+    return Promise.resolve();
   }
-  // Production: write to the IndexedDB ring.  SW events always go in;
-  // page-level relay would be gated on _debugEnabled but is not yet used here.
-  _swRingAppend(ctx, level, msg, payload).catch(function () {});
+  // Production: write to the IndexedDB ring.  The write promise is tracked in
+  // _ringPending so the triggering event's waitUntil can flush it before the
+  // SW is terminated -- a bare fire-and-forget IDB write can be lost mid-flight
+  // when the worker is killed right after the handler returns, leaving the ring
+  // empty even though the event fired.
+  const p = _swRingAppend(ctx, level, msg, payload).catch(function () {});
+  _ringPending.push(p);
+  return p;
+}
+
+// Await all ring writes queued since the last flush.  Call inside the event's
+// waitUntil chain so the IDB writes commit before the SW may be killed.
+async function _flushRing() {
+  const pending = _ringPending;
+  _ringPending = [];
+  try {
+    await Promise.all(pending);
+  } catch { /* never throw */ }
 }
 
 // ── Install / activate ─────────────────────────────────────────────────────
@@ -267,15 +284,20 @@ self.addEventListener('push', (event) => {
   }
 
   const pushInfo = { kind: payload.kind, hasThreadId: payload.threadId !== undefined };
+  console.log('[sw] push', pushInfo);
   swLog('sw.push', pushInfo);
   swRingWrite('sw', 'info', 'sw.push', pushInfo);
 
   const options = buildNotificationOptions(payload);
-  if (!options) return;
+  if (!options) {
+    event.waitUntil(_flushRing());
+    return;
+  }
 
-  event.waitUntil(
-    self.registration.showNotification(options.title, options),
-  );
+  event.waitUntil((async () => {
+    await self.registration.showNotification(options.title, options);
+    await _flushRing();
+  })());
 });
 
 /**
@@ -391,8 +413,6 @@ function buildNotificationOptions(payload) {
 // ── Notification click ─────────────────────────────────────────────────────
 
 self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-
   const data = event.notification.data ?? {};
   const action = event.action;
 
@@ -401,6 +421,13 @@ self.addEventListener('notificationclick', (event) => {
     kind: data.kind,
     hasThreadId: data.threadId !== undefined,
   };
+  // Synchronous console breadcrumb: unlike the IDB ring write, this cannot be
+  // lost to SW termination and shows immediately in the SW inspector console,
+  // so it is the definitive "did notificationclick fire" signal.
+  console.log('[sw] notificationclick', clickInfo, data);
+
+  event.notification.close();
+
   swLog('sw.notificationclick', clickInfo);
   swRingWrite('sw', 'info', 'sw.notificationclick', clickInfo);
 
@@ -409,11 +436,15 @@ self.addEventListener('notificationclick', (event) => {
   // are dispatched through a separate waitUntil path that does not call openApp.
   const path = resolveNotificationPath(data, action);
 
-  if (path !== null) {
-    event.waitUntil(openApp(path));
-  } else {
-    event.waitUntil(handleBackgroundAction(data, action, event));
-  }
+  event.waitUntil((async () => {
+    if (path !== null) {
+      await openApp(path);
+    } else {
+      await handleBackgroundAction(data, action, event);
+    }
+    // Flush ring writes queued during this handler before the SW may be killed.
+    await _flushRing();
+  })());
 });
 
 /**
@@ -615,20 +646,24 @@ async function jmapEmailSetSeen(emailId) {
  */
 async function openApp(path) {
   const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  console.log('[sw] openApp.matchAll', { count: wins.length, path });
   swRingWrite('sw', 'info', 'sw.openApp.matchAll', { count: wins.length, path });
 
   if (wins.length > 0) {
     // Post the navigate message BEFORE calling focus() so the route change
     // is always delivered even when focus() subsequently throws.
     wins[0].postMessage({ type: 'navigate', path });
+    console.log('[sw] openApp.postNavigate', { path });
     swRingWrite('sw', 'info', 'sw.openApp.postNavigate', { path });
     swLog('sw.openApp.postNavigate', { windowCount: wins.length, path });
 
     try {
       await wins[0].focus();
+      console.log('[sw] openApp.focus.ok');
       swRingWrite('sw', 'info', 'sw.openApp.focus.ok');
     } catch (err) {
       const name = (err && err.name) ? err.name : 'unknown';
+      console.log('[sw] openApp.focus.threw', name);
       swRingWrite('sw', 'warn', 'sw.openApp.focus.threw', { name });
       swLog('sw.openApp.focus.threw', { name, path });
     }
@@ -636,14 +671,17 @@ async function openApp(path) {
   }
 
   // No existing window: open a new one.
+  console.log('[sw] openApp.openWindow', { path });
   swRingWrite('sw', 'info', 'sw.openApp.openWindow', { path });
   swLog('sw.openApp.openWindow', { path });
   try {
     await self.clients.openWindow(path);
+    console.log('[sw] openApp.openWindow.opened', { path });
     swRingWrite('sw', 'info', 'sw.openApp.openWindow.opened', { path });
     swLog('sw.openApp.openWindow.opened', { path });
   } catch (err) {
     const name = (err && err.name) ? err.name : 'unknown';
+    console.log('[sw] openApp.openWindow.threw', name);
     swRingWrite('sw', 'warn', 'sw.openApp.openWindow.threw', { name, path });
     swLog('sw.openApp.openWindow.threw', { name, path });
   }
@@ -651,6 +689,9 @@ async function openApp(path) {
 
 // ── Notification close ─────────────────────────────────────────────────────
 
-self.addEventListener('notificationclose', () => {
-  // Nothing to do — we do not track dismissals (REQ-PUSH-73: no remote telemetry).
+self.addEventListener('notificationclose', (event) => {
+  // We do not track dismissals (REQ-PUSH-73: no remote telemetry), but a
+  // synchronous breadcrumb here distinguishes "the click reached the SW as a
+  // close" from "no event fired at all" during notification-click debugging.
+  console.log('[sw] notificationclose', event.notification && event.notification.data);
 });
