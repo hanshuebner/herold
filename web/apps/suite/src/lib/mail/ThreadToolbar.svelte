@@ -12,7 +12,7 @@
    * uses the THREAD_ACTIONS registry directly with a fixed visible count.
    */
   import { mail } from './store.svelte';
-  import { router } from '../router/router.svelte';
+  import { navigateBackFromThread } from './navigate-back';
   import { movePicker } from './move-picker.svelte';
   import { labelPicker } from './label-picker.svelte';
   import { snoozePicker } from './snooze-picker.svelte';
@@ -71,16 +71,6 @@
   let blockError = $state<string | null>(null);
   let blockInProgress = $state(false);
 
-  function back(): void {
-    if (window.history.length > 1) {
-      window.history.back();
-      return;
-    }
-    const folder = mail.listFolder;
-    if (folder === 'inbox') router.navigate('/mail');
-    else router.navigate(`/mail/folder/${encodeURIComponent(folder)}`);
-  }
-
   function archive(): void {
     // Archive every inbox-member email in the thread, not only latest.id,
     // so threads whose newest message is a self-sent reply (in Sent) are
@@ -93,12 +83,12 @@
     // Mail, Archive). re #35.
     if (inboxEmailIds.length === 0) return;
     void mail.bulkArchive(inboxEmailIds);
-    back();
+    navigateBackFromThread();
   }
 
   function deleteThread(): void {
     void mail.bulkDelete([latest.id]);
-    back();
+    navigateBackFromThread();
   }
 
   // Restore the thread out of Trash. Mirrors the previous per-message
@@ -106,12 +96,12 @@
   // the conversation; the user is sent back to the listing afterwards.
   function restoreThread(): void {
     void mail.restoreFromTrash(latest.id);
-    back();
+    navigateBackFromThread();
   }
 
   function markUnread(): void {
     void mail.markThreadSeen(threadId, false);
-    back();
+    navigateBackFromThread();
   }
 
   function snooze(): void {
@@ -142,12 +132,12 @@
   // global, so the user can still undo from the listing.
   function handleReportSpam(): void {
     void mail.reportSpam(latest.id, 'spam');
-    back();
+    navigateBackFromThread();
   }
 
   function handleReportPhishing(): void {
     void mail.reportSpam(latest.id, 'phishing');
-    back();
+    navigateBackFromThread();
   }
 
   function openBlockConfirm(): void {
@@ -297,7 +287,7 @@
     class="icon-btn back"
     aria-label={t('thread.back')}
     title={t('thread.back')}
-    onclick={back}
+    onclick={navigateBackFromThread}
   >
     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
       <path d="M15.5 4 8 12l7.5 8 1.5-1.5L11 12l6-6.5z" />

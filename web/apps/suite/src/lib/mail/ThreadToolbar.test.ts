@@ -84,7 +84,7 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX } = vi
       reportSpam: vi.fn().mockResolvedValue(undefined),
     };
 
-    const routerMock = { navigate: vi.fn() };
+    const routerMock = { parts: ['mail'] as readonly string[], navigate: vi.fn() };
 
     return { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX };
   },

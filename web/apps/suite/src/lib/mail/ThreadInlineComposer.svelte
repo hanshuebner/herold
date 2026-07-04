@@ -23,7 +23,7 @@
   import { untrack } from 'svelte';
   import { compose } from '../compose/compose.svelte';
   import { mail } from './store.svelte';
-  import { router } from '../router/router.svelte';
+  import { navigateBackFromThread } from './navigate-back';
   import { keyboard } from '../keyboard/engine.svelte';
   import { confirm } from '../dialog/confirm.svelte';
   import { t } from '../i18n/i18n.svelte';
@@ -106,17 +106,6 @@
     compose.inlineMode = false;
   }
 
-  /** Navigate back to the mail list after archiving. */
-  function navigateBack(): void {
-    if (window.history.length > 1) {
-      window.history.back();
-      return;
-    }
-    const folder = mail.listFolder;
-    if (folder === 'inbox') router.navigate('/mail');
-    else router.navigate(`/mail/folder/${encodeURIComponent(folder)}`);
-  }
-
   /**
    * Send + Archive: send the reply, then archive every inbox-member
    * email in the thread and navigate to the list. Captures inboxEmailIds
@@ -129,7 +118,7 @@
     await compose.send();
     if (!compose.isOpen) {
       if (ids.length > 0) void mail.bulkArchive(ids);
-      navigateBack();
+      navigateBackFromThread();
     }
   }
 
