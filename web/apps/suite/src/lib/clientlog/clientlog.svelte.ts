@@ -145,7 +145,13 @@ function readCsrfCookie(): string {
 export function getClientlog(): Clientlog {
   if (_instance !== null) return _instance;
   // Fallback: return a no-op stub so callers don't have to null-check.
-  return { logFatal: () => Promise.resolve(), shutdown: () => undefined };
+  return {
+    logFatal: () => Promise.resolve(),
+    logDebug: () => undefined,
+    logInfo: () => undefined,
+    logWarn: () => undefined,
+    shutdown: () => undefined,
+  };
 }
 
 /**
