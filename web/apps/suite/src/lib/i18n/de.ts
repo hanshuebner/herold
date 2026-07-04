@@ -1412,6 +1412,12 @@ export const de = {
   'settings.submission.probe.default': 'Verbindungstest fehlgeschlagen',
   /** Button label for re-testing an existing OAuth2 connection (re #105). */
   'settings.submission.testConnection': 'Verbindung testen',
+  /** On-demand SMTP probe button that delivers a test message to the inbox (re #113, re #115). */
+  'settings.submission.sendTest': 'Testnachricht senden',
+  'settings.submission.sendTestPending': 'Wird gesendet…',
+  'settings.submission.sendTestOk':
+    'Verbindung erfolgreich — eine Testnachricht wurde an Ihren Posteingang gesendet.',
+  'settings.submission.sendTestFail': 'Verbindung fehlgeschlagen: {detail}',
   /**
    * Toast shown after returning from a completed OAuth flow (re #105).
    * {provider} is substituted with "Google" or "Microsoft".

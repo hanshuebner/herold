@@ -21,6 +21,7 @@ vi.mock('../../lib/api/identity-submission', () => ({
   putSubmission: vi.fn(async () => undefined),
   deleteSubmission: vi.fn(async () => undefined),
   startOAuth: vi.fn(async () => undefined),
+  testSubmission: vi.fn(async () => ({ ok: true, detail: 'message queued' })),
 }));
 
 vi.mock('../../lib/identities/identity-submission.svelte', () => {
@@ -58,7 +59,7 @@ vi.mock('../../lib/toast/toast.svelte', () => ({
   },
 }));
 
-const { startOAuth, putSubmission } = await import('../../lib/api/identity-submission');
+const { startOAuth, putSubmission, testSubmission } = await import('../../lib/api/identity-submission');
 const submissionModule = await import('../../lib/identities/identity-submission.svelte') as unknown as {
   submissionStore: { forIdentity: ReturnType<typeof vi.fn>; evict: ReturnType<typeof vi.fn> };
   _mockHandle: {
@@ -440,5 +441,158 @@ describe('IdentitySubmissionSection', () => {
     await vi.waitFor(() => {
       expect(vi.mocked(startOAuth)).toHaveBeenCalledWith(IDENTITY.id, 'gmail');
     });
+  });
+
+  // ── On-demand SMTP probe button (re #113, re #115) ─────────────────────────
+
+  it('shows "Send test message" button when submission is configured (password)', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: [],
+      domain_authoritative: true,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    expect(screen.getByText('Send test message')).toBeInTheDocument();
+  });
+
+  it('shows "Send test message" button when submission is oauth2-configured', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.gmail.com',
+      submit_port: 465,
+      submit_security: 'implicit_tls',
+      submit_auth_method: 'oauth2',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: false,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // Both "Send test message" (SMTP probe) and "Test connection" (OAuth re-auth)
+    // must be visible — they are distinct buttons.
+    expect(screen.getByText('Send test message')).toBeInTheDocument();
+    expect(screen.getByText('Test connection')).toBeInTheDocument();
+  });
+
+  it('does not show "Send test message" button when submission is not configured', async () => {
+    // Default mock: configured: false.
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // Toggle to external panel.
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    expect(screen.queryByText('Send test message')).not.toBeInTheDocument();
+  });
+
+  it('clicking "Send test message" calls testSubmission and shows success result', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: [],
+      domain_authoritative: true,
+    };
+
+    vi.mocked(testSubmission).mockResolvedValueOnce({
+      ok: true,
+      detail: 'message queued',
+    });
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const btn = screen.getByText('Send test message');
+    await fireEvent.click(btn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(testSubmission)).toHaveBeenCalledWith(IDENTITY.id);
+    });
+
+    // Success message renders inline.
+    await vi.waitFor(() => {
+      const status = screen.queryByRole('status');
+      expect(status).toBeTruthy();
+      expect(status!.textContent).toContain('test message was sent to your inbox');
+    });
+  });
+
+  it('clicking "Send test message" shows failure result with diagnostic detail', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: [],
+      domain_authoritative: true,
+    };
+
+    vi.mocked(testSubmission).mockResolvedValueOnce({
+      ok: false,
+      detail: '535 Authentication failed',
+    });
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const btn = screen.getByText('Send test message');
+    await fireEvent.click(btn);
+
+    await vi.waitFor(() => {
+      const alert = screen.queryByRole('alert');
+      // There should be an alert that is the test-result failure (distinct from
+      // any probeError alert which would say 'Authentication failed' without the
+      // 'Connection failed:' prefix).
+      const testFail = Array.from(document.querySelectorAll('[role=alert]')).find(
+        (el) => el.textContent?.includes('Connection failed:'),
+      );
+      expect(testFail).toBeTruthy();
+      expect(testFail!.textContent).toContain('535 Authentication failed');
+    });
+  });
+
+  it('test result is cleared when the toggle is switched', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: [],
+      domain_authoritative: true,
+    };
+
+    vi.mocked(testSubmission).mockResolvedValueOnce({
+      ok: true,
+      detail: 'ok',
+    });
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const btn = screen.getByText('Send test message');
+    await fireEvent.click(btn);
+
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('status')).toBeTruthy();
+    });
+
+    // Toggle back to "Use this server".
+    const localRadio = screen.getAllByRole('radio')[0]!;
+    await fireEvent.click(localRadio);
+
+    // The success status should be gone.
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });

@@ -15,7 +15,7 @@
  * chain.
  */
 
-import { get, post, put, del } from './client';
+import { get, post, put, del, ApiError } from './client';
 
 /** Security mode for the external SMTP connection. */
 export type SubmitSecurity = 'implicit_tls' | 'starttls' | 'none';
@@ -184,6 +184,48 @@ export function deleteSubmission(identityId: string): Promise<void> {
  * an "Already authorized" toast (re #105).
  */
 export const OAUTH_PENDING_KEY = 'herold_oauth_pending';
+
+/**
+ * Result of POST /api/v1/identities/{id}/submission/test.
+ * ok=true means the probe succeeded and a test message was queued for the
+ * user's own inbox. ok=false means the probe failed; detail carries the
+ * diagnostic from the external SMTP server.
+ */
+export interface TestSubmissionResult {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * POST /api/v1/identities/{id}/submission/test
+ *
+ * Runs an on-demand SMTP probe against the identity's configured external
+ * submission without changing any stored credentials. On success the server
+ * delivers a self-addressed test message to the user's inbox
+ * (re #113, re #115).
+ *
+ * The endpoint returns HTTP 200 with {ok: false, detail: "..."} for probe
+ * failures, and HTTP 4xx/5xx with a problem+json body for configuration or
+ * server errors. This function always resolves (never throws); 4xx/5xx
+ * errors are converted to {ok: false, detail: "..."} so callers can
+ * display the diagnostic uniformly.
+ */
+export async function testSubmission(identityId: string): Promise<TestSubmissionResult> {
+  try {
+    return await post<TestSubmissionResult>(`/api/v1/identities/${identityId}/submission/test`);
+  } catch (err) {
+    if (err instanceof ApiError) {
+      const d = err.detail as {
+        detail?: string;
+        message?: string;
+        diagnostic?: string;
+      } | null;
+      const detail = d?.detail ?? d?.message ?? d?.diagnostic ?? err.message;
+      return { ok: false, detail };
+    }
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 export async function startOAuth(
   identityId: string,
