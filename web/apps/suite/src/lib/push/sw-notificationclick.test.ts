@@ -109,6 +109,40 @@ function makeOpenApp(clientsMock: {
   return (f(mock) as { openApp: (path: string) => Promise<void> }).openApp;
 }
 
+// ── openApp ring-write fixture ────────────────────────────────────────────────
+//
+// makeOpenAppWithRing injects self._ringWrite so tests can assert which ring
+// records openApp emits without touching IndexedDB.  It returns both the
+// openApp function and a ringCalls array that accumulates every write.
+
+type RingCall = { ctx: string; level: string; msg: string; payload?: unknown };
+
+function makeOpenAppWithRing(clientsMock: {
+  matchAll?: (opts?: unknown) => Promise<ClientMock[]>;
+  openWindow?: (path: string) => Promise<unknown>;
+}): { openApp: (path: string) => Promise<void>; ringCalls: RingCall[] } {
+  const ringCalls: RingCall[] = [];
+  const mock = {
+    addEventListener: () => {},
+    clients: {
+      matchAll: async (): Promise<ClientMock[]> => [],
+      openWindow: async (): Promise<null> => null,
+      ...clientsMock,
+    },
+    registration: { scope: 'http://localhost/' },
+    skipWaiting: () => {},
+    _ringWrite: (ctx: string, level: string, msg: string, payload?: unknown) => {
+      ringCalls.push({ ctx, level, msg, payload });
+    },
+  };
+  // eslint-disable-next-line no-new-func
+  const f = new Function('self', `${swSource}\nreturn { openApp };`);
+  return {
+    openApp: (f(mock) as { openApp: (path: string) => Promise<void> }).openApp,
+    ringCalls,
+  };
+}
+
 // ── Background JMAP actions (must return null — no window to open) ──────────
 
 describe('resolveNotificationPath — background actions', () => {
@@ -797,5 +831,218 @@ describe('threadId format — regression guard (re #83)', () => {
     expect(opts.data['threadId']).toBe('t99');
     const path = resolveNotificationPath(opts.data as Record<string, unknown>, '');
     expect(path).toBe('/#/mail/thread/t99');
+  });
+});
+
+// ── openApp navigate-before-focus ordering (re #83) ─────────────────────────
+//
+// WindowClient.focus() can throw InvalidAccessError when transient activation
+// is absent (proven on macOS Chrome, issue #83).  The fix posts the navigate
+// message BEFORE awaiting focus() so the route change is always delivered
+// even when focus subsequently throws.
+//
+// These tests are the regression gate: they assert both the ordering contract
+// and the throw-safe behaviour.
+
+describe('openApp — navigate message posted BEFORE focus', () => {
+  it('calls postMessage before focus when a window exists', async () => {
+    const callOrder: string[] = [];
+    const mockClient = {
+      focus: vi.fn().mockImplementation(async () => { callOrder.push('focus'); }),
+      postMessage: vi.fn().mockImplementation(() => { callOrder.push('postMessage'); }),
+    };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    const pmIdx = callOrder.indexOf('postMessage');
+    const focusIdx = callOrder.indexOf('focus');
+    expect(pmIdx).toBeGreaterThanOrEqual(0);
+    expect(focusIdx).toBeGreaterThanOrEqual(0);
+    expect(pmIdx).toBeLessThan(focusIdx);
+  });
+
+  it('delivers the navigate message even when focus throws InvalidAccessError', async () => {
+    const err = Object.assign(new Error('Not allowed to open a window'), {
+      name: 'InvalidAccessError',
+    });
+    const mockClient = {
+      focus: vi.fn().mockRejectedValue(err),
+      postMessage: vi.fn(),
+    };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+
+    // The navigate message must have been posted despite the focus throw.
+    expect(mockClient.postMessage).toHaveBeenCalledWith({
+      type: 'navigate',
+      path: '/#/mail/thread/T1',
+    });
+  });
+
+  it('does not reject when focus throws InvalidAccessError', async () => {
+    const err = Object.assign(new Error('Not allowed to open a window'), {
+      name: 'InvalidAccessError',
+    });
+    const mockClient = {
+      focus: vi.fn().mockRejectedValue(err),
+      postMessage: vi.fn(),
+    };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+
+  it('does not reject when focus throws a generic Error', async () => {
+    const mockClient = {
+      focus: vi.fn().mockRejectedValue(new Error('some unexpected focus failure')),
+      postMessage: vi.fn(),
+    };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+});
+
+// ── openApp ring records (re #83) ─────────────────────────────────────────────
+//
+// openApp must write specific sw.* ring records so the Diagnostics form can
+// show the click trace.  Tests use makeOpenAppWithRing which injects
+// self._ringWrite to capture records synchronously without IDB.
+
+describe('openApp — ring records when window exists', () => {
+  it('writes sw.openApp.matchAll with count', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    const matchAllRecord = ringCalls.find((r) => r.msg === 'sw.openApp.matchAll');
+    expect(matchAllRecord).toBeDefined();
+    expect((matchAllRecord?.payload as { count: number }).count).toBe(1);
+  });
+
+  it('writes sw.openApp.postNavigate after posting the message', async () => {
+    const postMessageOrder: string[] = [];
+    const mockClient = {
+      focus: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockImplementation(() => { postMessageOrder.push('postMessage'); }),
+    };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.postNavigate')).toBeDefined();
+    // postMessage must have been called (it was recorded in postMessageOrder).
+    expect(postMessageOrder).toContain('postMessage');
+  });
+
+  it('writes sw.openApp.focus.ok when focus succeeds', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.focus.ok')).toBeDefined();
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.focus.threw')).toBeUndefined();
+  });
+
+  it('writes sw.openApp.focus.threw with the error name when focus throws', async () => {
+    const err = Object.assign(new Error('Not allowed'), { name: 'InvalidAccessError' });
+    const mockClient = {
+      focus: vi.fn().mockRejectedValue(err),
+      postMessage: vi.fn(),
+    };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    const threwRecord = ringCalls.find((r) => r.msg === 'sw.openApp.focus.threw');
+    expect(threwRecord).toBeDefined();
+    expect((threwRecord?.payload as { name: string }).name).toBe('InvalidAccessError');
+    // ok record must NOT have been written.
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.focus.ok')).toBeUndefined();
+  });
+
+  it('ring records have ctx=sw and level=info for matchAll and postNavigate', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    for (const msg of ['sw.openApp.matchAll', 'sw.openApp.postNavigate', 'sw.openApp.focus.ok']) {
+      const r = ringCalls.find((rc) => rc.msg === msg);
+      expect(r).toBeDefined();
+      expect(r?.ctx).toBe('sw');
+    }
+  });
+
+  it('ring record for focus.threw has level=warn', async () => {
+    const err = Object.assign(new Error('Not allowed'), { name: 'InvalidAccessError' });
+    const mockClient = {
+      focus: vi.fn().mockRejectedValue(err),
+      postMessage: vi.fn(),
+    };
+    const { openApp, ringCalls } = makeOpenAppWithRing({
+      matchAll: vi.fn().mockResolvedValue([mockClient]),
+    });
+
+    await openApp('/#/mail/thread/T1');
+
+    const r = ringCalls.find((rc) => rc.msg === 'sw.openApp.focus.threw');
+    expect(r?.level).toBe('warn');
+  });
+});
+
+describe('openApp — ring records when no window exists', () => {
+  it('writes sw.openApp.matchAll with count=0', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const { openApp, ringCalls } = makeOpenAppWithRing({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    const r = ringCalls.find((rc) => rc.msg === 'sw.openApp.matchAll');
+    expect(r).toBeDefined();
+    expect((r?.payload as { count: number }).count).toBe(0);
+  });
+
+  it('writes sw.openApp.openWindow.opened when openWindow succeeds', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const { openApp, ringCalls } = makeOpenAppWithRing({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.openWindow.opened')).toBeDefined();
+    expect(ringCalls.find((r) => r.msg === 'sw.openApp.openWindow.threw')).toBeUndefined();
+  });
+
+  it('writes sw.openApp.openWindow.threw with the error name when openWindow throws', async () => {
+    const err = Object.assign(new Error('Not allowed'), { name: 'InvalidAccessError' });
+    const openWindow = vi.fn().mockRejectedValue(err);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const { openApp, ringCalls } = makeOpenAppWithRing({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    const r = ringCalls.find((rc) => rc.msg === 'sw.openApp.openWindow.threw');
+    expect(r).toBeDefined();
+    expect((r?.payload as { name: string }).name).toBe('InvalidAccessError');
   });
 });

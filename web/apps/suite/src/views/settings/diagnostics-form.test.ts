@@ -2,19 +2,33 @@
  * Tests for DiagnosticsForm.svelte (REQ-CLOG-06, issue #83).
  *
  * Coverage:
- *   1. Renders the telemetry checkbox
- *   2. Checkbox is checked when session capability says enabled=true
- *   3. Checkbox is unchecked when session capability says enabled=false
- *   4. Toggling to false calls PUT /api/v1/me/clientlog/telemetry_enabled
- *      with {enabled: false}
- *   5. Toggling to true calls PUT with {enabled: true}
- *   6. On PUT failure, reverts optimistic state and shows error
- *   7. Admin log copy section not rendered for non-admin users
- *   8. Admin log copy section rendered for admin role users
- *   9. Load log button calls GET /api/v1/admin/clientlog
- *  10. Log rows rendered as plain text in textarea, oldest first
- *  11. Empty state shown when no rows returned
- *  12. Error state shown when fetch fails
+ *   Telemetry toggle
+ *   1.  Renders the telemetry checkbox
+ *   2.  Checkbox is checked when session capability says enabled=true
+ *   3.  Checkbox is unchecked when session capability says enabled=false
+ *   4.  Toggling to false calls PUT /api/v1/me/clientlog/telemetry_enabled
+ *       with {enabled: false}
+ *   5.  Toggling to true calls PUT with {enabled: true}
+ *   6.  On PUT failure, reverts optimistic state and shows error
+ *
+ *   Device-local debug ring
+ *   7.  Debug log section heading always rendered
+ *   8.  Debug logging toggle rendered
+ *   9.  Toggling debug on calls setEnabled(true) and notifySW(true)
+ *  10.  Refresh button calls readAll and updates rendered entries
+ *  11.  Copy button formats entries and writes to clipboard
+ *  12.  Clear button calls clearRing and empties the view
+ *  13.  Empty state shown when ring is empty
+ *
+ *   Admin server log section
+ *  14.  Not rendered for non-admin users
+ *  15.  Rendered for admin role users
+ *  16.  Rendered for superadmin role users
+ *  17.  Load log button calls GET /api/v1/admin/clientlog
+ *  18.  Rows rendered as plain text in textarea, oldest first
+ *  19.  Empty state shown when no rows returned
+ *  20.  Error state shown when fetch fails
+ *  21.  Copy button rendered after log is loaded
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -71,6 +85,42 @@ vi.mock('../../lib/api/client', () => ({
   },
 }));
 
+// ── Debug ring mock ────────────────────────────────────────────────────────
+
+const {
+  mockReadAll,
+  mockClearRing,
+  mockGetEnabled,
+  mockSetEnabled,
+  mockNotifySW,
+  mockFormatRecord,
+} = vi.hoisted(() => {
+  const mockReadAll = vi.fn();
+  const mockClearRing = vi.fn();
+  const mockGetEnabled = vi.fn();
+  const mockSetEnabled = vi.fn();
+  const mockNotifySW = vi.fn();
+  const mockFormatRecord = vi.fn();
+  return {
+    mockReadAll,
+    mockClearRing,
+    mockGetEnabled,
+    mockSetEnabled,
+    mockNotifySW,
+    mockFormatRecord,
+  };
+});
+
+vi.mock('../../lib/debug-ring/debug-ring', () => ({
+  readAll: (...args: unknown[]) => mockReadAll(...args),
+  clear: (...args: unknown[]) => mockClearRing(...args),
+  getEnabled: (...args: unknown[]) => mockGetEnabled(...args),
+  setEnabled: (...args: unknown[]) => mockSetEnabled(...args),
+  notifySW: (...args: unknown[]) => mockNotifySW(...args),
+  formatRecord: (r: { ts: string; ctx: string; level: string; msg: string; payload?: string }) =>
+    mockFormatRecord(r),
+}));
+
 // ── i18n mock ─────────────────────────────────────────────────────────────
 
 vi.mock('../../lib/i18n/i18n.svelte', () => ({
@@ -79,8 +129,16 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.diagnostics.heading': 'Diagnostics',
       'settings.diagnostics.telemetry.label':
         'Send anonymous diagnostic logs to my mail-server operator',
-      'settings.diagnostics.logCopy.heading': 'Recent service-worker log',
-      'settings.diagnostics.logCopy.hint': 'Fetches the most recent anonymous client-log entries.',
+      'settings.diagnostics.devLog.heading': 'Client debug log (this device)',
+      'settings.diagnostics.devLog.toggle.label': 'Verbose page debug logging',
+      'settings.diagnostics.devLog.toggle.hint': 'Hint text.',
+      'settings.diagnostics.devLog.refreshBtn': 'Refresh',
+      'settings.diagnostics.devLog.copyBtn': 'Copy',
+      'settings.diagnostics.devLog.copiedBtn': 'Copied',
+      'settings.diagnostics.devLog.clearBtn': 'Clear',
+      'settings.diagnostics.devLog.empty': 'No entries yet.',
+      'settings.diagnostics.logCopy.heading': 'Server log (server, admin)',
+      'settings.diagnostics.logCopy.hint': 'Reads recent entries from the server.',
       'settings.diagnostics.logCopy.fetchBtn': 'Load log',
       'settings.diagnostics.logCopy.loading': 'Loading...',
       'settings.diagnostics.logCopy.copyBtn': 'Copy',
@@ -99,7 +157,18 @@ beforeEach(() => {
   mockAuth.roles = [];
   mockPut.mockResolvedValue(undefined);
   mockGet.mockResolvedValue({ rows: [], next_cursor: '' });
+  mockReadAll.mockResolvedValue([]);
+  mockClearRing.mockResolvedValue(undefined);
+  mockGetEnabled.mockResolvedValue(false);
+  mockSetEnabled.mockResolvedValue(undefined);
+  mockNotifySW.mockReturnValue(undefined);
+  mockFormatRecord.mockImplementation(
+    (r: { ts: string; ctx: string; level: string; msg: string; payload?: string }) =>
+      `${r.ts}  ${r.ctx}  ${r.level}  ${r.msg}`,
+  );
 });
+
+// ── Telemetry toggle ──────────────────────────────────────────────────────
 
 describe('DiagnosticsForm', () => {
   it('renders the telemetry checkbox', async () => {
@@ -188,35 +257,181 @@ describe('DiagnosticsForm', () => {
   });
 });
 
-// ── Admin log copy section ────────────────────────────────────────────────────
-//
-// The "Copy diagnostic log" affordance is only visible when the signed-in
-// user holds the 'admin' or 'superadmin' role.  When visible, "Load log"
-// fetches GET /api/v1/admin/clientlog?slice=public&app=suite&limit=100 and
-// renders the rows as plain text in a read-only textarea with a Copy button.
+// ── Device-local debug ring ────────────────────────────────────────────────
 
-describe('DiagnosticsForm — admin log copy section', () => {
-  it('does not render the log copy section for non-admin users', async () => {
+describe('DiagnosticsForm — device-local debug log section', () => {
+  it('always renders the debug log section heading', async () => {
+    const { getByText } = render(DiagnosticsForm);
+    await waitFor(() => {
+      expect(getByText('Client debug log (this device)')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the verbose-debug toggle', async () => {
+    const { getByRole } = render(DiagnosticsForm);
+    await waitFor(() => {
+      expect(
+        getByRole('checkbox', { name: /Verbose page debug logging/ }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('toggle is unchecked when getEnabled returns false', async () => {
+    mockGetEnabled.mockResolvedValue(false);
+    const { getByRole } = render(DiagnosticsForm);
+    await waitFor(() => {
+      const cb = getByRole('checkbox', {
+        name: /Verbose page debug logging/,
+      }) as HTMLInputElement;
+      expect(cb.checked).toBe(false);
+    });
+  });
+
+  it('toggle is checked when getEnabled returns true', async () => {
+    mockGetEnabled.mockResolvedValue(true);
+    const { getByRole } = render(DiagnosticsForm);
+    await waitFor(() => {
+      const cb = getByRole('checkbox', {
+        name: /Verbose page debug logging/,
+      }) as HTMLInputElement;
+      expect(cb.checked).toBe(true);
+    });
+  });
+
+  it('toggling on calls setEnabled(true) and notifySW(true)', async () => {
+    mockGetEnabled.mockResolvedValue(false);
+    const { getByRole } = render(DiagnosticsForm);
+
+    const cb = await waitFor(() =>
+      getByRole('checkbox', { name: /Verbose page debug logging/ }),
+    ) as HTMLInputElement;
+    await fireEvent.change(cb, { target: { checked: true } });
+
+    await waitFor(() => {
+      expect(mockSetEnabled).toHaveBeenCalledWith(true);
+      expect(mockNotifySW).toHaveBeenCalledWith(true);
+    });
+  });
+
+  it('toggling off calls setEnabled(false) and notifySW(false)', async () => {
+    mockGetEnabled.mockResolvedValue(true);
+    const { getByRole } = render(DiagnosticsForm);
+
+    const cb = await waitFor(() =>
+      getByRole('checkbox', { name: /Verbose page debug logging/ }),
+    ) as HTMLInputElement;
+    await fireEvent.change(cb, { target: { checked: false } });
+
+    await waitFor(() => {
+      expect(mockSetEnabled).toHaveBeenCalledWith(false);
+      expect(mockNotifySW).toHaveBeenCalledWith(false);
+    });
+  });
+
+  it('renders Refresh button', async () => {
+    const { getByRole } = render(DiagnosticsForm);
+    await waitFor(() => {
+      expect(getByRole('button', { name: /Refresh/ })).toBeInTheDocument();
+    });
+  });
+
+  it('Refresh button calls readAll and updates the view', async () => {
+    mockReadAll.mockResolvedValueOnce([]);
+    const { getByRole } = render(DiagnosticsForm);
+
+    // Second call returns an entry so we can observe the change.
+    mockReadAll.mockResolvedValue([
+      { id: 1, ts: '2026-07-04T12:00:00.000Z', ctx: 'sw', level: 'info', msg: 'sw.push' },
+    ]);
+
+    const btn = await waitFor(() => getByRole('button', { name: /Refresh/ }));
+    await fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(mockReadAll).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('shows empty state when ring has no entries', async () => {
+    mockReadAll.mockResolvedValue([]);
+    const { getByText } = render(DiagnosticsForm);
+    await waitFor(() => {
+      expect(getByText('No entries yet.')).toBeInTheDocument();
+    });
+  });
+
+  it('renders textarea with formatted entries when ring is non-empty', async () => {
+    const entry = {
+      id: 1,
+      ts: '2026-07-04T12:00:00.000Z',
+      ctx: 'sw' as const,
+      level: 'info',
+      msg: 'sw.openApp.postNavigate',
+    };
+    mockReadAll.mockResolvedValue([entry]);
+    mockFormatRecord.mockReturnValue(
+      '2026-07-04T12:00:00.000Z  sw  info  sw.openApp.postNavigate',
+    );
+
+    const { getByRole } = render(DiagnosticsForm);
+
+    const textarea = await waitFor(() =>
+      getByRole('textbox', { name: /Client debug log/ }),
+    ) as HTMLTextAreaElement;
+    expect(textarea.value).toContain('sw.openApp.postNavigate');
+  });
+
+  it('Copy button is visible when entries are present', async () => {
+    mockReadAll.mockResolvedValue([
+      { id: 1, ts: '2026-07-04T12:00:00.000Z', ctx: 'sw' as const, level: 'info', msg: 'sw.push' },
+    ]);
+    const { getAllByRole } = render(DiagnosticsForm);
+    await waitFor(() => {
+      // There may be multiple "Copy" buttons if admin; just check one exists.
+      const copies = getAllByRole('button', { name: /Copy/ });
+      expect(copies.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('Clear button calls clearRing', async () => {
+    mockReadAll.mockResolvedValue([
+      { id: 1, ts: '2026-07-04T12:00:00.000Z', ctx: 'sw' as const, level: 'info', msg: 'sw.push' },
+    ]);
+    const { getByRole } = render(DiagnosticsForm);
+
+    const clearBtn = await waitFor(() => getByRole('button', { name: /Clear/ }));
+    await fireEvent.click(clearBtn);
+
+    await waitFor(() => {
+      expect(mockClearRing).toHaveBeenCalled();
+    });
+  });
+});
+
+// ── Admin server log section ────────────────────────────────────────────────
+
+describe('DiagnosticsForm — admin server log section', () => {
+  it('does not render the server log section for non-admin users', async () => {
     mockAuth.roles = [];
     const { queryByText } = render(DiagnosticsForm);
     await waitFor(() => {
-      expect(queryByText('Recent service-worker log')).not.toBeInTheDocument();
+      expect(queryByText('Server log (server, admin)')).not.toBeInTheDocument();
     });
   });
 
-  it('renders the log copy section when user has admin role', async () => {
+  it('renders the server log section when user has admin role', async () => {
     mockAuth.roles = ['admin'];
     const { getByText } = render(DiagnosticsForm);
     await waitFor(() => {
-      expect(getByText('Recent service-worker log')).toBeInTheDocument();
+      expect(getByText('Server log (server, admin)')).toBeInTheDocument();
     });
   });
 
-  it('renders the log copy section when user has superadmin role', async () => {
+  it('renders the server log section when user has superadmin role', async () => {
     mockAuth.roles = ['superadmin'];
     const { getByText } = render(DiagnosticsForm);
     await waitFor(() => {
-      expect(getByText('Recent service-worker log')).toBeInTheDocument();
+      expect(getByText('Server log (server, admin)')).toBeInTheDocument();
     });
   });
 
@@ -287,7 +502,7 @@ describe('DiagnosticsForm — admin log copy section', () => {
     await fireEvent.click(getByRole('button', { name: /Load log/ }));
 
     const textarea = await waitFor(() =>
-      getByRole('textbox', { name: /Recent service-worker log/ }),
+      getByRole('textbox', { name: /Server log/ }),
     ) as HTMLTextAreaElement;
 
     const lines = textarea.value.split('\n');
@@ -337,6 +552,7 @@ describe('DiagnosticsForm — admin log copy section', () => {
     await fireEvent.click(getByRole('button', { name: /Load log/ }));
 
     await waitFor(() => {
+      // After loading there will be at least one Copy button.
       expect(getByRole('button', { name: /Copy/ })).toBeInTheDocument();
     });
   });

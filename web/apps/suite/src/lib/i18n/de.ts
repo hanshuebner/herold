@@ -718,10 +718,21 @@ export const de = {
   'settings.diagnostics.heading': 'Diagnose',
   'settings.diagnostics.telemetry.label':
     'Anonyme Diagnoseprotokolle an meinen Mail-Server-Betreiber senden',
-  // Diagnoseprotokoll-Kopieranzeige (nur Administratoren, re #83).
-  'settings.diagnostics.logCopy.heading': 'Aktuelle Service-Worker-Protokolle',
+  // Geräteeigenes Debug-Protokoll (re #83): immer sichtbar, keine Anmeldung/TOTP nötig.
+  'settings.diagnostics.devLog.heading': 'Client-Debugprotokoll (dieses Gerät)',
+  'settings.diagnostics.devLog.toggle.label': 'Ausführliches Seiten-Debugging',
+  'settings.diagnostics.devLog.toggle.hint':
+    'Zeichnet Seitenereignisse im geräteeigenen Ringspeicher auf. Service-Worker-Ereignisse ' +
+    '(Push, Benachrichtigungsklick) werden unabhängig von dieser Einstellung immer aufgezeichnet.',
+  'settings.diagnostics.devLog.refreshBtn': 'Aktualisieren',
+  'settings.diagnostics.devLog.copyBtn': 'Kopieren',
+  'settings.diagnostics.devLog.copiedBtn': 'Kopiert',
+  'settings.diagnostics.devLog.clearBtn': 'Leeren',
+  'settings.diagnostics.devLog.empty': 'Noch keine Einträge.',
+  // Serverseitiges Protokoll, nur Administratoren (re #83).
+  'settings.diagnostics.logCopy.heading': 'Serverprotokoll (Server, Administrator)',
   'settings.diagnostics.logCopy.hint':
-    'Zeigt die neuesten anonymen Diagnoseeinträge (Service-Worker-Ereignisse, nur Administratoren).',
+    'Liest die neuesten anonymen Protokolleinträge aus dem serverseitigen Ringspeicher (nur Administratoren).',
   'settings.diagnostics.logCopy.fetchBtn': 'Protokoll laden',
   'settings.diagnostics.logCopy.loading': 'Laden...',
   'settings.diagnostics.logCopy.copyBtn': 'Kopieren',
