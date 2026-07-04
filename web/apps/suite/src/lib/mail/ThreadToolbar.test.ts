@@ -1,7 +1,7 @@
 /**
- * Unit tests for ThreadToolbar archive-action visibility (re #35).
+ * Unit tests for ThreadToolbar (re #35, re #117).
  *
- * Covers three cases:
+ * Archive-action visibility (re #35):
  *   (a) Inbox thread — Archive visible, bulkArchive called with inbox ids.
  *   (b) Own-reply thread — latest email is in Sent but earlier thread
  *       members are in the Inbox; Archive visible, bulkArchive called with
@@ -10,9 +10,14 @@
  *       but clicking it is a no-op (bulkArchive is NOT called, no
  *       navigation occurs).
  *   (d) Trash thread — Archive absent.
+ *
+ * Formerly-overflow actions now shown as icon buttons (re #117):
+ *   Verifies that Move, Labels, Mute, Spam, Phishing, Block sender, and
+ *   Print each render as an accessible icon button in the toolbar and
+ *   trigger their respective handlers.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ThreadToolbar from './ThreadToolbar.svelte';
 import type { Email, Mailbox } from './types';
@@ -110,6 +115,11 @@ vi.mock('../settings/managed-rules.svelte', () => ({
   },
 }));
 
+// Import the mocked singletons so we can assert on them.
+import { movePicker } from './move-picker.svelte';
+import { labelPicker } from './label-picker.svelte';
+import { managedRules } from '../settings/managed-rules.svelte';
+
 // Icon stubs — must be functions in Svelte 5.
 vi.mock('../icons/ArchiveIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/TrashIcon.svelte', () => ({ default: () => null }));
@@ -124,7 +134,6 @@ vi.mock('../icons/SpamIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PhishingIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/BlockIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PrintIcon.svelte', () => ({ default: () => null }));
-vi.mock('./ActionOverflowMenu.svelte', () => ({ default: () => null }));
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -223,5 +232,89 @@ describe('ThreadToolbar archive action visibility (re #35)', () => {
     renderToolbar(trashMsg);
 
     expect(screen.queryByRole('button', { name: 'thread.archive' })).not.toBeInTheDocument();
+  });
+});
+
+// ── Formerly-overflow actions rendered as icon buttons (re #117) ───────────────
+
+describe('ThreadToolbar formerly-overflow actions (re #117)', () => {
+  const email = makeEmail('e-1', 'tid-x', { 'mbx-inbox': true });
+
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.trash = null;
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-x' ? [email] : []);
+    vi.mocked(movePicker.openBulk).mockClear();
+    vi.mocked(labelPicker.openBulk).mockClear();
+    vi.mocked(managedRules.muteThread).mockClear();
+    vi.mocked(managedRules.blockSender).mockClear();
+    mailMock.reportSpam.mockClear();
+  });
+
+  it('renders Move as an icon button and calls movePicker.openBulk on click', async () => {
+    renderToolbar(email);
+    const btn = screen.getByRole('button', { name: 'thread.move' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(vi.mocked(movePicker.openBulk)).toHaveBeenCalledWith([email.id]);
+  });
+
+  it('renders Labels as an icon button and calls labelPicker.openBulk on click', async () => {
+    renderToolbar(email);
+    const btn = screen.getByRole('button', { name: 'thread.label' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(vi.mocked(labelPicker.openBulk)).toHaveBeenCalledWith([email.id]);
+  });
+
+  it('renders Mute as an icon button and calls managedRules.muteThread on click', async () => {
+    renderToolbar(email);
+    // isThreadMuted returns false, so label is msg.muteThread.
+    const btn = screen.getByRole('button', { name: 'msg.muteThread' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(vi.mocked(managedRules.muteThread)).toHaveBeenCalled();
+  });
+
+  it('renders Spam as an icon button and calls mail.reportSpam on click', async () => {
+    renderToolbar(email);
+    const btn = screen.getByRole('button', { name: 'msg.reportSpam' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(mailMock.reportSpam).toHaveBeenCalledWith(email.id, 'spam');
+  });
+
+  it('renders Phishing as an icon button and calls mail.reportSpam with phishing on click', async () => {
+    renderToolbar(email);
+    const btn = screen.getByRole('button', { name: 'msg.reportPhishing' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(mailMock.reportSpam).toHaveBeenCalledWith(email.id, 'phishing');
+  });
+
+  it('renders Block sender as an icon button and opens confirmation dialog on click', async () => {
+    renderToolbar(email);
+    const btn = screen.getByRole('button', { name: 'msg.blockSender' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    // Confirmation dialog should now be visible.
+    expect(screen.getByRole('dialog', { name: 'Block sender' })).toBeInTheDocument();
+  });
+
+  it('renders Print as an icon button and calls onPrint on click', async () => {
+    const onPrint = vi.fn();
+    render(ThreadToolbar, { props: { threadId: email.threadId, latest: email, onPrint } });
+    const btn = screen.getByRole('button', { name: 'thread.print' });
+    expect(btn).toBeInTheDocument();
+    await fireEvent.click(btn);
+    expect(onPrint).toHaveBeenCalledOnce();
+  });
+
+  it('no ActionOverflowMenu ("Weitere Aktionen") trigger is present', () => {
+    renderToolbar(email);
+    // The overflow trigger had aria-label from t('actions.moreActions') = 'actions.moreActions'.
+    expect(
+      screen.queryByRole('button', { name: /actions\.moreActions/i }),
+    ).not.toBeInTheDocument();
   });
 });

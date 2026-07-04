@@ -43,8 +43,3 @@ export const THREAD_ACTIONS: ActionDef[] = [
   { id: 'blockSender',   labelKey: 'msg.blockSender',       iconName: 'BlockIcon' },
   { id: 'print',         labelKey: 'thread.print',          iconName: 'PrintIcon' },
 ];
-
-// Default visible-in-toolbar count. Chosen to keep the toolbar readable
-// without configuration: Archive / Delete / Mark-unread / Snooze as the
-// primary group; the rest sit in the "More actions" overflow menu.
-export const DEFAULT_THREAD_VISIBLE = 4;

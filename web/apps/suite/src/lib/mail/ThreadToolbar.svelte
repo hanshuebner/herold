@@ -17,8 +17,7 @@
   import { labelPicker } from './label-picker.svelte';
   import { snoozePicker } from './snooze-picker.svelte';
   import { managedRules } from '../settings/managed-rules.svelte';
-  import { THREAD_ACTIONS, DEFAULT_THREAD_VISIBLE } from './actions';
-  import ActionOverflowMenu from './ActionOverflowMenu.svelte';
+  import { THREAD_ACTIONS } from './actions';
   import { t } from '../i18n/i18n.svelte';
   import ArchiveIcon from '../icons/ArchiveIcon.svelte';
   import TrashIcon from '../icons/TrashIcon.svelte';
@@ -258,27 +257,18 @@
     },
   }));
 
+  // All visible thread actions in canonical order — shown directly as icon
+  // buttons; there is no overflow menu.
   let orderedThreadActions = $derived.by(() => {
-    const result: Array<{
-      id: ThreadActionKey;
-      desc: ThreadActionDesc;
-      isPrimary: boolean;
-    }> = [];
-
-    let primaryCount = 0;
+    const result: Array<{ id: ThreadActionKey; desc: ThreadActionDesc }> = [];
     for (const def of THREAD_ACTIONS) {
       const id = def.id as ThreadActionKey;
       const desc = allThreadActions[id];
       if (!desc || !desc.visible) continue;
-      const isPrimary = primaryCount < DEFAULT_THREAD_VISIBLE;
-      if (isPrimary) primaryCount++;
-      result.push({ id, desc, isPrimary });
+      result.push({ id, desc });
     }
     return result;
   });
-
-  let primaryThreadActions = $derived(orderedThreadActions.filter((a) => a.isPrimary));
-  let overflowThreadActions = $derived(orderedThreadActions.filter((a) => !a.isPrimary));
 </script>
 
 <div class="thread-toolbar" role="toolbar" aria-label={t('thread.back')}>
@@ -296,7 +286,7 @@
 
   <span class="divider" aria-hidden="true"></span>
 
-  {#each primaryThreadActions as { id, desc } (id)}
+  {#each orderedThreadActions as { id, desc } (id)}
     <button
       type="button"
       class="action-btn"
@@ -332,20 +322,8 @@
       {:else if id === 'print'}
         <PrintIcon size={16} />
       {/if}
-      <span class="btn-label">{desc.label}</span>
     </button>
   {/each}
-
-  {#if overflowThreadActions.length > 0}
-    <ActionOverflowMenu
-      items={overflowThreadActions.map(({ id, desc }) => ({
-        id,
-        label: desc.label,
-        shortcut: desc.shortcut,
-        onclick: desc.onclick,
-      }))}
-    />
-  {/if}
 
   <span class="spacer" aria-hidden="true"></span>
 </div>
@@ -426,20 +404,16 @@
     color: var(--text-primary);
   }
 
-  /* Primary thread action buttons: compact labeled pills.
-     The fixed reply bar at the bottom of the reader uses the same
-     visual language so the two action surfaces feel like one set. */
+  /* Thread action icon buttons — icon-only, same visual language as .icon-btn. */
   .action-btn {
     display: inline-flex;
     align-items: center;
-    gap: var(--spacing-02);
-    padding: var(--spacing-01) var(--spacing-03);
+    justify-content: center;
+    width: 36px;
+    height: 36px;
     border-radius: var(--radius-pill);
     color: var(--text-secondary);
     background: transparent;
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 500;
-    min-height: 32px;
     transition: background var(--duration-fast-02) var(--easing-productive-enter),
       color var(--duration-fast-02) var(--easing-productive-enter);
   }
@@ -452,11 +426,6 @@
   }
   .action-btn.muted {
     color: var(--text-helper);
-  }
-
-  .btn-label {
-    font-size: var(--type-body-compact-01-size);
-    white-space: nowrap;
   }
 
   /* Block-sender modal (shown below the toolbar). */
