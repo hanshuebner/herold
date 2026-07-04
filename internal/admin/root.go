@@ -139,6 +139,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newVAPIDCmd())
 	root.AddCommand(newContactsCmd())
 	root.AddCommand(newIdentityCmd())
+	root.AddCommand(newDevCmd())
 	return root
 }
 

@@ -285,6 +285,25 @@ seed_instance() {
             >/dev/null 2>"$dir/logs/principal-$local_part.err" \
             || { cat "$dir/logs/principal-$local_part.err" >&2; die "principal create $local_part failed"; }
     done
+
+    # When external-submission is enabled, seed three foreign-domain JMAP
+    # identities for alice covering the three UI rendering states:
+    #   800001 = setup-needed    (no submission row)
+    #   800002 = working-external (state: ok)
+    #   800003 = broken-external  (state: auth-failed)
+    #
+    # The command opens the store directly while the server is running; the
+    # SQLite WAL mode + 30 s busy timeout serialises it safely against the
+    # server's own writes.
+    if [ -n "${HEROLD_DEV_EXTERNAL_SUBMISSION:-}" ]; then
+        log "seeding external-identity shapes for alice@$SEED_DOMAIN"
+        "$HEROLD_BIN" dev seed-external-identities \
+            --system-config "$dir/system.toml" \
+            --principal "alice@$SEED_DOMAIN" \
+            >"$dir/logs/dev-seed.log" 2>&1 \
+            || { cat "$dir/logs/dev-seed.log" >&2; die "dev seed-external-identities failed"; }
+        cat "$dir/logs/dev-seed.log" >&2
+    fi
 }
 
 # ── start subcommand ─────────────────────────────────────────────────
