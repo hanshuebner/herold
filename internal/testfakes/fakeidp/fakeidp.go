@@ -1,8 +1,7 @@
-// Package fakeidp is a deterministic in-process OAuth 2.0 / OIDC
-// authorization server for tests. It lets a test exercise herold's
-// external-identity OAuth flow (per-user token acquisition and the
-// XOAUTH2 SMTP-submission path) without any external network or a real
-// provider such as Google or Microsoft 365.
+// Package fakeidp is a deterministic OAuth 2.0 / OIDC authorization server
+// for tests and development. It lets herold's external-identity OAuth flow
+// (per-user token acquisition and the XOAUTH2 SMTP-submission path) be
+// exercised without any external network or a real provider.
 //
 // The server implements two endpoints:
 //
@@ -18,6 +17,9 @@
 // monotonic counter — there is no crypto/rand and no wall-clock read on
 // any request path, so a run is fully reproducible. Time is injected via
 // Options.Now and only feeds the reported expires_in.
+//
+// For tests, use New which registers cleanup on testing.TB. For standalone
+// dev-tooling that runs outside a test, use NewServer and call Close when done.
 package fakeidp
 
 import (
@@ -77,10 +79,10 @@ type codeRecord struct {
 	scope       string
 }
 
-// New starts a fake IdP and registers cleanup on t. The provider is
-// reachable at BaseURL until the test finishes.
-func New(t testing.TB, opts Options) *Server {
-	t.Helper()
+// NewServer starts a fake IdP HTTP server and returns it. The server is
+// reachable at BaseURL until Close is called. For test code that wants
+// automatic cleanup, use New instead.
+func NewServer(opts Options) *Server {
 	if opts.ClientID == "" {
 		opts.ClientID = "fakeidp-client"
 	}
@@ -105,7 +107,18 @@ func New(t testing.TB, opts Options) *Server {
 	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/token", s.handleToken)
 	s.ts = httptest.NewServer(mux)
-	t.Cleanup(s.ts.Close)
+	return s
+}
+
+// Close stops the fake IdP server.
+func (s *Server) Close() { s.ts.Close() }
+
+// New starts a fake IdP and registers cleanup on t. The provider is
+// reachable at BaseURL until the test finishes.
+func New(t testing.TB, opts Options) *Server {
+	t.Helper()
+	s := NewServer(opts)
+	t.Cleanup(s.Close)
 	return s
 }
 
