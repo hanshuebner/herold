@@ -1,11 +1,12 @@
 /**
- * StepUpModal.svelte — auto-submit and button-removal tests (re #79).
+ * StepUpModal.svelte — auto-submit, button-removal, and focus tests (re #79, re #120).
  *
  * Verifies that:
  *   1. Entering all six digits triggers submitCode() automatically.
- *   2. The code boxes are cleared immediately on auto-submit.
+ *   2. The code boxes are cleared after submitCode() resolves.
  *   3. No Confirm/Submit button appears in the modal.
  *   4. Auto-submit is suppressed when the lockout countdown is active.
+ *   5. After a rejected code, focus returns to the first digit box (re #120).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -95,7 +96,7 @@ describe('StepUpModal — auto-submit (re #79)', () => {
     });
   });
 
-  it('clears the code boxes immediately after auto-submit triggers', async () => {
+  it('clears the code boxes after submitCode resolves', async () => {
     mockStepUp.visible = true;
     const { container } = render(StepUpModal);
     await tick();
@@ -106,8 +107,37 @@ describe('StepUpModal — auto-submit (re #79)', () => {
     await waitFor(() => {
       expect(mockSubmitCode).toHaveBeenCalledOnce();
     });
-    // After auto-submit clears `code`, all boxes should be empty.
+    // After submitCode resolves the .then() sets code = '', clearing all boxes.
     await tick();
+    for (const box of b) {
+      expect(box.value).toBe('');
+    }
+  });
+
+  it('returns focus to the first digit box after a rejected code (re #120)', async () => {
+    // Simulate a wrong-code response: submitCode resolves (no throw), leaving
+    // mockStepUp.error set. The modal stays visible.
+    (mockSubmitCode as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      mockStepUp.error = 'Incorrect code — try again.';
+    });
+    mockStepUp.visible = true;
+    const { container } = render(StepUpModal);
+    await tick();
+
+    const b = boxes(container);
+    // Focus the first box manually (mirrors autofocus in a real browser).
+    b[0]!.focus();
+    await enterCode(b, '999999');
+
+    // Wait for submitCode to be called and code to be cleared.
+    await waitFor(() => expect(mockSubmitCode).toHaveBeenCalledOnce());
+    // Flush the .then() microtask and the resulting Svelte effect.
+    await tick();
+    await tick();
+
+    // The first digit box must hold focus so the user can retype.
+    expect(document.activeElement).toBe(b[0]);
+    // All boxes must be empty.
     for (const box of b) {
       expect(box.value).toBe('');
     }

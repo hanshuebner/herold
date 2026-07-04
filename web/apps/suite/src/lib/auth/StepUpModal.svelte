@@ -79,17 +79,24 @@
     return () => document.removeEventListener('keydown', onKey, { capture: true });
   });
 
-  // Auto-submit when all six digits are entered (re #79).
+  // Auto-submit when all six digits are entered (re #79, re #120).
   // Reads `code` as a reactive dep so the effect fires on each digit change.
-  // The submit action and the code clear are untracked to prevent the write
-  // back to `code` from scheduling an extra effect run.
+  // The submit action is untracked to prevent re-entrant effect runs.
+  //
+  // `code` is cleared inside the `.then()` callback rather than before the
+  // call: `submitCode` sets `submitting = true` synchronously, so clearing
+  // `code` before the call fires CodeInput's reset-path `focusBox(0)` while
+  // the inputs are still disabled -- and a disabled input cannot receive
+  // focus. Clearing after the promise settles ensures `submitting = false`
+  // (set in the `finally` block) before `focusBox(0)` runs (re #120).
   $effect(() => {
     const currentCode = code;
     if (currentCode.length !== 6) return;
     untrack(() => {
       if (!stepUp.submitting && lockoutSeconds <= 0) {
-        code = '';
-        void stepUp.submitCode(currentCode);
+        void stepUp.submitCode(currentCode).then(() => {
+          code = '';
+        });
       }
     });
   });
