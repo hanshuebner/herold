@@ -21,7 +21,7 @@
    */
   import type { Identity } from '../mail/types';
   import type { SubmissionSummary } from '../identities/identity-status';
-  import { identityStatus } from '../identities/identity-status';
+  import { identityStatus, externalIdentityState } from '../identities/identity-status';
   import { composeFromSort, isFromSelectable } from './from-picker';
   import { t } from '../i18n/i18n.svelte';
 
@@ -72,23 +72,29 @@
   function chipKey(
     id: Identity,
     sub: SubmissionSummary | null,
-  ): 'verifying' | 'unverified' | 'external' | null {
+  ): 'verifying' | 'unverified' | 'setupNeeded' | 'broken' | null {
     const status = identityStatus(id);
     if (status === 'verifying') return 'verifying';
     if (status === 'unverified') return 'unverified';
-    if (status === 'verified' && !isFromSelectable(id, sub)) return 'external';
+    if (status === 'verified') {
+      const extState = externalIdentityState(id, sub);
+      if (extState === 'setup-needed') return 'setupNeeded';
+      if (extState === 'broken') return 'broken';
+    }
     return null;
   }
 
   function disabledKey(
     id: Identity,
     sub: SubmissionSummary | null,
-  ): 'unverified' | 'verifying' | 'external' | null {
+  ): 'unverified' | 'verifying' | 'setupNeeded' | 'broken' | null {
     if (isFromSelectable(id, sub)) return null;
     const status = identityStatus(id);
     if (status === 'unverified') return 'unverified';
     if (status === 'verifying') return 'verifying';
-    return 'external';
+    const extState = externalIdentityState(id, sub);
+    if (extState === 'broken') return 'broken';
+    return 'setupNeeded';
   }
 
   function toggle(): void {
@@ -216,16 +222,20 @@
             <span class="row-label">{rowLabel(id)}</span>
             <span class="row-trailing">
               {#if cKey === 'verifying'}
-                <span class="chip chip-verifying" data-testid="from-chip">
+                <span class="chip chip-verifying" data-testid="from-chip" data-chip-state="verifying">
                   {t('compose.from.chip.verifying')}
                 </span>
               {:else if cKey === 'unverified'}
-                <span class="chip chip-unverified" data-testid="from-chip">
+                <span class="chip chip-unverified" data-testid="from-chip" data-chip-state="unverified">
                   {t('compose.from.chip.unverified')}
                 </span>
-              {:else if cKey === 'external'}
-                <span class="chip chip-external" data-testid="from-chip">
-                  {t('compose.from.chip.external')}
+              {:else if cKey === 'setupNeeded'}
+                <span class="chip chip-setup-needed" data-testid="from-chip" data-chip-state="setup-needed">
+                  {t('compose.from.chip.setupNeeded')}
+                </span>
+              {:else if cKey === 'broken'}
+                <span class="chip chip-broken" data-testid="from-chip" data-chip-state="broken">
+                  {t('compose.from.chip.broken')}
                 </span>
               {:else if externalConfigured?.(id.id)}
                 <span class="ext-indicator" title="Mail sent via external SMTP">[ext]</span>
@@ -406,9 +416,15 @@
     border: 1px solid color-mix(in srgb, var(--support-error) 50%, transparent);
   }
 
-  .chip-external {
+  .chip-setup-needed {
     background: color-mix(in srgb, var(--support-warning) 15%, transparent);
     color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
     border: 1px solid color-mix(in srgb, var(--support-warning) 50%, transparent);
+  }
+
+  .chip-broken {
+    background: color-mix(in srgb, var(--support-error) 15%, transparent);
+    color: var(--support-error);
+    border: 1px solid color-mix(in srgb, var(--support-error) 50%, transparent);
   }
 </style>

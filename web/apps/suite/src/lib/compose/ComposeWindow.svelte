@@ -174,7 +174,9 @@
           ? t('compose.from.sendDisabled.unverified')
           : fromGating.reason === 'verifying'
             ? t('compose.from.sendDisabled.verifying')
-            : t('compose.from.sendDisabled.external'),
+            : fromGating.reason === 'external-broken'
+              ? t('compose.from.sendDisabled.broken')
+              : t('compose.from.sendDisabled.external'),
   );
 
   // Whether to render the dropdown or fall back to static text. The

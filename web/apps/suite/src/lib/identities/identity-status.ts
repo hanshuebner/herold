@@ -45,34 +45,16 @@ export function identityStatus(id: Identity): IdentityStatus {
 }
 
 /**
- * Whether this identity may be selected as the default From identity
- * (REQ-SET-IDENT-04). Only verified identities are selectable; the
- * radio is disabled on unverified / pending rows.
- */
-export function canBeDefault(id: Identity): boolean {
-  return identityStatus(id) === 'verified';
-}
-
-/**
- * Whether the row should render in the disabled visual treatment.
- * REQ-SET-IDENT-08 ties this to "external-without-submission" — an
- * external Identity (one whose owning domain is not hosted on this
- * herold) that has no working external submission configured. The
- * caller threads `externalSubmissionConfigured` from the per-identity
- * submission store; the helper combines it with the verification state
- * so a fresh unverified Identity does not gain a working radio just
- * because submission setup is pending.
+ * Per-identity submission summary resolved from the external-submission
+ * store. Passed as `sub` to the helpers below; null means "no record in
+ * the store" (identity sends via the local outbound queue).
  *
  * The server's GET /api/v1/identities/{id}/submission response carries
  * `domain_authoritative: true` when the identity's domain is hosted on
  * this herold instance (re #74). Locally-hosted identities route through
  * herold's outbound queue and never need external SMTP, so
- * `domainAuthoritative: true` exempts the row from the disabled treatment
+ * `domainAuthoritative: true` exempts the row from any external-SMTP gate
  * regardless of whether a submission record exists or is configured.
- *
- * Verified identities with no submission record at all (sub === null) are
- * also NOT considered external — absence of a record means "send via the
- * local outbound queue".
  */
 export interface SubmissionSummary {
   /** Whether a submission record exists with `configured: true`. */
@@ -89,27 +71,89 @@ export interface SubmissionSummary {
   domainAuthoritative?: boolean;
 }
 
+/**
+ * Six-state identity classification for the settings list and compose picker
+ * (REQ-SET-IDENT-08, re #98, re #107, re #115).
+ *
+ *   'authoritative'  — domain is hosted on this herold; identity routes via
+ *                      the local outbound queue. Never disabled in the UI.
+ *   'external-ok'    — verified external identity with a working configured
+ *                      submission. Fully usable.
+ *   'setup-needed'   — verified external whose submission record exists but
+ *                      has configured: false (user started the wizard, did
+ *                      not finish). Row is interactive; only the
+ *                      set-as-default control is disabled until SMTP is set up.
+ *   'broken'         — verified external with configured: true but probe
+ *                      failed (auth-failed / unreachable). Distinct
+ *                      attention/error state; default radio disabled.
+ *   'verifying'      — verification token live but not yet confirmed.
+ *   'unverified'     — verifiedAt is null and no live token.
+ */
+export type ExternalIdentityState =
+  | 'authoritative'
+  | 'external-ok'
+  | 'setup-needed'
+  | 'broken'
+  | 'verifying'
+  | 'unverified';
+
+/**
+ * Classify an identity into one of six states for the settings list and
+ * compose picker. The caller passes `sub` from the submission store, or
+ * null when no record exists (the "local outbound queue" case). Pure and
+ * Svelte-free.
+ */
+export function externalIdentityState(
+  id: Identity,
+  sub: SubmissionSummary | null,
+): ExternalIdentityState {
+  const vStatus = identityStatus(id);
+  if (vStatus === 'verifying') return 'verifying';
+  if (vStatus === 'unverified') return 'unverified';
+  // Verified identity.
+  if (sub === null) return 'authoritative';
+  if (sub.domainAuthoritative) return 'authoritative';
+  if (!sub.configured) return 'setup-needed';
+  if (sub.state === 'ok') return 'external-ok';
+  // configured=true with a non-ok probe state (auth-failed / unreachable /
+  // null — treat as broken in all non-ok cases).
+  return 'broken';
+}
+
+/**
+ * Whether this identity may be selected as the default From identity
+ * (REQ-SET-IDENT-04). Verified identities with a working submission path
+ * (authoritative queue or configured+ok external) are eligible. Unverified,
+ * verifying, setup-needed, and broken identities are not; the caller should
+ * disable the radio control.
+ *
+ * Pass `sub` when the submission store has loaded data for this identity.
+ * When `sub` is omitted or undefined the check falls back to verification
+ * state only (preserves existing behaviour for callers that lack submission
+ * context).
+ */
+export function canBeDefault(id: Identity, sub?: SubmissionSummary | null): boolean {
+  if (identityStatus(id) !== 'verified') return false;
+  if (sub === undefined) return true;
+  const state = externalIdentityState(id, sub);
+  return state === 'authoritative' || state === 'external-ok';
+}
+
+/**
+ * Whether the row should render in the disabled visual treatment
+ * (REQ-SET-IDENT-08). Returns true for any state in which the identity
+ * cannot send: unverified, verifying, setup-needed, and broken.
+ *
+ * Retained for sort/gating callers that treat all non-sendable states as
+ * a single bucket. For rendering that distinguishes setup-needed from
+ * broken, use `externalIdentityState` directly.
+ */
 export function isExternalWithoutSubmission(
   id: Identity,
   sub: SubmissionSummary | null,
 ): boolean {
-  // Unverified rows are always disabled — the user cannot use the
-  // identity at all yet, so the row is greyed independent of any
-  // submission state.
-  if (identityStatus(id) !== 'verified') return true;
-  // No submission record at all → the identity sends via the local
-  // outbound queue; not external; not disabled.
-  if (sub === null) return false;
-  // Domain is authoritative on this server → sends via the local outbound
-  // queue; external SMTP is irrelevant regardless of `configured`.
-  if (sub.domainAuthoritative) return false;
-  // Configured + ok → working external; row is active.
-  if (sub.configured && sub.state === 'ok') return false;
-  // Configured + alert state → external but broken; treat as disabled.
-  // Unconfigured submission record is "external-without-submission"
-  // (the row exists because the user started but did not finish the
-  // wizard) — REQ-SET-IDENT-08.
-  return true;
+  const state = externalIdentityState(id, sub);
+  return state !== 'authoritative' && state !== 'external-ok';
 }
 
 /**

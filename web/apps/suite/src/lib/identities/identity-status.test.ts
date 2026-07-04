@@ -9,6 +9,7 @@ import type { Identity } from '../mail/types';
 import {
   identityStatus,
   canBeDefault,
+  externalIdentityState,
   isExternalWithoutSubmission,
   sortIdentities,
   resolveDefault,
@@ -68,7 +69,7 @@ describe('identityStatus', () => {
 });
 
 describe('canBeDefault', () => {
-  it('is true only for verified identities', () => {
+  it('is true only for verified identities (no sub context)', () => {
     expect(canBeDefault(makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' }))).toBe(true);
     expect(
       canBeDefault(makeIdentity('2', 'b@x.test', { verifiedAt: null, verificationPendingSince: '2026-01-01T00:00:00Z' })),
@@ -76,6 +77,88 @@ describe('canBeDefault', () => {
     expect(
       canBeDefault(makeIdentity('3', 'c@x.test', { verifiedAt: null })),
     ).toBe(false);
+  });
+
+  it('returns true for a verified authoritative identity (sub=null)', () => {
+    const id = makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+    expect(canBeDefault(id, null)).toBe(true);
+  });
+
+  it('returns true for a verified identity with domainAuthoritative: true', () => {
+    const id = makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+    const sub: SubmissionSummary = { configured: false, state: null, domainAuthoritative: true };
+    expect(canBeDefault(id, sub)).toBe(true);
+  });
+
+  it('returns true for a verified identity with configured+ok external submission', () => {
+    const id = makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+    const sub: SubmissionSummary = { configured: true, state: 'ok' };
+    expect(canBeDefault(id, sub)).toBe(true);
+  });
+
+  it('returns false for setup-needed (configured: false, non-authoritative)', () => {
+    const id = makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+    const sub: SubmissionSummary = { configured: false, state: null };
+    expect(canBeDefault(id, sub)).toBe(false);
+  });
+
+  it('returns false for broken (configured: true, auth-failed)', () => {
+    const id = makeIdentity('1', 'a@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+    const sub: SubmissionSummary = { configured: true, state: 'auth-failed' };
+    expect(canBeDefault(id, sub)).toBe(false);
+  });
+});
+
+describe('externalIdentityState', () => {
+  const verified = makeIdentity('v', 'v@x.test', { verifiedAt: '2026-01-01T00:00:00Z' });
+  const verifying = makeIdentity('p', 'p@x.test', {
+    verifiedAt: null,
+    verificationPendingSince: '2026-05-01T00:00:00Z',
+  });
+  const unverified = makeIdentity('u', 'u@x.test', { verifiedAt: null });
+
+  it('returns verifying for a pending identity regardless of sub', () => {
+    expect(externalIdentityState(verifying, null)).toBe('verifying');
+    expect(externalIdentityState(verifying, { configured: true, state: 'ok' })).toBe('verifying');
+  });
+
+  it('returns unverified for an unverified identity regardless of sub', () => {
+    expect(externalIdentityState(unverified, null)).toBe('unverified');
+    expect(externalIdentityState(unverified, { configured: false, state: null })).toBe('unverified');
+  });
+
+  it('returns authoritative when sub is null (no record = local outbound queue)', () => {
+    expect(externalIdentityState(verified, null)).toBe('authoritative');
+  });
+
+  it('returns authoritative when domainAuthoritative is true (re #107)', () => {
+    const sub: SubmissionSummary = { configured: false, state: null, domainAuthoritative: true };
+    expect(externalIdentityState(verified, sub)).toBe('authoritative');
+  });
+
+  it('returns setup-needed when configured is false and domain is not authoritative', () => {
+    const sub: SubmissionSummary = { configured: false, state: null };
+    expect(externalIdentityState(verified, sub)).toBe('setup-needed');
+  });
+
+  it('returns external-ok when configured and state is ok', () => {
+    const sub: SubmissionSummary = { configured: true, state: 'ok' };
+    expect(externalIdentityState(verified, sub)).toBe('external-ok');
+  });
+
+  it('returns broken when configured but state is auth-failed', () => {
+    const sub: SubmissionSummary = { configured: true, state: 'auth-failed' };
+    expect(externalIdentityState(verified, sub)).toBe('broken');
+  });
+
+  it('returns broken when configured but state is unreachable', () => {
+    const sub: SubmissionSummary = { configured: true, state: 'unreachable' };
+    expect(externalIdentityState(verified, sub)).toBe('broken');
+  });
+
+  it('returns broken when configured but state is null (probe not yet run)', () => {
+    const sub: SubmissionSummary = { configured: true, state: null };
+    expect(externalIdentityState(verified, sub)).toBe('broken');
   });
 });
 

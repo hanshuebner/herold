@@ -29,6 +29,7 @@ import type { Identity } from '../mail/types';
 import {
   identityStatus,
   isExternalWithoutSubmission,
+  externalIdentityState,
   type SubmissionSummary,
 } from '../identities/identity-status';
 
@@ -36,18 +37,23 @@ import {
  * Reason key surfaced by composeFromGating when the selected identity is
  * not allowed to send. The caller maps these to localized strings.
  *
- *   - 'unverified'              — identity is verified=null, not pending.
- *   - 'verifying'               — verification token live but not yet
- *                                 confirmed (the row is still disabled).
- *   - 'external-no-submission'  — identity is verified but external
- *                                 submission is missing / broken.
- *   - 'no-identity'             — no identity is selected at all
- *                                 (rare; would be a store-warmup race).
+ *   - 'unverified'               — verifiedAt is null, no live token.
+ *   - 'verifying'                — verification token live but not yet
+ *                                  confirmed.
+ *   - 'external-setup-needed'    — identity is verified external but
+ *                                  submission has not been configured yet
+ *                                  (configured: false).
+ *   - 'external-broken'          — identity is verified external with
+ *                                  submission configured but probe failed
+ *                                  (auth-failed / unreachable).
+ *   - 'no-identity'              — no identity is selected at all
+ *                                  (rare; would be a store-warmup race).
  */
 export type FromGatingReason =
   | 'unverified'
   | 'verifying'
-  | 'external-no-submission'
+  | 'external-setup-needed'
+  | 'external-broken'
   | 'no-identity';
 
 export interface FromGating {
@@ -85,11 +91,17 @@ export function composeFromGating(
   if (status === 'verifying') {
     return { allowed: false, reason: 'verifying' };
   }
-  // Verified — but external-without-submission still blocks send.
-  if (isExternalWithoutSubmission(identity, submission)) {
-    return { allowed: false, reason: 'external-no-submission' };
+  // Verified — use the six-state classifier to distinguish authoritative /
+  // external-ok (both allowed) from setup-needed and broken (both blocked
+  // but with distinct reasons for the UI).
+  const extState = externalIdentityState(identity, submission);
+  if (extState === 'authoritative' || extState === 'external-ok') {
+    return { allowed: true, reason: null };
   }
-  return { allowed: true, reason: null };
+  if (extState === 'broken') {
+    return { allowed: false, reason: 'external-broken' };
+  }
+  return { allowed: false, reason: 'external-setup-needed' };
 }
 
 /**
