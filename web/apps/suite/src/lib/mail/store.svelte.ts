@@ -30,6 +30,7 @@ import { sounds } from '../notifications/sounds.svelte';
 import { shouldPlayMailCue } from '../notifications/cue-gates';
 import { settings } from '../settings/settings.svelte';
 import { router } from '../router/router.svelte';
+import { appendEvent } from '../debug-ring/debug-ring';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -3268,16 +3269,58 @@ class MailStore {
       '';
     const subject = email.subject || i18n.t('thread.subject.none');
     const title = sender ? `${sender}: ${subject}` : subject;
+    void appendEvent('page', 'info', 'desktop-notif.fire', {
+      emailId: email.id,
+      threadId: email.threadId,
+    });
     try {
-      new Notification(title, {
+      const notification = new Notification(title, {
         body: email.preview ?? undefined,
         tag: `mail-${email.id}`,
       });
+      // Clicking the notification must surface the message. These are
+      // page-created desktop notifications (shown while the tab is open); their
+      // click is handled here, in the page, and never reaches the service
+      // worker's notificationclick handler (re #83).
+      wireDesktopNotificationClick(
+        notification,
+        email.threadId,
+        (path) => router.navigate(path),
+        () => window.focus(),
+      );
     } catch {
       // Browser policy (e.g. secure-context check) may reject; swallow
       // silently so the sound cue path is unaffected.
     }
   }
+}
+
+/**
+ * Wire the click handler of a page-created desktop notification so clicking it
+ * surfaces the message: bring this tab to the foreground and route to the
+ * thread. Exported and dependency-injected (navigate/focus) so the behaviour is
+ * unit-testable without a real Notification or window. Records the click in the
+ * device-local debug ring so the notification path is observable (re #83).
+ */
+export function wireDesktopNotificationClick(
+  notification: { onclick: ((event: Event) => void) | null; close: () => void },
+  threadId: string,
+  navigate: (path: string) => void,
+  focus: () => void,
+): void {
+  notification.onclick = (event: Event): void => {
+    event.preventDefault();
+    const path = `/mail/thread/${encodeURIComponent(threadId)}`;
+    void appendEvent('page', 'info', 'desktop-notif.click', { threadId, path });
+    try {
+      focus();
+    } catch {
+      // focus() may be denied by browser policy; the route change below still
+      // surfaces the message once the user switches to the tab.
+    }
+    navigate(path);
+    notification.close();
+  };
 }
 
 function invocationArgs<T>(inv: Invocation | undefined): T {

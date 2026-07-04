@@ -284,7 +284,6 @@ self.addEventListener('push', (event) => {
   }
 
   const pushInfo = { kind: payload.kind, hasThreadId: payload.threadId !== undefined };
-  console.log('[sw] push', pushInfo);
   swLog('sw.push', pushInfo);
   swRingWrite('sw', 'info', 'sw.push', pushInfo);
 
@@ -295,6 +294,17 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil((async () => {
+    // Push notifications only surface when no tab is open. While a tab is open
+    // the page shows its own in-page desktop notification for new mail, so a
+    // push notification here would be a duplicate (re #83). matchAll with
+    // includeUncontrolled catches tabs that loaded before this SW took control.
+    const openTabs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (openTabs.length > 0) {
+      swRingWrite('sw', 'info', 'sw.push.suppressed', { openTabs: openTabs.length });
+      await _flushRing();
+      return;
+    }
+    swRingWrite('sw', 'info', 'sw.push.show', { kind: payload.kind });
     await self.registration.showNotification(options.title, options);
     await _flushRing();
   })());
@@ -421,10 +431,6 @@ self.addEventListener('notificationclick', (event) => {
     kind: data.kind,
     hasThreadId: data.threadId !== undefined,
   };
-  // Synchronous console breadcrumb: unlike the IDB ring write, this cannot be
-  // lost to SW termination and shows immediately in the SW inspector console,
-  // so it is the definitive "did notificationclick fire" signal.
-  console.log('[sw] notificationclick', clickInfo, data);
 
   event.notification.close();
 
@@ -646,24 +652,20 @@ async function jmapEmailSetSeen(emailId) {
  */
 async function openApp(path) {
   const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  console.log('[sw] openApp.matchAll', { count: wins.length, path });
   swRingWrite('sw', 'info', 'sw.openApp.matchAll', { count: wins.length, path });
 
   if (wins.length > 0) {
     // Post the navigate message BEFORE calling focus() so the route change
     // is always delivered even when focus() subsequently throws.
     wins[0].postMessage({ type: 'navigate', path });
-    console.log('[sw] openApp.postNavigate', { path });
     swRingWrite('sw', 'info', 'sw.openApp.postNavigate', { path });
     swLog('sw.openApp.postNavigate', { windowCount: wins.length, path });
 
     try {
       await wins[0].focus();
-      console.log('[sw] openApp.focus.ok');
       swRingWrite('sw', 'info', 'sw.openApp.focus.ok');
     } catch (err) {
       const name = (err && err.name) ? err.name : 'unknown';
-      console.log('[sw] openApp.focus.threw', name);
       swRingWrite('sw', 'warn', 'sw.openApp.focus.threw', { name });
       swLog('sw.openApp.focus.threw', { name, path });
     }
@@ -671,17 +673,14 @@ async function openApp(path) {
   }
 
   // No existing window: open a new one.
-  console.log('[sw] openApp.openWindow', { path });
   swRingWrite('sw', 'info', 'sw.openApp.openWindow', { path });
   swLog('sw.openApp.openWindow', { path });
   try {
     await self.clients.openWindow(path);
-    console.log('[sw] openApp.openWindow.opened', { path });
     swRingWrite('sw', 'info', 'sw.openApp.openWindow.opened', { path });
     swLog('sw.openApp.openWindow.opened', { path });
   } catch (err) {
     const name = (err && err.name) ? err.name : 'unknown';
-    console.log('[sw] openApp.openWindow.threw', name);
     swRingWrite('sw', 'warn', 'sw.openApp.openWindow.threw', { name, path });
     swLog('sw.openApp.openWindow.threw', { name, path });
   }
@@ -689,9 +688,6 @@ async function openApp(path) {
 
 // ── Notification close ─────────────────────────────────────────────────────
 
-self.addEventListener('notificationclose', (event) => {
-  // We do not track dismissals (REQ-PUSH-73: no remote telemetry), but a
-  // synchronous breadcrumb here distinguishes "the click reached the SW as a
-  // close" from "no event fired at all" during notification-click debugging.
-  console.log('[sw] notificationclose', event.notification && event.notification.data);
+self.addEventListener('notificationclose', () => {
+  // Nothing to do — we do not track dismissals (REQ-PUSH-73: no remote telemetry).
 });
