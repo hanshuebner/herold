@@ -5,138 +5,161 @@
  */
 
 /**
- * Splits a plain-text body into the "fresh" portion (all new content, always
- * shown) and the "quoted" portion (the prior message history, hidden behind
- * the "..." affordance by default). Detection rules, applied top-down to find
- * the first quoted-history boundary:
+ * A three-part view of a plain-text email body that preserves original
+ * source order:
  *
- *   1. An "On <date>, <addr> wrote:" / "Am <date> schrieb <addr>:"
- *      attribution line, followed by lines beginning with `>`.
- *   2. A line that consists solely of `>` quote prefixes (any depth).
- *   3. The legacy `--` (sigdash) is *not* a quote boundary; it just
- *      separates a signature.
+ *   head      — always-visible content before the citation.
+ *   collapsed — the single trailing citation, hidden behind "..." by default;
+ *               empty when no qualifying citation is found.
+ *   tail      — always-visible content that follows the citation (typically
+ *               a "-- " signature block); empty when there is no trailing
+ *               signature or when nothing is collapsed.
  *
- * Fresh content includes any text before the first quoted block AND any
- * non-quoted text found after or interleaved within the quoted section.
- * Only purely-quoted segments (attribution lines + `>`-prefixed lines) are
- * collapsed. A reply where all new text follows the quote is a common
- * composition pattern and is never trimmed.
- *
- * If no quoted block is found, `quoted` is empty and the original body is
- * returned in `fresh`.
+ * Rendered in source order: head → [... toggle] → tail
  */
-export function splitQuotedText(body: string): {
-  fresh: string;
-  quoted: string;
-} {
-  if (!body) return { fresh: '', quoted: '' };
+export type BodySplit = {
+  head: string;
+  collapsed: string;
+  tail: string;
+};
+
+/**
+ * Splits a plain-text body into a head / collapsed / tail triple.
+ *
+ * Rules:
+ *
+ * 1. Collapse AT MOST ONE citation — the single contiguous trailing quoted
+ *    region: an optional attribution line ("On … wrote:" / "Am … schrieb:")
+ *    immediately preceding consecutive `>`-prefixed lines (any nesting
+ *    depth), with blank lines allowed within the run.
+ * 2. Collapse that citation ONLY IF everything that follows it to the end of
+ *    the message is empty/whitespace or a signature block. A signature block
+ *    begins at the first line matching `^-- ?$` and runs to the end.
+ * 3. If the trailing quoted region is followed by any real (non-blank,
+ *    non-signature) content, collapse NOTHING — the whole body is returned
+ *    as `head` with `collapsed = ""`. This is the case when a quote appears
+ *    at the top and new text follows: nothing is collapsed, everything is
+ *    visible in order.
+ * 4. Order is never changed: rendering head + collapsed + tail preserves the
+ *    original source sequence. The signature is always in `tail` (shown),
+ *    never moved into `head`.
+ */
+export function splitQuotedText(body: string): BodySplit {
+  if (!body) return { head: '', collapsed: '', tail: '' };
 
   const lines = body.split(/\r?\n/);
-  const boundary = findQuoteBoundary(lines);
-  if (boundary < 0) return { fresh: body, quoted: '' };
 
-  const freshLines = lines.slice(0, boundary);
-  const quotedLines = lines.slice(boundary);
+  // ── Step 1: locate trailing signature ──────────────────────────────────
+  const sigStart = findSigDelimiter(lines);
+  const bodyLines = sigStart >= 0 ? lines.slice(0, sigStart) : lines;
+  const tailLines = sigStart >= 0 ? lines.slice(sigStart) : [];
 
-  // Drop trailing blank lines from `fresh` so we don't keep the blank line
-  // separator the user typed before the attribution.
-  while (freshLines.length > 0 && freshLines[freshLines.length - 1]!.trim() === '') {
-    freshLines.pop();
+  // ── Step 2: find the trailing citation within the body ─────────────────
+  const citationStart = findTrailingCitation(bodyLines);
+
+  if (citationStart < 0) {
+    // No qualifying citation: render the full body verbatim, in order.
+    return { head: body, collapsed: '', tail: '' };
   }
 
-  // Separate any non-quoted content interleaved within or trailing the quoted
-  // section. Such content is new text from the sender and must always be visible.
-  const { actualQuotedLines, extraFreshLines } = extractNonQuotedContent(quotedLines);
+  // ── Step 3: build the three parts, preserving source order ─────────────
+  const headLines = bodyLines.slice(0, citationStart);
+  // Strip trailing blank separator between head and citation.
+  while (headLines.length > 0 && headLines[headLines.length - 1]!.trim() === '') {
+    headLines.pop();
+  }
 
-  // Combine pre-quote fresh and any extracted non-quoted content.
-  const freshParts: string[] = [];
-  if (freshLines.length > 0) freshParts.push(freshLines.join('\n'));
-  if (extraFreshLines.length > 0) freshParts.push(extraFreshLines.join('\n'));
+  const collapsedLines = bodyLines.slice(citationStart);
+  // Strip trailing blank lines from the citation.
+  while (
+    collapsedLines.length > 0 &&
+    collapsedLines[collapsedLines.length - 1]!.trim() === ''
+  ) {
+    collapsedLines.pop();
+  }
 
   return {
-    fresh: freshParts.join('\n'),
-    quoted: actualQuotedLines.join('\n'),
+    head: headLines.join('\n'),
+    collapsed: collapsedLines.join('\n'),
+    tail: tailLines.join('\n'),
   };
 }
+
+// ── Private helpers ───────────────────────────────────────────────────────────
 
 const ATTRIBUTION_RE =
   /^(On\b[\s\S]+\bwrote\s*:|Am\b[\s\S]+schrieb\b[\s\S]*:|El\b[\s\S]+escribi[oó]\s*:|Le\b[\s\S]+a\s+[ée]crit\s*:)\s*$/i;
 
-function findQuoteBoundary(lines: string[]): number {
+/** Matches the RFC 3676 signature delimiter "-- " and the common variant "--". */
+const SIG_DELIM_RE = /^-- ?$/;
+
+/**
+ * Returns the index of the first signature-delimiter line (`^-- ?$`), or -1.
+ * The signature runs from that line to the end of the message.
+ */
+function findSigDelimiter(lines: string[]): number {
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    // Rule 1: attribution line followed by quoted block.
-    if (ATTRIBUTION_RE.test(line.trim())) {
-      const next = nextNonBlank(lines, i + 1);
-      if (next !== -1 && lines[next]!.trim().startsWith('>')) {
-        return i;
-      }
-      // Attribution-only with no quoted block beneath: still treat as
-      // boundary so the "On ... wrote:" line collapses with the rest.
-      if (next !== -1) return i;
-    }
-    // Rule 2: a quote-prefix line — one or more `>` characters at the
-    // start, followed by whitespace or end of line. Covers `> body`,
-    // `>>nested`, and `>` on its own.
-    if (/^>+(\s|$)/.test(line.trim())) {
-      return i;
-    }
+    if (SIG_DELIM_RE.test(lines[i]!)) return i;
   }
   return -1;
 }
 
 /**
- * Within the lines that make up the quoted section (from the first quote
- * boundary to the end), separates the purely-quoted lines from any non-quoted
- * content (trailing new text or inline replies between quoted paragraphs).
+ * Scans `lines` (the body before any signature) backwards to find the start
+ * of a single contiguous trailing citation. A citation is:
  *
- * Blank lines that fall between quoted segments are kept with the quoted
- * section. Blank lines that separate a quoted segment from a non-quoted
- * segment are treated as separators and discarded (so the caller does not
- * render a leading blank before the fresh content).
+ *   - zero or one attribution line immediately before
+ *   - one or more `>`-prefixed lines, with blank lines allowed within the run
+ *
+ * Returns the line index at which the citation starts, or -1 when the
+ * trailing-most non-blank line is not `>`-prefixed (no trailing citation).
  */
-function extractNonQuotedContent(quotedLines: string[]): {
-  actualQuotedLines: string[];
-  extraFreshLines: string[];
-} {
-  const quotedOnly: string[] = [];
-  const extraFresh: string[] = [];
-  const pendingBlanks: string[] = [];
+function findTrailingCitation(lines: string[]): number {
+  let end = lines.length - 1;
 
-  for (const line of quotedLines) {
-    const trimmed = line.trim();
-    const isQuotedLine =
-      /^>+(\s|$)/.test(trimmed) || ATTRIBUTION_RE.test(trimmed);
+  // Skip trailing blank lines.
+  while (end >= 0 && lines[end]!.trim() === '') end--;
 
-    if (isQuotedLine) {
-      // Blank lines buffered since the last quoted line belong to the quoted
-      // section (they separate quoted paragraphs, e.g. multi-block replies).
-      quotedOnly.push(...pendingBlanks, line);
-      pendingBlanks.length = 0;
-    } else if (trimmed === '') {
-      // Buffer — we don't yet know whether this blank separates two quoted
-      // segments (goes to quoted) or precedes fresh content (discarded).
-      pendingBlanks.push(line);
-    } else {
-      // Non-quoted, non-blank: new content from the sender.
-      // Blank lines already in extraFresh are paragraph separators within the
-      // fresh content and must be kept. Leading blanks (those before the first
-      // fresh line) are discarded so we don't emit a spurious leading newline.
-      if (extraFresh.length > 0) {
-        extraFresh.push(...pendingBlanks);
-      }
-      extraFresh.push(line);
-      pendingBlanks.length = 0;
+  // The trailing-most non-blank line must be a quoted line to have a citation.
+  if (end < 0 || !isQuotedLine(lines[end]!)) return -1;
+
+  // Scan backwards to find the start of the contiguous quoted run, then
+  // optionally a preceding attribution line.
+  let citationStart = end;
+  let i = end - 1;
+
+  while (i >= 0) {
+    const trimmed = lines[i]!.trim();
+
+    if (trimmed === '') {
+      // Blank line within the potential quoted run — keep scanning.
+      i--;
+      continue;
     }
-  }
-  // Any remaining pending blanks are trailing whitespace — discard them.
 
-  return { actualQuotedLines: quotedOnly, extraFreshLines: extraFresh };
+    if (isQuotedLine(lines[i]!)) {
+      citationStart = i;
+      i--;
+      continue;
+    }
+
+    if (ATTRIBUTION_RE.test(trimmed)) {
+      // Attribution line at the top of the run; include it and stop.
+      citationStart = i;
+      break;
+    }
+
+    // Non-blank, non-quoted, non-attribution: the citation starts just below.
+    break;
+  }
+
+  return citationStart;
 }
 
-function nextNonBlank(lines: string[], from: number): number {
-  for (let i = from; i < lines.length; i++) {
-    if (lines[i]!.trim() !== '') return i;
-  }
-  return -1;
+/**
+ * Returns true when a line starts with one or more `>` characters, optionally
+ * followed by a space. Covers `> body`, `>>nested`, and bare `>`.
+ */
+function isQuotedLine(line: string): boolean {
+  return /^>+(\s|$)/.test(line.trim());
 }

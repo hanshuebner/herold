@@ -99,7 +99,7 @@ vi.mock('./sanitize', () => ({
 }));
 
 vi.mock('./quoted', () => ({
-  splitQuotedText: (t: string) => ({ fresh: t, quoted: null }),
+  splitQuotedText: (t: string) => ({ head: t, collapsed: '', tail: '' }),
 }));
 
 // ── helpers ───────────────────────────────────────────────────────────────────

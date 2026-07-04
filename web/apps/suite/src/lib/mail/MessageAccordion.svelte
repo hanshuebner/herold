@@ -682,10 +682,12 @@
         {/if}
         <HtmlBody {html} {loadImages} {cidMap} {cidDimensions} {inlineImageMeta} />
       {:else if text && textSplit}
-        <pre class="text-body">{textSplit.fresh}</pre>
-        {#if textSplit.quoted}
+        {#if textSplit.head}
+          <pre class="text-body">{textSplit.head}</pre>
+        {/if}
+        {#if textSplit.collapsed}
           {#if quotedExpanded}
-            <pre class="text-body quoted">{textSplit.quoted}</pre>
+            <pre class="text-body quoted">{textSplit.collapsed}</pre>
             <button
               type="button"
               class="quoted-toggle"
@@ -703,6 +705,9 @@
               <span aria-hidden="true">...</span>
             </button>
           {/if}
+        {/if}
+        {#if textSplit.tail}
+          <pre class="text-body">{textSplit.tail}</pre>
         {/if}
       {:else}
         <p class="empty">(no body)</p>
