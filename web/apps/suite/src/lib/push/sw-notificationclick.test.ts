@@ -172,14 +172,18 @@ describe('resolveNotificationPath — background actions', () => {
 });
 
 // ── Mail body click ──────────────────────────────────────────────────────────
+//
+// The SW body-click target is the chrome-less thread-window route (REQ-PUSH-60).
+// clients.openWindow() cannot set window features, so the bare route itself
+// triggers the chrome-less layout.
 
 describe('resolveNotificationPath — mail body click', () => {
-  it('returns /#/mail/thread/<threadId> when threadId is present', () => {
+  it('returns /#/thread-window/<threadId> when threadId is present', () => {
     const path = resolveNotificationPath(
       { kind: 'mail', threadId: 'T1234', emailId: 'e1' },
       '',
     );
-    expect(path).toBe('/#/mail/thread/T1234');
+    expect(path).toBe('/#/thread-window/T1234');
   });
 
   it('encodes special characters in threadId', () => {
@@ -187,7 +191,7 @@ describe('resolveNotificationPath — mail body click', () => {
       { kind: 'mail', threadId: 'T abc/+=' },
       '',
     );
-    expect(path).toBe('/#/mail/thread/T%20abc%2F%2B%3D');
+    expect(path).toBe('/#/thread-window/T%20abc%2F%2B%3D');
   });
 
   it('falls back to /#/mail when threadId is absent', () => {
@@ -405,13 +409,13 @@ describe('buildNotificationOptions — email (server payload format)', () => {
     expect(opts.tag).toBe('42');
   });
 
-  it('data.threadId flows through resolveNotificationPath to thread route', () => {
+  it('data.threadId flows through resolveNotificationPath to thread-window route', () => {
     const opts = buildNotificationOptions(emailPayload)!;
     const path = resolveNotificationPath(
       opts.data as Record<string, unknown>,
       '',
     );
-    expect(path).toBe('/#/mail/thread/t123');
+    expect(path).toBe('/#/thread-window/t123');
   });
 
   it('falls back to /#/mail route when threadId absent in notification data', () => {
@@ -755,16 +759,16 @@ describe('swLog — posts to /api/v1/clientlog/public', () => {
 // server-side emission.
 
 describe('threadId format — regression guard (re #83)', () => {
-  it('JMAP t-prefix threadId routes openApp to correct thread URL', async () => {
-    // Server now sends threadId: "t42". The SW opens /#/mail/thread/t42.
-    // SPA loadThread("t42") → Thread/get {ids: ["t42"]} → server responds
-    // {id: "t42"} → find((t) => t.id === "t42") succeeds.
+  it('JMAP t-prefix threadId routes openApp to correct thread-window URL', async () => {
+    // Server now sends threadId: "t42". The SW opens /#/thread-window/t42.
+    // SPA App.svelte detects the thread-window route and renders ThreadReader
+    // which calls loadThread("t42") → Thread/get {ids: ["t42"]} → {id: "t42"}.
     const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
     const openApp = makeOpenApp({ openWindow, matchAll: vi.fn().mockResolvedValue([]) });
 
-    await openApp('/#/mail/thread/t42');
+    await openApp('/#/thread-window/t42');
 
-    expect(openWindow).toHaveBeenCalledWith('/#/mail/thread/t42');
+    expect(openWindow).toHaveBeenCalledWith('/#/thread-window/t42');
   });
 
   it('bare-numeric threadId (old server format) produces a different path than t-prefix format', () => {
@@ -780,14 +784,14 @@ describe('threadId format — regression guard (re #83)', () => {
     const pathWithNewFormat = resolveNotificationPath({ kind: 'mail', threadId: 't42' }, '');
 
     // Old format produces a non-JMAP path (still functional via echo-back, but incorrect).
-    expect(pathWithOldFormat).toBe('/#/mail/thread/42');
-    // New format produces the correct JMAP thread path.
-    expect(pathWithNewFormat).toBe('/#/mail/thread/t42');
+    expect(pathWithOldFormat).toBe('/#/thread-window/42');
+    // New format produces the correct JMAP thread-window path.
+    expect(pathWithNewFormat).toBe('/#/thread-window/t42');
     // The paths differ — the "t" prefix matters for format correctness.
     expect(pathWithOldFormat).not.toBe(pathWithNewFormat);
   });
 
-  it('full pipeline: server-format payload → notification data → correct thread URL', () => {
+  it('full pipeline: server-format payload → notification data → correct thread-window URL', () => {
     // Simulates the complete push→click flow with the corrected server payload.
     // 1. Server pushes payload with threadId: "t42" (buildEmailPayload fix).
     const serverPayload = {
@@ -804,18 +808,16 @@ describe('threadId format — regression guard (re #83)', () => {
     expect(opts.data['threadId']).toBe('t42');
     // 3. On click, resolveNotificationPath reads notification.data.
     const path = resolveNotificationPath(opts.data as Record<string, unknown>, '');
-    // 4. The resolved path carries the JMAP-format thread ID.
-    expect(path).toBe('/#/mail/thread/t42');
-    // 5. openApp(path) calls clients.openWindow('/#/mail/thread/t42'); the
-    //    new tab loads the SPA at that hash, which navigates to /mail/thread/t42,
-    //    loadThread("t42") runs Thread/get {ids: ["t42"]}, the server returns
-    //    {id: "t42"}, and the thread renders. (SPA-side load is not exercisable
-    //    in this vitest harness; the Go test covers the payload emission and a
-    //    real-device test is required for the notification-click → thread-load
-    //    path on macOS.)
+    // 4. The resolved path is the chrome-less thread-window route (REQ-PUSH-60).
+    expect(path).toBe('/#/thread-window/t42');
+    // 5. openApp(path) calls clients.openWindow('/#/thread-window/t42'); the
+    //    new window loads the SPA at that hash, App.svelte detects the
+    //    thread-window route and renders only ThreadReader. (SPA-side load is
+    //    not exercisable in this vitest harness; puppeteer verification is
+    //    required for the full visual check.)
   });
 
-  it('full pipeline: unthreaded email uses emailId-derived thread URL', () => {
+  it('full pipeline: unthreaded email uses emailId-derived thread-window URL', () => {
     // For unthreaded messages (ThreadID==0 in store), the server now emits
     // threadId: "t<emailId>" (buildEmailPayload fix). This matches
     // threadIDForMessage's ThreadID==0 branch in the JMAP handler.
@@ -830,7 +832,7 @@ describe('threadId format — regression guard (re #83)', () => {
     const opts = buildNotificationOptions(serverPayload)!;
     expect(opts.data['threadId']).toBe('t99');
     const path = resolveNotificationPath(opts.data as Record<string, unknown>, '');
-    expect(path).toBe('/#/mail/thread/t99');
+    expect(path).toBe('/#/thread-window/t99');
   });
 });
 

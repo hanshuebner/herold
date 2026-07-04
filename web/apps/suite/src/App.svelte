@@ -38,6 +38,7 @@
   import HelpView from './views/HelpView.svelte';
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
+  import ThreadWindowView from './views/ThreadWindowView.svelte';
   import SidebarChats from './lib/chat/SidebarChats.svelte';
 
   // True when the user's session has the chat capability.
@@ -441,6 +442,12 @@
   }}
 >
 <AuthGate>
+{#if router.matches('thread-window')}
+  <!-- Chrome-less standalone thread popup (REQ-PUSH-60). No sidebar, no
+       top nav, no compose FAB. Opened by wireDesktopNotificationClick via
+       window.open(..., 'popup,...') when a desktop notification is clicked. -->
+  <ThreadWindowView threadId={router.parts[1] ?? ''} />
+{:else}
 <!-- Non-modal push-enable banner (REQ-PUSH-30): shown after 60s in-app. -->
 {#if showPushBanner}
   <div class="push-banner" role="status" aria-live="polite">
@@ -645,6 +652,7 @@
     <NotFoundView />
   {/if}
 </Shell>
+{/if}
 </AuthGate>
 </svelte:boundary>
 

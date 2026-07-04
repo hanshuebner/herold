@@ -3278,15 +3278,15 @@ class MailStore {
         body: email.preview ?? undefined,
         tag: `mail-${email.id}`,
       });
-      // Clicking the notification must surface the message. These are
-      // page-created desktop notifications (shown while the tab is open); their
-      // click is handled here, in the page, and never reaches the service
-      // worker's notificationclick handler (re #83).
+      // Clicking the notification opens a chrome-less popup at the
+      // thread-window route. The onclick is a user gesture so window.open
+      // is not popup-blocked. A per-thread window name
+      // (herold-thread-<id>) means re-clicking the same notification
+      // focuses the existing popup instead of stacking (re #83).
       wireDesktopNotificationClick(
         notification,
         email.threadId,
-        (path) => router.navigate(path),
-        () => window.focus(),
+        (url, name, features) => window.open(url, name, features),
       );
     } catch {
       // Browser policy (e.g. secure-context check) may reject; swallow
@@ -3297,28 +3297,26 @@ class MailStore {
 
 /**
  * Wire the click handler of a page-created desktop notification so clicking it
- * surfaces the message: bring this tab to the foreground and route to the
- * thread. Exported and dependency-injected (navigate/focus) so the behaviour is
- * unit-testable without a real Notification or window. Records the click in the
- * device-local debug ring so the notification path is observable (re #83).
+ * opens a chrome-less popup at the thread-window route for the thread. Exported
+ * and dependency-injected (open) so the behaviour is unit-testable without a
+ * real Notification or window. Records the click in the device-local debug ring
+ * so the notification path is observable (re #83).
+ *
+ * The popup is opened with a per-thread window name so re-clicking the same
+ * notification focuses the existing popup instead of stacking a new one.
  */
 export function wireDesktopNotificationClick(
   notification: { onclick: ((event: Event) => void) | null; close: () => void },
   threadId: string,
-  navigate: (path: string) => void,
-  focus: () => void,
+  open: (url: string, name: string, features: string) => Window | null,
 ): void {
   notification.onclick = (event: Event): void => {
     event.preventDefault();
-    const path = `/mail/thread/${encodeURIComponent(threadId)}`;
-    void appendEvent('page', 'info', 'desktop-notif.click', { threadId, path });
-    try {
-      focus();
-    } catch {
-      // focus() may be denied by browser policy; the route change below still
-      // surfaces the message once the user switches to the tab.
-    }
-    navigate(path);
+    const url = `/#/thread-window/${encodeURIComponent(threadId)}`;
+    const name = `herold-thread-${threadId}`;
+    const features = 'popup,width=900,height=700';
+    void appendEvent('page', 'info', 'desktop-notif.click', { threadId, url });
+    open(url, name, features);
     notification.close();
   };
 }
