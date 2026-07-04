@@ -14,6 +14,8 @@ package admin
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -79,6 +81,7 @@ func newDevCmd() *cobra.Command {
 // domain_authoritative=true.
 func newDevSeedExternalIdentitiesCmd() *cobra.Command {
 	var principalEmail string
+	var sinkAddr string
 	c := &cobra.Command{
 		Use:   "seed-external-identities",
 		Short: "seed foreign-domain identities for a dev instance (not for production)",
@@ -91,18 +94,23 @@ func newDevSeedExternalIdentitiesCmd() *cobra.Command {
 			"  " + devIdentityWorkingExt + " = working-external (state: ok)\n" +
 			"  " + devIdentityBrokenExt + " = broken-external  (state: auth-failed)\n\n" +
 			"The principal must already exist. Run after `herold bootstrap` and " +
-			"after the principal is created (e.g. via `herold principal create`).",
+			"after the principal is created (e.g. via `herold principal create`).\n\n" +
+			"When --sink-addr is set (host:port of a running heroldfakesmtp), the " +
+			"working-external identity is seeded pointing at that address with " +
+			"submit_security=none so the connection-test endpoint can reach the sink.",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDevSeedExternalIdentities(cmd, principalEmail)
+			return runDevSeedExternalIdentities(cmd, principalEmail, sinkAddr)
 		},
 	}
 	c.Flags().StringVar(&principalEmail, "principal", "alice@example.local",
 		"email of the principal that will own the seeded identities")
+	c.Flags().StringVar(&sinkAddr, "sink-addr", "",
+		"host:port of the running heroldfakesmtp sink; overrides the working-external identity's submit_host/port and sets submit_security=none")
 	return c
 }
 
-func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail string) error {
+func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr string) error {
 	g := globals(cmd.Context())
 	cfg, err := requireConfig(g)
 	if err != nil {
@@ -161,12 +169,31 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail string) err
 		return fmt.Errorf("dev seed-external-identities: seal placeholder: %w", err)
 	}
 
-	// Working external identity: state ok.
+	// Working external identity: state ok. When --sink-addr is provided
+	// (host:port of a live heroldfakesmtp), the working submission row points
+	// at that address with submit_security=none so the connection-test and
+	// real relay can reach the fake sink without TLS.
+	workingHost := "smtp." + devSeedForeignDomain
+	workingPort := 587
+	workingSecurity := "starttls"
+	if sinkAddr != "" {
+		h, portStr, err := net.SplitHostPort(sinkAddr)
+		if err != nil {
+			return fmt.Errorf("dev seed-external-identities: --sink-addr %q: %w", sinkAddr, err)
+		}
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("dev seed-external-identities: --sink-addr %q: port not numeric: %w", sinkAddr, err)
+		}
+		workingHost = h
+		workingPort = p
+		workingSecurity = "none"
+	}
 	if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
 		IdentityID:       devIdentityWorkingExt,
-		SubmitHost:       "smtp." + devSeedForeignDomain,
-		SubmitPort:       587,
-		SubmitSecurity:   "starttls",
+		SubmitHost:       workingHost,
+		SubmitPort:       workingPort,
+		SubmitSecurity:   workingSecurity,
 		SubmitAuthMethod: "password",
 		PasswordCT:       pwCT,
 		OAuthClientID:    "alice-work@" + devSeedForeignDomain,
@@ -202,6 +229,9 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail string) err
 	fmt.Fprintf(w, "dev-seed: seeded 3 external identities for %s on %s\n", principalEmail, devSeedForeignDomain)
 	for _, entry := range devSeedEntries {
 		fmt.Fprintf(w, "  identity_id=%s  email=%s  note=%s\n", entry.id, entry.email, entry.note)
+	}
+	if sinkAddr != "" {
+		fmt.Fprintf(w, "  working-external sink: %s (security=none)\n", sinkAddr)
 	}
 	return nil
 }

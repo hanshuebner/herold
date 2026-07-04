@@ -114,6 +114,13 @@ wait_for_http() {
     return 0
 }
 
+# read_report_key FILE KEY — extract a KEY=VALUE line from a flat
+# key=value report file written by heroldfakeidp / heroldfakesmtp.
+read_report_key() {
+    local file="$1" key="$2"
+    grep "^${key}=" "$file" | cut -d= -f2-
+}
+
 # read_port_from_report STATE_DIR LISTENER_NAME — extract a single
 # `address` field from the herold port_report_file by listener name.
 read_port_from_report() {
@@ -259,11 +266,77 @@ EOF
     fi
 }
 
+# start_fake_servers DIR — build heroldfakeidp and heroldfakesmtp into
+# DIR/bin/, start them, and wait for their report files. Sets these
+# globals for the caller:
+#   FAKEIDP_PID  FAKESMTP_PID
+#   FAKEIDP_AUTH_URL  FAKEIDP_TOKEN_URL
+#   FAKEIDP_CLIENT_ID  FAKEIDP_CLIENT_SECRET
+#   FAKESMTP_SMTP_ADDR  FAKESMTP_HTTP_ADDR
+#
+# Called only when HEROLD_DEV_EXTERNAL_SUBMISSION is set.
+FAKEIDP_PID=""
+FAKESMTP_PID=""
+FAKEIDP_AUTH_URL=""
+FAKEIDP_TOKEN_URL=""
+FAKEIDP_CLIENT_ID=""
+FAKEIDP_CLIENT_SECRET=""
+FAKESMTP_SMTP_ADDR=""
+FAKESMTP_HTTP_ADDR=""
+
+start_fake_servers() {
+    local dir="$1"
+    local fakeidp_bin="$dir/bin/heroldfakeidp"
+    local fakesmtp_bin="$dir/bin/heroldfakesmtp"
+    mkdir -p "$dir/bin"
+
+    log "building heroldfakeidp"
+    ( cd "$REPO_ROOT" && go build -o "$fakeidp_bin" ./cmd/heroldfakeidp ) \
+        >"$dir/logs/build-fakeidp.log" 2>&1 \
+        || { cat "$dir/logs/build-fakeidp.log" >&2; die "go build ./cmd/heroldfakeidp failed"; }
+
+    log "building heroldfakesmtp"
+    ( cd "$REPO_ROOT" && go build -o "$fakesmtp_bin" ./cmd/heroldfakesmtp ) \
+        >"$dir/logs/build-fakesmtp.log" 2>&1 \
+        || { cat "$dir/logs/build-fakesmtp.log" >&2; die "go build ./cmd/heroldfakesmtp failed"; }
+
+    local fakeidp_report="$dir/fakeidp.report"
+    log "starting heroldfakeidp"
+    "$fakeidp_bin" --report-file "$fakeidp_report" \
+        >>"$dir/logs/fakeidp.log" 2>&1 &
+    FAKEIDP_PID=$!
+
+    if ! wait_for_file "$fakeidp_report" 10; then
+        kill "$FAKEIDP_PID" 2>/dev/null || true
+        die "fake IdP did not write report within 10s; see $dir/logs/fakeidp.log"
+    fi
+    FAKEIDP_AUTH_URL=$(read_report_key "$fakeidp_report" auth_url)
+    FAKEIDP_TOKEN_URL=$(read_report_key "$fakeidp_report" token_url)
+    FAKEIDP_CLIENT_ID=$(read_report_key "$fakeidp_report" client_id)
+    FAKEIDP_CLIENT_SECRET=$(read_report_key "$fakeidp_report" client_secret)
+
+    local fakesmtp_report="$dir/fakesmtp.report"
+    log "starting heroldfakesmtp"
+    "$fakesmtp_bin" --report-file "$fakesmtp_report" \
+        >>"$dir/logs/fakesmtp.log" 2>&1 &
+    FAKESMTP_PID=$!
+
+    if ! wait_for_file "$fakesmtp_report" 10; then
+        kill "$FAKESMTP_PID" "$FAKEIDP_PID" 2>/dev/null || true
+        die "fake SMTP did not write report within 10s; see $dir/logs/fakesmtp.log"
+    fi
+    FAKESMTP_SMTP_ADDR=$(read_report_key "$fakesmtp_report" smtp_addr)
+    FAKESMTP_HTTP_ADDR=$(read_report_key "$fakesmtp_report" http_addr)
+
+    log "fake IdP running: auth_url=$FAKEIDP_AUTH_URL client_id=$FAKEIDP_CLIENT_ID"
+    log "fake SMTP running: smtp=$FAKESMTP_SMTP_ADDR status=http://$FAKESMTP_HTTP_ADDR"
+}
+
 # Seed the domain + non-admin principals via the admin REST surface.
 # Caller bootstrapped the admin principal beforehand and passes the
 # resulting API key.
 seed_instance() {
-    local dir="$1" backend_url="$2" api_key="$3"
+    local dir="$1" backend_url="$2" api_key="$3" sink_addr="${4:-}"
 
     # `herold bootstrap` already created admin@$SEED_DOMAIN, which
     # implicitly registered $SEED_DOMAIN itself. Calling `domain add`
@@ -289,17 +362,23 @@ seed_instance() {
     # When external-submission is enabled, seed three foreign-domain JMAP
     # identities for alice covering the three UI rendering states:
     #   800001 = setup-needed    (no submission row)
-    #   800002 = working-external (state: ok)
+    #   800002 = working-external (state: ok, pointed at the live fake SMTP sink)
     #   800003 = broken-external  (state: auth-failed)
+    #
+    # --sink-addr points the working-external identity at the live fake SMTP
+    # sink so the connection-test endpoint and real relay can reach it.
     #
     # The command opens the store directly while the server is running; the
     # SQLite WAL mode + 30 s busy timeout serialises it safely against the
     # server's own writes.
     if [ -n "${HEROLD_DEV_EXTERNAL_SUBMISSION:-}" ]; then
-        log "seeding external-identity shapes for alice@$SEED_DOMAIN"
+        log "seeding external-identity shapes for alice@$SEED_DOMAIN (sink=$sink_addr)"
+        local sink_flag=()
+        [ -n "$sink_addr" ] && sink_flag=(--sink-addr "$sink_addr")
         "$HEROLD_BIN" dev seed-external-identities \
             --system-config "$dir/system.toml" \
             --principal "alice@$SEED_DOMAIN" \
+            "${sink_flag[@]}" \
             >"$dir/logs/dev-seed.log" 2>&1 \
             || { cat "$dir/logs/dev-seed.log" >&2; die "dev seed-external-identities failed"; }
         cat "$dir/logs/dev-seed.log" >&2
@@ -335,6 +414,30 @@ cmd_start() {
         || die "make-self-signed-cert.sh failed; see $dir/logs/cert.log"
 
     write_system_toml "$dir"
+
+    # When external-submission is enabled: build and start the fake OAuth IdP
+    # and SMTP sink, then append the [server.oauth_providers.fakeidp] block to
+    # system.toml. The fakes must start BEFORE bootstrap so herold validates the
+    # config at bootstrap time against the now-real URLs.
+    if [ -n "${HEROLD_DEV_EXTERNAL_SUBMISSION:-}" ]; then
+        start_fake_servers "$dir"
+
+        # Write the fake IdP client secret to a file so the TOML block can
+        # reference it as file:/path (inline secrets are rejected at Validate).
+        printf '%s' "$FAKEIDP_CLIENT_SECRET" > "$dir/data/fakeidp-secret.txt"
+        chmod 600 "$dir/data/fakeidp-secret.txt"
+
+        cat >> "$dir/system.toml" <<EOF
+
+[server.oauth_providers.fakeidp]
+client_id = "$FAKEIDP_CLIENT_ID"
+client_secret_ref = "file:$dir/data/fakeidp-secret.txt"
+auth_url = "$FAKEIDP_AUTH_URL"
+token_url = "$FAKEIDP_TOKEN_URL"
+scopes = ["https://mail.google.com/"]
+EOF
+        log "appended [server.oauth_providers.fakeidp] to system.toml"
+    fi
 
     # Bootstrap the admin BEFORE starting the server, since
     # `herold bootstrap` opens the store directly and a running
@@ -391,7 +494,9 @@ cmd_start() {
     fi
 
     # Seed: domain + principals (admin already created via bootstrap).
-    seed_instance "$dir" "$backend_url" "$api_key"
+    # Pass the fake SMTP sink address when external submission is enabled so the
+    # working-external identity's submission row points at the live fake sink.
+    seed_instance "$dir" "$backend_url" "$api_key" "${FAKESMTP_SMTP_ADDR:-}"
 
     # Make sure the workspace has node_modules installed (a no-op
     # for the user's main checkout; mandatory for fresh agent
@@ -434,6 +539,9 @@ cmd_start() {
 INSTANCE_ID=$id
 HEROLD_PID=$herold_pid
 VITE_PID=$vite_pid
+FAKEIDP_PID=${FAKEIDP_PID:-}
+FAKESMTP_PID=${FAKESMTP_PID:-}
+FAKESMTP_HTTP_ADDR=${FAKESMTP_HTTP_ADDR:-}
 STATE_DIR=$dir
 BACKEND_URL=$backend_url
 ADMIN_URL=$admin_url
@@ -460,25 +568,40 @@ EOF
     if [ "$detach" = "1" ]; then
         log "instance $id detached; supervisor pid $$ exiting"
         # Disown the children so they survive after this script exits.
-        disown "$herold_pid" "$vite_pid" 2>/dev/null || true
+        local disown_pids="$herold_pid $vite_pid"
+        [ -n "${FAKEIDP_PID:-}" ] && disown_pids="$disown_pids $FAKEIDP_PID"
+        [ -n "${FAKESMTP_PID:-}" ] && disown_pids="$disown_pids $FAKESMTP_PID"
+        # shellcheck disable=SC2086
+        disown $disown_pids 2>/dev/null || true
         exit 0
     fi
 
     # Foreground mode: register cleanup, then block.
+    # Capture fake PIDs into local vars so the cleanup closure sees them.
+    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}"
     cleanup() {
         log "tearing down instance $id"
         kill_tree "$vite_pid" TERM
         kill_tree "$herold_pid" TERM
+        [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" TERM
+        [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" TERM
         sleep 1
         kill_tree "$vite_pid" KILL
         kill_tree "$herold_pid" KILL
+        [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" KILL
+        [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" KILL
         rm -rf "$dir"
     }
     trap cleanup EXIT INT TERM
 
     log "instance $id ready; SIGINT/SIGTERM to tear down"
-    # Keep the script alive without busy-waiting.
-    wait "$herold_pid" "$vite_pid"
+    # Keep the script alive without busy-waiting. Include fake PIDs so the
+    # script exits if either fake process dies unexpectedly.
+    local wait_pids="$herold_pid $vite_pid"
+    [ -n "$_fakeidp_pid" ] && wait_pids="$wait_pids $_fakeidp_pid"
+    [ -n "$_fakesmtp_pid" ] && wait_pids="$wait_pids $_fakesmtp_pid"
+    # shellcheck disable=SC2086
+    wait $wait_pids
 }
 
 # ── stop subcommand ──────────────────────────────────────────────────
@@ -509,15 +632,22 @@ cmd_stop() {
     log "stopping instance $INSTANCE_ID"
     kill_tree "$VITE_PID" TERM
     kill_tree "$HEROLD_PID" TERM
+    [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" TERM
+    [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if ! kill -0 "$VITE_PID" 2>/dev/null && ! kill -0 "$HEROLD_PID" 2>/dev/null; then
-            break
-        fi
+        local all_dead=1
+        kill -0 "$VITE_PID" 2>/dev/null && all_dead=0
+        kill -0 "$HEROLD_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKEIDP_PID:-}" ] && kill -0 "$FAKEIDP_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKESMTP_PID:-}" ] && kill -0 "$FAKESMTP_PID" 2>/dev/null && all_dead=0
+        [ "$all_dead" = "1" ] && break
         sleep 0.2
     done
     kill_tree "$VITE_PID" KILL
     kill_tree "$HEROLD_PID" KILL
+    [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" KILL
+    [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" KILL
     rm -rf "$dir"
 }
 

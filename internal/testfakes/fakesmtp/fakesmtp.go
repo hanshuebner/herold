@@ -1,4 +1,4 @@
-// Package fakesmtp is an in-process SMTP submission server for tests. It
+// Package fakesmtp is an SMTP submission server for tests and development. It
 // stands in for an external smart host (Gmail, Microsoft 365, a corporate
 // relay) so herold's external-submission path can be exercised end to end
 // without any network or a real provider.
@@ -14,6 +14,9 @@
 // on the STARTTLS verb), and ImplicitTLS (TLS from the first byte). The TLS
 // paths use a self-signed certificate generated in-process; TLSConfigForClient
 // returns a *tls.Config trusting it for tests that dial the TLS variants.
+//
+// For tests, use New which registers cleanup on testing.TB. For standalone
+// dev-tooling outside a test, use NewServer and call Close when done.
 package fakesmtp
 
 import (
@@ -25,9 +28,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -94,16 +100,16 @@ type Server struct {
 	closed chan struct{}
 }
 
-// New starts a fake SMTP server bound to 127.0.0.1 on a kernel-picked port
-// and registers cleanup on t.
-func New(t testing.TB, opts Options) *Server {
-	t.Helper()
+// NewServer starts a fake SMTP server bound to 127.0.0.1 on a kernel-picked
+// port and returns it. Call Close when done. For test code that wants
+// automatic cleanup, use New instead.
+func NewServer(opts Options) (*Server, error) {
 	if opts.Hostname == "" {
 		opts.Hostname = "smtp.fake.test"
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("fakesmtp: listen: %v", err)
+		return nil, fmt.Errorf("fakesmtp: listen: %w", err)
 	}
 	s := &Server{
 		ln:       ln,
@@ -112,15 +118,70 @@ func New(t testing.TB, opts Options) *Server {
 		closed:   make(chan struct{}),
 	}
 	if opts.Security != Plain {
-		s.tlsCfg, s.certPEM = selfSignedTLS(t, opts.Hostname)
+		tlsCfg, certPEM, err := selfSignedTLSNoT(opts.Hostname)
+		if err != nil {
+			_ = ln.Close()
+			return nil, err
+		}
+		s.tlsCfg = tlsCfg
+		s.certPEM = certPEM
 	}
 	if opts.Security == ImplicitTLS {
 		s.ln = tls.NewListener(ln, s.tlsCfg)
 	}
 	s.wg.Add(1)
 	go s.acceptLoop()
+	return s, nil
+}
+
+// New starts a fake SMTP server bound to 127.0.0.1 on a kernel-picked port
+// and registers cleanup on t.
+func New(t testing.TB, opts Options) *Server {
+	t.Helper()
+	s, err := NewServer(opts)
+	if err != nil {
+		t.Fatalf("fakesmtp.New: %v", err)
+	}
 	t.Cleanup(s.Close)
 	return s
+}
+
+// HTTPHandler returns an http.Handler that exposes the server's recorded
+// messages for dev-instance status checks. Mount it on a separate listener.
+//
+// Routes:
+//   - GET /messages — JSON array of envelope records (no raw body bytes).
+//   - GET /count    — JSON object {"count": N}.
+func (s *Server) HTTPHandler() http.Handler {
+	type msgJSON struct {
+		MailFrom      string   `json:"mail_from"`
+		RcptTo        []string `json:"rcpt_to"`
+		AuthMechanism string   `json:"auth_mechanism,omitempty"`
+		AuthIdentity  string   `json:"auth_identity,omitempty"`
+		OverTLS       bool     `json:"over_tls,omitempty"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/messages", func(w http.ResponseWriter, _ *http.Request) {
+		msgs := s.Messages()
+		out := make([]msgJSON, len(msgs))
+		for i, m := range msgs {
+			out[i] = msgJSON{
+				MailFrom:      m.MailFrom,
+				RcptTo:        m.RcptTo,
+				AuthMechanism: m.AuthMechanism,
+				AuthIdentity:  m.AuthIdentity,
+				OverTLS:       m.OverTLS,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("/count", func(w http.ResponseWriter, _ *http.Request) {
+		n := len(s.Messages())
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, "{\"count\":%d}\n", n)
+	})
+	return mux
 }
 
 // Addr is the "host:port" the server is listening on.
@@ -497,13 +558,13 @@ func mustDecode(s string) []byte {
 	return b
 }
 
-// selfSignedTLS generates a self-signed ECDSA certificate for hostname and
-// returns a server *tls.Config plus the certificate in PEM form.
-func selfSignedTLS(t testing.TB, hostname string) (*tls.Config, []byte) {
-	t.Helper()
+// selfSignedTLSNoT generates a self-signed ECDSA certificate for hostname and
+// returns a server *tls.Config plus the certificate in PEM form. It returns
+// an error instead of calling t.Fatalf, making it usable outside test code.
+func selfSignedTLSNoT(hostname string) (*tls.Config, []byte, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("fakesmtp: gen key: %v", err)
+		return nil, nil, fmt.Errorf("fakesmtp: gen key: %w", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -517,17 +578,17 @@ func selfSignedTLS(t testing.TB, hostname string) (*tls.Config, []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
-		t.Fatalf("fakesmtp: create cert: %v", err)
+		return nil, nil, fmt.Errorf("fakesmtp: create cert: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
-		t.Fatalf("fakesmtp: marshal key: %v", err)
+		return nil, nil, fmt.Errorf("fakesmtp: marshal key: %w", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		t.Fatalf("fakesmtp: x509 keypair: %v", err)
+		return nil, nil, fmt.Errorf("fakesmtp: x509 keypair: %w", err)
 	}
-	return &tls.Config{Certificates: []tls.Certificate{cert}}, certPEM
+	return &tls.Config{Certificates: []tls.Certificate{cert}}, certPEM, nil
 }
