@@ -372,11 +372,11 @@
       <!-- External config panel -->
       <div class="external-panel">
 
-        <!-- OAuth one-click buttons: shown for initial setup only, hidden when
-             oauth2 is already configured (re #105). When already configured,
-             a "Verbindung testen" button in the form-actions section re-runs
-             the OAuth flow instead. -->
-        {#if availableOAuthProviders.length > 0 && !isOAuthConfigured}
+        <!-- OAuth one-click buttons: shown for initial setup only, hidden once
+             any submission is configured (password or oauth2, re #121). When
+             already oauth2-configured, a "Verbindung testen" button in the
+             form-actions section re-runs the OAuth flow instead (re #105). -->
+        {#if availableOAuthProviders.length > 0 && !isConfigured}
           <div class="oauth-section">
             <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
             <div class="oauth-buttons">

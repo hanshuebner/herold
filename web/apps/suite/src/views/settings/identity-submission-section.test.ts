@@ -439,6 +439,47 @@ describe('IdentitySubmissionSection', () => {
 
   // ── OAuth2-configured state (re #105) ─────────────────────────────────────
 
+  // ── #121: OAuth button gating on isConfigured, not isOAuthConfigured ────────
+
+  it('#121: hides OAuth sign-in buttons when submission is already configured with password auth', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: ['gmail', 'm365'],
+      domain_authoritative: false, // forces external panel open
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // Even though providers are available, the identity is already configured
+    // with password auth, so the OAuth sign-in buttons must NOT appear.
+    expect(screen.queryByText('Sign in with Google')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sign in with Microsoft')).not.toBeInTheDocument();
+  });
+
+  it('#121: hides OAuth sign-in buttons when submission is configured with password auth on authoritative domain', async () => {
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls',
+      submit_auth_method: 'password',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: true,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // The "Use an external SMTP server" radio is the active one (configured=true
+    // seeds useExternal=true); the OAuth button must still be suppressed.
+    expect(screen.queryByText('Sign in with Google')).not.toBeInTheDocument();
+  });
+
   it('hides OAuth sign-in buttons when submission is already configured with oauth2', async () => {
     // Simulate an existing oauth2 submission for smtp.gmail.com.
     _mockHandle.data = {
