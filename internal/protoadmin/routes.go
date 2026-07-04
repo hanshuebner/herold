@@ -212,6 +212,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// inside the handler by using principalFrom, not a {pid} path param).
 	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
 
+	// Self-service client-log readback (re #83). Returns the caller's own
+	// recent rows from the authenticated slice only; no admin scope or
+	// elevation required. The user_id filter is applied server-side from
+	// the authenticated context.
+	mux.HandleFunc("GET /api/v1/me/clientlog", auth1(s.handleMeClientLog))
+
 	// Tagged-address dismissals + Convert-to-Sieve (REQ-TAG-50..62, REQ-TAG-90).
 	// All four endpoints are self-only (gated by principalFrom inside the
 	// handler). They are also registered on the public listener via
@@ -332,6 +338,10 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 
 	// Per-user client-log telemetry opt-out (REQ-OPS-208, REQ-CLOG-06).
 	mux.HandleFunc("PUT /api/v1/me/clientlog/telemetry_enabled", auth1(s.handlePutTelemetryEnabled))
+
+	// Self-service client-log readback (re #83). Authenticated slice only;
+	// principal-id filter applied server-side from the session context.
+	mux.HandleFunc("GET /api/v1/me/clientlog", auth1(s.handleMeClientLog))
 
 	// Spam-classifier feedback signal (Wave 3.15). The Suite SPA's
 	// per-message report-spam / report-phishing actions POST here so
