@@ -63,4 +63,83 @@ describe('splitQuotedText', () => {
     expect(fresh).toBe('Reply.');
     expect(quoted).toContain('>> earlier');
   });
+
+  // ── Trailing new content (issue #116) ─────────────────────────────────────
+
+  it('extracts trailing new content after a quoted block as fresh (ticket example)', () => {
+    // Exact body from issue #116: format=flowed reply where the sender's
+    // new text ("das ist noch nicht alles") comes after the quoted block.
+    const body =
+      'Am 2026-07-04 17:07, schrieb Hans Hübner:\n' +
+      '> es geht, finally!\n' +
+      '> ...\n' +
+      '>> hjgjh\n' +
+      '\n' +
+      'das ist noch nicht alles';
+    const { fresh, quoted } = splitQuotedText(body);
+    // The new content must be in fresh so it is always visible.
+    expect(fresh).toBe('das ist noch nicht alles');
+    // The quoted portion contains only the attributed + quoted lines.
+    expect(quoted).toContain('Am 2026-07-04 17:07, schrieb Hans Hübner:');
+    expect(quoted).toContain('> es geht, finally!');
+    expect(quoted).toContain('>> hjgjh');
+    // The new content must NOT appear in the quoted/hidden section.
+    expect(quoted).not.toContain('das ist noch nicht alles');
+  });
+
+  it('combines pre-quote fresh text with trailing new content', () => {
+    const body =
+      'Initial reply.\n' +
+      '\n' +
+      'On Mon, 4 Jul 2026, Alice <a@x.test> wrote:\n' +
+      '> Some quoted text.\n' +
+      '\n' +
+      'Additional comment after quote.';
+    const { fresh, quoted } = splitQuotedText(body);
+    expect(fresh).toContain('Initial reply.');
+    expect(fresh).toContain('Additional comment after quote.');
+    expect(quoted).toContain('> Some quoted text.');
+    expect(quoted).not.toContain('Additional comment after quote.');
+  });
+
+  it('extracts inline replies interleaved between quoted segments', () => {
+    // Inline reply style: non-quoted lines appear between quoted paragraphs.
+    const body =
+      'On date, Alice wrote:\n' +
+      '> Original paragraph one.\n' +
+      'My reply to paragraph one.\n' +
+      '\n' +
+      '> Original paragraph two.\n' +
+      'My reply to paragraph two.';
+    const { fresh, quoted } = splitQuotedText(body);
+    expect(fresh).toContain('My reply to paragraph one.');
+    expect(fresh).toContain('My reply to paragraph two.');
+    expect(quoted).toContain('> Original paragraph one.');
+    expect(quoted).toContain('> Original paragraph two.');
+    expect(quoted).not.toContain('My reply to paragraph one.');
+    expect(quoted).not.toContain('My reply to paragraph two.');
+  });
+
+  it('does not alter a reply with no trailing content (standard quote-at-end case)', () => {
+    // Regression guard: purely-trailing quoted blocks must keep working.
+    const body =
+      'Thanks!\n' +
+      '\n' +
+      'Am 27.04.2026 um 10:00 schrieb Bob <b@x.test>:\n' +
+      '> hallo\n' +
+      '> welt';
+    const { fresh, quoted } = splitQuotedText(body);
+    expect(fresh).toBe('Thanks!');
+    expect(quoted).toContain('Am 27.04.2026');
+    expect(quoted).toContain('> hallo');
+    expect(quoted).not.toContain('Thanks!');
+  });
+
+  it('returns only trailing content as fresh when there is no pre-quote text', () => {
+    // Message starts immediately with the attributed quote, new text follows.
+    const body = '> Quoted only.\n\nNew text after.';
+    const { fresh, quoted } = splitQuotedText(body);
+    expect(fresh).toBe('New text after.');
+    expect(quoted).toBe('> Quoted only.');
+  });
 });
