@@ -1,18 +1,26 @@
 /**
- * Tests for the REST API client's onUnauthenticated hook (re #57, re #77).
+ * Tests for the REST API client.
  *
- * When the server returns 401 the client must:
- *   1. invoke the registered onUnauthenticated callback so the auth state
- *      machine can transition to 'unauthenticated' and present the LoginView.
- *   2. still throw UnauthenticatedError so call-site error paths continue to
- *      work as before.
- *   3. not invoke the callback for non-401 error responses.
- *   4. pass the RFC 7807 `type` URI from the problem body to the callback so
- *      the auth state machine can distinguish session_expired from session_revoked
- *      and render the appropriate context message (REQ-AUTH-76, REQ-AS-10, re #77).
+ * Covers:
+ *  - onUnauthenticated hook (re #57, re #77):
+ *      1. invoke the registered onUnauthenticated callback on 401
+ *      2. still throw UnauthenticatedError
+ *      3. not invoke the callback for non-401 error responses
+ *      4. pass the RFC 7807 `type` URI (REQ-AUTH-76, REQ-AS-10, re #77)
+ *  - debug-ring logging (re #124):
+ *      5. records failed API calls (422, 500, network error) to the ring
+ *      6. does NOT log successful responses
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock the debug-ring module so appendEvent is a controllable spy.
+// vi.mock is hoisted above imports so client.ts receives the mock binding.
+vi.mock('../debug-ring/debug-ring', () => ({
+  appendEvent: vi.fn(async () => undefined),
+}));
+
 import { setOnUnauthenticated, UnauthenticatedError, ApiError, get, put } from './client';
+const { appendEvent } = await import('../debug-ring/debug-ring');
 
 // Reset fetch mock before each test.
 beforeEach(() => {
@@ -204,5 +212,105 @@ describe('setOnUnauthenticated / REST client 401 hook', () => {
     expect((thrown as UnauthenticatedError).problemType).toBe(
       'https://netzhansa.com/problems/session_expired',
     );
+  });
+});
+
+// ── Debug-ring logging (re #124) ────────────────────────────────────────────
+
+describe('api client — debug-ring logging (re #124)', () => {
+  beforeEach(() => {
+    vi.mocked(appendEvent).mockClear();
+  });
+
+  it('records a 422 probe-failure (category + diagnostic) as api.error in the ring', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            type: 'https://netzhansa.com/problems/external_submission_probe_failed',
+            title: 'external submission probe failed',
+            category: 'auth-failed',
+            diagnostic: 'auth probe: AUTH PLAIN: 535 Error: authentication failed',
+            status: 422,
+          }),
+          { status: 422, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+
+    await expect(put('/api/v1/identities/id-1/submission', {})).rejects.toThrow(ApiError);
+
+    expect(vi.mocked(appendEvent)).toHaveBeenCalledWith(
+      'page',
+      'error',
+      'api.error',
+      expect.objectContaining({
+        method: 'PUT',
+        path: '/api/v1/identities/id-1/submission',
+        status: 422,
+        title: 'external submission probe failed',
+        category: 'auth-failed',
+        diagnostic: 'auth probe: AUTH PLAIN: 535 Error: authentication failed',
+      }),
+    );
+  });
+
+  it('records a network error (status 0) as api.error in the ring', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new TypeError('Failed to fetch')),
+    );
+
+    await expect(get('/api/v1/identities')).rejects.toThrow(ApiError);
+
+    expect(vi.mocked(appendEvent)).toHaveBeenCalledWith(
+      'page',
+      'error',
+      'api.error',
+      expect.objectContaining({
+        method: 'GET',
+        path: '/api/v1/identities',
+        status: 0,
+        title: 'Failed to fetch',
+      }),
+    );
+  });
+
+  it('records a 500 response as api.error in the ring', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: 'internal server error', title: 'Internal Server Error' }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+
+    await expect(get('/api/v1/something')).rejects.toThrow(ApiError);
+
+    expect(vi.mocked(appendEvent)).toHaveBeenCalledWith(
+      'page',
+      'error',
+      'api.error',
+      expect.objectContaining({ status: 500, title: 'Internal Server Error' }),
+    );
+  });
+
+  it('does NOT call appendEvent for a successful 200 response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify([{ id: 'ident-1' }]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+
+    await get('/api/v1/identities');
+
+    expect(vi.mocked(appendEvent)).not.toHaveBeenCalled();
   });
 });

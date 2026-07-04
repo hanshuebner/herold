@@ -22,7 +22,16 @@
  *   granted, or rejects when the user cancels. On resolve the original
  *   request is retried once (_retry flag prevents infinite loops). On reject
  *   a StepUpCancelledError propagates to the caller.
+ *
+ * Debug-ring logging (re #124):
+ *   Every failed API call (network error, 401, 403, or any non-2xx) is
+ *   recorded as an 'error'-level entry in the device debug ring via
+ *   appendEvent. The payload carries method, path, status, and the
+ *   problem-detail fields title/category/diagnostic when present.
+ *   Credentials and request bodies are never logged.
  */
+
+import { appendEvent } from '../debug-ring/debug-ring';
 
 /** RFC 7807 problem detail body, as returned by herold. */
 export interface ProblemDetail {
@@ -174,7 +183,9 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (err) {
-    throw new ApiError(0, err instanceof Error ? err.message : 'Network error');
+    const networkMsg = err instanceof Error ? err.message : 'Network error';
+    void appendEvent('page', 'error', 'api.error', { method, path, status: 0, title: networkMsg });
+    throw new ApiError(0, networkMsg);
   }
 
   if (response.status === 401) {
@@ -189,6 +200,12 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
     } catch {
       // ignore
     }
+    void appendEvent('page', 'error', 'api.error', {
+      method,
+      path,
+      status: 401,
+      ...(problemType ? { type: problemType } : {}),
+    });
     _onUnauthenticated?.(problemType);
     throw new UnauthenticatedError(msg, problemType);
   }
@@ -207,6 +224,7 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
         await _onStepUpRequired();
       } catch {
         // User cancelled the modal.
+        void appendEvent('page', 'error', 'api.error', { method, path, status: 403, title: 'step-up cancelled' });
         throw new StepUpCancelledError();
       }
       // Elevation granted; retry the original request exactly once.
@@ -214,6 +232,7 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
     }
 
     const msg = detail?.message ?? 'Insufficient permissions.';
+    void appendEvent('page', 'error', 'api.error', { method, path, status: 403 });
     throw new ForbiddenError(msg);
   }
 
@@ -226,6 +245,14 @@ async function request<T>(method: string, path: string, body?: unknown, _retry =
     } catch {
       // ignore
     }
+    void appendEvent('page', 'error', 'api.error', {
+      method,
+      path,
+      status: response.status,
+      ...(detail?.['title'] ? { title: String(detail['title']) } : {}),
+      ...(detail?.['category'] ? { category: String(detail['category']) } : {}),
+      ...(detail?.['diagnostic'] ? { diagnostic: String(detail['diagnostic']) } : {}),
+    });
     throw new ApiError(response.status, msg, detail);
   }
 

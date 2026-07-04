@@ -97,6 +97,9 @@
   let smtpUser = $state('');
   let smtpPassword = $state('');
   let smtpSecurity = $state<SubmitSecurity>('starttls');
+  /** Structured probe-failure error from a 422 response (category + raw diagnostic). */
+  let smtpProbeError = $state<{ category: string; diagnostic: string } | null>(null);
+  /** Generic save error for non-422 failures. */
   let smtpError = $state<string | null>(null);
   let smtpSaving = $state(false);
 
@@ -336,6 +339,22 @@
     }
   }
 
+  /** Maps a probe-failure category string to a localized label. */
+  function probeCategoryLabel(category: string): string {
+    switch (category) {
+      case 'auth-failed':
+        return t('settings.submission.probe.authFailed');
+      case 'unreachable':
+        return t('settings.submission.probe.unreachable');
+      case 'permanent':
+        return t('settings.submission.probe.permanent');
+      case 'transient':
+        return t('settings.submission.probe.transient');
+      default:
+        return t('settings.submission.probe.default');
+    }
+  }
+
   // Step 3 validation.
   let smtpHostValid = $derived(smtpHost.trim() !== '');
   let smtpUserValid = $derived(smtpUser.trim() !== '');
@@ -353,6 +372,7 @@
     if (!createdIdentity) return;
     if (smtpSaveDisabled) return;
     smtpError = null;
+    smtpProbeError = null;
     smtpSaving = true;
     try {
       const body: SubmissionPutBody = {
@@ -369,8 +389,22 @@
       void submissionStore.forIdentity(createdIdentity.id).refresh();
       close();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      smtpError = t('settings.identityWizard.smtpSaveError', { message: msg });
+      if (err instanceof ApiError && err.status === 422) {
+        // Probe failure — surface inline with the same detail block used by
+        // IdentitySubmissionSection (REQ-MAIL-SUBMIT-03, re #124).
+        const detail = err.detail as {
+          type?: string;
+          category?: string;
+          diagnostic?: string;
+        } | null;
+        smtpProbeError = {
+          category: detail?.category ?? 'permanent',
+          diagnostic: detail?.diagnostic ?? err.message,
+        };
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        smtpError = t('settings.identityWizard.smtpSaveError', { message: msg });
+      }
     } finally {
       smtpSaving = false;
     }
@@ -657,7 +691,12 @@
             {/if}
           </label>
 
-          {#if smtpError}
+          {#if smtpProbeError}
+            <div class="probe-error" role="alert" data-testid="identity-wizard-smtp-probe-error">
+              <strong>{probeCategoryLabel(smtpProbeError.category)}.</strong>
+              {smtpProbeError.diagnostic}
+            </div>
+          {:else if smtpError}
             <p class="error-block" role="alert" data-testid="identity-wizard-smtp-error">
               {smtpError}
             </p>
@@ -841,6 +880,23 @@
   .error {
     color: var(--support-error);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  .probe-error {
+    margin: 0;
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-error) 10%, transparent);
+    border-left: 3px solid var(--support-error);
+    border-radius: var(--radius-md);
+    color: var(--support-error);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
+  }
+
+  .probe-error strong {
+    font-weight: 700;
+    display: block;
+    margin-bottom: var(--spacing-01);
   }
 
   .error-block {

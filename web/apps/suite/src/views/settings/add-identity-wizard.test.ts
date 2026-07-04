@@ -144,6 +144,11 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.identityWizard.createdToast': `Sent to ${params?.email ?? ''}`,
       'settings.identityWizard.done': 'Done',
       'settings.identityWizard.skip': 'Skip',
+      'settings.submission.probe.authFailed': 'Authentication failed',
+      'settings.submission.probe.unreachable': 'Server unreachable',
+      'settings.submission.probe.permanent': 'Rejected by external server',
+      'settings.submission.probe.transient': 'Temporary failure',
+      'settings.submission.probe.default': 'Probe failed',
     };
     return map[key] ?? key;
   },
@@ -909,5 +914,148 @@ describe('AddIdentityWizard', () => {
         expect.objectContaining({ auth_user: 'alice2@gmail.com' }),
       );
     });
+  });
+
+  // ── Step 3 probe-error surfacing (re #124) ────────────────────────────────
+
+  /**
+   * Advance the wizard to step 3 for an external domain identity.
+   * Returns the rendered container already at step 3.
+   */
+  async function advanceToStep3(
+    container: HTMLElement,
+  ): Promise<void> {
+    vi.mocked(mail.createIdentity).mockResolvedValueOnce({
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: null,
+      verificationPendingSince: '2026-05-11T00:00:00Z',
+    });
+    (mail.identities as Map<string, Identity>).set('new-identity', {
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: '2026-05-11T01:00:00Z',
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@gmail.com' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    await typeWizardCode(container, '654321');
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-3"]'),
+      ).not.toBeNull();
+    });
+  }
+
+  it('#124: step 3 renders the probe-error block (category label + diagnostic) on a 422 response, not "HTTP 422"', async () => {
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    await advanceToStep3(container);
+
+    // Simulate a 422 probe failure with category and diagnostic.
+    vi.mocked(putSubmission).mockRejectedValueOnce(
+      new ApiError(422, 'HTTP 422', {
+        type: 'https://netzhansa.com/problems/external_submission_probe_failed',
+        title: 'external submission probe failed',
+        category: 'auth-failed',
+        diagnostic: 'auth probe: AUTH PLAIN: 535 Error: authentication failed',
+        status: 422,
+      }),
+    );
+
+    const hostInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-host"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
+    const passwordInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-password"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(passwordInput, { target: { value: 'wrongpassword' } });
+
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-save-step3"]',
+      ) as HTMLButtonElement,
+    );
+
+    await vi.waitFor(() => {
+      const probeBlock = container.querySelector(
+        '[data-testid="identity-wizard-smtp-probe-error"]',
+      );
+      expect(probeBlock).not.toBeNull();
+      // Category label must appear (localized, not raw category key).
+      expect(probeBlock?.textContent).toContain('Authentication failed');
+      // Raw SMTP diagnostic must appear.
+      expect(probeBlock?.textContent).toContain('auth probe: AUTH PLAIN: 535');
+    });
+
+    // The bare "HTTP 422" fallback must NOT appear.
+    const genericError = container.querySelector(
+      '[data-testid="identity-wizard-smtp-error"]',
+    );
+    expect(genericError).toBeNull();
+  });
+
+  it('#124: step 3 renders the generic error for non-422 failures', async () => {
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    await advanceToStep3(container);
+
+    vi.mocked(putSubmission).mockRejectedValueOnce(
+      new ApiError(500, 'internal server error'),
+    );
+
+    const hostInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-host"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
+    const passwordInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-password"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(passwordInput, { target: { value: 'somepass' } });
+
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-save-step3"]',
+      ) as HTMLButtonElement,
+    );
+
+    await vi.waitFor(() => {
+      const genericError = container.querySelector(
+        '[data-testid="identity-wizard-smtp-error"]',
+      );
+      expect(genericError).not.toBeNull();
+      expect(genericError?.textContent).toContain('internal server error');
+    });
+
+    // The probe-error block must NOT appear for generic errors.
+    expect(
+      container.querySelector('[data-testid="identity-wizard-smtp-probe-error"]'),
+    ).toBeNull();
   });
 });
