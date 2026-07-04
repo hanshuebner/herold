@@ -784,4 +784,130 @@ describe('AddIdentityWizard', () => {
       expect(cooldown?.textContent).toContain('47');
     });
   });
+
+  // ── auth_user pre-population and PUT body (re #118) ───────────────────────
+
+  it('#118: wizard step 3 smtpUser is pre-populated with the new identity email', async () => {
+    vi.mocked(mail.createIdentity).mockResolvedValueOnce({
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: null,
+      verificationPendingSince: '2026-05-11T00:00:00Z',
+    });
+    (mail.identities as Map<string, Identity>).set('new-identity', {
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: '2026-05-11T01:00:00Z',
+    });
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@gmail.com' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    await typeWizardCode(container, '654321');
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-3"]'),
+      ).not.toBeNull();
+    });
+    const userInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-user"]',
+    ) as HTMLInputElement;
+    expect(userInput.value).toBe('alice2@gmail.com');
+  });
+
+  it('#118: wizard step 3 sends auth_user in putSubmission body', async () => {
+    vi.mocked(mail.createIdentity).mockResolvedValueOnce({
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: null,
+      verificationPendingSince: '2026-05-11T00:00:00Z',
+    });
+    (mail.identities as Map<string, Identity>).set('new-identity', {
+      id: 'new-identity',
+      name: '',
+      email: 'alice2@gmail.com',
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: true,
+      verifiedAt: '2026-05-11T01:00:00Z',
+    });
+    const { container } = render(AddIdentityWizard, {
+      props: { hostedDomains: HOSTED, onclose: vi.fn() },
+    });
+    const emailInput = container.querySelector(
+      '[data-testid="identity-wizard-email"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(emailInput, { target: { value: 'alice2@gmail.com' } });
+    await fireEvent.click(
+      container.querySelector(
+        '[data-testid="identity-wizard-next-step1"]',
+      ) as HTMLButtonElement,
+    );
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-2"]'),
+      ).not.toBeNull();
+    });
+    await typeWizardCode(container, '654321');
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="identity-wizard-step-3"]'),
+      ).not.toBeNull();
+    });
+
+    const hostInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-host"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(hostInput, { target: { value: 'smtp.gmail.com' } });
+
+    const passwordInput = container.querySelector(
+      '[data-testid="identity-wizard-smtp-password"]',
+    ) as HTMLInputElement;
+    await fireEvent.input(passwordInput, { target: { value: 'secret123' } });
+
+    const doneBtn = container.querySelector(
+      '[data-testid="identity-wizard-save-step3"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(doneBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(putSubmission)).toHaveBeenCalledWith(
+        'new-identity',
+        expect.objectContaining({ auth_user: 'alice2@gmail.com' }),
+      );
+    });
+  });
 });

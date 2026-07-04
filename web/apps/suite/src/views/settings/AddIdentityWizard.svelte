@@ -288,6 +288,7 @@
       const refreshed = mail.identities.get(createdIdentity.id);
       if (refreshed) createdIdentity = refreshed;
       if (showStep3) {
+        smtpUser = createdIdentity.email;
         step = 3;
       } else {
         close();
@@ -359,6 +360,7 @@
         submit_host: smtpHost.trim(),
         submit_port: smtpPort,
         submit_security: smtpSecurity,
+        auth_user: smtpUser.trim(),
         password: smtpPassword,
       };
       await putSubmission(createdIdentity.id, body);

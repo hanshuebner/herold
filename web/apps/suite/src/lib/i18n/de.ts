@@ -1412,6 +1412,7 @@ export const de = {
   'settings.submission.fieldAuthMethod': 'Authentifizierungsmethode',
   'settings.submission.authPassword': 'Passwort / App-spezifisches Passwort',
   'settings.submission.authOauth2': 'OAuth-2.0-Token',
+  'settings.submission.fieldUsername': 'Benutzername',
   'settings.submission.fieldPassword': 'Passwort',
   'settings.submission.passwordKeepExisting': '(leer lassen, um bestehendes Passwort zu behalten)',
   'settings.submission.oauth2Hint':

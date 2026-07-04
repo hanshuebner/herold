@@ -272,6 +272,64 @@ describe('IdentitySubmissionSection', () => {
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
   });
 
+  // ── Username (auth_user) field (re #118) ─────────────────────────────────
+
+  it('#118: username field is present when external panel is open', async () => {
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    expect(screen.getByLabelText('Username')).toBeInTheDocument();
+  });
+
+  it('#118: username field defaults to the identity email', async () => {
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    const usernameInput = screen.getByLabelText('Username') as HTMLInputElement;
+    expect(usernameInput.value).toBe(IDENTITY.email);
+  });
+
+  it('#118: username value is sent as auth_user in the PUT body', async () => {
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    const hostInput = screen.getByPlaceholderText('smtp.gmail.com');
+    await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
+
+    const usernameInput = screen.getByLabelText('Username');
+    await fireEvent.input(usernameInput, { target: { value: 'custom@provider.com' } });
+
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
+    await fireEvent.click(saveBtn);
+
+    expect(putSubmission).toHaveBeenCalledWith('ident-1', expect.objectContaining({
+      auth_user: 'custom@provider.com',
+    }));
+  });
+
+  it('#118: auth_user defaults to identity email when username field is not changed', async () => {
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    const hostInput = screen.getByPlaceholderText('smtp.gmail.com');
+    await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
+
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
+    await fireEvent.click(saveBtn);
+
+    expect(putSubmission).toHaveBeenCalledWith('ident-1', expect.objectContaining({
+      auth_user: IDENTITY.email,
+    }));
+  });
+
   // ── Manual form and probe failure ────────────────────────────────────────
 
   it('submitting password mode issues correct PUT body shape', async () => {

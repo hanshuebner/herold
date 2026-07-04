@@ -93,6 +93,17 @@
   let port = $state(587);
   let security = $state<SubmitSecurity>('starttls');
   let authMethod = $state<SubmitAuthMethod>('password');
+  /**
+   * The SMTP AUTH username. The server never returns the stored value (no
+   * credential material in GET responses), so we always seed from the
+   * identity email address — the most common value — and let the user edit
+   * it before saving.
+   */
+  let authUser = $state('');
+  $effect(() => {
+    const email = identity.email;
+    if (!authUser) authUser = email;
+  });
   let password = $state('');
 
   // Pre-fill from existing config when loaded.
@@ -155,6 +166,7 @@
       submit_host: host.trim(),
       submit_port: port,
       submit_security: security,
+      auth_user: authUser.trim() || undefined,
       ...(authMethod === 'password' ? { password } : {}),
     };
     try {
@@ -203,6 +215,7 @@
       port = 587;
       security = 'starttls';
       authMethod = 'password';
+      authUser = identity.email;
       password = '';
       probeError = null;
       saveError = null;
@@ -444,6 +457,21 @@
               <option value="password">{t('settings.submission.authPassword')}</option>
               <option value="oauth2">{t('settings.submission.authOauth2')}</option>
             </select>
+          </div>
+
+          <div class="field">
+            <label for="sub-username-{identity.id}" class="field-label">
+              {t('settings.submission.fieldUsername')}
+            </label>
+            <input
+              id="sub-username-{identity.id}"
+              type="text"
+              class="input"
+              autocomplete="username"
+              bind:value={authUser}
+              disabled={saving}
+              spellcheck="false"
+            />
           </div>
 
           {#if authMethod === 'password'}
