@@ -233,7 +233,9 @@ func (s *Server) isDomainAuthoritative(ctx context.Context, domain string) (bool
 //  4. Upsert the row in the store.
 //  5. Emit an audit log entry.
 //
-// Gated by requireSelfOnly (REQ-AUTH-EXT-SUBMIT-04).
+// Gated by requireSelfOnly (REQ-AUTH-EXT-SUBMIT-04). No TOTP step-up is
+// required: saving external-SMTP credentials is a routine end-user
+// self-service operation, not a privileged action (issue #119).
 func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 	identityID := r.PathValue("id")
 	if identityID == "" {
@@ -263,12 +265,6 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !requireSelfOnly(w, r, caller, identity.PrincipalID) {
-		return
-	}
-	// Gate on TOTP step-up when the caller has TOTP enrolled (REQ-AUTH-78,
-	// issue #79). handlePutSubmission is always self-service (requireSelfOnly
-	// above already rejects admin-for-other), so the gate applies unconditionally.
-	if !s.requireSelfServiceElevation(w, r, caller) {
 		return
 	}
 

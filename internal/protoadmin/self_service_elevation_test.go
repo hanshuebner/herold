@@ -454,7 +454,7 @@ func TestSelfServiceElevation_TOTPDisable_AfterStepUp_Succeeds(t *testing.T) {
 }
 
 // -------------------------------------------------------------------------
-// PART B: update external submission credentials gate
+// PART B: update external submission credentials (no elevation gate)
 // -------------------------------------------------------------------------
 
 // newSessionHarnessForSubmission builds a sessionHarness whose underlying
@@ -523,9 +523,11 @@ func submissionPutBody() map[string]any {
 	}
 }
 
-// TestSelfServiceElevation_Submission_TOTPNoElevation_Returns403 asserts that
-// a TOTP-enrolled principal cannot update submission credentials without step-up.
-func TestSelfServiceElevation_Submission_TOTPNoElevation_Returns403(t *testing.T) {
+// TestSelfServiceElevation_Submission_TOTPEnrolled_NoElevation_Succeeds asserts
+// that a TOTP-enrolled principal can update submission credentials via cookie
+// auth WITHOUT a prior step-up. Saving external-SMTP credentials is a routine
+// end-user self-service operation; TOTP step-up is not required (issue #119).
+func TestSelfServiceElevation_Submission_TOTPEnrolled_NoElevation_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarnessForSubmission(t)
 	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("sse-sub-noelev@example.com")
@@ -555,11 +557,14 @@ func TestSelfServiceElevation_Submission_TOTPNoElevation_Returns403(t *testing.T
 	sc2, raw2 := sh.doWithCookie("PUT",
 		fmt.Sprintf("/api/v1/identities/%s/submission", identityID),
 		submissionPutBody(), csrf)
-	assertSelfServiceElevation(t, sc2, raw2)
+	if sc2 != http.StatusNoContent {
+		t.Errorf("submission update with TOTP enrolled but no step-up: status=%d body=%s, want 204", sc2, raw2)
+	}
 }
 
 // TestSelfServiceElevation_Submission_AfterStepUp_Succeeds asserts that
-// submission credential update succeeds after a valid step-up.
+// submission credential update succeeds when the caller happens to have
+// performed a step-up (step-up is not required but must not break the path).
 func TestSelfServiceElevation_Submission_AfterStepUp_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarnessForSubmission(t)
