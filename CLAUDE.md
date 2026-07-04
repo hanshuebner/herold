@@ -27,6 +27,43 @@ The recurring failure mode on this project is acting on a plausible-sounding sto
 - **Verify delegated outcomes against artifacts before relaying "done".** Confirm the commit is on `main`, the label is applied, the screenshot is attached, the reproduction now passes — do not repeat a subagent's summary as fact. Under-claim when evidence is missing; over-claiming is what drives the rework rounds.
 - **A verification environment that cannot exercise the failing surface has not verified anything.** If the dev instance lacks the config the flow needs (e.g. no OAuth provider, so the start endpoint returns 503 where prod returns the real error), that is a "cannot reproduce" condition — fix the environment or work against a faithful target; do not ship against the wrong signal.
 
+## Verification and done-state (how work converges)
+
+The project's dominant failure mode has been non-convergence: a feature is
+"delivered", then accumulates a long tail of follow-up bugs that never close,
+because the only thing that actually exercises the feature is the maintainer's
+real-world session. Two months of this produced a feature (external identity /
+OAuth / external SMTP submission) that was worked for seven weeks and never once
+ran end-to-end. These rules exist to break that pattern.
+
+- **"Closed" means an acceptance check is green — never "a fix was pushed."** An
+  issue closes only when a test or a captured puppeteer flow demonstrates the
+  reported behaviour is now correct. Pushing a commit is not closure.
+- **`waiting-for-feedback` keeps an issue OPEN.** If a fix still needs the
+  maintainer's eyes, the issue stays open under `waiting-for-feedback` and does
+  not count as done. Closing an issue that still carries `waiting-for-feedback`
+  is prohibited: it manufactures a fictional done-state.
+- **Fakes before fixes for surfaces the dev instance cannot exercise.** If a
+  feature depends on an external service the ephemeral instance does not provide
+  (an external IdP, a foreign SMTP server, a third-party OAuth provider), the
+  first work item is a deterministic in-tree fake of that service wired into
+  `scripts/dev-instance.sh` and into one CI end-to-end test that drives the whole
+  flow. Guessed fixes validated only against the maintainer's real account are
+  not permitted for these surfaces — they are the engine of non-convergence.
+- **Batch the maintainer's real-world verification.** Accumulate a stack of fixes
+  all green against the fakes, then hand the maintainer ONE real-world session per
+  feature milestone. Do not hand back one guessed fix at a time; that makes the
+  maintainer the integration harness and sets the loop's clock rate to their
+  availability.
+- **Cap fix-on-fix depth.** When a feature spawns its third follow-up bug, stop
+  fixing symptoms: write the missing end-to-end acceptance test first, make it
+  pass, and only then resume. Symptom-chasing (field name, then deadline, then
+  gating, then cookie policy — all one flow) is the signal that the flow's
+  contract was never captured as a test.
+- **One analysis comment per ticket; the diff and the passing test are the
+  record.** Agents post a single RCA/analysis comment and edit it in place.
+  Growing long comment threads and re-narrating status is entropy, not progress.
+
 ## Hard rules (restated because they are frequently overlooked)
 
 - **No pull requests during pre-release iteration. None. At all.** The maintainer is the sole reviewer; the PR surface adds friction without value. Push commits directly to `main` once local verification is done (puppeteer for UI, tests for backend, both backends for store changes). If you want pre-merge CI gating, push to a feature branch, watch CI on that branch, then `git push origin <branch>:main` to fast-forward `main` — still no PR opened. CI runs on every push to `main` anyway; a failure on `main` is fixed forward, not reverted. Restated by the maintainer twice on 2026-05-05 after the agent kept opening PRs. This rule reverses only at release.

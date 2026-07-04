@@ -108,6 +108,24 @@ environment, rather than fixing against the wrong signal. State the OBSERVED
 mechanism in your analysis checklist; if the cause is still a hypothesis, label
 it as one.
 
+**No guessed fix on a surface with no in-tree fake.** When the failing flow
+depends on an external service (an external IdP / OAuth provider, a foreign SMTP
+server) and the repo has no deterministic fake of it wired into
+`scripts/dev-instance.sh` plus a CI end-to-end test, you may NOT ship a fix
+validated only against the maintainer's real account. That is the exact loop
+that kept the external-identity feature broken for seven weeks. Instead:
+reproduce against the fake if one exists; if none exists, stop, and route to the
+root agent that **the fake harness is the prerequisite work item** — name the
+service, the flow the fake must support, and the acceptance assertion the CI test
+should make. The fake lands first; the fix follows and is verified against it.
+
+**Fix-on-fix cap.** Before fixing, scan the issue and its siblings: if this is
+the third or later follow-up bug on one feature flow (add-identity -> OAuth ->
+external submit has already produced prior symptom fixes), do not ship another
+symptom fix. Surface to the root agent that the flow needs its end-to-end
+acceptance test written and made green first; symptom-chasing across a flow with
+no captured contract is what drives non-convergence.
+
 - **Suite UI bugs**: spin up the dev server (`pnpm --filter @herold/suite
   dev` or whatever the workspace's `web/CLAUDE.md` documents), reproduce
   the reported flow, capture the resulting JS console error, network

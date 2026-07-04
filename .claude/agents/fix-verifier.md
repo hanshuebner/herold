@@ -62,7 +62,15 @@ Produce a verdict against each of these. Any unmet item is a DEVIATION.
    "verified" against an environment that cannot show the reported failure (e.g.
    OAuth start returns 503 on a dev instance with no provider configured, so a
    production 404 can never appear there), the verification is void — DEVIATION,
-   and say what faithful target is needed.
+   and say what faithful target is needed. **A fix on an external-service surface
+   (external IdP / OAuth / foreign SMTP) that has no in-tree deterministic fake
+   wired into the dev instance and no CI end-to-end test is an automatic
+   DEVIATION**, regardless of how plausible the diff reads: it was validated
+   against the maintainer's real account or against nothing, which is the
+   non-convergence loop this gate exists to stop. Name the fake harness as the
+   prerequisite. Likewise, if this is the third-or-later symptom fix on one
+   feature flow with no captured end-to-end acceptance test, that missing test is
+   a DEVIATION — the flow's contract must be pinned before more symptom fixes.
 
 4. **Project STANDARDS and repo rules.** Read `STANDARDS.md`. Check: a test that
    fails pre-fix and passes post-fix exists and maps to the checklist; store or
