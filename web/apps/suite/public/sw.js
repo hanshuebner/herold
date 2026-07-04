@@ -473,9 +473,11 @@ function resolveNotificationPath(data, action) {
       if (action === 'reply' || action === 'retry_archive' || action === 'retry_read') {
         return `/#/mail/compose?inReplyTo=${encodeURIComponent(data.emailId ?? '')}&quick=1`;
       }
-      // Body click — open the thread.
+      // Body click — open the chrome-less standalone thread window.
+      // clients.openWindow() cannot set window features, so the app renders
+      // chrome-less at the bare route itself (REQ-PUSH-60).
       return data.threadId
-        ? `/#/mail/thread/${encodeURIComponent(data.threadId)}`
+        ? `/#/thread-window/${encodeURIComponent(data.threadId)}`
         : '/#/mail';
     }
     case 'chat': {
