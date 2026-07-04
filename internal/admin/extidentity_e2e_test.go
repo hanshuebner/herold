@@ -71,6 +71,11 @@ const (
 	extE2EOAuthIdentityID  = "900001"
 	extE2EPwIdentityID     = "900002"
 	extE2EHostedIdentityID = "900003"
+	// extE2EReauthIdentityID is a dedicated OAuth identity used only by the
+	// held-for-reauth retry loop (Criterion B, re #70). It never sends
+	// successfully in the main body, so a delivery to its address proves the
+	// retry ran (exactly-once check).
+	extE2EReauthIdentityID = "900004"
 
 	extE2EDataKeyEnv     = "HEROLD_EXTID_E2E_DATA_KEY"
 	extE2EOAuthSecretEnv = "HEROLD_EXTID_E2E_OAUTH_SECRET"
@@ -345,6 +350,166 @@ metrics_bind = ""
 		t.Errorf("connection test failure carried no detail; want a diagnostic string")
 	}
 	smtp.SetRejectAuth(false)
+
+	// ---- Criterion B: OAuth token-expiry recovery + queued retry (#70) ----
+	runReauthRetryE2E(t, adminAddr, publicAddr, apiKeyPlain, accountID, emailID, idp, smtp)
+}
+
+// runReauthRetryE2E drives the whole held-for-reauth retry loop (re #70):
+// an OAuth identity's send fails auth (the smart host rejects AUTH, simulating
+// an expired/revoked token), the submission is HELD rather than bounced, the
+// user re-authenticates through the real OAuth start+callback flow, and the
+// held message is redelivered exactly once with no re-composition.
+func runReauthRetryE2E(t *testing.T, adminAddr, publicAddr, apiKey, accountID, emailID string, idp *fakeidp.Server, smtp *fakesmtp.Server) {
+	t.Helper()
+	reauthUser := "dave@" + extE2EForeignDomain
+
+	// Configure the OAuth identity against the fake smart host while AUTH is
+	// accepted (the PUT probe must pass to persist).
+	smtp.SetRejectAuth(false)
+	tok := idp.Authenticate(t, "http://localhost/oauth/callback", "state-reauth-setup", "https://mail.google.com/")
+	putSubmission(t, adminAddr, apiKey, extE2EReauthIdentityID, map[string]any{
+		"submit_host":          smtp.Host(),
+		"submit_port":          smtp.Port(),
+		"submit_security":      "none",
+		"submit_auth_method":   "oauth2",
+		"oauth_access_token":   tok.AccessToken,
+		"oauth_refresh_token":  tok.RefreshToken,
+		"oauth_token_endpoint": idp.TokenURL(),
+		"oauth_client_id":      reauthUser,
+		"auth_user":            reauthUser,
+	})
+
+	// The token is now "expired": the smart host rejects AUTH. The send must
+	// be parked held-for-reauth, not bounced or lost.
+	smtp.SetRejectAuth(true)
+	submitViaJMAP(t, publicAddr, apiKey, accountID, extE2EReauthIdentityID, emailID)
+
+	// Assert HELD: the submission surfaces as delivered=queued with
+	// "pending re-authentication", and nothing reaches the smart host.
+	waitForHeldSubmission(t, publicAddr, apiKey, accountID)
+	for _, m := range smtp.Messages() {
+		if m.AuthIdentity == reauthUser && len(m.Data) > 0 {
+			t.Fatalf("held submission was delivered before re-auth: %+v", m)
+		}
+	}
+
+	// The user re-authenticates: the smart host accepts AUTH again and the
+	// full OAuth start+callback flow runs, which triggers the retry.
+	smtp.SetRejectAuth(false)
+	reauthenticateViaOAuth(t, adminAddr, apiKey, extE2EReauthIdentityID)
+
+	// Assert DELIVERED exactly once: the parked message reaches the smart
+	// host with no user re-composition, and no duplicate.
+	msg := waitForMessage(t, smtp, reauthUser)
+	if len(msg.RcptTo) != 1 || msg.RcptTo[0] != "bob@remote.test" {
+		t.Errorf("retried delivery: RCPT TO = %v; want [bob@remote.test]", msg.RcptTo)
+	}
+	if msg.MailFrom != reauthUser {
+		t.Errorf("retried delivery: MAIL FROM = %q; want %q", msg.MailFrom, reauthUser)
+	}
+	delivered := 0
+	for _, m := range smtp.Messages() {
+		if m.AuthIdentity == reauthUser && len(m.Data) > 0 {
+			delivered++
+		}
+	}
+	if delivered != 1 {
+		t.Errorf("retried delivery count = %d; want exactly 1 (no duplicate)", delivered)
+	}
+}
+
+// waitForHeldSubmission polls EmailSubmission/get until a submission surfaces
+// as held-for-reauth ("pending re-authentication"), the user-visible signal
+// that a message is parked awaiting re-authentication (re #70).
+func waitForHeldSubmission(t *testing.T, publicAddr, apiKey, accountID string) {
+	t.Helper()
+	getArgs, _ := json.Marshal(map[string]any{"accountId": accountID})
+	envelope := map[string]any{
+		"using": []string{
+			"urn:ietf:params:jmap:core",
+			"urn:ietf:params:jmap:mail",
+			"urn:ietf:params:jmap:submission",
+		},
+		"methodCalls": []any{
+			[]any{"EmailSubmission/get", json.RawMessage(getArgs), "g0"},
+		},
+	}
+	body, _ := json.Marshal(envelope)
+	deadline := time.Now().Add(15 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+publicAddr+"/jmap", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /jmap EmailSubmission/get: %v", err)
+		}
+		raw, _ := readAllAndClose(resp)
+		last = string(raw)
+		if bytes.Contains(raw, []byte("pending re-authentication")) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("submission never reached held-for-reauth state; last /get: %s", last)
+}
+
+// reauthenticateViaOAuth drives the real server-mediated OAuth flow the Suite
+// uses to reconnect an identity: POST .../submission/oauth/start to obtain the
+// provider auth URL, follow it to the fake IdP (which redirects back with a
+// code), then GET the callback. The callback exchanges the code, refreshes the
+// token material, and retries any held submissions for the identity (re #70).
+func reauthenticateViaOAuth(t *testing.T, adminAddr, apiKey, identityID string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+adminAddr+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=fakeidp", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST oauth/start: %v", err)
+	}
+	raw, _ := readAllAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("oauth/start: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var startResp struct {
+		AuthURL string `json:"auth_url"`
+	}
+	if err := json.Unmarshal(raw, &startResp); err != nil || startResp.AuthURL == "" {
+		t.Fatalf("oauth/start: no auth_url (err=%v body=%s)", err, raw)
+	}
+
+	// Follow the auth URL to the fake IdP, capturing the redirect back to the
+	// fixed callback path (do not follow it — GET it explicitly below).
+	noRedirect := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	ar, err := noRedirect.Get(startResp.AuthURL)
+	if err != nil {
+		t.Fatalf("GET authorize: %v", err)
+	}
+	ar.Body.Close()
+	if ar.StatusCode != http.StatusFound {
+		t.Fatalf("authorize: status=%d; want 302", ar.StatusCode)
+	}
+	callbackURL := ar.Header.Get("Location")
+	if callbackURL == "" {
+		t.Fatalf("authorize redirect carried no Location")
+	}
+
+	// The callback runs the token exchange, the probe, persistence, and the
+	// held-submission retry synchronously before returning.
+	cb, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	cbBody, _ := readAllAndClose(cb)
+	if cb.StatusCode != http.StatusNoContent && cb.StatusCode != http.StatusOK {
+		t.Fatalf("oauth callback: status=%d body=%s", cb.StatusCode, cbBody)
+	}
 }
 
 // seedExtIdentityStore seeds the pre-boot store and returns the JMAP emailId
@@ -395,6 +560,7 @@ func seedExtIdentityStore(t *testing.T, st store.Store, clk clock.Clock, adminEm
 		{extE2EOAuthIdentityID, "alice@" + extE2EForeignDomain},
 		{extE2EPwIdentityID, "carol@" + extE2EForeignDomain},
 		{extE2EHostedIdentityID, adminEmail},
+		{extE2EReauthIdentityID, "dave@" + extE2EForeignDomain},
 	}
 	for _, id := range identities {
 		if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{

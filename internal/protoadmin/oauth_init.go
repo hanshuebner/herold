@@ -393,11 +393,25 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Endpoint defaults come from the provider's well-known SMTP host. When an
+	// external submission is already configured for this identity, this is a
+	// re-authentication (re #70): keep the existing endpoint and refresh only
+	// the token material, so a custom or non-well-known host survives the
+	// re-auth rather than being reset to the provider default.
+	submitHost := providerSMTPHost(entry.Provider)
+	submitPort := providerSMTPPort(entry.Provider)
+	submitSecurity := "implicit_tls"
+	if existing, gerr := s.store.Meta().GetIdentitySubmission(r.Context(), identityID); gerr == nil && existing.SubmitHost != "" {
+		submitHost = existing.SubmitHost
+		submitPort = existing.SubmitPort
+		submitSecurity = existing.SubmitSecurity
+	}
+
 	sub := store.IdentitySubmission{
 		IdentityID:         identityID,
-		SubmitHost:         providerSMTPHost(entry.Provider),
-		SubmitPort:         providerSMTPPort(entry.Provider),
-		SubmitSecurity:     "implicit_tls",
+		SubmitHost:         submitHost,
+		SubmitPort:         submitPort,
+		SubmitSecurity:     submitSecurity,
 		SubmitAuthMethod:   "oauth2",
 		OAuthAccessCT:      atCT,
 		OAuthTokenEndpoint: prov.TokenURL,

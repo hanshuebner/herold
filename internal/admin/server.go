@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -822,9 +823,23 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// handler applies its bounded default timeout.
 		Translation: &cfg.Translation,
 	}
+	// External-submission retryer: redelivers submissions parked
+	// held-for-reauth once the identity's auth recovers (re #70,
+	// REQ-AUTH-EXT-SUBMIT-05). The same instance is shared by the OAuth
+	// callback (user re-authenticates) and the sweeper (token refresh
+	// succeeds); both invoke RetryForIdentity. Built here, before NewServer,
+	// so it can be threaded into both call sites.
+	var extRetryer *extsubmit.Retryer
 	if prebuiltExtSubmitter != nil {
 		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
 		adminServerOpts.ExternalTestSender = protoadmin.DefaultTestSenderFromSubmitter(prebuiltExtSubmitter)
+		extRetryer = &extsubmit.Retryer{
+			Meta:   st.Meta(),
+			Blobs:  retryBlobAdapter{b: st.Blobs()},
+			Submit: prebuiltExtSubmitter,
+			Logger: logger.With("subsystem", "extsubmit-retryer"),
+		}
+		adminServerOpts.ExternalRetryer = extRetryer
 	}
 	adminServer := protoadmin.NewServer(
 		st,
@@ -1302,6 +1317,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			Logger:       logger.With("subsystem", "extsubmit-sweeper"),
 			AuditLog:     &sweeperAuditLogger{meta: st.Meta(), clk: clk},
 			Workers:      workerCount,
+			// Redeliver parked submissions after a successful token refresh
+			// (re #70, REQ-AUTH-EXT-SUBMIT-05).
+			Retryer: extRetryer,
 		}
 		g.Go(func() error {
 			if err := sweeper.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -3244,6 +3262,21 @@ func (a *sweeperAuditLogger) AppendAudit(
 		// Non-fatal: audit failure should not crash the sweeper.
 		_ = err
 	}
+}
+
+// retryBlobAdapter adapts store.Blobs to extsubmit.RetryBlobGetter, whose Get
+// returns an io.ReadCloser (the narrow surface the Retryer needs) rather than
+// the seekable store.BlobReader.
+type retryBlobAdapter struct {
+	b store.Blobs
+}
+
+func (a retryBlobAdapter) Get(ctx context.Context, hash string) (io.ReadCloser, error) {
+	r, err := a.b.Get(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // parseChallengeType maps the sysconfig string to a store.ChallengeType.
