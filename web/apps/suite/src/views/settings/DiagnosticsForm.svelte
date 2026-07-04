@@ -15,12 +15,10 @@
    *   always records its own sw.* events regardless of the toggle; the toggle
    *   governs verbose page-level capture only.  No auth, no network, no TOTP.
    *
-   * Admin server log (admin-only):
-   *   Fetches recent entries from the server-side clientlog ring buffer via
-   *   GET /api/v1/admin/clientlog.  Clearly labelled "(server, admin)" so it
-   *   is not confused with the device-local ring.  Note: the server endpoint
-   *   currently returns the "public" slice (anonymous); the authenticated
-   *   self-readback endpoint is a follow-up.
+   * Self-service server log (any authenticated user, re #83):
+   *   Fetches the caller's own recent entries from the server-side clientlog
+   *   ring buffer via GET /api/v1/me/clientlog.  No admin role or elevation
+   *   required; returns only the signed-in user's own rows.
    */
 
   import { auth } from '../../lib/auth/auth.svelte';
@@ -147,11 +145,7 @@
     devLogEntries = [];
   }
 
-  // ── Admin server log ───────────────────────────────────────────────────────
-
-  let hasAdminRole = $derived(
-    auth.roles.includes('admin') || auth.roles.includes('superadmin'),
-  );
+  // ── Self-service server log ────────────────────────────────────────────────
 
   let loadingLog = $state(false);
   let logText = $state<string | null>(null);
@@ -164,7 +158,7 @@
     logText = null;
     try {
       const resp = await get<ListClientLogResponse>(
-        '/api/v1/admin/clientlog?slice=public&app=suite&limit=100',
+        '/api/v1/me/clientlog?limit=100',
       );
       const rows = resp.rows ?? [];
       if (rows.length === 0) {
@@ -260,47 +254,45 @@
   {/if}
 </div>
 
-{#if hasAdminRole}
-  <div class="log-copy-section">
-    <h3 class="section-heading">{t('settings.diagnostics.logCopy.heading')}</h3>
-    <p class="hint">{t('settings.diagnostics.logCopy.hint')}</p>
-    <div class="log-actions">
-      <button
-        type="button"
-        class="btn-secondary"
-        onclick={loadLog}
-        disabled={loadingLog}
-        aria-busy={loadingLog}
-      >
-        {loadingLog
-          ? t('settings.diagnostics.logCopy.loading')
-          : t('settings.diagnostics.logCopy.fetchBtn')}
-      </button>
-    </div>
-    {#if logError}
-      <p class="error-text" role="alert">{logError}</p>
-    {:else if logText !== null}
-      {#if logText === ''}
-        <p class="hint">{t('settings.diagnostics.logCopy.empty')}</p>
-      {:else}
-        <textarea
-          readonly
-          value={logText}
-          rows={12}
-          class="log-textarea"
-          aria-label={t('settings.diagnostics.logCopy.heading')}
-        ></textarea>
-        <div class="log-actions">
-          <button type="button" class="btn-secondary" onclick={copyLog}>
-            {copied
-              ? t('settings.diagnostics.logCopy.copiedBtn')
-              : t('settings.diagnostics.logCopy.copyBtn')}
-          </button>
-        </div>
-      {/if}
-    {/if}
+<div class="log-copy-section">
+  <h3 class="section-heading">{t('settings.diagnostics.logCopy.heading')}</h3>
+  <p class="hint">{t('settings.diagnostics.logCopy.hint')}</p>
+  <div class="log-actions">
+    <button
+      type="button"
+      class="btn-secondary"
+      onclick={loadLog}
+      disabled={loadingLog}
+      aria-busy={loadingLog}
+    >
+      {loadingLog
+        ? t('settings.diagnostics.logCopy.loading')
+        : t('settings.diagnostics.logCopy.fetchBtn')}
+    </button>
   </div>
-{/if}
+  {#if logError}
+    <p class="error-text" role="alert">{logError}</p>
+  {:else if logText !== null}
+    {#if logText === ''}
+      <p class="hint">{t('settings.diagnostics.logCopy.empty')}</p>
+    {:else}
+      <textarea
+        readonly
+        value={logText}
+        rows={12}
+        class="log-textarea"
+        aria-label={t('settings.diagnostics.logCopy.heading')}
+      ></textarea>
+      <div class="log-actions">
+        <button type="button" class="btn-secondary" onclick={copyLog}>
+          {copied
+            ? t('settings.diagnostics.logCopy.copiedBtn')
+            : t('settings.diagnostics.logCopy.copyBtn')}
+        </button>
+      </div>
+    {/if}
+  {/if}
+</div>
 
 <style>
   .row.vertical {
