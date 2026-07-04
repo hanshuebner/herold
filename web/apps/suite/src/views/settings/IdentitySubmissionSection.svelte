@@ -193,7 +193,6 @@
     };
     try {
       await putSubmission(identity.id, body);
-      submissionStore.evict(identity.id);
       await handle.refresh();
       toast.show({ message: t('settings.submission.toast.saved'), timeoutMs: 4000 });
       onchange?.();
@@ -229,7 +228,6 @@
     removing = true;
     try {
       await deleteSubmission(identity.id);
-      submissionStore.evict(identity.id);
       if (domainAuthoritative) {
         useExternal = false;
       }
@@ -369,7 +367,7 @@
       : t('settings.submission.foreignDomainHint')}
   </p>
 
-  {#if handle.status === 'loading' || handle.status === 'idle'}
+  {#if (handle.status === 'loading' || handle.status === 'idle') && handle.data === null}
     <div class="spinner" role="status" aria-label={t('settings.submission.loadingAriaLabel')}></div>
   {:else if handle.status === 'error'}
     <p class="form-error" role="alert">{handle.error}</p>
@@ -596,6 +594,13 @@
               </Button>
             {/if}
           </div>
+
+          {#if !isOAuthConfigured || oauthConfiguredProvider === null}
+            <!-- Description for the manual save+test button: tells the user
+                 what the action actually does (connection probe, no message
+                 delivered) so the effect is not ambiguous (re #123). -->
+            <p class="save-test-hint">{t('settings.submission.saveAndTestHint')}</p>
+          {/if}
 
           {#if showTestPrompt}
             <!-- Inline recipient-address prompt (re #122). Shown when the user
@@ -943,5 +948,13 @@
     .spinner {
       animation: none;
     }
+  }
+
+  /* Description below the save+test button explaining the probe (re #123). */
+  .save-test-hint {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    margin: 0;
+    line-height: var(--type-body-compact-01-line);
   }
 </style>

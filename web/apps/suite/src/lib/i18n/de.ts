@@ -1430,7 +1430,7 @@ export const de = {
     'Externer Versand ist derzeit konfiguriert. Um ihn zu entfernen und zur ' +
     'Sendewarteschlange von herold zurückzukehren, erweitern Sie die externe ' +
     'Option und klicken Sie auf „Externe Konfiguration entfernen".',
-  'settings.submission.toast.saved': 'Externer Versand gespeichert.',
+  'settings.submission.toast.saved': 'Externer Versand gespeichert — Verbindung erfolgreich.',
   'settings.submission.toast.removed': 'Externer Versand entfernt.',
   'settings.submission.hostRequired': 'Host ist erforderlich.',
   'settings.submission.confirmRemoveTitle': 'Externe Sendekonfiguration entfernen?',
@@ -1445,6 +1445,15 @@ export const de = {
   'settings.submission.probe.default': 'Verbindungstest fehlgeschlagen',
   /** Button label for re-testing an existing OAuth2 connection (re #105). */
   'settings.submission.testConnection': 'Verbindung testen',
+  /**
+   * Description paragraph shown below the manual save+test button explaining
+   * that the probe verifies credentials without delivering a message (re #123).
+   */
+  'settings.submission.saveAndTestHint':
+    'Speichert die Zugangsdaten und öffnet eine SMTP-Verbindung, um zu ' +
+    'prüfen, ob der Server sie akzeptiert und E-Mails weiterleitet. ' +
+    'Es wird keine Nachricht zugestellt — nutzen Sie „Testnachricht senden" ' +
+    'oben, um die Zustellung zu prüfen.',
   /** On-demand SMTP probe button that delivers a test message to a chosen recipient (re #113, re #115, re #122). */
   'settings.submission.sendTest': 'Testnachricht senden',
   'settings.submission.sendTestPending': 'Wird gesendet…',

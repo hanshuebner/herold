@@ -1409,7 +1409,7 @@ export const en = {
     'External submission is currently configured. To remove it and revert to ' +
     "herold's outbound queue, expand the external option and click " +
     '"Remove external configuration".',
-  'settings.submission.toast.saved': 'External submission saved.',
+  'settings.submission.toast.saved': 'External submission saved — connection verified.',
   'settings.submission.toast.removed': 'External submission removed.',
   'settings.submission.hostRequired': 'Host is required.',
   'settings.submission.confirmRemoveTitle': 'Remove external submission config?',
@@ -1424,6 +1424,14 @@ export const en = {
   'settings.submission.probe.default': 'Probe failed',
   /** Button label for re-testing an existing OAuth2 connection (re #105). */
   'settings.submission.testConnection': 'Test connection',
+  /**
+   * Description paragraph shown below the manual save+test button explaining
+   * that the probe verifies credentials without delivering a message (re #123).
+   */
+  'settings.submission.saveAndTestHint':
+    'Saves the credentials and opens a live SMTP connection to verify that ' +
+    'the server accepts them and will relay outbound mail. No message is ' +
+    'delivered — use "Send test message" above to confirm delivery.',
   /** On-demand SMTP probe button that delivers a test message to a chosen recipient (re #113, re #115, re #122). */
   'settings.submission.sendTest': 'Send test message',
   'settings.submission.sendTestPending': 'Sending...',
