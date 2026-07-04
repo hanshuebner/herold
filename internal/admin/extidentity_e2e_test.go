@@ -314,6 +314,37 @@ metrics_bind = ""
 	// routes it through the local queue and returns created, not a
 	// "configure external submission" forbiddenFrom.
 	submitViaJMAP(t, publicAddr, apiKeyPlain, accountID, extE2EHostedIdentityID, emailID)
+
+	// ---- Criterion A: on-demand connection test (#113) --------------------
+	// Success: testing the configured password identity returns ok=true and
+	// relays a test message that arrives at the fake smart host addressed to
+	// the identity's own address (no third-party recipient).
+	if ok, detail, status := testConnection(t, adminAddr, apiKeyPlain, extE2EPwIdentityID); !ok {
+		t.Fatalf("connection test (password identity): ok=false status=%d detail=%q; want ok=true", status, detail)
+	}
+	testMsg := waitForRcpt(t, smtp, pwUser)
+	if testMsg.MailFrom != pwUser {
+		t.Errorf("connection test message: MAIL FROM = %q; want %q (self)", testMsg.MailFrom, pwUser)
+	}
+	if len(testMsg.RcptTo) != 1 || testMsg.RcptTo[0] != pwUser {
+		t.Errorf("connection test message: RCPT TO = %v; want [%s] (self)", testMsg.RcptTo, pwUser)
+	}
+
+	// Failure: with the smart host rejecting AUTH, the test returns a
+	// structured failure (ok=false, HTTP 200) carrying the diagnostic detail
+	// (RFC 7807-style detail string), not a bare status.
+	smtp.SetRejectAuth(true)
+	failOK, failDetail, failStatus := testConnection(t, adminAddr, apiKeyPlain, extE2EPwIdentityID)
+	if failOK {
+		t.Errorf("connection test with AUTH rejected: ok=true; want ok=false")
+	}
+	if failStatus != http.StatusOK {
+		t.Errorf("connection test with AUTH rejected: status=%d; want 200 with {ok:false,detail}", failStatus)
+	}
+	if failDetail == "" {
+		t.Errorf("connection test failure carried no detail; want a diagnostic string")
+	}
+	smtp.SetRejectAuth(false)
 }
 
 // seedExtIdentityStore seeds the pre-boot store and returns the JMAP emailId
@@ -643,6 +674,55 @@ func waitForMessage(t *testing.T, smtp *fakesmtp.Server, authIdentity string) fa
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("no message relayed for identity %q within deadline; recorded=%d", authIdentity, len(smtp.Messages()))
+	return fakesmtp.Message{}
+}
+
+// testConnection drives the on-demand connection-test endpoint
+// (POST /api/v1/identities/{id}/submission/test) and returns the decoded
+// {ok, detail} plus the HTTP status. A non-200 status returns ok=false with
+// the raw body as detail so callers can assert on the transport-level error.
+func testConnection(t *testing.T, adminAddr, apiKey, identityID string) (ok bool, detail string, status int) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+adminAddr+"/api/v1/identities/"+identityID+"/submission/test", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST submission/test %s: %v", identityID, err)
+	}
+	raw, _ := readAllAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return false, string(raw), resp.StatusCode
+	}
+	var out struct {
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode submission/test %s: %v body=%s", identityID, err, raw)
+	}
+	return out.OK, out.Detail, resp.StatusCode
+}
+
+// waitForRcpt polls the fake SMTP sink until a message with a body has been
+// delivered to rcpt, or fails after a deadline.
+func waitForRcpt(t *testing.T, smtp *fakesmtp.Server, rcpt string) fakesmtp.Message {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, m := range smtp.Messages() {
+			if len(m.Data) == 0 {
+				continue
+			}
+			for _, r := range m.RcptTo {
+				if r == rcpt {
+					return m
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("no message delivered to rcpt %q within deadline; recorded=%d", rcpt, len(smtp.Messages()))
 	return fakesmtp.Message{}
 }
 

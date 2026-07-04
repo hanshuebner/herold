@@ -86,8 +86,9 @@ type Server struct {
 	tlsCfg   *tls.Config
 	certPEM  []byte
 
-	mu       sync.Mutex
-	messages []Message
+	mu         sync.Mutex
+	messages   []Message
+	rejectAuth bool
 
 	wg     sync.WaitGroup
 	closed chan struct{}
@@ -134,6 +135,23 @@ func (s *Server) Host() string {
 // Port is the listening TCP port.
 func (s *Server) Port() int {
 	return s.ln.Addr().(*net.TCPAddr).Port
+}
+
+// SetRejectAuth toggles AUTH rejection. When set, the server answers every
+// AUTH command with 535 (authentication failed) and records nothing, so a
+// submission attempt fails with an auth error. It is safe to call at runtime
+// between transactions, letting a test simulate an expired/revoked credential
+// (identity parked held-for-reauth) and then recovery (re-enable and retry).
+func (s *Server) SetRejectAuth(reject bool) {
+	s.mu.Lock()
+	s.rejectAuth = reject
+	s.mu.Unlock()
+}
+
+func (s *Server) authRejected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rejectAuth
 }
 
 // Messages returns a snapshot of every accepted message.
@@ -327,6 +345,10 @@ func (s *Server) handleAuth(sess *session, rest string, write func(string), read
 			ir = line
 		}
 		user, secret := decodePlain(ir)
+		if s.authRejected() {
+			write("535 5.7.8 authentication credentials invalid")
+			return
+		}
 		sess.authMech, sess.authID, sess.authSec = "PLAIN", user, secret
 		write("235 2.7.0 authentication successful")
 
@@ -339,6 +361,10 @@ func (s *Server) handleAuth(sess *session, rest string, write func(string), read
 		write("334 " + b64("Password:"))
 		passB64, ok := readLine()
 		if !ok {
+			return
+		}
+		if s.authRejected() {
+			write("535 5.7.8 authentication credentials invalid")
 			return
 		}
 		sess.authMech = "LOGIN"
@@ -359,6 +385,10 @@ func (s *Server) handleAuth(sess *session, rest string, write func(string), read
 			ir = line
 		}
 		user, token := decodeXOAuth2(ir)
+		if s.authRejected() {
+			write("535 5.7.8 authentication credentials invalid")
+			return
+		}
 		sess.authMech, sess.authID, sess.authSec = "XOAUTH2", user, token
 		write("235 2.7.0 authentication successful")
 

@@ -474,3 +474,129 @@ func DefaultProbeFromSubmitter(sub *extsubmit.Submitter) ExternalProbe {
 		return sub.Probe(ctx, row, fromAddr)
 	}
 }
+
+// ExternalTestSender relays one test message through the external smart host
+// using the persisted submission credentials. It wraps extsubmit.Submitter.Submit
+// and backs the on-demand connection test (re #113).
+type ExternalTestSender func(ctx context.Context, sub store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome
+
+// DefaultTestSenderFromSubmitter wraps a *extsubmit.Submitter as an
+// ExternalTestSender. admin/server.go passes this into protoadmin.Options so
+// the connection-test endpoint reaches the real SMTP path.
+func DefaultTestSenderFromSubmitter(sub *extsubmit.Submitter) ExternalTestSender {
+	return func(ctx context.Context, row store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
+		return sub.Submit(ctx, row, env)
+	}
+}
+
+// submissionTestResponse is the wire form returned by
+// POST /api/v1/identities/{id}/submission/test (re #113). It carries the
+// connection-test result the identity editor renders: ok reports whether the
+// smart host accepted the authenticated test message, and detail carries the
+// human-readable diagnostic (the SMTP reply on failure, the accept notice on
+// success). No credential material is ever included.
+type submissionTestResponse struct {
+	// OK is true when the test message was accepted by the smart host.
+	OK bool `json:"ok"`
+	// Detail is the human-readable diagnostic (SMTP reply / accept notice).
+	Detail string `json:"detail"`
+}
+
+// handleTestSubmission implements POST /api/v1/identities/{id}/submission/test.
+//
+// It loads the persisted submission config for the identity and relays a small
+// test message through the external smart host to the identity's own address,
+// exercising the full authenticated SMTP path (AUTH + MAIL + RCPT + DATA). The
+// response is a 200 {ok, detail} envelope in every reachable case: ok reports
+// whether the smart host accepted the message, and detail carries the SMTP
+// diagnostic. A misconfigured or unreachable endpoint yields ok=false with the
+// diagnostic in detail — never a bare status (re #113).
+//
+// Gated by requireSelfOnly: the caller must own the identity. Returns 404 when
+// the identity does not exist, 422 when no submission row is configured, and
+// 503 when external submission is not configured on this server.
+func (s *Server) handleTestSubmission(w http.ResponseWriter, r *http.Request) {
+	identityID := r.PathValue("id")
+	if identityID == "" {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_id", "identity id is required", "")
+		return
+	}
+	caller, _ := principalFrom(r.Context())
+
+	if isSyntheticDefault(identityID) {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "synthetic_default_unsupported",
+			"the default identity has no persistent submission row; create a custom Identity to configure external SMTP submission", identityID)
+		return
+	}
+
+	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
+		} else {
+			s.writeStoreError(w, r, err)
+		}
+		return
+	}
+	if !requireSelfOnly(w, r, caller, identity.PrincipalID) {
+		return
+	}
+
+	if len(s.opts.ExternalSubmissionDataKey) == 0 || s.opts.ExternalTestSender == nil {
+		writeProblem(w, r, http.StatusServiceUnavailable, "not_configured",
+			"external submission is not configured on this server", "")
+		return
+	}
+
+	sub, err := s.store.Meta().GetIdentitySubmission(r.Context(), identityID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "submission_not_configured",
+				"no external submission is configured for this identity", identityID)
+			return
+		}
+		s.writeStoreError(w, r, err)
+		return
+	}
+
+	// Build a small self-addressed test message. The identity's own address is
+	// both sender and recipient so the probe never injects mail to a third
+	// party (REQ-AUTH-EXT-SUBMIT-11 — send-capability without leakage).
+	from := identity.Email
+	body := "From: " + from + "\r\n" +
+		"To: " + from + "\r\n" +
+		"Subject: herold external submission test\r\n" +
+		"Message-ID: <conn-test-" + newRequestID() + "@herold>\r\n" +
+		"\r\n" +
+		"This message confirms that herold can send mail through the configured\r\n" +
+		"external submission server for this identity.\r\n"
+	env := extsubmit.Envelope{
+		MailFrom:      from,
+		RcptTo:        []string{from},
+		Body:          strings.NewReader(body),
+		CorrelationID: "conn-test:" + identityID,
+	}
+
+	outcome := s.opts.ExternalTestSender(r.Context(), sub, env)
+	ok := outcome.State == extsubmit.OutcomeOK
+
+	s.appendAudit(r.Context(), "identity.submission.test",
+		fmt.Sprintf("identity:%s", identityID),
+		outcomeToAuditResult(ok), outcome.Diagnostic,
+		map[string]string{
+			"principal_id": fmt.Sprintf("%d", caller.ID),
+			"identity_id":  identityID,
+			"category":     string(outcome.State),
+		})
+
+	writeJSON(w, http.StatusOK, submissionTestResponse{OK: ok, Detail: outcome.Diagnostic})
+}
+
+// outcomeToAuditResult maps a connection-test success flag to the audit
+// outcome vocabulary.
+func outcomeToAuditResult(ok bool) store.AuditOutcome {
+	if ok {
+		return store.OutcomeSuccess
+	}
+	return store.OutcomeFailure
+}

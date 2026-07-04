@@ -274,6 +274,16 @@ type Options struct {
 	// *extsubmit.Retryer; tests leave it nil (no-op).
 	ExternalRetryer *extsubmit.Retryer
 
+	// ExternalTestSender relays a small test message through the external
+	// smart host for the on-demand connection test at POST
+	// /api/v1/identities/{id}/submission/test (re #113). It exercises the
+	// full authenticated SMTP path (AUTH + MAIL + RCPT + DATA) against the
+	// persisted submission credentials, delivering to the identity's own
+	// address. Nil disables the endpoint (returns 503). Production wires
+	// DefaultTestSenderFromSubmitter(s) where s is the configured
+	// *extsubmit.Submitter.
+	ExternalTestSender ExternalTestSender
+
 	// VerificationResender drives POST /api/v1/identities/{id}/verify-request
 	// (REQ-IDENT-36, REQ-IDENT-41 resend surface). It rotates the
 	// per-Identity verification token+code, enqueues the email, and

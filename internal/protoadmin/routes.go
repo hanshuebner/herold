@@ -167,6 +167,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/identities/{id}/submission", auth1(s.handleGetSubmission))
 	mux.HandleFunc("PUT /api/v1/identities/{id}/submission", auth1(s.handlePutSubmission))
 	mux.HandleFunc("DELETE /api/v1/identities/{id}/submission", auth1(s.handleDeleteSubmission))
+	// On-demand connection test: relays a self-addressed test message through
+	// the configured smart host and returns {ok, detail} (re #113).
+	mux.HandleFunc("POST /api/v1/identities/{id}/submission/test", auth1(s.handleTestSubmission))
 	mux.HandleFunc("POST /api/v1/identities/{id}/submission/oauth/start", auth1(s.handleOAuthStart))
 	// The OAuth callback URL is FIXED (no identity id in the path) so
 	// operators register one redirect URI with their OAuth provider (Google /
@@ -351,6 +354,8 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/identities/{id}/submission", auth1(s.handleGetSubmission))
 	mux.HandleFunc("PUT /api/v1/identities/{id}/submission", auth1(s.handlePutSubmission))
 	mux.HandleFunc("DELETE /api/v1/identities/{id}/submission", auth1(s.handleDeleteSubmission))
+	// On-demand connection test (re #113).
+	mux.HandleFunc("POST /api/v1/identities/{id}/submission/test", auth1(s.handleTestSubmission))
 
 	// Server-mediated OAuth start/callback for external submission
 	// (REQ-MAIL-SUBMIT-02, REQ-AUTH-EXT-SUBMIT-03).

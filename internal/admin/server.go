@@ -824,6 +824,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}
 	if prebuiltExtSubmitter != nil {
 		adminServerOpts.ExternalProbe = protoadmin.DefaultProbeFromSubmitter(prebuiltExtSubmitter)
+		adminServerOpts.ExternalTestSender = protoadmin.DefaultTestSenderFromSubmitter(prebuiltExtSubmitter)
 	}
 	adminServer := protoadmin.NewServer(
 		st,
