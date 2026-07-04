@@ -710,6 +710,74 @@ describe('IdentitySubmissionSection', () => {
     });
   });
 
+  // ── #123: saveAndTestHint copy and updated toast (re #123) ─────────────────
+
+  it('#123: saveAndTestHint paragraph is shown when the password save+test button is rendered', async () => {
+    // External panel open, unconfigured — the "Save and test connection" submit
+    // button is present and the hint must appear below the form-actions.
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    // The hint p.save-test-hint must be in the document.
+    const hint = document.querySelector('.save-test-hint');
+    expect(hint).toBeInTheDocument();
+    // Content must mention that no message is delivered.
+    expect(hint!.textContent).toContain('No message is delivered');
+  });
+
+  it('#123: saveAndTestHint paragraph is absent when the OAuth "Test connection" button replaces save+test', async () => {
+    // oauth2 + known provider (gmail) → isOAuthConfigured=true,
+    // oauthConfiguredProvider='gmail' → hint is suppressed.
+    _mockHandle.data = {
+      configured: true,
+      submit_host: 'smtp.gmail.com',
+      submit_port: 465,
+      submit_security: 'implicit_tls',
+      submit_auth_method: 'oauth2',
+      state: 'ok',
+      available_oauth_providers: ['gmail'],
+      domain_authoritative: false,
+    };
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    // The "Test connection" OAuth re-auth button is shown in place of save+test.
+    expect(screen.getByText('Test connection')).toBeInTheDocument();
+    expect(screen.queryByText('Save and test connection')).not.toBeInTheDocument();
+
+    // The hint must NOT appear.
+    const hint = document.querySelector('.save-test-hint');
+    expect(hint).not.toBeInTheDocument();
+  });
+
+  it('#123: successful save shows updated toast confirming save and connection verification', async () => {
+    const toastModule = (await import('../../lib/toast/toast.svelte')) as unknown as {
+      toast: { show: ReturnType<typeof vi.fn>; dismiss: ReturnType<typeof vi.fn>; current: null };
+    };
+    const { toast } = toastModule;
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    const hostInput = screen.getByPlaceholderText('smtp.gmail.com');
+    await fireEvent.input(hostInput, { target: { value: 'smtp.example.com' } });
+
+    const saveBtn = screen.getByRole('button', { name: 'Save and test connection' });
+    await fireEvent.click(saveBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(toast.show)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'External submission saved — connection verified.',
+        }),
+      );
+    });
+  });
+
   it('test result is cleared when the toggle is switched', async () => {
     _mockHandle.data = {
       configured: true,
