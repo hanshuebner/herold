@@ -77,6 +77,12 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.identityList.chip.verified': 'Verified',
       'settings.identityList.chip.verifying': 'Verification pending',
       'settings.identityList.chip.unverified': 'Unverified',
+      'settings.identityList.chip.setupNeeded': 'Setup needed',
+      'settings.identityList.chip.broken': 'SMTP error',
+      'settings.identityList.radioDisabled.setupNeeded':
+        'Configure external SMTP before setting this identity as default.',
+      'settings.identityList.radioDisabled.broken':
+        'Fix the external SMTP configuration before setting this identity as default.',
       'settings.identityList.verifyBtn': 'Verify',
       'settings.identityList.resendBtn': 'Resend',
       'settings.identityList.verifyTooltip': 'Enter the verification code',
@@ -108,6 +114,8 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
 const { mail } = await import('../../lib/mail/store.svelte');
 const { toast } = await import('../../lib/toast/toast.svelte');
 const { confirm } = await import('../../lib/dialog/confirm.svelte');
+const { submissionStore } = await import('../../lib/identities/identity-submission.svelte');
+const capabilitiesMod = await import('../../lib/auth/capabilities');
 
 import IdentityList from './IdentityList.svelte';
 
@@ -149,6 +157,15 @@ const PENDING: Identity = makeIdentity('3', 'pending@example.local', {
 
 const UNVERIFIED: Identity = makeIdentity('4', 'unverified@example.local', {
   verifiedAt: null,
+});
+
+// External identities (verified but with various submission states).
+const EXTERNAL_SETUP_NEEDED: Identity = makeIdentity('5', 'setup@foreign.example', {
+  verifiedAt: '2026-01-01T00:00:00Z',
+});
+
+const EXTERNAL_BROKEN: Identity = makeIdentity('6', 'broken@foreign.example', {
+  verifiedAt: '2026-01-01T00:00:00Z',
 });
 
 function seedIdentities(...ids: Identity[]): void {
@@ -668,10 +685,175 @@ describe('IdentityList', () => {
     expect(rows[rows.length - 1]?.getAttribute('data-identity-id')).toBe('4'); // unverified
   });
 
-  it('applies the disabled class to unverified rows (external-without-submission gate)', () => {
+  it('applies the disabled class to unverified rows', () => {
     seedIdentities(VERIFIED_DEFAULT, UNVERIFIED);
     const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
     const unverifiedRow = container.querySelector('[data-identity-id="4"]');
     expect(unverifiedRow?.classList.contains('disabled')).toBe(true);
+  });
+
+  it('applies the disabled class to verifying rows', () => {
+    seedIdentities(VERIFIED_DEFAULT, PENDING);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const pendingRow = container.querySelector('[data-identity-id="3"]');
+    expect(pendingRow?.classList.contains('disabled')).toBe(true);
+  });
+
+  // ── re #98, re #115: setup-needed and broken external identity rendering ──
+
+  it('does NOT apply the disabled class to a setup-needed external identity row (re #98, re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '5') {
+        return {
+          status: 'ready',
+          data: { configured: false, state: null, domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(VERIFIED_DEFAULT, EXTERNAL_SETUP_NEEDED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const row = container.querySelector('[data-identity-id="5"]');
+    expect(row?.classList.contains('disabled')).toBe(false);
+  });
+
+  it('renders a "Setup needed" chip on a setup-needed external identity row (re #98, re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '5') {
+        return {
+          status: 'ready',
+          data: { configured: false, state: null, domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(EXTERNAL_SETUP_NEEDED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const chip = container.querySelector(
+      '[data-identity-id="5"] [data-testid="identity-chip"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute('data-chip-state')).toBe('setup-needed');
+    expect(chip?.textContent?.trim()).toBe('Setup needed');
+  });
+
+  it('disables the default radio on a setup-needed external identity (re #98, re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '5') {
+        return {
+          status: 'ready',
+          data: { configured: false, state: null, domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(EXTERNAL_SETUP_NEEDED);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const radio = container.querySelector(
+      '[data-identity-id="5"] [data-testid="identity-default-radio"]',
+    ) as HTMLInputElement | null;
+    expect(radio?.disabled).toBe(true);
+  });
+
+  it('renders a "SMTP error" chip on a broken external identity row (re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '6') {
+        return {
+          status: 'ready',
+          data: { configured: true, state: 'auth-failed', domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(EXTERNAL_BROKEN);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const chip = container.querySelector(
+      '[data-identity-id="6"] [data-testid="identity-chip"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute('data-chip-state')).toBe('broken');
+    expect(chip?.textContent?.trim()).toBe('SMTP error');
+  });
+
+  it('does NOT apply the disabled class to a broken external identity row (re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '6') {
+        return {
+          status: 'ready',
+          data: { configured: true, state: 'auth-failed', domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(EXTERNAL_BROKEN);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const row = container.querySelector('[data-identity-id="6"]');
+    expect(row?.classList.contains('disabled')).toBe(false);
+    // Broken rows carry the 'broken' class for the attention/error styling.
+    expect(row?.classList.contains('broken')).toBe(true);
+  });
+
+  it('disables the default radio on a broken external identity (re #115)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    vi.mocked(submissionStore.forIdentity).mockImplementation((id: string) => {
+      if (id === '6') {
+        return {
+          status: 'ready',
+          data: { configured: true, state: 'auth-failed', domain_authoritative: false, available_oauth_providers: [] },
+          error: null,
+          load: vi.fn(async () => undefined),
+          refresh: vi.fn(async () => undefined),
+        } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+      }
+      return { status: 'idle', data: null, error: null, load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined) } as unknown as ReturnType<typeof submissionStore.forIdentity>;
+    });
+    seedIdentities(EXTERNAL_BROKEN);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const radio = container.querySelector(
+      '[data-identity-id="6"] [data-testid="identity-default-radio"]',
+    ) as HTMLInputElement | null;
+    expect(radio?.disabled).toBe(true);
+  });
+
+  it('does not apply disabled/broken class to a hosted identity with domainAuthoritative (re #107)', async () => {
+    vi.mocked(capabilitiesMod.hasExternalSubmission).mockReturnValue(true);
+    // Hosted identity: server sends domain_authoritative: true
+    vi.mocked(submissionStore.forIdentity).mockImplementation((_id: string) => ({
+      status: 'ready',
+      data: { configured: false, state: null, domain_authoritative: true, available_oauth_providers: [] },
+      error: null,
+      load: vi.fn(async () => undefined),
+      refresh: vi.fn(async () => undefined),
+    } as unknown as ReturnType<typeof submissionStore.forIdentity>));
+    seedIdentities(VERIFIED_DEFAULT);
+    const { container } = render(IdentityList, { props: { onedit: vi.fn() } });
+    const row = container.querySelector('[data-identity-id="1"]');
+    expect(row?.classList.contains('disabled')).toBe(false);
+    expect(row?.classList.contains('broken')).toBe(false);
+    // Hosted identity radio should remain enabled.
+    const radio = container.querySelector(
+      '[data-identity-id="1"] [data-testid="identity-default-radio"]',
+    ) as HTMLInputElement | null;
+    expect(radio?.disabled).toBe(false);
   });
 });

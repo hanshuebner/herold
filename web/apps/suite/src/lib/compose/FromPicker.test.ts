@@ -32,12 +32,18 @@ vi.mock('../i18n/i18n.svelte', () => ({
       'compose.from.chip.verifying': 'Verification pending',
       'compose.from.chip.unverified': 'Unverified',
       'compose.from.chip.external': 'External SMTP missing',
+      'compose.from.chip.setupNeeded': 'Setup needed',
+      'compose.from.chip.broken': 'Auth failed',
       'compose.from.disabled.unverified':
         'Verify this address before you can send from it.',
       'compose.from.disabled.verifying':
         'Waiting for verification of this address.',
       'compose.from.disabled.external':
         'Set up external SMTP submission before you can send from this address.',
+      'compose.from.disabled.setupNeeded':
+        'Set up external SMTP submission before you can send from this address.',
+      'compose.from.disabled.broken':
+        'External SMTP authentication failed for this address.',
     };
     return map[key] ?? key;
   },
@@ -223,7 +229,7 @@ describe('FromPicker', () => {
     expect(chips).toEqual([
       'Verification pending',
       'Unverified',
-      'External SMTP missing',
+      'Auth failed',
     ]);
   });
 
@@ -248,7 +254,7 @@ describe('FromPicker', () => {
       'Verify this address before you can send from it.',
     );
     expect(rows[3]!.title).toBe(
-      'Set up external SMTP submission before you can send from this address.',
+      'External SMTP authentication failed for this address.',
     );
   });
 

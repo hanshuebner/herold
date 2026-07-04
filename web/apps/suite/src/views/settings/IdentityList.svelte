@@ -45,7 +45,7 @@
   import {
     identityStatus,
     canBeDefault,
-    isExternalWithoutSubmission,
+    externalIdentityState,
     resolveDefault,
     sortIdentities,
     type SubmissionSummary,
@@ -231,26 +231,33 @@
       {#each sorted as identity (identity.id)}
         {@const status = identityStatus(identity)}
         {@const sub = submissionSummary(identity.id)}
-        {@const disabled = isExternalWithoutSubmission(identity, sub)}
+        {@const extState = externalIdentityState(identity, sub)}
+        {@const rowDimmed = extState === 'verifying' || extState === 'unverified'}
         {@const isDefault = defaultId?.id === identity.id}
         {@const avatarUrl = identityAvatarUrl(identity)}
         <li
           class="row"
-          class:disabled
+          class:disabled={rowDimmed}
+          class:broken={extState === 'broken'}
           class:default={isDefault}
           data-testid="identity-row"
           data-identity-id={identity.id}
           data-identity-status={status}
+          data-external-state={extState}
         >
-          <label class="radio-col" title={canBeDefault(identity)
+          <label class="radio-col" title={canBeDefault(identity, sub)
             ? ''
-            : t('settings.identityList.defaultRadioDisabledTitle')}>
+            : extState === 'setup-needed'
+              ? t('settings.identityList.radioDisabled.setupNeeded')
+              : extState === 'broken'
+                ? t('settings.identityList.radioDisabled.broken')
+                : t('settings.identityList.defaultRadioDisabledTitle')}>
             <input
               type="radio"
               name="default-identity"
               value={identity.id}
               checked={isDefault}
-              disabled={!canBeDefault(identity)}
+              disabled={!canBeDefault(identity, sub)}
               aria-label={t('settings.identityList.defaultRadioAria', {
                 email: identity.email,
               })}
@@ -293,7 +300,7 @@
 
             <div class="status">
               {#if status === 'verifying'}
-                <span class="status-label status-verifying" data-testid="identity-chip">
+                <span class="status-label status-verifying" data-testid="identity-chip" data-chip-state="verifying">
                   <span class="status-dot" aria-hidden="true"></span>
                   {t('settings.identityList.chip.verifying')}
                 </span>
@@ -307,7 +314,7 @@
                   {t('settings.identityList.resendBtn')}
                 </Button>
               {:else if status === 'unverified'}
-                <span class="status-label status-unverified" data-testid="identity-chip">
+                <span class="status-label status-unverified" data-testid="identity-chip" data-chip-state="unverified">
                   <span class="status-dot" aria-hidden="true"></span>
                   {t('settings.identityList.chip.unverified')}
                 </span>
@@ -320,9 +327,25 @@
                 >
                   {t('settings.identityList.verifyBtn')}
                 </Button>
+              {:else if extState === 'setup-needed'}
+                <!-- Verified external identity with no SMTP configured: row
+                     is fully interactive; only the default radio is disabled.
+                     Shows "Setup needed" chip so the user knows action is
+                     required (REQ-SET-IDENT-08, re #98, re #115). -->
+                <span class="status-label status-setup-needed" data-testid="identity-chip" data-chip-state="setup-needed">
+                  <span class="status-dot" aria-hidden="true"></span>
+                  {t('settings.identityList.chip.setupNeeded')}
+                </span>
+              {:else if extState === 'broken'}
+                <!-- Verified external with configured but broken submission:
+                     distinct attention/error state (re #115). -->
+                <span class="status-label status-broken" data-testid="identity-chip" data-chip-state="broken">
+                  <span class="status-dot" aria-hidden="true"></span>
+                  {t('settings.identityList.chip.broken')}
+                </span>
               {:else}
-                <!-- REQ-SET-IDENT-02: verified rows have no status label
-                     (silent normal) — render an empty status cell so
+                <!-- REQ-SET-IDENT-02: verified rows with working submission
+                     have no status label — render an empty status cell so
                      the layout grid still aligns. -->
                 <span class="chip-spacer" aria-hidden="true"></span>
               {/if}
@@ -430,6 +453,13 @@
 
   .row.disabled .card-body {
     opacity: 0.55;
+  }
+
+  /* Broken external identity: attention/error border without full dimming
+     so the row remains interactive and the user can click to fix it. */
+  .row.broken .card-body {
+    border-color: color-mix(in srgb, var(--support-error) 45%, transparent);
+    background: color-mix(in srgb, var(--support-error) 4%, var(--layer-02));
   }
 
   .radio-col {
@@ -591,6 +621,24 @@
   }
 
   .status-unverified .status-dot {
+    background: var(--support-error);
+  }
+
+  /* Setup-needed: warning colour (action required, not broken). */
+  .status-setup-needed {
+    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
+  }
+
+  .status-setup-needed .status-dot {
+    background: var(--support-warning);
+  }
+
+  /* Broken: error colour (attention required, something failed). */
+  .status-broken {
+    color: var(--support-error);
+  }
+
+  .status-broken .status-dot {
     background: var(--support-error);
   }
 
