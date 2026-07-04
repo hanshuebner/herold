@@ -109,16 +109,23 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 	// default cannot persist a submission row. Returning 200
 	// {configured:false} (instead of a 404) lets the SPA render the
 	// per-row badge without polling forever. Domain authoritativeness
-	// is left false because there is no email to inspect.
+	// is determined from the caller's own canonical email: the synthetic
+	// default identity always uses the principal's own address, so the
+	// domain check must use caller.CanonicalEmail (re #107).
 	if isSyntheticDefault(identityID) {
 		if !callerOK {
 			writeProblem(w, r, http.StatusUnauthorized, "unauthenticated", "session required", "")
 			return
 		}
-		_ = caller
+		authoritative, err := s.isDomainAuthoritative(r.Context(), emailDomainOf(caller.CanonicalEmail))
+		if err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, submissionGetResponse{
 			Configured:              false,
 			AvailableOAuthProviders: providers,
+			DomainAuthoritative:     authoritative,
 		})
 		return
 	}

@@ -280,6 +280,50 @@ func TestGetSubmission_SyntheticDefault_NotFound_RegressionLoopFix(t *testing.T)
 	}
 }
 
+// TestGetSubmission_SyntheticDefault_DomainAuthoritative verifies that
+// GET /api/v1/identities/default/submission returns domain_authoritative:true
+// when the caller's email domain is a locally authoritative domain (re #107).
+//
+// Before the fix, the synthetic-default path omitted DomainAuthoritative in the
+// response struct and Go's zero-value produced false, which caused
+// isExternalWithoutSubmission in the Suite to return true and disabled Send after
+// the Settings page visited the Account section.
+func TestGetSubmission_SyntheticDefault_DomainAuthoritative(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			// Register "hostedlocal.example" as authoritative before bootstrap.
+			if err := be.fs.Meta().InsertDomain(context.Background(), store.Domain{
+				Name:    "hostedlocal.example",
+				IsLocal: true,
+			}); err != nil {
+				t.Fatalf("InsertDomain: %v", err)
+			}
+
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{})
+			_, adminKey := sh.bootstrap("admin@hostedlocal.example")
+
+			res, buf := sh.doRequest("GET", "/api/v1/identities/default/submission", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("GET default submission: status %d: %s", res.StatusCode, buf)
+			}
+			var got struct {
+				Configured          bool `json:"configured"`
+				DomainAuthoritative bool `json:"domain_authoritative"`
+			}
+			if err := json.Unmarshal(buf, &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Configured {
+				t.Errorf("configured: got true; want false (synthetic default cannot persist a row)")
+			}
+			if !got.DomainAuthoritative {
+				t.Errorf("domain_authoritative: got false; want true (caller's domain is locally authoritative)")
+			}
+		})
+	}
+}
+
 // TestPutSubmission_SyntheticDefault_Rejected verifies that PUT
 // against the synthetic default returns 422 with a clear reason.
 // The schema FKs jmap_identities; the default has no row there, so
