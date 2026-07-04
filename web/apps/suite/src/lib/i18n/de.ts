@@ -729,10 +729,10 @@ export const de = {
   'settings.diagnostics.devLog.copiedBtn': 'Kopiert',
   'settings.diagnostics.devLog.clearBtn': 'Leeren',
   'settings.diagnostics.devLog.empty': 'Noch keine Einträge.',
-  // Serverseitiges Protokoll, nur Administratoren (re #83).
-  'settings.diagnostics.logCopy.heading': 'Serverprotokoll (Server, Administrator)',
+  // Eigenes serverseitiges Protokoll (re #83): verfügbar für jeden angemeldeten Nutzer.
+  'settings.diagnostics.logCopy.heading': 'Mein Serverprotokoll',
   'settings.diagnostics.logCopy.hint':
-    'Liest die neuesten anonymen Protokolleinträge aus dem serverseitigen Ringspeicher (nur Administratoren).',
+    'Liest die eigenen Einträge aus dem serverseitigen Protokollpuffer.',
   'settings.diagnostics.logCopy.fetchBtn': 'Protokoll laden',
   'settings.diagnostics.logCopy.loading': 'Laden...',
   'settings.diagnostics.logCopy.copyBtn': 'Kopieren',

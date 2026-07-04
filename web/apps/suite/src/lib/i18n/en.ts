@@ -720,10 +720,10 @@ export const en = {
   'settings.diagnostics.devLog.copiedBtn': 'Copied',
   'settings.diagnostics.devLog.clearBtn': 'Clear',
   'settings.diagnostics.devLog.empty': 'No entries yet.',
-  // Admin-only server-side log readback (issue #83).
-  'settings.diagnostics.logCopy.heading': 'Server log (server, admin)',
+  // Self-service server-side log readback (issue #83): available to every signed-in user.
+  'settings.diagnostics.logCopy.heading': 'My server log',
   'settings.diagnostics.logCopy.hint':
-    'Reads recent anonymous client-log entries from the server-side ring buffer (admin only).',
+    'Reads your own recent entries from the server-side log buffer.',
   'settings.diagnostics.logCopy.fetchBtn': 'Load log',
   'settings.diagnostics.logCopy.loading': 'Loading...',
   'settings.diagnostics.logCopy.copyBtn': 'Copy',

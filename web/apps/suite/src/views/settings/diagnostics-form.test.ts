@@ -20,15 +20,14 @@
  *  12.  Clear button calls clearRing and empties the view
  *  13.  Empty state shown when ring is empty
  *
- *   Admin server log section
- *  14.  Not rendered for non-admin users
- *  15.  Rendered for admin role users
- *  16.  Rendered for superadmin role users
- *  17.  Load log button calls GET /api/v1/admin/clientlog
- *  18.  Rows rendered as plain text in textarea, oldest first
- *  19.  Empty state shown when no rows returned
- *  20.  Error state shown when fetch fails
- *  21.  Copy button rendered after log is loaded
+ *   Self-service server log section
+ *  14.  Rendered for non-admin users (no role gate)
+ *  15.  Load log button calls GET /api/v1/me/clientlog
+ *  16.  Never calls the admin endpoint
+ *  17.  Rows rendered as plain text in textarea, oldest first
+ *  18.  Empty state shown when no rows returned
+ *  19.  Error state shown when fetch fails
+ *  20.  Copy button rendered after log is loaded
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -137,8 +136,8 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.diagnostics.devLog.copiedBtn': 'Copied',
       'settings.diagnostics.devLog.clearBtn': 'Clear',
       'settings.diagnostics.devLog.empty': 'No entries yet.',
-      'settings.diagnostics.logCopy.heading': 'Server log (server, admin)',
-      'settings.diagnostics.logCopy.hint': 'Reads recent entries from the server.',
+      'settings.diagnostics.logCopy.heading': 'My server log',
+      'settings.diagnostics.logCopy.hint': 'Reads your own recent entries from the server-side log buffer.',
       'settings.diagnostics.logCopy.fetchBtn': 'Load log',
       'settings.diagnostics.logCopy.loading': 'Loading...',
       'settings.diagnostics.logCopy.copyBtn': 'Copy',
@@ -408,35 +407,23 @@ describe('DiagnosticsForm — device-local debug log section', () => {
   });
 });
 
-// ── Admin server log section ────────────────────────────────────────────────
+// ── Self-service server log section ────────────────────────────────────────
+//
+// The server log section is available to every signed-in user with no role
+// gate.  "Load log" fetches GET /api/v1/me/clientlog?limit=100 and renders
+// the caller's own rows as plain text, oldest first.
 
-describe('DiagnosticsForm — admin server log section', () => {
-  it('does not render the server log section for non-admin users', async () => {
+describe('DiagnosticsForm — self-service server log section', () => {
+  it('renders the server log section for non-admin users', async () => {
     mockAuth.roles = [];
-    const { queryByText } = render(DiagnosticsForm);
-    await waitFor(() => {
-      expect(queryByText('Server log (server, admin)')).not.toBeInTheDocument();
-    });
-  });
-
-  it('renders the server log section when user has admin role', async () => {
-    mockAuth.roles = ['admin'];
     const { getByText } = render(DiagnosticsForm);
     await waitFor(() => {
-      expect(getByText('Server log (server, admin)')).toBeInTheDocument();
+      expect(getByText('My server log')).toBeInTheDocument();
     });
   });
 
-  it('renders the server log section when user has superadmin role', async () => {
-    mockAuth.roles = ['superadmin'];
-    const { getByText } = render(DiagnosticsForm);
-    await waitFor(() => {
-      expect(getByText('Server log (server, admin)')).toBeInTheDocument();
-    });
-  });
-
-  it('calls GET /api/v1/admin/clientlog when Load log is clicked', async () => {
-    mockAuth.roles = ['admin'];
+  it('calls GET /api/v1/me/clientlog when Load log is clicked', async () => {
+    mockAuth.roles = [];
     mockGet.mockResolvedValue({ rows: [], next_cursor: '' });
     const { getByRole } = render(DiagnosticsForm);
 
@@ -444,14 +431,26 @@ describe('DiagnosticsForm — admin server log section', () => {
     await fireEvent.click(btn);
 
     await waitFor(() => {
-      expect(mockGet).toHaveBeenCalledWith(
+      expect(mockGet).toHaveBeenCalledWith('/api/v1/me/clientlog?limit=100');
+    });
+  });
+
+  it('never calls the admin clientlog endpoint', async () => {
+    mockAuth.roles = [];
+    mockGet.mockResolvedValue({ rows: [], next_cursor: '' });
+    const { getByRole } = render(DiagnosticsForm);
+
+    const btn = await waitFor(() => getByRole('button', { name: /Load log/ }));
+    await fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(mockGet).not.toHaveBeenCalledWith(
         expect.stringContaining('/api/v1/admin/clientlog'),
       );
     });
   });
 
   it('shows the empty state when no rows are returned', async () => {
-    mockAuth.roles = ['admin'];
     mockGet.mockResolvedValue({ rows: [], next_cursor: '' });
     const { getByRole, findByText } = render(DiagnosticsForm);
 
@@ -463,13 +462,12 @@ describe('DiagnosticsForm — admin server log section', () => {
   });
 
   it('renders log rows as plain text in a textarea, oldest first', async () => {
-    mockAuth.roles = ['admin'];
     // API returns newest first (ring buffer order); component reverses to show oldest first.
     mockGet.mockResolvedValue({
       rows: [
         {
           id: 2,
-          slice: 'public',
+          slice: 'auth',
           server_ts: '2026-07-04T12:00:01.000Z',
           client_ts: '2026-07-04T12:00:01.000Z',
           app: 'suite',
@@ -482,7 +480,7 @@ describe('DiagnosticsForm — admin server log section', () => {
         },
         {
           id: 1,
-          slice: 'public',
+          slice: 'auth',
           server_ts: '2026-07-04T12:00:00.000Z',
           client_ts: '2026-07-04T12:00:00.000Z',
           app: 'suite',
@@ -502,7 +500,7 @@ describe('DiagnosticsForm — admin server log section', () => {
     await fireEvent.click(getByRole('button', { name: /Load log/ }));
 
     const textarea = await waitFor(() =>
-      getByRole('textbox', { name: /Server log/ }),
+      getByRole('textbox', { name: /My server log/ }),
     ) as HTMLTextAreaElement;
 
     const lines = textarea.value.split('\n');
@@ -513,7 +511,6 @@ describe('DiagnosticsForm — admin server log section', () => {
   });
 
   it('shows error text when the fetch fails', async () => {
-    mockAuth.roles = ['admin'];
     const { ApiError } = await import('../../lib/api/client');
     mockGet.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
@@ -527,12 +524,11 @@ describe('DiagnosticsForm — admin server log section', () => {
   });
 
   it('renders the Copy button after log is loaded', async () => {
-    mockAuth.roles = ['admin'];
     mockGet.mockResolvedValue({
       rows: [
         {
           id: 1,
-          slice: 'public',
+          slice: 'auth',
           server_ts: '2026-07-04T12:00:00.000Z',
           client_ts: '2026-07-04T12:00:00.000Z',
           app: 'suite',
