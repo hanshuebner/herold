@@ -1,8 +1,6 @@
 /**
  * Herold suite service worker — REQ-PUSH-70..73, REQ-MOB-74.
  *
- * Build: __SW_BUILD__
- *
  * Responsibilities:
  *   - Receive Web Push notifications and display them via the Notifications API.
  *   - Handle notificationclick: dispatch action buttons or open the app.
@@ -22,6 +20,64 @@
  */
 
 'use strict';
+
+// ── SW observability state ──────────────────────────────────────────────────
+//
+// swLog() fires-and-forgets a narrow event to /api/v1/clientlog/public so
+// service-worker events appear in the server-side ring buffer.  Conforms to
+// the narrow-event wire schema (REQ-OPS-207): no session_id, no breadcrumbs.
+// Payload content is JSON-encoded and appended to the msg field (the narrow
+// schema has no separate payload field, and the server rejects unknown fields
+// with DisallowUnknownFields).
+//
+// _swPageId is a stable "page" identifier for the lifetime of this SW
+// instance (reset on SW restart / update).  _swSeq is a monotonic counter.
+
+const _swPageId = (() => {
+  try { return crypto.randomUUID(); } catch { return 'sw-' + Date.now(); }
+})();
+let _swSeq = 0;
+
+/**
+ * Fire-and-forget log helper for the service worker.
+ *
+ * Encodes msg + payload into a narrow NarrowEvent and POSTs it to the
+ * anonymous clientlog endpoint with keepalive:true so the request survives
+ * the notificationclick handler teardown.  Never throws or rejects.
+ *
+ * Prefix SW events with "sw." (e.g. "sw.notificationclick") so they are
+ * greppable in the admin clientlog ring buffer.
+ */
+function swLog(msg, payload) {
+  let full = msg;
+  if (payload) {
+    try {
+      full = msg + ' ' + JSON.stringify(payload);
+    } catch { /* ignore serialisation errors */ }
+  }
+  if (full.length > 1024) full = full.slice(0, 1021) + '...';
+  const event = {
+    v: 1,
+    kind: 'log',
+    level: 'info',
+    msg: full,
+    client_ts: new Date().toISOString(),
+    seq: _swSeq++,
+    page_id: _swPageId,
+    app: 'suite',
+    build_sha: '',
+    route: '/sw',
+    ua: '',
+  };
+  try {
+    fetch('/api/v1/clientlog/public', {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [event] }),
+    }).catch(() => { /* fire-and-forget: swallow network errors */ });
+  } catch { /* never throw */ }
+}
 
 // ── Install / activate ─────────────────────────────────────────────────────
 
@@ -63,6 +119,8 @@ self.addEventListener('push', (event) => {
     // Non-JSON push: ignore.
     return;
   }
+
+  swLog('sw.push', { kind: payload.kind, hasThreadId: payload.threadId !== undefined });
 
   const options = buildNotificationOptions(payload);
   if (!options) return;
@@ -190,18 +248,13 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data ?? {};
   const action = event.action;
 
+  swLog('sw.notificationclick', {
+    action,
+    kind: data.kind,
+    hasThreadId: data.threadId !== undefined,
+  });
+
   // Resolve the navigation path SYNCHRONOUSLY before the first await.
-  //
-  // clients.openWindow() is gated on the transient user activation granted by
-  // the notificationclick event.  On macOS (Chrome and Safari), that activation
-  // can expire after the first microtask yield even when event.waitUntil() is
-  // in use, so any intermediate async function boundary before the openWindow()
-  // call can silently prevent the window from opening.
-  //
-  // The fix: determine the path here (synchronous), then pass it directly to
-  // event.waitUntil(openApp(path)) so that clients.openWindow() executes as
-  // the very first async step in the waitUntil promise chain.
-  //
   // Pure JMAP background actions (archive, mark_read) do not open a window and
   // are dispatched through a separate waitUntil path that does not call openApp.
   const path = resolveNotificationPath(data, action);
@@ -390,32 +443,45 @@ async function jmapEmailSetSeen(emailId) {
 /**
  * Open the suite at the given path.
  *
- * clients.openWindow() is called first.  On platforms where it succeeds (the
- * common case), the browser opens a new tab/window and brings it to the
- * foreground.  On macOS, some browser versions return null from openWindow()
- * when the browser is not the active application (macOS focus-stealing
- * prevention blocks the window from coming to the front, and the browser
- * silently declines to open it).  In that case we fall back to focusing the
- * nearest existing window client and posting a navigate message so the user
- * can find the message when they switch to the browser.
+ * Uses the "Gmail pattern": focus an existing window client first and post a
+ * navigate message so the already-open tab drives the route.  This sidesteps
+ * clients.openWindow()'s two failure modes on macOS Chrome (issue #83):
  *
- * IMPORTANT: this function must be called as the first async step within
- * event.waitUntil() — with no intermediate await before the call — so that
- * clients.openWindow() executes while Chrome's transient user activation is
- * still in effect (see the notificationclick handler comment above).
+ *   1. Hash-fragment blindness: openWindow('/#/mail/thread/tX') opens or
+ *      focuses a window but ignores the new hash when a tab is already open
+ *      at the same origin, so no route change fires.
+ *
+ *   2. InvalidAccessError: openWindow throws when transient activation has
+ *      expired (which can happen after any microtask yield on macOS).
+ *
+ * Focus-existing-first avoids both: the postMessage path reliably drives the
+ * router in the already-open tab (App.svelte's SW message listener calls
+ * handleSwNavigateMessage → router.navigate), and the openWindow branch is
+ * only reached when no window exists at all.
+ *
+ * The openWindow call is wrapped in try/catch so an InvalidAccessError in
+ * the no-existing-window case is swallowed rather than rejecting the
+ * event.waitUntil chain.
  */
 async function openApp(path) {
-  const win = await self.clients.openWindow(path);
-  if (win !== null) return;
+  const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  if (wins.length > 0) {
+    swLog('sw.openApp.focus', { windowCount: wins.length, path });
+    await wins[0].focus();
+    wins[0].postMessage({ type: 'navigate', path });
+    return;
+  }
 
-  // Fallback: focus an existing window and navigate it to the target path.
-  const clients = await self.clients.matchAll({ type: 'window' });
-  for (const client of clients) {
-    if ('focus' in client) {
-      await client.focus();
-      client.postMessage({ type: 'navigate', path });
-      return;
-    }
+  // No existing window: open a new one.
+  swLog('sw.openApp.openWindow', { path });
+  try {
+    await self.clients.openWindow(path);
+    swLog('sw.openApp.openWindow.opened', { path });
+  } catch (err) {
+    swLog('sw.openApp.openWindow.threw', {
+      name: (err && err.name) ? err.name : 'unknown',
+      path,
+    });
   }
 }
 

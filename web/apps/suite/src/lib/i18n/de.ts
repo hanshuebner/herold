@@ -718,6 +718,16 @@ export const de = {
   'settings.diagnostics.heading': 'Diagnose',
   'settings.diagnostics.telemetry.label':
     'Anonyme Diagnoseprotokolle an meinen Mail-Server-Betreiber senden',
+  // Diagnoseprotokoll-Kopieranzeige (nur Administratoren, re #83).
+  'settings.diagnostics.logCopy.heading': 'Aktuelle Service-Worker-Protokolle',
+  'settings.diagnostics.logCopy.hint':
+    'Zeigt die neuesten anonymen Diagnoseeinträge (Service-Worker-Ereignisse, nur Administratoren).',
+  'settings.diagnostics.logCopy.fetchBtn': 'Protokoll laden',
+  'settings.diagnostics.logCopy.loading': 'Laden...',
+  'settings.diagnostics.logCopy.copyBtn': 'Kopieren',
+  'settings.diagnostics.logCopy.copiedBtn': 'Kopiert',
+  'settings.diagnostics.logCopy.empty': 'Keine Protokolleinträge gefunden.',
+  'settings.diagnostics.logCopy.error': 'Protokoll konnte nicht geladen werden.',
 
   // ── Datenschutzeinstellungen ──────────────────────────────────────────
   'settings.privacy.avatarLookup.label':

@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Resolve the path to sw.js relative to this test file.
 // test: src/lib/push/  →  ../../../public/sw.js
@@ -61,10 +61,29 @@ const { resolveNotificationPath, buildNotificationOptions } = factory(selfMock) 
   ) => NotificationOptions | null;
 };
 
+// ── fetch stub ───────────────────────────────────────────────────────────────
+//
+// sw.js calls fetch() from swLog (fire-and-forget to /api/v1/clientlog/public).
+// Stub the global so tests do not make real network requests and so we can
+// assert the call site in swLog-specific tests.
+
+let fetchStub: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  fetchStub = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal('fetch', fetchStub);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 // ── openApp fixture ──────────────────────────────────────────────────────────
 //
-// openApp calls self.clients.openWindow and self.clients.matchAll, so each
-// test creates a fresh SW evaluation with the specific client mock it needs.
+// openApp calls self.clients.matchAll first (new focus-existing-first
+// behaviour — issue #83 fix).  Only when matchAll returns no window clients
+// does it fall back to self.clients.openWindow.  Each test creates a fresh
+// SW evaluation with the specific client mock it needs.
 
 type ClientMock = {
   focus: () => Promise<void>;
@@ -72,13 +91,14 @@ type ClientMock = {
 };
 
 function makeOpenApp(clientsMock: {
-  openWindow: (path: string) => Promise<ClientMock | null>;
-  matchAll?: () => Promise<ClientMock[]>;
+  matchAll?: (opts?: unknown) => Promise<ClientMock[]>;
+  openWindow?: (path: string) => Promise<unknown>;
 }): (path: string) => Promise<void> {
   const mock = {
     addEventListener: () => {},
     clients: {
       matchAll: async (): Promise<ClientMock[]> => [],
+      openWindow: async (): Promise<null> => null,
       ...clientsMock,
     },
     registration: { scope: 'http://localhost/' },
@@ -467,59 +487,16 @@ describe('buildNotificationOptions — calendar-invite (server payload format)',
 
 // ── openApp ──────────────────────────────────────────────────────────────────
 //
-// openApp is the definitive test the maintainer asked for (issue #83 comment
-// 2026-06-29): verify that clients.openWindow() is called first and that the
-// focus+navigate fallback fires only when openWindow() returns null (macOS
-// focus-stealing prevention).
+// openApp uses the "Gmail pattern" (focus-existing-first) after the issue #83
+// diagnosis: clients.matchAll is called first; if a window client exists it is
+// focused and a navigate message is posted so the already-open tab drives the
+// route.  clients.openWindow is only called when NO window client exists, and
+// only inside a try/catch so an InvalidAccessError is swallowed.
+//
+// These tests are the regression gate the prior five rounds lacked.
 
-describe('openApp — openWindow succeeds', () => {
-  it('calls clients.openWindow with the given path', async () => {
-    const mockWindow = { url: 'http://localhost/', postMessage: vi.fn() };
-    const openWindow = vi.fn().mockResolvedValue(mockWindow);
-    const matchAll = vi.fn().mockResolvedValue([]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
-
-    await openApp('/#/mail/thread/T1');
-
-    expect(openWindow).toHaveBeenCalledWith('/#/mail/thread/T1');
-  });
-
-  it('does not call matchAll when openWindow returns a window', async () => {
-    const mockWindow = { url: 'http://localhost/' };
-    const openWindow = vi.fn().mockResolvedValue(mockWindow);
-    const matchAll = vi.fn().mockResolvedValue([]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
-
-    await openApp('/#/mail/thread/T1');
-
-    expect(matchAll).not.toHaveBeenCalled();
-  });
-
-  it('does not call focus or postMessage when openWindow returns a window', async () => {
-    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
-    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
-    const matchAll = vi.fn().mockResolvedValue([mockClient]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
-
-    await openApp('/#/mail/thread/T1');
-
-    expect(mockClient.focus).not.toHaveBeenCalled();
-    expect(mockClient.postMessage).not.toHaveBeenCalled();
-  });
-});
-
-describe('openApp — openWindow returns null (macOS fallback)', () => {
-  it('calls matchAll to find existing window clients', async () => {
-    const openWindow = vi.fn().mockResolvedValue(null);
-    const matchAll = vi.fn().mockResolvedValue([]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
-
-    await openApp('/#/mail/thread/T1');
-
-    expect(matchAll).toHaveBeenCalled();
-  });
-
-  it('calls focus and postMessage on the first window client', async () => {
+describe('openApp — existing window (focus-existing-first, Gmail pattern)', () => {
+  it('focuses first existing window and posts a navigate message', async () => {
     const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
     const openWindow = vi.fn().mockResolvedValue(null);
     const matchAll = vi.fn().mockResolvedValue([mockClient]);
@@ -534,11 +511,21 @@ describe('openApp — openWindow returns null (macOS fallback)', () => {
     });
   });
 
-  it('posts the exact path string to postMessage', async () => {
+  it('does NOT call openWindow when a window client exists', async () => {
     const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
     const openWindow = vi.fn().mockResolvedValue(null);
     const matchAll = vi.fn().mockResolvedValue([mockClient]);
     const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(openWindow).not.toHaveBeenCalled();
+  });
+
+  it('posts the exact path string to postMessage', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
 
     await openApp('/#/mail?openChat=conv-abc');
 
@@ -548,20 +535,11 @@ describe('openApp — openWindow returns null (macOS fallback)', () => {
     });
   });
 
-  it('completes without error when no window clients exist', async () => {
-    const openWindow = vi.fn().mockResolvedValue(null);
-    const matchAll = vi.fn().mockResolvedValue([]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
-
-    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
-  });
-
-  it('uses only the first focusable client and does not call others', async () => {
+  it('focuses only the first client and does not interact with others', async () => {
     const client1 = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
     const client2 = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
-    const openWindow = vi.fn().mockResolvedValue(null);
     const matchAll = vi.fn().mockResolvedValue([client1, client2]);
-    const openApp = makeOpenApp({ openWindow, matchAll });
+    const openApp = makeOpenApp({ matchAll });
 
     await openApp('/#/mail/thread/T1');
 
@@ -569,6 +547,149 @@ describe('openApp — openWindow returns null (macOS fallback)', () => {
     expect(client1.postMessage).toHaveBeenCalled();
     expect(client2.focus).not.toHaveBeenCalled();
     expect(client2.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('calls matchAll before considering openWindow', async () => {
+    // matchAll is always the first clients call — never skipped.
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const openWindow = vi.fn().mockResolvedValue(null);
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(matchAll).toHaveBeenCalled();
+  });
+});
+
+describe('openApp — no window, openWindow succeeds', () => {
+  it('calls openWindow when matchAll returns no clients', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(openWindow).toHaveBeenCalledWith('/#/mail/thread/T1');
+  });
+
+  it('completes without error when no window clients exist and openWindow succeeds', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+
+  it('does not call focus or postMessage when openWindow path is taken', async () => {
+    // With no existing window, openWindow fires; no focus/navigate message needed.
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    // openWindow was called; no client to focus.
+    expect(openWindow).toHaveBeenCalled();
+  });
+});
+
+describe('openApp — no window, openWindow throws InvalidAccessError', () => {
+  it('swallows the throw and does not reject', async () => {
+    // This is the regression test: openWindow was previously called
+    // unconditionally, and an InvalidAccessError (absent transient activation)
+    // rejected the event.waitUntil chain, silently aborting the notification
+    // open — the primary failure mode on macOS Chrome (issue #83).
+    const err = new Error('Not allowed to open a window');
+    err.name = 'InvalidAccessError';
+    const openWindow = vi.fn().mockRejectedValue(err);
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+
+  it('does not propagate a generic Error thrown by openWindow', async () => {
+    const openWindow = vi.fn().mockRejectedValue(new Error('some other failure'));
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
+  });
+});
+
+// ── swLog observability ───────────────────────────────────────────────────────
+//
+// swLog is the fire-and-forget telemetry path that posts a narrow NarrowEvent
+// to /api/v1/clientlog/public on every notification click (re #83).  The
+// fetch stub installed in beforeEach() intercepts the request so no real
+// network call is made.
+
+describe('swLog — posts to /api/v1/clientlog/public', () => {
+  it('posts to the public clientlog endpoint when openApp focuses an existing window', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(fetchStub).toHaveBeenCalledWith(
+      '/api/v1/clientlog/public',
+      expect.objectContaining({
+        method: 'POST',
+        keepalive: true,
+      }),
+    );
+  });
+
+  it('posts to the public clientlog endpoint when openWindow is taken', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    expect(fetchStub).toHaveBeenCalledWith(
+      '/api/v1/clientlog/public',
+      expect.objectContaining({ method: 'POST', keepalive: true }),
+    );
+  });
+
+  it('posts a valid narrow NarrowEvent body', async () => {
+    const mockClient = { focus: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn() };
+    const matchAll = vi.fn().mockResolvedValue([mockClient]);
+    const openApp = makeOpenApp({ matchAll });
+
+    await openApp('/#/mail/thread/T1');
+
+    const lastCall = fetchStub.mock.calls.at(-1)!;
+    const body = JSON.parse(lastCall[1].body as string) as {
+      events: Record<string, unknown>[];
+    };
+    const ev = body.events[0]!;
+
+    expect(ev['v']).toBe(1);
+    expect(ev['kind']).toBe('log');
+    expect(ev['level']).toBe('info');
+    expect(typeof ev['msg']).toBe('string');
+    expect(typeof ev['client_ts']).toBe('string');
+    expect(typeof ev['seq']).toBe('number');
+    expect(typeof ev['page_id']).toBe('string');
+    expect(ev['app']).toBe('suite');
+    expect(ev['route']).toBe('/sw');
+    // Narrow schema must NOT contain breadcrumbs, session_id, or request_id.
+    expect(ev).not.toHaveProperty('breadcrumbs');
+    expect(ev).not.toHaveProperty('session_id');
+    expect(ev).not.toHaveProperty('request_id');
+  });
+
+  it('does not reject even if the fetch call itself throws', async () => {
+    fetchStub.mockRejectedValue(new TypeError('Failed to fetch'));
+    const matchAll = vi.fn().mockResolvedValue([]);
+    const openWindow = vi.fn().mockResolvedValue({ url: 'http://localhost/' });
+    const openApp = makeOpenApp({ openWindow, matchAll });
+
+    await expect(openApp('/#/mail/thread/T1')).resolves.toBeUndefined();
   });
 });
 

@@ -709,6 +709,16 @@ export const en = {
   'settings.diagnostics.heading': 'Diagnostics',
   'settings.diagnostics.telemetry.label':
     'Send anonymous diagnostic logs to my mail-server operator',
+  // Admin-only diagnostic log copy affordance (issue #83).
+  'settings.diagnostics.logCopy.heading': 'Recent service-worker log',
+  'settings.diagnostics.logCopy.hint':
+    'Fetches the most recent anonymous client-log entries (service-worker events, admin only).',
+  'settings.diagnostics.logCopy.fetchBtn': 'Load log',
+  'settings.diagnostics.logCopy.loading': 'Loading...',
+  'settings.diagnostics.logCopy.copyBtn': 'Copy',
+  'settings.diagnostics.logCopy.copiedBtn': 'Copied',
+  'settings.diagnostics.logCopy.empty': 'No log entries found.',
+  'settings.diagnostics.logCopy.error': 'Could not load log.',
 
   // ── Privacy settings ─────────────────────────────────────────────────
   'settings.privacy.avatarLookup.label':

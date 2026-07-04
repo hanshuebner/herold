@@ -68,6 +68,21 @@ export interface Clientlog {
    */
   logFatal(err: unknown, opts?: { synchronous?: boolean }): Promise<void>;
   /**
+   * Emit a debug-level log event (kind='log', level='debug').
+   * Gated by telemetryEnabled(); no-ops when telemetry is disabled.
+   */
+  logDebug(msg: string, payload?: Record<string, unknown>): void;
+  /**
+   * Emit an info-level log event (kind='log', level='info').
+   * Gated by telemetryEnabled(); no-ops when telemetry is disabled.
+   */
+  logInfo(msg: string, payload?: Record<string, unknown>): void;
+  /**
+   * Emit a warn-level log event (kind='log', level='warn').
+   * Gated by telemetryEnabled(); no-ops when telemetry is disabled.
+   */
+  logWarn(msg: string, payload?: Record<string, unknown>): void;
+  /**
    * Drains the queue and removes all installed handlers. Called on
    * deliberate SPA teardown (e.g. test cleanup).
    */
@@ -80,6 +95,9 @@ export interface Clientlog {
  */
 const NOOP_CLIENTLOG: Clientlog = {
   logFatal: () => Promise.resolve(),
+  logDebug: () => undefined,
+  logInfo: () => undefined,
+  logWarn: () => undefined,
   shutdown: () => undefined,
 };
 
@@ -281,6 +299,17 @@ export function install(cfg: ClientlogConfig): Clientlog {
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onBeforeUnload);
 
+    // Helper: encode payload as a JSON suffix appended to msg, truncated to
+    // the authenticated endpoint's msg limit (4096 chars).
+    function fmtMsg(msg: string, payload?: Record<string, unknown>): string {
+      if (!payload || Object.keys(payload).length === 0) return msg.slice(0, 4096);
+      try {
+        return (msg + ' ' + JSON.stringify(payload)).slice(0, 4096);
+      } catch {
+        return msg.slice(0, 4096);
+      }
+    }
+
     // 13. Public interface.
     return {
       async logFatal(err: unknown, opts?: { synchronous?: boolean }): Promise<void> {
@@ -315,6 +344,42 @@ export function install(cfg: ClientlogConfig): Clientlog {
         } catch {
           // logFatal must never throw
         }
+      },
+
+      logDebug(msg: string, payload?: Record<string, unknown>): void {
+        try {
+          emit({
+            kind: 'log',
+            level: 'debug',
+            msg: fmtMsg(msg, payload),
+            client_ts: new Date().toISOString(),
+            seq: nextSeq(),
+          });
+        } catch { /* never throw */ }
+      },
+
+      logInfo(msg: string, payload?: Record<string, unknown>): void {
+        try {
+          emit({
+            kind: 'log',
+            level: 'info',
+            msg: fmtMsg(msg, payload),
+            client_ts: new Date().toISOString(),
+            seq: nextSeq(),
+          });
+        } catch { /* never throw */ }
+      },
+
+      logWarn(msg: string, payload?: Record<string, unknown>): void {
+        try {
+          emit({
+            kind: 'log',
+            level: 'warn',
+            msg: fmtMsg(msg, payload),
+            client_ts: new Date().toISOString(),
+            seq: nextSeq(),
+          });
+        } catch { /* never throw */ }
       },
 
       shutdown(): void {
