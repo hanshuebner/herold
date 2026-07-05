@@ -1499,6 +1499,7 @@ export const de = {
   'settings.import.status.migrated': 'Migration abgeschlossen',
   'settings.import.lastSuccess': 'Letzter Abgleich: {date}',
   'settings.import.neverSynced': 'Erster Abgleich ausstehend',
+  'settings.import.syncInProgress': 'Abgleich läuft…',
   'settings.import.lastError': 'Letzter Fehler: {error}',
   'settings.import.backfillHorizon': 'Horizont: {horizon}',
   'settings.import.horizonAllLabel': 'alle E-Mails',

@@ -1479,6 +1479,7 @@ export const en = {
   'settings.import.status.migrated': 'Migration complete',
   'settings.import.lastSuccess': 'Last sync: {date}',
   'settings.import.neverSynced': 'First sync pending',
+  'settings.import.syncInProgress': 'Import in progress…',
   'settings.import.lastError': 'Last error: {error}',
   'settings.import.backfillHorizon': 'Backfill horizon: {horizon}',
   'settings.import.horizonAllLabel': 'all mail',

@@ -4,11 +4,17 @@
  * The main test file (identity-import-section.test.ts) uses a key-passthrough
  * i18n mock, so its assertions never touch the actual catalogue values. This
  * file re-renders the component with a mock that returns REAL translated
- * strings (from en.ts) and asserts the three values changed by the #132 fix:
+ * strings (from en.ts) and asserts the values touched by the #132 fix:
  *
- *   settings.import.neverSynced  → "First sync pending"
- *   settings.import.migrateBtn   → "Start full migration"
- *   settings.import.migrateTitle → "Start full migration from upstream"
+ *   settings.import.neverSynced    → "First sync pending"
+ *   settings.import.syncInProgress → "Import in progress…"
+ *   settings.import.migrateBtn     → "Start full migration"
+ *   settings.import.migrateTitle   → "Start full migration from upstream"
+ *
+ * Sync-status display rules (re #132 follow-up):
+ *   lastSuccessAt set               → show last sync date
+ *   lastSuccessAt null, count  > 0  → show "Import in progress…"
+ *   lastSuccessAt null, count null  → show "First sync pending"
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -95,6 +101,10 @@ function renderSection(props: Partial<SectionProps> = {}): ReturnType<typeof ren
 
 // ── Account fixtures ──────────────────────────────────────────────────────────
 
+/**
+ * Account whose name matches the mocked mailbox ("Gmail Import", 42 messages).
+ * lastSuccessAt is null but importedCount > 0 — expects "Import in progress…".
+ */
 const enabledAccountNeverSynced = {
   id: 'acc1',
   identityId: 'id1',
@@ -106,10 +116,19 @@ const enabledAccountNeverSynced = {
   authMethod: 'app_password',
   backfillHorizon: '90d',
   state: 'enabled',
-  lastSuccessAt: null,  // triggers the neverSynced label
+  lastSuccessAt: null,
   lastError: '',
   deletePropagates: true,
   hasCredential: true,
+};
+
+/**
+ * Account whose name does NOT match any mocked mailbox — importedCount is null.
+ * lastSuccessAt is null and importedCount is null — expects "First sync pending".
+ */
+const enabledAccountNoMessages = {
+  ...enabledAccountNeverSynced,
+  accountName: 'Other Account',  // no matching mailbox in the mock
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -122,14 +141,25 @@ describe('IdentityImportSection — translated string values (re #132)', () => {
     mockHandleState.error = null;
   });
 
-  it('renders "First sync pending" (not the key) when lastSuccessAt is null', () => {
+  it('renders "Import in progress…" when lastSuccessAt is null but messages are already imported', () => {
+    // enabledAccountNeverSynced.accountName matches the mocked mailbox "Gmail Import"
+    // with totalEmails=42, so importedCount > 0. The component must show the
+    // in-progress label, not the "pending" label.
     mockHandleState.status = 'ready';
     mockHandleState.account = enabledAccountNeverSynced;
     renderSection();
+    expect(screen.getByText('Import in progress…')).toBeInTheDocument();
+    expect(screen.queryByText('First sync pending')).not.toBeInTheDocument();
+  });
+
+  it('renders "First sync pending" when lastSuccessAt is null and no messages have been imported', () => {
+    // enabledAccountNoMessages.accountName does not match any mocked mailbox,
+    // so importedCount is null. The component must show the "pending" label.
+    mockHandleState.status = 'ready';
+    mockHandleState.account = enabledAccountNoMessages;
+    renderSection();
     expect(screen.getByText('First sync pending')).toBeInTheDocument();
-    expect(
-      screen.queryByText('settings.import.neverSynced'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Import in progress…')).not.toBeInTheDocument();
   });
 
   it('renders "Start full migration" on the migrate card button', () => {

@@ -377,6 +377,8 @@
               date: formatDate(account.lastSuccessAt),
             })}
           </span>
+        {:else if importedCount !== null && importedCount > 0}
+          <span class="detail-item muted">{t('settings.import.syncInProgress')}</span>
         {:else}
           <span class="detail-item muted">{t('settings.import.neverSynced')}</span>
         {/if}
