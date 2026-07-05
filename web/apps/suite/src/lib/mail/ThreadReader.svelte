@@ -11,6 +11,7 @@
   import { t } from '../i18n/i18n.svelte';
   import { labelForeground } from './label-color';
   import type { Email } from './types';
+  import { pickInitialExpanded } from './pick-initial-expanded';
 
   interface Props {
     threadId: string;
@@ -175,19 +176,6 @@
   let anyInternalizePending = $derived(
     emails.some((e) => e.internalizePending === true),
   );
-
-  /**
-   * Per docs/requirements/09-ui-layout.md REQ-UI-20: collapsed except the
-   * latest unread message — or the latest if all are read.
-   */
-  function pickInitialExpanded(emails: Email[]): string | null {
-    if (emails.length === 0) return null;
-    for (let i = emails.length - 1; i >= 0; i--) {
-      const e = emails[i];
-      if (e && !e.keywords.$seen) return e.id;
-    }
-    return emails[emails.length - 1]?.id ?? null;
-  }
 
   // Track expanded state by email id. Initial set computed once when
   // emails first arrive; subsequent toggles are user-driven.
