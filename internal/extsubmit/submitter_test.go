@@ -748,6 +748,210 @@ func TestSubmit_MultipleRcpt(t *testing.T) {
 	}
 }
 
+// TestSubmit_SubmitUsername_UsedForAuth verifies that Submit sends SubmitUsername
+// as the SMTP AUTH username (not the MailFrom / identity email) when SubmitUsername
+// is set on the IdentitySubmission (re #126).
+func TestSubmit_SubmitUsername_UsedForAuth(t *testing.T) {
+	var receivedAuthUser string
+	srv := newSMTPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		srvWrite(w, "220 smtp.test ESMTP")
+		srvRead(r) // EHLO
+		srvWrite(w, "250-smtp.test")
+		srvWrite(w, "250 AUTH PLAIN")
+		line := srvRead(r) // AUTH PLAIN <ir>
+		if strings.HasPrefix(line, "AUTH PLAIN ") {
+			ir := strings.TrimPrefix(line, "AUTH PLAIN ")
+			raw, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(ir))
+			parts := strings.Split(string(raw), "\x00")
+			if len(parts) == 3 {
+				receivedAuthUser = parts[1]
+			}
+		}
+		srvWrite(w, "235 2.7.0 ok")
+		srvRead(r) // MAIL FROM
+		srvWrite(w, "250 ok")
+		srvRead(r) // RCPT TO
+		srvWrite(w, "250 ok")
+		srvRead(r) // DATA
+		srvWrite(w, "354 send")
+		for {
+			l := srvRead(r)
+			if l == "." {
+				break
+			}
+		}
+		srvWrite(w, "250 2.0.0 ok")
+		srvRead(r) // QUIT
+	})
+
+	s := &extsubmit.Submitter{DataKey: testDataKey, HostName: "client.test"}
+	s.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", srv.addr())
+	})
+
+	sub := store.IdentitySubmission{
+		IdentityID:       "identity-username",
+		SubmitHost:       "smtp.test",
+		SubmitPort:       587,
+		SubmitSecurity:   "none",
+		SubmitAuthMethod: "password",
+		SubmitUsername:   "vorsitz",
+		PasswordCT:       sealSecret(t, "secretpw"),
+	}
+	env := extsubmit.Envelope{
+		MailFrom: "vorsitz@classic-computing.de",
+		RcptTo:   []string{"bob@example.com"},
+		Body:     strings.NewReader("Subject: test\r\n\r\nHello\r\n"),
+	}
+
+	out := s.Submit(context.Background(), sub, env)
+	if out.State != extsubmit.OutcomeOK {
+		t.Fatalf("state = %q; want ok; diagnostic: %s", out.State, out.Diagnostic)
+	}
+	// The AUTH PLAIN username must be the SubmitUsername, not the MailFrom.
+	if receivedAuthUser != "vorsitz" {
+		t.Errorf("AUTH PLAIN username = %q; want %q (SubmitUsername, not email)", receivedAuthUser, "vorsitz")
+	}
+}
+
+// TestSubmit_SubmitUsername_EmptyFallsBackToEmail verifies that when SubmitUsername
+// is empty, Submit falls back to using the identity's email (env.MailFrom) as the
+// AUTH username (re #126).
+func TestSubmit_SubmitUsername_EmptyFallsBackToEmail(t *testing.T) {
+	var receivedAuthUser string
+	srv := newSMTPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		srvWrite(w, "220 smtp.test ESMTP")
+		srvRead(r) // EHLO
+		srvWrite(w, "250-smtp.test")
+		srvWrite(w, "250 AUTH PLAIN")
+		line := srvRead(r) // AUTH PLAIN <ir>
+		if strings.HasPrefix(line, "AUTH PLAIN ") {
+			ir := strings.TrimPrefix(line, "AUTH PLAIN ")
+			raw, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(ir))
+			parts := strings.Split(string(raw), "\x00")
+			if len(parts) == 3 {
+				receivedAuthUser = parts[1]
+			}
+		}
+		srvWrite(w, "235 2.7.0 ok")
+		srvRead(r) // MAIL FROM
+		srvWrite(w, "250 ok")
+		srvRead(r) // RCPT TO
+		srvWrite(w, "250 ok")
+		srvRead(r) // DATA
+		srvWrite(w, "354 send")
+		for {
+			l := srvRead(r)
+			if l == "." {
+				break
+			}
+		}
+		srvWrite(w, "250 2.0.0 ok")
+		srvRead(r) // QUIT
+	})
+
+	s := &extsubmit.Submitter{DataKey: testDataKey, HostName: "client.test"}
+	s.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", srv.addr())
+	})
+
+	sub := store.IdentitySubmission{
+		IdentityID:       "identity-no-username",
+		SubmitHost:       "smtp.test",
+		SubmitPort:       587,
+		SubmitSecurity:   "none",
+		SubmitAuthMethod: "password",
+		SubmitUsername:   "", // empty -> fall back to MailFrom
+		PasswordCT:       sealSecret(t, "secretpw"),
+	}
+	env := extsubmit.Envelope{
+		MailFrom: "alice@example.com",
+		RcptTo:   []string{"bob@example.com"},
+		Body:     strings.NewReader("Subject: test\r\n\r\nHello\r\n"),
+	}
+
+	out := s.Submit(context.Background(), sub, env)
+	if out.State != extsubmit.OutcomeOK {
+		t.Fatalf("state = %q; want ok; diagnostic: %s", out.State, out.Diagnostic)
+	}
+	// SubmitUsername empty -> AUTH PLAIN must use MailFrom.
+	if receivedAuthUser != "alice@example.com" {
+		t.Errorf("AUTH PLAIN username = %q; want %q (email fallback)", receivedAuthUser, "alice@example.com")
+	}
+}
+
+// TestProbe_SubmitUsername_UsedForAuth verifies that Probe sends SubmitUsername
+// as the SMTP AUTH username when set, not the fromAddr email (re #126).
+func TestProbe_SubmitUsername_UsedForAuth(t *testing.T) {
+	var receivedAuthUser string
+	srv := newSMTPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		srvWrite(w, "220 smtp.test ESMTP")
+		srvRead(r) // EHLO
+		srvWrite(w, "250-smtp.test")
+		srvWrite(w, "250 AUTH PLAIN")
+		for {
+			line := srvRead(r)
+			if line == "" {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "AUTH PLAIN "):
+				ir := strings.TrimPrefix(line, "AUTH PLAIN ")
+				raw, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(ir))
+				parts := strings.Split(string(raw), "\x00")
+				if len(parts) == 3 {
+					receivedAuthUser = parts[1]
+				}
+				srvWrite(w, "235 2.7.0 ok")
+			case strings.HasPrefix(line, "MAIL"):
+				srvWrite(w, "250 ok")
+			case strings.HasPrefix(line, "RCPT"):
+				srvWrite(w, "250 ok")
+			case strings.HasPrefix(line, "RSET"):
+				srvWrite(w, "250 ok")
+			case line == "QUIT":
+				srvWrite(w, "221 bye")
+				return
+			default:
+				srvWrite(w, "250 ok")
+			}
+		}
+	})
+
+	s := &extsubmit.Submitter{DataKey: testDataKey, HostName: "client.test"}
+	s.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", srv.addr())
+	})
+
+	sub := store.IdentitySubmission{
+		IdentityID:       "identity-probe-username",
+		SubmitHost:       "smtp.test",
+		SubmitPort:       587,
+		SubmitSecurity:   "none",
+		SubmitAuthMethod: "password",
+		SubmitUsername:   "vorsitz",
+		PasswordCT:       sealSecret(t, "secretpw"),
+	}
+
+	out := s.Probe(context.Background(), sub, "vorsitz@classic-computing.de")
+	if out.State != extsubmit.OutcomeOK {
+		t.Fatalf("state = %q; want ok; diagnostic: %s", out.State, out.Diagnostic)
+	}
+	// Probe must authenticate as SubmitUsername, not the identity email.
+	if receivedAuthUser != "vorsitz" {
+		t.Errorf("Probe AUTH username = %q; want %q (SubmitUsername)", receivedAuthUser, "vorsitz")
+	}
+}
+
 // generateTestCert issues a self-signed ECDSA P-256 cert for "smtp.test".
 func generateTestCert(t *testing.T) (tls.Certificate, []byte) {
 	t.Helper()

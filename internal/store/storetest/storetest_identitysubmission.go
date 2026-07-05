@@ -105,6 +105,55 @@ func testIdentitySubmission_UpsertGet_Roundtrip(t *testing.T, s store.Store) {
 	}
 }
 
+// testIdentitySubmission_SubmitUsername_Roundtrip verifies that SubmitUsername
+// survives the upsert/get round-trip on both backends (re #126).
+func testIdentitySubmission_SubmitUsername_Roundtrip(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "sub-username@example.com")
+	identityID := mustMaterializeDefaultIdentity(t, s, p.ID)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sub := store.IdentitySubmission{
+		IdentityID:       identityID,
+		SubmitHost:       "smtp.example.com",
+		SubmitPort:       587,
+		SubmitSecurity:   "starttls",
+		SubmitAuthMethod: "password",
+		SubmitUsername:   "vorsitz",
+		PasswordCT:       []byte("v1:encrypted-password-blob"),
+		State:            store.IdentitySubmissionStateOK,
+		StateAt:          now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.Meta().UpsertIdentitySubmission(ctx, sub); err != nil {
+		t.Fatalf("UpsertIdentitySubmission with SubmitUsername: %v", err)
+	}
+
+	got, err := s.Meta().GetIdentitySubmission(ctx, identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission: %v", err)
+	}
+	if got.SubmitUsername != "vorsitz" {
+		t.Errorf("SubmitUsername = %q; want %q", got.SubmitUsername, "vorsitz")
+	}
+
+	// Verify that updating to empty string also round-trips (the "email fallback"
+	// path).
+	sub.SubmitUsername = ""
+	if err := s.Meta().UpsertIdentitySubmission(ctx, sub); err != nil {
+		t.Fatalf("UpsertIdentitySubmission (clear SubmitUsername): %v", err)
+	}
+	got2, err := s.Meta().GetIdentitySubmission(ctx, identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission (after clear): %v", err)
+	}
+	if got2.SubmitUsername != "" {
+		t.Errorf("SubmitUsername after clear = %q; want empty string", got2.SubmitUsername)
+	}
+}
+
 // testIdentitySubmission_OAuthFields_Roundtrip verifies OAuth credential fields
 // survive the round-trip byte-for-byte.
 func testIdentitySubmission_OAuthFields_Roundtrip(t *testing.T, s store.Store) {

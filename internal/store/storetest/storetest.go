@@ -343,6 +343,7 @@ func Run(t *testing.T, f Factory) {
 		// -- REQ-AUTH-EXT-SUBMIT-01..10 external SMTP submission ----------
 		{"IdentitySubmission_MaterializeDefault_Idempotent", testMaterializeDefaultIdentity_Idempotent},
 		{"IdentitySubmission_UpsertGet_Roundtrip", testIdentitySubmission_UpsertGet_Roundtrip},
+		{"IdentitySubmission_SubmitUsername_Roundtrip", testIdentitySubmission_SubmitUsername_Roundtrip},
 		{"IdentitySubmission_OAuthFields_Roundtrip", testIdentitySubmission_OAuthFields_Roundtrip},
 		{"IdentitySubmission_GetNotFound", testIdentitySubmission_GetNotFound},
 		{"IdentitySubmission_StateTransition", testIdentitySubmission_StateTransition},
