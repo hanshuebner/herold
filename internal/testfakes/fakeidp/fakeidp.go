@@ -321,6 +321,16 @@ func (s *Server) Authenticate(t testing.TB, redirectURI, state, scope string) To
 	})
 }
 
+// RevokeRefreshToken removes refreshToken from the server's valid set so that
+// any subsequent grant_type=refresh_token request using it returns
+// invalid_grant (HTTP 400). This simulates a provider revoking a refresh
+// token after the user has completed a new full OAuth authorization (re #131).
+func (s *Server) RevokeRefreshToken(refreshToken string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.refresh, refreshToken)
+}
+
 // Refresh exchanges a refresh token for a fresh access token, exercising
 // the refresh_token grant (the re-authentication path).
 func (s *Server) Refresh(t testing.TB, refreshToken string) Token {

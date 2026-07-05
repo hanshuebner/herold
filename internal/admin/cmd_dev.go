@@ -209,11 +209,25 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 	// bypasses the probe that the REST PUT enforces (the probe would need to
 	// reach a real SMTP server to return ok), allowing this unreachable state
 	// to be seeded deterministically for UI testing.
+	//
+	// When --sink-addr is provided the broken-external row points at the same
+	// fake SMTP sink as the working-external row. This lets puppeteer drive a
+	// successful "Verbindung testen" on the broken-external identity and observe
+	// the badge clearing from SMTP-Fehler to ok, exercising the
+	// handleTestSubmission state-update fix (re #131).
+	brokenHost := "smtp." + devSeedForeignDomain
+	brokenPort := 587
+	brokenSecurity := "starttls"
+	if sinkAddr != "" {
+		brokenHost = workingHost
+		brokenPort = workingPort
+		brokenSecurity = workingSecurity
+	}
 	if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
 		IdentityID:       devIdentityBrokenExt,
-		SubmitHost:       "smtp." + devSeedForeignDomain,
-		SubmitPort:       587,
-		SubmitSecurity:   "starttls",
+		SubmitHost:       brokenHost,
+		SubmitPort:       brokenPort,
+		SubmitSecurity:   brokenSecurity,
 		SubmitAuthMethod: "password",
 		PasswordCT:       pwCT,
 		OAuthClientID:    "alice-broken@" + devSeedForeignDomain,
