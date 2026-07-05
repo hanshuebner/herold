@@ -38,6 +38,11 @@ type SweeperStore interface {
 	CountOAuthIdentitySubmissions(ctx context.Context) (int, error)
 	// UpsertIdentitySubmission persists an updated IdentitySubmission row.
 	UpsertIdentitySubmission(ctx context.Context, sub store.IdentitySubmission) error
+	// GetIdentitySubmission returns the current row for identityID.
+	// The sweeper uses this to check whether a concurrent write (e.g. from
+	// handleOAuthCallback) has already refreshed the state before the worker
+	// writes auth-failed.
+	GetIdentitySubmission(ctx context.Context, identityID string) (store.IdentitySubmission, error)
 }
 
 // TokenRefresher is the interface the Sweeper uses to refresh one OAuth token.
@@ -249,6 +254,21 @@ func (sw *Sweeper) refreshRow(ctx context.Context, sub store.IdentitySubmission)
 		category := classifyRefreshError(err)
 		sw.recordRefreshFailure(ctx, sub, category,
 			fmt.Sprintf("refresh: %s (correlation_id=%s)", err.Error(), correlationID))
+
+		// Re-read the current row before writing auth-failed to guard against
+		// the race where handleOAuthCallback wrote state=ok concurrently (e.g.
+		// the user completed OAuth re-auth while this worker was processing a
+		// stale row). If the store already holds a fresher ok state, skip the
+		// overwrite so the successful re-auth is not silently undone (re #131).
+		if current, rerr := sw.Store.GetIdentitySubmission(ctx, sub.IdentityID); rerr == nil {
+			if current.State == store.IdentitySubmissionStateOK && current.StateAt.After(sub.StateAt) {
+				sw.logger().LogAttrs(ctx, slog.LevelDebug,
+					"extsubmit.sweeper: skipping auth-failed; fresher ok state already written",
+					slog.String("identity_id", sub.IdentityID),
+					slog.Time("callback_state_at", current.StateAt))
+				return
+			}
+		}
 
 		// Flip state to auth-failed, leave refresh_due_us unchanged so
 		// the sweeper retries on the next tick (architectural decision 3).

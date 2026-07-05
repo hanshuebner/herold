@@ -56,6 +56,17 @@ func (f *fakeStore) UpsertIdentitySubmission(_ context.Context, sub store.Identi
 	return nil
 }
 
+func (f *fakeStore) GetIdentitySubmission(_ context.Context, identityID string) (store.IdentitySubmission, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.rows {
+		if r.IdentityID == identityID {
+			return r, nil
+		}
+	}
+	return store.IdentitySubmission{}, store.ErrNotFound
+}
+
 func (f *fakeStore) getRow(identityID string) (store.IdentitySubmission, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -359,4 +370,58 @@ func (r *countingRefresher) Refresh(_ context.Context, sub store.IdentitySubmiss
 	time.Sleep(5 * time.Millisecond)
 	r.current.Add(-1)
 	return "token", nil
+}
+
+// TestSweeper_DoesNotOverwriteFresherOKStateOnRefreshFailure verifies the fix
+// for the race condition described in issue #131: when the sweeper worker
+// holds a stale row (state captured before OAuth re-auth) and the refresh
+// fails (old refresh token revoked), it must not overwrite a fresher state=ok
+// row that handleOAuthCallback wrote to the store while the worker was running.
+func TestSweeper_DoesNotOverwriteFresherOKStateOnRefreshFailure(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t1 := t0.Add(5 * time.Minute) // OAuth callback wrote ok at t1
+
+	fs := &fakeStore{}
+
+	// Stale row captured by the sweeper at t0 (state=auth-failed, stale tokens).
+	staleRow := store.IdentitySubmission{
+		IdentityID:       "id-race",
+		SubmitAuthMethod: "oauth2",
+		OAuthRefreshCT:   sealToken(t, "old-revoked-refresh"),
+		OAuthAccessCT:    sealToken(t, "old-access"),
+		RefreshDue:       t0.Add(-1 * time.Minute),
+		State:            store.IdentitySubmissionStateAuthFailed,
+		StateAt:          t0,
+	}
+
+	// Current row in the store already has ok state written by the OAuth callback.
+	fresherRow := staleRow
+	fresherRow.OAuthRefreshCT = sealToken(t, "new-refresh")
+	fresherRow.OAuthAccessCT = sealToken(t, "new-access")
+	fresherRow.State = store.IdentitySubmissionStateOK
+	fresherRow.StateAt = t1
+	fs.rows = append(fs.rows, fresherRow)
+
+	// Refresh fails (old token was revoked).
+	fr := &fakeTokenRefresher{err: ErrAuthFailed}
+	sw := &Sweeper{
+		Store:        fs,
+		TokenRefresh: fr,
+		DataKey:      testDataKey32,
+		Workers:      1,
+		Now:          func() time.Time { return t1 },
+	}
+
+	// Invoke refreshRow directly with the stale row captured at t0.
+	sw.refreshRow(context.Background(), staleRow)
+
+	// The store row must still be state=ok (the fresher state from the callback
+	// must not have been overwritten by the sweeper's auth-failed write).
+	got, ok := fs.getRow("id-race")
+	if !ok {
+		t.Fatal("row missing from store")
+	}
+	if got.State != store.IdentitySubmissionStateOK {
+		t.Errorf("State = %q after race; want ok (sweeper must not overwrite fresher callback state)", got.State)
+	}
 }

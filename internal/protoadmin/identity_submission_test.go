@@ -1296,3 +1296,73 @@ func TestTestSubmission_EmptyToDefaultsToSelf(t *testing.T) {
 		t.Errorf("RCPT TO = %v; want [owner@example.com]", rcpt)
 	}
 }
+
+// TestTestSubmission_ClearsAuthFailedStateOnSuccess verifies that a successful
+// test-message send updates the stored state to ok, so a stale auth-failed
+// badge clears without requiring a full OAuth re-auth cycle (re #131).
+func TestTestSubmission_ClearsAuthFailedStateOnSuccess(t *testing.T) {
+	cap := &capturedEnvelope{}
+	sh := newSubmissionHarnessWithSender(t, cap.sender())
+
+	_, adminKey := sh.bootstrap("smtp@example.com")
+
+	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+	}
+	var who struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(buf, &who)
+	identityID := sh.insertIdentity(who.PrincipalID, "smtp@example.com")
+
+	// PUT a submission row; the alwaysOKProbe in the harness accepts it.
+	res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityID+"/submission", adminKey, putSubmissionBody())
+	if res2.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
+	}
+
+	// Manually flip the row's state to auth-failed to simulate a previous sweeper failure.
+	sub, err := sh.fs.Meta().GetIdentitySubmission(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission: %v", err)
+	}
+	sub.State = store.IdentitySubmissionStateAuthFailed
+	sub.StateAt = sh.clk.Now().Add(-5 * time.Minute)
+	if err := sh.fs.Meta().UpsertIdentitySubmission(context.Background(), sub); err != nil {
+		t.Fatalf("UpsertIdentitySubmission (set auth-failed): %v", err)
+	}
+
+	// Verify the badge reads as auth-failed before the test.
+	gotBefore, err := sh.fs.Meta().GetIdentitySubmission(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission (before): %v", err)
+	}
+	if gotBefore.State != store.IdentitySubmissionStateAuthFailed {
+		t.Fatalf("pre-condition: State = %q; want auth-failed", gotBefore.State)
+	}
+
+	// POST /submission/test — the capturedEnvelope sender always returns ok.
+	res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityID+"/submission/test", adminKey, nil)
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("POST submission/test: %d: %s", res3.StatusCode, buf3)
+	}
+	var testResp struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(buf3, &testResp); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if !testResp.OK {
+		t.Fatalf("test response ok=false; want true")
+	}
+
+	// The stored state must now be ok.
+	gotAfter, err := sh.fs.Meta().GetIdentitySubmission(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("GetIdentitySubmission (after): %v", err)
+	}
+	if gotAfter.State != store.IdentitySubmissionStateOK {
+		t.Errorf("State = %q after successful test; want ok", gotAfter.State)
+	}
+}

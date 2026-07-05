@@ -597,6 +597,20 @@ func (s *Server) handleTestSubmission(w http.ResponseWriter, r *http.Request) {
 	outcome := s.opts.ExternalTestSender(r.Context(), sub, env)
 	ok := outcome.State == extsubmit.OutcomeOK
 
+	// A successful test proves the stored credentials are still valid. Update
+	// the row's state to ok so a stale auth-failed badge clears immediately
+	// without requiring a full OAuth re-auth cycle (re #131).
+	if ok {
+		sub.State = store.IdentitySubmissionStateOK
+		sub.StateAt = s.clk.Now()
+		if uerr := s.store.Meta().UpsertIdentitySubmission(r.Context(), sub); uerr != nil {
+			s.loggerFrom(r.Context()).Warn("protoadmin.submission.test.state_update_failed",
+				"activity", observe.ActivityInternal, "err", uerr)
+			// Non-fatal: the test result stands; state update failure does not
+			// change the HTTP response.
+		}
+	}
+
 	s.appendAudit(r.Context(), "identity.submission.test",
 		fmt.Sprintf("identity:%s", identityID),
 		outcomeToAuditResult(ok), outcome.Diagnostic,
