@@ -578,6 +578,7 @@
           </RecipientTrigger>
         {:else}
           <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
+          {#if senderEmail}<span class="from-email">&lt;{senderEmail}&gt;</span>{/if}
         {/if}
       </span>
       {#if expanded}
