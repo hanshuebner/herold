@@ -708,6 +708,50 @@ describe('MessageAccordion: expanded header shows name + email (re #129)', () =>
   });
 });
 
+// ── Sender email in COLLAPSED header rows (re #134) ──────────────────────────
+//
+// Extends the "#129" expanded-header tests to cover the collapsed state.
+// The {:else} branch of the expanded/collapsed conditional now also renders
+// the from-email span so collapsed rows show "Name <email@addr>", not just "Name".
+describe('MessageAccordion: collapsed header shows name + email (re #134)', () => {
+  it('shows the email address for an external sender in the collapsed row', () => {
+    const email = makeEmail({ from: [{ name: 'Alice', email: 'alice@example.test' }] });
+    // expanded=false → collapsed state, which is the subject of issue #134.
+    renderAccordion(email, /* expanded */ false);
+    // Both the name and the angle-bracket email address must be present.
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('<alice@example.test>')).toBeInTheDocument();
+  });
+
+  it('shows the email address when senderName equals senderEmail (no display name)', () => {
+    const email = makeEmail({ from: [{ name: null, email: 'alice@example.test' }] });
+    renderAccordion(email, /* expanded */ false);
+    // senderName falls back to the email address; from-email also shows it.
+    expect(screen.getByText('<alice@example.test>')).toBeInTheDocument();
+  });
+
+  it('shows the email address alongside the i18n "fromYou" key for a self-sent collapsed row', () => {
+    const SELF_EMAIL = 'self@example.test';
+    const selfIdentity: import('./types').Identity = {
+      id: 'ident-self',
+      name: 'Self',
+      email: SELF_EMAIL,
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: false,
+    };
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({ from: [{ name: 'Self', email: SELF_EMAIL }] });
+    renderAccordion(email, /* expanded */ false);
+    // Collapsed self-sent row: "Du" (fromYou key) + email address.
+    expect(screen.getByText('mail.thread.fromYou')).toBeInTheDocument();
+    expect(screen.getByText('<self@example.test>')).toBeInTheDocument();
+    mailMock.identities = new Map();
+  });
+});
+
 // ── auto-read latch (issue #102) ─────────────────────────────────────────
 describe('MessageAccordion auto-read latch', () => {
   beforeEach(() => {
