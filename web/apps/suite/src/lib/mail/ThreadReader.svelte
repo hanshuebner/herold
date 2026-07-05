@@ -311,7 +311,7 @@
       <div class="messages">
         {#each emails as email (email.id)}
           <div data-email-id={email.id}>
-            <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} />
+            <MessageAccordion {email} expanded={expanded.has(email.id)} onToggle={toggle} {standalone} />
           </div>
         {/each}
       </div>

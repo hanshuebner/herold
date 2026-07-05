@@ -27,6 +27,9 @@
   import { keyboard } from '../keyboard/engine.svelte';
   import { untrack } from 'svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
+  import ReplyIcon from '../icons/ReplyIcon.svelte';
+  import { compose } from '../compose/compose.svelte';
+  import { navigateBackFromThread } from './navigate-back';
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
   import RawSourceModal from './RawSourceModal.svelte';
   import { emlDownloadFilename } from './download-filename';
@@ -44,8 +47,14 @@
     email: Email;
     expanded: boolean;
     onToggle?: (id: string) => void;
+    /**
+     * When true, the accordion is rendered inside the chrome-less standalone
+     * thread-window popup (/#/thread-window/<id>). Mark-as-unread closes the
+     * popup instead of navigating back to the mail list (re #129).
+     */
+    standalone?: boolean;
   }
-  let { email, expanded, onToggle }: Props = $props();
+  let { email, expanded, onToggle, standalone = false }: Props = $props();
 
   // ── Truncated-body recovery (Forgejo #48) ─────────────────────────────
   //
@@ -361,12 +370,40 @@
   // deferred. See docs/design/web/requirements/02-mail-basics.md
   // § Per-message context menu.
 
+  /**
+   * Leave the current thread after a per-message action, honouring the
+   * standalone-popup exception — mirrors ThreadToolbar.leaveThread() (re #129).
+   */
+  function leaveThread(): void {
+    if (standalone) {
+      window.close();
+    } else {
+      navigateBackFromThread();
+    }
+  }
+
   function markUnread(): void {
     void mail.setSeen(email.id, false);
+    leaveThread();
   }
 
   function markUnreadFromHere(): void {
     void mail.markUnreadFromHere(email.threadId, email.id);
+    leaveThread();
+  }
+
+  // True when the inline composer is open — suppress the per-message reply
+  // button in that window so it does not compete with the active composer.
+  let isInlineOpen = $derived(compose.isOpen && compose.inlineMode);
+
+  /**
+   * Reply to THIS specific message (not necessarily the latest). Reuses the
+   * same compose plumbing as ThreadReplyBar.reply() (re #129).
+   */
+  async function replyToThis(): Promise<void> {
+    compose.inlineMode = true;
+    await compose.openReply(email);
+    if (!compose.isOpen) compose.inlineMode = false;
   }
 
   function deleteMessage(): void {
@@ -537,9 +574,7 @@
             inline
           >
             <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
-            {#if !isSelf && senderEmail !== senderName}
-              <span class="from-email">&lt;{senderEmail}&gt;</span>
-            {/if}
+            <span class="from-email">&lt;{senderEmail}&gt;</span>
           </RecipientTrigger>
         {:else}
           <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
@@ -592,6 +627,29 @@
         avoid toggling the accordion when interacting with reactions.
       -->
       {#if expanded}
+        {#if !isInlineOpen}
+          <!-- Per-message reply button (re #129): targets THIS specific message,
+               not the latest. Hidden while the inline composer is already open
+               so it does not compete with the active compose session. Click is
+               stopped at this span so expanding/collapsing the accordion is
+               not triggered. -->
+          <span
+            class="reply-anchor"
+            onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => e.stopPropagation()}
+            role="presentation"
+          >
+            <button
+              type="button"
+              class="header-icon-btn"
+              onclick={() => void replyToThis()}
+              aria-label={t('msg.reply')}
+              title={t('msg.reply')}
+            >
+              <ReplyIcon size={16} />
+            </button>
+          </span>
+        {/if}
         <span
           class="reactions-anchor"
           onclick={(e) => e.stopPropagation()}
@@ -840,6 +898,13 @@
   .date-relative {
     color: var(--text-placeholder);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  /* Per-message reply button anchor (re #129). Click-through stopped so the
+     button does not fold/unfold the accordion. */
+  .reply-anchor {
+    display: inline-flex;
+    align-items: center;
   }
 
   /* Reactions strip + react button live in a single anchor span inside

@@ -116,6 +116,20 @@ vi.mock('./avatar-resolver.svelte', () => ({
   clearAvatarCache: vi.fn(),
 }));
 
+// Compose mock: must be hoisted so the vi.mock() factory can reference it.
+const { composeMock, navigateBackMock } = vi.hoisted(() => {
+  const composeMock = {
+    isOpen: false,
+    inlineMode: false,
+    openReply: vi.fn().mockResolvedValue(undefined),
+  };
+  const navigateBackMock = vi.fn();
+  return { composeMock, navigateBackMock };
+});
+
+vi.mock('../compose/compose.svelte', () => ({ compose: composeMock }));
+vi.mock('./navigate-back', () => ({ navigateBackFromThread: navigateBackMock }));
+
 vi.mock('./identity-avatar', () => ({
   identityAvatarUrl: () => null,
 }));
@@ -300,12 +314,15 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     mailMock.reportPhishing.mockClear();
   });
 
-  it('does not render reply / reply-all / forward inside the message body', () => {
+  it('renders the per-message reply button when expanded but not reply-all / forward', () => {
+    // Per re #129: a per-message reply button lives in the expanded header.
+    // Reply-all and forward remain in ThreadReplyBar only.
+    composeMock.isOpen = false;
+    composeMock.inlineMode = false;
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
-    // Reply / forward live in the ThreadReplyBar, not under each message.
-    expect(screen.queryByLabelText('msg.reply')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('msg.reply')).toBeInTheDocument();
     expect(screen.queryByLabelText('msg.replyAll')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('msg.forward')).not.toBeInTheDocument();
   });
@@ -557,6 +574,137 @@ describe('MessageAccordion: self-authored card treatment', () => {
     renderAccordion(email, /* expanded */ false);
     expect(screen.getByText('Alice')).toBeInTheDocument();
     expect(screen.queryByText('mail.thread.fromYou')).not.toBeInTheDocument();
+  });
+});
+
+// ── Per-message reply button (re #129) ───────────────────────────────────────
+describe('MessageAccordion: per-message reply button (re #129)', () => {
+  beforeEach(() => {
+    composeMock.isOpen = false;
+    composeMock.inlineMode = false;
+    composeMock.openReply.mockClear();
+  });
+
+  it('is absent when the accordion is collapsed', () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ false);
+    expect(screen.queryByLabelText('msg.reply')).not.toBeInTheDocument();
+  });
+
+  it('is present when the accordion is expanded and no inline composer is open', () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+    expect(screen.getByLabelText('msg.reply')).toBeInTheDocument();
+  });
+
+  it('is hidden while the inline composer is open', () => {
+    composeMock.isOpen = true;
+    composeMock.inlineMode = true;
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+    expect(screen.queryByLabelText('msg.reply')).not.toBeInTheDocument();
+  });
+
+  it('calls compose.openReply with the message email when clicked', async () => {
+    const email = makeEmail({});
+    renderAccordion(email, /* expanded */ true);
+    await fireEvent.click(screen.getByLabelText('msg.reply'));
+    expect(composeMock.openReply).toHaveBeenCalledWith(email);
+  });
+});
+
+// ── Mark-as-unread navigation (re #129) ──────────────────────────────────────
+describe('MessageAccordion: mark-as-unread navigates back (re #129)', () => {
+  beforeEach(() => {
+    navigateBackMock.mockClear();
+    mailMock.setSeen.mockClear();
+    mailMock.markUnreadFromHere.mockClear();
+  });
+
+  it('markUnread calls navigateBackFromThread in normal (non-standalone) mode', async () => {
+    const email = makeEmail({});
+    render(MessageAccordion, { props: { email, expanded: true, onToggle: vi.fn(), standalone: false } });
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.markUnread'));
+
+    expect(mailMock.setSeen).toHaveBeenCalledWith(email.id, false);
+    expect(navigateBackMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('markUnreadFromHere calls navigateBackFromThread in normal mode', async () => {
+    const email = makeEmail({});
+    render(MessageAccordion, { props: { email, expanded: true, onToggle: vi.fn(), standalone: false } });
+
+    await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+    await fireEvent.click(screen.getByText('msg.kebab.markUnreadFromHere'));
+
+    expect(mailMock.markUnreadFromHere).toHaveBeenCalledWith(email.threadId, email.id);
+    expect(navigateBackMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('markUnread calls window.close() in standalone mode (no navigateBackFromThread)', async () => {
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    try {
+      const email = makeEmail({});
+      render(MessageAccordion, { props: { email, expanded: true, onToggle: vi.fn(), standalone: true } });
+
+      await fireEvent.click(screen.getByLabelText('msg.kebab.openLabel'));
+      await fireEvent.click(screen.getByText('msg.kebab.markUnread'));
+
+      expect(mailMock.setSeen).toHaveBeenCalledWith(email.id, false);
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+      expect(navigateBackMock).not.toHaveBeenCalled();
+    } finally {
+      closeSpy.mockRestore();
+    }
+  });
+});
+
+// ── Full sender identity in expanded header (re #129) ─────────────────────────
+describe('MessageAccordion: expanded header shows name + email (re #129)', () => {
+  it('shows the email address for an external sender with a display name', () => {
+    const email = makeEmail({ from: [{ name: 'Alice', email: 'alice@example.test' }] });
+    renderAccordion(email, /* expanded */ true);
+    // Both the name and the angle-bracket email address must be present.
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('<alice@example.test>')).toBeInTheDocument();
+  });
+
+  it('shows the email address even when senderName equals senderEmail (no display name)', () => {
+    // When the From header has no display name, senderName falls back to the
+    // email address. The old guard suppressed the angle-bracket span in this
+    // case; the fix removes the guard so both are shown.
+    const email = makeEmail({ from: [{ name: null, email: 'alice@example.test' }] });
+    renderAccordion(email, /* expanded */ true);
+    // The email address appears in both the from-name and the from-email spans.
+    const allAlice = screen.getAllByText('alice@example.test');
+    // Two instances: once as the name fallback, once inside angle brackets.
+    // (The angle-bracket span text is rendered as the literal string including
+    //  the angle brackets, so this query returns that element as well.)
+    expect(allAlice.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('<alice@example.test>')).toBeInTheDocument();
+  });
+
+  it('shows the email address alongside Du for a self-sent message', () => {
+    const SELF_EMAIL = 'self@example.test';
+    const selfIdentity: import('./types').Identity = {
+      id: 'ident-self',
+      name: 'Self',
+      email: SELF_EMAIL,
+      replyTo: null,
+      bcc: null,
+      textSignature: '',
+      htmlSignature: '',
+      mayDelete: false,
+    };
+    mailMock.identities = new Map([[selfIdentity.id, selfIdentity]]);
+    const email = makeEmail({ from: [{ name: 'Self', email: SELF_EMAIL }] });
+    renderAccordion(email, /* expanded */ true);
+    // 'mail.thread.fromYou' is the i18n key (t() returns key as-is in mock).
+    expect(screen.getByText('mail.thread.fromYou')).toBeInTheDocument();
+    expect(screen.getByText('<self@example.test>')).toBeInTheDocument();
+    mailMock.identities = new Map();
   });
 });
 

@@ -1956,12 +1956,29 @@ class MailStore {
   threadEmails(threadId: string): Email[] {
     const committed = this.committedThreadEmailIds.get(threadId);
     if (committed !== undefined) {
-      return resolveDeduplicatedThreadEmails(committed, this.emails);
+      // Suppress draft emails from the rendered thread. A draft that was
+      // auto-saved by the inline composer appears in the server's thread
+      // (via In-Reply-To) and flows into the committed snapshot via
+      // #processFreshArrivals, but the open composer already shows its
+      // content — rendering a duplicate accordion would confuse the user
+      // (re #129). The filter is a read-time guard only; the draft ID
+      // remains in committedThreadEmailIds so that, when the server
+      // removes $draft after submission, the now-sent email appears
+      // immediately without another snapshot advance.
+      const withoutDrafts = committed.filter((id) => {
+        const e = this.emails.get(id);
+        return !e || !e.keywords.$draft;
+      });
+      return resolveDeduplicatedThreadEmails(withoutDrafts, this.emails);
     }
     // Fallback: thread loaded but committed snapshot not yet set.
     const thread = this.threads.get(threadId);
     if (!thread) return [];
-    return resolveDeduplicatedThreadEmails(thread.emailIds, this.emails);
+    const withoutDrafts = thread.emailIds.filter((id) => {
+      const e = this.emails.get(id);
+      return !e || !e.keywords.$draft;
+    });
+    return resolveDeduplicatedThreadEmails(withoutDrafts, this.emails);
   }
 
   /**
