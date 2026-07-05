@@ -601,9 +601,20 @@ func (s *Server) handleTestSubmission(w http.ResponseWriter, r *http.Request) {
 	// the row's state to ok so a stale auth-failed badge clears immediately
 	// without requiring a full OAuth re-auth cycle (re #131).
 	if ok {
-		sub.State = store.IdentitySubmissionStateOK
-		sub.StateAt = s.clk.Now()
-		if uerr := s.store.Meta().UpsertIdentitySubmission(r.Context(), sub); uerr != nil {
+		// Re-read the current row from the store before upserting state=ok.
+		// The ExternalTestSender may have internally called Refresher.Refresh
+		// (via accessToken when RefreshDue has passed), which writes a new
+		// OAuthAccessCT to the store. Upserting the pre-test `sub` here would
+		// overwrite that fresh sealed token with the original stale one,
+		// re-expiring the token and causing the next test or delivery to fail
+		// with 535 again (re #131).
+		toUpdate := sub
+		if current, rerr := s.store.Meta().GetIdentitySubmission(r.Context(), identityID); rerr == nil {
+			toUpdate = current
+		}
+		toUpdate.State = store.IdentitySubmissionStateOK
+		toUpdate.StateAt = s.clk.Now()
+		if uerr := s.store.Meta().UpsertIdentitySubmission(r.Context(), toUpdate); uerr != nil {
 			s.loggerFrom(r.Context()).Warn("protoadmin.submission.test.state_update_failed",
 				"activity", observe.ActivityInternal, "err", uerr)
 			// Non-fatal: the test result stands; state update failure does not

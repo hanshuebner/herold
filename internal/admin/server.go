@@ -710,9 +710,19 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 			return fmt.Errorf("external submission: load data key: %w", dkErr)
 		}
 		extSubmitDataKey = dk
+		// Refresher is shared between the Submitter (probe and test-sender
+		// paths) and the background sweeper. Attaching it here ensures that
+		// accessToken proactively refreshes an expired OAuth access token
+		// during "Verbindung testen" — not just during the 60-second sweep
+		// cycle (re #131).
+		extSubmitRefresher := &extsubmit.Refresher{
+			Meta:    st.Meta(),
+			DataKey: dk,
+		}
 		prebuiltExtSubmitter = &extsubmit.Submitter{
-			DataKey:  dk,
-			HostName: cfg.Server.Hostname,
+			DataKey:   dk,
+			HostName:  cfg.Server.Hostname,
+			Refresher: extSubmitRefresher,
 		}
 		// Resolve OAuth provider client secrets from the sysconfig secret
 		// references so the plaintext is available in-memory for the OAuth
@@ -1306,13 +1316,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		if workerCount <= 0 {
 			workerCount = 4 // default per architectural decision 1
 		}
-		refresher := &extsubmit.Refresher{
-			Meta:    st.Meta(),
-			DataKey: extSubmitDataKey,
-		}
 		sweeper := &extsubmit.Sweeper{
-			Store:        st.Meta(),
-			TokenRefresh: refresher,
+			Store: st.Meta(),
+			// Reuse prebuiltExtSubmitter.Refresher so probe, test-sender, and
+			// sweeper all share one Refresher instance (same Meta and DataKey).
+			TokenRefresh: prebuiltExtSubmitter.Refresher,
 			DataKey:      extSubmitDataKey,
 			Logger:       logger.With("subsystem", "extsubmit-sweeper"),
 			AuditLog:     &sweeperAuditLogger{meta: st.Meta(), clk: clk},
