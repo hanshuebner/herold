@@ -4,6 +4,13 @@
    * Module-level export so tests can reference it without hard-coding the string.
    */
   export const CONSENT_STORAGE_KEY = 'translate.consented';
+
+  /**
+   * The localStorage key under which the per-account never-translate language
+   * block list is stored. Holds a string[] of ISO 639-1 codes the user has
+   * opted out of translating. Module-level export so tests can reference it.
+   */
+  export const NEVER_LANGS_STORAGE_KEY = 'translate.neverLangs';
 </script>
 
 <script lang="ts">
@@ -43,16 +50,28 @@
   // ── Language detection ────────────────────────────────────────────────────
   let detectedLang = $derived(detectLanguage(bodyText));
 
+  // ── Never-translate block list ────────────────────────────────────────────
+  // Per-account list of ISO 639-1 codes the user has opted out of translating.
+  let neverLangs = $state<string[]>([]);
+
+  // Hydrate block list from localStorage on mount (re-runs on auth change so
+  // the list stays correct when switching accounts).
+  $effect(() => {
+    neverLangs = readAccountJson<string[]>(NEVER_LANGS_STORAGE_KEY, []);
+  });
+
   /**
    * True when the Translate button should be visible:
    *   - feature available (no 501 this session)
    *   - body is long enough and in a known language
    *   - detected language differs from the active locale
+   *   - detected language is not in the user's never-translate block list
    */
   let showAffordance = $derived(
     translateFeature.available &&
       detectedLang !== null &&
-      detectedLang !== locale,
+      detectedLang !== locale &&
+      !neverLangs.includes(detectedLang),
   );
 
   // ── Consent state ─────────────────────────────────────────────────────────
@@ -70,6 +89,21 @@
   let translatedText = $state<string | null>(null);
   let showingTranslation = $state(false);
   let errorKey = $state<string | null>(null);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /**
+   * Return the display name for an ISO 639-1 code using the existing
+   * `settings.language.{code}` i18n entries. Falls back to the raw code
+   * for languages not yet in the catalogue (e.g. 'fr' -> 'fr').
+   */
+  function langDisplayName(code: string): string {
+    const key = `settings.language.${code}`;
+    const name = t(key);
+    // t() returns the key itself when no translation exists; use the bare
+    // ISO code as the fallback in that case.
+    return name === key ? code : name;
+  }
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -135,6 +169,18 @@
   function handleShowTranslation(): void {
     showingTranslation = true;
   }
+
+  /**
+   * Add the currently detected language to the user's never-translate block
+   * list and persist it. showAffordance reacts immediately so the bar hides.
+   */
+  function handleNeverTranslate(): void {
+    if (detectedLang === null) return;
+    const lang = detectedLang;
+    const updated = neverLangs.includes(lang) ? neverLangs : [...neverLangs, lang];
+    neverLangs = updated;
+    writeAccountJson(NEVER_LANGS_STORAGE_KEY, updated);
+  }
 </script>
 
 {#if showAffordance}
@@ -153,6 +199,14 @@
           {t('msg.translate.button')}
         </button>
       {/if}
+      <!-- Per-language opt-out: permanently suppresses the affordance for
+           the detected source language across all messages. showAffordance
+           already ensures detectedLang is non-null here; the ?? '' guards
+           TypeScript since it cannot narrow through the {#if showAffordance}
+           block. -->
+      <button type="button" class="never-btn" onclick={handleNeverTranslate}>
+        {t('msg.translate.neverTranslate', { lang: langDisplayName(detectedLang ?? '') })}
+      </button>
       {#if translatedText !== null}
         <!-- Already have a translation; offer to show it again -->
         <button type="button" class="toggle-btn" onclick={handleShowTranslation}>
@@ -232,6 +286,18 @@
   .toggle-btn:hover {
     background: var(--layer-02);
     color: var(--text-primary);
+  }
+
+  .never-btn {
+    color: var(--text-helper);
+    padding: var(--spacing-01) var(--spacing-03);
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .never-btn:hover {
+    background: var(--layer-02);
+    color: var(--text-secondary);
   }
 
   .translating {

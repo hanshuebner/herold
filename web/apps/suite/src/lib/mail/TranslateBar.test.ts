@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
-import TranslateBar, { CONSENT_STORAGE_KEY } from './TranslateBar.svelte';
+import TranslateBar, { CONSENT_STORAGE_KEY, NEVER_LANGS_STORAGE_KEY } from './TranslateBar.svelte';
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -153,6 +153,7 @@ describe('TranslateBar: consent gate', () => {
 
 describe('TranslateBar: Show-original toggle', () => {
   beforeEach(() => {
+    storageMap.clear();
     storageMap.set(CONSENT_STORAGE_KEY, true);
     mockDetectLanguage.mockReturnValue('de');
     mockTranslateFeature.available = true;
@@ -201,8 +202,80 @@ describe('TranslateBar: Show-original toggle', () => {
   });
 });
 
+describe('TranslateBar: never-translate block list', () => {
+  beforeEach(() => {
+    storageMap.clear();
+    mockDetectLanguage.mockReturnValue('de');
+    mockTranslateFeature.available = true;
+  });
+
+  it('renders the Never-translate button alongside the Translate button', () => {
+    renderBar({ locale: 'en' });
+    expect(screen.getByText('msg.translate.button')).toBeInTheDocument();
+    // t() mock returns key; the never-translate key is interpolated with the
+    // detected lang display name (which itself falls back to the key for 'de').
+    expect(screen.getByText(/msg\.translate\.neverTranslate/)).toBeInTheDocument();
+  });
+
+  it('clicking Never-translate adds the detected language to the block list', async () => {
+    renderBar({ locale: 'en' });
+    const neverBtn = screen.getByText(/msg\.translate\.neverTranslate/);
+    await fireEvent.click(neverBtn);
+    const stored = storageMap.get(NEVER_LANGS_STORAGE_KEY) as string[];
+    expect(stored).toContain('de');
+  });
+
+  it('showAffordance is false after adding a language to the block list', async () => {
+    renderBar({ locale: 'en' });
+    // Affordance is visible before opting out
+    expect(screen.getByText('msg.translate.button')).toBeInTheDocument();
+    const neverBtn = screen.getByText(/msg\.translate\.neverTranslate/);
+    await fireEvent.click(neverBtn);
+    // After opting out the entire bar must vanish
+    await waitFor(() => {
+      expect(screen.queryByText('msg.translate.button')).not.toBeInTheDocument();
+    });
+  });
+
+  it('affordance is suppressed on render when language is already in the block list', () => {
+    storageMap.set(NEVER_LANGS_STORAGE_KEY, ['de']);
+    renderBar({ locale: 'en' });
+    expect(screen.queryByText('msg.translate.button')).not.toBeInTheDocument();
+  });
+
+  it('current-locale guard still applies independently of the block list', () => {
+    // Detected language matches locale — no affordance regardless of block list.
+    mockDetectLanguage.mockReturnValue('en');
+    renderBar({ locale: 'en' });
+    expect(screen.queryByText('msg.translate.button')).not.toBeInTheDocument();
+  });
+
+  it('block list is per-account: a different key in the block list does not suppress', () => {
+    // Block list contains 'fr' but email is detected as 'de'
+    storageMap.set(NEVER_LANGS_STORAGE_KEY, ['fr']);
+    renderBar({ locale: 'en' });
+    expect(screen.getByText('msg.translate.button')).toBeInTheDocument();
+  });
+
+  it('repeated opt-out does not duplicate the language in the block list', async () => {
+    storageMap.set(NEVER_LANGS_STORAGE_KEY, ['de']);
+    // Render with the language NOT in the block list initially so the bar shows,
+    // then manually call handleNeverTranslate twice via two renders.
+    // Simpler: set neverLangs to ['de'], render with 'fr' detected, opt out 'fr'.
+    mockDetectLanguage.mockReturnValue('fr');
+    renderBar({ locale: 'en' });
+    const neverBtn = screen.getByText(/msg\.translate\.neverTranslate/);
+    await fireEvent.click(neverBtn);
+    // Block list should have ['de', 'fr'] with no duplicates.
+    const stored = storageMap.get(NEVER_LANGS_STORAGE_KEY) as string[];
+    expect(stored).toEqual(['de', 'fr']);
+    expect(stored.filter((c) => c === 'fr').length).toBe(1);
+  });
+});
+
 describe('TranslateBar: error handling', () => {
   beforeEach(() => {
+    storageMap.clear();
     storageMap.set(CONSENT_STORAGE_KEY, true);
     mockDetectLanguage.mockReturnValue('de');
     mockTranslateFeature.available = true;

@@ -234,6 +234,9 @@ export const en = {
   'msg.translate.showOriginal': 'Show original',
   'msg.translate.showTranslation': 'Show translation',
   'msg.translate.translating': 'Translating...',
+  // Per-language opt-out: {lang} is the display name of the detected language.
+  // Falls back to the bare ISO 639-1 code for languages not yet in the catalogue.
+  'msg.translate.neverTranslate': 'Never translate {lang}',
   'msg.translate.error.unavailable': 'Translation is not enabled on this server.',
   'msg.translate.error.tooLong': 'Message is too long to translate.',
   'msg.translate.error.upstream': 'Translation service error. Please try again.',

@@ -230,6 +230,9 @@ export const de = {
   'msg.translate.showOriginal': 'Original anzeigen',
   'msg.translate.showTranslation': 'Übersetzung anzeigen',
   'msg.translate.translating': 'Wird übersetzt...',
+  // Dauerhafte Sprachunterdrückung: {lang} ist der Anzeigename der erkannten Sprache.
+  // Für Sprachen ohne Katalogeintrag wird der nackte ISO-639-1-Code verwendet.
+  'msg.translate.neverTranslate': '{lang} nie übersetzen',
   'msg.translate.error.unavailable': 'Übersetzung ist auf diesem Server nicht aktiviert.',
   'msg.translate.error.tooLong': 'Nachricht ist zu lang zum Übersetzen.',
   'msg.translate.error.upstream': 'Fehler beim Übersetzungsdienst. Bitte erneut versuchen.',
