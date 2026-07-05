@@ -295,7 +295,7 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 	rawBody := w.raw[rawBodyOff : rawBodyOff+rawBodyLen]
 
 	if strings.HasPrefix(ctLower, "text/") {
-		text, size, truncated, decErrs, parseErr := w.decodeTextPart(rawBody, cteLower, charset, idx)
+		text, size, truncated, decErrs, parseErr := w.decodeTextPart(rawBody, cteLower, charset, ctLower, idx)
 		if parseErr != nil {
 			return Part{}, parseErr
 		}
@@ -531,8 +531,9 @@ func findBodyStart(raw []byte) int64 {
 }
 
 // decodeTextPart CTE-decodes and charset-converts the raw encoded body of a text part.
+// contentType is the MIME content type (e.g. "text/html") used for charset reconciliation.
 // Returns text (capped), full decoded size, truncation flag, non-fatal warnings, and any fatal error.
-func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset string, idx int) (text string, size int64, truncated bool, decErrs []string, parseErr error) {
+func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset, contentType string, idx int) (text string, size int64, truncated bool, decErrs []string, parseErr error) {
 	cteDecoded, warn, parseErr := decodeCTEBytes(raw, cteLower, w.opts.StrictBase64, w.opts.StrictQP, idx)
 	if parseErr != nil {
 		return "", 0, false, nil, parseErr
@@ -542,8 +543,30 @@ func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset string, idx in
 	}
 	size = int64(len(cteDecoded))
 
+	// For text/html parts: reconcile MIME-declared charset with the in-document
+	// HTML meta charset. A common real-world pattern is a sender that misdeclares
+	// charset=ISO-8859-1 in the MIME header while the document bytes are actually
+	// valid UTF-8 and a <meta charset> inside the document correctly says UTF-8.
+	// The Windows-1252 decoder (htmlindex's canonical ISO-8859-1) would then
+	// produce mojibake that happens to be valid UTF-8 (e.g. 0xC3 0xBC -> "Ã¼"),
+	// silently bypassing the isUTF8OrASCII guard below.
+	//
+	// When the MIME charset is a single-byte Latin encoding, the CTE-decoded bytes
+	// are valid UTF-8, AND an HTML meta in the document declares UTF-8, we trust
+	// the meta and skip the charset conversion — the bytes are used as-is.
+	//
+	// The check is conservative: if the bytes are NOT valid UTF-8 (a genuinely
+	// ISO-8859-1 document with high-range bytes like 0xFC for ü) the condition
+	// is false and the original conversion path runs unchanged.
+	effectiveCharset := charset
+	if contentType == "text/html" && isLatinSingleByteCharset(charset) && isUTF8OrASCII(string(cteDecoded)) {
+		if metaCS := extractHTMLMetaCharset(cteDecoded); isUTF8Charset(metaCS) {
+			effectiveCharset = "utf-8" // charsetDecoder returns nil for utf-8; conversion is skipped
+		}
+	}
+
 	// Charset-convert to UTF-8.
-	utf8Bytes, charsetErr := convertCharset(cteDecoded, charset)
+	utf8Bytes, charsetErr := convertCharset(cteDecoded, effectiveCharset)
 	if charsetErr != nil {
 		if w.opts.StrictCharset {
 			return "", 0, false, nil, &ParseError{
