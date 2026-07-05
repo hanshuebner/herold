@@ -46,7 +46,11 @@ func RewriteForPlaceholder(raw []byte) ([]byte, error) {
 
 // placeholderifyNode replaces every external src / srcset / href on
 // img / source / image elements with the placeholder. CSS
-// background-image url(...) values are likewise rewritten.
+// background-image url(...) values are likewise rewritten. The
+// deprecated HTML background= attribute on table elements is also
+// placeholderified so that newsletter images supplied via that
+// mechanism show a consistent placeholder while the background
+// internalize worker prepares the rewritten blob.
 func placeholderifyNode(n *html.Node) {
 	switch n.Data {
 	case "img":
@@ -72,6 +76,11 @@ func placeholderifyNode(n *html.Node) {
 		}
 		if isExternal(attrValue(n, "xlink:href")) {
 			setAttr(n, "xlink:href", PlaceholderDataURI)
+		}
+	case "body", "table", "tr", "td", "th":
+		// Placeholderify deprecated HTML background= attribute on table elements.
+		if isExternal(attrValue(n, "background")) {
+			setAttr(n, "background", PlaceholderDataURI)
 		}
 	}
 	if styleVal := attrValue(n, "style"); styleVal != "" {

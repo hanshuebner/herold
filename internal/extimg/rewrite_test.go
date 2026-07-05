@@ -160,3 +160,87 @@ func TestExtractCandidates_MalformedHTMLDoesNotCrash(t *testing.T) {
 		t.Fatalf("missed well-formed url among malformed input: %+v", cands)
 	}
 }
+
+// TestExtractCandidates_BackgroundAttr verifies that the deprecated HTML
+// background= attribute on table elements is extracted as a candidate URL.
+// This covers the newsletter pattern where large content images are supplied
+// via <td background="https://..."> rather than <img src="...">.
+func TestExtractCandidates_BackgroundAttr(t *testing.T) {
+	htmlStr := `<table>
+		<tr>
+			<td background="https://img.srv2.de/assets/bm/a.png" width="650">
+				<img src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" width="650" height="366">
+			</td>
+		</tr>
+		<tr>
+			<td background="https://img.srv2.de/assets/bm/b.png">text</td>
+		</tr>
+		<tbody>
+			<tr>
+				<th background="https://img.srv2.de/assets/bm/header.png">header</th>
+			</tr>
+		</tbody>
+	</table>
+	<body background="https://img.srv2.de/assets/bm/body-bg.png"></body>`
+
+	cands, err := extractCandidates([]byte(htmlStr))
+	if err != nil {
+		t.Fatalf("extractCandidates: %v", err)
+	}
+	wantURLs := map[string]bool{
+		"https://img.srv2.de/assets/bm/a.png":       true,
+		"https://img.srv2.de/assets/bm/b.png":       true,
+		"https://img.srv2.de/assets/bm/header.png":  true,
+		"https://img.srv2.de/assets/bm/body-bg.png": true,
+	}
+	got := map[string]bool{}
+	for _, c := range cands {
+		got[c.URL] = true
+	}
+	for u := range wantURLs {
+		if !got[u] {
+			t.Errorf("missing background= URL %q; got: %v", u, cands)
+		}
+	}
+	// The 1x1 transparent GIF data URI must NOT appear as a candidate.
+	for _, c := range cands {
+		if strings.HasPrefix(c.URL, "data:") {
+			t.Errorf("data: URI leaked into candidates: %q", c.URL)
+		}
+	}
+}
+
+// TestRewriteHTML_BackgroundAttr verifies that background= URLs are rewritten
+// to cid: references when a cidMap entry is present.
+func TestRewriteHTML_BackgroundAttr(t *testing.T) {
+	htmlStr := `<table><tr><td background="https://img.test/hero.png" width="650">content</td></tr></table>`
+	cidMap := map[string]string{
+		"https://img.test/hero.png": "hero@herold",
+	}
+	out, err := rewriteHTML([]byte(htmlStr), cidMap)
+	if err != nil {
+		t.Fatalf("rewriteHTML: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `background="cid:hero@herold"`) {
+		t.Fatalf("background= attr not rewritten; got: %s", s)
+	}
+	if strings.Contains(s, "https://img.test/hero.png") {
+		t.Fatalf("original background= URL still present: %s", s)
+	}
+}
+
+// TestRewriteHTML_BackgroundAttr_UnmappedUntouched verifies that a background=
+// URL absent from cidMap is left unchanged (failed-fetch preservation).
+// The <td> must be inside a <table> so the HTML parser preserves it.
+func TestRewriteHTML_BackgroundAttr_UnmappedUntouched(t *testing.T) {
+	htmlStr := `<table><tr><td background="https://img.test/hero.png">content</td></tr></table>`
+	cidMap := map[string]string{} // empty — fetch never completed
+	out, err := rewriteHTML([]byte(htmlStr), cidMap)
+	if err != nil {
+		t.Fatalf("rewriteHTML: %v", err)
+	}
+	if !strings.Contains(string(out), "https://img.test/hero.png") {
+		t.Fatalf("unmapped background= URL was removed: %s", out)
+	}
+}

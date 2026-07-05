@@ -99,6 +99,12 @@ func candidateURLsFromNode(n *html.Node) []string {
 		// SVG <image href="..."> and legacy xlink:href.
 		out = appendIfExternal(out, attrValue(n, "href"))
 		out = appendIfExternal(out, attrValue(n, "xlink:href"))
+	case "body", "table", "tr", "td", "th":
+		// The HTML background= attribute on table elements is a deprecated but
+		// widely-used technique in email newsletters (e.g. background images
+		// supplied via <td background="https://..."> rather than img src= or
+		// CSS url()). Extract those URLs so they are eligible for internalization.
+		out = appendIfExternal(out, attrValue(n, "background"))
 	}
 	if styleVal := attrValue(n, "style"); styleVal != "" {
 		for _, u := range cssExtractURLs(styleVal) {
@@ -123,6 +129,9 @@ func rewriteNode(n *html.Node, cidMap map[string]string) {
 	case "image":
 		setAttrIfMapped(n, "href", cidMap)
 		setAttrIfMapped(n, "xlink:href", cidMap)
+	case "body", "table", "tr", "td", "th":
+		// Rewrite deprecated HTML background= attribute on table elements.
+		setAttrIfMapped(n, "background", cidMap)
 	}
 	if styleVal := attrValue(n, "style"); styleVal != "" {
 		newStyle := cssRewriteURLs(styleVal, cidMap)

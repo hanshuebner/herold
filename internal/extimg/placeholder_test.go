@@ -96,3 +96,48 @@ func TestRewriteForPlaceholder_NotHTMLReturnedUnchanged(t *testing.T) {
 		t.Fatalf("placeholder leaked into plain text: %s", got)
 	}
 }
+
+// TestRewriteForPlaceholder_BackgroundAttr verifies that the deprecated HTML
+// background= attribute on table/td/tr/th elements is placeholderified.
+// This covers newsletters that supply content images via <td background="https://...">
+// rather than <img src="...">.
+func TestRewriteForPlaceholder_BackgroundAttr(t *testing.T) {
+	in := []byte(`<table>
+		<tr>
+			<td background="https://img.srv2.de/assets/bm/hero.png" width="650">
+				<img src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" width="650" height="366">
+			</td>
+		</tr>
+	</table>`)
+	got, err := RewriteForPlaceholder(in)
+	if err != nil {
+		t.Fatalf("RewriteForPlaceholder: %v", err)
+	}
+	s := string(got)
+	if strings.Contains(s, "https://img.srv2.de") {
+		t.Fatalf("external background= URL survived placeholderify: %s", s)
+	}
+	if !strings.Contains(s, PlaceholderDataURI) {
+		t.Fatalf("placeholder data URI not present in output: %s", s)
+	}
+	// The original 1x1 transparent GIF in <img src=data:...> must be preserved.
+	if !strings.Contains(s, "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==") {
+		t.Fatalf("original inline data: img src was modified: %s", s)
+	}
+}
+
+// TestRewriteForPlaceholder_BackgroundAttr_InlinePreserved verifies that a
+// cid: background= value (already inline / already-internalized) is NOT
+// replaced with the placeholder. The <td> must be inside a <table> so the
+// HTML parser does not strip the element.
+func TestRewriteForPlaceholder_BackgroundAttr_InlinePreserved(t *testing.T) {
+	in := []byte(`<table><tr><td background="cid:bg@example">content</td></tr></table>`)
+	got, err := RewriteForPlaceholder(in)
+	if err != nil {
+		t.Fatalf("RewriteForPlaceholder: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "cid:bg@example") {
+		t.Fatalf("cid: background= was replaced (should be preserved): %s", s)
+	}
+}
