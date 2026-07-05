@@ -106,6 +106,11 @@ _SW_FILE="${SUITE_DST}/sw.js"
 _SW_BUILD="${GITHUB_SHA:+${GITHUB_SHA:0:7}}"
 _SW_BUILD="${_SW_BUILD:-dev}"
 _SW_TMP=$(mktemp)
+if ! grep -q '__SW_BUILD__' "${_SW_FILE}"; then
+  echo "build-web.sh: ${_SW_FILE} is missing the __SW_BUILD__ placeholder" >&2
+  echo "  The sed stamp would be a no-op; sw.js would be byte-identical across deploys." >&2
+  exit 1
+fi
 sed "s/__SW_BUILD__/${_SW_BUILD}/" "${_SW_FILE}" > "${_SW_TMP}" && mv "${_SW_TMP}" "${_SW_FILE}"
 echo "build-web.sh: sw.js stamped with build ${_SW_BUILD}"
 
@@ -133,6 +138,11 @@ echo "build-web.sh: admin SPA installed at ${ADMIN_DST}/"
 #     browser's byte-comparison update check detects a new worker on every
 #     deploy (same rationale as step 4b for the suite SW).
 _ADMIN_SW_FILE="${ADMIN_DST}/sw.js"
+if ! grep -q '__SW_BUILD__' "${_ADMIN_SW_FILE}"; then
+  echo "build-web.sh: ${_ADMIN_SW_FILE} is missing the __SW_BUILD__ placeholder" >&2
+  echo "  The sed stamp would be a no-op; admin sw.js would be byte-identical across deploys." >&2
+  exit 1
+fi
 sed "s/__SW_BUILD__/${_SW_BUILD}/" "${_ADMIN_SW_FILE}" > "${_SW_TMP}" && mv "${_SW_TMP}" "${_ADMIN_SW_FILE}"
 echo "build-web.sh: admin sw.js stamped with build ${_SW_BUILD}"
 
