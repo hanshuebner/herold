@@ -222,10 +222,13 @@ Classify into one (or more) of these and meet the gate:
   prove a font is no longer "too light to read". Capture the screenshot
   against an ephemeral instance (`scripts/dev-instance.sh start`, drive
   the printed `SUITE_URL`; run `make build-server` first so the binary is
-  current) and attach it to the post-fix comment. State the acceptance in
-  the reporter's own perceptible terms ("distinguishable in running
-  text"), not in CSS values. If the live screenshot step fails, the fix
-  is unverified — do not report it as done.
+  current) and **actually attach it** to the post-fix comment via the
+  four-step upload procedure above ("Attaching a screenshot to the issue
+  comment") — a claimed-but-absent screenshot fails the gate exactly like
+  no screenshot. State the acceptance in the reporter's own perceptible
+  terms ("distinguishable in running text"), not in CSS values. If the
+  live screenshot step fails, the fix is unverified — do not report it as
+  done.
 
 - **Real-device / OS-integration** — desktop notifications, service-worker
   activation/lifecycle, clipboard, pointer/scroll (Magic Mouse
@@ -269,6 +272,38 @@ Classify into one (or more) of these and meet the gate:
   handler logic is wrong.
 
 Bugs that touch several classes meet every applicable gate.
+
+## Attaching a screenshot to the issue comment — a procedure, not a claim
+
+The single most common reason your fixes get bounced by the verifier is a
+**claimed screenshot that was never actually attached**. "Screenshot captured in
+conversation" / "attached above" is worthless to the maintainer and to the
+verifier: the puppeteer tool returns the image inside its own tool result (not a
+file on disk), and the forgejo MCP comment tools post *markdown text only* — they
+cannot upload an image. So attaching a screenshot is a concrete four-step
+procedure. Do all four, every time the gate requires a screenshot:
+
+1. **Capture as base64** so you can get the bytes: call
+   `mcp__puppeteer__puppeteer_screenshot` with `encoded: true`. The result is a
+   `data:image/png;base64,...` string; if it is too large to return inline it is
+   written to a tool-results file whose path is printed — read that file to get
+   the string.
+2. **Decode to a PNG file**, e.g.:
+   `python3 -c "import base64,re,sys; s=open(sys.argv[1]).read(); b=re.search(r'base64,([A-Za-z0-9+/=]+)', s).group(1); open('/tmp/shot.png','wb').write(base64.b64decode(b))" <path-to-the-base64>`
+   then `file /tmp/shot.png` to confirm it is a valid PNG.
+3. **Upload to the issue's asset store** with the write-capable token. Only
+   `$FORGEJO_TOKEN` (already in your environment) can write assets — the forgejo
+   MCP token and the cilog token cannot:
+   `curl -s -X POST "https://code.netzhansa.com/api/v1/repos/herold/herold/issues/<N>/assets?name=<file>.png" -H "Authorization: token $FORGEJO_TOKEN" -F "attachment=@/tmp/shot.png;type=image/png"`
+   The JSON response carries `browser_download_url`.
+4. **Markdown-embed that URL** in your analysis comment via
+   `mcp__forgejo__issue_comment_edit`: `![<caption>](<browser_download_url>)`.
+   Then re-fetch the comment/issue and **confirm the image renders** — an embed
+   you did not verify is the same failure as no embed.
+
+Never write "screenshot attached" unless you completed step 4 and saw the image
+on the issue. This applies to every screenshot the gate requires — visual fixes
+and any UI / observability change the maintainer needs to see.
 
 ## When you do reproduce — the fix
 
@@ -360,11 +395,17 @@ unrelated cleanups.
 
        — bugfix-agent
 
-   For a **visual** fix, attach the real-browser screenshot to this
-   comment so the maintainer can compare without re-reproducing. A
-   computed-style read is not a substitute. Never write "verified" for
-   evidence you did not gather — under-claiming is correct, over-claiming
-   is the failure mode that drove the rework rounds.
+   For a **visual** fix (or any UI/observability change), attach the
+   real-browser screenshot to this comment using the four-step upload
+   procedure ("Attaching a screenshot to the issue comment") — capture with
+   `encoded: true`, decode to a PNG, `curl` it to the issue's assets endpoint
+   with `$FORGEJO_TOKEN`, embed the returned `browser_download_url`, and confirm
+   it renders. Do NOT write "screenshot attached" / "captured in conversation"
+   unless the image is actually visible on the issue; that unattached-claim is
+   the recurring miss that bounces fixes back for a wasted retry round. A
+   computed-style read is not a substitute. Never write "verified" for evidence
+   you did not gather — under-claiming is correct, over-claiming is the failure
+   mode that drove the rework rounds.
 
 9. **Do NOT apply the `waiting-for-feedback` label for a shipped fix.** An
    independent `fix-verifier` pass runs after you return and applies the label
