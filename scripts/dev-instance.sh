@@ -435,8 +435,26 @@ client_secret_ref = "file:$dir/data/fakeidp-secret.txt"
 auth_url = "$FAKEIDP_AUTH_URL"
 token_url = "$FAKEIDP_TOKEN_URL"
 scopes = ["https://mail.google.com/"]
+
+# Aliases for the fake IdP using the production provider ids so the Suite
+# renders the real Gmail / Microsoft 365 hint text during local development
+# and puppeteer verification (re #125). The same fake backend handles all
+# three ids; only the id (the TOML key) changes.
+[server.oauth_providers.gmail]
+client_id = "$FAKEIDP_CLIENT_ID"
+client_secret_ref = "file:$dir/data/fakeidp-secret.txt"
+auth_url = "$FAKEIDP_AUTH_URL"
+token_url = "$FAKEIDP_TOKEN_URL"
+scopes = ["https://mail.google.com/"]
+
+[server.oauth_providers.m365]
+client_id = "$FAKEIDP_CLIENT_ID"
+client_secret_ref = "file:$dir/data/fakeidp-secret.txt"
+auth_url = "$FAKEIDP_AUTH_URL"
+token_url = "$FAKEIDP_TOKEN_URL"
+scopes = ["https://outlook.office365.com/IMAP.AccessAsUser.All", "https://outlook.office365.com/SMTP.Send", "offline_access"]
 EOF
-        log "appended [server.oauth_providers.fakeidp] to system.toml"
+        log "appended [server.oauth_providers.fakeidp,gmail,m365] to system.toml"
     fi
 
     # Bootstrap the admin BEFORE starting the server, since
