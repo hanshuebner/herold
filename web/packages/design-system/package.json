@@ -11,6 +11,7 @@
       "default": "./src/index.ts"
     },
     "./Button.svelte": "./src/Button.svelte",
+    "./CodeInput.svelte": "./src/CodeInput.svelte",
     "./index.css": "./src/index.css",
     "./tokens.css": "./src/tokens/tokens.css",
     "./reset.css": "./src/reset.css",

@@ -15,7 +15,7 @@
   import { stepUp } from './step-up.svelte';
   import { t } from '../i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
-  import CodeInput from '../identities/CodeInput.svelte';
+  import CodeInput from '@herold/design-system/CodeInput.svelte';
 
   let code = $state('');
   let lockoutSeconds = $state(0);

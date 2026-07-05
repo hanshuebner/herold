@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import CodeInput from './CodeInput.svelte';
+import CodeInput from '@herold/design-system/CodeInput.svelte';
 
 afterEach(() => cleanup());
 

@@ -51,7 +51,7 @@
   } from '../../lib/identities/wizard-validators';
   import { t } from '../../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
-  import CodeInput from '../../lib/identities/CodeInput.svelte';
+  import CodeInput from '@herold/design-system/CodeInput.svelte';
   import { IdentitySetError } from '../../lib/mail/store.svelte';
   import type { Identity } from '../../lib/mail/types';
 
