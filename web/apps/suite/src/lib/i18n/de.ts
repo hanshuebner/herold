@@ -1498,7 +1498,7 @@ export const de = {
   'settings.import.status.migrating': 'Migration läuft (vollständige Sicherung)',
   'settings.import.status.migrated': 'Migration abgeschlossen',
   'settings.import.lastSuccess': 'Letzter Abgleich: {date}',
-  'settings.import.neverSynced': 'Noch nicht abgeglichen',
+  'settings.import.neverSynced': 'Erster Abgleich ausstehend',
   'settings.import.lastError': 'Letzter Fehler: {error}',
   'settings.import.backfillHorizon': 'Horizont: {horizon}',
   'settings.import.horizonAllLabel': 'alle E-Mails',
@@ -1537,8 +1537,8 @@ export const de = {
   'settings.import.toast.saved': 'E-Mail-Import konfiguriert.',
   'settings.import.toast.removed': 'E-Mail-Import entfernt.',
   'settings.import.toast.migrationStarted': 'Vollständige Migration gestartet.',
-  'settings.import.migrateBtn': 'Migration abschließen',
-  'settings.import.migrateTitle': 'Migration vom vorgelagerten Server abschließen',
+  'settings.import.migrateBtn': 'Vollständige Migration starten',
+  'settings.import.migrateTitle': 'Vollständige Migration vom vorgelagerten Server starten',
   'settings.import.migrateMessage':
     'Hierdurch wird eine vollständige einmalige Sicherung Ihres vorgelagerten ' +
     'Postfachs durchgeführt (alle E-Mails, kein Horizont), und anschließend ' +

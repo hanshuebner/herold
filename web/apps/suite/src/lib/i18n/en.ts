@@ -1478,7 +1478,7 @@ export const en = {
   'settings.import.status.migrating': 'Migrating (full backfill in progress)',
   'settings.import.status.migrated': 'Migration complete',
   'settings.import.lastSuccess': 'Last sync: {date}',
-  'settings.import.neverSynced': 'Not yet synced',
+  'settings.import.neverSynced': 'First sync pending',
   'settings.import.lastError': 'Last error: {error}',
   'settings.import.backfillHorizon': 'Backfill horizon: {horizon}',
   'settings.import.horizonAllLabel': 'all mail',
@@ -1517,8 +1517,8 @@ export const en = {
   'settings.import.toast.removed': 'Mail import removed.',
   'settings.import.toast.migrationStarted': 'Complete migration started.',
   // Complete migration action (REQ-IMAP-IMP-90)
-  'settings.import.migrateBtn': 'Complete migration',
-  'settings.import.migrateTitle': 'Complete migration from upstream',
+  'settings.import.migrateBtn': 'Start full migration',
+  'settings.import.migrateTitle': 'Start full migration from upstream',
   'settings.import.migrateMessage':
     'This runs a full one-shot backfill of your upstream mailbox (all mail, ' +
     'no horizon), then makes herold authoritative. The upstream connection is ' +
