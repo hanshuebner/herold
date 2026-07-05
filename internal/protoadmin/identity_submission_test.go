@@ -17,16 +17,22 @@ package protoadmin_test
 //   - Probe failure audit emits submission.external.failure category
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +42,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
@@ -1369,7 +1376,9 @@ func TestTestSubmission_ClearsAuthFailedStateOnSuccess(t *testing.T) {
 
 // TestTestSubmission_FreshTokenPreservedAfterInternalRefresh verifies that
 // handleTestSubmission does not clobber a store update made by ExternalTestSender
-// (re #131, stale-token overwrite fix).
+// (re #131, stale-token overwrite fix). Runs on both SQLite and Postgres
+// (STANDARDS §8.4) because the fix touches GetIdentitySubmission +
+// UpsertIdentitySubmission.
 //
 // Scenario: ExternalTestSender simulates the real Submitter.Submit path where
 // accessToken calls Refresher.Refresh — writing updated fields (new OAuthAccessCT,
@@ -1377,74 +1386,272 @@ func TestTestSubmission_ClearsAuthFailedStateOnSuccess(t *testing.T) {
 // pre-test sub on success and overwrites those updated fields with the stale ones.
 // With the fix, it re-reads the current row first, so the sender's writes survive.
 func TestTestSubmission_FreshTokenPreservedAfterInternalRefresh(t *testing.T) {
-	var storeRef store.Metadata
-	var identityRef string
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			var identityRef string
 
-	// Sender simulates what Submitter.Submit does when accessToken calls
-	// Refresher.Refresh: it writes a marker value to the store that the test
-	// verifies was preserved after handleTestSubmission's state upsert.
-	tokenUpdatingSender := func(ctx context.Context, _ store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
-		if storeRef != nil && identityRef != "" {
-			current, cerr := storeRef.GetIdentitySubmission(ctx, identityRef)
-			if cerr == nil {
-				// Use a distinguishable SubmitHost value so we can verify that the
-				// sender's store update survives the state upsert in handleTestSubmission.
-				current.SubmitHost = "refreshed.smtp.example.com"
-				_ = storeRef.UpsertIdentitySubmission(ctx, current)
+			// Sender simulates what Submitter.Submit does when accessToken calls
+			// Refresher.Refresh: it writes a marker value to the store that the test
+			// verifies was preserved after handleTestSubmission's state upsert.
+			tokenUpdatingSender := func(ctx context.Context, _ store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
+				if identityRef != "" {
+					current, cerr := be.fs.Meta().GetIdentitySubmission(ctx, identityRef)
+					if cerr == nil {
+						// Use a distinguishable SubmitHost value so we can verify that the
+						// sender's store update survives the state upsert in handleTestSubmission.
+						current.SubmitHost = "refreshed.smtp.example.com"
+						_ = be.fs.Meta().UpsertIdentitySubmission(ctx, current)
+					}
+				}
+				return extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "test ok"}
+			}
+
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{
+				ExternalTestSender: tokenUpdatingSender,
+			})
+
+			_, adminKey := sh.bootstrap("refresh@example.com")
+
+			res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+			}
+			var who struct {
+				PrincipalID uint64 `json:"principal_id"`
+			}
+			json.Unmarshal(buf, &who)
+			identityRef = sh.insertIdentity(who.PrincipalID, "refresh@example.com")
+
+			// PUT a submission row (SubmitHost = "smtp.example.com" from putSubmissionBody).
+			res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityRef+"/submission", adminKey, putSubmissionBody())
+			if res2.StatusCode != http.StatusNoContent {
+				t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
+			}
+
+			// POST /submission/test — the sender updates SubmitHost in the store to
+			// "refreshed.smtp.example.com" before returning ok.
+			res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityRef+"/submission/test", adminKey, nil)
+			if res3.StatusCode != http.StatusOK {
+				t.Fatalf("POST submission/test: %d: %s", res3.StatusCode, buf3)
+			}
+			var testResp struct {
+				OK bool `json:"ok"`
+			}
+			if err := json.Unmarshal(buf3, &testResp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !testResp.OK {
+				t.Fatalf("test response ok=false; want true")
+			}
+
+			// After the test, the sender's updated SubmitHost must be preserved in the
+			// store — not overwritten by the old value from the pre-test sub. With the
+			// re-read fix, handleTestSubmission reads the current row (which has
+			// SubmitHost="refreshed.smtp.example.com") and only flips state to ok.
+			got, err := be.fs.Meta().GetIdentitySubmission(context.Background(), identityRef)
+			if err != nil {
+				t.Fatalf("GetIdentitySubmission after test: %v", err)
+			}
+			if got.SubmitHost != "refreshed.smtp.example.com" {
+				t.Errorf("SubmitHost = %q after test; want refreshed.smtp.example.com (sender store update must survive state upsert)", got.SubmitHost)
+			}
+			if got.State != store.IdentitySubmissionStateOK {
+				t.Errorf("State = %q after successful test; want ok", got.State)
+			}
+		})
+	}
+}
+
+// TestTestSubmission_SubmitterRefresherWired is the integration test for the
+// root-cause fix in internal/admin/server.go: prebuiltExtSubmitter must have a
+// non-nil Refresher so that an expired OAuth access token (RefreshDue in the
+// past) is refreshed before SMTP AUTH — not presented stale (causing 535) and
+// then succeeding only on a lucky second attempt after the sweeper fires (re
+// #131). Runs on both SQLite and Postgres (STANDARDS §8.4).
+//
+// Fail-without-fix: if Submitter.Refresher is nil (the pre-fix state), accessToken
+// falls through to openAccessToken and returns "stale-access-token"; the scripted
+// SMTP server returns 535; Submit returns OutcomeAuthFailed; the endpoint returns
+// ok=false; the test fails.
+//
+// Pass-with-fix: Refresher is set; accessToken calls Refresher.Refresh against
+// the fake token endpoint; fresh token is sent to SMTP; 235 Accepted; ok=true.
+func TestTestSubmission_SubmitterRefresherWired(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			var tokenEndpointCalls int32
+
+			// Fake token endpoint: returns "fresh-access-token" for any refresh request.
+			tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&tokenEndpointCalls, 1)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token":  "fresh-access-token",
+					"token_type":    "Bearer",
+					"expires_in":    3600,
+					"refresh_token": "same-refresh-token",
+				})
+			}))
+			t.Cleanup(tokenSrv.Close)
+
+			// Scripted SMTP server: accepts XOAUTH2 only with "fresh-access-token".
+			// Any other token causes a 535 so the test fails if the stale token
+			// reaches SMTP (i.e. Refresher was nil and no refresh happened).
+			smtpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { smtpLn.Close() })
+			go func() {
+				for {
+					conn, err := smtpLn.Accept()
+					if err != nil {
+						return
+					}
+					go serveOAuthCheckSMTP(conn, "fresh-access-token")
+				}
+			}()
+
+			// Wire the Refresher onto the Submitter — this mirrors what
+			// internal/admin/server.go must do to prebuiltExtSubmitter.
+			// Without this wiring (Refresher: nil), the test fails.
+			refresher := &extsubmit.Refresher{
+				Meta:    be.fs.Meta(),
+				DataKey: testDataKey,
+			}
+			submitter := &extsubmit.Submitter{
+				DataKey:   testDataKey,
+				HostName:  "client.test",
+				Refresher: refresher,
+			}
+			submitter.SetDialFn(func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return net.Dial("tcp", smtpLn.Addr().String())
+			})
+
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{
+				ExternalTestSender: protoadmin.DefaultTestSenderFromSubmitter(submitter),
+			})
+			_, adminKey := sh.bootstrap("oauth-wired@example.com")
+
+			// Get PrincipalID for insertIdentity.
+			res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+			}
+			var who struct {
+				PrincipalID uint64 `json:"principal_id"`
+			}
+			json.Unmarshal(buf, &who)
+			identityID := sh.insertIdentity(who.PrincipalID, "oauth-wired@example.com")
+
+			// Seal credential material for direct store insertion.
+			staleCT, serr := secrets.Seal(testDataKey, []byte("stale-access-token"))
+			if serr != nil {
+				t.Fatalf("seal stale access token: %v", serr)
+			}
+			refreshCT, rerr := secrets.Seal(testDataKey, []byte("valid-refresh-token"))
+			if rerr != nil {
+				t.Fatalf("seal refresh token: %v", rerr)
+			}
+
+			// Insert the submission row directly — bypassing the PUT endpoint — so we
+			// can set RefreshDue to a past value without the probe running. The stored
+			// access token is deliberately stale; the Refresher must replace it before
+			// the SMTP AUTH step.
+			subRow := store.IdentitySubmission{
+				IdentityID:         identityID,
+				SubmitHost:         "smtp.example.com",
+				SubmitPort:         587,
+				SubmitSecurity:     "none",
+				SubmitAuthMethod:   "oauth2",
+				OAuthAccessCT:      staleCT,
+				OAuthRefreshCT:     refreshCT,
+				OAuthTokenEndpoint: tokenSrv.URL,
+				OAuthClientID:      "oauth-wired@example.com",
+				State:              store.IdentitySubmissionStateAuthFailed,
+				// RefreshDue in the past: accessToken must trigger Refresher.Refresh.
+				RefreshDue: be.clk.Now().Add(-5 * time.Minute),
+			}
+			if err := be.fs.Meta().UpsertIdentitySubmission(context.Background(), subRow); err != nil {
+				t.Fatalf("UpsertIdentitySubmission: %v", err)
+			}
+
+			// POST /submission/test — with a non-nil Refresher, the expired token
+			// is refreshed, SMTP accepts, and ok=true is returned.
+			res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityID+"/submission/test", adminKey, nil)
+			if res3.StatusCode != http.StatusOK {
+				t.Fatalf("POST submission/test: %d: %s", res3.StatusCode, buf3)
+			}
+			var testResp struct {
+				OK     bool   `json:"ok"`
+				Detail string `json:"detail"`
+			}
+			json.Unmarshal(buf3, &testResp)
+			if !testResp.OK {
+				t.Errorf("ok=false (detail=%s); want true — Refresher must have refreshed the expired token before SMTP AUTH", testResp.Detail)
+			}
+			if n := atomic.LoadInt32(&tokenEndpointCalls); n != 1 {
+				t.Errorf("token endpoint called %d times; want exactly 1 (proactive refresh)", n)
+			}
+		})
+	}
+}
+
+// serveOAuthCheckSMTP runs a scripted SMTP server on conn that parses the XOAUTH2
+// initial response and returns 235 if the bearer token matches acceptedToken, or
+// 535 otherwise. Used by TestTestSubmission_SubmitterRefresherWired to
+// distinguish between a refreshed token and the stale one.
+func serveOAuthCheckSMTP(conn net.Conn, acceptedToken string) {
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	bw := bufio.NewWriter(conn)
+	write := func(s string) {
+		bw.WriteString(s + "\r\n")
+		bw.Flush()
+	}
+	readln := func() string {
+		line, _ := br.ReadString('\n')
+		return strings.TrimRight(line, "\r\n")
+	}
+
+	write("220 smtp.example.com ESMTP test")
+	readln() // EHLO
+	write("250-smtp.example.com")
+	write("250 AUTH XOAUTH2")
+	authLine := readln() // AUTH XOAUTH2 <base64-IR>
+
+	// Parse XOAUTH2 IR: user=<email>\x01auth=Bearer <token>\x01\x01
+	var token string
+	if parts := strings.SplitN(authLine, " ", 3); len(parts) == 3 {
+		if decoded, err := base64.StdEncoding.DecodeString(parts[2]); err == nil {
+			ir := string(decoded)
+			if idx := strings.Index(ir, "Bearer "); idx >= 0 {
+				rest := ir[idx+7:]
+				if end := strings.Index(rest, "\x01"); end >= 0 {
+					token = rest[:end]
+				}
 			}
 		}
-		return extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "test ok"}
 	}
 
-	sh := newSubmissionHarnessWithSender(t, tokenUpdatingSender)
-	storeRef = sh.fs.Meta() // set after harness creation; sender closure reads at call time
-
-	_, adminKey := sh.bootstrap("refresh@example.com")
-
-	res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+	if token != acceptedToken {
+		write("535 5.7.8 Username and Password not accepted")
+		return
 	}
-	var who struct {
-		PrincipalID uint64 `json:"principal_id"`
+	write("235 2.7.0 Accepted")
+	readln() // MAIL FROM
+	write("250 ok")
+	readln() // RCPT TO
+	write("250 ok")
+	readln() // DATA
+	write("354 send data")
+	for {
+		if l := readln(); l == "." {
+			break
+		}
 	}
-	json.Unmarshal(buf, &who)
-	identityRef = sh.insertIdentity(who.PrincipalID, "refresh@example.com")
-
-	// PUT a submission row (SubmitHost = "smtp.example.com" from putSubmissionBody).
-	res2, buf2 := sh.doRequest("PUT", "/api/v1/identities/"+identityRef+"/submission", adminKey, putSubmissionBody())
-	if res2.StatusCode != http.StatusNoContent {
-		t.Fatalf("PUT submission: %d: %s", res2.StatusCode, buf2)
-	}
-
-	// POST /submission/test — the sender updates SubmitHost in the store to
-	// "refreshed.smtp.example.com" before returning ok.
-	res3, buf3 := sh.doRequest("POST", "/api/v1/identities/"+identityRef+"/submission/test", adminKey, nil)
-	if res3.StatusCode != http.StatusOK {
-		t.Fatalf("POST submission/test: %d: %s", res3.StatusCode, buf3)
-	}
-	var testResp struct {
-		OK bool `json:"ok"`
-	}
-	if err := json.Unmarshal(buf3, &testResp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !testResp.OK {
-		t.Fatalf("test response ok=false; want true")
-	}
-
-	// After the test, the sender's updated SubmitHost must be preserved in the
-	// store — not overwritten by the old value from the pre-test sub. With the
-	// re-read fix, handleTestSubmission reads the current row (which has
-	// SubmitHost="refreshed.smtp.example.com") and only flips state to ok.
-	got, err := sh.fs.Meta().GetIdentitySubmission(context.Background(), identityRef)
-	if err != nil {
-		t.Fatalf("GetIdentitySubmission after test: %v", err)
-	}
-	if got.SubmitHost != "refreshed.smtp.example.com" {
-		t.Errorf("SubmitHost = %q after test; want refreshed.smtp.example.com (sender store update must survive state upsert)", got.SubmitHost)
-	}
-	if got.State != store.IdentitySubmissionStateOK {
-		t.Errorf("State = %q after successful test; want ok", got.State)
-	}
+	write("250 2.0.0 ok")
+	readln() // QUIT
 }
