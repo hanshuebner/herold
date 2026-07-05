@@ -449,7 +449,15 @@ const CurrentBackupVersion = 1
 //	values. The migration sets every row in a same-MessageID group to
 //	the effective thread of the group's first (lowest id) row. Data-only
 //	migration; no schema change.
-const CurrentSchemaVersion = 70
+//
+// 71 — 0071_identity_submission_username.sql (re #126). Adds
+//
+//	submit_username TEXT NOT NULL DEFAULT '' to identity_submission so
+//	the SMTP AUTH (SASL) username for password auth can differ from the
+//	identity's email address. Empty string means "use the identity email
+//	at auth time". Not used for oauth2 (XOAUTH2 user stays the email).
+//	Column-only migration.
+const CurrentSchemaVersion = 71
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

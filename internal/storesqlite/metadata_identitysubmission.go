@@ -16,6 +16,7 @@ import (
 
 const identitySubmissionSelectCols = `
 	identity_id, submit_host, submit_port, submit_security, submit_auth_method,
+	submit_username,
 	password_ct, oauth_access_ct, oauth_refresh_ct,
 	oauth_token_endpoint, oauth_client_id, oauth_client_secret_ct,
 	oauth_expires_at_us, refresh_due_us,
@@ -25,6 +26,7 @@ func scanIdentitySubmission(row rowLike) (store.IdentitySubmission, error) {
 	var (
 		identityID, host, security, authMethod string
 		port                                   int64
+		submitUsername                         string
 		passwordCT, accessCT, refreshCT        []byte
 		tokenEndpoint, clientID                sql.NullString
 		clientSecretCT                         []byte
@@ -35,6 +37,7 @@ func scanIdentitySubmission(row rowLike) (store.IdentitySubmission, error) {
 
 	err := row.Scan(
 		&identityID, &host, &port, &security, &authMethod,
+		&submitUsername,
 		&passwordCT, &accessCT, &refreshCT,
 		&tokenEndpoint, &clientID, &clientSecretCT,
 		&expiresUs, &refreshDueUs,
@@ -49,6 +52,7 @@ func scanIdentitySubmission(row rowLike) (store.IdentitySubmission, error) {
 		SubmitPort:          int(port),
 		SubmitSecurity:      security,
 		SubmitAuthMethod:    authMethod,
+		SubmitUsername:      submitUsername,
 		PasswordCT:          nullableBytes(passwordCT),
 		OAuthAccessCT:       nullableBytes(accessCT),
 		OAuthRefreshCT:      nullableBytes(refreshCT),
@@ -107,16 +111,18 @@ func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.Ident
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO identity_submission
 			  (identity_id, submit_host, submit_port, submit_security, submit_auth_method,
+			   submit_username,
 			   password_ct, oauth_access_ct, oauth_refresh_ct,
 			   oauth_token_endpoint, oauth_client_id, oauth_client_secret_ct,
 			   oauth_expires_at_us, refresh_due_us,
 			   state, state_at_us, created_at_us, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(identity_id) DO UPDATE SET
 			  submit_host            = excluded.submit_host,
 			  submit_port            = excluded.submit_port,
 			  submit_security        = excluded.submit_security,
 			  submit_auth_method     = excluded.submit_auth_method,
+			  submit_username        = excluded.submit_username,
 			  password_ct            = excluded.password_ct,
 			  oauth_access_ct        = excluded.oauth_access_ct,
 			  oauth_refresh_ct       = excluded.oauth_refresh_ct,
@@ -130,6 +136,7 @@ func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.Ident
 			  updated_at_us          = ?`,
 			sub.IdentityID,
 			sub.SubmitHost, sub.SubmitPort, sub.SubmitSecurity, sub.SubmitAuthMethod,
+			sub.SubmitUsername,
 			nullOrBytes(sub.PasswordCT),
 			nullOrBytes(sub.OAuthAccessCT),
 			nullOrBytes(sub.OAuthRefreshCT),

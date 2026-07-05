@@ -219,13 +219,25 @@ func (s *Submitter) buildSession(ctx context.Context, sub store.IdentitySubmissi
 	return sess, conn, nil
 }
 
+// passwordAuthUser returns the SMTP AUTH username for password auth: it
+// prefers sub.SubmitUsername when set, and falls back to emailFallback (the
+// identity's email address) otherwise.
+func passwordAuthUser(sub store.IdentitySubmission, emailFallback string) string {
+	if sub.SubmitUsername != "" {
+		return sub.SubmitUsername
+	}
+	return emailFallback
+}
+
 // auth performs the configured SASL AUTH exchange for sess.
-// authUser is the SMTP AUTH username — for password auth it is the account's
-// email address (typically the From address); for oauth2 it is the XOAUTH2
-// user= field (also the email address).
-func (s *Submitter) auth(ctx context.Context, sess *session.Session, sub store.IdentitySubmission, authUser string) error {
+// emailFallback is the identity's email address used as the AUTH username
+// when no explicit override is configured. For password auth the username is
+// sub.SubmitUsername when set, otherwise emailFallback. For oauth2 the XOAUTH2
+// user= field is emailFallback when non-empty, falling back to sub.OAuthClientID.
+func (s *Submitter) auth(ctx context.Context, sess *session.Session, sub store.IdentitySubmission, emailFallback string) error {
 	switch sub.SubmitAuthMethod {
 	case "password":
+		authUser := passwordAuthUser(sub, emailFallback)
 		pass, err := openPassword(s.DataKey, sub)
 		if err != nil {
 			return err
@@ -244,6 +256,13 @@ func (s *Submitter) auth(ctx context.Context, sess *session.Session, sub store.I
 		return sess.AuthLogin(authUser, string(pass))
 
 	case "oauth2":
+		// XOAUTH2 user= field: use the supplied email when present; fall back
+		// to the per-row OAuthClientID for callers (Probe) that pass an empty
+		// string when no identity address is known.
+		oauthUser := emailFallback
+		if oauthUser == "" {
+			oauthUser = sub.OAuthClientID
+		}
 		token, err := s.accessToken(ctx, sub)
 		if err != nil {
 			return fmt.Errorf("access token: %w", err)
@@ -253,7 +272,7 @@ func (s *Submitter) auth(ctx context.Context, sess *session.Session, sub store.I
 				token[i] = 0
 			}
 		}()
-		return sess.AuthXOAUTH2(authUser, string(token))
+		return sess.AuthXOAUTH2(oauthUser, string(token))
 
 	default:
 		return fmt.Errorf("unsupported submit_auth_method %q", sub.SubmitAuthMethod)
@@ -286,8 +305,10 @@ func (s *Submitter) Submit(ctx context.Context, sub store.IdentitySubmission, en
 		_ = conn.Close()
 	}()
 
-	// AUTH. The username for both password and oauth2 is the From address,
-	// which is the same as env.MailFrom (the identity's email address).
+	// AUTH. Pass env.MailFrom as the email fallback: auth() uses
+	// sub.SubmitUsername for password auth when set, otherwise env.MailFrom;
+	// for oauth2 auth() uses env.MailFrom as the XOAUTH2 user= field.
+	// MAIL FROM always uses env.MailFrom regardless of the AUTH username.
 	if err := s.auth(ctx, sess, sub, env.MailFrom); err != nil {
 		if isAuthError(err) {
 			out.State = OutcomeAuthFailed
@@ -385,14 +406,10 @@ func (s *Submitter) Probe(ctx context.Context, sub store.IdentitySubmission, fro
 		_ = conn.Close()
 	}()
 
-	// AUTH username: prefer the identity's own address (the canonical
-	// submission user). Fall back to the per-row OAuthClientID when the
-	// caller did not supply an address.
-	probeUser := fromAddr
-	if probeUser == "" {
-		probeUser = sub.OAuthClientID
-	}
-	if err := s.auth(ctx, sess, sub, probeUser); err != nil {
+	// AUTH: pass fromAddr as the email fallback. For password auth, auth()
+	// uses sub.SubmitUsername when set, otherwise fromAddr. For oauth2,
+	// auth() uses fromAddr when non-empty and falls back to sub.OAuthClientID.
+	if err := s.auth(ctx, sess, sub, fromAddr); err != nil {
 		if isAuthError(err) {
 			out.State = OutcomeAuthFailed
 			out.Diagnostic = fmt.Sprintf("auth probe: %s", err.Error())

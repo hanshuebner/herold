@@ -17,6 +17,7 @@ import (
 
 const identitySubmissionSelectColsPG = `
 	identity_id, submit_host, submit_port, submit_security, submit_auth_method,
+	submit_username,
 	password_ct, oauth_access_ct, oauth_refresh_ct,
 	oauth_token_endpoint, oauth_client_id, oauth_client_secret_ct,
 	oauth_expires_at_us, refresh_due_us,
@@ -26,6 +27,7 @@ func scanIdentitySubmissionPG(row pgx.Row) (store.IdentitySubmission, error) {
 	var (
 		identityID, host, security, authMethod string
 		port                                   int64
+		submitUsername                         string
 		passwordCT, accessCT, refreshCT        []byte
 		tokenEndpoint, clientID                *string
 		clientSecretCT                         []byte
@@ -35,6 +37,7 @@ func scanIdentitySubmissionPG(row pgx.Row) (store.IdentitySubmission, error) {
 	)
 	err := row.Scan(
 		&identityID, &host, &port, &security, &authMethod,
+		&submitUsername,
 		&passwordCT, &accessCT, &refreshCT,
 		&tokenEndpoint, &clientID, &clientSecretCT,
 		&expiresUs, &refreshDueUs,
@@ -49,6 +52,7 @@ func scanIdentitySubmissionPG(row pgx.Row) (store.IdentitySubmission, error) {
 		SubmitPort:          int(port),
 		SubmitSecurity:      security,
 		SubmitAuthMethod:    authMethod,
+		SubmitUsername:      submitUsername,
 		PasswordCT:          nilSafeBytes(passwordCT),
 		OAuthAccessCT:       nilSafeBytes(accessCT),
 		OAuthRefreshCT:      nilSafeBytes(refreshCT),
@@ -107,16 +111,18 @@ func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.Ident
 		_, err := tx.Exec(ctx, `
 			INSERT INTO identity_submission
 			  (identity_id, submit_host, submit_port, submit_security, submit_auth_method,
+			   submit_username,
 			   password_ct, oauth_access_ct, oauth_refresh_ct,
 			   oauth_token_endpoint, oauth_client_id, oauth_client_secret_ct,
 			   oauth_expires_at_us, refresh_due_us,
 			   state, state_at_us, created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 			ON CONFLICT (identity_id) DO UPDATE SET
 			  submit_host            = EXCLUDED.submit_host,
 			  submit_port            = EXCLUDED.submit_port,
 			  submit_security        = EXCLUDED.submit_security,
 			  submit_auth_method     = EXCLUDED.submit_auth_method,
+			  submit_username        = EXCLUDED.submit_username,
 			  password_ct            = EXCLUDED.password_ct,
 			  oauth_access_ct        = EXCLUDED.oauth_access_ct,
 			  oauth_refresh_ct       = EXCLUDED.oauth_refresh_ct,
@@ -127,9 +133,10 @@ func (m *metadata) UpsertIdentitySubmission(ctx context.Context, sub store.Ident
 			  refresh_due_us         = EXCLUDED.refresh_due_us,
 			  state                  = EXCLUDED.state,
 			  state_at_us            = EXCLUDED.state_at_us,
-			  updated_at_us          = $17`,
+			  updated_at_us          = $18`,
 			sub.IdentityID,
 			sub.SubmitHost, sub.SubmitPort, sub.SubmitSecurity, sub.SubmitAuthMethod,
+			sub.SubmitUsername,
 			pgNullBytes(sub.PasswordCT),
 			pgNullBytes(sub.OAuthAccessCT),
 			pgNullBytes(sub.OAuthRefreshCT),

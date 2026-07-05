@@ -82,15 +82,23 @@ type Options struct {
 	// Hostname is announced in the greeting and EHLO reply. Defaults to
 	// "smtp.fake.test".
 	Hostname string
+	// ExpectUsername, when non-empty, causes the server to respond with 535
+	// to any AUTH PLAIN or AUTH LOGIN command whose presented username does
+	// not match this value. The zero value disables the check (accept-any),
+	// preserving the existing behavior so unrelated tests are unaffected.
+	// Not applied to XOAUTH2 (the XOAUTH2 user= field is asserted at the
+	// test level).
+	ExpectUsername string
 }
 
 // Server is a running fake SMTP submission server.
 type Server struct {
-	ln       net.Listener
-	security Security
-	hostname string
-	tlsCfg   *tls.Config
-	certPEM  []byte
+	ln             net.Listener
+	security       Security
+	hostname       string
+	tlsCfg         *tls.Config
+	certPEM        []byte
+	expectUsername string
 
 	mu         sync.Mutex
 	messages   []Message
@@ -112,10 +120,11 @@ func NewServer(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("fakesmtp: listen: %w", err)
 	}
 	s := &Server{
-		ln:       ln,
-		security: opts.Security,
-		hostname: opts.Hostname,
-		closed:   make(chan struct{}),
+		ln:             ln,
+		security:       opts.Security,
+		hostname:       opts.Hostname,
+		expectUsername: opts.ExpectUsername,
+		closed:         make(chan struct{}),
 	}
 	if opts.Security != Plain {
 		tlsCfg, certPEM, err := selfSignedTLSNoT(opts.Hostname)
@@ -213,6 +222,12 @@ func (s *Server) authRejected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.rejectAuth
+}
+
+// usernameRejected returns true when ExpectUsername is set and the presented
+// username does not match. Called after credential decoding, before accepting.
+func (s *Server) usernameRejected(presented string) bool {
+	return s.expectUsername != "" && presented != s.expectUsername
 }
 
 // Messages returns a snapshot of every accepted message.
@@ -406,7 +421,7 @@ func (s *Server) handleAuth(sess *session, rest string, write func(string), read
 			ir = line
 		}
 		user, secret := decodePlain(ir)
-		if s.authRejected() {
+		if s.authRejected() || s.usernameRejected(user) {
 			write("535 5.7.8 authentication credentials invalid")
 			return
 		}
@@ -424,12 +439,13 @@ func (s *Server) handleAuth(sess *session, rest string, write func(string), read
 		if !ok {
 			return
 		}
-		if s.authRejected() {
+		loginUser := string(mustDecode(userB64))
+		if s.authRejected() || s.usernameRejected(loginUser) {
 			write("535 5.7.8 authentication credentials invalid")
 			return
 		}
 		sess.authMech = "LOGIN"
-		sess.authID = string(mustDecode(userB64))
+		sess.authID = loginUser
 		sess.authSec = string(mustDecode(passB64))
 		write("235 2.7.0 authentication successful")
 

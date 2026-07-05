@@ -1469,6 +1469,10 @@ type IdentitySubmission struct {
 	// OAuthTokenEndpoint is the token endpoint URL for OAuth refresh.
 	// Empty when SubmitAuthMethod == "password".
 	OAuthTokenEndpoint string
+	// SubmitUsername is the SMTP AUTH (SASL) username for password auth.
+	// Empty means "default to the identity's email address at auth time".
+	// Not used for oauth2 (XOAUTH2 user stays the email address).
+	SubmitUsername string
 	// OAuthClientID is the OAuth client identifier. Empty when
 	// SubmitAuthMethod == "password".
 	OAuthClientID string

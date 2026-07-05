@@ -303,10 +303,10 @@ func (s *Server) handlePutSubmission(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sub.PasswordCT = ct
-		// Use AuthUser as the probe user if provided.
-		if req.AuthUser != "" {
-			sub.OAuthClientID = req.AuthUser
-		}
+		// Store the explicit SMTP AUTH username for password auth. Empty
+		// means "fall back to the identity email at auth time" (the default
+		// for providers that use the email address as the SASL username).
+		sub.SubmitUsername = req.AuthUser
 	case "oauth2":
 		at, serr := secrets.Seal(dataKey, []byte(req.OAuthAccessToken))
 		if serr != nil {

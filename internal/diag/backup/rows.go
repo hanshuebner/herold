@@ -882,11 +882,14 @@ type PushSubscriptionRow struct {
 // as opaque []byte (base64 in JSONL). All BLOB columns are NULLable in the
 // schema (absent credential type means unused auth method).
 type IdentitySubmissionRow struct {
-	IdentityID          string  `json:"identity_id"`
-	SubmitHost          string  `json:"submit_host"`
-	SubmitPort          int64   `json:"submit_port"`
-	SubmitSecurity      string  `json:"submit_security"`
-	SubmitAuthMethod    string  `json:"submit_auth_method"`
+	IdentityID       string `json:"identity_id"`
+	SubmitHost       string `json:"submit_host"`
+	SubmitPort       int64  `json:"submit_port"`
+	SubmitSecurity   string `json:"submit_security"`
+	SubmitAuthMethod string `json:"submit_auth_method"`
+	// SubmitUsername is the SMTP AUTH (SASL) username for password auth
+	// (migration 0071, re #126). Empty string means "use the identity email".
+	SubmitUsername      string  `json:"submit_username,omitempty" default:""`
 	PasswordCT          []byte  `json:"password_ct,omitempty" nullable:"true"`
 	OAuthAccessCT       []byte  `json:"oauth_access_ct,omitempty" nullable:"true"`
 	OAuthRefreshCT      []byte  `json:"oauth_refresh_ct,omitempty" nullable:"true"`
