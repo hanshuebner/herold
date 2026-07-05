@@ -316,15 +316,16 @@ class MailStore {
     //   - creations or destroys → list membership may have changed.
     //   - updates only → list shape unchanged; per-row data refreshed
     //     transparently when the Email/get below repopulates `emails`.
+    // Routed through #refreshFolderSoon() so a burst of Email state
+    // pushes (e.g. an IMAP import) collapses into a single round-trip
+    // rather than one per message. The in-place path in #refreshFolderSoon
+    // updates listEmailIds atomically after the query returns, so the
+    // visible list never blanks during the quiet-window delay (issue #127).
     if (this.listLoadStatus === 'ready') {
       const listMayHaveChanged =
         delta === null || delta.created.size > 0 || delta.destroyed.size > 0;
       if (listMayHaveChanged) {
-        tasks.push(
-          this.refreshFolder().catch((err) => {
-            console.error('list refresh after state change failed', err);
-          }),
-        );
+        this.#refreshFolderSoon();
       }
     }
 
@@ -1626,12 +1627,146 @@ class MailStore {
     return this.loadFolder('inbox');
   }
 
-  /** Force a refresh of the current folder view. Drops cached state. */
+  /**
+   * Force a refresh of the current folder view.
+   *
+   * When the list is already showing ('ready'), the refresh runs in-place:
+   * the visible rows stay on screen while the replacement query is in
+   * flight, and listEmailIds / emails / threads are swapped atomically
+   * only when the response arrives. This prevents the blank-and-skeleton
+   * flash that the old clear-then-load path produced (issue #127).
+   *
+   * When the list is not yet loaded (idle/error) the method falls back to
+   * a full reload via loadFolder, which does the normal loading transition.
+   */
   async refreshFolder(): Promise<void> {
+    if (this.listLoadStatus === 'ready') {
+      await this.#refreshFolderInPlace();
+    } else {
+      const folder = this.listFolder;
+      this.listLoadStatus = 'idle';
+      this.listEmailIds = [];
+      await this.loadFolder(folder);
+    }
+  }
+
+  /**
+   * Re-query the current folder and swap in fresh state atomically.
+   *
+   * The list status remains 'ready' and listEmailIds is left unchanged
+   * while the query is in flight. On success the three state cells
+   * (emails, listEmailIds, threads) are updated together; on error
+   * listLoadStatus flips to 'error' so the retry button appears.
+   *
+   * Only valid to call when listLoadStatus === 'ready' (mailboxes are
+   * therefore already loaded).
+   */
+  async #refreshFolderInPlace(): Promise<void> {
     const folder = this.listFolder;
-    this.listLoadStatus = 'idle';
-    this.listEmailIds = [];
-    await this.loadFolder(folder);
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+
+    let filter: Record<string, unknown> | undefined;
+    let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
+    try {
+      if (folder === 'important') {
+        filter = { hasKeyword: '$important' };
+      } else if (folder === 'snoozed') {
+        filter = { hasKeyword: '$snoozed' };
+      } else if (folder !== 'all') {
+        let mailboxId: string | null = null;
+        if (ROLED_FOLDERS.has(folder)) {
+          const role = FOLDER_ROLE[folder] ?? folder;
+          const mailbox = this.#mailboxByRole(role);
+          if (!mailbox) {
+            throw new Error(`No ${FOLDER_LABEL[folder]} mailbox in this account`);
+          }
+          mailboxId = mailbox.id;
+        } else if (this.mailboxes.has(folder)) {
+          mailboxId = folder;
+        } else {
+          throw new Error(`Unknown mailbox: ${folder}`);
+        }
+        filter = { inMailbox: mailboxId };
+        if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
+      }
+
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Email/query',
+          {
+            accountId,
+            ...(filter ? { filter } : {}),
+            sort: [{ property: sortProperty, isAscending: false }],
+            collapseThreads: true,
+            limit: 50,
+            calculateTotal: false,
+          },
+          [Capability.Mail],
+        );
+        const eg = b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': q.ref('/ids'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+        // Thread membership for per-thread message counts (issue #64).
+        const tg = b.call(
+          'Thread/get',
+          {
+            accountId,
+            '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
+        // All thread member emails so threadDedupeCount is correct on
+        // first render (re #88).
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': tg.ref('/list/*/emailIds'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+
+      // Guard: if the user navigated away while the query was in flight,
+      // discard stale results rather than overwriting the new folder.
+      if (this.listFolder !== folder || this.listLoadStatus !== 'ready') return;
+
+      const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
+      const getResult = invocationArgs<{ list: Email[]; state: string }>(
+        responses[1],
+      );
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
+      const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
+
+      const next = new Map(this.emails);
+      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      // Merge thread member emails (re #88).
+      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+
+      // Atomic swap: all three cells update together; the list never
+      // sees a partial state where listEmailIds refers to email ids that
+      // are not yet in the emails map.
+      this.emails = next;
+      this.listEmailIds = queryResult.ids;
+      if (typeof getResult.state === 'string') this.emailState = getResult.state;
+
+      const nextThreads = new Map(this.threads);
+      for (const t of threadResult.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+      // listLoadStatus stays 'ready' — no visible transition.
+    } catch (err) {
+      this.listLoadStatus = 'error';
+      this.listError = err instanceof Error ? err.message : String(err);
+    }
   }
 
   threadStatus(threadId: string): LoadStatus {
@@ -3132,10 +3267,10 @@ class MailStore {
    * ourselves. Without this, every Email/set bumps the server's Email
    * state, the eventsource emits a StateChange a moment later, the
    * handler at #onEmailStateChange sees newState !== this.emailState,
-   * and runs refreshFolder — which clears listEmailIds and re-fetches
-   * the list, producing a visible flicker on every star / archive /
-   * delete. The optimistic patch already updated the UI; the spurious
-   * refresh adds nothing.
+   * and triggers a folder-list refresh via refreshFolder() / #refreshFolderSoon().
+   * The optimistic patch already updated the UI; the spurious refresh
+   * adds nothing, and on a slow connection it would blank the list
+   * (issue #127). Capturing newState prevents the re-trigger entirely.
    *
    * The newState field is mandatory in JMAP Foo/set responses (RFC 8620
    * §5.3) but old servers may not echo it; the callers fall through to
@@ -3171,6 +3306,32 @@ class MailStore {
         console.warn('mailbox count refresh failed', err);
       });
     });
+  }
+
+  /**
+   * Coalesce folder-list refreshes during rapid Email state-change bursts
+   * (e.g. an IMAP import or bulk server-side operation) into a single
+   * #refreshFolderInPlace() call per 300 ms quiet window.
+   *
+   * Uses a timer (not queueMicrotask) because EventSource messages arrive
+   * as separate macro-tasks; microtasks only coalesce work from a single
+   * task. The 300 ms window is long enough to absorb bursts of per-message
+   * state advances while short enough not to feel sluggish to the user.
+   *
+   * Issue #127.
+   */
+  #refreshFolderPending = false;
+  #refreshFolderSoon(): void {
+    if (this.#refreshFolderPending) return;
+    this.#refreshFolderPending = true;
+    setTimeout(() => {
+      this.#refreshFolderPending = false;
+      if (this.listLoadStatus === 'ready') {
+        void this.#refreshFolderInPlace().catch((err) => {
+          console.warn('folder list refresh failed', err);
+        });
+      }
+    }, 300);
   }
 
   #setThreadStatus(id: string, status: LoadStatus): void {
