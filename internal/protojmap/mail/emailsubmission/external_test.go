@@ -36,16 +36,18 @@ func (f *fakeExternalSubmitter) Submit(_ context.Context, _ store.IdentitySubmis
 	return f.outcome
 }
 
-// delayingFakeExternalSubmitter sleeps delay before returning a preset Outcome.
-// Used to verify that the relay runs asynchronously (re #108).
-type delayingFakeExternalSubmitter struct {
-	delay   time.Duration
+// gateFakeExternalSubmitter blocks in Submit until the test releases the gate
+// by closing the release channel. This lets tests prove the relay is async
+// without depending on wall-clock timing: Execute returning while the gate is
+// still closed is structural proof that Submit was not called synchronously.
+type gateFakeExternalSubmitter struct {
+	release chan struct{}
 	outcome extsubmit.Outcome
 }
 
-func (f *delayingFakeExternalSubmitter) Submit(_ context.Context, _ store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
-	_, _ = io.ReadAll(env.Body) // drain the body so the test is clean
-	time.Sleep(f.delay)
+func (f *gateFakeExternalSubmitter) Submit(_ context.Context, _ store.IdentitySubmission, env extsubmit.Envelope) extsubmit.Outcome {
+	_, _ = io.ReadAll(env.Body) // drain body before blocking so the reader is consumed
+	<-f.release                 // block until the test closes the gate
 	return f.outcome
 }
 
@@ -510,15 +512,16 @@ func TestEmailSubmission_External_RelayBlobMissing(t *testing.T) {
 }
 
 // TestEmailSubmission_External_RelayAsync verifies that the external relay runs
-// asynchronously and does not block the JMAP method beyond the deadline (re #108).
+// asynchronously and does not block Execute (re #108).
 //
-// Before the fix, processCreateExternal called Submit synchronously, so the method
-// would block for the full delay and the dispatcher would see DeadlineExceeded.
-// After the fix, the method returns immediately with undoStatus=pending and the row
-// reaches undoStatus=final after the background goroutine completes.
+// The fake submitter blocks on an unbuffered channel ("gate") that the test
+// controls. Execute is called with context.Background() so the test does not
+// race wall-clock against Execute's own synchronous SQLite work. Async is
+// proven structurally: Execute returns with undoStatus=pending while the gate
+// is still closed, which means Submit could not have been called on the
+// critical path. Releasing the gate then lets h.Wait() confirm the relay
+// goroutine ran to completion and updated the row to undoStatus=final.
 func TestEmailSubmission_External_RelayAsync(t *testing.T) {
-	const relayDelay = 200 * time.Millisecond
-
 	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
 		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	if err != nil {
@@ -551,8 +554,13 @@ func TestEmailSubmission_External_RelayAsync(t *testing.T) {
 		}
 	}
 
-	slowSub := &delayingFakeExternalSubmitter{
-		delay:   relayDelay,
+	// gate blocks Submit until the test closes it. Using an unbuffered channel
+	// guarantees the relay goroutine is provably still inside Submit while the
+	// gate is open, so Execute returning before that point is structural proof
+	// of async dispatch with no wall-clock dependency.
+	gate := make(chan struct{})
+	gatedSub := &gateFakeExternalSubmitter{
+		release: gate,
 		outcome: extsubmit.Outcome{State: extsubmit.OutcomeOK, Diagnostic: "250 ok"},
 	}
 	h := &handlerSet{
@@ -560,7 +568,7 @@ func TestEmailSubmission_External_RelayAsync(t *testing.T) {
 		queue:          &fakeSubmitter{store: st},
 		clk:            clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		identity:       stubResolver{email: "alice@example.test"},
-		externalSubmit: slowSub,
+		externalSubmit: gatedSub,
 		externalRouter: &fakeExternalRouter{has: true},
 	}
 	t.Cleanup(func() {
@@ -578,26 +586,15 @@ func TestEmailSubmission_External_RelayAsync(t *testing.T) {
 		},
 	})
 
-	// Use a context with a deadline shorter than the relay delay.
-	// Before the fix, Execute would block for relayDelay and the
-	// method would exceed this deadline; after the fix it returns
-	// immediately with undoStatus=pending.
-	deadline := relayDelay / 4 // 50 ms << 200 ms relay delay
-	callCtx, cancel := context.WithTimeout(contextWithTestPrincipal(context.Background(), p), deadline)
-	defer cancel()
-
-	start := time.Now()
-	resp, mErr := setHandler{h: h}.Execute(callCtx, args)
-	elapsed := time.Since(start)
-
+	// No artificial deadline: async is proven by the gate, not by a stopwatch.
+	resp, mErr := setHandler{h: h}.Execute(contextWithTestPrincipal(context.Background(), p), args)
 	if mErr != nil {
-		t.Fatalf("EmailSubmission/set returned error: %v (elapsed %v)", mErr, elapsed)
-	}
-	if elapsed >= relayDelay {
-		t.Fatalf("Submit ran synchronously: elapsed %v >= relayDelay %v; async fix not in effect", elapsed, relayDelay)
+		t.Fatalf("EmailSubmission/set returned error: %v", mErr)
 	}
 
-	// The created submission should be pending (relay still in flight).
+	// Execute returned with the gate still closed, so Submit has not returned
+	// yet. The response carries undoStatus=pending, which processCreateExternal
+	// sets synchronously before launching the goroutine.
 	sresp := resp.(setResponse)
 	if len(sresp.Created) == 0 {
 		t.Fatal("no created entries in response")
@@ -610,7 +607,8 @@ func TestEmailSubmission_External_RelayAsync(t *testing.T) {
 		t.Fatalf("expected undoStatus=pending immediately after create, got %q", sub.UndoStatus)
 	}
 
-	// Wait for the relay goroutine to finish.
+	// Release the gate and drain the relay goroutine.
+	close(gate)
 	h.Wait()
 
 	// After the goroutine completes the row must be finalized.
