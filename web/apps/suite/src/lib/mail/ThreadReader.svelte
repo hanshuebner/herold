@@ -192,8 +192,8 @@
   $effect(() => {
     if (!initialised && emails.length > 0) {
       const initial = pickInitialExpanded(emails);
-      if (initial) {
-        expanded = new Set([initial]);
+      if (initial.length > 0) {
+        expanded = new Set(initial);
       }
       // Capture the baseline ID set so the new-message effect can diff
       // against it on the very first tick (prevents it from marking all

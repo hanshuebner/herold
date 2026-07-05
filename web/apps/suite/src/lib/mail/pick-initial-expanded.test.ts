@@ -1,8 +1,8 @@
 /**
  * Unit tests for pickInitialExpanded (re #135).
  *
- * REQ-UI-20 (corrected): the first unread message is expanded on thread open,
- * not the last. When all messages are read, the last message is expanded.
+ * REQ-UI-20 (corrected): all unread messages are expanded on thread open.
+ * When all messages are read, only the last message is expanded.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -31,23 +31,23 @@ function makeEmail(id: string, seen: boolean): Email {
 }
 
 describe('pickInitialExpanded (re #135)', () => {
-  it('returns null for an empty array', () => {
-    expect(pickInitialExpanded([])).toBeNull();
+  it('returns empty array for an empty emails list', () => {
+    expect(pickInitialExpanded([])).toEqual([]);
   });
 
-  it('returns the last message id when all messages are read', () => {
+  it('returns only the last message id when all messages are read', () => {
     const emails = [makeEmail('e1', true), makeEmail('e2', true), makeEmail('e3', true)];
-    expect(pickInitialExpanded(emails)).toBe('e3');
+    expect(pickInitialExpanded(emails)).toEqual(['e3']);
   });
 
-  it('returns the single unread message when only the last is unread (new-message case)', () => {
+  it('returns the single unread message id when only the last message is unread (new-message case)', () => {
     const emails = [makeEmail('e1', true), makeEmail('e2', true), makeEmail('e3', false)];
-    expect(pickInitialExpanded(emails)).toBe('e3');
+    expect(pickInitialExpanded(emails)).toEqual(['e3']);
   });
 
-  it('returns the FIRST unread message when multiple consecutive messages are unread from the middle (mark-from-here case, re #135)', () => {
+  it('returns ALL unread message ids when multiple consecutive messages are unread from the middle (mark-from-here case, re #135)', () => {
     // Messages e3, e4, e5 are unread (marked from e3 onward).
-    // Expected: e3 is expanded, not e5.
+    // Expected: all three are expanded, not just e3 or e5.
     const emails = [
       makeEmail('e1', true),
       makeEmail('e2', true),
@@ -55,16 +55,27 @@ describe('pickInitialExpanded (re #135)', () => {
       makeEmail('e4', false),
       makeEmail('e5', false),
     ];
-    expect(pickInitialExpanded(emails)).toBe('e3');
+    expect(pickInitialExpanded(emails)).toEqual(['e3', 'e4', 'e5']);
   });
 
-  it('returns the first message when all messages are unread', () => {
+  it('returns all message ids when all messages are unread', () => {
     const emails = [makeEmail('e1', false), makeEmail('e2', false), makeEmail('e3', false)];
-    expect(pickInitialExpanded(emails)).toBe('e1');
+    expect(pickInitialExpanded(emails)).toEqual(['e1', 'e2', 'e3']);
   });
 
-  it('returns the single message regardless of read state', () => {
-    expect(pickInitialExpanded([makeEmail('e1', true)])).toBe('e1');
-    expect(pickInitialExpanded([makeEmail('e1', false)])).toBe('e1');
+  it('returns the single message id regardless of read state', () => {
+    expect(pickInitialExpanded([makeEmail('e1', true)])).toEqual(['e1']);
+    expect(pickInitialExpanded([makeEmail('e1', false)])).toEqual(['e1']);
+  });
+
+  it('returns only the unread messages when they are scattered among read messages', () => {
+    // e1 read, e2 unread, e3 read, e4 unread — both unread are expanded.
+    const emails = [
+      makeEmail('e1', true),
+      makeEmail('e2', false),
+      makeEmail('e3', true),
+      makeEmail('e4', false),
+    ];
+    expect(pickInitialExpanded(emails)).toEqual(['e2', 'e4']);
   });
 });
