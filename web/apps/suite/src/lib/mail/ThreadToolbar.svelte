@@ -76,11 +76,14 @@
     // fully removed from the Inbox. re #35.
     //
     // When the thread is already fully archived (inboxEmailIds is empty),
-    // the action is a harmless no-op: no network call is made and the user
-    // stays on the thread view. The button remains visible so that the UI is
-    // consistent regardless of where the thread was opened from (Inbox, All
-    // Mail, Archive). re #35.
-    if (inboxEmailIds.length === 0) return;
+    // skip the network call but still leave the thread view.  Archive is
+    // idempotent: the user opened the thread from some listing (All Mail,
+    // Archive) and expects the same leave behaviour regardless of whether a
+    // JMAP call was needed. re #35.
+    if (inboxEmailIds.length === 0) {
+      navigateBackFromThread();
+      return;
+    }
     void mail.bulkArchive(inboxEmailIds);
     navigateBackFromThread();
   }

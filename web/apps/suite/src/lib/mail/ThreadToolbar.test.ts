@@ -6,9 +6,9 @@
  *   (b) Own-reply thread — latest email is in Sent but earlier thread
  *       members are in the Inbox; Archive visible, bulkArchive called with
  *       the inbox-member ids (not the Sent email).
- *   (c) Fully-archived thread — no inbox members; Archive still visible
- *       but clicking it is a no-op (bulkArchive is NOT called, no
- *       navigation occurs).
+ *   (c) Fully-archived thread — no inbox members; Archive still visible;
+ *       clicking it skips the network call (bulkArchive NOT called) but
+ *       still performs post-action navigation (idempotent leave).
  *   (d) Trash thread — Archive absent.
  *
  * Formerly-overflow actions now shown as icon buttons (re #117):
@@ -208,7 +208,7 @@ describe('ThreadToolbar archive action visibility (re #35)', () => {
     expect(mailMock.bulkArchive).not.toHaveBeenCalledWith(expect.arrayContaining(['e-sent']));
   });
 
-  it('(c) shows Archive for a fully-archived thread and performs a no-op on click', async () => {
+  it('(c) shows Archive for a fully-archived thread, skips network call, and navigates back', async () => {
     // Thread has no inbox members — it was already archived.
     const archivedMsg = makeEmail('e-arch', 'tid-3', { 'mbx-archive': true });
     mailMock.threadEmails = (tid: string) => (tid === 'tid-3' ? [archivedMsg] : []);
@@ -219,9 +219,12 @@ describe('ThreadToolbar archive action visibility (re #35)', () => {
     expect(archiveBtn).toBeInTheDocument();
 
     await fireEvent.click(archiveBtn);
-    // No network call and no navigation: the thread is already archived.
+    // No network call: the thread is already archived (idempotent).
     expect(mailMock.bulkArchive).not.toHaveBeenCalled();
-    expect(routerMock.navigate).not.toHaveBeenCalled();
+    // Navigation still happens: archive is idempotent but always leaves the thread.
+    // In the test environment history.length === 1, so navigateBackFromThread()
+    // falls back to router.navigate('/mail').
+    expect(routerMock.navigate).toHaveBeenCalledWith('/mail');
   });
 
   it('(d) hides Archive when the thread is in Trash', () => {
