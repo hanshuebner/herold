@@ -14,8 +14,14 @@
 
   interface Props {
     threadId: string;
+    /**
+     * When true, the reader is running inside the chrome-less standalone
+     * thread-window popup. Forwarded to ThreadToolbar so it can hide the
+     * back arrow and close the popup instead of navigating on leave actions.
+     */
+    standalone?: boolean;
   }
-  let { threadId }: Props = $props();
+  let { threadId, standalone = false }: Props = $props();
 
   // Kick off thread load on prop change. untrack() prevents the load
   // function's synchronous read-modify-write of its status cell from
@@ -266,7 +272,7 @@
   {:else if emails.length === 0 || !latest}
     <div class="state">{t('thread.empty')}</div>
   {:else}
-    <ThreadToolbar {threadId} {latest} onPrint={() => void printThread()} />
+    <ThreadToolbar {threadId} {latest} {standalone} onPrint={() => void printThread()} />
     <!-- New-reply banner lives OUTSIDE the scroll container so it is always
          visible and never displaces the user's reading position when an
          external message arrives (issue #56). The user must explicitly

@@ -321,3 +321,68 @@ describe('ThreadToolbar formerly-overflow actions (re #117)', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ── Standalone mode (thread-window popup, Bug C) ───────────────────────────────
+
+describe('ThreadToolbar standalone mode', () => {
+  let closeSpy: ReturnType<typeof vi.spyOn>;
+
+  function renderStandaloneToolbar(latest: Email, onPrint = vi.fn()) {
+    return render(ThreadToolbar, {
+      props: { threadId: latest.threadId, latest, onPrint, standalone: true },
+    });
+  }
+
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.trash = null;
+    mailMock.archive = ARCHIVE_MBX;
+    mailMock.listFolder = 'inbox';
+    mailMock.bulkArchive.mockClear();
+    routerMock.navigate.mockClear();
+    closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    closeSpy.mockRestore();
+  });
+
+  it('hides the back button in standalone mode', () => {
+    const inboxMsg = makeEmail('e-1', 'tid-s1', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [inboxMsg];
+    renderStandaloneToolbar(inboxMsg);
+    expect(screen.queryByRole('button', { name: 'thread.back' })).not.toBeInTheDocument();
+  });
+
+  it('shows the back button in non-standalone (default) mode', () => {
+    const inboxMsg = makeEmail('e-1', 'tid-s2', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [inboxMsg];
+    renderToolbar(inboxMsg);
+    expect(screen.getByRole('button', { name: 'thread.back' })).toBeInTheDocument();
+  });
+
+  it('archive on an inbox thread calls window.close() and not router.navigate()', async () => {
+    const inboxMsg = makeEmail('e-1', 'tid-s3', { 'mbx-inbox': true });
+    mailMock.threadEmails = () => [inboxMsg];
+    renderStandaloneToolbar(inboxMsg);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'thread.archive' }));
+
+    expect(mailMock.bulkArchive).toHaveBeenCalledWith(['e-1']);
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(routerMock.navigate).not.toHaveBeenCalled();
+  });
+
+  it('archive on an already-archived thread skips network call but calls window.close()', async () => {
+    // Thread is fully archived — inboxEmailIds will be empty.
+    const archivedMsg = makeEmail('e-arch', 'tid-s4', { 'mbx-archive': true });
+    mailMock.threadEmails = () => [archivedMsg];
+    renderStandaloneToolbar(archivedMsg);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'thread.archive' }));
+
+    expect(mailMock.bulkArchive).not.toHaveBeenCalled();
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(routerMock.navigate).not.toHaveBeenCalled();
+  });
+});

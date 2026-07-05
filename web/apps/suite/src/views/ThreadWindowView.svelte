@@ -47,7 +47,7 @@
     </button>
   </div>
   <div class="thread-window-body">
-    <ThreadReader {threadId} />
+    <ThreadReader {threadId} standalone={true} />
   </div>
 </div>
 
