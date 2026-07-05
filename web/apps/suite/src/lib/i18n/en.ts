@@ -1376,9 +1376,12 @@ export const en = {
   'settings.submission.useThisServer': 'Use this server',
   'settings.submission.recommended': '(recommended)',
   'settings.submission.useExternal': 'Use an external SMTP server',
-  'settings.submission.oauthHint':
-    'For Gmail or Microsoft 365, sign in with one click to configure ' +
-    'submission automatically:',
+  'settings.submission.oauthHint.gmail':
+    'If your email account is hosted on Google, you can sign in with Google ' +
+    'to configure submission automatically.',
+  'settings.submission.oauthHint.m365':
+    'If your email account is hosted on Microsoft, you can sign in with ' +
+    'Microsoft to configure submission automatically.',
   'settings.submission.signinGoogle': 'Sign in with Google',
   'settings.submission.signinMicrosoft': 'Sign in with Microsoft',
   'settings.submission.starting': 'Starting...',

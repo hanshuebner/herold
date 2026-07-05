@@ -227,6 +227,69 @@ describe('IdentitySubmissionSection', () => {
     expect(startOAuth).toHaveBeenCalledWith('ident-1', 'm365');
   });
 
+  // ── #125: oauthHint adapts to configured providers; no "one click" claim ────
+
+  it('#125: when only gmail is configured, shows the Google hint and not the Microsoft hint', async () => {
+    _mockHandle.data.available_oauth_providers = ['gmail'];
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    // Google hint must be visible.
+    expect(screen.getByText(/hosted on Google/)).toBeInTheDocument();
+    // Microsoft hint must be absent.
+    expect(screen.queryByText(/hosted on Microsoft/)).not.toBeInTheDocument();
+    // The old "one click" claim must not appear anywhere.
+    expect(screen.queryByText(/one click/i)).not.toBeInTheDocument();
+  });
+
+  it('#125: when only m365 is configured, shows the Microsoft hint and not the Google hint', async () => {
+    _mockHandle.data.available_oauth_providers = ['m365'];
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    // Microsoft hint must be visible.
+    expect(screen.getByText(/hosted on Microsoft/)).toBeInTheDocument();
+    // Google hint must be absent.
+    expect(screen.queryByText(/hosted on Google/)).not.toBeInTheDocument();
+    // No "one click" claim.
+    expect(screen.queryByText(/one click/i)).not.toBeInTheDocument();
+  });
+
+  it('#125: when both gmail and m365 are configured, shows both hints in one paragraph', async () => {
+    _mockHandle.data.available_oauth_providers = ['gmail', 'm365'];
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    // Both hints must appear.
+    expect(screen.getByText(/hosted on Google/)).toBeInTheDocument();
+    expect(screen.getByText(/hosted on Microsoft/)).toBeInTheDocument();
+    // No "one click" claim.
+    expect(screen.queryByText(/one click/i)).not.toBeInTheDocument();
+  });
+
+  it('#125: when only an unknown provider is configured, no oauth-hint paragraph is shown', async () => {
+    _mockHandle.data.available_oauth_providers = ['fakeidp'];
+
+    render(IdentitySubmissionSection, { props: { identity: IDENTITY } });
+
+    const externalRadio = screen.getAllByRole('radio')[1]!;
+    await fireEvent.click(externalRadio);
+
+    // No hint paragraph for an unknown provider id.
+    expect(document.querySelector('.oauth-hint')).not.toBeInTheDocument();
+    // The OAuth button for the unknown provider is still present.
+    expect(screen.getByText('fakeidp')).toBeInTheDocument();
+  });
+
   // ── #74: foreign-domain gating ───────────────────────────────────────────
 
   it('#74: when domain_authoritative is false, "Use this server" radio is not shown', async () => {

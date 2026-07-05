@@ -329,6 +329,24 @@
   let isConfigured = $derived(handle.data?.configured === true);
 
   /**
+   * Hint sentences for the OAuth section, built from the actually-configured
+   * provider ids. Only known ids ('gmail', 'm365') produce a sentence; unknown
+   * ids (e.g. 'fakeidp') are silently skipped. The resulting array is joined
+   * with a space so that both sentences appear in one paragraph when both
+   * providers are available.
+   */
+  let oauthHintParts = $derived(
+    availableOAuthProviders
+      .filter((p) => p === 'gmail' || p === 'm365')
+      .map((p) =>
+        p === 'gmail'
+          ? t('settings.submission.oauthHint.gmail')
+          : t('settings.submission.oauthHint.m365'),
+      ),
+  );
+  let oauthHintText = $derived(oauthHintParts.join(' '));
+
+  /**
    * True when the current submission config uses OAuth2 tokens stored by a
    * previous OAuth flow. In this state the "Mit Google/Microsoft anmelden"
    * initial-setup CTA is hidden (not needed) and a dedicated
@@ -410,7 +428,9 @@
              form-actions section re-runs the OAuth flow instead (re #105). -->
         {#if availableOAuthProviders.length > 0 && !isConfigured}
           <div class="oauth-section">
-            <p class="oauth-hint">{t('settings.submission.oauthHint')}</p>
+            {#if oauthHintText}
+              <p class="oauth-hint">{oauthHintText}</p>
+            {/if}
             <div class="oauth-buttons">
               {#each availableOAuthProviders as provider (provider)}
                 <Button
