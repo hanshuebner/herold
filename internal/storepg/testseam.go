@@ -83,6 +83,12 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		// across subtests and break ClientLog_Pagination / EvictByAge /
 		// EvictByCap / EvictDoesNotCrossSlice in storetest.
 		"clientlog",
+		// REQ-ADM-304 system-events ring buffer (migration 0073). Same shape
+		// as clientlog: no FK, so CASCADE never reaches it; must be enumerated
+		// explicitly or rows leak across subtests and break
+		// SystemEvents_AppendList / EvictByCap / DomainFilter / ActionFilter /
+		// CursorPagination in storetest.
+		"system_events",
 		// Per-blob MIME part index (migration 0061). Keyed by blob_hash with
 		// no FK, so CASCADE from messages never reaches it; like clientlog it
 		// must be enumerated explicitly or rows leak across subtests and break
