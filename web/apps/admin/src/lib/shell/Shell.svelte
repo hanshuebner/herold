@@ -17,7 +17,7 @@
     { label: 'Audit', path: '/audit', segment: 'audit' },
     { label: 'Ereignisse', path: '/events', segment: 'events' },
     { label: 'Client logs', path: '/clientlog', segment: 'clientlog' },
-    { label: 'Research', path: '/research', segment: 'research' },
+    { label: 'Nachrichtenrecherche', path: '/message-research', segment: 'message-research' },
     { label: 'Help', path: '/help', segment: 'help' },
   ];
 

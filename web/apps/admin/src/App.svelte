@@ -15,7 +15,7 @@
   import AuditView from './views/AuditView.svelte';
   import EventsView from './views/EventsView.svelte';
   import ClientlogView from './views/ClientlogView.svelte';
-  import ResearchView from './views/ResearchView.svelte';
+  import MessageResearchView from './views/MessageResearchView.svelte';
   import HelpView from './views/HelpView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
 
@@ -57,8 +57,8 @@
   });
   keyboard.registerGlobal({
     key: 'g r',
-    description: 'Go to Research',
-    action: () => router.navigate('/research'),
+    description: 'Go to Message research',
+    action: () => router.navigate('/message-research'),
   });
   keyboard.registerGlobal({
     key: 'g h',
@@ -245,8 +245,8 @@
       <EventsView />
     {:else if router.matches('clientlog')}
       <ClientlogView />
-    {:else if router.matches('research')}
-      <ResearchView />
+    {:else if router.matches('message-research')}
+      <MessageResearchView />
     {:else if router.matches('help')}
       <HelpView />
     {:else}

@@ -1,263 +1,479 @@
 /**
- * research.spec.ts
+ * research.spec.ts — Message-research view (re #143)
  *
  * Covers:
- *   - Email research page renders with a search input and queue items
- *   - Search input narrows the loaded list (client-side filter)
- *   - Clicking a row expands inline detail (shows item summary)
- *   - Clicking again collapses the expanded row
- *   - "Load more" button triggers a second fetch and appends rows
+ *   - Page renders with heading "Nachrichtenrecherche" and filter form
+ *   - "received" source entries render with source badge, envelope, mailbox, Junk
+ *   - "smtp_event" entries render with action, outcome badge, message
+ *   - "send_outcome" entries render with mail_from/rcpt_to, state badge, attempts/error
+ *   - Sender filter sends the sender query param
+ *   - Recipient filter sends the recipient query param
+ *   - Date-range filters send date_from / date_to
+ *   - Subject filter sends the subject query param
+ *   - Load-more sends before_us cursor and appends entries
+ *   - Reset clears filters and reloads without params
  */
 
 import { test, expect } from '@playwright/test';
 import { installAdminSession } from './fixtures/auth';
 
-const ITEMS = [
-  {
-    id: 'q1',
-    principal_id: '1',
-    mail_from: 'alice@sender.com',
-    rcpt_to: 'bob@recipient.org',
-    envelope_id: 'env-1',
-    state: 'queued',
-    attempts: 0,
-    created_at: new Date(Date.now() - 60_000).toISOString(),
+// Sample data covering all three source types.
+
+const RECEIVED_HIT = {
+  source: 'received',
+  at: new Date(Date.now() - 120_000).toISOString(),
+  principal_id: 1,
+  mailbox_name: 'INBOX',
+  is_junk: false,
+  spam_verdict: 'ham',
+  spam_confidence: 0.95,
+  envelope: {
+    subject: 'Bestellung #42',
+    from: 'kunde@example.com',
+    to: 'alice@example.local',
+    cc: '',
+    bcc: '',
+    reply_to: '',
+    message_id: '<msg-001@example.com>',
+    in_reply_to: '',
+    references: '',
+    date: new Date(Date.now() - 120_000).toISOString(),
   },
-  {
-    id: 'q2',
-    principal_id: '1',
-    mail_from: 'charlie@sender.com',
-    rcpt_to: 'dave@recipient.org',
-    envelope_id: 'env-2',
-    state: 'deferred',
-    attempts: 2,
-    last_error: 'connection refused',
-    created_at: new Date(Date.now() - 3600_000).toISOString(),
+};
+
+const JUNK_RECEIVED_HIT = {
+  source: 'received',
+  at: new Date(Date.now() - 180_000).toISOString(),
+  principal_id: 1,
+  mailbox_name: 'Junk',
+  is_junk: true,
+  spam_verdict: 'spam',
+  spam_confidence: 0.99,
+  envelope: {
+    subject: 'Gewinner!!!',
+    from: 'spammer@evil.example',
+    to: 'alice@example.local',
+    cc: '',
+    bcc: '',
+    reply_to: '',
+    message_id: '<spam-001@evil.example>',
+    in_reply_to: '',
+    references: '',
   },
+};
+
+const SMTP_EVENT_HIT = {
+  source: 'smtp_event',
+  at: new Date(Date.now() - 300_000).toISOString(),
+  action: 'smtp.rcpt.resolve',
+  actor_id: 'alice@example.local',
+  subject: 'unknown@nosuchwhere.example',
+  remote_addr: '203.0.113.42',
+  outcome: 'failure',
+  message: 'User unknown',
+  domain: 'example.local',
+};
+
+const SMTP_SUCCESS_HIT = {
+  source: 'smtp_event',
+  at: new Date(Date.now() - 360_000).toISOString(),
+  action: 'smtp.rcpt.resolve',
+  actor_id: 'alice@example.local',
+  subject: 'alice@example.local',
+  remote_addr: '203.0.113.42',
+  outcome: 'success',
+  message: '',
+  domain: 'example.local',
+};
+
+const SEND_OUTCOME_HIT = {
+  source: 'send_outcome',
+  at: new Date(Date.now() - 600_000).toISOString(),
+  queue_id: 1001,
+  mail_from: 'alice@example.local',
+  rcpt_to: 'bob@remote.example',
+  envelope_id: 'env-abc-123',
+  state: 'deferred',
+  attempts: 3,
+  last_error: 'Connection timeout after 30s',
+  last_attempt_at: new Date(Date.now() - 300_000).toISOString(),
+};
+
+const SEND_OUTCOME_DONE = {
+  source: 'send_outcome',
+  at: new Date(Date.now() - 700_000).toISOString(),
+  queue_id: 1002,
+  mail_from: 'alice@example.local',
+  rcpt_to: 'carol@remote.example',
+  envelope_id: 'env-def-456',
+  state: 'done',
+  attempts: 1,
+};
+
+const ALL_ITEMS = [
+  RECEIVED_HIT,
+  JUNK_RECEIVED_HIT,
+  SMTP_EVENT_HIT,
+  SMTP_SUCCESS_HIT,
+  SEND_OUTCOME_HIT,
+  SEND_OUTCOME_DONE,
+];
+
+const PAGE2_ITEMS = [
   {
-    id: 'q3',
-    principal_id: '2',
-    mail_from: 'eve@other.com',
-    rcpt_to: 'frank@other.org',
-    envelope_id: 'env-3',
-    state: 'held',
-    attempts: 1,
-    created_at: new Date(Date.now() - 7200_000).toISOString(),
+    source: 'received',
+    at: new Date(Date.now() - 900_000).toISOString(),
+    principal_id: 2,
+    mailbox_name: 'INBOX',
+    is_junk: false,
+    envelope: {
+      subject: 'Seite 2 Nachricht',
+      from: 'page2sender@example.com',
+      to: 'filip@example.local',
+      cc: '',
+      bcc: '',
+      reply_to: '',
+      message_id: '<page2-001@example.com>',
+      in_reply_to: '',
+      references: '',
+    },
   },
 ];
 
-const MORE_ITEMS = [
-  {
-    id: 'q4',
-    principal_id: '1',
-    mail_from: 'page2@sender.com',
-    rcpt_to: 'page2@recipient.org',
-    envelope_id: 'env-4',
-    state: 'done',
-    attempts: 3,
-    created_at: new Date(Date.now() - 86_400_000).toISOString(),
-  },
-];
-
-test.describe('research', () => {
+test.describe('message-research', () => {
   test.beforeEach(async ({ page }) => {
     installAdminSession(page);
   });
 
-  test('research page renders queue items in a searchable table', async ({ page }) => {
-    await page.route(/\/api\/v1\/queue/, (route) =>
+  test('page renders heading and filter form fields', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: ITEMS, next: null }),
+        body: JSON.stringify({ items: ALL_ITEMS, next: null }),
       }),
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByRole('heading', { name: 'Email research' })).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
 
-    // All items should be listed.
-    await expect(page.getByText('alice@sender.com')).toBeVisible();
-    await expect(page.getByText('charlie@sender.com')).toBeVisible();
-    await expect(page.getByText('eve@other.com')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    // All filter inputs should be present.
+    await expect(page.getByLabel('Nach Absender filtern')).toBeVisible();
+    await expect(page.getByLabel('Nach Empfänger filtern')).toBeVisible();
+    await expect(page.getByLabel('Nach Betreff filtern')).toBeVisible();
+    await expect(page.getByLabel('Nach Nachrichten-ID filtern')).toBeVisible();
+    await expect(page.getByLabel('Von (Datum)')).toBeVisible();
+    await expect(page.getByLabel('Bis (Datum)')).toBeVisible();
+
+    // Action buttons.
+    await expect(page.getByRole('button', { name: 'Suchen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Zurücksetzen' })).toBeVisible();
   });
 
-  test('search input narrows the list client-side', async ({ page }) => {
-    await page.route(/\/api\/v1\/queue/, (route) =>
+  test('received hit renders source badge, envelope fields, mailbox and spam verdict', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: ITEMS, next: null }),
+        body: JSON.stringify({ items: [RECEIVED_HIT], next: null }),
       }),
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByText('alice@sender.com')).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-    await page.getByRole('searchbox', { name: /search by sender or recipient/i }).fill('alice');
-    // Only alice's row should remain visible.
-    await expect(page.getByText('alice@sender.com')).toBeVisible();
-    await expect(page.getByText('charlie@sender.com')).not.toBeVisible();
-    await expect(page.getByText('eve@other.com')).not.toBeVisible();
+    // Source badge "Empfangen" (CSS text-transform: uppercase; DOM text is "Empfangen").
+    await expect(page.locator('.source-badge').filter({ hasText: 'Empfangen' })).toBeVisible();
+
+    // Envelope fields.
+    await expect(page.getByText('kunde@example.com')).toBeVisible();
+    await expect(page.getByText('alice@example.local')).toBeVisible();
+    await expect(page.getByText('Bestellung #42')).toBeVisible();
+    await expect(page.getByText('INBOX')).toBeVisible();
+
+    // Spam verdict badge.
+    await expect(page.getByText('ham')).toBeVisible();
   });
 
-  test('clicking a row shows inline detail with item summary', async ({ page }) => {
-    await page.route(/\/api\/v1\/queue/, (route) =>
+  test('junk received hit shows Junk badge and spam verdict', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: ITEMS, next: null }),
+        body: JSON.stringify({ items: [JUNK_RECEIVED_HIT], next: null }),
       }),
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByText('alice@sender.com')).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-    // Click the alice row to expand it. Use the table row locator to avoid
-    // matching the expanded-detail dd which also contains the sender text.
-    await page.locator('table tbody tr.table-row').filter({ hasText: 'alice@sender.com' }).first().click();
-
-    // The expanded row should show the inline detail definition list.
-    // Scope checks to the expand-cell to avoid strict mode violations with
-    // column headers that also contain "Sender"/"Recipient".
-    const expandCell = page.locator('.expand-cell').first();
-    await expect(expandCell.getByRole('term').filter({ hasText: 'Sender' })).toBeVisible();
-    await expect(expandCell.getByRole('term').filter({ hasText: 'Recipient' })).toBeVisible();
-    await expect(expandCell.getByText('env-1')).toBeVisible();
+    // The Junk chip and mailbox name both contain "Junk" — use the chip locator.
+    await expect(page.locator('.chip').filter({ hasText: 'Junk' }).first()).toBeVisible();
+    await expect(page.locator('.chip').filter({ hasText: 'spam' })).toBeVisible();
+    await expect(page.getByText('spammer@evil.example')).toBeVisible();
   });
 
-  test('clicking an expanded row collapses it', async ({ page }) => {
-    await page.route(/\/api\/v1\/queue/, (route) =>
+  test('smtp_event hit renders action, outcome badge, and message', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: ITEMS, next: null }),
+        body: JSON.stringify({ items: [SMTP_EVENT_HIT], next: null }),
       }),
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByText('alice@sender.com')).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-    // Expand by clicking the table row (not the expanded detail dd).
-    const aliceRow = page.locator('table tbody tr.table-row').filter({ hasText: 'alice@sender.com' }).first();
-    await aliceRow.click();
-    await expect(page.locator('.expand-cell').first().getByText('env-1')).toBeVisible();
+    // Source badge "SMTP" — use the badge locator to avoid substring matches on action names.
+    await expect(page.locator('.source-badge').filter({ hasText: 'SMTP' })).toBeVisible();
 
-    // Collapse: click the same row again (now the only tr.table-row with alice).
-    await aliceRow.click();
-    await expect(page.locator('.expand-cell')).not.toBeVisible();
+    // Action, outcome, message.
+    await expect(page.getByText('smtp.rcpt.resolve')).toBeVisible();
+    await expect(page.getByText('failure')).toBeVisible();
+    await expect(page.getByText('User unknown')).toBeVisible();
+    await expect(page.getByText('unknown@nosuchwhere.example')).toBeVisible();
   });
 
-  test('items are displayed newest-first regardless of API response order', async ({ page }) => {
-    // Deliberately return items in oldest-first order from the API to verify
-    // that the view applies a client-side newest-first sort.
-    const oldestFirst = [
-      {
-        id: 'q-old',
-        principal_id: '1',
-        mail_from: 'oldest@sender.example',
-        rcpt_to: 'rcpt@example.org',
-        envelope_id: 'env-old',
-        state: 'queued',
-        attempts: 0,
-        created_at: '2024-01-01T06:00:00Z',
-      },
-      {
-        id: 'q-mid',
-        principal_id: '1',
-        mail_from: 'middle@sender.example',
-        rcpt_to: 'rcpt@example.org',
-        envelope_id: 'env-mid',
-        state: 'queued',
-        attempts: 0,
-        created_at: '2024-01-01T07:00:00Z',
-      },
-      {
-        id: 'q-new',
-        principal_id: '1',
-        mail_from: 'newest@sender.example',
-        rcpt_to: 'rcpt@example.org',
-        envelope_id: 'env-new',
-        state: 'queued',
-        attempts: 0,
-        created_at: '2024-01-01T08:00:00Z',
-      },
-    ];
-
-    await page.route(/\/api\/v1\/queue/, (route) =>
+  test('send_outcome hit renders addresses, state badge, attempts, and last_error', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: oldestFirst, next: null }),
+        body: JSON.stringify({ items: [SEND_OUTCOME_HIT], next: null }),
       }),
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByRole('heading', { name: 'Email research' })).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-    // All three senders must appear.
-    await expect(page.getByText('oldest@sender.example')).toBeVisible();
-    await expect(page.getByText('middle@sender.example')).toBeVisible();
-    await expect(page.getByText('newest@sender.example')).toBeVisible();
+    // Source badge "AUSGANG".
+    await expect(page.locator('.source-badge').filter({ hasText: 'AUSGANG' })).toBeVisible();
 
-    // The DOM order of table rows should be newest -> middle -> oldest.
-    const rows = page.locator('table tbody tr.table-row');
-    await expect(rows.nth(0)).toContainText('newest@sender.example');
-    await expect(rows.nth(1)).toContainText('middle@sender.example');
-    await expect(rows.nth(2)).toContainText('oldest@sender.example');
+    // Addresses, state, attempts, error.
+    await expect(page.getByText('alice@example.local')).toBeVisible();
+    await expect(page.getByText('bob@remote.example')).toBeVisible();
+    await expect(page.getByText('deferred')).toBeVisible();
+    // Attempts count "3" — use exact match to avoid ambiguity with substrings.
+    await expect(page.getByText('3', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Connection timeout after 30s')).toBeVisible();
   });
 
-  test('load-more fetches next page and appends rows', async ({ page }) => {
-    let callCount = 0;
+  test('all three source types render together in a single results list', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: ALL_ITEMS, next: null }),
+      }),
+    );
 
-    await page.route(/\/api\/v1\/queue/, (route) => {
-      callCount++;
-      const url = new URL(route.request().url());
-      const hasAfter = url.searchParams.has('after_id');
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-      if (callCount === 1 || !hasAfter) {
-        // Return page 1 with hasMore = true (exactly PAGE_LIMIT items would
-        // trigger it; here we fake it by returning items with a non-null next
-        // cursor). The SPA checks cursor !== null to determine hasMore.
-        const page1 = Array.from({ length: 50 }, (_, i) => ({
-          id: `p1-q${i}`,
-          principal_id: '1',
-          mail_from: `sender${i}@example.com`,
-          rcpt_to: `rcpt${i}@example.com`,
-          envelope_id: `env-p1-${i}`,
-          state: 'queued',
-          attempts: 0,
-          created_at: new Date(Date.now() - (i + 1) * 1000).toISOString(),
-        }));
-        return route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ items: page1, next: 'cursor-p1-last' }),
-        });
-      }
-      // Page 2 (load-more).
+    // All three badge types visible.
+    await expect(page.locator('.source-badge').filter({ hasText: 'EMPFANGEN' }).first()).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'SMTP' }).first()).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'AUSGANG' }).first()).toBeVisible();
+  });
+
+  test('sender filter sends sender query parameter', async ({ page }) => {
+    const requests: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      requests.push(route.request().url());
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: MORE_ITEMS, next: null }),
+        body: JSON.stringify({ items: [RECEIVED_HIT], next: null }),
       });
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Research' }).click();
-    await expect(page.getByRole('heading', { name: 'Email research' })).toBeVisible();
-    await expect(page.getByText('sender0@example.com')).toBeVisible();
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
 
-    // Load-more button should be visible since 50 items = PAGE_LIMIT.
-    const loadMoreBtn = page.getByRole('button', { name: 'Load more' });
+    await page.getByLabel('Nach Absender filtern').fill('kunde@example.com');
+    await page.getByRole('button', { name: 'Suchen' }).click();
+
+    await page.waitForTimeout(200);
+    const senderRequests = requests.filter((u) => u.includes('sender='));
+    expect(senderRequests.length).toBeGreaterThan(0);
+    expect(senderRequests[senderRequests.length - 1]).toContain('sender=kunde%40example.com');
+  });
+
+  test('recipient filter sends recipient query parameter', async ({ page }) => {
+    const requests: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      requests.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [RECEIVED_HIT], next: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    await page.getByLabel('Nach Empfänger filtern').fill('alice@example.local');
+    await page.getByRole('button', { name: 'Suchen' }).click();
+
+    await page.waitForTimeout(200);
+    const recipientRequests = requests.filter((u) => u.includes('recipient='));
+    expect(recipientRequests.length).toBeGreaterThan(0);
+    expect(recipientRequests[recipientRequests.length - 1]).toContain('recipient=alice%40example.local');
+  });
+
+  test('subject filter sends subject query parameter', async ({ page }) => {
+    const requests: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      requests.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], next: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    await page.getByLabel('Nach Betreff filtern').fill('Bestellung');
+    await page.getByRole('button', { name: 'Suchen' }).click();
+
+    await page.waitForTimeout(200);
+    const subjectRequests = requests.filter((u) => u.includes('subject='));
+    expect(subjectRequests.length).toBeGreaterThan(0);
+    expect(subjectRequests[subjectRequests.length - 1]).toContain('subject=Bestellung');
+  });
+
+  test('date-range filters send date_from and date_to parameters', async ({ page }) => {
+    const requests: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      requests.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], next: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    await page.locator('#mr-date-from').fill('2024-06-01T00:00');
+    await page.locator('#mr-date-to').fill('2024-06-02T00:00');
+    await page.getByRole('button', { name: 'Suchen' }).click();
+
+    await page.waitForTimeout(200);
+    const fromRequests = requests.filter((u) => u.includes('date_from='));
+    const toRequests = requests.filter((u) => u.includes('date_to='));
+    expect(fromRequests.length).toBeGreaterThan(0);
+    expect(toRequests.length).toBeGreaterThan(0);
+  });
+
+  test('load-more sends before_us cursor and appends entries', async ({ page }) => {
+    let callCount = 0;
+    const loadMoreUrls: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      callCount++;
+      const url = new URL(route.request().url());
+      const hasCursor = url.searchParams.has('before_us');
+      if (hasCursor) loadMoreUrls.push(url.toString());
+
+      if (!hasCursor) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: ALL_ITEMS, next: '1718000000000000' }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: PAGE2_ITEMS, next: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    // First page results visible.
+    await expect(page.getByText('kunde@example.com')).toBeVisible();
+
+    // "Weitere laden" visible when next cursor is set.
+    const loadMoreBtn = page.getByRole('button', { name: 'Weitere laden' });
     await expect(loadMoreBtn).toBeVisible();
     await loadMoreBtn.click();
 
-    await expect(page.getByText('page2@sender.com')).toBeVisible();
+    // Second page results appended.
+    await expect(page.getByText('page2sender@example.com')).toBeVisible();
+    expect(loadMoreUrls.length).toBeGreaterThan(0);
+    expect(loadMoreUrls[0]).toContain('before_us=');
+  });
+
+  test('reset clears filters and reloads without filter params', async ({ page }) => {
+    const requests: string[] = [];
+
+    await page.route('/api/v1/admin/message-research*', (route) => {
+      requests.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: ALL_ITEMS, next: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    // Apply a sender filter.
+    await page.getByLabel('Nach Absender filtern').fill('test@example.com');
+    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.waitForTimeout(100);
+
+    // Reset.
+    await page.getByRole('button', { name: 'Zurücksetzen' }).click();
+    await page.waitForTimeout(100);
+
+    // Filter input should be cleared.
+    await expect(page.getByLabel('Nach Absender filtern')).toHaveValue('');
+
+    // The last request should not contain the sender param.
+    const lastRequest = requests[requests.length - 1];
+    expect(lastRequest).not.toContain('sender=test%40example.com');
+  });
+
+  test('empty result set shows "Keine Nachrichten gefunden"', async ({ page }) => {
+    await page.route('/api/v1/admin/message-research*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], next: null }),
+      }),
+    );
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+
+    await expect(page.getByText('Keine Nachrichten gefunden.')).toBeVisible();
   });
 });
