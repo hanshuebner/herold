@@ -560,6 +560,30 @@ type Metadata interface {
 	// deployment.
 	DeleteDomain(ctx context.Context, name string) error
 
+	// -- Delegated-operator managed domains (REQ-ADM-307, re #145) -------
+
+	// AssignManagedDomain adds domain to the set of domains managed by
+	// principalID. Idempotent: assigning a domain that is already present
+	// is not an error. Returns ErrNotFound when principalID does not
+	// exist. Returns ErrConflict when domain is already in the set (some
+	// backends may return nil on idempotent insert instead of ErrConflict;
+	// callers must not rely on the distinction).
+	AssignManagedDomain(ctx context.Context, principalID PrincipalID, domain string) error
+
+	// RevokeManagedDomain removes domain from the set of domains managed by
+	// principalID. Returns ErrNotFound when the row is absent.
+	RevokeManagedDomain(ctx context.Context, principalID PrincipalID, domain string) error
+
+	// ListManagedDomains returns the domain names managed by principalID in
+	// ascending alphabetical order. Returns an empty slice (nil) and nil
+	// error when no rows are present.
+	ListManagedDomains(ctx context.Context, principalID PrincipalID) ([]string, error)
+
+	// ListDomainOperators returns every principal that has PrincipalFlagAdmin
+	// set but NOT PrincipalFlagSuperAdmin — i.e., domain-scoped operators
+	// rather than global super-admins. Results are in ascending ID order.
+	ListDomainOperators(ctx context.Context) ([]Principal, error)
+
 	// InsertOIDCProvider records a new OIDC provider configuration.
 	// Returns ErrConflict on duplicate Name.
 	InsertOIDCProvider(ctx context.Context, p OIDCProvider) error

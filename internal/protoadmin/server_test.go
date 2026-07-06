@@ -143,6 +143,28 @@ func (h *harness) createPrincipal(adminKey, email string) uint64 {
 	return p.ID
 }
 
+// createAPIKey creates an admin-scoped API key for the given principal, using
+// the caller's key to authenticate. Returns (keyID, keyPlaintext).
+func (h *harness) createAPIKey(callerKey string, pid uint64) (uint64, string) {
+	h.t.Helper()
+	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/api-keys", pid), callerKey, map[string]any{
+		"label":             "operator-key",
+		"scope":             []string{"admin"},
+		"allow_admin_scope": true,
+	})
+	if res.StatusCode != http.StatusCreated {
+		h.t.Fatalf("createAPIKey for principal %d: %d: %s", pid, res.StatusCode, buf)
+	}
+	var created struct {
+		ID  uint64 `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		h.t.Fatalf("createAPIKey decode: %v", err)
+	}
+	return created.ID, created.Key
+}
+
 func TestHealthz_Live_Ready(t *testing.T) {
 	h := newHarness(t)
 	res, _ := h.doRequest("GET", "/api/v1/healthz/live", "", nil)

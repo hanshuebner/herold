@@ -60,6 +60,9 @@ func principalFlagsToStrings(f store.PrincipalFlags) []string {
 	if f.Has(store.PrincipalFlagAdmin) {
 		out = append(out, "admin")
 	}
+	if f.Has(store.PrincipalFlagSuperAdmin) {
+		out = append(out, "super_admin")
+	}
 	if f.Has(store.PrincipalFlagTOTPEnabled) {
 		out = append(out, "totp_enabled")
 	}
@@ -85,11 +88,23 @@ func principalFlagsFromStrings(in []string) (store.PrincipalFlags, bool) {
 			// Clients may not set totp_enabled directly; it is toggled by
 			// the TOTP confirm/disable endpoints.
 			continue
+		case "super_admin":
+			// Clients may not set super_admin directly; it is managed via the
+			// dedicated operator-scope endpoints (REQ-ADM-307).
+			continue
 		default:
 			return 0, false
 		}
 	}
 	return f, true
+}
+
+// operatorDTO is the wire shape for a domain-scoped operator listing.
+// It extends principalDTO with the managed-domain set so callers can
+// read both in one round trip.
+type operatorDTO struct {
+	principalDTO
+	ManagedDomains []string `json:"managed_domains"`
 }
 
 // aliasDTO is the wire representation of an Alias row.

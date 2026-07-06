@@ -49,6 +49,14 @@ type PrincipalRow struct {
 	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
 }
 
+// PrincipalManagedDomainRow mirrors the principal_managed_domains table
+// introduced in migration 0072 (REQ-ADM-307, re #145). FK to principals(id)
+// ON DELETE CASCADE; restored after principals are in place.
+type PrincipalManagedDomainRow struct {
+	PrincipalID int64  `json:"principal_id"`
+	Domain      string `json:"domain"`
+}
+
 type OIDCProviderRow struct {
 	Name            string `json:"name"`
 	IssuerURL       string `json:"issuer_url"`

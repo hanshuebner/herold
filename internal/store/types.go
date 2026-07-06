@@ -97,6 +97,15 @@ const (
 	// scan ban (REQ-PERF-INDEX-08): that is a correctness rule, not a
 	// performance gate.
 	PrincipalFlagBypassResponseDeadline
+	// PrincipalFlagSuperAdmin designates a global super-admin (REQ-ADM-307,
+	// re #145). A super-admin sees all domains and performs server-wide
+	// administration. It is always set alongside PrincipalFlagAdmin; a
+	// principal that has PrincipalFlagAdmin but NOT PrincipalFlagSuperAdmin
+	// is a domain-scoped operator whose visibility is restricted to the
+	// domains listed in principal_managed_domains. Existing
+	// PrincipalFlagAdmin principals are auto-promoted to super-admin by
+	// migration 0072 so no operator is locked out on upgrade.
+	PrincipalFlagSuperAdmin
 )
 
 // Has reports whether f includes mask (every bit in mask is set in f).

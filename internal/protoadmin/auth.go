@@ -436,6 +436,26 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal
 	return false
 }
 
+// requireSuperAdmin returns 403 when the caller does not hold BOTH
+// PrincipalFlagAdmin AND PrincipalFlagSuperAdmin. It is the gate for
+// server-wide operations that domain-scoped operators must not perform
+// (creating operators, managing DKIM keys, server config, etc.)
+// (REQ-ADM-307, re #145).
+func requireSuperAdmin(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
+	if caller.Flags.Has(store.PrincipalFlagAdmin) && caller.Flags.Has(store.PrincipalFlagSuperAdmin) {
+		return true
+	}
+	slog.WarnContext(r.Context(), "protoadmin.permission_denied",
+		"activity", observe.ActivityAudit,
+		"actor_id", caller.ID,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"reason", "super_admin required")
+	writeProblem(w, r, http.StatusForbidden, "forbidden",
+		"super-admin privileges required", "")
+	return false
+}
+
 // requireSelfServiceElevation gates a sensitive self-service operation behind
 // TOTP step-up when the caller has TOTP enrolled (REQ-AUTH-78, issue #79).
 //

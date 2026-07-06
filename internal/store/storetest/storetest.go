@@ -414,6 +414,13 @@ func Run(t *testing.T, f Factory) {
 		{"PreTrash_SnapshotClearedAfterRestore", testPreTrashSnapshotClearedAfterRestore},
 		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
 		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
+		// -- Delegated-operator managed domains (REQ-ADM-307, migration 0072, re #145) --
+		{"ManagedDomains_AssignRevoke", testManagedDomains_AssignRevoke},
+		{"ManagedDomains_AssignIdempotent", testManagedDomains_AssignIdempotent},
+		{"ManagedDomains_RevokeNotFound", testManagedDomains_RevokeNotFound},
+		{"ManagedDomains_CascadeOnDeletePrincipal", testManagedDomains_CascadeOnDeletePrincipal},
+		{"ListDomainOperators", testListDomainOperators},
+		{"MigrationAutoPromotion_SuperAdminFlagRoundtrip", testMigrationAutoPromotion},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --
 		// The three scenarios run as subtests of a single case so they share
 		// one freshly-migrated store: each top-level case re-applies the full

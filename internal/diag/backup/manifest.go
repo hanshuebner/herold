@@ -457,7 +457,15 @@ const CurrentBackupVersion = 1
 //	identity's email address. Empty string means "use the identity email
 //	at auth time". Not used for oauth2 (XOAUTH2 user stays the email).
 //	Column-only migration.
-const CurrentSchemaVersion = 71
+//
+// 72 — 0072_principal_managed_domains.sql (REQ-ADM-307, re #145).
+//
+//	Introduces the delegated-operator authorization model. Creates the
+//	principal_managed_domains association table (principal_id -> domain)
+//	for domain-scoped operators. Adds PrincipalFlagSuperAdmin = 32 (bit 5)
+//	and auto-promotes every existing PrincipalFlagAdmin principal to
+//	super-admin so no operator changes behaviour on upgrade.
+const CurrentSchemaVersion = 72
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -501,6 +509,10 @@ type BlobSummary struct {
 var TableNames = []string{
 	"domains",
 	"principals",
+	// Delegated-operator managed-domain association (REQ-ADM-307, migration 0072,
+	// re #145). FK to principals(id) ON DELETE CASCADE; restored after principals
+	// so the parent rows are in place before the association rows arrive.
+	"principal_managed_domains",
 	// Phase 3 Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122,
 	// migration 0017). FK to principals(id); restored after the
 	// principals row is in place. No child tables of its own — the

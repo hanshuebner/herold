@@ -91,6 +91,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/domains", authAdmin(s.handleCreateDomain))
 	mux.HandleFunc("DELETE /api/v1/domains/{name}", authAdmin(s.handleDeleteDomain))
 
+	// Domain-scoped operator management (REQ-ADM-307, re #145).
+	// Super-admin only: listing operators and assigning/revoking managed domains.
+	mux.HandleFunc("GET /api/v1/admin/operators", authAdmin(s.handleListOperators))
+	mux.HandleFunc("GET /api/v1/principals/{pid}/managed-domains", authAdmin(s.handleListManagedDomains))
+	mux.HandleFunc("POST /api/v1/principals/{pid}/managed-domains", authAdmin(s.handleAssignManagedDomain))
+	mux.HandleFunc("DELETE /api/v1/principals/{pid}/managed-domains/{domain}", authAdmin(s.handleRevokeManagedDomain))
+
 	// Domain-scoped DKIM keys (REQ-ADM-11, REQ-ADM-310, REQ-OPS-60, REQ-OPS-62).
 	mux.HandleFunc("POST /api/v1/domains/{name}/dkim", authAdmin(s.handleGenerateDKIMKey))
 	mux.HandleFunc("GET /api/v1/domains/{name}/dkim", authAdmin(s.handleListDKIMKeys))
