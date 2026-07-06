@@ -268,11 +268,15 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		}
 	}
 
-	// Audit the acceptance (REQ-FLOW-03 durability).
+	// Record the acceptance in the system events ring-buffer (REQ-ADM-304).
+	// Derive domain from the first recipient for REQ-ADM-307 scoping.
+	var ingestDomain string
+	if len(req.Recipients) > 0 {
+		ingestDomain = domainOfRecipient(req.Recipients[0].Addr)
+	}
 	auditTimer := observe.StartStoreOp("append_audit")
-	_ = s.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+	_ = s.store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
 		At:         s.clk.Now(),
-		ActorKind:  store.ActorSystem,
 		ActorID:    source,
 		Action:     source + ".accept",
 		Subject:    "message:" + blobRef.Hash,
@@ -280,6 +284,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		Outcome:    store.OutcomeSuccess,
 		Message: fmt.Sprintf("source=%s recipients=%d size=%d",
 			source, len(req.Recipients), len(finalBytes)),
+		Domain: ingestDomain,
 		Metadata: map[string]string{
 			"hostname":  s.opts.Hostname,
 			"mail_from": req.MailFrom,

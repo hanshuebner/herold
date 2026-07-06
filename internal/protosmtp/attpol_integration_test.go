@@ -384,23 +384,23 @@ func TestAttPol_AuditLog_RecordsOutcome(t *testing.T) {
 	_, _ = f.drive(t, "bob@sender.test",
 		[]string{"alice@example.test"}, bodyMultipartMixed())
 
-	entries, err := f.ha.Store.Meta().ListAuditLog(context.Background(),
-		store.AuditLogFilter{Action: "smtp.attpol", Limit: 10})
+	evs, err := f.ha.Store.Meta().ListSystemEvents(context.Background(),
+		store.SystemEventFilter{Action: "smtp.attpol", Limit: 10})
 	if err != nil {
-		t.Fatalf("ListAuditLog: %v", err)
+		t.Fatalf("ListSystemEvents: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatalf("expected at least one smtp.attpol audit row")
+	if len(evs) == 0 {
+		t.Fatalf("expected at least one smtp.attpol system event")
 	}
-	got := entries[0].Metadata["attpol_outcome"]
+	got := evs[0].Metadata["attpol_outcome"]
 	if got != "refused_at_data" {
 		t.Errorf("attpol_outcome = %q; want refused_at_data", got)
 	}
-	if entries[0].Metadata["recipient_domain"] != "example.test" {
-		t.Errorf("recipient_domain = %q; want example.test", entries[0].Metadata["recipient_domain"])
+	if evs[0].Metadata["recipient_domain"] != "example.test" {
+		t.Errorf("recipient_domain = %q; want example.test", evs[0].Metadata["recipient_domain"])
 	}
-	if entries[0].Outcome != store.OutcomeFailure {
-		t.Errorf("audit Outcome = %v; want OutcomeFailure", entries[0].Outcome)
+	if evs[0].Outcome != store.OutcomeFailure {
+		t.Errorf("smtp.attpol Outcome = %v; want OutcomeFailure", evs[0].Outcome)
 	}
 }
 

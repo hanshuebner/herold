@@ -101,6 +101,11 @@ func (a *nullAudit) AppendAuditLog(_ context.Context, _ store.AuditLogEntry) err
 	return nil
 }
 
+func (a *nullAudit) AppendSystemEvent(_ context.Context, _ store.SystemEvent) error {
+	atomic.AddInt64(&a.count, 1)
+	return nil
+}
+
 // ---- ephemeral signing key helper ------------------------------------------
 
 type testSigner struct {

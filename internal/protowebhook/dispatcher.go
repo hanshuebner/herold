@@ -535,7 +535,7 @@ func (d *Dispatcher) deliverSynthetic(ctx context.Context, hook store.Webhook, i
 		// REQ-HOOK-EXTRACTED-03: text_required + origin=none drops the
 		// delivery without retry.
 		d.recordOutcome(hook, "dropped_no_text")
-		d.recordDropAudit(ctx, hook, deliveryID, 0, in.Parsed.Envelope.MessageID)
+		d.recordDropSystemEvent(ctx, hook, deliveryID, 0, in.Parsed.Envelope.MessageID, addrDomain(in.Recipient))
 		d.logger.Info("protowebhook: synthetic dropped no_text",
 			"activity", observe.ActivitySystem,
 			"webhook_id", uint64(hook.ID),

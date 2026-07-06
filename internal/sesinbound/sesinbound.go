@@ -39,10 +39,11 @@ type IngestMsg struct {
 	EnvelopeTo []string
 }
 
-// AuditLogger is the minimal audit interface sesinbound needs from the
-// store layer.  Production code wires store.Metadata; tests use a stub.
+// AuditLogger is the minimal store interface sesinbound needs.
+// Production code wires store.Metadata; tests use a stub.
 type AuditLogger interface {
 	AppendAuditLog(ctx context.Context, entry store.AuditLogEntry) error
+	AppendSystemEvent(ctx context.Context, ev store.SystemEvent) error
 }
 
 // Handler is the HTTP handler for POST /hooks/ses/inbound (REQ-HOOK-SES-01).
@@ -252,16 +253,17 @@ func (h *Handler) handleNotification(ctx context.Context, w http.ResponseWriter,
 			slog.String("err", err.Error()))
 	}
 
-	// Audit log entry per REQ-ADM-300.
-	_ = h.audit.AppendAuditLog(ctx, store.AuditLogEntry{
-		At:        time.Now(),
-		ActorKind: store.ActorSystem,
-		ActorID:   "ses_inbound",
-		Action:    "ses_inbound_received",
-		Subject:   "message:" + m.MessageID,
-		Outcome:   store.OutcomeSuccess,
+	// Route to system events ring-buffer (REQ-ADM-304).
+	_ = h.audit.AppendSystemEvent(ctx, store.SystemEvent{
+		At:      time.Now(),
+		ActorID: "ses_inbound",
+		Action:  "ses_inbound_received",
+		Subject: "message:" + m.MessageID,
+		Outcome: store.OutcomeSuccess,
 		Message: fmt.Sprintf("sns_message_id=%s bucket=%s key=%s",
 			m.MessageID, bucket, key),
+		// Domain is left empty: SES inbound events are not tied to a single
+		// herold-managed recipient domain at this recording point.
 		Metadata: map[string]string{
 			"sns_message_id": m.MessageID,
 			"s3_bucket":      bucket,

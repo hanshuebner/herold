@@ -145,7 +145,8 @@ func TestSetTelemetry_PersistsAndAuditLogs(t *testing.T) {
 		t.Fatal("expected audit entries for telemetry.set, got none")
 	}
 	// The most-recent entry (SetTelemetry(nil)) should carry before=false after=null.
-	last := audit[len(audit)-1]
+	// ListAuditLog returns rows newest-first (ORDER BY id DESC), so audit[0] is the latest.
+	last := audit[0]
 	if before, ok := last.Metadata["before"]; !ok || before != "false" {
 		t.Errorf("last audit entry before: want 'false', got %q (ok=%v)", before, ok)
 	}

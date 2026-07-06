@@ -125,6 +125,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Audit log.
 	mux.HandleFunc("GET /api/v1/audit", authAdmin(s.handleAuditLog))
 
+	// System events ring-buffer (REQ-ADM-304, re #142). Admin-scoped;
+	// operator results are filtered to managed domains per REQ-ADM-307.
+	mux.HandleFunc("GET /api/v1/admin/system-events", authAdmin(s.handleSystemEvents))
+
 	// Outbound queue.
 	mux.HandleFunc("GET /api/v1/queue", authAdmin(s.handleListQueue))
 	mux.HandleFunc("GET /api/v1/queue/stats", authAdmin(s.handleQueueStats))

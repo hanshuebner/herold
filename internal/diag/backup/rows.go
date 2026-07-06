@@ -943,3 +943,19 @@ type InboundAttpolRecipientRow struct {
 	RejectText  string `json:"reject_text"`
 	UpdatedAtUs int64  `json:"updated_at_us"`
 }
+
+// SystemEventRow mirrors one row of the system_events ring-buffer table
+// introduced in migration 0073 (REQ-ADM-304, re #142). Excluded from backup
+// by default (--include-system-events opts in). No FK constraints.
+type SystemEventRow struct {
+	ID           int64  `json:"id"`
+	Ts           int64  `json:"ts"`
+	Action       string `json:"action"`
+	ActorID      string `json:"actor_id"`
+	Subject      string `json:"subject"`
+	RemoteAddr   string `json:"remote_addr"`
+	Outcome      int64  `json:"outcome"`
+	Message      string `json:"message"`
+	Domain       string `json:"domain"`
+	MetadataJSON string `json:"metadata_json"`
+}

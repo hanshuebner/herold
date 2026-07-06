@@ -421,6 +421,14 @@ func Run(t *testing.T, f Factory) {
 		{"ManagedDomains_CascadeOnDeletePrincipal", testManagedDomains_CascadeOnDeletePrincipal},
 		{"ListDomainOperators", testListDomainOperators},
 		{"MigrationAutoPromotion_SuperAdminFlagRoundtrip", testMigrationAutoPromotion},
+		// -- System events ring-buffer (REQ-ADM-304, migration 0073, re #142) --
+		{"SystemEvents_AppendList", testSystemEvents_AppendList},
+		{"SystemEvents_NewestFirst", testSystemEvents_NewestFirst},
+		{"SystemEvents_EvictByCap", testSystemEvents_EvictByCap},
+		{"SystemEvents_EvictByAge", testSystemEvents_EvictByAge},
+		{"SystemEvents_DomainFilter", testSystemEvents_DomainFilter},
+		{"SystemEvents_ActionFilter", testSystemEvents_ActionFilter},
+		{"SystemEvents_CursorPagination", testSystemEvents_CursorPagination},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --
 		// The three scenarios run as subtests of a single case so they share
 		// one freshly-migrated store: each top-level case re-applies the full

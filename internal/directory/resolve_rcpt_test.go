@@ -21,10 +21,6 @@ import (
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
-// storeAuditFilter is a helper returning an empty AuditLogFilter so the
-// test code stays decoupled from the internal/store struct shape.
-func storeAuditFilter() store.AuditLogFilter { return store.AuditLogFilter{} }
-
 // fakeResolveRcptInvoker drives the resolver under test. The handler
 // is swappable so individual tests script the per-call response or
 // inject failures.
@@ -330,27 +326,30 @@ func TestResolveRcpt_AuditLogWritten(t *testing.T) {
 		Recipient: "reply+1@app.example.com",
 		Envelope:  directory.ResolveRcptEnvelope{SourceIP: "203.0.113.5", MailFrom: "alice@example.net"},
 	})
-	rows, err := fs.Meta().ListAuditLog(context.Background(), storeAuditFilter())
+	evs, err := fs.Meta().ListSystemEvents(context.Background(), store.SystemEventFilter{
+		Action: "smtp.rcpt.resolve",
+		Limit:  50,
+	})
 	if err != nil {
-		t.Fatalf("ListAuditLog: %v", err)
+		t.Fatalf("ListSystemEvents: %v", err)
 	}
 	var found bool
-	for _, e := range rows {
-		if e.Action == "smtp.rcpt.resolve" && e.Subject == "rcpt:reply+1@app.example.com" {
+	for _, e := range evs {
+		if e.Subject == "rcpt:reply+1@app.example.com" {
 			found = true
 			if e.Metadata["plugin"] != "app-rcpt" {
-				t.Fatalf("audit metadata plugin: %v", e.Metadata)
+				t.Fatalf("system event metadata plugin: %v", e.Metadata)
 			}
 			if e.Metadata["route_tag"] != "ticket:1" {
-				t.Fatalf("audit metadata route_tag: %v", e.Metadata)
+				t.Fatalf("system event metadata route_tag: %v", e.Metadata)
 			}
 			if e.Metadata["action"] != "accept" {
-				t.Fatalf("audit metadata action: %v", e.Metadata)
+				t.Fatalf("system event metadata action: %v", e.Metadata)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected smtp.rcpt.resolve audit row, got %d rows", len(rows))
+		t.Fatalf("expected smtp.rcpt.resolve system event, got %d rows", len(evs))
 	}
 }
 

@@ -57,11 +57,11 @@ func (d *Dispatcher) deliver(ctx context.Context, hook store.Webhook, p store.Pr
 	}
 	if dropped {
 		// REQ-HOOK-EXTRACTED-03: text_required + origin=none drops the
-		// delivery without retry.  No HTTP POST is issued; the audit
-		// log + metric + admin hook log carry the operator-visible
+		// delivery without retry.  No HTTP POST is issued; the system
+		// event + metric + admin hook log carry the operator-visible
 		// signal.
 		d.recordOutcome(hook, "dropped_no_text")
-		d.recordDropAudit(ctx, hook, deliveryID, msg.ID, msg.Envelope.MessageID)
+		d.recordDropSystemEvent(ctx, hook, deliveryID, msg.ID, msg.Envelope.MessageID, addrDomain(p.CanonicalEmail))
 		d.logger.Info("protowebhook: dropped no_text",
 			"activity", observe.ActivitySystem,
 			"webhook_id", uint64(hook.ID),
@@ -170,14 +170,16 @@ func hookMetricName(hook store.Webhook) string {
 	return strconv.FormatUint(uint64(hook.ID), 10)
 }
 
-// recordDropAudit appends the REQ-HOOK-EXTRACTED-03 audit row.  The
-// audit message is intentionally short and machine-grep-friendly; the
-// hook id and message id appear in Metadata for filterable replay.
+// recordDropSystemEvent writes the REQ-HOOK-EXTRACTED-03 system event row
+// to the system_events ring-buffer (REQ-ADM-304).  The message is
+// intentionally short and machine-grep-friendly; the hook id and message id
+// appear in Metadata for filterable replay.
 //
 // messageID is the store-side row id (0 for synthetic dispatches with no
-// messages-row); messageIDHeader is the RFC 5322 Message-ID header. Both
-// are recorded for correlation.
-func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, deliveryID string, messageID store.MessageID, messageIDHeader string) {
+// messages-row); messageIDHeader is the RFC 5322 Message-ID header. domain
+// is the managed-domain key for REQ-ADM-307 scope filtering (derived by
+// the caller from the principal email or recipient address).
+func (d *Dispatcher) recordDropSystemEvent(ctx context.Context, hook store.Webhook, deliveryID string, messageID store.MessageID, messageIDHeader string, domain string) {
 	md := map[string]string{
 		"delivery_id": deliveryID,
 		"reason":      "dropped_no_text",
@@ -188,24 +190,34 @@ func (d *Dispatcher) recordDropAudit(ctx context.Context, hook store.Webhook, de
 	if messageIDHeader != "" {
 		md["message_id_email"] = messageIDHeader
 	}
-	entry := store.AuditLogEntry{
-		At:        d.clock.Now().UTC(),
-		ActorKind: store.ActorSystem,
-		ActorID:   "system",
-		Action:    "hook.dispatch.dropped_no_text",
-		Subject:   fmt.Sprintf("webhook:%d", hook.ID),
-		Outcome:   store.OutcomeSuccess,
-		Message:   "extracted-mode webhook delivery dropped: text_required and body.text_origin=none",
-		Metadata:  md,
+	ev := store.SystemEvent{
+		At:       d.clock.Now().UTC(),
+		ActorID:  "system",
+		Action:   "hook.dispatch.dropped_no_text",
+		Subject:  fmt.Sprintf("webhook:%d", hook.ID),
+		Outcome:  store.OutcomeSuccess,
+		Message:  "extracted-mode webhook delivery dropped: text_required and body.text_origin=none",
+		Domain:   domain,
+		Metadata: md,
 	}
-	if err := d.store.Meta().AppendAuditLog(ctx, entry); err != nil {
+	if err := d.store.Meta().AppendSystemEvent(ctx, ev); err != nil {
 		// Never blocks delivery; the log warn surfaces store-side
 		// problems for the operator.
-		d.logger.Warn("protowebhook: append audit log",
+		d.logger.Warn("protowebhook: append system event",
 			"activity", observe.ActivityInternal,
 			"webhook_id", uint64(hook.ID),
 			"err", err.Error())
 	}
+}
+
+// addrDomain extracts the domain portion of an email address for use in
+// REQ-ADM-307 scope filtering. Returns empty string on parse failure.
+func addrDomain(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at+1 >= len(email) {
+		return ""
+	}
+	return strings.ToLower(email[at+1:])
 }
 
 // postOnce executes a single HTTP attempt. Returns (status, ok, transient)

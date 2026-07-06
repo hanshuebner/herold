@@ -229,18 +229,19 @@ func (sess *session) auditAttPol(
 	if outcome != attpolOutcomePassed {
 		auditOutcome = store.OutcomeFailure
 	}
-	if err := sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+	// Route to system events ring-buffer (REQ-ADM-304).
+	if err := sess.srv.store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
 		At:         sess.srv.clk.Now(),
-		ActorKind:  store.ActorSystem,
 		ActorID:    "smtp",
 		Action:     "smtp.attpol",
 		Subject:    subject,
 		RemoteAddr: sess.remoteIP,
 		Outcome:    auditOutcome,
 		Message:    "session=" + sess.sessID,
+		Domain:     attpolDomainOf(rc.addr),
 		Metadata:   md,
 	}); err != nil {
-		sess.log.WarnContext(ctx, "attpol audit append failed",
+		sess.log.WarnContext(ctx, "attpol system event append failed",
 			slog.String("activity", observe.ActivityInternal),
 			slog.String("err", err.Error()))
 	}

@@ -149,16 +149,16 @@ func TestSynthetic_NoSubscription_AcceptsAndLogsAudit(t *testing.T) {
 		t.Errorf("expected no DispatchSynthetic calls, got %d", got)
 	}
 
-	// Audit row "smtp.synthetic_accept" must record outcome=no_subscription.
-	entries, err := f.ha.Store.Meta().ListAuditLog(context.Background(),
-		store.AuditLogFilter{Action: "smtp.synthetic_accept", Limit: 10})
+	// System event "smtp.synthetic_accept" must record outcome=no_subscription.
+	evs, err := f.ha.Store.Meta().ListSystemEvents(context.Background(),
+		store.SystemEventFilter{Action: "smtp.synthetic_accept", Limit: 10})
 	if err != nil {
-		t.Fatalf("ListAuditLog: %v", err)
+		t.Fatalf("ListSystemEvents: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatalf("expected smtp.synthetic_accept audit row")
+	if len(evs) == 0 {
+		t.Fatalf("expected smtp.synthetic_accept system event")
 	}
-	if got := entries[0].Metadata["dispatch_outcome"]; got != "no_subscription" {
+	if got := evs[0].Metadata["dispatch_outcome"]; got != "no_subscription" {
 		t.Errorf("dispatch_outcome = %q, want no_subscription", got)
 	}
 }
@@ -187,15 +187,16 @@ func TestSynthetic_NoDispatcherWired_AcceptsAndLogsAudit(t *testing.T) {
 	cli.send(t, "QUIT")
 	mustOK(t, cli, 221)
 
-	entries, err := f.ha.Store.Meta().ListAuditLog(context.Background(),
-		store.AuditLogFilter{Action: "smtp.synthetic_accept", Limit: 10})
+	// System event "smtp.synthetic_accept" must record outcome=no_dispatcher_wired.
+	evs, err := f.ha.Store.Meta().ListSystemEvents(context.Background(),
+		store.SystemEventFilter{Action: "smtp.synthetic_accept", Limit: 10})
 	if err != nil {
-		t.Fatalf("ListAuditLog: %v", err)
+		t.Fatalf("ListSystemEvents: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatalf("expected smtp.synthetic_accept audit row")
+	if len(evs) == 0 {
+		t.Fatalf("expected smtp.synthetic_accept system event")
 	}
-	if got := entries[0].Metadata["dispatch_outcome"]; got != "no_dispatcher_wired" {
+	if got := evs[0].Metadata["dispatch_outcome"]; got != "no_dispatcher_wired" {
 		t.Errorf("dispatch_outcome = %q, want no_dispatcher_wired", got)
 	}
 }

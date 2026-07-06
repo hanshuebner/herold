@@ -194,20 +194,20 @@ func TestDispatch_Extracted_TextRequired_DropsNoText(t *testing.T) {
 		}
 	}
 
-	// Verify the audit log carries the dropped_no_text entry.
-	entries, err := h.store.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{Limit: 100})
+	// Verify the system events ring-buffer carries the dropped_no_text entry.
+	evs, err := h.store.Meta().ListSystemEvents(context.Background(), store.SystemEventFilter{Limit: 100})
 	if err != nil {
-		t.Fatalf("ListAuditLog: %v", err)
+		t.Fatalf("ListSystemEvents: %v", err)
 	}
 	var saw bool
-	for _, e := range entries {
+	for _, e := range evs {
 		if e.Action == "hook.dispatch.dropped_no_text" && e.Metadata["reason"] == "dropped_no_text" {
 			saw = true
 			break
 		}
 	}
 	if !saw {
-		t.Fatalf("expected audit entry hook.dispatch.dropped_no_text in %+v", entries)
+		t.Fatalf("expected system event hook.dispatch.dropped_no_text in %+v", evs)
 	}
 }
 

@@ -360,21 +360,25 @@ func (r *RcptResolver) audit(ctx context.Context, plugin string, req ResolveRcpt
 	if dec.Action == ResolveRcptDefer || dec.Action == ResolveRcptReject || dec.Action == ResolveRcptRateLimited {
 		outcome = store.OutcomeFailure
 	}
-	entry := store.AuditLogEntry{
+	// Route to system events ring-buffer (REQ-ADM-304).
+	rcptDomain := ""
+	if at := strings.LastIndex(req.Recipient, "@"); at >= 0 && at+1 < len(req.Recipient) {
+		rcptDomain = strings.ToLower(req.Recipient[at+1:])
+	}
+	ev := store.SystemEvent{
 		At:         r.clk.Now(),
-		ActorKind:  store.ActorSystem,
 		ActorID:    "smtp",
 		Action:     "smtp.rcpt.resolve",
 		Subject:    "rcpt:" + req.Recipient,
 		RemoteAddr: req.Envelope.SourceIP,
 		Outcome:    outcome,
 		Message:    fmt.Sprintf("plugin=%s action=%s code=%s", plugin, dec.Action, dec.Code),
+		Domain:     rcptDomain,
 		Metadata:   meta,
 	}
-	if err := r.store.AppendAuditLog(ctx, entry); err != nil {
-		// Audit failure must not break the SMTP path; log at WARN so
-		// the operator notices a silently-dropping audit pipeline.
-		r.logger.WarnContext(ctx, "directory.resolve_rcpt audit append failed",
+	if err := r.store.AppendSystemEvent(ctx, ev); err != nil {
+		// System event failure must not break the SMTP path; log at WARN.
+		r.logger.WarnContext(ctx, "directory.resolve_rcpt system event append failed",
 			slog.String("activity", observe.ActivityInternal),
 			slog.String("plugin", plugin),
 			slog.String("recipient", req.Recipient),

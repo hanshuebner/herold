@@ -312,17 +312,25 @@ func (sess *session) finishMessageWithBlob(
 			anyOK = true
 		}
 	}
-	// Audit the accept (REQ-FLOW-03 durability).
+	// Record the accept in the system events ring-buffer (REQ-ADM-304).
+	// Derive domain from the first local recipient for REQ-ADM-307 scoping.
+	var acceptDomain string
+	for _, rc := range sess.envelope.rcpts {
+		if rc.domain != "" {
+			acceptDomain = rc.domain
+			break
+		}
+	}
 	auditTimer := observe.StartStoreOp("append_audit")
-	_ = sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+	_ = sess.srv.store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
 		At:         sess.srv.clk.Now(),
-		ActorKind:  store.ActorSystem,
 		ActorID:    "smtp",
 		Action:     "smtp.accept",
 		Subject:    "message:" + blobRef.Hash,
 		RemoteAddr: sess.remoteIP,
 		Outcome:    store.OutcomeSuccess,
 		Message:    fmt.Sprintf("session=%s recipients=%d size=%d", sess.sessID, len(sess.envelope.rcpts), len(finalBytes)),
+		Domain:     acceptDomain,
 		Metadata: map[string]string{
 			"hostname":  sess.srv.opts.Hostname,
 			"authserv":  sess.srv.opts.AuthservID,
@@ -1333,18 +1341,19 @@ func (sess *session) auditSyntheticAccepted(
 	if outcome == "no_dispatcher_wired" || outcome == "dispatch_error" {
 		auditOutcome = store.OutcomeFailure
 	}
-	if err := sess.srv.store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+	// Route to system events ring-buffer (REQ-ADM-304).
+	if err := sess.srv.store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
 		At:         sess.srv.clk.Now(),
-		ActorKind:  store.ActorSystem,
 		ActorID:    "smtp",
 		Action:     "smtp.synthetic_accept",
 		Subject:    "recipient:" + rc.addr,
 		RemoteAddr: sess.remoteIP,
 		Outcome:    auditOutcome,
 		Message:    "session=" + sess.sessID,
+		Domain:     strings.ToLower(rc.domain),
 		Metadata:   md,
 	}); err != nil {
-		sess.log.WarnContext(ctx, "synthetic audit append failed",
+		sess.log.WarnContext(ctx, "synthetic system event append failed",
 			slog.String("activity", observe.ActivityInternal),
 			slog.String("err", err.Error()))
 	}

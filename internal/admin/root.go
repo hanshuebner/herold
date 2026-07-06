@@ -127,6 +127,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newAPIKeyCmd())
 	root.AddCommand(newAliasCmd())
 	root.AddCommand(newAuditCmd())
+	root.AddCommand(newSystemEventsCmd())
 	root.AddCommand(newCategoriseCmd())
 	root.AddCommand(newAppConfigCmd())
 	root.AddCommand(newQueueCmd())

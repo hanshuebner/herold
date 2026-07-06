@@ -707,6 +707,24 @@ type Metadata interface {
 	// entries. Use filter.BeforeID to paginate.
 	ListAuditLog(ctx context.Context, filter AuditLogFilter) ([]AuditLogEntry, error)
 
+	// -- REQ-ADM-304: system events ring-buffer ---------------------------------
+
+	// AppendSystemEvent writes one row to the bounded system_events ring-buffer.
+	// Best-effort: callers MUST NOT treat a non-nil error as grounds to fail
+	// the surrounding mail-flow operation.
+	AppendSystemEvent(ctx context.Context, ev SystemEvent) error
+
+	// ListSystemEvents returns system events matching filter, newest-first
+	// (id DESC), up to filter.Limit (capped at 1000 server-side). Use
+	// filter.BeforeID to paginate. When filter.Domains is a non-nil empty
+	// slice, no rows are returned (fail-closed per REQ-ADM-307).
+	ListSystemEvents(ctx context.Context, filter SystemEventFilter) ([]SystemEvent, error)
+
+	// EvictSystemEvents deletes rows older than opts.MaxAge or below the
+	// row-count cap, up to opts.BatchSize rows per call. Returns the number
+	// deleted.
+	EvictSystemEvents(ctx context.Context, opts SystemEventEvictOptions) (int, error)
+
 	// GetMailboxByName returns the mailbox owned by pid whose Name
 	// matches name case-sensitively (INBOX normalisation is the
 	// caller's responsibility). Returns ErrNotFound when no such

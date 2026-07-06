@@ -465,7 +465,16 @@ const CurrentBackupVersion = 1
 //	for domain-scoped operators. Adds PrincipalFlagSuperAdmin = 32 (bit 5)
 //	and auto-promotes every existing PrincipalFlagAdmin principal to
 //	super-admin so no operator changes behaviour on upgrade.
-const CurrentSchemaVersion = 72
+//
+// 73 — 0073_system_events.sql (REQ-ADM-304, re #142).
+//
+//	Adds the system_events bounded ring-buffer table for system-initiated
+//	operational telemetry (SMTP acceptance, recipient resolution, SES
+//	inbound receipt, webhook dispatch outcomes). Separate from the audit
+//	log which is the security/compliance record for actor-initiated
+//	actions. The domain column enables REQ-ADM-307 scope filtering.
+//	Excluded from herold diag backup by default.
+const CurrentSchemaVersion = 73
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -648,4 +657,9 @@ var TableNames = []string{
 	// opts in, REQ-OPS-206a).  Listed last so restore tooling can skip
 	// it cleanly without disturbing FK-ordered table groups.
 	"clientlog",
+	// System-events ring buffer (REQ-ADM-304, migration 0073, re #142).
+	// No FK constraints; excluded from backup by default
+	// (--include-system-events opts in).  Operational telemetry; not part
+	// of the security/compliance backup set.
+	"system_events",
 }
