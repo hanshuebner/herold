@@ -474,7 +474,14 @@ const CurrentBackupVersion = 1
 //	log which is the security/compliance record for actor-initiated
 //	actions. The domain column enables REQ-ADM-307 scope filtering.
 //	Excluded from herold diag backup by default.
-const CurrentSchemaVersion = 73
+//
+// 74 — 0074_imapimport_debug_log.sql (re #138).
+//
+//	Adds imapimport_account.debug_log: a runtime-toggled boolean that
+//	raises per-worker verbosity (connection lifecycle, IDLE arm/wake,
+//	sync round counts, NOOP poll ticks) and routes events into the
+//	system_events ring-buffer tagged with the account ID as actor_id.
+const CurrentSchemaVersion = 74
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

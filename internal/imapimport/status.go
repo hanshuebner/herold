@@ -100,6 +100,11 @@ type WorkerStatus struct {
 	// LastError is the redacted last error string. Never contains credential
 	// material (REQ-IMAP-IMP-71).
 	LastError string
+
+	// DebugLog reports whether per-account debug logging is enabled.
+	// When true, the worker emits fine-grained system events tagged with
+	// the account ID. Reflects the persisted flag (re #138).
+	DebugLog bool
 }
 
 // String returns a one-line human-readable summary of the status. Useful for
@@ -152,6 +157,7 @@ type workerStatus struct {
 	msgFetched    int64
 	flagPropag    int64
 	lastError     string
+	debugLog      bool
 }
 
 // snapshot returns a copy of the current status. The caller owns the copy.
@@ -174,6 +180,7 @@ func (ws *workerStatus) snapshot() WorkerStatus {
 		MessagesFetched:     ws.msgFetched,
 		FlagsPropagated:     ws.flagPropag,
 		LastError:           ws.lastError,
+		DebugLog:            ws.debugLog,
 	}
 	if ws.lastSyncAt != nil {
 		t := *ws.lastSyncAt
@@ -272,6 +279,13 @@ func (ws *workerStatus) incFetched(n int64) {
 	}
 	ws.mu.Lock()
 	ws.msgFetched += n
+	ws.mu.Unlock()
+}
+
+// setDebugLog records the current debug-logging flag value (re #138).
+func (ws *workerStatus) setDebugLog(v bool) {
+	ws.mu.Lock()
+	ws.debugLog = v
 	ws.mu.Unlock()
 }
 

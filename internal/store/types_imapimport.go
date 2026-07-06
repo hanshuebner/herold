@@ -141,6 +141,12 @@ type IMAPImportAccount struct {
 	// Zero until the worker first enables the account and creates the
 	// label.
 	ProvenanceMailboxID MailboxID
+	// DebugLog, when true, raises per-worker verbosity: the worker emits
+	// fine-grained operational events (connection lifecycle, IDLE arm/wake,
+	// sync round counts, NOOP poll ticks) into the system_events ring-buffer
+	// tagged with the account ID as actor_id. Toggled at runtime via the
+	// admin PATCH endpoint without a herold restart (re #138).
+	DebugLog bool
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -195,6 +201,9 @@ type IMAPImportAccountUpdate struct {
 	CredentialCT     []byte
 	State            IMAPImportAccountState
 	DeletePropagates bool
+	// DebugLog, when non-nil, replaces the stored debug-log flag.
+	// nil means "preserve existing".
+	DebugLog *bool
 }
 
 // IMAPImportFolderMapEntry is one row in the imapimport_folder_map

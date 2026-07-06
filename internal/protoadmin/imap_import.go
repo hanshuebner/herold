@@ -43,6 +43,7 @@ type imapImportAccountDTO struct {
 	LastError        string     `json:"last_error,omitempty"`
 	DeletePropagates bool       `json:"delete_propagates"`
 	HasCredential    bool       `json:"has_credential"`
+	DebugLog         bool       `json:"debug_log"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
@@ -82,6 +83,7 @@ func toImapImportDTO(a store.IMAPImportAccount) imapImportAccountDTO {
 		t := *a.LastSuccessAt
 		dto.LastSuccessAt = &t
 	}
+	dto.DebugLog = a.DebugLog
 	return dto
 }
 
@@ -114,10 +116,14 @@ type patchIMAPImportRequest struct {
 	// Credential, when non-empty, replaces the sealed credential.
 	// When absent or empty the stored credential is preserved
 	// (REQ-IMAP-IMP-70).
-	Credential       *string                       `json:"credential,omitempty"`
-	State            *string                       `json:"state,omitempty"`
-	DeletePropagates *bool                         `json:"delete_propagates,omitempty"`
-	FolderMap        []imapImportFolderMapEntryDTO `json:"folder_map,omitempty"`
+	Credential       *string `json:"credential,omitempty"`
+	State            *string `json:"state,omitempty"`
+	DeletePropagates *bool   `json:"delete_propagates,omitempty"`
+	// DebugLog, when non-nil, sets the per-account debug-logging flag.
+	// When enabled the worker emits fine-grained system events tagged with
+	// the account ID. Runtime toggle without a herold restart (re #138).
+	DebugLog  *bool                         `json:"debug_log,omitempty"`
+	FolderMap []imapImportFolderMapEntryDTO `json:"folder_map,omitempty"`
 }
 
 // -- validation helpers -------------------------------------------------------
@@ -446,7 +452,7 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 		BackfillFloorDate: existing.BackfillFloorDate,
 		State:             existing.State,
 		DeletePropagates:  existing.DeletePropagates,
-		// CredentialCT nil means "keep existing"
+		// CredentialCT nil means "keep existing"; DebugLog nil means "keep existing"
 	}
 
 	if req.AccountName != nil {
@@ -507,6 +513,9 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DeletePropagates != nil {
 		upd.DeletePropagates = *req.DeletePropagates
+	}
+	if req.DebugLog != nil {
+		upd.DebugLog = req.DebugLog
 	}
 
 	// Reseal credential if supplied (REQ-IMAP-IMP-70).
@@ -645,4 +654,61 @@ func (s *Server) handleIMAPImportStatus(w http.ResponseWriter, r *http.Request) 
 		snap = []IMAPImportWorkerStatus{}
 	}
 	writeJSON(w, http.StatusOK, pageDTO[IMAPImportWorkerStatus]{Items: snap})
+}
+
+// imapImportMyStatusDTO is the user-facing subset of IMAPImportWorkerStatus.
+// It exposes the fields relevant for the settings card (connected, watch mode,
+// phase, last sync, messages fetched, last error) without revealing admin-only
+// detail. Intentionally does not include FlagsPropagated or DebugLog.
+type imapImportMyStatusDTO struct {
+	AccountID       string     `json:"account_id"`
+	AccountName     string     `json:"account_name"`
+	Connected       bool       `json:"connected"`
+	Phase           string     `json:"phase"`
+	WatchMode       string     `json:"watch_mode,omitempty"`
+	LastSyncAt      *time.Time `json:"last_sync_at,omitempty"`
+	MessagesFetched int64      `json:"messages_fetched"`
+	LastError       string     `json:"last_error,omitempty"`
+}
+
+// handleIMAPImportMyStatus handles GET /api/v1/me/imap-imports/status.
+// Returns the live status of the authenticated caller's own IMAP import
+// workers. Scoped so a principal can never read another principal's status.
+// REQ-IMAP-IMP-65, re #138.
+func (s *Server) handleIMAPImportMyStatus(w http.ResponseWriter, r *http.Request) {
+	caller, ok := principalFrom(r.Context())
+	if !ok {
+		writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "authentication required", "")
+		return
+	}
+
+	provider := s.opts.IMAPImportStatus
+	if provider == nil {
+		writeJSON(w, http.StatusOK, pageDTO[imapImportMyStatusDTO]{
+			Items: []imapImportMyStatusDTO{},
+		})
+		return
+	}
+
+	// Filter the pool snapshot to only the caller's accounts.
+	callerPIDStr := fmt.Sprint(uint64(caller.ID))
+	snap := provider.Snapshot()
+	items := make([]imapImportMyStatusDTO, 0)
+	for _, s := range snap {
+		if s.PrincipalID != callerPIDStr {
+			continue
+		}
+		item := imapImportMyStatusDTO{
+			AccountID:       s.AccountID,
+			AccountName:     s.AccountName,
+			Connected:       s.Connected,
+			Phase:           s.Phase,
+			WatchMode:       s.WatchMode,
+			LastSyncAt:      s.LastSyncAt,
+			MessagesFetched: s.MessagesFetched,
+			LastError:       s.LastError,
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, pageDTO[imapImportMyStatusDTO]{Items: items})
 }

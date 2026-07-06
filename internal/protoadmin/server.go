@@ -74,6 +74,7 @@ type IMAPImportWorkerStatus struct {
 	Phase               string     `json:"phase"`
 	CurrentFolder       string     `json:"current_folder,omitempty"`
 	ConnMode            string     `json:"conn_mode,omitempty"`
+	WatchMode           string     `json:"watch_mode,omitempty"`
 	Connected           bool       `json:"connected"`
 	PhaseSince          time.Time  `json:"phase_since"`
 	LastSyncAt          *time.Time `json:"last_sync_at,omitempty"`
@@ -82,6 +83,7 @@ type IMAPImportWorkerStatus struct {
 	MessagesFetched     int64      `json:"messages_fetched"`
 	FlagsPropagated     int64      `json:"flags_propagated"`
 	LastError           string     `json:"last_error,omitempty"`
+	DebugLog            bool       `json:"debug_log"`
 }
 
 // IMAPImportStatusProvider is the interface the admin server uses to obtain

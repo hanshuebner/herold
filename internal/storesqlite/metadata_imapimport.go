@@ -17,7 +17,7 @@ const imapImportAccountSelectCols = `
 	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
-	delete_propagates, provenance_mailbox_id, created_at, updated_at`
+	delete_propagates, provenance_mailbox_id, debug_log, created_at, updated_at`
 
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
@@ -28,13 +28,14 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		credentialCT                                                           []byte
 		deletePropagates                                                       int64
 		provenanceMailboxID                                                    sql.NullInt64
+		debugLog                                                               int64
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
 		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
-		&deletePropagates, &provenanceMailboxID, &createdUs, &updatedUs,
+		&deletePropagates, &provenanceMailboxID, &debugLog, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
@@ -54,6 +55,7 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		State:               store.IMAPImportAccountState(state),
 		LastError:           lastError,
 		DeletePropagates:    deletePropagates != 0,
+		DebugLog:            debugLog != 0,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -150,6 +152,16 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			credExpr = "credential_ct = ?,"
 			args = append(args, update.CredentialCT)
 		}
+		// debug_log: only update when the field is explicitly set.
+		var debugLogExpr string
+		if update.DebugLog != nil {
+			var v int64
+			if *update.DebugLog {
+				v = 1
+			}
+			debugLogExpr = "debug_log = ?,"
+			args = append(args, v)
+		}
 		args = append(args,
 			string(update.State), deletePropagates, nowUs,
 			update.ID, int64(update.PrincipalID),
@@ -160,7 +172,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			  account_name = ?, host = ?, port = ?, tls_mode = ?,
 			  username = ?, auth_method = ?,
 			  backfill_floor_date = ?,
-			  `+credExpr+`
+			  `+credExpr+debugLogExpr+`
 			  state = ?, delete_propagates = ?, updated_at = ?
 			WHERE id = ? AND principal_id = ?`,
 			args...,

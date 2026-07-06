@@ -973,6 +973,109 @@ func testIMAPImport_DeleteNotFound(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_DebugLog verifies that the debug_log flag round-trips through
+// CreateIMAPImportAccount (default false) and UpdateIMAPImportAccount with
+// a non-nil DebugLog pointer (re #138, REQ-IMAP-IMP-XX).
+func testIMAPImport_DebugLog(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-debuglog@example.com")
+
+	// Created accounts default to debug_log = false.
+	acc, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:      p.ID,
+		AccountName:      "DebugLogTest",
+		Host:             "imap.example.com",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "user",
+		AuthMethod:       store.IMAPImportAuthMethodPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: false,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	if acc.DebugLog {
+		t.Error("DebugLog = true on fresh account; want false")
+	}
+
+	// Flip debug_log on via Update (pointer = non-nil).
+	trueBool := true
+	updated, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      acc.AccountName,
+		Host:             acc.Host,
+		Port:             acc.Port,
+		TLSMode:          acc.TLSMode,
+		Username:         acc.Username,
+		AuthMethod:       acc.AuthMethod,
+		State:            acc.State,
+		DeletePropagates: acc.DeletePropagates,
+		DebugLog:         &trueBool,
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount (enable debug): %v", err)
+	}
+	if !updated.DebugLog {
+		t.Error("DebugLog = false after enabling; want true")
+	}
+
+	// Round-trip via Get.
+	got, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount after debug enable: %v", err)
+	}
+	if !got.DebugLog {
+		t.Error("DebugLog = false in Get after enabling; want true")
+	}
+
+	// Flip back off via Update with nil leaves it unchanged; explicit false turns it off.
+	falseBool := false
+	updated2, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      acc.AccountName,
+		Host:             acc.Host,
+		Port:             acc.Port,
+		TLSMode:          acc.TLSMode,
+		Username:         acc.Username,
+		AuthMethod:       acc.AuthMethod,
+		State:            acc.State,
+		DeletePropagates: acc.DeletePropagates,
+		DebugLog:         &falseBool,
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount (disable debug): %v", err)
+	}
+	if updated2.DebugLog {
+		t.Error("DebugLog = true after disabling; want false")
+	}
+
+	// nil pointer preserves the current value (now false).
+	updated3, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      acc.AccountName,
+		Host:             acc.Host,
+		Port:             acc.Port,
+		TLSMode:          acc.TLSMode,
+		Username:         acc.Username,
+		AuthMethod:       acc.AuthMethod,
+		State:            acc.State,
+		DeletePropagates: acc.DeletePropagates,
+		DebugLog:         nil, // preserve
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount (nil = preserve): %v", err)
+	}
+	if updated3.DebugLog {
+		t.Error("DebugLog changed to true after nil-preserve update; want false")
+	}
+}
+
 // mustCreateIMAPImportAccount is a test helper that creates an account
 // and fails the test on error.
 func mustCreateIMAPImportAccount(t *testing.T, s store.Store, pid store.PrincipalID, name string) store.IMAPImportAccount {

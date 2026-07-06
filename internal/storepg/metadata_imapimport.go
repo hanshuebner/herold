@@ -2,6 +2,7 @@ package storepg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +18,7 @@ const imapImportAccountSelectColsPG = `
 	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
-	delete_propagates, provenance_mailbox_id, created_at, updated_at`
+	delete_propagates, provenance_mailbox_id, debug_log, created_at, updated_at`
 
 func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 	var (
@@ -28,13 +29,14 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		credentialCT                                                           []byte
 		deletePropagates                                                       bool
 		provenanceMailboxID                                                    *int64
+		debugLog                                                               bool
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
 		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
-		&deletePropagates, &provenanceMailboxID, &createdUs, &updatedUs,
+		&deletePropagates, &provenanceMailboxID, &debugLog, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
@@ -54,6 +56,7 @@ func scanIMAPImportAccountPG(row pgx.Row) (store.IMAPImportAccount, error) {
 		State:               store.IMAPImportAccountState(state),
 		LastError:           lastError,
 		DeletePropagates:    deletePropagates,
+		DebugLog:            debugLog,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -131,51 +134,49 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 	nowUs := usMicros(now)
 
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		var rowsAffected int64
-		if len(update.CredentialCT) > 0 {
-			res, err := tx.Exec(ctx, `
-				UPDATE imapimport_account SET
-				  account_name = $1, host = $2, port = $3, tls_mode = $4,
-				  username = $5, auth_method = $6,
-				  backfill_floor_date = $7,
-				  credential_ct = $8,
-				  state = $9, delete_propagates = $10, updated_at = $11,
-				  identity_id = $14
-				WHERE id = $12 AND principal_id = $13`,
-				update.AccountName, update.Host, update.Port,
-				string(update.TLSMode), update.Username, string(update.AuthMethod),
-				nullOrMicrosPG(update.BackfillFloorDate),
-				update.CredentialCT,
-				string(update.State), update.DeletePropagates, nowUs,
-				update.ID, int64(update.PrincipalID),
-				nullStringOrNilPG(update.IdentityID),
-			)
-			if err != nil {
-				return mapErr(err)
-			}
-			rowsAffected = res.RowsAffected()
-		} else {
-			res, err := tx.Exec(ctx, `
-				UPDATE imapimport_account SET
-				  account_name = $1, host = $2, port = $3, tls_mode = $4,
-				  username = $5, auth_method = $6,
-				  backfill_floor_date = $7,
-				  state = $8, delete_propagates = $9, updated_at = $10,
-				  identity_id = $13
-				WHERE id = $11 AND principal_id = $12`,
-				update.AccountName, update.Host, update.Port,
-				string(update.TLSMode), update.Username, string(update.AuthMethod),
-				nullOrMicrosPG(update.BackfillFloorDate),
-				string(update.State), update.DeletePropagates, nowUs,
-				update.ID, int64(update.PrincipalID),
-				nullStringOrNilPG(update.IdentityID),
-			)
-			if err != nil {
-				return mapErr(err)
-			}
-			rowsAffected = res.RowsAffected()
+		// Build the query dynamically: always-present columns first, then
+		// optional columns (credential_ct, debug_log) appended only when
+		// the caller supplied them so existing values are preserved.
+		args := []any{
+			update.AccountName, update.Host, update.Port,
+			string(update.TLSMode), update.Username, string(update.AuthMethod),
+			nullOrMicrosPG(update.BackfillFloorDate),
+			string(update.State), update.DeletePropagates, nowUs,
+			nullStringOrNilPG(update.IdentityID),
 		}
-		if rowsAffected == 0 {
+		// $1..$7 are the always-present non-credential columns, $8=state,
+		// $9=delete_propagates, $10=updated_at, $11=identity_id.
+		setParts := `
+			  account_name = $1, host = $2, port = $3, tls_mode = $4,
+			  username = $5, auth_method = $6,
+			  backfill_floor_date = $7,
+			  state = $8, delete_propagates = $9, updated_at = $10,
+			  identity_id = $11`
+		n := 11 // count of args so far
+		if len(update.CredentialCT) > 0 {
+			n++
+			setParts += fmt.Sprintf(", credential_ct = $%d", n)
+			args = append(args, update.CredentialCT)
+		}
+		if update.DebugLog != nil {
+			n++
+			setParts += fmt.Sprintf(", debug_log = $%d", n)
+			args = append(args, *update.DebugLog)
+		}
+		n++ // WHERE id
+		idParam := fmt.Sprintf("$%d", n)
+		args = append(args, update.ID)
+		n++ // WHERE principal_id
+		pidParam := fmt.Sprintf("$%d", n)
+		args = append(args, int64(update.PrincipalID))
+
+		query := "UPDATE imapimport_account SET " + setParts +
+			" WHERE id = " + idParam + " AND principal_id = " + pidParam
+		res, err := tx.Exec(ctx, query, args...)
+		if err != nil {
+			return mapErr(err)
+		}
+		if res.RowsAffected() == 0 {
 			return store.ErrNotFound
 		}
 		return nil

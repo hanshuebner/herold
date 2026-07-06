@@ -867,3 +867,225 @@ func TestIMAPImport_UnknownPrincipalReturns404(t *testing.T) {
 		t.Fatalf("unknown pid: want 404, got %d: %s", res.StatusCode, buf)
 	}
 }
+
+// ---- principal-scoped status endpoint (re #138, REQ-IMAP-IMP-65) ----------
+
+// TestIMAPImport_MyStatus_NilProvider verifies that GET
+// /api/v1/me/imap-imports/status returns 200 with an empty list when no status
+// provider is wired.
+func TestIMAPImport_MyStatus_NilProvider(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	res, buf := ih.do("GET", "/api/v1/me/imap-imports/status", ih.workerKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("my status nil provider: want 200, got %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("expected empty items, got %d", len(out.Items))
+	}
+}
+
+// TestIMAPImport_MyStatus_Unauthenticated verifies that an unauthenticated
+// request to GET /api/v1/me/imap-imports/status returns 401.
+func TestIMAPImport_MyStatus_Unauthenticated(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	res, buf := ih.do("GET", "/api/v1/me/imap-imports/status", "" /* no key */, nil)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: want 401, got %d: %s", res.StatusCode, buf)
+	}
+}
+
+// TestIMAPImport_MyStatus_Scoped verifies that GET
+// /api/v1/me/imap-imports/status only returns the authenticated caller's own
+// workers, not workers belonging to other principals (re #138).
+func TestIMAPImport_MyStatus_Scoped(t *testing.T) {
+	// The worker principal has PID = ih.workerPID; the admin principal has
+	// PID = ih.adminPID. Build a snapshot that contains entries for both.
+	workerPIDStr := ""
+	adminPIDStr := ""
+
+	// We know the harness creates admin first, then worker. Get the real PIDs
+	// from the harness after construction.
+	ih := newIMAPHarness(t, nil /* replaced below */)
+	workerPIDStr = fmt.Sprint(ih.workerPID)
+	adminPIDStr = fmt.Sprint(ih.adminPID)
+
+	snap := []protoadmin.IMAPImportWorkerStatus{
+		{
+			AccountID:       "acc-worker",
+			PrincipalID:     workerPIDStr,
+			AccountName:     "Worker Gmail",
+			Host:            "imap.gmail.com",
+			Phase:           "idle",
+			Connected:       true,
+			MessagesFetched: 10,
+		},
+		{
+			AccountID:       "acc-admin",
+			PrincipalID:     adminPIDStr,
+			AccountName:     "Admin Yahoo",
+			Host:            "imap.yahoo.com",
+			Phase:           "connecting",
+			Connected:       false,
+			MessagesFetched: 0,
+		},
+	}
+	provider := &fakeStatusProvider{snap: snap}
+
+	// Re-create the server with the provider wired in. The harness store
+	// already has the principals; we only swap the server and its provider.
+	dir := directory.New(ih.fs.Meta(), nil, ih.clk, nil)
+	rp := directoryoidc.New(ih.fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, ih.clk)
+	srvWithProvider := protoadmin.NewServer(ih.fs, dir, rp, nil, ih.clk, protoadmin.Options{
+		BootstrapPerWindow:      1,
+		BootstrapWindow:         5 * time.Minute,
+		RequestsPerMinutePerKey: 100,
+		IMAPImportDataKey:       imapImportDataKey,
+		IMAPImportStatus:        provider,
+	})
+
+	// Start a fresh HTTP listener for the new server.
+	h2, _ := testharness.Start(t, testharness.Options{
+		Store: ih.fs,
+		Clock: ih.clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin2", Protocol: "http"},
+		},
+	})
+	if err := h2.AttachAdmin("admin2", srvWithProvider, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client2, base2 := h2.DialAdminByName(context.Background(), "admin2")
+	ih2 := &imapHarness{
+		t: t, fs: ih.fs, clk: ih.clk, srv: srvWithProvider,
+		client: client2, baseURL: base2,
+		adminPID: ih.adminPID, adminKey: ih.adminKey,
+		workerPID: ih.workerPID, workerKey: ih.workerKey,
+	}
+
+	// Worker queries /me/imap-imports/status: should only see acc-worker.
+	res, buf := ih2.do("GET", "/api/v1/me/imap-imports/status", ih2.workerKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("worker my-status: want 200, got %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []struct {
+			AccountID string `json:"account_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("worker my-status unmarshal: %v: %s", err, buf)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("worker should see 1 item, got %d: %s", len(out.Items), buf)
+	}
+	if out.Items[0].AccountID != "acc-worker" {
+		t.Fatalf("worker item account_id = %q, want acc-worker", out.Items[0].AccountID)
+	}
+
+	// Admin can call /api/v1/imap-imports/status and sees all workers.
+	res2, buf2 := ih2.do("GET", "/api/v1/imap-imports/status", ih2.adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("admin all-status: want 200, got %d: %s", res2.StatusCode, buf2)
+	}
+	var out2 struct {
+		Items []struct {
+			AccountID string `json:"account_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf2, &out2); err != nil {
+		t.Fatalf("admin all-status unmarshal: %v: %s", err, buf2)
+	}
+	if len(out2.Items) != 2 {
+		t.Fatalf("admin should see 2 items, got %d: %s", len(out2.Items), buf2)
+	}
+}
+
+// ---- debug_log toggle (re #138) -------------------------------------------
+
+// TestIMAPImport_DebugLog_Toggle verifies that PATCH with debug_log:true
+// persists the flag; debug_log:false turns it off; absent field preserves.
+func TestIMAPImport_DebugLog_Toggle(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+
+	// Create an account.
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID       string `json:"id"`
+		DebugLog bool   `json:"debug_log"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("create unmarshal: %v", err)
+	}
+	if created.DebugLog {
+		t.Error("fresh account: debug_log must be false")
+	}
+
+	// Enable debug logging via PATCH.
+	res2, buf2 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"debug_log": true,
+	})
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("patch debug_log=true: want 200, got %d: %s", res2.StatusCode, buf2)
+	}
+	var patched struct {
+		DebugLog bool `json:"debug_log"`
+	}
+	if err := json.Unmarshal(buf2, &patched); err != nil {
+		t.Fatalf("patch unmarshal: %v", err)
+	}
+	if !patched.DebugLog {
+		t.Error("debug_log must be true after PATCH debug_log:true")
+	}
+
+	// Verify store-side persistence.
+	row, err := ih.fs.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if !row.DebugLog {
+		t.Error("debug_log must be true in store after patch")
+	}
+
+	// PATCH without debug_log field preserves the current value (true).
+	res3, buf3 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"account_name": "Still Gmail",
+	})
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("patch without debug_log: want 200, got %d: %s", res3.StatusCode, buf3)
+	}
+	var patched3 struct {
+		DebugLog bool `json:"debug_log"`
+	}
+	if err := json.Unmarshal(buf3, &patched3); err != nil {
+		t.Fatalf("patch no-debug_log unmarshal: %v", err)
+	}
+	if !patched3.DebugLog {
+		t.Error("debug_log must still be true after patch without debug_log field")
+	}
+
+	// Disable debug logging.
+	res4, buf4 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"debug_log": false,
+	})
+	if res4.StatusCode != http.StatusOK {
+		t.Fatalf("patch debug_log=false: want 200, got %d: %s", res4.StatusCode, buf4)
+	}
+	var patched4 struct {
+		DebugLog bool `json:"debug_log"`
+	}
+	if err := json.Unmarshal(buf4, &patched4); err != nil {
+		t.Fatalf("patch false unmarshal: %v", err)
+	}
+	if patched4.DebugLog {
+		t.Error("debug_log must be false after PATCH debug_log:false")
+	}
+}

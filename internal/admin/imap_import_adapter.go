@@ -39,6 +39,7 @@ func (a imapImportPoolStatusAdapter) Snapshot() []protoadmin.IMAPImportWorkerSta
 			Phase:               s.Phase,
 			CurrentFolder:       s.CurrentFolder,
 			ConnMode:            s.ConnMode,
+			WatchMode:           s.WatchMode,
 			Connected:           s.Connected,
 			PhaseSince:          s.PhaseSince,
 			LastSyncAt:          s.LastSyncAt,
@@ -47,6 +48,7 @@ func (a imapImportPoolStatusAdapter) Snapshot() []protoadmin.IMAPImportWorkerSta
 			MessagesFetched:     s.MessagesFetched,
 			FlagsPropagated:     s.FlagsPropagated,
 			LastError:           s.LastError,
+			DebugLog:            s.DebugLog,
 		}
 	}
 	return out

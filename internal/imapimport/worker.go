@@ -120,6 +120,7 @@ func newAccountWorker(opts accountWorkerOpts) *accountWorker {
 	w.status.host = opts.account.Host
 	w.status.phase = PhaseStarting
 	w.status.phaseSince = opts.clk.Now()
+	w.status.debugLog = opts.account.DebugLog
 	w.status.mu.Unlock()
 	return w
 }
@@ -303,16 +304,46 @@ func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (st
 // refreshAccount copies the durable fields that can change at runtime from a
 // freshly-read account row onto the worker's in-memory copy, so the next
 // dispatch and the running loops see the current state, backfill floor,
-// provenance label, and delete policy. Called only from the worker's own
-// goroutine between attempts, so no other goroutine reads w.opts.account
-// concurrently. The cached identity fields in w.status are left untouched
-// (account_id / host do not change).
+// provenance label, delete policy, and debug-log flag. Called only from the
+// worker's own goroutine between attempts, so no other goroutine reads
+// w.opts.account concurrently. The cached identity fields in w.status are
+// left untouched (account_id / host do not change).
 func (w *accountWorker) refreshAccount(cur store.IMAPImportAccount) {
 	w.opts.account.State = cur.State
 	w.opts.account.BackfillFloorDate = cur.BackfillFloorDate
 	w.opts.account.AccountName = cur.AccountName
 	w.opts.account.DeletePropagates = cur.DeletePropagates
 	w.opts.account.ProvenanceMailboxID = cur.ProvenanceMailboxID
+	w.opts.account.DebugLog = cur.DebugLog
+	w.status.setDebugLog(cur.DebugLog)
+}
+
+// emitDebugEvent appends a system event tagged with the account ID when
+// per-account debug logging is enabled (re #138). It is a no-op (zero
+// overhead) when DebugLog is false. The event is tagged with the account ID
+// as ActorID so the admin Events view can filter by account.
+func (w *accountWorker) emitDebugEvent(ctx context.Context, action, message string, metadata map[string]string) {
+	if !w.opts.account.DebugLog {
+		return
+	}
+	ev := store.SystemEvent{
+		At:       w.opts.clk.Now(),
+		Action:   action,
+		ActorID:  w.opts.account.ID,
+		Subject:  "imapimport:" + w.opts.account.ID,
+		Outcome:  store.OutcomeSuccess,
+		Message:  message,
+		Metadata: metadata,
+		// Domain is left empty: the worker does not know which herold-managed
+		// domain the principal belongs to. Only super-admins see these events
+		// in the scoped Events view; domain-scoped operators do not.
+	}
+	if err := w.opts.store.Meta().AppendSystemEvent(ctx, ev); err != nil {
+		w.opts.log.Debug("imapimport: failed to append debug system event",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("action", action),
+			slog.String("error", err.Error()))
+	}
 }
 
 // authorityIsHerold reports whether herold (not the upstream) is the
@@ -328,13 +359,20 @@ func (w *accountWorker) authorityIsHerold() bool {
 // stateChangedFromEnabled re-reads the account state and reports whether it is
 // no longer "enabled" (a runtime transition to migrating/migrated/disabled or
 // a delete). The running IDLE / poll loops call this so a transition is
-// observed without waiting for a disconnect (REQ-IMAP-IMP-90). A read error is
-// treated as "no change" so a transient store hiccup does not bounce the loop.
+// observed without waiting for a disconnect (REQ-IMAP-IMP-90). As a side
+// effect it refreshes the debug-log flag so a runtime toggle takes effect
+// within the stateRecheckInterval without a reconnect (re #138). A read error
+// is treated as "no change" so a transient store hiccup does not bounce the
+// loop.
 func (w *accountWorker) stateChangedFromEnabled(ctx context.Context) bool {
 	cur, err := w.opts.store.Meta().GetIMAPImportAccount(ctx, w.opts.account.ID)
 	if err != nil {
 		return errors.Is(err, store.ErrNotFound)
 	}
+	// Refresh the debug-log flag while we have the row — this lets an operator
+	// toggle debugging without waiting for a full reconnect cycle.
+	w.opts.account.DebugLog = cur.DebugLog
+	w.status.setDebugLog(cur.DebugLog)
 	return cur.State != store.IMAPImportAccountStateEnabled
 }
 
@@ -384,6 +422,9 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 		return err
 	}
 	w.status.setConnected(true)
+	w.emitDebugEvent(ctx, "imapimport.dial.connected",
+		"connected and authenticated to "+account.Host,
+		map[string]string{"host": account.Host, "username": account.Username})
 	defer func() {
 		w.status.setConnected(false)
 		// Orderly close: LOGOUT then close the TCP connection.
@@ -393,6 +434,9 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 				slog.String("error", logoutErr.Error()))
 		}
 		conn.Close()
+		w.emitDebugEvent(ctx, "imapimport.dial.closed",
+			"connection to "+account.Host+" closed",
+			map[string]string{"host": account.Host})
 	}()
 
 	// Record single-connection-fallback capability for later sub-steps.

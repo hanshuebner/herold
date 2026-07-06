@@ -29,6 +29,7 @@ package imapimport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -232,6 +233,7 @@ func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn
 		if err != nil {
 			return err // connection-level error → reconnect
 		}
+		w.emitDebugEvent(ctx, "imapimport.idle.entered", "IDLE armed", nil)
 
 		// Block until: (a) update arrives, (b) ctx cancelled, (c) conn drop,
 		// (d) the periodic state-recheck timer fires (REQ-IMAP-IMP-90).
@@ -271,22 +273,33 @@ func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn
 			// then run a sync round.
 			_ = handle.Close()
 			w.recordIdleSeconds(idleStart)
+			w.emitDebugEvent(ctx, "imapimport.idle.woke", "IDLE woke; scheduling sync round", nil)
 		}
 
 		// Run sync on the sync connection (second conn or primary in
 		// single-conn mode). REQ-IMAP-IMP-22 latency target is here.
 		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
-		if err := w.syncAfterWake(ctx, syncConn, useSingleConn); err != nil {
+		syncErr := w.syncAfterWake(ctx, syncConn, useSingleConn)
+		if syncErr != nil {
 			// Non-fatal: log and continue the IDLE loop (don't reconnect for
 			// a single failed sync round).
 			log.Warn("imapimport: sync after IDLE wake failed",
 				slog.String("account_id", account.ID),
-				slog.String("error", err.Error()),
+				slog.String("error", syncErr.Error()),
 			)
+			w.emitDebugEvent(ctx, "imapimport.sync.round.failed",
+				"sync round after IDLE wake failed: "+syncErr.Error(), nil)
 		} else {
 			syncNow := w.opts.clk.Now()
 			w.status.recordSyncOK(syncNow)
 			w.persistSuccessAt(ctx, syncNow)
+			snap := w.status.snapshot()
+			w.emitDebugEvent(ctx, "imapimport.sync.round.completed",
+				"sync round after IDLE wake completed",
+				map[string]string{
+					"messages_fetched": fmt.Sprintf("%d", snap.MessagesFetched),
+					"flags_propagated": fmt.Sprintf("%d", snap.FlagsPropagated),
+				})
 		}
 
 		// A runtime transition observed after the sync round re-dispatches
@@ -324,6 +337,8 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 			slog.String("account_id", account.ID),
 			slog.Duration("interval", pollInterval),
 		)
+		w.emitDebugEvent(ctx, "imapimport.noop.tick",
+			fmt.Sprintf("NOOP poll tick (interval %s)", pollInterval), nil)
 
 		// NOOP flushes any pending unsolicited responses on the primary.
 		if err := primary.Noop(ctx); err != nil {
@@ -331,15 +346,24 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 		}
 
 		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
-		if err := w.syncAfterWake(ctx, syncConn, useSingleConn); err != nil {
+		if syncErr := w.syncAfterWake(ctx, syncConn, useSingleConn); syncErr != nil {
 			log.Warn("imapimport: sync after NOOP poll failed",
 				slog.String("account_id", account.ID),
-				slog.String("error", err.Error()),
+				slog.String("error", syncErr.Error()),
 			)
+			w.emitDebugEvent(ctx, "imapimport.sync.round.failed",
+				"sync round after NOOP poll failed: "+syncErr.Error(), nil)
 		} else {
 			pollNow := w.opts.clk.Now()
 			w.status.recordSyncOK(pollNow)
 			w.persistSuccessAt(ctx, pollNow)
+			snap := w.status.snapshot()
+			w.emitDebugEvent(ctx, "imapimport.sync.round.completed",
+				"sync round after NOOP poll completed",
+				map[string]string{
+					"messages_fetched": fmt.Sprintf("%d", snap.MessagesFetched),
+					"flags_propagated": fmt.Sprintf("%d", snap.FlagsPropagated),
+				})
 		}
 
 		// Observe a runtime state transition between polls (REQ-IMAP-IMP-90).

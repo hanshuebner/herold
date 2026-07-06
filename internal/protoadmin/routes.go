@@ -244,13 +244,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/tagged-address-filters/{id}/convert-to-sieve", auth1(s.handleConvertTaggedAddressFilterToSieve))
 
 	// IMAP import (REQ-IMAP-IMP-60, REQ-IMAP-IMP-65).
-	// All five endpoints are admin-authed: the operator surface for
-	// managing upstream accounts and observing live worker status.
+	// Admin-only endpoints (operator surface for managing upstream accounts):
 	mux.HandleFunc("GET /api/v1/principals/{pid}/imap-imports", authAdmin(s.handleListIMAPImports))
 	mux.HandleFunc("POST /api/v1/principals/{pid}/imap-imports", authAdmin(s.handleCreateIMAPImport))
 	mux.HandleFunc("PATCH /api/v1/principals/{pid}/imap-imports/{aid}", authAdmin(s.handlePatchIMAPImport))
 	mux.HandleFunc("DELETE /api/v1/principals/{pid}/imap-imports/{aid}", authAdmin(s.handleDeleteIMAPImport))
 	mux.HandleFunc("GET /api/v1/imap-imports/status", authAdmin(s.handleIMAPImportStatus))
+	// Principal-scoped live status: authenticated user sees only their own
+	// accounts' worker status (re #138, REQ-IMAP-IMP-65).
+	mux.HandleFunc("GET /api/v1/me/imap-imports/status", auth1(s.handleIMAPImportMyStatus))
 
 	// Mailbox ACL administration (REQ-PROTO-33, REQ-AUTH-63). The
 	// matching IMAP wire surface lives in internal/protoimap/acl.go;
@@ -434,6 +436,11 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tagged-address-dismissals", auth1(s.handleListTaggedAddressDismissals))
 	mux.HandleFunc("DELETE /api/v1/tagged-address-dismissals/{base_identity_id}/{suffix}", auth1(s.handleDeleteTaggedAddressDismissal))
 	mux.HandleFunc("POST /api/v1/tagged-address-filters/{id}/convert-to-sieve", auth1(s.handleConvertTaggedAddressFilterToSieve))
+
+	// IMAP import principal-scoped live status (re #138, REQ-IMAP-IMP-65).
+	// Returns the authenticated caller's own workers; cannot read other
+	// principals' status.
+	mux.HandleFunc("GET /api/v1/me/imap-imports/status", auth1(s.handleIMAPImportMyStatus))
 }
 
 // SelfServiceHandler returns the self-service route set wrapped in the
