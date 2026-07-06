@@ -429,6 +429,18 @@ func Run(t *testing.T, f Factory) {
 		{"SystemEvents_DomainFilter", testSystemEvents_DomainFilter},
 		{"SystemEvents_ActionFilter", testSystemEvents_ActionFilter},
 		{"SystemEvents_CursorPagination", testSystemEvents_CursorPagination},
+		// -- message research / admin search (REQ-ADM-306, re #143) ----------
+		{"SearchAdminMessages_ReceivedMessage", testSearchAdminMessages_ReceivedMessage},
+		{"SearchAdminMessages_SenderFilter", testSearchAdminMessages_SenderFilter},
+		{"SearchAdminMessages_RecipientFilter", testSearchAdminMessages_RecipientFilter},
+		{"SearchAdminMessages_MessageIDFilter", testSearchAdminMessages_MessageIDFilter},
+		{"SearchAdminMessages_SubjectFilter", testSearchAdminMessages_SubjectFilter},
+		{"SearchAdminMessages_DateRangeFilter", testSearchAdminMessages_DateRangeFilter},
+		{"SearchAdminMessages_DomainScope_SuperAdmin", testSearchAdminMessages_DomainScope_SuperAdmin},
+		{"SearchAdminMessages_DomainScope_Operator", testSearchAdminMessages_DomainScope_Operator},
+		{"SearchAdminMessages_DomainScope_FailClosed", testSearchAdminMessages_DomainScope_FailClosed},
+		{"SearchAdminMessages_CursorPagination", testSearchAdminMessages_CursorPagination},
+		{"QueueFilter_SenderDomainsAndContains", testQueueFilter_SenderDomainsAndContains},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --
 		// The three scenarios run as subtests of a single case so they share
 		// one freshly-migrated store: each top-level case re-applies the full

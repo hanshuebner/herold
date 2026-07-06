@@ -129,6 +129,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// operator results are filtered to managed domains per REQ-ADM-307.
 	mux.HandleFunc("GET /api/v1/admin/system-events", authAdmin(s.handleSystemEvents))
 
+	// Message research: retrospective per-message tracer joining received
+	// messages, SMTP system events, and outbound queue history
+	// (REQ-ADM-306/307, re #143).
+	mux.HandleFunc("GET /api/v1/admin/message-research", authAdmin(s.handleMessageResearch))
+
 	// Outbound queue.
 	mux.HandleFunc("GET /api/v1/queue", authAdmin(s.handleListQueue))
 	mux.HandleFunc("GET /api/v1/queue/stats", authAdmin(s.handleQueueStats))

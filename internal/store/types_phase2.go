@@ -229,6 +229,17 @@ type QueueFilter struct {
 	Limit int
 	// AfterID is the keyset cursor: rows with ID > AfterID.
 	AfterID QueueItemID
+	// SenderDomains, when non-nil, restricts to rows whose mail_from
+	// address domain matches any entry in the slice (REQ-ADM-307 scope
+	// for outbound sends). nil = unrestricted. Non-nil empty = no results
+	// (fail-closed). Used by the message research endpoint (REQ-ADM-306).
+	SenderDomains []string
+	// MailFromContains, when non-empty, restricts to rows where mail_from
+	// contains this substring (case-insensitive). Used by message research.
+	MailFromContains string
+	// RcptToContains, when non-empty, restricts to rows where rcpt_to
+	// contains this substring (case-insensitive). Used by message research.
+	RcptToContains string
 }
 
 // -- DKIM keys --------------------------------------------------------

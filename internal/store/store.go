@@ -894,9 +894,18 @@ type Metadata interface {
 	GetQueueItem(ctx context.Context, id QueueItemID) (QueueItem, error)
 
 	// ListQueueItems applies the filter and returns matching rows in
-	// ascending ID order. Caps at 1000 rows; callers paginate via
-	// filter.AfterID.
+	// ascending ID order by default. Caps at 1000 rows; callers paginate
+	// via filter.AfterID. When filter.SenderDomains is a non-nil empty
+	// slice, no rows are returned (fail-closed per REQ-ADM-307).
 	ListQueueItems(ctx context.Context, filter QueueFilter) ([]QueueItem, error)
+
+	// SearchAdminMessages performs a cross-principal message search for
+	// the admin message-research surface (REQ-ADM-306). It returns
+	// envelope metadata and disposition — never body content. Results are
+	// ordered by received_at DESC, id DESC. When filter.Domains is a
+	// non-nil empty slice, no rows are returned (fail-closed per
+	// REQ-ADM-307).
+	SearchAdminMessages(ctx context.Context, filter AdminMessageFilter) ([]AdminMessageHit, error)
 
 	// CountQueueByState returns a per-state population map suitable
 	// for an admin dashboard. States not present in the table appear

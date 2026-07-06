@@ -325,6 +325,11 @@ func (m *metadata) GetQueueItem(ctx context.Context, id store.QueueItemID) (stor
 }
 
 func (m *metadata) ListQueueItems(ctx context.Context, filter store.QueueFilter) ([]store.QueueItem, error) {
+	// Fail closed: non-nil empty SenderDomains means no access (REQ-ADM-307).
+	if filter.SenderDomains != nil && len(filter.SenderDomains) == 0 {
+		return nil, nil
+	}
+
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
@@ -351,6 +356,24 @@ func (m *metadata) ListQueueItems(ctx context.Context, filter store.QueueFilter)
 		where = append(where, "instr(rcpt_to, ?) = (length(rcpt_to) - length(?) + 1)")
 		dom := "@" + strings.ToLower(filter.RecipientDomain)
 		args = append(args, dom, dom)
+	}
+	if len(filter.SenderDomains) > 0 {
+		placeholders := make([]string, len(filter.SenderDomains))
+		for i, d := range filter.SenderDomains {
+			placeholders[i] = "?"
+			args = append(args, strings.ToLower(d))
+		}
+		where = append(where,
+			"lower(substr(mail_from, instr(mail_from, '@') + 1)) IN ("+
+				strings.Join(placeholders, ",")+")")
+	}
+	if filter.MailFromContains != "" {
+		where = append(where, "lower(mail_from) LIKE lower('%'||?||'%')")
+		args = append(args, filter.MailFromContains)
+	}
+	if filter.RcptToContains != "" {
+		where = append(where, "lower(rcpt_to) LIKE lower('%'||?||'%')")
+		args = append(args, filter.RcptToContains)
 	}
 	q := `SELECT ` + queueSelectColumns + ` FROM queue`
 	if len(where) > 0 {
