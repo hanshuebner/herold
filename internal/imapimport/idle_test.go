@@ -11,6 +11,8 @@ package imapimport
 //     rounds; single-connection fallback when a second conn is refused.
 //   - ctx cancel stops the IDLE loop cleanly.
 //   - Metrics: idle_seconds gauge advances after IDLE.
+//   - last_success_at is persisted to the durable store after each sync
+//     round without waiting for session end (acceptance gate for #136).
 
 import (
 	"context"
@@ -434,4 +436,78 @@ func TestIDLESecondsMetricAdvances(t *testing.T) {
 	// newAccountWorker, the gauge should be available.
 	// We just assert the test didn't hang; the exact value depends on
 	// timing. The test demonstrates the code path runs without panic.
+}
+
+// --------------------------------------------------------------------------
+// Test: last_success_at persisted while IDLE connection is active (#136)
+// --------------------------------------------------------------------------
+
+// TestLastSuccessAtPersistedWhileIDLEActive is the acceptance gate for #136.
+// It verifies that after the initial syncAllFolders round completes, the
+// durable last_success_at column in the account row becomes non-nil while the
+// IDLE connection is still open — i.e. persistence does NOT depend on ctx
+// cancellation or session teardown.
+//
+// Without the fix, last_success_at is written only in run() after attempt()
+// returns nil, which only happens on graceful shutdown (ctx cancel). The store
+// write itself uses the already-cancelled ctx, so it fails and last_success_at
+// is never persisted. The settings card therefore shows "Abgleich läuft..."
+// forever for a healthy account.
+func TestLastSuccessAtPersistedWhileIDLEActive(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("lastsucc1", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	// Seed a message so the initial sync does actual work.
+	d := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	raw := buildRFC822("lastsucc-msg@test", "LastSuccAt Test", d)
+	appendToServer(t, ts, "lastsucc1", "pw", "INBOX", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "lastsucc1@example.test",
+		username:            "lastsucc1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		w := newAccountWorker(accountWorkerOpts{
+			account:     acc,
+			store:       ha.Store,
+			dataKey:     testDataKey(t),
+			cfg:         sysconfig.IMAPImportConfig{},
+			log:         newTestLogger(t),
+			clk:         ha.Clock,
+			dialer:      &fakeDialer{ts: ts},
+			categoriser: noopCategoriser{},
+		})
+		done <- w.attempt(ctx)
+	}()
+
+	// Poll the durable account row until LastSuccessAt is non-nil or we time
+	// out. The context is intentionally NOT cancelled before this check: the
+	// whole point is that persistence happens while the IDLE connection is
+	// still up, not on teardown.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, err := ha.Store.Meta().GetIMAPImportAccount(context.Background(), acc.ID)
+		if err != nil {
+			t.Fatalf("GetIMAPImportAccount: %v", err)
+		}
+		if stored.LastSuccessAt != nil {
+			// last_success_at was persisted while the connection is live.
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Error("last_success_at not persisted within 15s while IDLE connection was active (re #136)")
 }

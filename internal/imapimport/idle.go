@@ -284,7 +284,9 @@ func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn
 				slog.String("error", err.Error()),
 			)
 		} else {
-			w.status.recordSyncOK(w.opts.clk.Now())
+			syncNow := w.opts.clk.Now()
+			w.status.recordSyncOK(syncNow)
+			w.persistSuccessAt(ctx, syncNow)
 		}
 
 		// A runtime transition observed after the sync round re-dispatches
@@ -335,7 +337,9 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 				slog.String("error", err.Error()),
 			)
 		} else {
-			w.status.recordSyncOK(w.opts.clk.Now())
+			pollNow := w.opts.clk.Now()
+			w.status.recordSyncOK(pollNow)
+			w.persistSuccessAt(ctx, pollNow)
 		}
 
 		// Observe a runtime state transition between polls (REQ-IMAP-IMP-90).

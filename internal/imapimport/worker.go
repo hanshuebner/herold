@@ -421,7 +421,9 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 		// level error so the backoff + errored logic applies.
 		return fmt.Errorf("imapimport: syncAllFolders: %w", err)
 	}
-	w.status.recordSyncOK(w.opts.clk.Now())
+	now := w.opts.clk.Now()
+	w.status.recordSyncOK(now)
+	w.persistSuccessAt(ctx, now)
 
 	// 3d-B: start the write-back goroutine on a dedicated third connection.
 	// If the third connection fails we start the write-back goroutine in
@@ -463,6 +465,26 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	// connection error (non-nil). A nil return causes run() to record success
 	// and reconnect; a non-nil return triggers the backoff path.
 	return w.runIDLELoop(ctx, conn)
+}
+
+// persistSuccessAt records a successful sync round to the durable store by
+// writing last_success_at. Called after every completed syncAllFolders pass
+// (the initial pass in attempt and each wake-driven round in the IDLE / poll
+// loops) so the settings card shows current sync status without waiting for
+// session end. Best-effort: a failure is logged and does not abort the loop.
+func (w *accountWorker) persistSuccessAt(ctx context.Context, now time.Time) {
+	if setErr := w.opts.store.Meta().SetIMAPImportAccountState(
+		ctx,
+		w.opts.account.ID,
+		store.IMAPImportAccountStateEnabled,
+		"",
+		&now,
+	); setErr != nil {
+		w.opts.log.Warn("imapimport: failed to persist last_success_at after sync round",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("error", setErr.Error()),
+		)
+	}
 }
 
 // openCredential decrypts the account's sealed credential using the
