@@ -3906,9 +3906,9 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 	}
 	var where []string
 	var args []any
-	if filter.AfterID != 0 {
-		where = append(where, "id > ?")
-		args = append(args, int64(filter.AfterID))
+	if filter.BeforeID != 0 {
+		where = append(where, "id < ?")
+		args = append(args, int64(filter.BeforeID))
 	}
 	if filter.PrincipalID != 0 {
 		where = append(where, "principal_id = ?")
@@ -3932,7 +3932,7 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY id ASC LIMIT ?"
+	q += " ORDER BY id DESC LIMIT ?"
 	args = append(args, limit)
 	rows, err := m.s.db.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -677,10 +677,10 @@ type Metadata interface {
 	// it. Returns an error on backend failure; otherwise nil.
 	AppendAuditLog(ctx context.Context, entry AuditLogEntry) error
 
-	// ListAuditLog returns audit entries matching filter, in ascending
-	// ID order, up to filter.Limit (capped at 1000 server-side). An
-	// empty filter returns the first page of all entries. Use
-	// filter.AfterID to paginate.
+	// ListAuditLog returns audit entries matching filter, in descending
+	// ID order (newest first), up to filter.Limit (capped at 1000
+	// server-side). An empty filter returns the first page of all
+	// entries. Use filter.BeforeID to paginate.
 	ListAuditLog(ctx context.Context, filter AuditLogFilter) ([]AuditLogEntry, error)
 
 	// GetMailboxByName returns the mailbox owned by pid whose Name

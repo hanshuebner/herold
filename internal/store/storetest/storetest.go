@@ -2999,8 +2999,8 @@ func testAuditLogAppendAndList(t *testing.T, s store.Store) {
 		t.Fatalf("audit all len = %d, want >= 12", len(all))
 	}
 	for i := 1; i < len(all); i++ {
-		if all[i].ID <= all[i-1].ID {
-			t.Fatalf("audit list not ordered: %d then %d", all[i-1].ID, all[i].ID)
+		if all[i].ID >= all[i-1].ID {
+			t.Fatalf("audit list not ordered descending: %d then %d", all[i-1].ID, all[i].ID)
 		}
 	}
 	// Filter by principal.

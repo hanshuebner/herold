@@ -3591,8 +3591,8 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 		args = append(args, v)
 		pos++
 	}
-	if filter.AfterID != 0 {
-		add("id > ?", int64(filter.AfterID))
+	if filter.BeforeID != 0 {
+		add("id < ?", int64(filter.BeforeID))
 	}
 	if filter.PrincipalID != 0 {
 		add("principal_id = ?", int64(filter.PrincipalID))
@@ -3612,7 +3612,7 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += fmt.Sprintf(" ORDER BY id ASC LIMIT $%d", pos)
+	q += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", pos)
 	args = append(args, limit)
 	rows, err := m.s.pool.Query(ctx, q, args...)
 	if err != nil {

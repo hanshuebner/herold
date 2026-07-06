@@ -1050,8 +1050,9 @@ type AuditLogFilter struct {
 	// Limit caps the returned slice length. 0 means the default (1000).
 	// Values above 1000 are silently lowered to 1000.
 	Limit int
-	// AfterID is the keyset cursor: return rows with ID > AfterID.
-	// Callers paginate by setting AfterID to the ID of the last row
-	// from the previous page.
-	AfterID AuditLogID
+	// BeforeID is the keyset cursor: return rows with ID < BeforeID.
+	// Callers paginate by setting BeforeID to the ID of the last row
+	// from the previous page (which, with DESC ordering, is the oldest
+	// row in that page).
+	BeforeID AuditLogID
 }

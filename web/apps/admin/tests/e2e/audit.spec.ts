@@ -120,13 +120,44 @@ test.describe('audit', () => {
     expect(untilRequests.length).toBeGreaterThan(0);
   });
 
-  test('load-more appends additional rows', async ({ page }) => {
+  test('entries are displayed newest-first', async ({ page }) => {
+    // AUDIT_PAGE1[0] is the newest (at = now - 1min, action = principal.create).
+    // AUDIT_PAGE1[9] is the oldest (at = now - 10min, action = action.9).
+    // With newest-first ordering the newest entry must appear above the oldest.
+    await page.route('/api/v1/audit*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: AUDIT_PAGE1, next: null }),
+      }),
+    );
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Audit' }).click();
+    await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+
+    const rows = page.getByRole('row');
+    // Row 0 is the header; row 1 is the first data row (newest).
+    await expect(rows.nth(1)).toContainText('principal.create');
+    // The oldest entry (action.9) must appear somewhere after the newest.
+    const newestY = await rows.nth(1).boundingBox().then((b) => b?.y ?? 0);
+    const oldestRow = page.getByRole('row', { name: /action\.9/ });
+    await expect(oldestRow).toBeVisible();
+    const oldestY = await oldestRow.boundingBox().then((b) => b?.y ?? 0);
+    expect(oldestY).toBeGreaterThan(newestY);
+  });
+
+  test('load-more appends additional rows and sends before_id cursor', async ({ page }) => {
     let callCount = 0;
+    const loadMoreUrls: string[] = [];
 
     await page.route('/api/v1/audit*', (route) => {
       callCount++;
       const url = new URL(route.request().url());
-      const hasCursor = url.searchParams.has('cursor') || url.searchParams.has('after_id');
+      const hasCursor = url.searchParams.has('before_id');
+      if (hasCursor) {
+        loadMoreUrls.push(url.toString());
+      }
       // First call returns page 1 with a next cursor; second returns page 2.
       if (callCount === 1 || !hasCursor) {
         return route.fulfill({
@@ -160,6 +191,9 @@ test.describe('audit', () => {
 
     // After load-more, older entries appear.
     await expect(page.getByText('older.action.0')).toBeVisible();
+    // The load-more request must have used before_id, not after_id.
+    expect(loadMoreUrls.length).toBeGreaterThan(0);
+    expect(loadMoreUrls[0]).toContain('before_id=');
   });
 
   test('clear button resets filters', async ({ page }) => {

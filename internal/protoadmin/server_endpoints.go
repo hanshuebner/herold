@@ -270,14 +270,14 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Limit = n
 	}
-	if raw := q.Get("after_id"); raw != "" {
+	if raw := q.Get("before_id"); raw != "" {
 		n, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
 			writeProblem(w, r, http.StatusBadRequest, "invalid_cursor",
-				"after_id must be a positive integer", raw)
+				"before_id must be a positive integer", raw)
 			return
 		}
-		filter.AfterID = store.AuditLogID(n)
+		filter.BeforeID = store.AuditLogID(n)
 	}
 	rows, err := s.store.Meta().ListAuditLog(r.Context(), filter)
 	if err != nil {

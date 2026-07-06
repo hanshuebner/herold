@@ -1,7 +1,7 @@
 /**
  * Audit log state class.
  *
- * Loads GET /api/v1/audit with after_id cursor + limit.
+ * Loads GET /api/v1/audit with before_id cursor + limit.
  * Supports action (contains), principal_id, since, until server-side
  * filters.  Default limit 50; "load more" appends via cursor.
  *
@@ -40,7 +40,7 @@ class AuditState {
   sinceFilter = $state('');
   untilFilter = $state('');
 
-  private buildUrl(afterId?: string): string {
+  private buildUrl(beforeId?: string): string {
     const params = new URLSearchParams();
     params.set('limit', String(PAGE_LIMIT));
     if (this.actionFilter.trim()) {
@@ -58,8 +58,8 @@ class AuditState {
       const until = toRFC3339(this.untilFilter.trim());
       if (until) params.set('until', until);
     }
-    if (afterId) {
-      params.set('after_id', afterId);
+    if (beforeId) {
+      params.set('before_id', beforeId);
     }
     return `/api/v1/audit?${params.toString()}`;
   }

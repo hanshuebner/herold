@@ -127,23 +127,25 @@ func TestTelemetryEnabled_AuditLog_CarriesBeforeAfter(t *testing.T) {
 
 	// Each mutation produces two audit entries: one from directory.SetTelemetry
 	// (ActorSystem, carries before+after metadata) and one from the protoadmin
-	// handler (ActorPrincipal, carries enabled+request_id).  Find the last
-	// directory-layer entry (before+after present) for mutation 3 (false->null).
-	var lastWithBeforeAfter *store.AuditLogEntry
+	// handler (ActorPrincipal, carries enabled+request_id).  With DESC ordering
+	// the first directory-layer entry (before+after present) is the most recent
+	// mutation (false->null).
+	var firstWithBeforeAfter *store.AuditLogEntry
 	for i := range entries {
 		e := &entries[i]
 		if _, hasBefore := e.Metadata["before"]; hasBefore {
-			lastWithBeforeAfter = e
+			firstWithBeforeAfter = e
+			break
 		}
 	}
-	if lastWithBeforeAfter == nil {
+	if firstWithBeforeAfter == nil {
 		t.Fatalf("no audit entry carries 'before' field; entries=%+v", entries)
 	}
-	if before, ok := lastWithBeforeAfter.Metadata["before"]; !ok || before != "false" {
-		t.Errorf("last directory entry before = %q (ok=%v), want 'false'", before, ok)
+	if before, ok := firstWithBeforeAfter.Metadata["before"]; !ok || before != "false" {
+		t.Errorf("newest directory entry before = %q (ok=%v), want 'false'", before, ok)
 	}
-	if after, ok := lastWithBeforeAfter.Metadata["after"]; !ok || after != "null" {
-		t.Errorf("last directory entry after = %q (ok=%v), want 'null'", after, ok)
+	if after, ok := firstWithBeforeAfter.Metadata["after"]; !ok || after != "null" {
+		t.Errorf("newest directory entry after = %q (ok=%v), want 'null'", after, ok)
 	}
 }
 
