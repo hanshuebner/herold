@@ -36,7 +36,8 @@ Grouped by resource. Every resource supports `GET list`, `GET /<id>`, `POST crea
   - **REQ-ADM-231** `GET /api/v1/admin/clientlog/timeline?request_id=<id>` — joined view of all server log records and client-log records carrying the same `X-Request-Id`, sorted by effective time. Implements the cross-source correlation surface (REQ-OPS-213).
   - **REQ-ADM-232** `POST /api/v1/admin/clientlog/livetail` — body `{session_id, duration?}`. Sets `clientlog.livetail_until` on the target session (REQ-OPS-211). `duration` defaults to and is clamped by `clientlog.livetail_default_duration` / `livetail_max_duration`. `DELETE /api/v1/admin/clientlog/livetail/{session_id}` cancels live-tail. Audit-logged (REQ-ADM-300).
   - **REQ-ADM-233** `GET /api/v1/admin/clientlog/stats` — high-level counters per endpoint and per app for the last hour / day, derived from the metrics in REQ-OPS-220. Used by the admin dashboard tile.
-  - All four require admin scope (REQ-AUTH-SCOPE-*); none are exposed on the public listener.
+  - **REQ-ADM-234** The admin Client-logs view defaults to `kind=error` — the actionable crash-capture stream. `kind=log` (console output) and `kind=vital` (web-vitals performance telemetry: LCP, TTFB, FCP, CLS, INP) are reachable via the KIND filter (REQ-ADM-230) or a dedicated Performance sub-view, but do not populate the default incident-diagnosis view. Web vitals are trend telemetry, not per-incident signal.
+  - All require admin scope (REQ-AUTH-SCOPE-*); none are exposed on the public listener.
 
 ### Errors
 
@@ -105,10 +106,17 @@ Phase 3. Design placeholders here so later work doesn't demand redesign.
 
 ## Audit log
 
-- **REQ-ADM-300** Every admin action (auth + non-trivial write) MUST produce an audit record: `{timestamp, actor, actor_ip, action, resource, outcome, before, after}` for state changes; `{timestamp, actor, actor_ip, action, resource, outcome}` for reads.
+The audit log is the security/compliance record of *actor-initiated* actions. It answers "who did what". Routine *system-initiated* mail-flow telemetry (SMTP acceptance, recipient resolution, inbound receipt, webhook dispatch outcomes) is not an audit concern and lives in the System events stream (REQ-ADM-304). The distinguishing axis is the nature of the event — a deliberate or security-relevant action by an identifiable actor — not the `ActorKind` alone.
+
+- **REQ-ADM-300** Every admin action (auth + non-trivial write) MUST produce an audit record: `{timestamp, actor, actor_ip, action, resource, outcome, before, after}` for state changes; `{timestamp, actor, actor_ip, action, resource, outcome}` for reads. The audit stream carries actor-initiated actions — `ActorPrincipal` and `ActorAPIKey` writes and admin operations — plus a bounded allowlist of security-relevant `ActorSystem` events (configuration import, send-policy denial such as `mail.send.forbidden_from`, and recipient-leak detection such as `smtp.phase1_rcpt_leak`). Routine `ActorSystem` mail-flow events MUST NOT be written to the audit log; they belong to REQ-ADM-304.
 - **REQ-ADM-301** Audit log is append-only in the metadata store, retention per REQ-STORE-82.
 - **REQ-ADM-302** Audit log readable via REST/CLI; exportable to JSON lines for ingestion into external SIEM.
-- **REQ-ADM-303** Failed auth attempts MUST be logged separately in an "auth events" stream (for SIEM/fail2ban integration).
+- **REQ-ADM-303** Failed auth attempts MUST be logged separately in an "auth events" stream (for SIEM/fail2ban integration). Auth events are security events: they belong with the audit/security trail, distinct from the operational System events stream (REQ-ADM-304).
+
+## System events
+
+- **REQ-ADM-304** System-initiated operational events — SMTP acceptance (`*.accept`), recipient resolution (`smtp.rcpt.resolve`), inbound receipt (`ses_inbound_received`), webhook dispatch outcomes (`hook.dispatch.*`), and IMAP-import worker lifecycle including the per-account debug stream (REQ-IMAP-IMP-65) — are recorded in a dedicated bounded ring-buffer table, separate from the audit log. Bounded by row-count and age, both configurable; oldest rows evicted as new ones arrive, mirroring the client-log ring (REQ-OPS-206). Read-only via REST/CLI. Excluded from the audit SIEM export (REQ-ADM-302) and from `herold diag backup` by default. This is operational telemetry for diagnosing mail flow, not a security trail.
+- **REQ-ADM-305** The admin SPA presents each observability concern as one nav surface with one stated purpose: **Audit** (actor-initiated actions, REQ-ADM-300), **Events** (system-initiated operational telemetry, REQ-ADM-304), **Queue** (live delivery state with management actions — retry/hold/release/delete/flush), and **Message search** (read-only search over queued and recent messages by sender/recipient — the surface previously labelled "Research"/"Email research"). Live per-account state (e.g. IMAP-import worker status, REQ-IMAP-IMP-65) is presented as an account-scoped diagnostics panel, not a log surface.
 
 ## Bootstrap and DNS assistance
 
