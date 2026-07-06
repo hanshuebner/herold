@@ -154,10 +154,44 @@ scripts/dev-instance.sh start | tee /tmp/instance.env
 #   IMAP_ADDR=127.0.0.1:<port>
 #   SMTP_ADDR=127.0.0.1:<port>
 #   SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
+#   ADMIN_TOTP_SECRET=<base32>
 
 # Drive the puppeteer flow against $SUITE_URL above.
 # When done, kill the start invocation — the EXIT trap tears down.
 ```
+
+### Admin SPA login recipe (cookie/browser sessions)
+
+Admin-gated views require a live `session_elevations` record. The seeded
+admin principal has TOTP enrolled by `dev enroll-admin-totp` during
+`scripts/dev-instance.sh start`; the base32 secret is in `ADMIN_TOTP_SECRET`
+from the start output (and in `$STATE_DIR/admin-totp-secret.txt`).
+
+Complete puppeteer sequence:
+
+1. Navigate to `$ADMIN_URL` — the admin SPA login page.
+2. Sign in as `admin@example.local` with password `testpass123...` (the
+   three trailing dots are part of the password, not an ellipsis).
+3. Compute a live TOTP code:
+   ```bash
+   TOTP_CODE=$($HEROLD_BIN dev gen-totp-code --secret "$ADMIN_TOTP_SECRET")
+   # or, if oathtool is available:
+   TOTP_CODE=$(oathtool --totp --base32 "$ADMIN_TOTP_SECRET")
+   ```
+4. POST the code to complete step-up (sets the `session_elevations` record):
+   ```bash
+   curl -s -X POST "$ADMIN_URL/api/v1/auth/step-up" \
+     -H "Content-Type: application/json" \
+     -b cookies.txt -c cookies.txt \
+     -d "{\"totp_code\":\"$TOTP_CODE\"}"
+   ```
+   The puppeteer flow can also click the TOTP prompt in the SPA and fill the
+   code field rather than using curl — either approach works once the session
+   cookie is established.
+5. Navigate to an admin-gated view (e.g. Audit at `$ADMIN_URL/#/audit`).
+
+The `herold dev gen-totp-code --secret <base32>` subcommand is always
+available via `$HEROLD_BIN` and does not require `oathtool`.
 
 When invoked from a Claude `Bash run_in_background` task, the agent
 captures the task's stdout (URLs appear as the first eight lines)

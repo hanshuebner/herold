@@ -29,6 +29,7 @@
 #           IMAP_ADDR=127.0.0.1:<port>
 #           SMTP_ADDR=127.0.0.1:<port>
 #           SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
+#           ADMIN_TOTP_SECRET=<base32>  (admin TOTP secret for step-up elevation)
 #
 #       After that line block the script keeps running (so the EXIT
 #       trap can clean up); kill the script to tear down.
@@ -478,6 +479,20 @@ EOF
     printf '%s\n' "$api_key" > "$dir/api-key.txt"
     chmod 600 "$dir/api-key.txt"
 
+    # Enroll TOTP for the admin principal directly via the store while the
+    # server is not yet running (no lock contention). Prints the base32 secret;
+    # we persist it so subagents can derive live codes for step-up elevation.
+    log "enrolling TOTP for admin@$SEED_DOMAIN"
+    local admin_totp_secret
+    admin_totp_secret=$("$HEROLD_BIN" dev enroll-admin-totp \
+        --system-config "$dir/system.toml" \
+        --principal "admin@$SEED_DOMAIN" \
+        2>"$dir/logs/enroll-totp.err") \
+        || { cat "$dir/logs/enroll-totp.err" >&2; die "dev enroll-admin-totp failed"; }
+    [ -n "$admin_totp_secret" ] || die "dev enroll-admin-totp produced no output"
+    printf '%s\n' "$admin_totp_secret" > "$dir/admin-totp-secret.txt"
+    chmod 600 "$dir/admin-totp-secret.txt"
+
     # Start the herold backend in the background. Its port_report_file
     # tells us which ports the kernel picked.
     log "starting herold backend (instance $id)"
@@ -567,6 +582,7 @@ SUITE_URL=$vite_url
 IMAP_ADDR=$imap_addr
 SMTP_ADDR=$smtp_addr
 SMTP_SUBMISSION_ADDR=$smtp_sub_addr
+ADMIN_TOTP_SECRET=$admin_totp_secret
 STARTED_AT=$(date +%s)
 EOF
 
@@ -581,6 +597,7 @@ SUITE_URL=$vite_url
 IMAP_ADDR=$imap_addr
 SMTP_ADDR=$smtp_addr
 SMTP_SUBMISSION_ADDR=$smtp_sub_addr
+ADMIN_TOTP_SECRET=$admin_totp_secret
 EOF
 
     if [ "$detach" = "1" ]; then

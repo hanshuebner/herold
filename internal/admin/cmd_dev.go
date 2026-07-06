@@ -16,7 +16,10 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -61,7 +64,116 @@ func newDevCmd() *cobra.Command {
 		Hidden: true,
 	}
 	c.AddCommand(newDevSeedExternalIdentitiesCmd())
+	c.AddCommand(newDevEnrollAdminTOTPCmd())
+	c.AddCommand(newDevGenTOTPCodeCmd())
 	return c
+}
+
+// newDevEnrollAdminTOTPCmd implements direct TOTP enrollment for a named
+// principal without the two-step REST enroll+confirm flow. It opens the
+// store directly, generates a TOTP secret, writes it to the principal's
+// row with PrincipalFlagTOTPEnabled already set (skipping the confirmation
+// step), and prints the raw base32 secret to stdout.
+//
+// Called by scripts/dev-instance.sh after `herold bootstrap` and before
+// the server starts so the admin principal has a confirmed TOTP secret
+// from the first HTTP request onward.
+func newDevEnrollAdminTOTPCmd() *cobra.Command {
+	var principalEmail string
+	c := &cobra.Command{
+		Use:   "enroll-admin-totp",
+		Short: "enroll and confirm TOTP for a dev-instance principal (not for production)",
+		Long: "Opens the store directly, generates a TOTP secret for the named\n" +
+			"principal, and writes it with PrincipalFlagTOTPEnabled set — bypassing\n" +
+			"the REST two-step flow (enroll + confirm). Prints the base32 secret to\n" +
+			"stdout. Run after `herold bootstrap` and before the server starts.\n\n" +
+			"Pair with `herold dev gen-totp-code --secret <secret>` to derive a\n" +
+			"live TOTP code for POST /api/v1/auth/step-up during puppeteer flows.",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDevEnrollAdminTOTP(cmd, principalEmail)
+		},
+	}
+	c.Flags().StringVar(&principalEmail, "principal", "admin@example.local",
+		"email of the principal to enroll TOTP for")
+	return c
+}
+
+func runDevEnrollAdminTOTP(cmd *cobra.Command, principalEmail string) error {
+	g := globals(cmd.Context())
+	cfg, err := requireConfig(g)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	clk := clock.NewReal()
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		return fmt.Errorf("dev enroll-admin-totp: open store: %w", err)
+	}
+	defer st.Close()
+
+	p, err := st.Meta().GetPrincipalByEmail(ctx, principalEmail)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("dev enroll-admin-totp: principal %q not found; run bootstrap first", principalEmail)
+		}
+		return fmt.Errorf("dev enroll-admin-totp: lookup principal: %w", err)
+	}
+
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "Herold",
+		AccountName: p.CanonicalEmail,
+	})
+	if err != nil {
+		return fmt.Errorf("dev enroll-admin-totp: generate totp key: %w", err)
+	}
+
+	// Write the secret and mark TOTP confirmed in one UpdatePrincipal call.
+	// This is the clean dev-seed path: no REST enroll step, no confirmation
+	// code round-trip — the secret and the enabled flag are written atomically.
+	p.TOTPSecret = []byte(key.Secret())
+	p.Flags |= store.PrincipalFlagTOTPEnabled
+	if err := st.Meta().UpdatePrincipal(ctx, p); err != nil {
+		return fmt.Errorf("dev enroll-admin-totp: update principal: %w", err)
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), key.Secret())
+	return nil
+}
+
+// newDevGenTOTPCodeCmd generates the current TOTP code for a given base32
+// secret using the same parameters the directory enforces (SHA-1, 6 digits,
+// 30 s period). Intended for use in puppeteer flows that need to POST a live
+// code to /api/v1/auth/step-up.
+func newDevGenTOTPCodeCmd() *cobra.Command {
+	var secret string
+	c := &cobra.Command{
+		Use:    "gen-totp-code",
+		Short:  "generate the current TOTP code for a base32 secret (not for production)",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDevGenTOTPCode(cmd, secret)
+		},
+	}
+	c.Flags().StringVar(&secret, "secret", "", "base32 TOTP secret (required)")
+	_ = c.MarkFlagRequired("secret")
+	return c
+}
+
+func runDevGenTOTPCode(cmd *cobra.Command, secret string) error {
+	code, err := totp.GenerateCodeCustom(secret, time.Now(), totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		return fmt.Errorf("dev gen-totp-code: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), code)
+	return nil
 }
 
 // newDevSeedExternalIdentitiesCmd implements the per-principal identity
