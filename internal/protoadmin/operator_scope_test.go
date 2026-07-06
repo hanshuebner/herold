@@ -67,8 +67,14 @@ func TestResolveOperatorScope_DomainOperator(t *testing.T) {
 }
 
 // TestResolveOperatorScope_DomainOperator_NoDomains verifies that a domain-
-// scoped operator with no assigned domains receives an empty (non-nil) slice,
+// scoped operator with no assigned domains receives a non-nil empty slice,
 // enforcing the fail-closed contract of REQ-ADM-307.
+//
+// REGRESSION: before the fix, ListManagedDomains returned nil for a principal
+// with no rows, and ResolveOperatorScope propagated that nil directly as
+// Domains. SystemEventFilter treats nil Domains as unrestricted (super-admin
+// equivalent), so a no-domains admin saw all events. The fix coerces nil to
+// []string{} on all non-super-admin paths.
 func TestResolveOperatorScope_DomainOperator_NoDomains(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -86,14 +92,18 @@ func TestResolveOperatorScope_DomainOperator_NoDomains(t *testing.T) {
 	if scope.SuperAdmin {
 		t.Errorf("SuperAdmin = true; want false")
 	}
-	// Domains may be nil (empty slice from the store) — what matters is length 0.
+	// Domains MUST be non-nil so that store filter nil/empty distinction
+	// is honored (nil=unrestricted, non-nil-empty=fail-closed).
+	if scope.Domains == nil {
+		t.Errorf("Domains is nil; want non-nil empty slice (fail-closed contract)")
+	}
 	if len(scope.Domains) != 0 {
-		t.Errorf("Domains = %v; want empty (fail-closed)", scope.Domains)
+		t.Errorf("Domains = %v; want empty", scope.Domains)
 	}
 }
 
 // TestResolveOperatorScope_NotAdmin verifies that a plain (non-admin) principal
-// receives the zero scope.
+// receives a non-nil empty Domains slice (fail-closed).
 func TestResolveOperatorScope_NotAdmin(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -109,6 +119,10 @@ func TestResolveOperatorScope_NotAdmin(t *testing.T) {
 	scope := protoadmin.ResolveOperatorScope(ctx, h.h.Store.Meta(), p)
 	if scope.SuperAdmin {
 		t.Errorf("SuperAdmin = true; want false for non-admin")
+	}
+	// Domains must be non-nil even for a non-admin caller (fail-closed).
+	if scope.Domains == nil {
+		t.Errorf("Domains is nil for non-admin; want non-nil empty slice")
 	}
 	if len(scope.Domains) != 0 {
 		t.Errorf("Domains = %v; want empty for non-admin", scope.Domains)

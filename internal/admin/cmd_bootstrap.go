@@ -89,7 +89,7 @@ Exits 10 if a principal already exists.`,
 			if err != nil {
 				return fmt.Errorf("bootstrap: load admin principal: %w", err)
 			}
-			p.Flags |= store.PrincipalFlagAdmin
+			p.Flags |= store.PrincipalFlagAdmin | store.PrincipalFlagSuperAdmin
 			if err := st.Meta().UpdatePrincipal(ctx, p); err != nil {
 				return fmt.Errorf("bootstrap: grant admin flag: %w", err)
 			}

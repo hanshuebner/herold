@@ -116,7 +116,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	p.Flags |= store.PrincipalFlagAdmin
+	p.Flags |= store.PrincipalFlagAdmin | store.PrincipalFlagSuperAdmin
 	if req.DisplayName != "" {
 		p.DisplayName = req.DisplayName
 	}

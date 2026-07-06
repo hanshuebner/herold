@@ -310,3 +310,57 @@ func TestSystemEvents_AllowlistedActionsStayInAuditLog(t *testing.T) {
 		t.Errorf("allowlisted smtp.phase1_rcpt_leak leaked into system events: %+v", sysOut.Items)
 	}
 }
+
+// TestSystemEvents_NoDomainAdminSeesEmpty is a regression test for the
+// fail-closed leak: before the fix, a non-super-admin with NO managed domains
+// had ResolveOperatorScope return Domains=nil, which SystemEventFilter treats
+// as unrestricted (nil=all). That admin could see all events. After the fix,
+// ResolveOperatorScope returns a non-nil empty Domains slice, causing the store
+// to return zero results (fail-closed per REQ-ADM-307, re #145).
+func TestSystemEvents_NoDomainAdminSeesEmpty(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// Bootstrap the first admin (now gets both Admin+SuperAdmin per Bug B fix).
+	_, superKey := h.bootstrap("super@example.com")
+
+	// Create a second admin with no super-admin flag and no managed domains.
+	noDomainID := h.createPrincipal(superKey, "nodomain@example.com")
+	nd, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(noDomainID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	nd.Flags = store.PrincipalFlagAdmin // admin but NOT super-admin, NO domains
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, nd); err != nil {
+		t.Fatalf("UpdatePrincipal no-domain admin: %v", err)
+	}
+	_, ndKey := h.createAPIKey(superKey, noDomainID)
+
+	// Insert a system event with a concrete domain.
+	if err := h.h.Store.Meta().AppendSystemEvent(ctx, store.SystemEvent{
+		At:      time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		Action:  "regression.nodomain",
+		ActorID: "test",
+		Outcome: store.OutcomeSuccess,
+		Domain:  "secret.example",
+	}); err != nil {
+		t.Fatalf("AppendSystemEvent: %v", err)
+	}
+
+	// The no-domain admin must get an empty result (fail-closed), not leak
+	// the event for secret.example.
+	res, buf := h.doRequest("GET", "/api/v1/admin/system-events?action=regression.nodomain", ndKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET system-events: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if len(out.Items) != 0 {
+		t.Errorf("no-domain admin leaked %d event(s); want 0 (fail-closed): %+v",
+			len(out.Items), out.Items)
+	}
+}

@@ -208,6 +208,18 @@ func TestBootstrap_CreatesFirstAdminAndKey(t *testing.T) {
 	if !strings.HasPrefix(key, protoadmin.APIKeyPrefix) {
 		t.Fatalf("api key missing prefix: %q", key)
 	}
+	// Bootstrap principal must have both Admin and SuperAdmin flags
+	// (re #145, re #142 — the first principal is the server owner).
+	p, err := h.h.Store.Meta().GetPrincipalByID(context.Background(), store.PrincipalID(pid))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	if !p.Flags.Has(store.PrincipalFlagAdmin) {
+		t.Errorf("bootstrap principal missing PrincipalFlagAdmin; flags=%v", p.Flags)
+	}
+	if !p.Flags.Has(store.PrincipalFlagSuperAdmin) {
+		t.Errorf("bootstrap principal missing PrincipalFlagSuperAdmin; flags=%v", p.Flags)
+	}
 
 	// Second call must fail with 409.
 	res, buf := h.doRequest("POST", "/api/v1/bootstrap", "", map[string]any{
