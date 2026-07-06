@@ -19,10 +19,11 @@ describe('encodeFilters', () => {
     expect(p.get('limit')).toBe('50');
   });
 
-  it('omits empty optional fields', () => {
+  it('omits empty optional fields but includes non-empty defaults', () => {
+    // REQ-ADM-234: DEFAULT_FILTERS.kind is 'error', so kind IS included.
     const p = encodeFilters(DEFAULT_FILTERS);
     expect(p.has('app')).toBe(false);
-    expect(p.has('kind')).toBe(false);
+    expect(p.get('kind')).toBe('error');
     expect(p.has('level')).toBe(false);
     expect(p.has('user')).toBe(false);
     expect(p.has('text')).toBe(false);
@@ -78,10 +79,12 @@ describe('encodeFilters', () => {
 
 describe('decodeFilters', () => {
   it('returns defaults for empty params', () => {
+    // REQ-ADM-234: DEFAULT_FILTERS.kind is 'error', so decoding empty params
+    // returns kind='error' (the default, not the "all" empty string).
     const out = decodeFilters(new URLSearchParams());
     expect(out.slice).toBe('auth');
     expect(out.app).toBe('');
-    expect(out.kind).toBe('');
+    expect(out.kind).toBe('error');
     expect(out.level).toBe('');
     expect(out.user).toBe('');
     expect(out.text).toBe('');
@@ -102,11 +105,13 @@ describe('decodeFilters', () => {
   });
 
   it('ignores unknown enum values and uses defaults', () => {
+    // REQ-ADM-234: the default kind is 'error', so an unknown kind value
+    // falls back to 'error' (not empty string).
     const p = new URLSearchParams({ slice: 'unknown', app: 'badapp', kind: 'metric' });
     const out = decodeFilters(p);
     expect(out.slice).toBe('auth'); // falls back to default
     expect(out.app).toBe('');
-    expect(out.kind).toBe('');
+    expect(out.kind).toBe('error');
   });
 
   it('preserves free-text fields as-is', () => {

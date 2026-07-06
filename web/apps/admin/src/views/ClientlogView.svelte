@@ -1,7 +1,15 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { clientlog } from '../lib/clientlog/clientlog.svelte';
+  import type { VitalData } from '../lib/clientlog/clientlog.svelte';
   import { formatRelative, formatAbsolute, DATE_TIME_WITH_SECONDS } from '../lib/format';
+
+  // REQ-ADM-234: 'errors' is the default sub-view (kind=error).
+  // 'performance' maps to kind=vital (web-vitals telemetry).
+  // Derived from the current kind filter so tabs stay in sync with the dropdown.
+  let activeSubView = $derived(
+    clientlog.filters.kind === 'vital' ? 'performance' : 'errors',
+  );
 
   // Load on mount; reload when filters change via Apply button.
   $effect(() => {
@@ -17,14 +25,32 @@
   }
 
   function clearFilters(): void {
+    // REQ-ADM-234: resetFilters() restores kind='error' (the default),
+    // not empty (all).
     clientlog.resetFilters();
     clientlog.status = 'idle';
     void clientlog.load();
   }
 
+  function switchToErrors(): void {
+    clientlog.filters.kind = 'error';
+    applyFilters();
+  }
+
+  function switchToPerformance(): void {
+    clientlog.filters.kind = 'vital';
+    applyFilters();
+  }
+
   function formatSkew(skewMs: number): string {
     if (Math.abs(skewMs) < 1000) return `${skewMs}ms`;
     return `${(skewMs / 1000).toFixed(1)}s`;
+  }
+
+  function formatVitalValue(vital: VitalData | undefined): string {
+    if (!vital) return '';
+    if (vital.name === 'CLS') return vital.value.toFixed(4);
+    return `${Math.round(vital.value)} ms`;
   }
 
   function kindChipClass(kind: string): string {
@@ -63,6 +89,32 @@
         <div class="spinner" role="status" aria-label="Loading"></div>
       {/if}
     </div>
+  </div>
+
+  <!-- Sub-view tabs (REQ-ADM-234) -->
+  <div class="subview-tabs" role="tablist" aria-label="Log sub-view">
+    <button
+      type="button"
+      class="subview-tab"
+      class:subview-tab-active={activeSubView === 'errors'}
+      role="tab"
+      aria-selected={activeSubView === 'errors'}
+      onclick={switchToErrors}
+      disabled={clientlog.status === 'loading'}
+    >
+      Errors
+    </button>
+    <button
+      type="button"
+      class="subview-tab"
+      class:subview-tab-active={activeSubView === 'performance'}
+      role="tab"
+      aria-selected={activeSubView === 'performance'}
+      onclick={switchToPerformance}
+      disabled={clientlog.status === 'loading'}
+    >
+      Performance
+    </button>
   </div>
 
   <!-- Filters -->
@@ -208,59 +260,115 @@
     <div class="list-panel" class:list-panel-narrow={clientlog.selected !== null}>
       {#if clientlog.rows.length > 0 || clientlog.status === 'ready'}
         <div class="table-wrapper">
-          <table class="table">
-            <thead>
-              <tr>
-                <th class="col-when">When</th>
-                <th class="col-app">App</th>
-                <th class="col-kind">Kind</th>
-                <th class="col-level">Level</th>
-                <th class="col-route">Route</th>
-                <th class="col-msg">Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each clientlog.rows as row (row.id)}
-                <tr
-                  class="table-row"
-                  class:selected={clientlog.selected?.id === row.id}
-                  onclick={() => clientlog.openRow(row)}
-                  role="button"
-                  tabindex="0"
-                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clientlog.openRow(row); }}
-                  aria-pressed={clientlog.selected?.id === row.id}
-                >
-                  <td class="col-when">
-                    <span class="relative-time" title={formatAbsolute(row.server_ts)}>
-                      {formatRelative(row.server_ts)}
-                    </span>
-                  </td>
-                  <td class="col-app">
-                    <span class="mono small">{row.app}</span>
-                  </td>
-                  <td class="col-kind">
-                    <span class="chip {kindChipClass(row.kind)}">{row.kind}</span>
-                  </td>
-                  <td class="col-level">
-                    <span class="chip {levelChipClass(row.level)}">{row.level}</span>
-                  </td>
-                  <td class="col-route">
-                    {#if row.route}
-                      <!-- REQ-OPS-218: plain monospace text, no href -->
-                      <span class="mono small route-text">{row.route}</span>
-                    {/if}
-                  </td>
-                  <td class="col-msg">
-                    <span class="msg-text" title={row.msg}>{row.msg}</span>
-                  </td>
-                </tr>
-              {:else}
+          {#if activeSubView === 'performance'}
+            <!-- Performance sub-view: web-vitals columns (REQ-ADM-234) -->
+            <table class="table">
+              <thead>
                 <tr>
-                  <td colspan="6" class="empty-row">No log entries found.</td>
+                  <th class="col-when">When</th>
+                  <th class="col-app">App</th>
+                  <th class="col-metric">Metric</th>
+                  <th class="col-value">Value</th>
+                  <th class="col-vital-id">Vital ID</th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {#each clientlog.rows as row (row.id)}
+                  {@const vital = row.payload?.raw?.vital}
+                  <tr
+                    class="table-row"
+                    class:selected={clientlog.selected?.id === row.id}
+                    onclick={() => clientlog.openRow(row)}
+                    role="button"
+                    tabindex="0"
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clientlog.openRow(row); }}
+                    aria-pressed={clientlog.selected?.id === row.id}
+                  >
+                    <td class="col-when">
+                      <span class="relative-time" title={formatAbsolute(row.server_ts)}>
+                        {formatRelative(row.server_ts)}
+                      </span>
+                    </td>
+                    <td class="col-app">
+                      <span class="mono small">{row.app}</span>
+                    </td>
+                    <td class="col-metric">
+                      {#if vital}
+                        <span class="chip chip-green">{vital.name}</span>
+                      {:else}
+                        <span class="mono small">{row.msg}</span>
+                      {/if}
+                    </td>
+                    <td class="col-value">
+                      <span class="mono vital-list-value">{formatVitalValue(vital)}</span>
+                    </td>
+                    <td class="col-vital-id">
+                      <span class="mono small">{vital?.id ?? ''}</span>
+                    </td>
+                  </tr>
+                {:else}
+                  <tr>
+                    <td colspan="5" class="empty-row">No performance entries found.</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:else}
+            <!-- Errors sub-view: default layout -->
+            <table class="table">
+              <thead>
+                <tr>
+                  <th class="col-when">When</th>
+                  <th class="col-app">App</th>
+                  <th class="col-kind">Kind</th>
+                  <th class="col-level">Level</th>
+                  <th class="col-route">Route</th>
+                  <th class="col-msg">Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each clientlog.rows as row (row.id)}
+                  <tr
+                    class="table-row"
+                    class:selected={clientlog.selected?.id === row.id}
+                    onclick={() => clientlog.openRow(row)}
+                    role="button"
+                    tabindex="0"
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clientlog.openRow(row); }}
+                    aria-pressed={clientlog.selected?.id === row.id}
+                  >
+                    <td class="col-when">
+                      <span class="relative-time" title={formatAbsolute(row.server_ts)}>
+                        {formatRelative(row.server_ts)}
+                      </span>
+                    </td>
+                    <td class="col-app">
+                      <span class="mono small">{row.app}</span>
+                    </td>
+                    <td class="col-kind">
+                      <span class="chip {kindChipClass(row.kind)}">{row.kind}</span>
+                    </td>
+                    <td class="col-level">
+                      <span class="chip {levelChipClass(row.level)}">{row.level}</span>
+                    </td>
+                    <td class="col-route">
+                      {#if row.route}
+                        <!-- REQ-OPS-218: plain monospace text, no href -->
+                        <span class="mono small route-text">{row.route}</span>
+                      {/if}
+                    </td>
+                    <td class="col-msg">
+                      <span class="msg-text" title={row.msg}>{row.msg}</span>
+                    </td>
+                  </tr>
+                {:else}
+                  <tr>
+                    <td colspan="6" class="empty-row">No log entries found.</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
         </div>
 
         {#if clientlog.hasMore}
@@ -582,6 +690,49 @@
     .spinner { animation: none; }
   }
 
+  /* Sub-view tabs (REQ-ADM-234) */
+  .subview-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-subtle-01);
+    margin-bottom: var(--spacing-05);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .subview-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .subview-tab {
+    flex-shrink: 0;
+    padding: var(--spacing-03) var(--spacing-05);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    line-height: var(--type-body-compact-01-line);
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    cursor: pointer;
+    transition: color var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+    white-space: nowrap;
+    min-height: var(--touch-min);
+  }
+  .subview-tab:hover:not(:disabled) {
+    color: var(--text-primary);
+  }
+  .subview-tab-active {
+    color: var(--text-primary);
+    border-bottom-color: var(--interactive);
+    font-weight: 600;
+  }
+  .subview-tab:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
   /* Filters */
   .filter-section {
     display: flex;
@@ -721,6 +872,11 @@
   .col-level { width: 7%; }
   .col-route { width: 20%; }
   .col-msg { width: 52%; }
+
+  /* Performance sub-view columns */
+  .col-metric { width: 10%; white-space: nowrap; }
+  .col-value { width: 12%; white-space: nowrap; }
+  .col-vital-id { width: 40%; }
 
   .relative-time {
     color: var(--text-secondary);
@@ -918,6 +1074,12 @@
 
   .vital-value {
     font-size: var(--type-heading-compact-01-size, 14px);
+    font-weight: 600;
+    color: var(--support-success);
+  }
+
+  /* Inline value in the Performance sub-view list table */
+  .vital-list-value {
     font-weight: 600;
     color: var(--support-success);
   }

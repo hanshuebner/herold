@@ -20,10 +20,13 @@ export interface ClientlogFilters {
   text: string;
 }
 
+// REQ-ADM-234: default kind is 'error' so the incident-diagnosis view is
+// the opening view. 'log' and 'vital' are still reachable via the KIND
+// dropdown or the Performance sub-view.
 export const DEFAULT_FILTERS: ClientlogFilters = {
   slice: 'auth',
   app: '',
-  kind: '',
+  kind: 'error',
   level: '',
   since: '',
   until: '',

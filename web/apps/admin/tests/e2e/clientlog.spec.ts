@@ -571,6 +571,135 @@ test.describe('clientlog viewer', () => {
     expect(valueText).not.toMatch(/ms/);
   });
 
+  // REQ-ADM-234: default kind=error and Performance sub-view tests.
+
+  test('kind filter defaults to error on initial load', async ({ page }) => {
+    const requests: string[] = [];
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      const url = route.request().url();
+      if (!url.includes('/stats')) requests.push(url);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: PAGE1_ROWS, next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByRole('heading', { name: 'Client logs' })).toBeVisible();
+
+    // KIND dropdown must show 'error' without any manual selection.
+    await expect(page.locator('#cl-kind')).toHaveValue('error');
+
+    // 'Errors' tab must be marked active.
+    const errorsTab = page.getByRole('tab', { name: 'Errors' });
+    await expect(errorsTab).toBeVisible();
+    await expect(errorsTab).toHaveAttribute('aria-selected', 'true');
+
+    // The initial API request must carry kind=error.
+    await page.waitForTimeout(200);
+    const initialRequest = requests.find((u) => !u.includes('cursor'));
+    expect(initialRequest).toBeTruthy();
+    expect(initialRequest).toContain('kind=error');
+  });
+
+  test('Performance sub-view tab switches to kind=vital', async ({ page }) => {
+    const requests: string[] = [];
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      const url = route.request().url();
+      if (!url.includes('/stats')) requests.push(url);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByRole('heading', { name: 'Client logs' })).toBeVisible();
+
+    // Click the Performance tab.
+    await page.getByRole('tab', { name: 'Performance' }).click();
+
+    // KIND dropdown must now show 'vital'.
+    await expect(page.locator('#cl-kind')).toHaveValue('vital');
+
+    // 'Performance' tab must be marked active; 'Errors' must not.
+    await expect(page.getByRole('tab', { name: 'Performance' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: 'Errors' })).toHaveAttribute('aria-selected', 'false');
+
+    // The subsequent API request must carry kind=vital.
+    await page.waitForTimeout(200);
+    const perfRequest = requests.find((u) => u.includes('kind=vital'));
+    expect(perfRequest).toBeTruthy();
+  });
+
+  test('Performance sub-view shows vital columns in table', async ({ page }) => {
+    const vitalRow = makeVitalRow(200, 'LCP', 850, 'v-lcp-perf-1');
+
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      if (route.request().url().includes('/stats')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(STATS),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [vitalRow], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByRole('heading', { name: 'Client logs' })).toBeVisible();
+
+    // Navigate to the Performance sub-view.
+    await page.getByRole('tab', { name: 'Performance' }).click();
+
+    // The table should display vital-specific column headers.
+    await expect(page.getByRole('columnheader', { name: 'Metric' })).toBeVisible({ timeout: 3000 });
+    await expect(page.getByRole('columnheader', { name: 'Value' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Vital ID' })).toBeVisible();
+
+    // The vital row should show the metric name chip and value.
+    await expect(page.getByText('LCP', { exact: true })).toBeVisible();
+    await expect(page.getByText('850 ms')).toBeVisible();
+    await expect(page.getByText('v-lcp-perf-1')).toBeVisible();
+  });
+
+  test('clear filters resets kind to error', async ({ page }) => {
+    void page.route('/api/v1/admin/clientlog*', (route) => {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ rows: [], next_cursor: null }),
+      });
+    });
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Client logs' }).click();
+    await expect(page.getByRole('heading', { name: 'Client logs' })).toBeVisible();
+
+    // Switch to Performance (kind=vital).
+    await page.getByRole('tab', { name: 'Performance' }).click();
+    await expect(page.locator('#cl-kind')).toHaveValue('vital');
+
+    // Click Clear.
+    await page.getByRole('button', { name: 'Clear' }).click();
+
+    // Kind must reset to 'error', not '' (all).
+    await expect(page.locator('#cl-kind')).toHaveValue('error');
+    // The Errors tab must become active again.
+    await expect(page.getByRole('tab', { name: 'Errors' })).toHaveAttribute('aria-selected', 'true');
+  });
+
   test('breadcrumbs section shows description and activity entries', async ({ page }) => {
     // When an error row's detail pane is open, the Breadcrumbs section must
     // display a human-readable description (defect 6, issue #103) explaining
