@@ -16,6 +16,7 @@
   import EventsView from './views/EventsView.svelte';
   import ClientlogView from './views/ClientlogView.svelte';
   import MessageResearchView from './views/MessageResearchView.svelte';
+  import IMAPImportsView from './views/IMAPImportsView.svelte';
   import HelpView from './views/HelpView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
 
@@ -49,6 +50,11 @@
     key: 'g e',
     description: 'Go to Events',
     action: () => router.navigate('/events'),
+  });
+  keyboard.registerGlobal({
+    key: 'g i',
+    description: 'Go to IMAP imports',
+    action: () => router.navigate('/imap-imports'),
   });
   keyboard.registerGlobal({
     key: 'g l',
@@ -243,6 +249,8 @@
       <AuditView />
     {:else if router.matches('events')}
       <EventsView />
+    {:else if router.matches('imap-imports')}
+      <IMAPImportsView />
     {:else if router.matches('clientlog')}
       <ClientlogView />
     {:else if router.matches('message-research')}

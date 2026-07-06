@@ -1544,6 +1544,17 @@ export const en = {
   'settings.import.removeConfirmDelete': 'Remove and delete imported mail',
   'settings.import.removeCancel': 'Cancel',
   // Identity removal when identity carries imported mail (REQ-SET-IDENT-12)
+  // Live worker status panel (IdentityImportSection, re #138)
+  'settings.import.liveStatus.header': 'Live status',
+  'settings.import.liveStatus.connected': 'Connected',
+  'settings.import.liveStatus.disconnected': 'Disconnected',
+  'settings.import.liveStatus.phase': 'Phase: {phase}',
+  'settings.import.liveStatus.watchMode': 'Watch mode: {mode}',
+  'settings.import.liveStatus.messagesFetched': '{count} messages fetched this session',
+  'settings.import.liveStatus.lastSyncAt': 'Last sync: {date}',
+  'settings.import.liveStatus.lastError': 'Error: {error}',
+  'settings.import.liveStatus.noWorker': 'No active worker for this account',
+  'settings.import.liveStatus.refresh': 'Refresh',
   'settings.import.removeIdentityExtended':
     'This identity has mail imported through it. Choose what to do with ' +
     'that mail before removing the identity.',

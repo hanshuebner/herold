@@ -16,6 +16,7 @@
     { label: 'Queue', path: '/queue', segment: 'queue' },
     { label: 'Audit', path: '/audit', segment: 'audit' },
     { label: 'Ereignisse', path: '/events', segment: 'events' },
+    { label: 'IMAP-Import', path: '/imap-imports', segment: 'imap-imports' },
     { label: 'Client logs', path: '/clientlog', segment: 'clientlog' },
     { label: 'Nachrichtenrecherche', path: '/message-research', segment: 'message-research' },
     { label: 'Help', path: '/help', segment: 'help' },

@@ -235,6 +235,18 @@ format = "json"
 level  = "debug"
 EOF
 
+    # Always generate an ephemeral 32-byte AES data key. It is never
+    # persisted across restarts and enables credential-sealing features
+    # (IMAP-import passwords, external-submission SMTP credentials) in
+    # every dev instance without extra flags.
+    local data_key_file="$dir/data/data_key.hex"
+    openssl rand -hex 32 > "$data_key_file"
+    cat >> "$dir/system.toml" <<EOF
+
+[server.secrets]
+data_key_ref = "file:$data_key_file"
+EOF
+
     # Optional: enable the attachment-share offload feature for puppeteer
     # verification. public_base_url must be https to pass config
     # validation; a placeholder host is fine for UI flows (the suite only
@@ -250,16 +262,10 @@ EOF
     fi
 
     # Optional: enable external-submission (SMTP relay for external-domain
-    # identities) for puppeteer verification. A random 32-byte AES data key
-    # is generated and stored under the instance state dir; it is ephemeral
-    # and never persisted across restarts.
+    # identities) for puppeteer verification. The data key is always
+    # generated above; this block just enables the submission feature.
     if [ -n "${HEROLD_DEV_EXTERNAL_SUBMISSION:-}" ]; then
-        local data_key_file="$dir/data/data_key.hex"
-        openssl rand -hex 32 > "$data_key_file"
         cat >> "$dir/system.toml" <<EOF
-
-[server.secrets]
-data_key_ref = "file:$data_key_file"
 
 [server.external_submission]
 enabled = true

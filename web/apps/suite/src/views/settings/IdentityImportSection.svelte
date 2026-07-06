@@ -22,8 +22,10 @@
    *   5. Error loading — inline error with Retry.
    */
 
+  import { untrack } from 'svelte';
   import { mail } from '../../lib/mail/store.svelte';
   import { imapImportStore } from '../../lib/jmap/imap-import-store.svelte';
+  import { imapImportLiveStatus } from '../../lib/api/imap-import-live-status.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { t } from '../../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
@@ -90,6 +92,18 @@
 
   const account = $derived(handle?.account ?? null);
   const loadStatus = $derived(handle?.status ?? 'idle');
+
+  // Load live worker status when an account is configured (re #138).
+  $effect(() => {
+    if (account) {
+      untrack(() => void imapImportLiveStatus.load());
+    }
+  });
+
+  /** Live per-session worker status for the configured account. */
+  const liveStatus = $derived(
+    account ? imapImportLiveStatus.forAccount(account.id) : null,
+  );
 
   /**
    * Look up the provenance label in the mailbox list to get the count
@@ -385,6 +399,67 @@
         {#if account.lastError}
           <span class="detail-item error-text" data-testid="import-last-error">
             {t('settings.import.lastError', { error: account.lastError })}
+          </span>
+        {/if}
+      </div>
+
+      <!-- Live worker status sub-panel (re #138). -->
+      <div class="live-status-panel" data-testid="import-live-status">
+        <div class="live-status-header">
+          <span class="live-status-label">{t('settings.import.liveStatus.header')}</span>
+          <button
+            type="button"
+            class="live-status-refresh-btn"
+            onclick={() => void imapImportLiveStatus.refresh()}
+            aria-label={t('settings.import.liveStatus.refresh')}
+          >
+            {t('settings.import.liveStatus.refresh')}
+          </button>
+        </div>
+
+        {#if imapImportLiveStatus.status === 'loading'}
+          <div class="spinner spinner-sm" role="status" aria-label={t('settings.import.loadingAriaLabel')}></div>
+        {:else if imapImportLiveStatus.status === 'error'}
+          <span class="detail-item error-text">{imapImportLiveStatus.error}</span>
+        {:else if liveStatus !== null}
+          <div class="live-status-rows">
+            <span
+              class="live-conn-badge {liveStatus.connected ? 'conn-ok' : 'conn-off'}"
+              data-testid="live-status-connected"
+            >
+              {liveStatus.connected
+                ? t('settings.import.liveStatus.connected')
+                : t('settings.import.liveStatus.disconnected')}
+            </span>
+            <span class="detail-item" data-testid="live-status-phase">
+              {t('settings.import.liveStatus.phase', { phase: liveStatus.phase })}
+            </span>
+            {#if liveStatus.watch_mode}
+              <span class="detail-item" data-testid="live-status-watch-mode">
+                {t('settings.import.liveStatus.watchMode', { mode: liveStatus.watch_mode })}
+              </span>
+            {/if}
+            {#if liveStatus.last_sync_at}
+              <span class="detail-item" data-testid="live-status-last-sync">
+                {t('settings.import.liveStatus.lastSyncAt', {
+                  date: formatDate(liveStatus.last_sync_at),
+                })}
+              </span>
+            {/if}
+            <span class="detail-item" data-testid="live-status-messages-fetched">
+              {t('settings.import.liveStatus.messagesFetched', {
+                count: String(liveStatus.messages_fetched),
+              })}
+            </span>
+            {#if liveStatus.last_error}
+              <span class="detail-item error-text" data-testid="live-status-last-error">
+                {t('settings.import.liveStatus.lastError', { error: liveStatus.last_error })}
+              </span>
+            {/if}
+          </div>
+        {:else if imapImportLiveStatus.status === 'ready'}
+          <span class="detail-item muted" data-testid="live-status-no-worker">
+            {t('settings.import.liveStatus.noWorker')}
           </span>
         {/if}
       </div>
@@ -855,6 +930,81 @@
   .muted {
     color: var(--text-helper);
     font-weight: 400;
+  }
+
+  /* Live status sub-panel */
+  .live-status-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+  }
+
+  .live-status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-03);
+  }
+
+  .live-status-label {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+  }
+
+  .live-status-refresh-btn {
+    background: none;
+    border: none;
+    color: var(--interactive);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+  }
+
+  .live-status-refresh-btn:hover {
+    opacity: 0.8;
+  }
+
+  .live-status-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+  }
+
+  .live-conn-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px var(--spacing-02);
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    align-self: flex-start;
+  }
+
+  .conn-ok {
+    background: color-mix(in srgb, var(--support-success) 16%, transparent);
+    color: color-mix(in srgb, var(--support-success) 80%, var(--text-primary));
+  }
+
+  .conn-off {
+    background: color-mix(in srgb, var(--text-helper) 16%, transparent);
+    color: var(--text-helper);
+  }
+
+  .spinner-sm {
+    width: 12px;
+    height: 12px;
+    border-width: 1.5px;
   }
 
   .status-actions {

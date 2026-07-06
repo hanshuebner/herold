@@ -1567,6 +1567,17 @@ export const de = {
   'settings.import.removeConfirmKeep': 'Verbindung entfernen (E-Mails behalten)',
   'settings.import.removeConfirmDelete': 'Entfernen und importierte E-Mails löschen',
   'settings.import.removeCancel': 'Abbrechen',
+  // Live-Worker-Status-Panel (IdentityImportSection, re #138)
+  'settings.import.liveStatus.header': 'Live-Status',
+  'settings.import.liveStatus.connected': 'Verbunden',
+  'settings.import.liveStatus.disconnected': 'Getrennt',
+  'settings.import.liveStatus.phase': 'Phase: {phase}',
+  'settings.import.liveStatus.watchMode': 'Überwachungsmodus: {mode}',
+  'settings.import.liveStatus.messagesFetched': '{count} Nachrichten in dieser Sitzung abgerufen',
+  'settings.import.liveStatus.lastSyncAt': 'Zuletzt synchronisiert: {date}',
+  'settings.import.liveStatus.lastError': 'Fehler: {error}',
+  'settings.import.liveStatus.noWorker': 'Kein aktiver Worker für dieses Konto',
+  'settings.import.liveStatus.refresh': 'Aktualisieren',
   'settings.import.removeIdentityExtended':
     'Diese Identität hat über sie importierte E-Mails. Wählen Sie aus, was mit ' +
     'diesen E-Mails geschehen soll, bevor die Identität entfernt wird.',
