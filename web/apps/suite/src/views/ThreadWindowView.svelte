@@ -15,6 +15,7 @@
   import { mail } from '../lib/mail/store.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
+  import { threadSubject } from '../lib/mail/thread-subject';
 
   interface Props {
     threadId: string;
@@ -25,7 +26,7 @@
   // store: starts as the fallback once auth is ready and updates to the real
   // subject once mail.loadThread (triggered by ThreadReader) completes.
   let subject = $derived(
-    mail.threadEmails(threadId)[0]?.subject || t('thread.subject.none'),
+    threadSubject(mail.threadEmails(threadId), t('thread.subject.none')),
   );
 
   // Keep the browser-tab title in sync with the thread subject.

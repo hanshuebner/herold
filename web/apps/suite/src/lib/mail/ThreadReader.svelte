@@ -12,6 +12,7 @@
   import { labelForeground } from './label-color';
   import type { Email } from './types';
   import { pickInitialExpanded } from './pick-initial-expanded';
+  import { threadSubject } from './thread-subject';
 
   interface Props {
     threadId: string;
@@ -133,7 +134,7 @@
   let status = $derived(mail.threadStatus(threadId));
   let emails = $derived(mail.threadEmails(threadId));
   let pendingArrivals = $derived(mail.pendingArrivalsForThread(threadId));
-  let subject = $derived(emails[0]?.subject || t('thread.subject.none'));
+  let subject = $derived(threadSubject(emails, t('thread.subject.none')));
 
   // Most recent email — what reply / reply-all / forward target by
   // default, and the seed for thread-scoped bulk operations
