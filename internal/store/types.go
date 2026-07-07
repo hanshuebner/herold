@@ -960,6 +960,12 @@ type AuditLogEntry struct {
 	// store serialises the map deterministically (sorted keys) to the
 	// underlying column.
 	Metadata map[string]string
+	// Domain tags the entry with the mail domain it relates to, enabling
+	// REQ-ADM-307 operator-scope filtering in ListAuditLog. Empty string
+	// means the entry is not domain-specific (global admin actions such as
+	// principal.create, cert.renew, etc.). Populated by callers that have
+	// a natural domain context (e.g. queue operations, domain management).
+	Domain string
 }
 
 // SessionRow is one row in the sessions table. Each row is keyed on
@@ -1064,4 +1070,10 @@ type AuditLogFilter struct {
 	// from the previous page (which, with DESC ordering, is the oldest
 	// row in that page).
 	BeforeID AuditLogID
+	// Domains, when non-nil, applies REQ-ADM-307 operator scope filtering:
+	// nil = unrestricted (super-admin); non-nil empty = fail-closed (return
+	// no rows); non-empty = restrict to rows whose Domain matches any entry.
+	// Consumers MUST rely on this nil/non-nil distinction — never pass a nil
+	// slice when fail-closed behavior is required.
+	Domains []string
 }

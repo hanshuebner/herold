@@ -3070,11 +3070,11 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO audit_log (at_us, actor_kind, actor_id, action, subject,
-			  remote_addr, outcome, message, metadata_json, principal_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  remote_addr, outcome, message, metadata_json, principal_id, domain)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			usMicros(at), int64(entry.ActorKind), entry.ActorID, entry.Action, entry.Subject,
 			entry.RemoteAddr, int64(entry.Outcome), entry.Message, metaJSON,
-			auditPrincipalID(entry))
+			auditPrincipalID(entry), entry.Domain)
 		return mapErr(err)
 	})
 }
@@ -3900,6 +3900,11 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 }
 
 func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
+	// Fail closed: non-nil empty Domains means no access (REQ-ADM-307).
+	if filter.Domains != nil && len(filter.Domains) == 0 {
+		return nil, nil
+	}
+
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
@@ -3926,8 +3931,16 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 		where = append(where, "at_us < ?")
 		args = append(args, usMicros(filter.Until))
 	}
+	if len(filter.Domains) > 0 {
+		placeholders := make([]string, len(filter.Domains))
+		for i, d := range filter.Domains {
+			placeholders[i] = "?"
+			args = append(args, d)
+		}
+		where = append(where, "domain IN ("+strings.Join(placeholders, ",")+")")
+	}
 	q := `SELECT id, at_us, actor_kind, actor_id, action, subject,
-	             remote_addr, outcome, message, metadata_json
+	             remote_addr, outcome, message, metadata_json, domain
 	        FROM audit_log`
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
@@ -3946,7 +3959,7 @@ func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter
 		var actorKind, outcome int64
 		var metaJSON string
 		if err := rows.Scan(&id, &atUs, &actorKind, &e.ActorID, &e.Action, &e.Subject,
-			&e.RemoteAddr, &outcome, &e.Message, &metaJSON); err != nil {
+			&e.RemoteAddr, &outcome, &e.Message, &metaJSON, &e.Domain); err != nil {
 			return nil, mapErr(err)
 		}
 		e.ID = store.AuditLogID(id)

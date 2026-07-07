@@ -3,6 +3,7 @@ package storetest
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -171,6 +172,97 @@ func testListDomainOperators(t *testing.T, s store.Store) {
 	}
 	if !found {
 		t.Errorf("ListDomainOperators did not return operator %d", operator.ID)
+	}
+}
+
+// testAuditLog_DomainFilter verifies the REQ-ADM-307 domain-scope filter on
+// AuditLogFilter.Domains:
+//   - nil Domains = unrestricted (super-admin equivalent)
+//   - non-nil, non-empty Domains = IN-list filter
+//   - non-nil empty Domains = fail-closed (zero rows)
+//
+// The domain column defaults to an empty string on new entries. These cases seed
+// entries with explicit domain tags to exercise the IN-list path.
+func testAuditLog_DomainFilter(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// Insert audit entries with three distinct domain values.
+	for i, tc := range []struct {
+		action string
+		domain string
+	}{
+		{"audit.domain.alpha1", "alpha.example"},
+		{"audit.domain.alpha2", "alpha.example"},
+		{"audit.domain.beta1", "beta.example"},
+		{"audit.domain.noDomain", ""},
+	} {
+		if err := s.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        base.Add(time.Duration(i) * time.Second),
+			ActorKind: store.ActorSystem,
+			ActorID:   "test",
+			Action:    tc.action,
+			Subject:   "test:scope",
+			Outcome:   store.OutcomeSuccess,
+			Domain:    tc.domain,
+		}); err != nil {
+			t.Fatalf("AppendAuditLog %d: %v", i, err)
+		}
+	}
+
+	// Unrestricted (nil Domains): should return all four entries.
+	all, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		Action: "audit.domain.alpha1",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog unrestricted: %v", err)
+	}
+	if len(all) == 0 {
+		t.Error("nil Domains: got 0 entries; want >= 1 (unrestricted)")
+	}
+
+	// IN-list filter for alpha.example: must return only alpha entries.
+	alpha, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		Domains: []string{"alpha.example"},
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog Domains=[alpha]: %v", err)
+	}
+	if len(alpha) < 2 {
+		t.Errorf("Domains=[alpha.example]: got %d; want >= 2", len(alpha))
+	}
+	for _, e := range alpha {
+		if e.Domain != "alpha.example" {
+			t.Errorf("Domains=[alpha.example] returned entry with domain=%q", e.Domain)
+		}
+	}
+
+	// IN-list filter for beta.example: must return only beta entries.
+	beta, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		Domains: []string{"beta.example"},
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog Domains=[beta]: %v", err)
+	}
+	if len(beta) < 1 {
+		t.Errorf("Domains=[beta.example]: got %d; want >= 1", len(beta))
+	}
+	for _, e := range beta {
+		if e.Domain != "beta.example" {
+			t.Errorf("Domains=[beta.example] returned entry with domain=%q", e.Domain)
+		}
+	}
+
+	// Fail-closed: non-nil empty Domains must return zero entries.
+	empty, err := s.Meta().ListAuditLog(ctx, store.AuditLogFilter{
+		Domains: []string{},
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLog Domains=[]: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("Domains=[]: got %d entries; want 0 (fail-closed)", len(empty))
 	}
 }
 

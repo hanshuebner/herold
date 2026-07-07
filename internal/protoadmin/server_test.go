@@ -887,6 +887,254 @@ func TestAuditLog_RequestIDPropagated(t *testing.T) {
 	}
 }
 
+// TestListQueue_OperatorScope verifies that a domain-scoped operator sees only
+// queue items whose mail_from domain matches their managed-domain set
+// (REQ-ADM-307, re #145). The fix was that handleListQueue did not previously
+// call ResolveOperatorScope, so operators received unrestricted cross-domain data.
+func TestListQueue_OperatorScope(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// Bootstrap and promote to super-admin.
+	_, adminKey := h.bootstrap("sa-queue@example.com")
+	sa, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-queue@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	sa.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, sa); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+
+	// Create a domain-scoped operator managing only alpha.example.
+	opID := h.createPrincipal(adminKey, "op-queue@example.com")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal operator: %v", err)
+	}
+	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
+		t.Fatalf("AssignManagedDomain: %v", err)
+	}
+	_, opKey := h.createAPIKey(adminKey, opID)
+
+	// Enqueue items from two sender domains.
+	p, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-queue@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail for enqueue: %v", err)
+	}
+	for _, tc := range []struct {
+		mailFrom, rcptTo string
+	}{
+		{"sender@alpha.example", "dest@remote.test"},
+		{"sender@beta.example", "dest2@remote.test"},
+	} {
+		if _, err := h.h.Store.Meta().EnqueueMessage(ctx, store.QueueItem{
+			PrincipalID: p.ID,
+			MailFrom:    tc.mailFrom,
+			RcptTo:      tc.rcptTo,
+			EnvelopeID:  "env-scope-test",
+		}); err != nil {
+			t.Fatalf("EnqueueMessage %s: %v", tc.mailFrom, err)
+		}
+	}
+
+	// Operator must see only alpha.example items.
+	res, buf := h.doRequest("GET", "/api/v1/queue", opKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("operator GET /api/v1/queue: %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	for _, item := range page.Items {
+		mailFrom, _ := item["mail_from"].(string)
+		if !strings.Contains(mailFrom, "@alpha.example") {
+			t.Errorf("operator scope: got mail_from=%q; want only @alpha.example items", mailFrom)
+		}
+	}
+	if len(page.Items) == 0 {
+		t.Error("operator: got 0 items; want >= 1 from alpha.example")
+	}
+}
+
+// TestListQueue_NoDomainOperatorSeesEmpty is the fail-closed regression test for
+// the queue surface: an admin with no managed domains must get an empty queue
+// list (REQ-ADM-307, re #145).
+func TestListQueue_NoDomainOperatorSeesEmpty(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, superKey := h.bootstrap("sa-qnd@example.com")
+
+	// Create a no-domain operator.
+	ndID := h.createPrincipal(superKey, "nd-queue@example.com")
+	nd, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(ndID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	nd.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, nd); err != nil {
+		t.Fatalf("UpdatePrincipal: %v", err)
+	}
+	_, ndKey := h.createAPIKey(superKey, ndID)
+
+	// Enqueue a real item so there is something to leak.
+	p, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-qnd@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	if _, err := h.h.Store.Meta().EnqueueMessage(ctx, store.QueueItem{
+		PrincipalID: p.ID,
+		MailFrom:    "sender@secret.example",
+		RcptTo:      "dest@remote.test",
+		EnvelopeID:  "env-nd-test",
+	}); err != nil {
+		t.Fatalf("EnqueueMessage: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/queue", ndKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("no-domain GET /api/v1/queue: %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if len(page.Items) != 0 {
+		t.Errorf("no-domain operator leaked %d queue item(s); want 0 (fail-closed): %+v",
+			len(page.Items), page.Items)
+	}
+}
+
+// TestAuditLog_OperatorScope verifies that a domain-scoped operator sees only
+// audit entries whose domain matches their managed-domain set (REQ-ADM-307, re #145).
+func TestAuditLog_OperatorScope(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, adminKey := h.bootstrap("sa-audit@example.com")
+	sa, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-audit@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	sa.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, sa); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+
+	// Create a domain operator managing alpha.example.
+	opID := h.createPrincipal(adminKey, "op-audit@example.com")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal operator: %v", err)
+	}
+	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
+		t.Fatalf("AssignManagedDomain: %v", err)
+	}
+	_, opKey := h.createAPIKey(adminKey, opID)
+
+	// Seed audit entries: one for alpha.example, one for beta.example, one global.
+	for _, tc := range []struct {
+		action, domain string
+	}{
+		{"queue.scope.alpha", "alpha.example"},
+		{"queue.scope.beta", "beta.example"},
+		{"queue.scope.global", ""},
+	} {
+		if err := h.h.Store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+			At:        h.clk.Now(),
+			ActorKind: store.ActorSystem,
+			ActorID:   "test",
+			Action:    tc.action,
+			Subject:   "test:scope",
+			Outcome:   store.OutcomeSuccess,
+			Domain:    tc.domain,
+		}); err != nil {
+			t.Fatalf("AppendAuditLog %s: %v", tc.action, err)
+		}
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/audit", opKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("operator GET /api/v1/audit: %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	// Operator must see only alpha.example entries.
+	for _, item := range page.Items {
+		dom, _ := item["domain"].(string)
+		if dom != "alpha.example" {
+			t.Errorf("operator scope leaked domain=%q; want only alpha.example", dom)
+		}
+	}
+}
+
+// TestAuditLog_NoDomainOperatorSeesEmpty is the fail-closed regression test for
+// the audit log surface: an admin with no managed domains must see an empty
+// audit log (REQ-ADM-307, re #145).
+func TestAuditLog_NoDomainOperatorSeesEmpty(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, superKey := h.bootstrap("sa-andos@example.com")
+
+	ndID := h.createPrincipal(superKey, "nd-audit@example.com")
+	nd, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(ndID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	nd.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, nd); err != nil {
+		t.Fatalf("UpdatePrincipal: %v", err)
+	}
+	_, ndKey := h.createAPIKey(superKey, ndID)
+
+	// Seed an audit entry with a domain so there is data to potentially leak.
+	if err := h.h.Store.Meta().AppendAuditLog(ctx, store.AuditLogEntry{
+		At:        h.clk.Now(),
+		ActorKind: store.ActorSystem,
+		ActorID:   "test",
+		Action:    "audit.nodomain.regression",
+		Subject:   "test:scope",
+		Outcome:   store.OutcomeSuccess,
+		Domain:    "secret.example",
+	}); err != nil {
+		t.Fatalf("AppendAuditLog: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/audit", ndKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("no-domain GET /api/v1/audit: %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if len(page.Items) != 0 {
+		t.Errorf("no-domain operator leaked %d audit entry/entries; want 0 (fail-closed): %+v",
+			len(page.Items), page.Items)
+	}
+}
+
 func TestAuthentication_Bearer_APIKey_Required(t *testing.T) {
 	h := newHarness(t)
 	_, _ = h.bootstrap("admin@example.com")

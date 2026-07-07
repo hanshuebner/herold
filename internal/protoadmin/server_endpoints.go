@@ -230,9 +230,19 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r, caller) {
 		return
 	}
+
+	scope := ResolveOperatorScope(r.Context(), s.store.Meta(), caller)
+
 	q := r.URL.Query()
 	filter := store.AuditLogFilter{
 		Action: q.Get("action"),
+	}
+
+	// Apply domain scope per REQ-ADM-307 (the per-domain slice of the Audit
+	// log). Domains is nil for super-admins (unrestricted) and non-nil for
+	// domain-scoped operators (fail-closed when empty, IN-list when non-empty).
+	if !scope.SuperAdmin {
+		filter.Domains = scope.Domains
 	}
 	if raw := q.Get("principal_id"); raw != "" {
 		n, err := strconv.ParseUint(raw, 10, 64)
@@ -311,6 +321,7 @@ func auditEntryToMap(e store.AuditLogEntry) map[string]any {
 		"outcome":     outcomeString(e.Outcome),
 		"message":     e.Message,
 		"metadata":    e.Metadata,
+		"domain":      e.Domain,
 	}
 }
 

@@ -83,6 +83,7 @@ func Run(t *testing.T, f Factory) {
 		{"ListOIDCProviders", testListOIDCProviders},
 		{"UnlinkOIDC_NotFoundWhenAbsent", testUnlinkOIDCNotFound},
 		{"AuditLog_AppendAndList", testAuditLogAppendAndList},
+		{"AuditLog_DomainFilter", testAuditLog_DomainFilter},
 		{"PrincipalFlagTOTPEnabled", testPrincipalFlagTOTPEnabled},
 		{"GetMailboxByName", testGetMailboxByName},
 		{"ListMessagesPagination", testListMessagesPagination},

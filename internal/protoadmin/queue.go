@@ -86,8 +86,17 @@ func (s *Server) handleListQueue(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r, caller) {
 		return
 	}
+
+	scope := ResolveOperatorScope(r.Context(), s.store.Meta(), caller)
+
 	q := r.URL.Query()
 	filter := store.QueueFilter{}
+
+	// Apply domain scope per REQ-ADM-307. SenderDomains carries the correct
+	// nil=unrestricted / non-nil-empty=fail-closed semantics.
+	if !scope.SuperAdmin {
+		filter.SenderDomains = scope.Domains
+	}
 	if raw := q.Get("state"); raw != "" {
 		st, ok := queueStateFromString(raw)
 		if !ok {

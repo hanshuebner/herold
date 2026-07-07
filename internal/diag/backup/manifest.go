@@ -481,7 +481,16 @@ const CurrentBackupVersion = 1
 //	raises per-worker verbosity (connection lifecycle, IDLE arm/wake,
 //	sync round counts, NOOP poll ticks) and routes events into the
 //	system_events ring-buffer tagged with the account ID as actor_id.
-const CurrentSchemaVersion = 74
+//
+// 75 — 0075_audit_log_domain.sql (REQ-ADM-307, re #145).
+//
+//	Adds audit_log.domain TEXT NOT NULL DEFAULT '': the mail domain the
+//	audit entry relates to, used by AuditLogFilter.Domains for
+//	REQ-ADM-307 operator-scope filtering. Existing rows default to ''
+//	(global entries); domain operators see nothing from pre-migration
+//	history (correct fail-closed behavior). Index on (domain, id DESC)
+//	WHERE domain != '' supports the IN-list scope filter.
+const CurrentSchemaVersion = 75
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

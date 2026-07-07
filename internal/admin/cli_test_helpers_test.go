@@ -59,12 +59,15 @@ func newCLITestEnv(t *testing.T, optsMutator func(*protoadmin.Options)) *cliTest
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	// Seed admin principal and API key.
+	// Seed admin principal and API key. Both Admin and SuperAdmin flags are
+	// required: after REQ-ADM-307 (re #145) any admin without PrincipalFlagSuperAdmin
+	// is treated as a domain-scoped operator and sees only their managed domains.
+	// The CLI test principal is the server owner and needs full access.
 	ctx := context.Background()
 	pid, err := fs.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
 		CanonicalEmail: "admin@test.local",
-		Flags:          store.PrincipalFlagAdmin,
+		Flags:          store.PrincipalFlagAdmin | store.PrincipalFlagSuperAdmin,
 	})
 	if err != nil {
 		t.Fatalf("InsertPrincipal: %v", err)
