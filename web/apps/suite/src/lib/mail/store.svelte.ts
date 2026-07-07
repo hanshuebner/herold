@@ -2504,6 +2504,7 @@ class MailStore {
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
       this.#summarizeBulk('archived', Object.keys(updates).length, failed);
+      this.#refreshFolderIfEmptied();
     } catch (err) {
       for (const [id, prev] of prevById) {
         this.#patchEmail(id, { mailboxIds: prev });
@@ -2562,6 +2563,7 @@ class MailStore {
         });
       }
       this.#refreshMailboxesSoon();
+      this.#refreshFolderIfEmptied();
     } catch (err) {
       // Best-effort restore: put the rows back.
       this.listEmailIds = prevListIds;
@@ -2606,6 +2608,7 @@ class MailStore {
     try {
       const { failed } = await this.#emailSetUpdateBulk(updates);
       this.#summarizeBulk('deleted', Object.keys(updates).length, failed);
+      this.#refreshFolderIfEmptied();
     } catch (err) {
       for (const [id, prev] of prevById) {
         this.#patchEmail(id, { mailboxIds: prev });
@@ -3303,6 +3306,20 @@ class MailStore {
   #captureMailboxSetNewState(result: { newState?: string }): void {
     if (typeof result.newState === 'string' && result.newState !== '') {
       this.mailboxState = result.newState;
+    }
+  }
+
+  /**
+   * Re-fetch the current folder if a bulk action just emptied the visible
+   * list while the folder is still loaded. Prevents the false empty-state
+   * that appears when the 50-item query window is fully archived/deleted
+   * but more messages exist on the server (re #148).
+   */
+  #refreshFolderIfEmptied(): void {
+    if (this.listEmailIds.length === 0 && this.listLoadStatus === 'ready') {
+      void this.#refreshFolderInPlace().catch((err) => {
+        console.warn('folder refresh after bulk-empty failed', err);
+      });
     }
   }
 
