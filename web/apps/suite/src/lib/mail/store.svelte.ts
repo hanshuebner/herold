@@ -2517,7 +2517,7 @@ class MailStore {
 
     const allIds: string[] = [];
     const pageSize = 256;
-    const hardCap = 5000;
+    const hardCap = WHOLE_MAILBOX_SYNC_CAP;
     let position = 0;
 
     for (;;) {
@@ -2610,7 +2610,8 @@ class MailStore {
    * same patch -- atomic from the JMAP /set perspective.
    */
   async bulkArchive(ids: string[]): Promise<void> {
-    if (this.listWholeMailboxSelected) {
+    const wholeMailbox = this.listWholeMailboxSelected;
+    if (wholeMailbox) {
       ids = await this.fetchAllIds();
       if (ids.length === 0) { this.clearSelection(); return; }
     }
@@ -2625,24 +2626,31 @@ class MailStore {
       });
       return;
     }
-    ids = expandToThreadIds(ids, this.threads, this.emails);
+    // In whole-mailbox mode fetchAllIds already returns every ID in the
+    // folder; thread expansion is redundant and can pull in siblings from
+    // other mailboxes that would then be incorrect for the inbox-only patch.
+    if (!wholeMailbox) {
+      ids = expandToThreadIds(ids, this.threads, this.emails);
+    }
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
       const e = this.emails.get(id);
-      if (!e) continue;
-      if (!e.mailboxIds[inbox.id]) continue;
-      prevById.set(id, { ...e.mailboxIds });
-      // RFC 8621 §4.2: at least one mailbox membership must remain.
-      // Patch both keys in one /set update so the server sees a
-      // valid post-patch membership set in a single atomic apply.
+      if (e) {
+        // Cached: filter to inbox-members only and apply optimistic UI patch.
+        if (!e.mailboxIds[inbox.id]) continue;
+        prevById.set(id, { ...e.mailboxIds });
+        const next: Record<string, true> = { ...e.mailboxIds, [archive.id]: true };
+        delete next[inbox.id];
+        this.#patchEmail(id, { mailboxIds: next });
+      }
+      // Both cached (inbox-member) and uncached (fetchAllIds guarantees
+      // inbox membership in whole-mailbox mode): add to the JMAP payload.
+      // RFC 8621 §4.2: patch both keys atomically to avoid zero-mailbox state.
       updates[id] = {
         [`mailboxIds/${inbox.id}`]: null,
         [`mailboxIds/${archive.id}`]: true,
       };
-      const next: Record<string, true> = { ...e.mailboxIds, [archive.id]: true };
-      delete next[inbox.id];
-      this.#patchEmail(id, { mailboxIds: next });
     }
     if (Object.keys(updates).length === 0) return;
     if (this.listFolder === 'inbox') {
@@ -2738,23 +2746,31 @@ class MailStore {
 
   /** Bulk delete: replace every id's mailboxIds with `{<trashId>: true}`. */
   async bulkDelete(ids: string[]): Promise<void> {
-    if (this.listWholeMailboxSelected) {
+    const wholeMailbox = this.listWholeMailboxSelected;
+    if (wholeMailbox) {
       ids = await this.fetchAllIds();
       if (ids.length === 0) { this.clearSelection(); return; }
     }
     const trash = this.trash;
     if (!trash || ids.length === 0) return;
     // Thread-scoped per REQ-MAIL-52: delete every email in the thread.
-    ids = expandToThreadIds(ids, this.threads, this.emails);
+    // Skip in whole-mailbox mode — fetchAllIds already covers all folder IDs.
+    if (!wholeMailbox) {
+      ids = expandToThreadIds(ids, this.threads, this.emails);
+    }
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
       const e = this.emails.get(id);
-      if (!e) continue;
-      if (e.mailboxIds[trash.id] && Object.keys(e.mailboxIds).length === 1) continue;
-      prevById.set(id, { ...e.mailboxIds });
+      if (e) {
+        // Cached: skip if already in trash-only (nothing to do).
+        if (e.mailboxIds[trash.id] && Object.keys(e.mailboxIds).length === 1) continue;
+        prevById.set(id, { ...e.mailboxIds });
+        this.#patchEmail(id, { mailboxIds: { [trash.id]: true } });
+      }
+      // Both cached (not already trash-only) and uncached (fetchAllIds
+      // guarantees they are in the current non-trash folder): add to payload.
       updates[id] = { mailboxIds: { [trash.id]: true } };
-      this.#patchEmail(id, { mailboxIds: { [trash.id]: true } });
     }
     if (Object.keys(updates).length === 0) return;
     if (this.listFolder !== 'trash') {
@@ -2857,15 +2873,19 @@ class MailStore {
     const prevById = new Map<string, Record<string, true | undefined>>();
     for (const id of ids) {
       const e = this.emails.get(id);
-      if (!e) continue;
-      const wasSeen = Boolean(e.keywords.$seen);
-      if (wasSeen === seen) continue;
-      prevById.set(id, { ...e.keywords });
+      if (e) {
+        // Cached: skip if already in the desired seen state; optimistic patch.
+        const wasSeen = Boolean(e.keywords.$seen);
+        if (wasSeen === seen) continue;
+        prevById.set(id, { ...e.keywords });
+        const nextKeywords: Record<string, true | undefined> = { ...e.keywords };
+        if (seen) nextKeywords.$seen = true;
+        else delete nextKeywords.$seen;
+        this.#patchEmail(id, { keywords: nextKeywords });
+      }
+      // Both cached (seen-state differs) and uncached (cannot check; the
+      // server update is idempotent): add to the JMAP payload.
       updates[id] = { 'keywords/$seen': seen ? true : null };
-      const nextKeywords: Record<string, true | undefined> = { ...e.keywords };
-      if (seen) nextKeywords.$seen = true;
-      else delete nextKeywords.$seen;
-      this.#patchEmail(id, { keywords: nextKeywords });
     }
     if (Object.keys(updates).length === 0) return;
     this.clearSelection();
@@ -2922,29 +2942,43 @@ class MailStore {
   /** Bulk move: replace every id's mailboxIds with `{[targetId]: true}`.
    * Thread-scoped per REQ-MAIL-54: a thread move relocates every email
    * in the thread (including replies and the original message), not just
-   * the one whose row the user dragged or right-clicked. */
+   * the one whose row the user dragged or right-clicked.
+   *
+   * In whole-mailbox mode (issue #149) the caller (MailView.bulkMove) has
+   * already pre-fetched all IDs via fetchAllIds, so thread expansion is
+   * redundant. The flag is checked via listWholeMailboxSelected so uncached
+   * IDs are still included in the JMAP payload. */
   async bulkMoveToMailbox(ids: string[], targetId: string): Promise<void> {
     if (ids.length === 0) return;
-    // Fetch thread membership for any threads not already in the cache so
-    // expandToThreadIds can expand to all emails in the thread (re #52).
-    const threadIds = [
-      ...new Set(
-        ids
-          .map((id) => this.emails.get(id)?.threadId)
-          .filter((tid): tid is string => tid !== undefined),
-      ),
-    ];
-    await this.#ensureThreadsCached(threadIds);
-    ids = expandToThreadIds(ids, this.threads, this.emails);
+    // In whole-mailbox mode: ids already contain every folder email, skip
+    // thread expansion. In per-page mode: fetch thread membership for any
+    // threads not in the cache so expandToThreadIds covers all thread emails.
+    if (!this.listWholeMailboxSelected) {
+      const threadIds = [
+        ...new Set(
+          ids
+            .map((id) => this.emails.get(id)?.threadId)
+            .filter((tid): tid is string => tid !== undefined),
+        ),
+      ];
+      await this.#ensureThreadsCached(threadIds);
+      ids = expandToThreadIds(ids, this.threads, this.emails);
+    }
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
     for (const id of ids) {
       const e = this.emails.get(id);
-      if (!e) continue;
-      if (e.mailboxIds[targetId] && Object.keys(e.mailboxIds).length === 1) continue;
-      prevById.set(id, { ...e.mailboxIds });
-      updates[id] = { mailboxIds: { [targetId]: true } };
-      this.#patchEmail(id, { mailboxIds: { [targetId]: true } });
+      if (e) {
+        // Cached: skip if already in target-only (nothing to do); optimistic patch.
+        if (e.mailboxIds[targetId] && Object.keys(e.mailboxIds).length === 1) continue;
+        prevById.set(id, { ...e.mailboxIds });
+        updates[id] = { mailboxIds: { [targetId]: true } };
+        this.#patchEmail(id, { mailboxIds: { [targetId]: true } });
+      } else {
+        // Uncached (whole-mailbox mode only): add to JMAP payload without
+        // local-state checks — fetchAllIds guarantees the ID is in the folder.
+        updates[id] = { mailboxIds: { [targetId]: true } };
+      }
     }
     if (Object.keys(updates).length === 0) return;
     const prevListIds = [...this.listEmailIds];
@@ -4181,6 +4215,14 @@ export const mail = new MailStore();
 // Reset all mail state when the active account changes so a freshly-
 // signed-in user always sees their own data, not the previous account's.
 registerAccountResetCallback(() => mail.reset());
+
+/**
+ * Maximum number of IDs the synchronous whole-mailbox bulk path can handle
+ * (issue #149). Exported so MailView can gate the banner offer and avoid
+ * showing "Select all M messages" for mailboxes where the bulk action cannot
+ * deliver. Background-job dispatch for larger mailboxes is deferred.
+ */
+export const WHOLE_MAILBOX_SYNC_CAP = 5000;
 
 /**
  * Derive the total thread count for a given folder from the already-cached

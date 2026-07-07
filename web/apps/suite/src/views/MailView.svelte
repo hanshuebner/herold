@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { router } from '../lib/router/router.svelte';
-  import { mail, type FolderID } from '../lib/mail/store.svelte';
+  import { mail, WHOLE_MAILBOX_SYNC_CAP, type FolderID } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
   import { confirm } from '../lib/dialog/confirm.svelte';
@@ -1076,11 +1076,13 @@
 
     <!-- Whole-mailbox selection banner (issue #149). Shown below the toolbar
          as a dedicated row so it does not compete for space with the bulk
-         action buttons. Appears when all visible rows are selected and the
-         folder contains more messages than the loaded 50-row window. -->
+         action buttons. Offer state: appears when all visible rows are
+         selected and the folder contains more messages than the 50-row window
+         AND within the synchronous cap (WHOLE_MAILBOX_SYNC_CAP). Active state:
+         appears while whole-mailbox mode is engaged. -->
     {#if mail.listSelectedIds.size > 0 && mail.listFolderTotal !== null && mail.listEmails.length > 0}
       {@const folderTotal = mail.listFolderTotal}
-      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length}
+      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length && folderTotal <= WHOLE_MAILBOX_SYNC_CAP}
         <div class="whole-mailbox-banner" role="status" aria-live="polite">
           <span class="banner-text">
             {t('select.allPageSelected', { count: String(mail.listEmails.length) })}
