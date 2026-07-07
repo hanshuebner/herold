@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectReplyIdentity, _internals_forTest } from './reply-identity';
+import { selectReplyIdentity, deliveryAliasForCc, _internals_forTest } from './reply-identity';
 import type { Email, Identity } from '../mail/types';
 
 const { isVerified } = _internals_forTest;
@@ -253,5 +253,58 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     const parent = makeEmail();
     const got = selectReplyIdentity(parent, [ALICE], DEFAULT_ID);
     expect(got).toBe(DEFAULT_ID);
+  });
+});
+
+// ── deliveryAliasForCc ──────────────────────────────────────────────────
+
+describe('deliveryAliasForCc', () => {
+  it('returns the delivery address when X-Herold-Recipient does not match any identity', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alias@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alias@example.local',
+    });
+    const alias = deliveryAliasForCc(parent, [ALICE, BOB]);
+    expect(alias).toBe('alias@example.local');
+  });
+
+  it('returns null when X-Herold-Recipient matches a registered identity', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alice@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alice@example.local',
+    });
+    const alias = deliveryAliasForCc(parent, [ALICE, BOB]);
+    expect(alias).toBeNull();
+  });
+
+  it('returns null when X-Herold-Recipient is absent (outbound, REQ-FLOW-35)', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alice@example.local' }],
+    });
+    const alias = deliveryAliasForCc(parent, [ALICE, BOB]);
+    expect(alias).toBeNull();
+  });
+
+  it('matches X-Herold-Recipient case-insensitively against registered identities', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      'header:X-Herold-Recipient:asText': 'Alice@Example.Local',
+    });
+    // Upper-cased header matches alice@example.local — no alias CC needed.
+    const alias = deliveryAliasForCc(parent, [ALICE]);
+    expect(alias).toBeNull();
+  });
+
+  it('returns the normalised (lower-cased) alias when no identity matches', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      'header:X-Herold-Recipient:asText': 'Alias@Example.Local',
+    });
+    const alias = deliveryAliasForCc(parent, [ALICE, BOB]);
+    // readHeraldRecipient lower-cases and trims the value.
+    expect(alias).toBe('alias@example.local');
   });
 });

@@ -46,7 +46,7 @@ import {
   type Recipient,
 } from './recipient-parse';
 import { buildSelfEmailSet, isFromSelf } from '../mail/identity-match';
-import { selectReplyIdentity } from './reply-identity';
+import { selectReplyIdentity, deliveryAliasForCc } from './reply-identity';
 import {
   createFileShare,
   destroyFileShares,
@@ -414,8 +414,17 @@ class ComposeStore {
     const to = ownMessage
       ? (parent.to ?? []).map(addressToString).join(', ')
       : addressToString(parent.from?.[0]);
+    // When the delivery address (X-Herold-Recipient) is an alias or
+    // forwarding target that does not correspond to any registered
+    // Identity, add it to CC so the correspondent continues to see the
+    // address the original message reached. Outbound messages carry no
+    // X-Herold-Recipient (REQ-FLOW-35), so deliveryAliasForCc returns
+    // null for ownMessage paths automatically.
+    const identities = Array.from(mail.identities.values());
+    const deliveryAlias = deliveryAliasForCc(parent, identities);
     this.openWith({
       to,
+      cc: deliveryAlias ?? undefined,
       subject: replySubject(parent.subject),
       body: formatReplyQuote(parent),
       replyContext: {
@@ -452,6 +461,21 @@ class ComposeStore {
     } else {
       to = addressToString(parent.from?.[0]);
       cc = computeReplyAllCc(parent, selfEmails);
+    }
+    // When the delivery address (X-Herold-Recipient) is an alias or
+    // forwarding target not matching any registered Identity, prepend it
+    // to CC — unless it is already present from the parent's To/Cc scan
+    // above. Outbound messages carry no X-Herold-Recipient (REQ-FLOW-35),
+    // so this is a no-op for ownMessage paths.
+    const identities = Array.from(mail.identities.values());
+    const deliveryAlias = deliveryAliasForCc(parent, identities);
+    if (deliveryAlias) {
+      const alreadyInCc = cc.some(
+        (a) => (a.email ?? '').toLowerCase() === deliveryAlias,
+      );
+      if (!alreadyInCc) {
+        cc = [{ name: null, email: deliveryAlias }, ...cc];
+      }
     }
     this.openWith({
       to,

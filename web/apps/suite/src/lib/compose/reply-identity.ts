@@ -169,6 +169,32 @@ export function selectReplyIdentity(
 }
 
 /**
+ * Return the X-Herold-Recipient address from `parent` when it is present
+ * and does NOT match any registered Identity. That address is an alias or
+ * forwarding target the user does not have as a first-class identity;
+ * callers (openReply / openReplyAll in compose.svelte.ts) should add it to
+ * the reply's CC so the thread retains the routing address the original
+ * message reached (addresses the scenario in REQ-FLOW-34 where the RCPT TO
+ * envelope target differs from the user's registered identities).
+ *
+ * Returns null when:
+ *   - the header is absent or empty — including outbound messages, which
+ *     carry no X-Herold-Recipient per REQ-FLOW-35.
+ *   - the delivery address matches a registered Identity by email (case-
+ *     insensitive, same normalisation as `selectReplyIdentity`).
+ */
+export function deliveryAliasForCc(
+  parent: Email,
+  identities: readonly Identity[],
+): string | null {
+  const recipient = readHeraldRecipient(parent);
+  if (!recipient) return null;
+  const byEmail = identitiesByEmail(identities);
+  if (byEmail.has(recipient)) return null;
+  return recipient;
+}
+
+/**
  * Test seam: re-export the predicates so the test file can exercise
  * the verified gate without re-implementing it. Not part of the
  * stable public surface.
