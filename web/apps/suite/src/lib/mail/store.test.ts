@@ -359,3 +359,66 @@ describe('emailHtmlBody / emailTextBody (re #44)', () => {
     expect(emailHtmlBody(email as Email)).toBeNull();
   });
 });
+
+// ── folderTotalFromMailboxes (issue #149) ─────────────────────────────────────
+
+import { folderTotalFromMailboxes } from './store.svelte';
+import type { Mailbox } from './types';
+
+function makeMailbox(overrides: Partial<Mailbox> & Pick<Mailbox, 'id' | 'name' | 'role'>): Mailbox {
+  return {
+    parentId: null,
+    sortOrder: 0,
+    totalEmails: 0,
+    unreadEmails: 0,
+    totalThreads: 0,
+    unreadThreads: 0,
+    ...overrides,
+  };
+}
+
+describe('folderTotalFromMailboxes (issue #149)', () => {
+  it('returns null for the "all" virtual folder', () => {
+    expect(folderTotalFromMailboxes('all', new Map())).toBeNull();
+  });
+
+  it('returns null for the "important" virtual folder', () => {
+    expect(folderTotalFromMailboxes('important', new Map())).toBeNull();
+  });
+
+  it('returns null for the "snoozed" virtual folder', () => {
+    expect(folderTotalFromMailboxes('snoozed', new Map())).toBeNull();
+  });
+
+  it('returns totalThreads for a role-based folder', () => {
+    const mailboxes = new Map([
+      ['mb1', makeMailbox({ id: 'mb1', name: 'Inbox', role: 'inbox', totalThreads: 47 })],
+    ]);
+    expect(folderTotalFromMailboxes('inbox', mailboxes)).toBe(47);
+  });
+
+  it('returns totalThreads for the trash folder', () => {
+    const mailboxes = new Map([
+      ['mb2', makeMailbox({ id: 'mb2', name: 'Papierkorb', role: 'trash', totalThreads: 3 })],
+    ]);
+    expect(folderTotalFromMailboxes('trash', mailboxes)).toBe(3);
+  });
+
+  it('returns totalThreads for a custom mailbox looked up by id', () => {
+    const mailboxes = new Map([
+      ['custom-id', makeMailbox({ id: 'custom-id', name: 'Work', role: null, totalThreads: 12 })],
+    ]);
+    expect(folderTotalFromMailboxes('custom-id', mailboxes)).toBe(12);
+  });
+
+  it('returns null when the role-based mailbox is absent', () => {
+    expect(folderTotalFromMailboxes('inbox', new Map())).toBeNull();
+  });
+
+  it('returns null for an unknown custom mailbox id', () => {
+    const mailboxes = new Map([
+      ['other-id', makeMailbox({ id: 'other-id', name: 'Other', role: null, totalThreads: 5 })],
+    ]);
+    expect(folderTotalFromMailboxes('unknown-id', mailboxes)).toBeNull();
+  });
+});

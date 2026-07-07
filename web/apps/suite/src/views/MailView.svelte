@@ -654,9 +654,15 @@
   function bulkMarkUnread(): void {
     void mail.bulkSetSeen(selectedIds(), false);
   }
-  function bulkMove(): void {
-    const ids = selectedIds();
-    if (ids.length === 0) return;
+  async function bulkMove(): Promise<void> {
+    let ids: string[];
+    if (mail.listWholeMailboxSelected) {
+      ids = await mail.fetchAllIds();
+      if (ids.length === 0) return;
+    } else {
+      ids = selectedIds();
+      if (ids.length === 0) return;
+    }
     movePicker.openBulk(ids);
   }
 
@@ -983,7 +989,11 @@
       {/if}
       {#if mail.listSelectedIds.size > 0}
         <span class="bulk-count">
-          {t('bulk.selected', { count: mail.listSelectedIds.size })}
+          {t('bulk.selected', {
+            count: mail.listWholeMailboxSelected && mail.listFolderTotal !== null
+              ? mail.listFolderTotal
+              : mail.listSelectedIds.size,
+          })}
         </span>
         {#if folder === 'inbox'}
           <button
@@ -1063,6 +1073,41 @@
         ↻
       </button>
     </div>
+
+    <!-- Whole-mailbox selection banner (issue #149). Shown below the toolbar
+         as a dedicated row so it does not compete for space with the bulk
+         action buttons. Appears when all visible rows are selected and the
+         folder contains more messages than the loaded 50-row window. -->
+    {#if mail.listSelectedIds.size > 0 && mail.listFolderTotal !== null && mail.listEmails.length > 0}
+      {@const folderTotal = mail.listFolderTotal}
+      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length}
+        <div class="whole-mailbox-banner" role="status" aria-live="polite">
+          <span class="banner-text">
+            {t('select.allPageSelected', { count: String(mail.listEmails.length) })}
+          </span>
+          <button
+            type="button"
+            class="banner-btn"
+            onclick={() => mail.selectWholeMailbox()}
+          >
+            {t('select.selectAllInFolder', { total: String(folderTotal) })}
+          </button>
+        </div>
+      {:else if mail.listWholeMailboxSelected}
+        <div class="whole-mailbox-banner whole-mailbox-banner--active" role="status" aria-live="polite">
+          <span class="banner-text">
+            {t('select.wholeMailboxActive', { total: String(folderTotal) })}
+          </span>
+          <button
+            type="button"
+            class="banner-btn banner-btn--secondary"
+            onclick={() => mail.selectAllVisible()}
+          >
+            {t('select.clearWholeMailbox')}
+          </button>
+        </div>
+      {/if}
+    {/if}
 
     {#if showTabs}
       <nav class="tab-strip" aria-label={t('mail.list.tabsAria')}>
@@ -1595,6 +1640,46 @@
   }
   .list-toolbar-spacer {
     flex: 1;
+  }
+
+  /* Whole-mailbox selection banner (issue #149) */
+  .whole-mailbox-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-05);
+    background: var(--layer-01);
+    border-bottom: 1px solid var(--border-subtle-02);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+  .whole-mailbox-banner--active {
+    background: var(--layer-03);
+  }
+  .banner-text {
+    flex: 1;
+  }
+  .banner-btn {
+    white-space: nowrap;
+    color: var(--interactive);
+    background: transparent;
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    padding: var(--spacing-01) var(--spacing-02);
+    border-radius: var(--radius-sm);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .banner-btn:hover {
+    background: var(--layer-02);
+    color: var(--interactive-hover);
+    text-decoration: underline;
+  }
+  .banner-btn--secondary {
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+  .banner-btn--secondary:hover {
+    color: var(--text-primary);
   }
   .bulk-count {
     color: var(--text-primary);

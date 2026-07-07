@@ -125,6 +125,15 @@ class MailStore {
   listFocusedIndex = $state<number>(-1);
   /** Bulk-selected email ids in the current list view. Cleared on folder switch. */
   listSelectedIds = $state(new Set<string>());
+  /**
+   * True while the user has accepted the "select all M messages in this folder"
+   * offer from the SelectChooser banner (issue #149). While true, bulk actions
+   * fetch the full server-side result set via paginated `Email/query` before
+   * applying their mutation, rather than operating only on the 50-row loaded
+   * window. Cleared by `clearSelection`, `selectAllVisible`, `selectVisibleWhere`,
+   * `toggleSelectAllVisible`, and folder navigation.
+   */
+  listWholeMailboxSelected = $state(false);
 
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
@@ -224,6 +233,7 @@ class MailStore {
     this.listError = null;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
+    this.listWholeMailboxSelected = false;
     this.threadLoadStatus = new Map();
     this.threadLoadError = new Map();
     this.openThreadId = null;
@@ -684,6 +694,37 @@ class MailStore {
     if (wellKnown) return wellKnown;
     // Custom mailbox: render its name.
     return this.mailboxes.get(this.listFolder)?.name ?? 'Mailbox';
+  }
+
+  /**
+   * Total thread count for the folder currently held in the list slice, drawn
+   * from the already-cached `Mailbox.totalThreads` value. Returns null for
+   * virtual folders (`all`, `important`, `snoozed`) whose message set spans
+   * multiple mailboxes — those would need a separate `calculateTotal` round-trip
+   * that is not performed here to keep the folder-load fast.
+   *
+   * Used by the SelectChooser whole-mailbox-selection banner (issue #149).
+   */
+  get listFolderTotal(): number | null {
+    // Delegates to the exported pure helper so the same logic is unit-testable.
+    return folderTotalFromMailboxes(this.listFolder, this.mailboxes);
+  }
+
+  /**
+   * Resolved JMAP mailbox ID for the folder currently held in the list slice.
+   * Returns null for virtual folders (`all`, `important`, `snoozed`).
+   * Used by the whole-mailbox selection path (issue #149) to build the
+   * `inMailbox` filter for paginated `Email/query`.
+   */
+  get listMailboxId(): string | null {
+    const folder = this.listFolder;
+    if (folder === 'all' || folder === 'important' || folder === 'snoozed') return null;
+    if (ROLED_FOLDERS.has(folder)) {
+      const role = FOLDER_ROLE[folder] ?? folder;
+      return this.#mailboxByRole(role)?.id ?? null;
+    }
+    if (this.mailboxes.has(folder)) return folder;
+    return null;
   }
 
   /** Resolved search-result emails in result order. */
@@ -1499,6 +1540,7 @@ class MailStore {
     this.listFolder = folder;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
+    this.listWholeMailboxSelected = false;
     this.listLoadStatus = 'loading';
     this.listError = null;
     try {
@@ -2389,6 +2431,7 @@ class MailStore {
 
   /** Replace the selection with every id currently visible in the list. */
   selectAllVisible(): void {
+    this.listWholeMailboxSelected = false;
     this.listSelectedIds = new Set(this.listEmailIds);
   }
 
@@ -2398,6 +2441,7 @@ class MailStore {
    * otherwise select all of them.
    */
   toggleSelectAllVisible(visibleIds: string[]): void {
+    this.listWholeMailboxSelected = false;
     if (allVisibleSelected(visibleIds, this.listSelectedIds)) {
       this.listSelectedIds = new Set();
     } else {
@@ -2405,10 +2449,11 @@ class MailStore {
     }
   }
 
-  /** Clear the bulk selection set. */
+  /** Clear the bulk selection set and the whole-mailbox selection flag. */
   clearSelection(): void {
-    if (this.listSelectedIds.size === 0) return;
+    if (this.listSelectedIds.size === 0 && !this.listWholeMailboxSelected) return;
     this.listSelectedIds = new Set();
+    this.listWholeMailboxSelected = false;
   }
 
   /**
@@ -2417,11 +2462,110 @@ class MailStore {
    * Unstarred entries (REQ-MAIL-LIST-SELECT, issue #10).
    */
   selectVisibleWhere(predicate: (email: Email) => boolean): void {
+    this.listWholeMailboxSelected = false;
     const next = new Set<string>();
     for (const e of this.listEmails) {
       if (predicate(e)) next.add(e.id);
     }
     this.listSelectedIds = next;
+  }
+
+  /**
+   * Activate whole-mailbox selection mode (issue #149). The visible window
+   * remains selected in `listSelectedIds` so the UI shows checked rows;
+   * `listWholeMailboxSelected` signals that bulk actions should fetch the
+   * full server-side result set rather than operating only on the 50 loaded
+   * IDs.
+   */
+  selectWholeMailbox(): void {
+    this.listWholeMailboxSelected = true;
+  }
+
+  /**
+   * Build the `Email/query filter` for the folder currently held in the
+   * list slice. Returns undefined for the `all` folder (no filter). Called
+   * by `fetchAllIds` to reconstruct the same filter that `loadFolder` uses.
+   */
+  #buildCurrentFolderFilter(): Record<string, unknown> | undefined {
+    const folder = this.listFolder;
+    if (folder === 'important') return { hasKeyword: '$important' };
+    if (folder === 'snoozed') return { hasKeyword: '$snoozed' };
+    if (folder === 'all') return undefined;
+    const mailboxId = this.listMailboxId;
+    if (mailboxId === null) return undefined;
+    return { inMailbox: mailboxId };
+  }
+
+  /**
+   * Fetch ALL email IDs for the current folder via paginated `Email/query`
+   * (issue #149). Used by bulk actions in whole-mailbox selection mode to
+   * expand the selection beyond the 50-row loaded window.
+   *
+   * A hard cap of 5 000 IDs applies for this synchronous path. Mailboxes
+   * larger than 5 000 threads require the background-job infrastructure
+   * (deferred per the issue's notes) and are refused here with a toast.
+   *
+   * Returns an empty array when the folder is virtual and lacks a mailbox
+   * ID (the whole-mailbox banner is not shown for those folders anyway).
+   */
+  async fetchAllIds(): Promise<string[]> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return [];
+    const filter = this.#buildCurrentFolderFilter();
+    const sortProperty: 'receivedAt' | 'sentAt' =
+      this.listFolder === 'sent' || this.listFolder === 'drafts' ? 'sentAt' : 'receivedAt';
+
+    const allIds: string[] = [];
+    const pageSize = 256;
+    const hardCap = 5000;
+    let position = 0;
+
+    for (;;) {
+      const remaining = hardCap - allIds.length;
+      if (remaining <= 0) break;
+      const limit = Math.min(pageSize, remaining + 1); // +1 to detect overflow
+      try {
+        const { responses } = await jmap.batch((b) => {
+          b.call(
+            'Email/query',
+            {
+              accountId,
+              ...(filter ? { filter } : {}),
+              sort: [{ property: sortProperty, isAscending: false }],
+              collapseThreads: true,
+              position,
+              limit,
+              calculateTotal: false,
+            },
+            [Capability.Mail],
+          );
+        });
+        strict(responses);
+        const result = invocationArgs<{ ids: string[] }>(responses[0]);
+        // If we asked for remaining+1 and got remaining+1, the mailbox is
+        // larger than the cap.
+        if (allIds.length + result.ids.length > hardCap) {
+          toast.show({
+            message: `Diese Aktion unterstützt bis zu ${hardCap} Nachrichten. Für sehr große Postfächer ist ein Hintergrundjob erforderlich, der noch nicht implementiert ist.`,
+            kind: 'error',
+            timeoutMs: 8000,
+          });
+          return [];
+        }
+        allIds.push(...result.ids);
+        if (result.ids.length < limit) break;
+        position += result.ids.length;
+      } catch (err) {
+        console.error('fetchAllIds failed', err);
+        toast.show({
+          message: errMessage(err, 'Alle IDs konnten nicht abgerufen werden'),
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+        return [];
+      }
+    }
+    return allIds;
   }
 
   /**
@@ -2466,6 +2610,10 @@ class MailStore {
    * same patch -- atomic from the JMAP /set perspective.
    */
   async bulkArchive(ids: string[]): Promise<void> {
+    if (this.listWholeMailboxSelected) {
+      ids = await this.fetchAllIds();
+      if (ids.length === 0) { this.clearSelection(); return; }
+    }
     const inbox = this.inbox;
     const archive = this.archive;
     if (!inbox || ids.length === 0) return;
@@ -2522,6 +2670,10 @@ class MailStore {
    * Use only after the user confirms; there is no undo. Issue #29.
    */
   async bulkDestroy(ids: string[]): Promise<void> {
+    if (this.listWholeMailboxSelected) {
+      ids = await this.fetchAllIds();
+      if (ids.length === 0) { this.clearSelection(); return; }
+    }
     if (ids.length === 0) return;
     const accountId = this.mailAccountId;
     if (!accountId) return;
@@ -2586,6 +2738,10 @@ class MailStore {
 
   /** Bulk delete: replace every id's mailboxIds with `{<trashId>: true}`. */
   async bulkDelete(ids: string[]): Promise<void> {
+    if (this.listWholeMailboxSelected) {
+      ids = await this.fetchAllIds();
+      if (ids.length === 0) { this.clearSelection(); return; }
+    }
     const trash = this.trash;
     if (!trash || ids.length === 0) return;
     // Thread-scoped per REQ-MAIL-52: delete every email in the thread.
@@ -2692,6 +2848,10 @@ class MailStore {
 
   /** Bulk mark-read / mark-unread: set $seen on every id. */
   async bulkSetSeen(ids: string[], seen: boolean): Promise<void> {
+    if (this.listWholeMailboxSelected) {
+      ids = await this.fetchAllIds();
+      if (ids.length === 0) { this.clearSelection(); return; }
+    }
     if (ids.length === 0) return;
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true | undefined>>();
@@ -4021,6 +4181,28 @@ export const mail = new MailStore();
 // Reset all mail state when the active account changes so a freshly-
 // signed-in user always sees their own data, not the previous account's.
 registerAccountResetCallback(() => mail.reset());
+
+/**
+ * Derive the total thread count for a given folder from the already-cached
+ * mailboxes map. Returns null for virtual folders (`all`, `important`,
+ * `snoozed`) or when the mailbox is not found.
+ *
+ * Exported for unit testing (issue #149).
+ */
+export function folderTotalFromMailboxes(
+  folder: FolderID,
+  mailboxes: ReadonlyMap<string, Mailbox>,
+): number | null {
+  if (folder === 'all' || folder === 'important' || folder === 'snoozed') return null;
+  if (ROLED_FOLDERS.has(folder)) {
+    const role = FOLDER_ROLE[folder] ?? folder;
+    for (const m of mailboxes.values()) {
+      if (m.role === role) return m.totalThreads;
+    }
+    return null;
+  }
+  return mailboxes.get(folder)?.totalThreads ?? null;
+}
 
 /** Exported purely for unit tests; not part of the public surface. */
 export const _internals_forTest = {

@@ -189,6 +189,11 @@ export const de = {
   'select.clearSelection': 'Auswahl löschen',
   'select.selectAll': 'Alle auswählen',
   'select.options': 'Auswahloptionen',
+  // Whole-mailbox selection banner (issue #149)
+  'select.allPageSelected': 'Alle {count} Nachrichten auf dieser Seite sind ausgewählt.',
+  'select.selectAllInFolder': 'Alle {total} Nachrichten in diesem Ordner auswählen',
+  'select.wholeMailboxActive': 'Alle {total} Nachrichten in diesem Ordner sind ausgewählt.',
+  'select.clearWholeMailbox': 'Nur diese Seite auswählen',
 
   // ── Bulk actions ────────────────────────────────────────────────────
   'bulk.selected': '{count} ausgewählt',

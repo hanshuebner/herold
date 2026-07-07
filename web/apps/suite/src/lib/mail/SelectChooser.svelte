@@ -9,6 +9,10 @@
   // square button toggles between "all visible selected" and "none
   // selected"; the chevron opens a menu with the same options spelled
   // out plus Read/Unread/Starred/Unstarred filters (issue #10).
+  //
+  // The whole-mailbox-selection banner is rendered by MailView (the
+  // parent) so it can occupy a dedicated row below the toolbar rather
+  // than competing for horizontal space with the bulk-action buttons.
 
   let menuOpen = $state(false);
   let rootEl = $state<HTMLElement | null>(null);
@@ -73,14 +77,14 @@
       : someSelected
         ? t('select.clearSelection')
         : t('select.selectAll')}
-    aria-pressed={allSelected}
+    aria-pressed={allSelected || mail.listWholeMailboxSelected}
     title={allSelected ? t('select.deselectAll') : t('select.selectAll')}
     onclick={toggleAll}
   >
     <CheckSquareIcon
       size={18}
-      checked={allSelected}
-      indeterminate={someSelected}
+      checked={allSelected || mail.listWholeMailboxSelected}
+      indeterminate={someSelected && !mail.listWholeMailboxSelected}
     />
   </button>
   <button
