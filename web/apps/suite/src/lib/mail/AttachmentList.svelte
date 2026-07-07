@@ -258,7 +258,7 @@
           disabled={downloading}
           onclick={() => void downloadAll(true)}
         >
-          {t('att.downloadAll', { count: totalCount })}
+          {t('att.downloadAll', { count: attachParts.length })}
         </button>
         {#if inlineParts.length > 0 && attachParts.length > 0}
           <button

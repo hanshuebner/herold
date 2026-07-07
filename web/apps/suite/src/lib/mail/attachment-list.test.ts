@@ -287,14 +287,15 @@ describe('AttachmentList: Download all bulk action', () => {
     expect(screen.queryByText(/Download all/i)).toBeNull();
   });
 
-  it('shows "Download all (N)" counting both attachments and inline parts', () => {
+  it('shows "Download all (N)" counting only visible (non-inline) attachments', () => {
     const email = makeEmail([
       { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
       { disposition: 'attachment', name: 'data.csv', type: 'text/csv' },
       { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
     ]);
     render(AttachmentList, { email });
-    expect(screen.getByText('Download all (3)')).toBeInTheDocument();
+    // Header shows 2 tiles; button must match: "Download all (2)", not (3).
+    expect(screen.getByText('Download all (2)')).toBeInTheDocument();
   });
 
   it('shows "Attachments only" secondary action when both kinds are present', () => {
