@@ -332,18 +332,22 @@ describe('ComposeWindow send-button gating (REQ-MAIL-12)', () => {
     expect(container.querySelector('[data-testid="from-static"]')).toBeNull();
   });
 
-  it('renders the static From text when only one identity exists', async () => {
+  it('renders the From picker even when only one identity exists (REQ-MAIL-12)', async () => {
+    // Single-identity users must be able to confirm and change their
+    // From address; the picker is shown unconditionally when at least
+    // one identity is present. Static text is reserved for the zero-
+    // identity loading state.
     mailMock.identities = new Map<string, Identity>([
       [DEFAULT_IDENTITY.id, DEFAULT_IDENTITY],
     ]);
     composeMock.selectedIdentity = DEFAULT_IDENTITY;
     const { container } = render(ComposeWindow);
     await tick();
-    expect(
-      container.querySelector('[data-testid="from-picker-trigger"]'),
-    ).toBeNull();
-    const staticEl = container.querySelector('[data-testid="from-static"]');
-    expect(staticEl).not.toBeNull();
-    expect(staticEl?.textContent).toMatch(/alice@example\.local/);
+    const trigger = container.querySelector(
+      '[data-testid="from-picker-trigger"]',
+    );
+    expect(trigger).not.toBeNull();
+    expect(container.querySelector('[data-testid="from-static"]')).toBeNull();
+    expect(trigger?.textContent).toMatch(/alice@example\.local/);
   });
 });

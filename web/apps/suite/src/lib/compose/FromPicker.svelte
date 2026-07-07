@@ -9,10 +9,10 @@
    * rows are visible-but-not-selectable and render an explanatory
    * tooltip + a state chip; a click on a disabled row is a no-op.
    *
-   * The picker is rendered only when there are >= 2 identities; the
-   * caller (`ComposeWindow.svelte`) handles the single-identity case
-   * with a static text display. This keeps the dropdown DOM out of
-   * the common single-identity compose entirely.
+   * The picker is rendered when at least one identity exists; the
+   * caller (`ComposeWindow.svelte`) only shows a static text display
+   * when there are no identities (loading/warmup state). This lets
+   * single-identity users confirm and change their From on every reply.
    *
    * The component is presentational: it does NOT subscribe to the
    * compose store directly. The parent passes `identity` + an

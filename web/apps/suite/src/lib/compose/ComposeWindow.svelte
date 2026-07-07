@@ -180,7 +180,9 @@
   );
 
   // Whether to render the dropdown or fall back to static text. The
-  // single-identity case keeps the row uncluttered per REQ-MAIL-12.
+  // picker renders whenever at least one identity is present; the
+  // static fallback only shows during the identity-cache warmup race
+  // before the first identity record arrives (REQ-MAIL-12).
   let showPicker = $derived(
     shouldShowFromPicker(identitiesList, submissionResolver),
   );

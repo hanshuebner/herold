@@ -215,8 +215,8 @@ describe('shouldShowFromPicker', () => {
     expect(shouldShowFromPicker([], noSub)).toBe(false);
   });
 
-  it('returns false with a single identity', () => {
-    expect(shouldShowFromPicker([a], noSub)).toBe(false);
+  it('returns true with a single identity (picker always visible per REQ-MAIL-12)', () => {
+    expect(shouldShowFromPicker([a], noSub)).toBe(true);
   });
 
   it('returns true with two identities even when one is unverified', () => {

@@ -167,16 +167,14 @@ export function composeFromSort(
 
 /**
  * Whether the picker should render at all (REQ-MAIL-12 visibility
- * gate): two or more identities the user could plausibly select — the
- * verified set plus the verifying set (which become selectable on
- * confirmation without a full re-render). Single-identity principals
- * see the From as static text rather than a dropdown.
+ * gate): at least one identity is present. The picker is always shown
+ * when the user has any identity so they can confirm and change the
+ * From address during a reply — even a single-identity user benefits
+ * from being able to see which identity is pre-selected.
  *
  * Unverified identities and external-without-submission identities
- * still count toward the rendering threshold because the spec says
- * they appear in the picker as disabled rows; hiding the picker
- * entirely when the only second identity is unverified would hide
- * the affordance to Verify it from compose, regressing v1's wiring.
+ * appear in the picker as disabled rows; the picker is still shown so
+ * the affordance to Verify them from compose is not hidden.
  *
  * `submissionResolver` is the same callback shape as composeFromSort.
  */
@@ -184,8 +182,8 @@ export function shouldShowFromPicker(
   identities: readonly Identity[],
   _submissionResolver: (id: string) => SubmissionSummary | null,
 ): boolean {
-  // Two identities or more — show the picker, even if only one of
-  // them is selectable. The disabled-row affordance lives in the
-  // dropdown body, not the closed display.
-  return identities.length >= 2;
+  // One identity or more — show the picker unconditionally. The
+  // static-text fallback in ComposeWindow only appears when there
+  // are no identities at all (loading / warmup race).
+  return identities.length >= 1;
 }
