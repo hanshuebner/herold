@@ -8,9 +8,10 @@
  * REQ-MAIL-23: image and PDF cards render a "View" affordance that opens
  * the shared Lightbox component (see lib/preview/Lightbox.svelte).
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import AttachmentList from './AttachmentList.svelte';
+import { zipBlobsAsDownload } from './download-zip';
 import type { Email, EmailBodyPart } from './types';
 
 // Stub auth so accountId is available.
@@ -281,8 +282,22 @@ describe('AttachmentList: View action (REQ-MAIL-23)', () => {
 });
 
 describe('AttachmentList: Download all bulk action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('shows no "Download all" when there is only one attachment', () => {
     const email = makeEmail([{ disposition: 'attachment', name: 'file.pdf', type: 'application/pdf' }]);
+    render(AttachmentList, { email });
+    expect(screen.queryByText(/Download all/i)).toBeNull();
+  });
+
+  it('shows no "Download all" when there is only one visible attachment plus inline parts', () => {
+    // 1 regular + 1 inline: the bulk bar should NOT appear since only 1 tile is visible.
+    const email = makeEmail([
+      { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
+      { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
+    ]);
     render(AttachmentList, { email });
     expect(screen.queryByText(/Download all/i)).toBeNull();
   });
@@ -298,22 +313,40 @@ describe('AttachmentList: Download all bulk action', () => {
     expect(screen.getByText('Download all (2)')).toBeInTheDocument();
   });
 
-  it('shows "Attachments only" secondary action when both kinds are present', () => {
+  it('does NOT show an "Attachments only" secondary button', () => {
+    // The secondary button was removed: "Download all" is already attachments-only.
     const email = makeEmail([
       { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf' },
+      { disposition: 'attachment', name: 'data.csv', type: 'text/csv' },
       { disposition: 'inline', name: 'photo.png', cid: 'img1@h.test', type: 'image/png' },
     ]);
     render(AttachmentList, { email });
-    expect(screen.getByText('Attachments only')).toBeInTheDocument();
+    expect(screen.queryByText('Attachments only')).toBeNull();
   });
 
-  it('does NOT show "Attachments only" when there are no inline images', () => {
+  it('clicking "Download all" zips exactly the visible attachments — inline parts excluded', async () => {
+    // Regression guard: the download set must equal the label count (N), not N+inline.
     const email = makeEmail([
-      { disposition: 'attachment', name: 'a.pdf', type: 'application/pdf' },
-      { disposition: 'attachment', name: 'b.pdf', type: 'application/pdf' },
+      { disposition: 'attachment', name: 'doc.pdf', type: 'application/pdf', blobId: 'b0' },
+      { disposition: 'attachment', name: 'data.csv', type: 'text/csv', blobId: 'b1' },
+      { disposition: 'inline', name: 'logo.png', cid: 'logo@test', type: 'image/png', blobId: 'b2' },
     ]);
     render(AttachmentList, { email });
-    expect(screen.queryByText('Attachments only')).toBeNull();
+
+    const btn = screen.getByText('Download all (2)');
+    await fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(zipBlobsAsDownload).toHaveBeenCalledOnce();
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const [parts] = vi.mocked(zipBlobsAsDownload).mock.calls[0]!;
+    // Exactly 2 entries — the 2 regular attachments.
+    expect(parts).toHaveLength(2);
+    // The inline blob (b2) must NOT appear in the zip manifest.
+    const urls = (parts as Array<{ url: string }>).map((p) => p.url);
+    expect(urls.some((u) => u.includes('b2'))).toBe(false);
   });
 
   it('renders nothing when email has no attachments', () => {

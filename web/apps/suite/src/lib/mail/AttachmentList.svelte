@@ -45,22 +45,6 @@
     allParts.filter((p) => p.disposition !== 'inline'),
   );
 
-  /**
-   * Inline image parts: disposition=inline with a cid. These belong to the
-   * rendered body (HtmlBody resolves them via the cidMap and shows them
-   * inline). REQ-MAIL-21: inline images must not appear in the attachment
-   * list at all — even when cid resolution failed at render time, the user
-   * intent is "this is part of the body" and a duplicate chip is a worse
-   * answer than an inline broken-image icon. The "inlineParts" channel
-   * still exists for the bulk-download "Download all" action so the user
-   * can grab the original bytes; it is no longer rendered as a card.
-   */
-  let inlineParts = $derived(
-    allParts.filter((p) => p.disposition === 'inline'),
-  );
-
-  let totalCount = $derived(attachParts.length + inlineParts.length);
-
   let downloading = $state(false);
 
   function urlFor(part: EmailBodyPart): string | null {
@@ -126,13 +110,12 @@
     lightbox = null;
   }
 
-  /** Derive a safe filename for a part that has no name field. */
-  function fallbackName(part: EmailBodyPart, index: number): string {
-    const ext = part.type.split('/')[1] ?? 'bin';
-    return `inline-${index + 1}.${ext}`;
-  }
-
-  async function downloadAll(includeInline: boolean): Promise<void> {
+  /**
+   * Zip and download every visible attachment (attachParts only).
+   * REQ-MAIL-21: inline body parts are excluded — they render in the HTML
+   * body and are not user-visible as discrete attachments.
+   */
+  async function downloadAll(): Promise<void> {
     if (!accountId || downloading) return;
     const subject = email.subject ?? 'attachments';
     const parts: { url: string; zipPath: string }[] = [];
@@ -141,15 +124,6 @@
       const url = urlFor(p);
       if (!url) continue;
       parts.push({ url, zipPath: p.name ?? 'attachment' });
-    }
-
-    if (includeInline) {
-      inlineParts.forEach((p, i) => {
-        const url = urlFor(p);
-        if (!url) return;
-        const name = p.name ?? fallbackName(p, i);
-        parts.push({ url, zipPath: `inline/${name}` });
-      });
     }
 
     if (parts.length === 0) return;
@@ -250,26 +224,16 @@
       {/each}
     </ul>
 
-    {#if totalCount > 1}
+    {#if attachParts.length > 1}
       <div class="bulk-actions">
         <button
           type="button"
           class="download-all"
           disabled={downloading}
-          onclick={() => void downloadAll(true)}
+          onclick={() => void downloadAll()}
         >
           {t('att.downloadAll', { count: attachParts.length })}
         </button>
-        {#if inlineParts.length > 0 && attachParts.length > 0}
-          <button
-            type="button"
-            class="attachments-only"
-            disabled={downloading}
-            onclick={() => void downloadAll(false)}
-          >
-            {t('att.attachmentsOnly')}
-          </button>
-        {/if}
       </div>
     {/if}
   </section>
@@ -511,23 +475,5 @@
     cursor: progress;
   }
 
-  .attachments-only {
-    padding: var(--spacing-02) var(--spacing-04);
-    background: var(--layer-02);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-body-compact-01-size);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter);
-  }
 
-  .attachments-only:hover:not(:disabled) {
-    background: var(--layer-03);
-    color: var(--text-primary);
-  }
-
-  .attachments-only:disabled {
-    opacity: 0.5;
-    cursor: progress;
-  }
 </style>
