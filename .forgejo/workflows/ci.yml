@@ -576,7 +576,7 @@ jobs:
           name: jmaptest-logs
           path: test/interop/logs/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 3
 
   binaries:
     name: binaries (linux/darwin x amd64/arm64)
@@ -627,7 +627,10 @@ jobs:
         with:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
-          retention-days: 30
+          # 1 day: these artifacts serve only as an ephemeral handoff to the
+          # deploy job in the same run. The durable record is the Forgejo
+          # release created by the deploy job.
+          retention-days: 1
 
   # Deploy to outpost.netzhansa.com via the release-pull framework.
   #

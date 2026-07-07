@@ -75,3 +75,4 @@ jobs:
         with:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
+          retention-days: 14

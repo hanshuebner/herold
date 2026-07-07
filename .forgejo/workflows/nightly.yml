@@ -183,3 +183,4 @@ jobs:
         with:
           name: sbom
           path: sbom.cdx.json
+          retention-days: 3
