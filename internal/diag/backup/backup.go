@@ -34,6 +34,9 @@ type Options struct {
 	// IncludeClientLog, when true, includes the clientlog ring-buffer
 	// table in the bundle.  Defaults to false (REQ-OPS-206a).
 	IncludeClientLog bool
+	// IncludeSystemEvents, when true, includes the system_events ring-buffer
+	// table in the bundle.  Defaults to false (REQ-ADM-304).
+	IncludeSystemEvents bool
 }
 
 // Backup is the top-level controller for writing a bundle.
@@ -99,13 +102,16 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 	}
 
 	for _, table := range TableNames {
-		// clientlog is excluded from backups by default (REQ-OPS-206a).
-		// sessions is excluded permanently: rows expire naturally and
-		// restoring stale session rows would confuse TelemetryGate.
-		// In both cases we still write an empty .jsonl so the bundle is
+		// clientlog and system_events are excluded from backups by default
+		// (REQ-OPS-206a, REQ-ADM-304); --include-clientlog / --include-system-events opts in.
+		// sessions and session_elevations are excluded permanently: rows expire
+		// naturally and restoring stale session rows would confuse TelemetryGate.
+		// In all cases we still write an empty .jsonl so the bundle is
 		// structurally complete and restore / verify do not have to
 		// special-case the absence of the file.
-		if (table == "clientlog" && !b.opts.IncludeClientLog) || table == "sessions" || table == "session_elevations" {
+		if (table == "clientlog" && !b.opts.IncludeClientLog) ||
+			(table == "system_events" && !b.opts.IncludeSystemEvents) ||
+			table == "sessions" || table == "session_elevations" {
 			if err := writeEmptyJSONL(dst, table); err != nil {
 				return Manifest{}, fmt.Errorf("backup: empty %s: %w", table, err)
 			}

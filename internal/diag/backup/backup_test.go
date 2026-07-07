@@ -15,6 +15,19 @@ import (
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
+// seedSystemEvent appends one system_events row using the supplied clock's Now().
+func seedSystemEvent(t *testing.T, st store.Store, clk clock.Clock, action string) {
+	t.Helper()
+	if err := st.Meta().AppendSystemEvent(context.Background(), store.SystemEvent{
+		At:      clk.Now(),
+		Action:  action,
+		ActorID: "test",
+		Outcome: store.OutcomeSuccess,
+	}); err != nil {
+		t.Fatalf("AppendSystemEvent: %v", err)
+	}
+}
+
 // seedSmallCorpus inserts a tiny but representative dataset into st.
 // Returns the inserted blob hashes so callers can spot-check restore.
 func seedSmallCorpus(t *testing.T, st store.Store) []string {
@@ -352,6 +365,59 @@ func TestCreateBundle_WebhookExtractedFields_RoundTrip(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in webhooks.jsonl: %s", want, got)
 		}
+	}
+}
+
+// TestCreateBundle_SystemEvents_ExcludedByDefault confirms that when
+// IncludeSystemEvents is false (the default), system_events rows are NOT
+// written to the bundle even though the table is seeded with data.
+func TestCreateBundle_SystemEvents_ExcludedByDefault(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st := openSQLite(t)
+	seedSystemEvent(t, st, clk, "smtp.accept")
+	seedSystemEvent(t, st, clk, "smtp.accept")
+
+	dst := t.TempDir()
+	b := backup.New(backup.Options{Store: st, Clock: clk}) // IncludeSystemEvents defaults to false
+	m, err := b.CreateBundle(context.Background(), dst)
+	if err != nil {
+		t.Fatalf("CreateBundle: %v", err)
+	}
+	// system_events must be 0 in the manifest (empty JSONL written).
+	if got := m.Tables["system_events"]; got != 0 {
+		t.Errorf("system_events in default backup: want 0 rows, got %d", got)
+	}
+	// The empty JSONL must still exist so the bundle is structurally complete.
+	path := filepath.Join(dst, "metadata", "system_events.jsonl")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("system_events.jsonl missing: %v", err)
+	}
+	if fi.Size() != 0 {
+		t.Errorf("system_events.jsonl: expected empty file, got %d bytes", fi.Size())
+	}
+}
+
+// TestCreateBundle_SystemEvents_IncludedWhenFlagSet confirms that setting
+// IncludeSystemEvents:true causes system_events rows to be included in
+// the bundle.
+func TestCreateBundle_SystemEvents_IncludedWhenFlagSet(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st := openSQLite(t)
+	seedSystemEvent(t, st, clk, "smtp.accept")
+	seedSystemEvent(t, st, clk, "smtp.accept")
+
+	dst := t.TempDir()
+	b := backup.New(backup.Options{Store: st, Clock: clk, IncludeSystemEvents: true})
+	m, err := b.CreateBundle(context.Background(), dst)
+	if err != nil {
+		t.Fatalf("CreateBundle: %v", err)
+	}
+	// system_events must be 2 in the manifest.
+	if got := m.Tables["system_events"]; got != 2 {
+		t.Errorf("system_events with flag: want 2 rows, got %d", got)
 	}
 }
 

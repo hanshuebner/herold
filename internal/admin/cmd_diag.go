@@ -44,6 +44,8 @@ func newDiagCmd() *cobra.Command {
 
 func newDiagBackupCmd() *cobra.Command {
 	var to string
+	var includeClientLog bool
+	var includeSystemEvents bool
 	c := &cobra.Command{
 		Use:   "backup",
 		Short: "write a consistent backup bundle to --to <path>",
@@ -67,9 +69,11 @@ writes are allowed; the snapshot is consistent at the start of the run.`,
 			}
 			defer st.Close()
 			b := backup.New(backup.Options{
-				Store:  st,
-				Logger: discardLogger(),
-				Clock:  clk,
+				Store:               st,
+				Logger:              discardLogger(),
+				Clock:               clk,
+				IncludeClientLog:    includeClientLog,
+				IncludeSystemEvents: includeSystemEvents,
 			})
 			m, err := b.CreateBundle(ctx, to)
 			if err != nil {
@@ -79,6 +83,10 @@ writes are allowed; the snapshot is consistent at the start of the run.`,
 		},
 	}
 	c.Flags().StringVar(&to, "to", "", "destination directory (required)")
+	c.Flags().BoolVar(&includeClientLog, "include-clientlog", false,
+		"include the clientlog ring-buffer table (excluded by default, REQ-OPS-206a)")
+	c.Flags().BoolVar(&includeSystemEvents, "include-system-events", false,
+		"include the system_events ring-buffer table (excluded by default, REQ-ADM-304)")
 	return c
 }
 
