@@ -408,6 +408,119 @@ describe('mail store: #refreshFolderSoon coalescer (issue #127)', () => {
     expect(emailQueryCount).toBe(1);
   });
 
+  it('an Email/changes push with updated IDs in listEmailIds triggers an Email/query (issue #152)', async () => {
+    const { mail } = await import('./store.svelte');
+
+    // Seed: two emails visible in the inbox.
+    mail.listEmailIds = ['e1', 'e2'];
+    mail.listLoadStatus = 'ready';
+    mail.listFolder = 'all';
+    mail.emailState = 'state-1';
+
+    let emailQueryCount = 0;
+    batch.mockImplementation(async (builder: unknown) => {
+      let counter = 0;
+      const calls: { name: string }[] = [];
+      const api = {
+        call: (name: string, _args: unknown) => {
+          calls.push({ name });
+          return { ref: () => ({ resultOf: `c${counter++}`, name, path: '' }) };
+        },
+      };
+      (builder as (b: typeof api) => void)(api);
+      if (calls.some((c) => c.name === 'Email/query')) emailQueryCount++;
+
+      const responses: BatchResponse[] = [];
+      for (let i = 0; i < calls.length; i++) {
+        const c = calls[i]!;
+        if (c.name === 'Email/changes') {
+          // e1 was updated (mailboxIds changed — moved out of inbox).
+          // Nothing in created or destroyed.
+          responses.push([c.name, { created: [], updated: ['e1'], destroyed: [] }, `c${i}`]);
+        } else if (c.name === 'Email/query') {
+          // After the move, inbox only has e2.
+          responses.push([c.name, { ids: ['e2'] }, `c${i}`]);
+        } else if (c.name === 'Email/get') {
+          responses.push([c.name, { list: [], state: 'state-2' }, `c${i}`]);
+        } else if (c.name === 'Thread/get') {
+          responses.push([c.name, { list: [] }, `c${i}`]);
+        } else {
+          responses.push([c.name, { list: [] }, `c${i}`]);
+        }
+      }
+      return { responses, using: new Set<string>() };
+    });
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    // Push a state change where e1 was updated (not created/destroyed).
+    await handler!('state-2', 'acc1');
+
+    // Before the coalescer window: no Email/query yet.
+    expect(emailQueryCount).toBe(0);
+
+    // Drain microtasks before advancing the clock. #onEmailStateChange
+    // suspends at await Promise.all([]) after calling #refreshFolderSoon,
+    // so its microtask continuation has not yet set the timer when the
+    // test continuation runs. One drain pass is enough to guarantee the
+    // timer exists before vi.advanceTimersByTime fires it.
+    await drainMicrotasks(8);
+    // Advance the fake clock past the 300 ms coalescer window.
+    vi.advanceTimersByTime(300);
+    await drainMicrotasks(16);
+
+    // The updated ID is in listEmailIds; a folder refresh must have been issued.
+    expect(emailQueryCount).toBe(1);
+  });
+
+  it('an Email/changes push with updated IDs NOT in listEmailIds does NOT trigger an Email/query', async () => {
+    const { mail } = await import('./store.svelte');
+
+    // Seed: inbox has e1 only; e2 is in a different folder.
+    mail.listEmailIds = ['e1'];
+    mail.listLoadStatus = 'ready';
+    mail.listFolder = 'all';
+    mail.emailState = 'state-1';
+
+    let emailQueryCount = 0;
+    batch.mockImplementation(async (builder: unknown) => {
+      let counter = 0;
+      const calls: { name: string }[] = [];
+      const api = {
+        call: (name: string, _args: unknown) => {
+          calls.push({ name });
+          return { ref: () => ({ resultOf: `c${counter++}`, name, path: '' }) };
+        },
+      };
+      (builder as (b: typeof api) => void)(api);
+      if (calls.some((c) => c.name === 'Email/query')) emailQueryCount++;
+
+      const responses: BatchResponse[] = [];
+      for (let i = 0; i < calls.length; i++) {
+        const c = calls[i]!;
+        if (c.name === 'Email/changes') {
+          // e2 was updated (e.g. read in the archive folder), but e2 is not in
+          // listEmailIds, so the inbox list is unaffected.
+          responses.push([c.name, { created: [], updated: ['e2'], destroyed: [] }, `c${i}`]);
+        } else {
+          responses.push([c.name, { list: [] }, `c${i}`]);
+        }
+      }
+      return { responses, using: new Set<string>() };
+    });
+
+    const handler = syncHandlers.get('Email');
+    expect(handler).toBeDefined();
+
+    await handler!('state-2', 'acc1');
+    vi.advanceTimersByTime(300);
+    await drainMicrotasks(16);
+
+    // The updated ID is not in listEmailIds; no folder refresh needed.
+    expect(emailQueryCount).toBe(0);
+  });
+
   it('a second burst after the quiet window gets its own Email/query', async () => {
     const { mail } = await import('./store.svelte');
 

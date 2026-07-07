@@ -333,7 +333,11 @@ class MailStore {
     // visible list never blanks during the quiet-window delay (issue #127).
     if (this.listLoadStatus === 'ready') {
       const listMayHaveChanged =
-        delta === null || delta.created.size > 0 || delta.destroyed.size > 0;
+        delta === null ||
+        delta.created.size > 0 ||
+        delta.destroyed.size > 0 ||
+        (delta.updated.size > 0 &&
+          this.listEmailIds.some((id) => delta.updated.has(id)));
       if (listMayHaveChanged) {
         this.#refreshFolderSoon();
       }
