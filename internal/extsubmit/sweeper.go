@@ -237,8 +237,22 @@ func (sw *Sweeper) refreshRow(ctx context.Context, sub store.IdentitySubmission)
 	if len(sub.OAuthClientSecretCT) > 0 {
 		cs, err := secrets.Open(sw.DataKey, sub.OAuthClientSecretCT)
 		if err != nil {
-			sw.recordRefreshFailure(ctx, sub, "unknown",
+			// A client-secret decrypt failure is permanent: the ciphertext cannot
+			// be opened with the active key. Write state=auth-failed and clear
+			// RefreshDue so the row stops re-entering ListIdentitySubmissionsDue
+			// (re #156; same permanent-failure logic as the refresh-token path).
+			sw.recordRefreshFailure(ctx, sub, "decrypt",
 				fmt.Sprintf("open client secret: %s", err.Error()))
+			updated := sub
+			updated.State = store.IdentitySubmissionStateAuthFailed
+			updated.StateAt = sw.now()
+			updated.RefreshDue = time.Time{}
+			if err2 := sw.Store.UpsertIdentitySubmission(ctx, updated); err2 != nil {
+				sw.logger().LogAttrs(ctx, slog.LevelError,
+					"extsubmit.sweeper: upsert auth-failed after client-secret decrypt failure",
+					slog.String("identity_id", sub.IdentityID),
+					slog.String("err", err2.Error()))
+			}
 			return
 		}
 		creds.ClientSecret = string(cs)
@@ -270,12 +284,17 @@ func (sw *Sweeper) refreshRow(ctx context.Context, sub store.IdentitySubmission)
 			}
 		}
 
-		// Flip state to auth-failed, leave refresh_due_us unchanged so
-		// the sweeper retries on the next tick (architectural decision 3).
+		// Flip state to auth-failed. For transient failures (auth, network,
+		// unknown) leave RefreshDue unchanged so the sweeper retries on the
+		// next tick (architectural decision 3). For permanent decrypt failures
+		// the ciphertext can never be opened, so clear RefreshDue to stop the
+		// row from re-entering ListIdentitySubmissionsDue (re #156).
 		updated := sub
 		updated.State = store.IdentitySubmissionStateAuthFailed
 		updated.StateAt = sw.now()
-		// Do not modify RefreshDue so the row reappears on the next tick.
+		if category == "decrypt" {
+			updated.RefreshDue = time.Time{}
+		}
 		if err2 := sw.Store.UpsertIdentitySubmission(ctx, updated); err2 != nil {
 			sw.logger().LogAttrs(ctx, slog.LevelError,
 				"extsubmit.sweeper: upsert auth-failed state",
@@ -332,6 +351,12 @@ func (sw *Sweeper) recordRefreshFailure(ctx context.Context, sub store.IdentityS
 func classifyRefreshError(err error) string {
 	if errors.Is(err, ErrAuthFailed) {
 		return "auth"
+	}
+	// A decrypt failure means the stored ciphertext cannot be opened with the
+	// active data key. This is a permanent condition (key rotation or byte-level
+	// corruption); no retry will ever succeed (re #156).
+	if errors.Is(err, secrets.ErrBadCiphertext) {
+		return "decrypt"
 	}
 	// Network errors and other transient failures.
 	msg := err.Error()

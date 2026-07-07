@@ -2,6 +2,7 @@ package extsubmit
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -370,6 +371,134 @@ func (r *countingRefresher) Refresh(_ context.Context, sub store.IdentitySubmiss
 	time.Sleep(5 * time.Millisecond)
 	r.current.Add(-1)
 	return "token", nil
+}
+
+// TestClassifyRefreshError_DecryptFailure verifies that classifyRefreshError
+// returns "decrypt" when the error wraps secrets.ErrBadCiphertext (re #156).
+func TestClassifyRefreshError_DecryptFailure(t *testing.T) {
+	// Direct ErrBadCiphertext.
+	got := classifyRefreshError(secrets.ErrBadCiphertext)
+	if got != "decrypt" {
+		t.Errorf("classifyRefreshError(ErrBadCiphertext) = %q; want %q", got, "decrypt")
+	}
+
+	// Wrapped, as returned by Refresher.Refresh: "extsubmit: open refresh token: secrets: ..."
+	wrapped := fmt.Errorf("extsubmit: open refresh token: %w", secrets.ErrBadCiphertext)
+	got = classifyRefreshError(wrapped)
+	if got != "decrypt" {
+		t.Errorf("classifyRefreshError(wrapped ErrBadCiphertext) = %q; want %q", got, "decrypt")
+	}
+}
+
+// TestSweeper_UndecryptableRefreshToken_ClearsRefreshDue verifies that when
+// the sweeper cannot decrypt the stored OAuth refresh token (e.g. after key
+// rotation), it writes state=auth-failed AND clears RefreshDue so the row no
+// longer re-enters ListIdentitySubmissionsDue on subsequent ticks (re #156:
+// infinite 1/min retry loop).
+func TestSweeper_UndecryptableRefreshToken_ClearsRefreshDue(t *testing.T) {
+	now := time.Now()
+	fs := &fakeStore{}
+
+	originalDue := now.Add(-1 * time.Minute) // overdue
+	row := store.IdentitySubmission{
+		IdentityID:       "id-undecryptable",
+		SubmitAuthMethod: "oauth2",
+		OAuthRefreshCT:   sealToken(t, "refresh-token"),
+		OAuthAccessCT:    sealToken(t, "access-token"),
+		RefreshDue:       originalDue,
+		State:            store.IdentitySubmissionStateOK,
+	}
+	fs.rows = append(fs.rows, row)
+
+	// Simulate the error Refresher.Refresh returns when secrets.Open fails on
+	// the refresh token ciphertext (ErrBadCiphertext wrapped with context).
+	decryptErr := fmt.Errorf("extsubmit: open refresh token: %w", secrets.ErrBadCiphertext)
+	fr := &fakeTokenRefresher{err: decryptErr}
+	sw := newSweeperForTest(fs, fr)
+	sw.Now = func() time.Time { return now }
+
+	sw.tick(context.Background())
+
+	if fr.callCount() != 1 {
+		t.Fatalf("Refresh called %d times on first tick; want 1", fr.callCount())
+	}
+
+	got, ok := fs.getRow("id-undecryptable")
+	if !ok {
+		t.Fatal("row gone from store after first tick")
+	}
+	if got.State != store.IdentitySubmissionStateAuthFailed {
+		t.Errorf("State = %q after decrypt failure; want auth-failed", got.State)
+	}
+	// RefreshDue must be cleared so the row does not re-enter ListIdentitySubmissionsDue.
+	if !got.RefreshDue.IsZero() {
+		t.Errorf("RefreshDue = %v after decrypt failure; want zero (must not reappear in due list)", got.RefreshDue)
+	}
+
+	// A second tick must not call Refresh again — the row is no longer due.
+	sw.tick(context.Background())
+	if fr.callCount() != 1 {
+		t.Errorf("Refresh called %d times total; want 1 (row must not reappear after RefreshDue cleared)", fr.callCount())
+	}
+}
+
+// TestSweeper_UndecryptableClientSecret_ClearsRefreshDue verifies that when
+// the sweeper cannot decrypt OAuthClientSecretCT, it writes state=auth-failed
+// AND clears RefreshDue so the row does not loop (re #156).
+func TestSweeper_UndecryptableClientSecret_ClearsRefreshDue(t *testing.T) {
+	now := time.Now()
+	fs := &fakeStore{}
+
+	// Seal the client secret with a different key so secrets.Open with
+	// testDataKey32 returns ErrBadCiphertext (simulates key rotation / corruption).
+	wrongKey := make([]byte, 32)
+	for i := range wrongKey {
+		wrongKey[i] = 0xFF
+	}
+	wrongCT, err := secrets.Seal(wrongKey, []byte("client-secret"))
+	if err != nil {
+		t.Fatalf("seal with wrong key: %v", err)
+	}
+
+	originalDue := now.Add(-1 * time.Minute)
+	row := store.IdentitySubmission{
+		IdentityID:          "id-bad-client-secret",
+		SubmitAuthMethod:    "oauth2",
+		OAuthRefreshCT:      sealToken(t, "refresh-token"),
+		OAuthAccessCT:       sealToken(t, "access-token"),
+		OAuthClientSecretCT: wrongCT, // undecryptable with testDataKey32
+		RefreshDue:          originalDue,
+		State:               store.IdentitySubmissionStateOK,
+	}
+	fs.rows = append(fs.rows, row)
+
+	fr := &fakeTokenRefresher{} // should never be called
+	sw := newSweeperForTest(fs, fr)
+	sw.Now = func() time.Time { return now }
+
+	sw.tick(context.Background())
+
+	// Refresh must not have been called (sweeper returns before calling TokenRefresh).
+	if fr.callCount() != 0 {
+		t.Errorf("Refresh called %d times; want 0 (should bail on client secret decrypt failure)", fr.callCount())
+	}
+
+	got, ok := fs.getRow("id-bad-client-secret")
+	if !ok {
+		t.Fatal("row gone from store after first tick")
+	}
+	if got.State != store.IdentitySubmissionStateAuthFailed {
+		t.Errorf("State = %q after client-secret decrypt failure; want auth-failed", got.State)
+	}
+	if !got.RefreshDue.IsZero() {
+		t.Errorf("RefreshDue = %v; want zero (must not reappear in due list)", got.RefreshDue)
+	}
+
+	// A second tick must not call Refresh again.
+	sw.tick(context.Background())
+	if fr.callCount() != 0 {
+		t.Errorf("Refresh called after row should have been cleared; want 0")
+	}
 }
 
 // TestSweeper_DoesNotOverwriteFresherOKStateOnRefreshFailure verifies the fix
