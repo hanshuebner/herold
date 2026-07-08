@@ -238,6 +238,18 @@ func backfillTOTPFlags(ctx context.Context, s *Store, logger *slog.Logger) error
 // set the PRAGMAs the architecture spec mandates via the _pragma URL
 // parameter; the modernc driver runs them before the first query.
 //
+// _txlock=immediate causes every database/sql transaction opened with
+// BeginTx to issue BEGIN IMMEDIATE instead of the default BEGIN
+// (deferred). A deferred transaction acquires no lock until the first
+// write, so a transaction that reads (takes a WAL snapshot) and then
+// writes must upgrade from read to write. SQLite does not invoke the
+// busy handler for that upgrade in WAL mode — it returns SQLITE_BUSY
+// immediately even when busy_timeout is set — causing spurious failures
+// when a concurrent non-runTx writer (e.g. IncRefBlob) holds the write
+// lock at the moment of upgrade. BEGIN IMMEDIATE acquires the write
+// lock at transaction start, so busy_timeout governs all contention and
+// the upgrade path is never reached.
+//
 // BulkImport mode replaces synchronous=NORMAL with synchronous=OFF and
 // raises cache_size to 256 MiB; see Options.BulkImport for the
 // rationale and the corruption trade-off.
@@ -255,6 +267,7 @@ func buildDSN(path string, opts Options) string {
 		"_pragma=busy_timeout(30000)",
 		fmt.Sprintf("_pragma=cache_size(-%d)", cacheKB),
 		"_pragma=temp_store(MEMORY)",
+		"_txlock=immediate",
 	}
 	return "file:" + path + "?" + strings.Join(q, "&")
 }

@@ -75,9 +75,12 @@ func boolToInt64(b bool) int64 {
 	return 0
 }
 
-// runTx begins a transaction with the writer lock held, runs fn, and
-// commits or rolls back. Retries on SQLITE_BUSY are already handled by
-// the 30s busy_timeout PRAGMA.
+// runTx begins a BEGIN IMMEDIATE transaction with the writer mutex held,
+// runs fn, and commits or rolls back. The write lock is acquired at BEGIN
+// time (via the _txlock=immediate DSN parameter), so busy_timeout governs
+// contention and the deferred-upgrade SQLITE_BUSY path is never reached.
+// The writer mutex additionally prevents BUSY-retry churn when multiple
+// runTx callers compete: only one races for the write lock at a time.
 func (m *metadata) runTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	m.s.writerMu.Lock()
 	defer m.s.writerMu.Unlock()
