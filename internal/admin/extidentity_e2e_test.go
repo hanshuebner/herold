@@ -480,10 +480,17 @@ func waitForHeldSubmission(t *testing.T, publicAddr, apiKey, accountID string) {
 // provider auth URL, follow it to the fake IdP (which redirects back with a
 // code), then GET the callback. The callback exchanges the code, refreshes the
 // token material, and retries any held submissions for the identity (re #70).
+// reauthenticateViaOAuth drives the OAuth flow using the "fakeidp" provider.
+// For a different provider name use reauthenticateViaOAuthProvider directly.
 func reauthenticateViaOAuth(t *testing.T, adminAddr, apiKey, identityID string) {
 	t.Helper()
+	reauthenticateViaOAuthProvider(t, adminAddr, apiKey, identityID, "fakeidp")
+}
+
+func reauthenticateViaOAuthProvider(t *testing.T, adminAddr, apiKey, identityID, provider string) {
+	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost,
-		"http://"+adminAddr+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=fakeidp", nil)
+		"http://"+adminAddr+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider="+provider, nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)

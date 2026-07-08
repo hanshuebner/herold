@@ -499,3 +499,275 @@ func startOfflineE2EServer(t *testing.T, cfg *sysconfig.Config) (publicAddr, adm
 	}
 	return
 }
+
+// TestOAuthGmailAutoOffline_E2E verifies that a provider named "gmail" receives
+// access_type=offline and prompt=consent automatically — with NO extra_auth_params
+// in system.toml — so Gmail issues a refresh token without any operator config.
+//
+// The test is RED without providerDefaultAuthParams("gmail") and GREEN after.
+func TestOAuthGmailAutoOffline_E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("gmail auto offline access e2e test (re #131)")
+	}
+	t.Run("sqlite", func(t *testing.T) { runGmailAutoOfflineE2E(t, "sqlite", "") })
+	if dsn := os.Getenv("HEROLD_PG_DSN"); dsn != "" {
+		t.Run("postgres", func(t *testing.T) { runGmailAutoOfflineE2E(t, "postgres", dsn) })
+	}
+}
+
+// gmailAutoIdentityID is the JMAP identity id used in TestOAuthGmailAutoOffline_E2E.
+const gmailAutoIdentityID = "920001"
+
+func runGmailAutoOfflineE2E(t *testing.T, backend, pgDSN string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	// RequireOfflineAccess=true: the fake IdP only issues a refresh_token when
+	// access_type=offline is present in the authorization URL. Without the
+	// built-in Gmail defaults the refresh_token is absent and OAuthRefreshCT
+	// stays nil.
+	idp := fakeidp.New(t, fakeidp.Options{RequireOfflineAccess: true})
+	// The OAuth callback probes the SMTP endpoint to confirm reachability.
+	// A fakesmtp server supplies a real listener for the probe.
+	smtpProbe := fakesmtp.New(t, fakesmtp.Options{
+		Security: fakesmtp.Plain,
+		Hostname: "smtp.gmail-auto-probe.test",
+	})
+
+	const gmailAutoAPIKey = protoadmin.APIKeyPrefix + "gmail_auto_offline_e2e_key_00001"
+	const gmailAutoAdminEmail = "admin@gmail-auto.local"
+
+	dataKeyBytes, err := hex.DecodeString(offlineE2EDataKeyHex())
+	if err != nil {
+		t.Fatalf("decode data key: %v", err)
+	}
+
+	t.Setenv(offlineE2EDataKeyEnv, offlineE2EDataKeyHex())
+	// Reuse the same secret env var name for simplicity; both tests share the
+	// same key derivation, they just run in separate processes / t.Setenv scopes.
+	t.Setenv(offlineE2EOAuthSecretEnv, idp.ClientSecret())
+
+	var storageTOML string
+	var openSeed func() store.Store
+	var openRead func() store.Store
+
+	clk := clock.NewReal()
+	switch backend {
+	case "sqlite":
+		dbPath := filepath.Join(dir, "db.sqlite")
+		storageTOML = fmt.Sprintf("[server.storage]\nbackend = \"sqlite\"\n[server.storage.sqlite]\npath = %q\n", dbPath)
+		newSQLiteStore := func() store.Store {
+			st, err := storesqlite.Open(context.Background(), dbPath, discardLogger(), clk)
+			if err != nil {
+				t.Fatalf("storesqlite.Open: %v", err)
+			}
+			return st
+		}
+		openSeed = newSQLiteStore
+		openRead = newSQLiteStore
+	case "postgres":
+		blobDir := filepath.Join(dir, "blobs")
+		storageTOML = fmt.Sprintf("[server.storage]\nbackend = \"postgres\"\n[server.storage.postgres]\ndsn = %q\nblob_dir = %q\n", pgDSN, blobDir)
+		openSeed = func() store.Store {
+			st, err := storepg.Open(context.Background(), pgDSN, blobDir, discardLogger(), clk)
+			if err != nil {
+				t.Fatalf("storepg.Open (seed): %v", err)
+			}
+			if tr, ok := st.(interface {
+				TruncateAll(context.Context) error
+			}); ok {
+				if err := tr.TruncateAll(context.Background()); err != nil {
+					_ = st.Close()
+					t.Fatalf("TruncateAll: %v", err)
+				}
+			}
+			return st
+		}
+		openRead = func() store.Store {
+			st, err := storepg.Open(context.Background(), pgDSN, blobDir, discardLogger(), clk)
+			if err != nil {
+				t.Fatalf("storepg.Open (read): %v", err)
+			}
+			return st
+		}
+	default:
+		t.Fatalf("unknown backend %q", backend)
+	}
+
+	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
+	systomlPath := filepath.Join(dir, "system.toml")
+
+	// Note: the provider name is "gmail" and there is NO extra_auth_params block.
+	// The built-in defaults (access_type=offline, prompt=consent) must fire
+	// automatically so the fake IdP issues a refresh_token.
+	systoml := fmt.Sprintf(`
+[server]
+hostname = "gmail-auto.local"
+data_dir = %q
+run_as_user = ""
+run_as_group = ""
+shutdown_grace = "5s"
+port_report_file = %q
+
+[server.admin_tls]
+source = "file"
+cert_file = %q
+key_file = %q
+
+%s
+
+[server.secrets]
+data_key_ref = "$%s"
+
+[server.external_submission]
+enabled = true
+
+[server.oauth_providers.gmail]
+client_id = %q
+client_secret_ref = "$%s"
+auth_url = %q
+token_url = %q
+scopes = ["https://mail.google.com/"]
+
+[[listener]]
+name = "smtp"
+address = "127.0.0.1:0"
+protocol = "smtp"
+tls = "starttls"
+cert_file = %q
+key_file = %q
+
+[[listener]]
+name = "imap"
+address = "127.0.0.1:0"
+protocol = "imap"
+tls = "starttls"
+cert_file = %q
+key_file = %q
+
+[[listener]]
+name = "public"
+address = "127.0.0.1:0"
+protocol = "http"
+kind = "public"
+tls = "none"
+
+[[listener]]
+name = "admin"
+address = "127.0.0.1:0"
+protocol = "http"
+kind = "admin"
+tls = "none"
+
+[observability]
+log_format = "text"
+log_level = "warn"
+metrics_bind = ""
+`,
+		dir, filepath.Join(dir, "ports.toml"),
+		certPath, keyPath,
+		storageTOML,
+		offlineE2EDataKeyEnv,
+		idp.ClientID(), offlineE2EOAuthSecretEnv, idp.AuthorizeURL(), idp.TokenURL(),
+		certPath, keyPath, certPath, keyPath)
+
+	if err := os.WriteFile(systomlPath, []byte(systoml), 0o600); err != nil {
+		t.Fatalf("write system.toml: %v", err)
+	}
+	cfg, err := sysconfig.Load(systomlPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	// Seed domain, principal, api key, and one JMAP identity.
+	gmailAutoUser := "alice@gmail.com"
+	func() {
+		st := openSeed()
+		defer func() { _ = st.Close() }()
+		ctx := context.Background()
+
+		if err := st.Meta().InsertDomain(ctx, store.Domain{
+			Name: "gmail-auto.local", IsLocal: true, CreatedAt: clk.Now(),
+		}); err != nil {
+			t.Fatalf("insert domain: %v", err)
+		}
+		mgr := keymgmt.NewManager(st.Meta(), discardLogger(), clk, nil)
+		if _, err := mgr.GenerateKey(ctx, "gmail-auto.local", store.DKIMAlgorithmRSASHA256); err != nil {
+			t.Fatalf("generate dkim key: %v", err)
+		}
+		princ, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+			Kind:           store.PrincipalKindUser,
+			CanonicalEmail: gmailAutoAdminEmail,
+			Flags:          store.PrincipalFlagAdmin,
+			CreatedAt:      clk.Now(),
+		})
+		if err != nil {
+			t.Fatalf("insert principal: %v", err)
+		}
+		if _, err := st.Meta().InsertAPIKey(ctx, store.APIKey{
+			PrincipalID: princ.ID,
+			Hash:        protoadmin.HashAPIKey(gmailAutoAPIKey),
+			Name:        "gmail-auto-e2e",
+			CreatedAt:   clk.Now(),
+			ScopeJSON:   `["admin","mail.send","end-user"]`,
+		}); err != nil {
+			t.Fatalf("insert api key: %v", err)
+		}
+		if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+			ID:           gmailAutoIdentityID,
+			PrincipalID:  princ.ID,
+			Name:         "Gmail Auto Test",
+			Email:        gmailAutoUser,
+			MayDelete:    true,
+			VerifiedAtUs: clk.Now().UnixMicro(),
+		}); err != nil {
+			t.Fatalf("insert identity: %v", err)
+		}
+
+		// Pre-seed a minimal submission row so the OAuth callback probe can
+		// connect to the fake SMTP server and verify reachability.
+		stubAtCT, err := secrets.Seal(dataKeyBytes, []byte("stub-access-token-gmail-auto"))
+		if err != nil {
+			t.Fatalf("seal stub access token: %v", err)
+		}
+		subA := store.IdentitySubmission{
+			IdentityID:       gmailAutoIdentityID,
+			SubmitHost:       smtpProbe.Host(),
+			SubmitPort:       smtpProbe.Port(),
+			SubmitSecurity:   "none",
+			SubmitAuthMethod: "oauth2",
+			OAuthAccessCT:    stubAtCT,
+			OAuthClientID:    gmailAutoUser,
+			State:            store.IdentitySubmissionStateOK,
+			StateAt:          clk.Now(),
+			CreatedAt:        clk.Now(),
+		}
+		if err := st.Meta().UpsertIdentitySubmission(ctx, subA); err != nil {
+			t.Fatalf("upsert gmail-auto submission stub: %v", err)
+		}
+	}()
+
+	// Boot the server.
+	_, adminAddr := startOfflineE2EServer(t, cfg)
+
+	// Drive the OAuth start → callback flow using provider "gmail".
+	// The handler must include access_type=offline automatically from the
+	// built-in Gmail defaults (no extra_auth_params in config).
+	reauthenticateViaOAuthProvider(t, adminAddr, gmailAutoAPIKey, gmailAutoIdentityID, "gmail")
+
+	// Read the stored row. OAuthRefreshCT must be non-nil.
+	// If it is nil the built-in Gmail defaults were not applied (RED).
+	func() {
+		st := openRead()
+		defer func() { _ = st.Close() }()
+		row, err := st.Meta().GetIdentitySubmission(context.Background(), gmailAutoIdentityID)
+		if err != nil {
+			t.Fatalf("GetIdentitySubmission: %v", err)
+		}
+		if len(row.OAuthRefreshCT) == 0 {
+			t.Errorf("OAuthRefreshCT is nil after OAuth callback with provider=gmail and NO " +
+				"extra_auth_params; providerDefaultAuthParams(\"gmail\") must supply " +
+				"access_type=offline so the provider issues a refresh token (re #131)")
+		}
+	}()
+}

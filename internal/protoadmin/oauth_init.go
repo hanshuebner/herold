@@ -201,10 +201,18 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("scope", strings.Join(prov.Scopes, " "))
-	// Provider-specific extra parameters (re #131). For Google/Gmail this is
-	// access_type=offline + prompt=consent; operators configure them in
-	// [server.oauth_providers.<name>.extra_auth_params]. Applied before
-	// redirect_uri so provider-specific params cannot shadow the standard ones.
+	// Apply built-in defaults for well-known providers, then overlay the
+	// operator's configured ExtraAuthParams so an operator can override a
+	// specific key without losing the defaults (re #131).
+	//
+	// Gmail (provider name "gmail"): access_type=offline causes Google to issue
+	// a refresh token; prompt=consent forces the consent screen even when the
+	// user has previously authorized the same client, ensuring a fresh refresh
+	// token is issued on every authorization. Microsoft 365 ("m365") uses the
+	// offline_access scope instead; no built-in params are needed there.
+	for k, v := range providerDefaultAuthParams(providerName) {
+		q.Set(k, v)
+	}
 	for k, v := range prov.ExtraAuthParams {
 		q.Set(k, v)
 	}
@@ -505,6 +513,22 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// providerDefaultAuthParams returns the built-in authorization URL parameters
+// for well-known providers. These are applied before the operator's configured
+// ExtraAuthParams so the operator can override individual keys. Only Gmail
+// ("gmail") has defaults; other providers return nil. Microsoft 365 uses the
+// offline_access scope, not access_type, so no defaults are needed there.
+func providerDefaultAuthParams(provider string) map[string]string {
+	switch provider {
+	case "gmail":
+		return map[string]string{
+			"access_type": "offline",
+			"prompt":      "consent",
+		}
+	}
+	return nil
 }
 
 // providerSMTPHost returns the well-known SMTP submission host for
