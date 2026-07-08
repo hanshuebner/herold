@@ -469,35 +469,25 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 	w.status.recordSyncOK(now)
 	w.persistSuccessAt(ctx, now)
 
-	// 3d-B: start the write-back goroutine on a dedicated third connection.
-	// If the third connection fails we start the write-back goroutine in
-	// degraded mode (no write-back) but still run the IDLE loop.
+	// 3d-B: start the write-back goroutine. It opens its upstream connection on
+	// demand when the change feed has work and closes it when caught up, so no
+	// connection is parked between change bursts where an upstream inactivity
+	// timeout could silently close it (REQ-IMAP-IMP-40..45). Skipped entirely
+	// when a rate-limit / connection cap forced single-connection mode
+	// (REQ-IMAP-IMP-21/73); flag changes then reconcile on the next non-capped
+	// session.
 	wbCtx, wbCancel := context.WithCancel(ctx)
 	var wbWg sync.WaitGroup
 	if w.forceSingleConn {
-		// A rate-limited / connection-capped upstream forced single-connection
-		// mode (REQ-IMAP-IMP-21/73); do not open the dedicated write-back
-		// connection either. Flag changes still reconcile on the next sync
-		// round over the primary connection.
-		w.opts.log.Info("imapimport: rate-limit fallback active; skipping write-back connection",
+		w.opts.log.Info("imapimport: rate-limit fallback active; skipping write-back",
 			slog.String("account_id", account.ID),
 		)
-	} else if wbConn, wbErr := w.openSecondaryConn(wbCtx); wbErr == nil {
+	} else {
 		wbWg.Add(1)
 		go func() {
 			defer wbWg.Done()
-			w.runWriteBack(wbCtx, wbConn)
+			w.runWriteBack(wbCtx)
 		}()
-	} else {
-		// A rate-limit / too-many-connections rejection of the write-back
-		// connection is the same signal as for the second sync connection:
-		// drop to single-connection mode and raise the backoff
-		// (REQ-IMAP-IMP-21/73).
-		w.noteSecondaryConnError(wbErr)
-		w.opts.log.Info("imapimport: write-back connection unavailable; skipping write-back for this session",
-			slog.String("account_id", account.ID),
-			slog.String("error", redactError(wbErr)),
-		)
 	}
 	defer func() {
 		wbCancel()

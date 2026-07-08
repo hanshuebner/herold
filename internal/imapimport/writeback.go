@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 
@@ -43,24 +44,18 @@ func writeBackCursorKey(accountID string) string {
 }
 
 // runWriteBack is the write-back goroutine. It runs until ctx is cancelled.
-// It uses writeBackConn for all upstream IMAP write operations. The caller
-// is responsible for opening writeBackConn in read-write mode (SELECT, not
-// EXAMINE) before handing it to individual folder operations.
 //
-// writeBackConn is owned entirely by this goroutine; the caller must not
-// touch it again after launching.
-func (w *accountWorker) runWriteBack(ctx context.Context, writeBackConn Conn) {
+// The upstream connection is opened on demand: whenever the change feed has
+// pending entries, runWriteBack opens a secondary connection, drains all
+// currently-pending changes with it, and closes it once it reaches the head of
+// the feed. No connection is held while the feed is idle, so an upstream
+// inactivity timeout cannot silently close a parked connection and break the
+// next write-back round (the same failure mode fixed for the sync path). A
+// durable per-account cursor lets a restart resume without replaying already-
+// processed changes. REQ-IMAP-IMP-40..45/74.
+func (w *accountWorker) runWriteBack(ctx context.Context) {
 	account := w.opts.account
 	log := w.opts.log
-
-	defer func() {
-		if logoutErr := writeBackConn.Logout(); logoutErr != nil {
-			log.Debug("imapimport: write-back LOGOUT error",
-				slog.String("account_id", account.ID),
-				slog.String("error", logoutErr.Error()))
-		}
-		writeBackConn.Close()
-	}()
 
 	cursorKey := writeBackCursorKey(account.ID)
 
@@ -101,49 +96,125 @@ func (w *accountWorker) runWriteBack(ctx context.Context, writeBackConn Conn) {
 				slog.String("account_id", account.ID),
 				slog.String("error", err.Error()),
 			)
-			// Brief backoff before retry.
-			select {
-			case <-ctx.Done():
+			if !w.writeBackSleep(ctx, writeBackRetryDelay) {
 				return
-			case <-w.opts.clk.After(writeBackRetryDelay):
 			}
 			continue
 		}
 
-		for _, ch := range changes {
+		if len(changes) == 0 {
+			// Head of the feed with no work: hold no upstream connection, just
+			// poll after a short delay rather than hot-looping.
+			if !w.writeBackSleep(ctx, writeBackPollDelay) {
+				return
+			}
+			continue
+		}
+
+		// There is work. Open the upstream connection on demand and drain all
+		// currently-pending changes with it, then close it.
+		conn, connErr := w.openSecondaryConn(ctx)
+		if connErr != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			if ch.Kind != store.EntityKindEmail {
-				fromSeq = uint64(ch.Seq)
-				continue
+			// A rate-limit rejection makes single-connection mode sticky and
+			// raises the backoff (REQ-IMAP-IMP-73); other failures are
+			// transient. Either way, leave the cursor untouched and retry the
+			// same batch after a delay.
+			w.noteSecondaryConnError(connErr)
+			log.Warn("imapimport: write-back: connection unavailable; will retry",
+				slog.String("account_id", account.ID),
+				slog.String("reason", redactError(connErr)),
+			)
+			if !w.writeBackSleep(ctx, writeBackRetryDelay) {
+				return
 			}
-			msgID := store.MessageID(ch.EntityID)
-			w.status.setPhase(PhaseWriteback, w.opts.clk.Now())
-			w.processWriteBack(ctx, writeBackConn, ch, msgID)
+			continue
+		}
+
+		fromSeq = w.drainWriteBack(ctx, conn, cursorKey, fromSeq, changes, batchSize)
+
+		if logoutErr := conn.Logout(); logoutErr != nil {
+			log.Debug("imapimport: write-back LOGOUT error",
+				slog.String("account_id", account.ID),
+				slog.String("error", logoutErr.Error()))
+		}
+		conn.Close()
+
+		if ctx.Err() != nil {
+			return
+		}
+		// Reached the head of the feed; poll before checking for more work.
+		if !w.writeBackSleep(ctx, writeBackPollDelay) {
+			return
+		}
+	}
+}
+
+// drainWriteBack processes the given first batch and keeps reading and
+// processing further batches on conn until it reaches the head of the change
+// feed (a short batch) or ctx is cancelled. Non-email changes advance the
+// cursor without an upstream round-trip. The cursor is persisted after each
+// batch (REQ-IMAP-IMP-74). conn is owned by the caller (opened on demand,
+// closed after this returns). Returns the sequence reached.
+func (w *accountWorker) drainWriteBack(ctx context.Context, conn Conn, cursorKey string, fromSeq uint64, changes []store.StateChange, batchSize int) uint64 {
+	account := w.opts.account
+	log := w.opts.log
+
+	for {
+		for _, ch := range changes {
+			if ctx.Err() != nil {
+				return fromSeq
+			}
+			if ch.Kind == store.EntityKindEmail {
+				w.status.setPhase(PhaseWriteback, w.opts.clk.Now())
+				w.processWriteBack(ctx, conn, ch, store.MessageID(ch.EntityID))
+			}
 			fromSeq = uint64(ch.Seq)
 		}
 
-		// Persist cursor after each batch (even if empty, so we don't
-		// re-walk the same chunk on restart). REQ-IMAP-IMP-74.
-		if len(changes) > 0 {
-			if setErr := w.opts.store.Meta().SetFTSCursor(ctx, cursorKey, fromSeq); setErr != nil && ctx.Err() == nil {
-				log.Warn("imapimport: write-back: SetFTSCursor failed",
-					slog.String("account_id", account.ID),
-					slog.String("error", setErr.Error()),
-				)
-			}
+		if setErr := w.opts.store.Meta().SetFTSCursor(ctx, cursorKey, fromSeq); setErr != nil && ctx.Err() == nil {
+			log.Warn("imapimport: write-back: SetFTSCursor failed",
+				slog.String("account_id", account.ID),
+				slog.String("error", setErr.Error()),
+			)
 		}
 
-		// If we got fewer than batchSize we are at the head of the feed.
-		// Poll after a short delay rather than hot-looping.
-		if len(changes) < batchSize {
-			select {
-			case <-ctx.Done():
-				return
-			case <-w.opts.clk.After(writeBackPollDelay):
-			}
+		if len(changes) < batchSize || ctx.Err() != nil {
+			return fromSeq
 		}
+
+		next, err := w.opts.store.Meta().ReadChangeFeedAll(
+			ctx,
+			store.PrincipalID(account.PrincipalID),
+			store.ChangeSeq(fromSeq),
+			batchSize,
+		)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Warn("imapimport: write-back: ReadChangeFeedAll error during drain",
+					slog.String("account_id", account.ID),
+					slog.String("error", err.Error()),
+				)
+			}
+			return fromSeq
+		}
+		if len(next) == 0 {
+			return fromSeq
+		}
+		changes = next
+	}
+}
+
+// writeBackSleep waits for d or until ctx is cancelled. It returns false when
+// ctx was cancelled (the caller should return).
+func (w *accountWorker) writeBackSleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-w.opts.clk.After(d):
+		return true
 	}
 }
 

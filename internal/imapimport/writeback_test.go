@@ -17,6 +17,8 @@ package imapimport
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,35 +54,13 @@ func runOneWriteBackPass(t *testing.T, ha *testharness.Server, ts *testIMAPServe
 		categoriser: noopCategoriser{},
 	})
 
-	// Open a dedicated write-back connection (the real runWriteBack gets one
-	// via openSecondaryConn; here we do it directly for isolation).
-	credPlaintext, err := w.openCredential(ctx, acc)
-	if err != nil {
-		cancel()
-		t.Fatalf("openCredential: %v", err)
-	}
-	wbConn, err := w.opts.dialer.Dial(ctx, dialParams{
-		AccountID:           acc.ID,
-		Host:                acc.Host,
-		Port:                acc.Port,
-		TLSMode:             string(acc.TLSMode),
-		Username:            acc.Username,
-		AuthMethod:          string(acc.AuthMethod),
-		CredentialPlaintext: credPlaintext,
-	})
-	credPlaintext = ""
-	_ = credPlaintext
-	if err != nil {
-		cancel()
-		t.Fatalf("dial write-back conn: %v", err)
-	}
-
-	// Run the write-back goroutine. Cancel after a short delay to stop the
-	// poll loop so this helper returns quickly.
+	// Run the write-back goroutine. It opens its upstream connection on demand
+	// via openSecondaryConn. Cancel after a short delay to stop the poll loop so
+	// this helper returns quickly.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.runWriteBack(ctx, wbConn)
+		w.runWriteBack(ctx)
 	}()
 
 	// Give the loop enough time to process all current changes.
@@ -271,6 +251,22 @@ func dialFakeConn(t *testing.T, ts *testIMAPServer, user, password string) Conn 
 	return conn
 }
 
+// wrapDialer wraps every connection returned by an inner Dialer with wrap, so a
+// test can make the worker's on-demand write-back connection a fault-injecting
+// wrapper (e.g. failingStoreConn) without pre-opening it.
+type wrapDialer struct {
+	inner Dialer
+	wrap  func(Conn) Conn
+}
+
+func (d *wrapDialer) Dial(ctx context.Context, p dialParams) (Conn, error) {
+	c, err := d.inner.Dial(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return d.wrap(c), nil
+}
+
 // --------------------------------------------------------------------------
 // Test: failed push leaves last_synced unchanged
 // --------------------------------------------------------------------------
@@ -312,27 +308,26 @@ func TestWriteBackFailedPushLeavesLastSyncedUnchanged(t *testing.T) {
 	// Save the original last_synced.
 	origLastSynced := ms.LastSyncedFlags
 
-	// Run write-back with a conn that fails UIDStoreFlags.
+	// Run write-back with an on-demand conn that fails UIDStoreFlags.
 	w := newAccountWorker(accountWorkerOpts{
-		account:     acc,
-		store:       ha.Store,
-		dataKey:     testDataKey(t),
-		cfg:         sysconfig.IMAPImportConfig{},
-		log:         newTestLogger(t),
-		clk:         ha.Clock,
-		dialer:      &fakeDialer{ts: ts},
+		account: acc,
+		store:   ha.Store,
+		dataKey: testDataKey(t),
+		cfg:     sysconfig.IMAPImportConfig{},
+		log:     newTestLogger(t),
+		clk:     ha.Clock,
+		dialer: &wrapDialer{
+			inner: &fakeDialer{ts: ts},
+			wrap:  func(c Conn) Conn { return &failingStoreConn{Conn: c} },
+		},
 		categoriser: noopCategoriser{},
 	})
 
-	// Build a real conn but wrap it with a failing store conn.
 	wbCtx, wbCancel := context.WithCancel(ctx)
-	realConn := dialFakeConn(t, ts, "wb3", "pw")
-	failConn := &failingStoreConn{Conn: realConn}
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.runWriteBack(wbCtx, failConn)
+		w.runWriteBack(wbCtx)
 	}()
 	time.Sleep(300 * time.Millisecond)
 	wbCancel()
@@ -457,23 +452,25 @@ func TestWriteBackMoveConflictCounted(t *testing.T) {
 
 	before := testutil.ToFloat64(observe.IMAPImportConflictsTotal.WithLabelValues(acc.ID, "move"))
 
-	// Run write-back with a conn whose UIDMove always fails.
+	// Run write-back with an on-demand conn whose UIDMove always fails.
 	w := newAccountWorker(accountWorkerOpts{
-		account:     acc,
-		store:       ha.Store,
-		dataKey:     testDataKey(t),
-		cfg:         sysconfig.IMAPImportConfig{},
-		log:         newTestLogger(t),
-		clk:         ha.Clock,
-		dialer:      &fakeDialer{ts: ts},
+		account: acc,
+		store:   ha.Store,
+		dataKey: testDataKey(t),
+		cfg:     sysconfig.IMAPImportConfig{},
+		log:     newTestLogger(t),
+		clk:     ha.Clock,
+		dialer: &wrapDialer{
+			inner: &fakeDialer{ts: ts},
+			wrap:  func(c Conn) Conn { return &failingMoveConn{Conn: c} },
+		},
 		categoriser: noopCategoriser{},
 	})
 	wbCtx, wbCancel := context.WithCancel(ctx)
-	failConn := &failingMoveConn{Conn: dialFakeConn(t, ts, "wb4c", "pw")}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.runWriteBack(wbCtx, failConn)
+		w.runWriteBack(wbCtx)
 	}()
 	time.Sleep(300 * time.Millisecond)
 	wbCancel()
@@ -729,11 +726,10 @@ func TestWriteBackCtxCancelStops(t *testing.T) {
 		categoriser: noopCategoriser{},
 	})
 
-	wbConn := dialFakeConn(t, ts, "wb9", "pw")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.runWriteBack(ctx, wbConn)
+		w.runWriteBack(ctx)
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -744,4 +740,124 @@ func TestWriteBackCtxCancelStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("write-back goroutine did not stop within 5s after ctx cancel")
 	}
+}
+
+// --------------------------------------------------------------------------
+// Test: write-back connection is opened on demand and released when idle
+// --------------------------------------------------------------------------
+
+// trackingConn records whether Close has been called.
+type trackingConn struct {
+	Conn
+	closed *atomic.Bool
+}
+
+func (c *trackingConn) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+// trackingDialer counts how many connections were opened and tracks whether
+// each was closed, so a test can assert the write-back connection is opened on
+// demand and not parked open while the change feed is idle.
+type trackingDialer struct {
+	inner  Dialer
+	mu     sync.Mutex
+	closed []*atomic.Bool
+}
+
+func (d *trackingDialer) Dial(ctx context.Context, p dialParams) (Conn, error) {
+	c, err := d.inner.Dial(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	flag := &atomic.Bool{}
+	d.mu.Lock()
+	d.closed = append(d.closed, flag)
+	d.mu.Unlock()
+	return &trackingConn{Conn: c, closed: flag}, nil
+}
+
+func (d *trackingDialer) dialCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.closed)
+}
+
+func (d *trackingDialer) allClosed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, f := range d.closed {
+		if !f.Load() {
+			return false
+		}
+	}
+	return true
+}
+
+// TestWriteBackConnOpenedOnDemandAndReleasedWhenIdle asserts that the write-back
+// loop opens its upstream connection on demand when the change feed has work and
+// closes it once the feed is drained, rather than holding a connection open for
+// the loop's lifetime. A parked, idle connection is what the upstream
+// autologs-out, breaking later write-back rounds (the same failure mode fixed
+// for the sync path). REQ-IMAP-IMP-40..45.
+func TestWriteBackConnOpenedOnDemandAndReleasedWhenIdle(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("wbod", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "wbod@example.test",
+		username:            "wbod",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	_, ms := setupSyncedMessage(t, ha, ts, acc, "INBOX", "wb-ondemand@test", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Mark herold \Seen so there is exactly one flag change to push upstream.
+	heroldMsg, _ := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+	if _, err := ha.Store.Meta().UpdateMessageFlags(ctx, heroldMsg.ID, heroldMsg.MailboxID,
+		store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags: %v", err)
+	}
+
+	td := &trackingDialer{inner: &fakeDialer{ts: ts}}
+	w := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		cfg:         sysconfig.IMAPImportConfig{},
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		dialer:      td,
+		categoriser: noopCategoriser{},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.runWriteBack(ctx)
+	}()
+
+	// Give the loop time to open a connection on demand, push the change, drain
+	// to the head of the feed, and release the connection before it idles.
+	time.Sleep(500 * time.Millisecond)
+
+	if n := td.dialCount(); n < 1 {
+		cancel()
+		<-done
+		t.Fatalf("write-back did not open a connection on demand; dials=%d", n)
+	}
+	if !td.allClosed() {
+		cancel()
+		<-done
+		t.Error("write-back parked a connection open while idle; want every " +
+			"on-demand connection closed once the feed drained")
+	}
+
+	cancel()
+	<-done
 }
