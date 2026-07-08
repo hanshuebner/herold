@@ -15,12 +15,15 @@ package imapimport
 //   - If the upstream did NOT advertise IDLE (RFC 2177 not in CAPABILITY),
 //     the worker falls back to NOOP-poll every cfg.PollInterval
 //     (REQ-IMAP-IMP-23).
-//   - Second connection: opened optimistically after the primary connects; on
-//     failure the loop falls back to single-connection mode and logs once.
-//     Rate-limit errors increment the backoff exponent; repeated rate-limiting
-//     leaves the second-connection decision in "single" mode but does NOT
-//     immediately flip to errored (that happens at the accountWorker level via
-//     consecutive failures). REQ-IMAP-IMP-21/73.
+//   - FETCH connection: each wake-driven sync round opens a fresh secondary
+//     connection on demand and closes it when the round returns, so no FETCH
+//     connection is parked between rounds where an upstream inactivity timeout
+//     could silently close it and wedge every later round on a dead socket.
+//     When the secondary open is refused with a rate-limit / too-many-connections
+//     error the round falls back to the primary and the worker sticks to
+//     single-connection mode for its life, raising the backoff exponent; a
+//     non-rate-limit open failure falls back to the primary for that round only
+//     and retries a fresh secondary next round. REQ-IMAP-IMP-21/73.
 //   - Context cancellation cleanly closes IDLE and returns.
 //   - Metrics: herold_imapimport_idle_seconds{account} (gauge) measures the
 //     cumulative seconds the primary connection spent in IDLE per connect
@@ -75,51 +78,15 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 	supportsIDLE := caps.Has(imap.CapIdle)
 	supportsNOTIFY := caps.Has(imap.CapNotify)
 
-	// Try to establish a second connection for concurrent FETCH.
-	// REQ-IMAP-IMP-21.
-	var syncConn Conn
-	useSingleConn := true // default until second connection succeeds
-
-	switch {
-	case w.forceSingleConn:
-		// A prior rate-limit / too-many-connections rejection forced
-		// single-connection mode for the worker's lifetime (REQ-IMAP-IMP-21/73);
-		// skip the second-connection attempt entirely so we stop probing a
-		// connection-capped upstream.
-		log.Info("imapimport: rate-limit fallback active; using single-connection mode",
-			slog.String("account_id", account.ID),
-		)
-		useSingleConn = true
-	default:
-		if syncConn2, err := w.openSecondaryConn(ctx); err != nil {
-			// A rate-limit rejection makes the single-conn fallback sticky and
-			// raises the backoff exponent (REQ-IMAP-IMP-73).
-			w.noteSecondaryConnError(err)
-			log.Info("imapimport: second connection unavailable; using single-connection mode",
-				slog.String("account_id", account.ID),
-				slog.String("reason", redactError(err)),
-			)
-			useSingleConn = true
-		} else {
-			syncConn = syncConn2
-			useSingleConn = false
-			defer func() {
-				if logoutErr := syncConn.Logout(); logoutErr != nil {
-					log.Debug("imapimport: secondary LOGOUT error",
-						slog.String("account_id", account.ID),
-						slog.String("error", logoutErr.Error()))
-				}
-				syncConn.Close()
-			}()
-		}
-	}
-
-	if useSingleConn {
-		syncConn = primary
-	}
-
-	// Record the connection mode in the live status (REQ-IMAP-IMP-65).
-	if useSingleConn {
+	// Sync rounds open their FETCH connection on demand and close it when the
+	// round returns (see syncAfterWake). No FETCH connection is held open
+	// between rounds, so an upstream inactivity timeout cannot silently close a
+	// parked connection and wedge every later round on a dead socket
+	// (REQ-IMAP-IMP-21/22). connMode reflects whether a separate FETCH
+	// connection is used at all: "single" when a sticky rate-limit fallback
+	// (REQ-IMAP-IMP-73) makes the primary serve sync rounds too, "dual"
+	// otherwise.
+	if w.forceSingleConn {
 		w.status.setConnMode("single")
 	} else {
 		w.status.setConnMode("dual")
@@ -129,7 +96,7 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 		slog.String("account_id", account.ID),
 		slog.Bool("idle", supportsIDLE),
 		slog.Bool("notify", supportsNOTIFY),
-		slog.Bool("single_conn", useSingleConn),
+		slog.Bool("single_conn", w.forceSingleConn),
 	)
 
 	// Watch-mode selection (REQ-IMAP-IMP-27/29): NOTIFY+IDLE > IDLE > poll.
@@ -137,19 +104,19 @@ func (w *accountWorker) runIDLELoop(ctx context.Context, primary Conn) error {
 	case supportsIDLE && supportsNOTIFY:
 		// notifyIdleLoop sets the watch mode internally ("notify" on success,
 		// "idle" on fallback after a rejected SET).
-		return w.notifyIdleLoop(ctx, primary, syncConn, useSingleConn)
+		return w.notifyIdleLoop(ctx, primary)
 	case supportsIDLE:
 		w.status.setWatchMode("idle")
-		return w.idleLoop(ctx, primary, syncConn, useSingleConn)
+		return w.idleLoop(ctx, primary)
 	default:
 		w.status.setWatchMode("poll")
-		return w.noopPollLoop(ctx, primary, syncConn, useSingleConn)
+		return w.noopPollLoop(ctx, primary)
 	}
 }
 
 // idleLoop drives the primary connection in a repeating IDLE → wake → sync
 // cycle when the upstream advertises IDLE but not NOTIFY. REQ-IMAP-IMP-20.
-func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+func (w *accountWorker) idleLoop(ctx context.Context, primary Conn) error {
 	account := w.opts.account
 	log := w.opts.log
 
@@ -165,7 +132,7 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 		)
 	}
 
-	return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+	return w.idleLoopCore(ctx, primary)
 }
 
 // notifyIdleLoop drives the primary connection with NOTIFY+IDLE so events from
@@ -173,7 +140,7 @@ func (w *accountWorker) idleLoop(ctx context.Context, primary, syncConn Conn, us
 // INBOX, issues NOTIFY SET, then runs the same IDLE wake→sync cycle as
 // idleLoopCore. On a server NO/BAD rejection it falls back to idleLoopCore
 // (watch mode "idle") and logs once; the worker does not flip to errored.
-func (w *accountWorker) notifyIdleLoop(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+func (w *accountWorker) notifyIdleLoop(ctx context.Context, primary Conn) error {
 	account := w.opts.account
 	log := w.opts.log
 
@@ -194,7 +161,7 @@ func (w *accountWorker) notifyIdleLoop(ctx context.Context, primary, syncConn Co
 				slog.String("account_id", account.ID),
 			)
 			w.status.setWatchMode("idle")
-			return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+			return w.idleLoopCore(ctx, primary)
 		}
 		// Connection-level error; surface to the caller for reconnect/backoff.
 		return err
@@ -210,13 +177,13 @@ func (w *accountWorker) notifyIdleLoop(ctx context.Context, primary, syncConn Co
 	// events from any watched mailbox — and NOTIFICATIONOVERFLOW — wake the
 	// loop through the same notify channel (REQ-IMAP-IMP-28). No change to the
 	// core IDLE cycle is needed.
-	return w.idleLoopCore(ctx, primary, syncConn, useSingleConn)
+	return w.idleLoopCore(ctx, primary)
 }
 
 // idleLoopCore is the repeating IDLE → wake → sync inner loop shared by
 // idleLoop and notifyIdleLoop. It assumes the mailbox is already selected and
 // (for NOTIFY mode) NOTIFY SET has already been issued.
-func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+func (w *accountWorker) idleLoopCore(ctx context.Context, primary Conn) error {
 	account := w.opts.account
 	log := w.opts.log
 
@@ -279,7 +246,7 @@ func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn
 		// Run sync on the sync connection (second conn or primary in
 		// single-conn mode). REQ-IMAP-IMP-22 latency target is here.
 		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
-		syncErr := w.syncAfterWake(ctx, syncConn, useSingleConn)
+		syncErr := w.syncAfterWake(ctx, primary)
 		if syncErr != nil {
 			// Non-fatal: log and continue the IDLE loop (don't reconnect for
 			// a single failed sync round).
@@ -312,7 +279,7 @@ func (w *accountWorker) idleLoopCore(ctx context.Context, primary, syncConn Conn
 
 // noopPollLoop drives the primary connection via periodic NOOP polling.
 // Used when the upstream does not advertise IDLE.  REQ-IMAP-IMP-23.
-func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn, useSingleConn bool) error {
+func (w *accountWorker) noopPollLoop(ctx context.Context, primary Conn) error {
 	account := w.opts.account
 	log := w.opts.log
 
@@ -346,7 +313,7 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 		}
 
 		w.status.setPhase(PhaseSyncing, w.opts.clk.Now())
-		if syncErr := w.syncAfterWake(ctx, syncConn, useSingleConn); syncErr != nil {
+		if syncErr := w.syncAfterWake(ctx, primary); syncErr != nil {
 			log.Warn("imapimport: sync after NOOP poll failed",
 				slog.String("account_id", account.ID),
 				slog.String("error", syncErr.Error()),
@@ -373,11 +340,45 @@ func (w *accountWorker) noopPollLoop(ctx context.Context, primary, syncConn Conn
 	}
 }
 
-// syncAfterWake runs a full syncAllFolders round. When using two
-// connections, syncConn is the secondary; when single-conn, it is the
-// primary (which is NOT in IDLE at this point — IDLE has been closed
-// before this call). REQ-IMAP-IMP-22.
-func (w *accountWorker) syncAfterWake(ctx context.Context, syncConn Conn, _ bool) error {
+// syncAfterWake runs a full syncAllFolders round on a FETCH connection opened
+// on demand for this round and closed when it returns, so no FETCH connection
+// is parked between rounds — an upstream inactivity timeout would otherwise
+// silently close a parked connection and every later round would fail on the
+// dead socket (REQ-IMAP-IMP-22).
+//
+// In sticky single-connection mode (a prior rate-limit / too-many-connections
+// rejection, REQ-IMAP-IMP-73), or when opening the on-demand connection is
+// refused, the round runs over the primary, which is NOT in IDLE at this point
+// (IDLE has been closed before this call).
+func (w *accountWorker) syncAfterWake(ctx context.Context, primary Conn) error {
+	if w.forceSingleConn {
+		return w.syncAllFolders(ctx, primary)
+	}
+
+	syncConn, err := w.openSecondaryConn(ctx)
+	if err != nil {
+		// A rate-limit rejection makes single-connection mode sticky and raises
+		// the backoff exponent (REQ-IMAP-IMP-73); any other open failure is
+		// transient and a fresh secondary is retried on the next round. Either
+		// way, run this round over the primary so the wake is not dropped.
+		w.noteSecondaryConnError(err)
+		if w.forceSingleConn {
+			w.status.setConnMode("single")
+		}
+		w.opts.log.Info("imapimport: on-demand FETCH connection unavailable; using primary for this round",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("reason", redactError(err)),
+		)
+		return w.syncAllFolders(ctx, primary)
+	}
+	defer func() {
+		if logoutErr := syncConn.Logout(); logoutErr != nil {
+			w.opts.log.Debug("imapimport: on-demand FETCH connection LOGOUT error",
+				slog.String("account_id", w.opts.account.ID),
+				slog.String("error", logoutErr.Error()))
+		}
+		syncConn.Close()
+	}()
 	return w.syncAllFolders(ctx, syncConn)
 }
 

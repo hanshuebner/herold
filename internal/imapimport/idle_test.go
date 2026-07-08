@@ -17,6 +17,7 @@ package imapimport
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -510,4 +511,135 @@ func TestLastSuccessAtPersistedWhileIDLEActive(t *testing.T) {
 	cancel()
 	<-done
 	t.Error("last_success_at not persisted within 15s while IDLE connection was active (re #136)")
+}
+
+// --------------------------------------------------------------------------
+// Test: FETCH connection is opened on demand per sync round, never reused
+// --------------------------------------------------------------------------
+
+// listCountingConn wraps a Conn and counts List calls. Each wake-driven sync
+// round issues exactly one LIST (sync.go), so the number of List calls on a
+// single connection is the number of sync rounds it served.
+type listCountingConn struct {
+	Conn
+	lists *atomic.Int32
+}
+
+func (c *listCountingConn) List(ctx context.Context) ([]folderInfo, error) {
+	c.lists.Add(1)
+	return c.Conn.List(ctx)
+}
+
+// listCountingDialer wraps every dialed Conn so a test can inspect how many
+// sync rounds each connection served.
+type listCountingDialer struct {
+	inner    Dialer
+	mu       sync.Mutex
+	counters []*atomic.Int32
+}
+
+func (d *listCountingDialer) Dial(ctx context.Context, p dialParams) (Conn, error) {
+	c, err := d.inner.Dial(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	ctr := &atomic.Int32{}
+	d.mu.Lock()
+	d.counters = append(d.counters, ctr)
+	d.mu.Unlock()
+	return &listCountingConn{Conn: c, lists: ctr}, nil
+}
+
+func (d *listCountingDialer) maxListsPerConn() int32 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var max int32
+	for _, c := range d.counters {
+		if n := c.Load(); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// TestSyncConnectionOpenedOnDemandPerRound is a regression guard for the
+// production wedge where the wake-driven FETCH connection was opened once and
+// reused for every sync round. When the upstream autologged-out that parked
+// connection after an inactivity timeout, every later round failed with
+// "use of closed network connection" and, because the sync-round error is
+// non-fatal, the worker never reconnected and stopped importing new mail while
+// the live status still reported "connected / idle".
+//
+// The fix opens a fresh FETCH connection per round and closes it when the round
+// returns, so no connection is parked between rounds. This test asserts that
+// invariant structurally: across two separate IDLE-wake rounds, no single
+// connection serves more than one round (the old shared-secondary design would
+// serve both rounds on one connection). REQ-IMAP-IMP-21/22.
+func TestSyncConnectionOpenedOnDemandPerRound(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("ondemand1", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "ondemand1@example.test",
+		username:            "ondemand1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	lcd := &listCountingDialer{inner: &fakeDialer{ts: ts}}
+
+	done := make(chan error, 1)
+	go func() {
+		w := newAccountWorker(accountWorkerOpts{
+			account:     acc,
+			store:       ha.Store,
+			dataKey:     testDataKey(t),
+			cfg:         sysconfig.IMAPImportConfig{},
+			log:         newTestLogger(t),
+			clk:         ha.Clock,
+			dialer:      lcd,
+			categoriser: noopCategoriser{},
+		})
+		done <- w.attempt(ctx)
+	}()
+
+	// Let the initial sync finish and the worker settle into IDLE.
+	time.Sleep(500 * time.Millisecond)
+
+	// Two messages appended at different times, each waited for in turn, force
+	// two distinct wake-driven sync rounds.
+	waitForCount := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			if n := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); n == want {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		cancel()
+		<-done
+		t.Fatalf("INBOX message count did not reach %d within 8s", want)
+	}
+
+	d1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	appendToServer(t, ts, "ondemand1", "pw", "INBOX",
+		buildRFC822("ondemand-1@test", "On Demand One", d1), nil, d1)
+	waitForCount(1)
+
+	d2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	appendToServer(t, ts, "ondemand1", "pw", "INBOX",
+		buildRFC822("ondemand-2@test", "On Demand Two", d2), nil, d2)
+	waitForCount(2)
+
+	cancel()
+	<-done
+
+	if got := lcd.maxListsPerConn(); got > 1 {
+		t.Errorf("a single connection served %d sync rounds; want at most 1 "+
+			"(FETCH connection must be opened on demand per round, not reused)", got)
+	}
 }
