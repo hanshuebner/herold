@@ -1403,10 +1403,16 @@ type Metadata interface {
 
 	// CountOAuthIdentitySubmissions returns the total number of
 	// identity_submission rows whose submit_auth_method is 'oauth2',
-	// regardless of refresh_due_us. Used by the sweeper to keep the
-	// herold_external_submission_active_identities gauge accurate between
-	// refresh windows (REQ-AUTH-EXT-SUBMIT-09).
+	// regardless of refresh_due_us.
 	CountOAuthIdentitySubmissions(ctx context.Context) (int, error)
+
+	// ListIdentitiesWithHeldSubmissions returns the identity_id values of all
+	// identities that have at least one jmap_email_submission row with
+	// held_for_reauth=true. The result drives the held-submission retry loop:
+	// Retryer.RetryForIdentity is called for each returned identity so that
+	// parked messages are redelivered once authentication recovers (re #131,
+	// REQ-AUTH-EXT-SUBMIT-05).
+	ListIdentitiesWithHeldSubmissions(ctx context.Context) ([]string, error)
 
 	// -- Phase 2 JMAP snooze (REQ-PROTO-49) ---------------------------
 

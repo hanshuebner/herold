@@ -1224,6 +1224,21 @@ func (h *handlerSet) execExternalRelay(
 		_ = h.externalRouter.BumpIdentityPushState(ctx, p.ID)
 	}
 
+	// On an auth failure, mark the identity_submission row as auth-failed so
+	// the UI badge is updated and the held-submission retry loop can find the
+	// identity on its next scan (re #131, REQ-AUTH-EXT-SUBMIT-05).
+	if outcome.State == extsubmit.OutcomeAuthFailed {
+		updatedSub := cfg
+		updatedSub.State = store.IdentitySubmissionStateAuthFailed
+		updatedSub.StateAt = h.clk.Now()
+		if err := h.store.Meta().UpsertIdentitySubmission(ctx, updatedSub); err != nil {
+			slog.WarnContext(ctx, "emailsubmission: ext relay: write auth-failed state",
+				"submission_id", submissionID,
+				"identity_id", cfg.IdentityID,
+				"err", err)
+		}
+	}
+
 	// Map the outcome to the stored state. On auth-failed: park the row
 	// for the Retryer (re #70, REQ-AUTH-EXT-SUBMIT-05).
 	heldForReauth := outcome.State == extsubmit.OutcomeAuthFailed

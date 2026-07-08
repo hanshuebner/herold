@@ -399,6 +399,10 @@ type OAuthProviderOptions struct {
 	TokenURL string
 	// Scopes is the set of OAuth scopes requested.
 	Scopes []string
+	// ExtraAuthParams holds provider-specific key/value pairs appended to the
+	// authorization URL query (re #131). Typical use: access_type=offline and
+	// prompt=consent for Google Gmail.
+	ExtraAuthParams map[string]string
 }
 
 // Server is the protoadmin REST handle. One *Server serves any number

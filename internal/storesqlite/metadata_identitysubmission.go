@@ -190,6 +190,24 @@ func (m *metadata) CountOAuthIdentitySubmissions(ctx context.Context) (int, erro
 	return n, nil
 }
 
+func (m *metadata) ListIdentitiesWithHeldSubmissions(ctx context.Context) ([]string, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT DISTINCT identity_id FROM jmap_email_submissions WHERE held_for_reauth = 1`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (m *metadata) ListIdentitySubmissionsDue(ctx context.Context, before time.Time) ([]store.IdentitySubmission, error) {
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT `+identitySubmissionSelectCols+`

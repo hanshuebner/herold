@@ -416,11 +416,9 @@ type ExternalSubmissionConfig struct {
 	// to start otherwise (boot-time hard-fail per architectural decision 4).
 	// Default false.
 	Enabled bool `toml:"enabled,omitempty"`
-	// SweeperWorkers is the size of the bounded worker pool that the OAuth
-	// refresh sweeper dispatches refresh attempts to. Zero or absent defaults
-	// to 4 (architectural decision 1, Phase 6). A higher value allows more
-	// concurrent refreshes when many OAuth identities are due at once;
-	// raising it above 16 provides diminishing returns for typical deployments.
+	// SweeperWorkers is retained for config-file compatibility but is no longer
+	// used. The OAuth token-refresh sweeper was removed in favour of on-demand
+	// refresh at send time and a held-submission retry loop (re #131).
 	SweeperWorkers int `toml:"sweeper_workers,omitempty"`
 }
 
@@ -730,6 +728,11 @@ type OAuthProviderConfig struct {
 	TokenURL string `toml:"token_url"`
 	// Scopes is the set of OAuth scopes requested. Must be non-empty.
 	Scopes []string `toml:"scopes"`
+	// ExtraAuthParams holds provider-specific key/value pairs appended to the
+	// authorization URL at OAuth start. Use this to set access_type=offline and
+	// prompt=consent for Google Gmail, or any other provider-specific parameter
+	// that the base OAuth 2.0 flow does not cover (re #131).
+	ExtraAuthParams map[string]string `toml:"extra_auth_params,omitempty"`
 }
 
 // IMAPImportConfig is the operator-facing [imap_import] block for the

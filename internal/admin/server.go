@@ -729,19 +729,31 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// start/callback handlers (REQ-AUTH-EXT-SUBMIT-03).
 		if len(cfg.Server.OAuthProviders) > 0 {
 			adminOAuthProviders = make(map[string]protoadmin.OAuthProviderOptions, len(cfg.Server.OAuthProviders))
+			oauthCredsByTokenURL := make(map[string]extsubmit.OAuthClientCredentials, len(cfg.Server.OAuthProviders))
 			for name, pc := range cfg.Server.OAuthProviders {
 				cs, csErr := sysconfig.ResolveSecretStrict(pc.ClientSecretRef)
 				if csErr != nil {
 					return fmt.Errorf("external submission: oauth_providers.%s: resolve client_secret_ref: %w", name, csErr)
 				}
 				adminOAuthProviders[name] = protoadmin.OAuthProviderOptions{
-					ClientID:     pc.ClientID,
-					ClientSecret: cs,
-					AuthURL:      pc.AuthURL,
-					TokenURL:     pc.TokenURL,
-					Scopes:       pc.Scopes,
+					ClientID:        pc.ClientID,
+					ClientSecret:    cs,
+					AuthURL:         pc.AuthURL,
+					TokenURL:        pc.TokenURL,
+					Scopes:          pc.Scopes,
+					ExtraAuthParams: pc.ExtraAuthParams,
+				}
+				// Index by token endpoint URL so accessToken can look up
+				// operator credentials at refresh time (re #131).
+				if pc.TokenURL != "" {
+					oauthCredsByTokenURL[pc.TokenURL] = extsubmit.OAuthClientCredentials{
+						ClientID:      pc.ClientID,
+						ClientSecret:  cs,
+						TokenEndpoint: pc.TokenURL,
+					}
 				}
 			}
+			prebuiltExtSubmitter.OAuthCredsByTokenURL = oauthCredsByTokenURL
 		}
 	}
 
@@ -1307,35 +1319,43 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		})
 	}
 
-	// OAuth token refresh sweeper (REQ-AUTH-EXT-SUBMIT-02, Phase 6).
-	// Only started when external_submission.enabled = true; the sweeper
-	// queries identity_submission rows whose refresh_due_us <= now and
-	// dispatches refresh attempts to a bounded worker pool.
-	if cfg.Server.ExternalSubmission.Enabled && prebuiltExtSubmitter != nil {
-		workerCount := cfg.Server.ExternalSubmission.SweeperWorkers
-		if workerCount <= 0 {
-			workerCount = 4 // default per architectural decision 1
-		}
-		sweeper := &extsubmit.Sweeper{
-			Store: st.Meta(),
-			// Reuse prebuiltExtSubmitter.Refresher so probe, test-sender, and
-			// sweeper all share one Refresher instance (same Meta and DataKey).
-			TokenRefresh: prebuiltExtSubmitter.Refresher,
-			DataKey:      extSubmitDataKey,
-			Logger:       logger.With("subsystem", "extsubmit-sweeper"),
-			AuditLog:     &sweeperAuditLogger{meta: st.Meta(), clk: clk},
-			Workers:      workerCount,
-			// Redeliver parked submissions after a successful token refresh
-			// (re #70, REQ-AUTH-EXT-SUBMIT-05).
-			Retryer: extRetryer,
-		}
+	// Held-submission retry loop (REQ-AUTH-EXT-SUBMIT-05, re #131).
+	// Periodically finds identities with parked (held_for_reauth=true) email
+	// submissions and calls Retryer.RetryForIdentity for each. Each retry
+	// attempt calls Submitter.Submit which performs on-demand OAuth token
+	// refresh via accessToken when RefreshDue has passed (re #131). This
+	// replaces the proactive OAuth token-refresh sweeper: refresh tokens are
+	// long-lived; they only need to be used when a send is attempted, not on
+	// a fixed schedule.
+	if cfg.Server.ExternalSubmission.Enabled && extRetryer != nil {
+		heldRetryInterval := 5 * time.Minute
 		g.Go(func() error {
-			if err := sweeper.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.LogAttrs(context.Background(), slog.LevelWarn,
-					"extsubmit sweeper exited", slog.String("err", err.Error()))
-				return err
+			t := clk.After(heldRetryInterval)
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case <-t:
+				}
+				ids, err := st.Meta().ListIdentitiesWithHeldSubmissions(gctx)
+				if err != nil && !errors.Is(err, context.Canceled) {
+					logger.LogAttrs(context.Background(), slog.LevelWarn,
+						"held-submission retry: list identities",
+						slog.String("err", err.Error()))
+				}
+				for _, identityID := range ids {
+					sub, err := st.Meta().GetIdentitySubmission(gctx, identityID)
+					if err != nil {
+						logger.LogAttrs(context.Background(), slog.LevelWarn,
+							"held-submission retry: get submission",
+							slog.String("identity_id", identityID),
+							slog.String("err", err.Error()))
+						continue
+					}
+					extRetryer.RetryForIdentity(gctx, identityID, sub)
+				}
+				t = clk.After(heldRetryInterval)
 			}
-			return nil
 		})
 	}
 
@@ -3232,44 +3252,6 @@ func (a acmePluginAdapter) Call(ctx context.Context, pluginName, method string, 
 		return fmt.Errorf("acme: dns plugin %q not registered", pluginName)
 	}
 	return pl.Call(ctx, method, params, result)
-}
-
-// sweeperAuditLogger implements extsubmit.SweeperAuditLogger and writes
-// structured audit entries to the store's audit log for sweeper-triggered
-// state transitions (Phase 6, REQ-AUTH-EXT-SUBMIT-09).
-//
-// The audit record carries the failure category and correlation id; it never
-// includes the credential material (token values, passwords).
-type sweeperAuditLogger struct {
-	meta store.Metadata
-	clk  clock.Clock
-}
-
-func (a *sweeperAuditLogger) AppendAudit(
-	ctx context.Context,
-	action, principalID, identityID, category, correlationID string,
-) {
-	subject := fmt.Sprintf("identity:%s", identityID)
-	metadata := map[string]string{
-		"category":       category,
-		"correlation_id": correlationID,
-	}
-	if principalID != "" {
-		metadata["principal_id"] = principalID
-	}
-	entry := store.AuditLogEntry{
-		At:        a.clk.Now(),
-		ActorKind: store.ActorSystem,
-		ActorID:   "extsubmit-sweeper",
-		Action:    action,
-		Subject:   subject,
-		Outcome:   store.OutcomeFailure,
-		Metadata:  metadata,
-	}
-	if err := a.meta.AppendAuditLog(ctx, entry); err != nil {
-		// Non-fatal: audit failure should not crash the sweeper.
-		_ = err
-	}
 }
 
 // retryBlobAdapter adapts store.Blobs to extsubmit.RetryBlobGetter, whose Get

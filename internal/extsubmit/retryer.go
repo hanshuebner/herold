@@ -137,10 +137,10 @@ func (r *Retryer) RetryForIdentity(ctx context.Context, identityID string, sub s
 
 // retryRow attempts one redelivery. On hold-window expiry it abandons the
 // row immediately. On OutcomeOK it clears the parked state. On OutcomeAuthFailed
-// it leaves the row parked (the identity will transition back to auth-failed and
-// the sweeper will retry on the next successful refresh). On OutcomePermanent it
-// abandons immediately. On transient/unreachable within the hold window it stays
-// parked for the next retry cycle.
+// it leaves the row parked for the next held-submission retry loop cycle
+// (re #131). On OutcomePermanent it abandons immediately. On
+// transient/unreachable within the hold window it stays parked for the next
+// retry cycle.
 func (r *Retryer) retryRow(ctx context.Context, row store.EmailSubmissionRow, sub store.IdentitySubmission) {
 	now := r.now()
 
@@ -223,9 +223,8 @@ func (r *Retryer) retryRow(ctx context.Context, row store.EmailSubmissionRow, su
 		r.finalise(ctx, row, false, "final", props)
 
 	case OutcomeAuthFailed:
-		// Auth is still failing. Leave the submission parked; the identity
-		// will transition back to auth-failed and the sweeper will retry on
-		// the next successful refresh cycle.
+		// Auth is still failing. Leave the submission parked; the held-submission
+		// retry loop will attempt again on the next scan cycle (re #131).
 		r.logger().LogAttrs(ctx, slog.LevelWarn, "extsubmit.retryer: redelivery auth-failed; staying parked",
 			slog.String("submission_id", row.ID),
 			slog.String("identity_id", row.IdentityID),

@@ -143,6 +143,8 @@ func Run(t *testing.T, f Factory) {
 		// -- re #70: hold-and-retry for external auth-failed submissions ------
 		{"EmailSubmission_HeldForReauth_ListAndUpdate", testEmailSubmissionHeldForReauthListAndUpdate},
 		{"EmailSubmission_HeldForReauth_IdentityIsolation", testEmailSubmissionHeldForReauthIdentityIsolation},
+		// -- re #131: list identities with parked submissions for retry loop ---
+		{"EmailSubmission_ListIdentitiesWithHeldSubmissions", testEmailSubmission_ListIdentitiesWithHeldSubmissions},
 		{"JMAPIdentity_InsertGet_Roundtrip", testJMAPIdentityInsertGetRoundtrip},
 		{"JMAPIdentity_List_ByPrincipal", testJMAPIdentityListByPrincipal},
 		{"JMAPIdentity_Update_RoundTrips", testJMAPIdentityUpdateRoundtrips},
@@ -5157,6 +5159,73 @@ func testEmailSubmissionHeldForReauthIdentityIsolation(t *testing.T, s store.Sto
 	}
 	if len(listC) != 0 {
 		t.Fatalf("listC: got %d rows, want 0", len(listC))
+	}
+}
+
+// testEmailSubmission_ListIdentitiesWithHeldSubmissions verifies that
+// ListIdentitiesWithHeldSubmissions returns exactly the set of identity_id
+// values that have at least one held_for_reauth row, deduplicated.
+// re #131, REQ-AUTH-EXT-SUBMIT-05.
+func testEmailSubmission_ListIdentitiesWithHeldSubmissions(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "held-identity-list@example.com")
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	insert := func(id, identityID string, held bool) {
+		t.Helper()
+		err := s.Meta().InsertEmailSubmission(ctx, store.EmailSubmissionRow{
+			ID:             id,
+			EnvelopeID:     store.EnvelopeID(id),
+			PrincipalID:    p.ID,
+			IdentityID:     identityID,
+			EmailID:        store.MessageID(999),
+			SendAtUs:       now.UnixMicro(),
+			CreatedAtUs:    now.UnixMicro(),
+			UndoStatus:     "pending",
+			External:       true,
+			HeldForReauth:  held,
+			HoldDeadlineUs: now.Add(72 * time.Hour).UnixMicro(),
+		})
+		if err != nil {
+			t.Fatalf("InsertEmailSubmission %s: %v", id, err)
+		}
+	}
+
+	// Empty table: no held submissions.
+	ids, err := s.Meta().ListIdentitiesWithHeldSubmissions(ctx)
+	if err != nil {
+		t.Fatalf("ListIdentitiesWithHeldSubmissions (empty): %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("empty: got %v, want []", ids)
+	}
+
+	// Two held rows for ident-X (must appear once), one held for ident-Y,
+	// and one NOT held for ident-Z (must not appear).
+	insert("lis-a1", "lident-X", true)
+	insert("lis-a2", "lident-X", true) // duplicate identity, should be deduplicated
+	insert("lis-b", "lident-Y", true)
+	insert("lis-c", "lident-Z", false)
+
+	ids, err = s.Meta().ListIdentitiesWithHeldSubmissions(ctx)
+	if err != nil {
+		t.Fatalf("ListIdentitiesWithHeldSubmissions: %v", err)
+	}
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	if !idSet["lident-X"] {
+		t.Errorf("lident-X not in result: %v", ids)
+	}
+	if !idSet["lident-Y"] {
+		t.Errorf("lident-Y not in result: %v", ids)
+	}
+	if idSet["lident-Z"] {
+		t.Errorf("lident-Z (not held) appeared in result: %v", ids)
+	}
+	if len(ids) != 2 {
+		t.Errorf("len = %d, want 2 (X and Y); ids = %v", len(ids), ids)
 	}
 }
 

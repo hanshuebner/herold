@@ -201,6 +201,13 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("scope", strings.Join(prov.Scopes, " "))
+	// Provider-specific extra parameters (re #131). For Google/Gmail this is
+	// access_type=offline + prompt=consent; operators configure them in
+	// [server.oauth_providers.<name>.extra_auth_params]. Applied before
+	// redirect_uri so provider-specific params cannot shadow the standard ones.
+	for k, v := range prov.ExtraAuthParams {
+		q.Set(k, v)
+	}
 	// The redirect_uri is the fixed callback endpoint. The identity id is
 	// carried in the state token, not in the URL, so operators only register
 	// one redirect URI with their OAuth provider.

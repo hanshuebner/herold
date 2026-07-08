@@ -32,6 +32,11 @@ type Submitter struct {
 	// Refresher handles OAuth token refresh. May be nil if no OAuth
 	// identities will be submitted.
 	Refresher *Refresher
+	// OAuthCredsByTokenURL maps a token endpoint URL to the operator-level
+	// OAuth application credentials (client_id + client_secret) for that
+	// provider. accessToken looks up by sub.OAuthTokenEndpoint to obtain the
+	// correct credentials for token refresh (re #131).
+	OAuthCredsByTokenURL map[string]OAuthClientCredentials
 	// dialFn is injectable for tests; nil uses net.Dialer.
 	dialFn dialFunc
 	// tlsWrapFn is injectable for tests; nil uses tls.Client with standard
@@ -99,31 +104,34 @@ func (s *Submitter) accessToken(ctx context.Context, sub store.IdentitySubmissio
 	// If the token is not expired or refresh is not due yet, just open it.
 	if s.Refresher != nil && !sub.RefreshDue.IsZero() && !s.now().Before(sub.RefreshDue) {
 		// Token refresh is due. Refresher obtains and stores the new token;
-		// but Refresh returns a plaintext string so we avoid double-open.
-		// We seal a copy for the Refresher to store and use the returned
-		// plaintext directly.
+		// Refresh returns plaintext so we use it directly without a second seal.
 		if len(sub.OAuthRefreshCT) == 0 {
-			// No refresh token; fall through to just opening the current one.
+			// No refresh token; fall through to opening the current access token.
 		} else {
-			// Build OAuthClientCredentials from the sub row. In v1 the
-			// operator-level credentials are carried on sub directly.
+			// Build credentials for the token endpoint. Look up the operator-level
+			// client_id/secret from OAuthCredsByTokenURL (keyed by the row's
+			// token endpoint URL). This is the correct credentials source — the
+			// per-row OAuthClientID holds the XOAUTH2 user= field (the user's
+			// email address), not an OAuth client_id (re #131).
 			creds := OAuthClientCredentials{
-				ClientID:      sub.OAuthClientID,
 				TokenEndpoint: sub.OAuthTokenEndpoint,
 			}
-			// ClientSecret is sealed in OAuthClientSecretCT when present.
-			// In v1 this field may be nil (operator-level secret not
-			// per-user). We leave ClientSecret empty in that case and let
-			// the Refresher handle it — the token endpoint may not require
-			// it for PKCE or public clients.
-			if len(sub.OAuthClientSecretCT) > 0 {
-				cs, err := secrets.Open(s.DataKey, sub.OAuthClientSecretCT)
-				if err != nil {
-					return nil, fmt.Errorf("extsubmit: open client secret: %w", err)
-				}
-				creds.ClientSecret = string(cs)
-				for i := range cs {
-					cs[i] = 0
+			if opCreds, ok := s.OAuthCredsByTokenURL[sub.OAuthTokenEndpoint]; ok {
+				creds.ClientID = opCreds.ClientID
+				creds.ClientSecret = opCreds.ClientSecret
+			} else {
+				// Fallback: use per-row fields. Supports old rows or public
+				// clients that carry their own credentials.
+				creds.ClientID = sub.OAuthClientID
+				if len(sub.OAuthClientSecretCT) > 0 {
+					cs, err := secrets.Open(s.DataKey, sub.OAuthClientSecretCT)
+					if err != nil {
+						return nil, fmt.Errorf("extsubmit: open client secret: %w", err)
+					}
+					creds.ClientSecret = string(cs)
+					for i := range cs {
+						cs[i] = 0
+					}
 				}
 			}
 			plaintext, err := s.Refresher.Refresh(ctx, sub, creds)

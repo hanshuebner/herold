@@ -58,15 +58,20 @@ type Options struct {
 	// AccessTTL is the lifetime reported as expires_in for issued access
 	// tokens. Defaults to one hour.
 	AccessTTL time.Duration
+	// RequireOfflineAccess, when true, causes the server to only issue a
+	// refresh_token when the authorization request carried access_type=offline.
+	// This matches the behaviour of Google's OAuth server (re #131).
+	RequireOfflineAccess bool
 }
 
 // Server is a running fake authorization server backed by httptest.
 type Server struct {
-	ts           *httptest.Server
-	clientID     string
-	clientSecret string
-	now          func() time.Time
-	accessTTL    time.Duration
+	ts                   *httptest.Server
+	clientID             string
+	clientSecret         string
+	now                  func() time.Time
+	accessTTL            time.Duration
+	requireOfflineAccess bool
 
 	mu      sync.Mutex
 	counter int
@@ -75,8 +80,9 @@ type Server struct {
 }
 
 type codeRecord struct {
-	redirectURI string
-	scope       string
+	redirectURI   string
+	scope         string
+	offlineAccess bool // true when the auth request included access_type=offline
 }
 
 // NewServer starts a fake IdP HTTP server and returns it. The server is
@@ -96,12 +102,13 @@ func NewServer(opts Options) *Server {
 		opts.AccessTTL = time.Hour
 	}
 	s := &Server{
-		clientID:     opts.ClientID,
-		clientSecret: opts.ClientSecret,
-		now:          opts.Now,
-		accessTTL:    opts.AccessTTL,
-		codes:        make(map[string]codeRecord),
-		refresh:      make(map[string]bool),
+		clientID:             opts.ClientID,
+		clientSecret:         opts.ClientSecret,
+		now:                  opts.Now,
+		accessTTL:            opts.AccessTTL,
+		requireOfflineAccess: opts.RequireOfflineAccess,
+		codes:                make(map[string]codeRecord),
+		refresh:              make(map[string]bool),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/authorize", s.handleAuthorize)
@@ -169,7 +176,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	code := "code-" + strconv.Itoa(s.nextLocked())
-	s.codes[code] = codeRecord{redirectURI: redirectURI, scope: q.Get("scope")}
+	s.codes[code] = codeRecord{
+		redirectURI:   redirectURI,
+		scope:         q.Get("scope"),
+		offlineAccess: q.Get("access_type") == "offline",
+	}
 	s.mu.Unlock()
 
 	rq := u.Query()
@@ -214,8 +225,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		n := s.nextLocked()
 		access := "access-" + strconv.Itoa(n)
-		refresh := "refresh-" + strconv.Itoa(n)
-		s.refresh[refresh] = true
+		var refresh string
+		if !s.requireOfflineAccess || rec.offlineAccess {
+			refresh = "refresh-" + strconv.Itoa(n)
+			s.refresh[refresh] = true
+		}
 		s.mu.Unlock()
 		s.writeToken(w, access, refresh, rec.scope)
 
@@ -240,13 +254,16 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeToken emits a successful token response.
+// writeToken emits a successful token response. When refresh is empty,
+// the refresh_token field is omitted from the response.
 func (s *Server) writeToken(w http.ResponseWriter, access, refresh, scope string) {
 	tok := map[string]any{
-		"access_token":  access,
-		"refresh_token": refresh,
-		"token_type":    "Bearer",
-		"expires_in":    int(s.accessTTL.Seconds()),
+		"access_token": access,
+		"token_type":   "Bearer",
+		"expires_in":   int(s.accessTTL.Seconds()),
+	}
+	if refresh != "" {
+		tok["refresh_token"] = refresh
 	}
 	if scope != "" {
 		tok["scope"] = scope
@@ -319,6 +336,59 @@ func (s *Server) Authenticate(t testing.TB, redirectURI, state, scope string) To
 		"client_id":     {s.clientID},
 		"client_secret": {s.clientSecret},
 	})
+}
+
+// AuthenticateOffline is like Authenticate but includes access_type=offline in
+// the authorization request. Use when RequireOfflineAccess is set on the server
+// to obtain a refresh token without going through the full browser flow (re #131).
+func (s *Server) AuthenticateOffline(t testing.TB, redirectURI, state, scope string) Token {
+	t.Helper()
+
+	authURL, _ := url.Parse(s.AuthorizeURL())
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", s.clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("state", state)
+	q.Set("access_type", "offline")
+	if scope != "" {
+		q.Set("scope", scope)
+	}
+	authURL.RawQuery = q.Encode()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(authURL.String())
+	if err != nil {
+		t.Fatalf("fakeidp: GET /authorize (offline): %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("fakeidp: /authorize (offline) status = %d; want 302", resp.StatusCode)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("fakeidp: bad Location header: %v", err)
+	}
+	code := loc.Query().Get("code")
+	if code == "" {
+		t.Fatalf("fakeidp: /authorize (offline) redirect carried no code: %s", resp.Header.Get("Location"))
+	}
+
+	tok := s.exchange(t, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {s.clientID},
+		"client_secret": {s.clientSecret},
+	})
+	if tok.RefreshToken == "" {
+		t.Fatalf("fakeidp: AuthenticateOffline: token response carried no refresh_token (RequireOfflineAccess=%v)", s.requireOfflineAccess)
+	}
+	return tok
 }
 
 // RevokeRefreshToken removes refreshToken from the server's valid set so that
