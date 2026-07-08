@@ -34,6 +34,7 @@
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
   import { ApiError } from '../../lib/api/client';
   import { confirm } from '../../lib/dialog/confirm.svelte';
+  import { connectionTest } from '../../lib/dialog/connection-test.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import type { Identity } from '../../lib/mail/types';
   import Button from '@herold/design-system/Button.svelte';
@@ -127,6 +128,13 @@
   /** OAuth button-specific error (e.g. 503 provider not configured). */
   let oauthError = $state<string | null>(null);
   let oauthStarting = $state<string | null>(null);
+
+  /**
+   * True while the silent connection test for an OAuth identity is in
+   * flight (re #131). Distinct from testingSmtp (which delivers a message
+   * to a chosen recipient).
+   */
+  let testingConnection = $state(false);
 
   /** Pending state for the on-demand SMTP probe button (re #113, re #115). */
   let testingSmtp = $state(false);
@@ -297,6 +305,44 @@
       testSmtpResult = await testSubmission(identity.id, { to: recipient });
     } finally {
       testingSmtp = false;
+    }
+  }
+
+  /**
+   * Silent connection probe for OAuth identities (re #131 item 1).
+   *
+   * Called when the user clicks "Verbindung testen" on an oauth2-configured
+   * identity instead of the previous full-page OAuth redirect. The server
+   * refreshes the access token on-demand if needed, so no user interaction
+   * is required for unexpired / still-refreshable tokens.
+   *
+   * The outcome is surfaced in the ConnectionTestDialog modal (item 2 of
+   * #131). If the probe reports an auth failure and the provider is known,
+   * the modal offers a "Neu autorisieren" popup flow.
+   */
+  async function testOAuthConnection(): Promise<void> {
+    if (testingConnection) return;
+    testingConnection = true;
+    try {
+      const result: TestSubmissionResult = await testSubmission(identity.id);
+      // Refresh the handle so the badge reflects any state change the
+      // probe wrote (e.g. clearing auth-failed after a token refresh).
+      await handle.refresh();
+      await connectionTest.show({
+        ok: result.ok,
+        detail: result.detail,
+        serverHost: handle.data?.submit_host ?? undefined,
+        selfEmail: identity.email,
+        isOAuth: true,
+        provider: oauthConfiguredProvider,
+        identityId: identity.id,
+      });
+      // After the modal closes, refresh again in case the user completed
+      // a re-auth popup flow which would have updated the stored token.
+      await handle.refresh();
+      onchange?.();
+    } finally {
+      testingConnection = false;
     }
   }
 
@@ -587,18 +633,19 @@
               </Button>
             {/if}
             {#if isOAuthConfigured && oauthConfiguredProvider !== null}
-              <!-- For oauth2-configured identities, "Verbindung testen"
-                   re-runs the OAuth flow: the provider re-issues tokens and
-                   herold re-probes the SMTP connection. For already-consented
-                   providers (Gmail, Microsoft) this usually completes
-                   instantly without user interaction (re #105). -->
+              <!-- For oauth2-configured identities, "Verbindung testen" runs
+                   a silent probe first (re #131): no redirect, no page reload.
+                   The server refreshes the token on-demand if needed. The
+                   outcome is surfaced in the ConnectionTestDialog modal. A
+                   "Neu autorisieren" popup is offered inside the modal only
+                   when the token cannot be refreshed silently. -->
               <Button
                 variant="primary"
-                onclick={() => void startOAuthFlow(oauthConfiguredProvider!)}
-                disabled={oauthStarting !== null || removing}
+                onclick={() => void testOAuthConnection()}
+                disabled={testingConnection || removing}
               >
-                {oauthStarting === oauthConfiguredProvider
-                  ? t('settings.submission.starting')
+                {testingConnection
+                  ? t('settings.submission.testModal.testing')
                   : t('settings.submission.testConnection')}
               </Button>
             {:else}

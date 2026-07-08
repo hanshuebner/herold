@@ -255,3 +255,37 @@ export async function startOAuth(
   }
   window.location.href = auth_url;
 }
+
+/**
+ * Open a popup window to re-authorize OAuth credentials for a specific
+ * identity provider (re #131).
+ *
+ * Calls POST /api/v1/identities/{id}/submission/oauth/start with
+ * display=popup so the callback serves a completion HTML page instead of
+ * redirecting. The completion page posts a
+ * { type: "herold:oauth-result", ok: boolean, detail: string } message
+ * to the opener via window.postMessage (targetOrigin = window.location.origin)
+ * and calls window.close().
+ *
+ * Returns the popup Window reference so the caller can poll popup.closed,
+ * or null when window.open was blocked by the browser.
+ *
+ * Throws an ApiError when the start endpoint returns an error (e.g. 503
+ * provider not configured). The caller is responsible for surfacing that.
+ */
+export async function startOAuthPopup(
+  identityId: string,
+  provider: OAuthProvider,
+): Promise<Window | null> {
+  const returnUrl = encodeURIComponent(window.location.href);
+  const url =
+    `/api/v1/identities/${identityId}/submission/oauth/start` +
+    `?provider=${encodeURIComponent(provider)}&return_url=${returnUrl}&display=popup`;
+  const { auth_url } = await post<{ auth_url: string }>(url);
+  const popup = window.open(
+    auth_url,
+    'herold-oauth',
+    'width=600,height=700,resizable=yes,scrollbars=yes',
+  );
+  return popup;
+}

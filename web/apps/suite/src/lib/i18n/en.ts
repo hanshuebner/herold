@@ -1466,6 +1466,34 @@ export const en = {
   'settings.submission.foreignDomainHint':
     'Enter the SMTP server credentials for this address.',
 
+  // Connection test result modal (re #131 item 2)
+  'settings.submission.testModal.testing': 'Testing connection...',
+  'settings.submission.testModal.successTitle': 'Connection successful',
+  'settings.submission.testModal.successBody':
+    'Connected to {host} and queued a test message for delivery to {email}.',
+  'settings.submission.testModal.successBodyNoHost':
+    'Connection verified and a test message was queued for delivery to {email}.',
+  'settings.submission.testModal.probeDescription':
+    'Tested: TCP connection, TLS handshake, SMTP authentication, MAIL FROM/RCPT probe.',
+  'settings.submission.testModal.failTitle': 'Connection test failed',
+  'settings.submission.testModal.failBody': 'The SMTP connection failed:',
+  'settings.submission.testModal.reauthorizeHint':
+    'The OAuth token may have expired or been revoked. ' +
+    'Re-authorize to issue a new token.',
+  'settings.submission.testModal.reauthorize': 'Re-authorize',
+  'settings.submission.testModal.close': 'Close',
+  'settings.submission.testModal.ok': 'OK',
+  'settings.submission.testModal.authorizing': 'Authorizing...',
+  'settings.submission.testModal.authorizingHint':
+    'An authorization window has been opened. Complete the sign-in there.',
+  'settings.submission.testModal.popupBlocked':
+    'The authorization window was blocked. Allow pop-ups for this page and try again.',
+  'settings.submission.testModal.reauthorizeSuccessTitle': 'Authorization successful',
+  'settings.submission.testModal.reauthorizeSuccessBody':
+    'The OAuth token was renewed and the SMTP connection verified.',
+  'settings.submission.testModal.reauthorizeFailTitle': 'Authorization failed',
+  'settings.submission.testModal.reauthorizeFailBody': 'Authorization failed:',
+
   // identity import section (IdentityImportSection.svelte)
   // REQ-SET-IMAPIMP-01..04
   'settings.import.sectionTitle': 'Receiving (IMAP import)',

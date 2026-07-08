@@ -16,6 +16,7 @@
   import ChatOverlayHost from '../chat/ChatOverlayHost.svelte';
   import NewChatPicker from '../chat/NewChatPicker.svelte';
   import RecipientHoverCard from '../mail/RecipientHoverCard.svelte';
+  import ConnectionTestDialog from '../dialog/ConnectionTestDialog.svelte';
 
   interface Props {
     /** When false, hide the overlay host (capability gate). */
@@ -62,6 +63,7 @@
   <StepUpModal />
   <NewChatPicker />
   <RecipientHoverCard />
+  <ConnectionTestDialog />
 
   <!-- Floating chat overlay windows. The host filters out the
        conversation that's already rendered in the dedicated chat

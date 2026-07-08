@@ -644,3 +644,188 @@ func TestOAuthStart_MissingClientSecret(t *testing.T) {
 		t.Errorf("type = %q; want to contain oauth_provider_not_configured", prob.Type)
 	}
 }
+
+// TestOAuthCallback_PopupMode_Success verifies that when the start request
+// carries display=popup the callback returns a text/html completion page (not
+// a 204 or redirect) that contains the postMessage call with ok=true.
+func TestOAuthCallback_PopupMode_Success(t *testing.T) {
+	oh := newOAuthHarness(t)
+	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauth-popup-ok@example.com")
+
+	// Start flow with display=popup.
+	req, err := http.NewRequest("POST",
+		oh.baseURL+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail&display=popup",
+		nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	res, err := oh.client.Do(req)
+	if err != nil {
+		t.Fatalf("do start: %v", err)
+	}
+	buf, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("start: expected 200, got %d: %s", res.StatusCode, buf)
+	}
+	var startBody struct {
+		AuthURL string `json:"auth_url"`
+	}
+	if err := json.Unmarshal(buf, &startBody); err != nil {
+		t.Fatalf("parse start body: %v", err)
+	}
+	u, _ := url.Parse(startBody.AuthURL)
+	stateTok := u.Query().Get("state")
+	if stateTok == "" {
+		t.Fatal("no state in auth_url")
+	}
+
+	// Call the callback. The probe is alwaysOKProbe (injected in newOAuthHarness).
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=fake-code",
+		url.QueryEscape(stateTok))
+	cbRes, cbBody := oh.doRequest("GET", callbackPath, "", nil)
+
+	// Popup mode: expect 200 HTML, not 204.
+	if cbRes.StatusCode != http.StatusOK {
+		t.Fatalf("popup callback: expected 200, got %d: %s", cbRes.StatusCode, cbBody)
+	}
+	ct := cbRes.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Errorf("popup callback Content-Type = %q; want text/html", ct)
+	}
+	bodyStr := string(cbBody)
+	if !strings.Contains(bodyStr, `"herold:oauth-result"`) {
+		t.Error("popup page does not contain herold:oauth-result message type")
+	}
+	if !strings.Contains(bodyStr, `"ok":true`) {
+		t.Errorf("popup page does not contain ok:true; body = %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `window.location.origin`) {
+		t.Error("popup page does not use window.location.origin as postMessage targetOrigin")
+	}
+}
+
+// TestOAuthCallback_PopupMode_ProbeFailure verifies that when display=popup
+// and the probe rejects the credentials the callback still returns a 200
+// HTML page with ok=false and the diagnostic in the postMessage payload.
+func TestOAuthCallback_PopupMode_ProbeFailure(t *testing.T) {
+	// Build a harness with a probe that always fails auth.
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+
+	// Fake token endpoint used by the harness.
+	fakeSv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok",
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+		})
+	}))
+	t.Cleanup(fakeSv.Close)
+
+	failProbe := func(_ context.Context, _ store.IdentitySubmission, _ string) extsubmit.Outcome {
+		return extsubmit.Outcome{
+			State:      extsubmit.OutcomeAuthFailed,
+			Diagnostic: "535 authentication failed",
+		}
+	}
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+		BootstrapPerWindow:        1,
+		BootstrapWindow:           5 * time.Minute,
+		RequestsPerMinutePerKey:   100,
+		ExternalSubmissionDataKey: testDataKey,
+		ExternalProbe:             failProbe,
+		OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
+			"gmail": {
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL:     fakeSv.URL + "/token",
+				Scopes:       []string{"https://mail.google.com/"},
+			},
+		},
+	})
+	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client, base := h.DialAdminByName(context.Background(), "admin")
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	// Bootstrap + identity.
+	bsBody, _ := json.Marshal(map[string]string{"email": "popup-probe-fail@example.com", "display_name": "T"})
+	bsReq, _ := http.NewRequest("POST", base+"/api/v1/bootstrap", bytes.NewReader(bsBody))
+	bsReq.Header.Set("Content-Type", "application/json")
+	bsRes, _ := client.Do(bsReq)
+	bsRaw, _ := io.ReadAll(bsRes.Body)
+	bsRes.Body.Close()
+	var bsOut struct {
+		InitialAPIKey string `json:"initial_api_key"`
+		PrincipalID   uint64 `json:"principal_id"`
+	}
+	json.Unmarshal(bsRaw, &bsOut)
+	identityID := fmt.Sprintf("popup-fail-id-%d", bsOut.PrincipalID)
+	fs.Meta().InsertJMAPIdentity(context.Background(), store.JMAPIdentity{
+		ID:          identityID,
+		PrincipalID: store.PrincipalID(bsOut.PrincipalID),
+		Name:        "T",
+		Email:       "popup-probe-fail@example.com",
+		MayDelete:   true,
+	})
+
+	// Start with display=popup.
+	startReq, _ := http.NewRequest("POST",
+		base+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail&display=popup",
+		nil)
+	startReq.Header.Set("Authorization", "Bearer "+bsOut.InitialAPIKey)
+	startReq.Header.Set("Accept", "application/json")
+	startRes, _ := client.Do(startReq)
+	startRaw, _ := io.ReadAll(startRes.Body)
+	startRes.Body.Close()
+	if startRes.StatusCode != http.StatusOK {
+		t.Fatalf("start: expected 200, got %d", startRes.StatusCode)
+	}
+	var startOut struct {
+		AuthURL string `json:"auth_url"`
+	}
+	json.Unmarshal(startRaw, &startOut)
+	u, _ := url.Parse(startOut.AuthURL)
+	stateTok := u.Query().Get("state")
+
+	// Call the callback. The failProbe will reject it.
+	callbackPath := fmt.Sprintf("/api/v1/oauth/external-submission/callback?state=%s&code=fake-code",
+		url.QueryEscape(stateTok))
+	cbReq, _ := http.NewRequest("GET", base+callbackPath, nil)
+	cbRes, _ := client.Do(cbReq)
+	cbBody, _ := io.ReadAll(cbRes.Body)
+	cbRes.Body.Close()
+
+	// Popup probe failure: expect 200 HTML with ok=false and the diagnostic.
+	if cbRes.StatusCode != http.StatusOK {
+		t.Fatalf("popup probe failure: expected 200, got %d: %s", cbRes.StatusCode, cbBody)
+	}
+	ct := cbRes.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q; want text/html", ct)
+	}
+	bodyStr := string(cbBody)
+	if !strings.Contains(bodyStr, `"ok":false`) {
+		t.Errorf("popup failure page does not contain ok:false; body = %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "535 authentication failed") {
+		t.Errorf("popup failure page does not contain the probe diagnostic; body = %s", bodyStr)
+	}
+}

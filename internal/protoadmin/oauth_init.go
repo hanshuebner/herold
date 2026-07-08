@@ -61,6 +61,12 @@ type oauthStateEntry struct {
 	ExpiresAt time.Time
 	// ReturnURL, when non-empty, is the suite URL to redirect to on success.
 	ReturnURL string
+	// DisplayMode, when "popup", causes the callback to return a tiny
+	// completion HTML page that posts the result to the opener via
+	// window.postMessage and calls window.close(), rather than redirecting
+	// to ReturnURL or returning 204. Used by the "Verbindung testen" popup
+	// flow in the Suite settings (re #131).
+	DisplayMode string
 }
 
 // oauthStateStore is the server-wide in-memory state store.
@@ -178,12 +184,17 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	returnURL := r.URL.Query().Get("return_url")
+	// displayMode="popup" signals that the callback should return a
+	// completion HTML page instead of redirecting. The Suite sends this
+	// for the "Verbindung testen" popup flow (re #131).
+	displayMode := r.URL.Query().Get("display")
 	stateTok, err := storeOAuthState(oauthStateEntry{
 		IdentityID:   identityID,
 		Provider:     providerName,
 		CodeVerifier: verifier,
 		ExpiresAt:    s.clk.Now().Add(5 * time.Minute),
 		ReturnURL:    returnURL,
+		DisplayMode:  displayMode,
 	})
 	if err != nil {
 		s.loggerFrom(r.Context()).Error("protoadmin.oauth_start.state_failed",
@@ -350,6 +361,31 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isPopup := entry.DisplayMode == "popup"
+
+	// failResp writes either a popup completion page (popup mode) or a
+	// problem+json response for general errors. Used for all failure
+	// paths after the state lookup so popup callers always get the
+	// completion page rather than an HTTP error page.
+	failResp := func(status int, errType, detail string) {
+		if isPopup {
+			writePopupCompletion(w, false, detail)
+		} else {
+			writeProblem(w, r, status, errType, detail, "")
+		}
+	}
+	// failProbe is the probe-failure variant: uses writeProbeFailed in
+	// standard mode (which carries category + diagnostic) and the popup
+	// completion page in popup mode (only the diagnostic crosses the
+	// boundary; category is not exposed to prevent info leakage).
+	failProbe := func(outcome extsubmit.Outcome) {
+		if isPopup {
+			writePopupCompletion(w, false, outcome.Diagnostic)
+		} else {
+			writeProbeFailed(w, r, outcome)
+		}
+	}
+
 	// Recover the identity from the state token. Ownership is established by
 	// the fact that only handleOAuthStart (which is auth1+requireSelfOnly
 	// gated) can create a valid state token for this IdentityID.
@@ -357,9 +393,13 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	identity, err := resolveIdentity(r.Context(), s.store.Meta(), identityID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeProblem(w, r, http.StatusNotFound, "not_found", "identity not found", identityID)
+			failResp(http.StatusNotFound, "not_found", "identity not found")
 		} else {
-			s.writeStoreError(w, r, err)
+			if isPopup {
+				writePopupCompletion(w, false, "internal server error")
+			} else {
+				s.writeStoreError(w, r, err)
+			}
 		}
 		return
 	}
@@ -367,20 +407,20 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	prov, ok := s.opts.OAuthProviders[entry.Provider]
 	if !ok {
-		writeProblem(w, r, http.StatusServiceUnavailable, "oauth_provider_not_configured",
-			fmt.Sprintf("OAuth provider %q is no longer configured", entry.Provider), "")
+		failResp(http.StatusServiceUnavailable, "oauth_provider_not_configured",
+			fmt.Sprintf("OAuth provider %q is no longer configured", entry.Provider))
 		return
 	}
 	if prov.ClientSecret == "" {
-		writeProblem(w, r, http.StatusServiceUnavailable, "oauth_provider_not_configured",
-			fmt.Sprintf("OAuth provider %q client secret is not available", entry.Provider), "")
+		failResp(http.StatusServiceUnavailable, "oauth_provider_not_configured",
+			fmt.Sprintf("OAuth provider %q client secret is not available", entry.Provider))
 		return
 	}
 
 	dataKey := s.opts.ExternalSubmissionDataKey
 	if len(dataKey) == 0 {
-		writeProblem(w, r, http.StatusServiceUnavailable, "not_configured",
-			"external submission is not configured on this server", "")
+		failResp(http.StatusServiceUnavailable, "not_configured",
+			"external submission is not configured on this server")
 		return
 	}
 
@@ -394,8 +434,8 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			"provider", entry.Provider,
 			"identity_id", identityID,
 			"err", err)
-		writeProblem(w, r, http.StatusBadGateway, "oauth_exchange_failed",
-			"token exchange with provider failed", err.Error())
+		failResp(http.StatusBadGateway, "oauth_exchange_failed",
+			"token exchange with provider failed: "+err.Error())
 		return
 	}
 
@@ -404,7 +444,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.loggerFrom(r.Context()).Error("protoadmin.oauth_callback.seal_failed",
 			"activity", observe.ActivityInternal, "err", err)
-		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to seal access token", "")
+		failResp(http.StatusInternalServerError, "internal_error", "failed to seal access token")
 		return
 	}
 
@@ -442,7 +482,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.loggerFrom(r.Context()).Error("protoadmin.oauth_callback.seal_failed",
 				"activity", observe.ActivityInternal, "err", err)
-			writeProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to seal refresh token", "")
+			failResp(http.StatusInternalServerError, "internal_error", "failed to seal refresh token")
 			return
 		}
 		sub.OAuthRefreshCT = rtCT
@@ -468,12 +508,16 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 				"provider":    entry.Provider,
 				"auth_method": "oauth2",
 			})
-		writeProbeFailed(w, r, probeOutcome)
+		failProbe(probeOutcome)
 		return
 	}
 
 	if err := s.store.Meta().UpsertIdentitySubmission(r.Context(), sub); err != nil {
-		s.writeStoreError(w, r, err)
+		if isPopup {
+			writePopupCompletion(w, false, "failed to persist credentials")
+		} else {
+			s.writeStoreError(w, r, err)
+		}
 		return
 	}
 
@@ -486,7 +530,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.loggerFrom(r.Context()).Error("protoadmin.oauth_callback.mark_verified_failed",
 			"activity", observe.ActivityInternal, "err", err,
 			"identity_id", identityID)
-		s.writeStoreError(w, r, err)
+		if isPopup {
+			writePopupCompletion(w, false, "failed to mark identity verified")
+		} else {
+			s.writeStoreError(w, r, err)
+		}
 		return
 	}
 
@@ -508,6 +556,12 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			"provider":     entry.Provider,
 		})
 
+	// Popup mode: return the completion page; the popup posts the result
+	// to the opener and closes itself (re #131).
+	if isPopup {
+		writePopupCompletion(w, true, "")
+		return
+	}
 	if entry.ReturnURL != "" {
 		http.Redirect(w, r, entry.ReturnURL, http.StatusFound)
 		return
@@ -551,4 +605,59 @@ func providerSMTPPort(provider string) int {
 		return 465
 	}
 	return 587
+}
+
+// popupCompletionPageTemplate is the HTML page served to the OAuth popup
+// window when DisplayMode == "popup". The single format verb %s is replaced
+// with a JSON-encoded {"ok":bool,"detail":string} object. The script reads
+// the object, posts it to the opener via window.postMessage (targetOrigin =
+// window.location.origin, never "*"), and calls window.close(). If the
+// opener is unavailable (e.g. the user navigated the main window away), the
+// page shows a plain-text fallback instead.
+//
+// Security: Go's json.Marshal escapes "<", ">", and "&" in strings as
+// < / > / &, making the JSON safe for direct embedding in a
+// <script> block without further escaping.
+const popupCompletionPageTemplate = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Authorization</title>
+</head>
+<body>
+<p id="m">Processing...</p>
+<script>
+(function () {
+  var r = %s;
+  try {
+    if (window.opener && window.opener.postMessage) {
+      window.opener.postMessage(
+        { type: "herold:oauth-result", ok: r.ok, detail: r.detail },
+        window.location.origin
+      );
+      window.close();
+    }
+  } catch (e) {}
+  document.getElementById("m").textContent = r.ok
+    ? "Authorization complete. You may close this window."
+    : ("Authorization failed: " + r.detail + " You may close this window.");
+})();
+</script>
+</body>
+</html>`
+
+// writePopupCompletion serves the OAuth popup completion HTML page.
+// ok is true on success; detail carries the human-readable diagnostic on
+// failure (empty string on success). No credential material is ever included.
+func writePopupCompletion(w http.ResponseWriter, ok bool, detail string) {
+	type resultJSON struct {
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	data, _ := json.Marshal(resultJSON{OK: ok, Detail: detail})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, popupCompletionPageTemplate, data)
 }

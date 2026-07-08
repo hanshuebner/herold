@@ -51,6 +51,14 @@ vi.mock('../../lib/dialog/confirm.svelte', () => ({
   },
 }));
 
+vi.mock('../../lib/dialog/connection-test.svelte', () => ({
+  connectionTest: {
+    show: vi.fn(async () => undefined),
+    close: vi.fn(),
+    pending: null,
+  },
+}));
+
 vi.mock('../../lib/toast/toast.svelte', () => ({
   toast: {
     show: vi.fn(),
@@ -69,6 +77,9 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
 }));
 
 const { startOAuth, putSubmission, testSubmission } = await import('../../lib/api/identity-submission');
+const { connectionTest } = await import('../../lib/dialog/connection-test.svelte') as unknown as {
+  connectionTest: { show: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; pending: null }
+};
 const submissionModule = await import('../../lib/identities/identity-submission.svelte') as unknown as {
   submissionStore: { forIdentity: ReturnType<typeof vi.fn>; evict: ReturnType<typeof vi.fn> };
   _mockHandle: {
@@ -592,7 +603,7 @@ describe('IdentitySubmissionSection', () => {
     expect(screen.queryByText('Save and test connection')).not.toBeInTheDocument();
   });
 
-  it('calls startOAuth when "Test connection" is clicked for an oauth2-configured submission', async () => {
+  it('runs a silent probe and shows the result modal when "Test connection" is clicked for an oauth2-configured submission (re #131)', async () => {
     _mockHandle.data = {
       configured: true,
       submit_host: 'smtp.gmail.com',
@@ -609,9 +620,22 @@ describe('IdentitySubmissionSection', () => {
     const testBtn = screen.getByText('Test connection');
     await fireEvent.click(testBtn);
 
+    // The new flow calls testSubmission (silent probe) and shows the
+    // connection test modal, instead of triggering a full-page OAuth
+    // redirect via startOAuth.
     await vi.waitFor(() => {
-      expect(vi.mocked(startOAuth)).toHaveBeenCalledWith(IDENTITY.id, 'gmail');
+      expect(vi.mocked(testSubmission)).toHaveBeenCalledWith(IDENTITY.id);
+      expect(vi.mocked(connectionTest.show)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ok: true,
+          isOAuth: true,
+          provider: 'gmail',
+          identityId: IDENTITY.id,
+        }),
+      );
     });
+    // startOAuth must NOT be called (no full-page redirect).
+    expect(vi.mocked(startOAuth)).not.toHaveBeenCalled();
   });
 
   // ── On-demand SMTP probe button (re #113, re #115) ─────────────────────────

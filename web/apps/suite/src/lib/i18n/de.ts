@@ -1488,6 +1488,34 @@ export const de = {
   'settings.submission.foreignDomainHint':
     'Geben Sie die SMTP-Zugangsdaten für diese Adresse ein.',
 
+  // Verbindungstest-Ergebnismodal (re #131 Punkt 2)
+  'settings.submission.testModal.testing': 'Verbindung wird geprüft…',
+  'settings.submission.testModal.successTitle': 'Verbindung erfolgreich',
+  'settings.submission.testModal.successBody':
+    'Verbindung zu {host} hergestellt. Eine Testnachricht wurde zur Zustellung an {email} in die Warteschlange eingestellt.',
+  'settings.submission.testModal.successBodyNoHost':
+    'Verbindung erfolgreich geprüft. Eine Testnachricht wurde zur Zustellung an {email} in die Warteschlange eingestellt.',
+  'settings.submission.testModal.probeDescription':
+    'Geprüft: TCP-Verbindung, TLS-Handshake, SMTP-Authentifizierung, MAIL FROM/RCPT-Sonde.',
+  'settings.submission.testModal.failTitle': 'Verbindungstest fehlgeschlagen',
+  'settings.submission.testModal.failBody': 'Die SMTP-Verbindung ist fehlgeschlagen:',
+  'settings.submission.testModal.reauthorizeHint':
+    'Das OAuth-Token ist möglicherweise abgelaufen oder wurde widerrufen. ' +
+    'Starten Sie eine Neu-Autorisierung, um ein neues Token auszustellen.',
+  'settings.submission.testModal.reauthorize': 'Neu autorisieren',
+  'settings.submission.testModal.close': 'Schließen',
+  'settings.submission.testModal.ok': 'OK',
+  'settings.submission.testModal.authorizing': 'Autorisierung läuft…',
+  'settings.submission.testModal.authorizingHint':
+    'Ein Autorisierungsfenster wurde geöffnet. Bitte schließen Sie die Anmeldung dort ab.',
+  'settings.submission.testModal.popupBlocked':
+    'Das Autorisierungsfenster wurde blockiert. Bitte Pop-ups für diese Seite erlauben und erneut versuchen.',
+  'settings.submission.testModal.reauthorizeSuccessTitle': 'Autorisierung erfolgreich',
+  'settings.submission.testModal.reauthorizeSuccessBody':
+    'Das OAuth-Token wurde erneuert und die SMTP-Verbindung bestätigt.',
+  'settings.submission.testModal.reauthorizeFailTitle': 'Autorisierung fehlgeschlagen',
+  'settings.submission.testModal.reauthorizeFailBody': 'Autorisierung fehlgeschlagen:',
+
   // identity import section (IdentityImportSection.svelte)
   'settings.import.sectionTitle': 'Empfang (IMAP-Import)',
   'settings.import.sectionHint':
