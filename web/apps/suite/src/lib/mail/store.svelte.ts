@@ -32,6 +32,7 @@ import { settings } from '../settings/settings.svelte';
 import { router } from '../router/router.svelte';
 import { appendEvent } from '../debug-ring/debug-ring';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
+import { resolveDefault } from '../identities/identity-status';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -931,10 +932,14 @@ class MailStore {
     return this.#mailboxByRole('archive');
   }
 
-  /** The first available Identity — used as the default From for compose. */
+  /**
+   * The default From identity for compose. Returns the identity flagged
+   * `isDefault: true`, falling back to the first verified identity in
+   * stable sort order (REQ-SET-IDENT-04). Returns null when the identity
+   * cache is empty or contains no verified identity.
+   */
   get primaryIdentity(): Identity | null {
-    for (const id of this.identities.values()) return id;
-    return null;
+    return resolveDefault(Array.from(this.identities.values()));
   }
 
   #mailboxByRole(role: string): Mailbox | null {
