@@ -158,11 +158,16 @@ describe('watchRegistration: already-waiting case', () => {
     expect(onShow).not.toHaveBeenCalled();
   });
 
-  it('still announces a NEW worker (updatefound) even when initial waiting is suppressed', () => {
+  it('suppresses the first updatefound after a post-activation reload and announces the second', () => {
+    // The first updatefound is the browser's spurious re-check of the just-
+    // activated sw.js version (the update-check races with SW activation).
+    // The second updatefound is a genuine new deploy (e.g. from the hourly
+    // startPeriodicUpdateCheck) and must still be announced.
     const onShow = vi.fn();
     const controller = mockSw();
-    const installing = makeInstalling();
-    const reg = makeRegistration({ waiting: mockSw(), installing });
+    const spuriousInstalling = makeInstalling();
+    const genuineInstalling = makeInstalling();
+    const reg = makeRegistration({ waiting: mockSw(), installing: spuriousInstalling });
 
     watchRegistration(
       reg as unknown as ServiceWorkerRegistration,
@@ -172,10 +177,81 @@ describe('watchRegistration: already-waiting case', () => {
     );
     expect(onShow).not.toHaveBeenCalled();
 
-    // A genuinely new worker installs after this load -> Case 2 fires.
+    // First updatefound: spurious register()-triggered check for the version
+    // we just activated.  Must NOT show the banner.
+    reg.dispatchUpdateFound();
+    spuriousInstalling.dispatchStateChange('installed');
+    expect(onShow).not.toHaveBeenCalled();
+
+    // Second updatefound: a genuinely new version installed later.
+    reg.installing = genuineInstalling;
+    reg.dispatchUpdateFound();
+    genuineInstalling.dispatchStateChange('installed');
+    expect(onShow).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Regression: post-activation reload double-prompt ─────────────────────────
+
+describe('watchRegistration: post-activation reload double-prompt regression', () => {
+  it('does not re-show banner when updatefound fires on the post-activation reloaded page', () => {
+    // REGRESSION TEST (re #N): clicking "Neu laden" reloads the page; the
+    // reloaded page ran register() and the browser's update check raced with
+    // SW activation, firing updatefound for the version we just activated.
+    // suppressInitialWaiting=true was set from sessionStorage but previously
+    // only suppressed Case 1 (reg.waiting non-null at call time).  Case 2
+    // (updatefound -> statechange -> installed) was never suppressed, so the
+    // banner reappeared immediately after reload.
+    //
+    // Sequence modelled here:
+    //   Page 1: Version A active, Version B waiting -> Case 1 -> banner shown.
+    //   User clicks reload: SKIP_WAITING, controllerchange, sessionStorage set,
+    //   location.reload().
+    //   Page 2 (this test): Version B is now controller.  register() fires an
+    //   update check; browser compares fetched sw.js against the not-yet-fully-
+    //   committed installed state and fires updatefound for the same Version B
+    //   bytes.  Banner must NOT reappear.
+    const onShow = vi.fn();
+    const controllerB = mockSw(); // Version B just became the controller.
+    const installing = makeInstalling();
+    // reg.waiting is null: Version B is active, not waiting.
+    const reg = makeRegistration({ waiting: null, installing });
+
+    watchRegistration(
+      reg as unknown as ServiceWorkerRegistration,
+      () => controllerB,
+      onShow,
+      { suppressInitialWaiting: true }, // set from sessionStorage on reload
+    );
+
+    // Case 1: reg.waiting is null -> no immediate banner (correct).
+    expect(onShow).not.toHaveBeenCalled();
+
+    // Spurious Case 2: the update check for register() fires updatefound
+    // and the installing SW reaches installed state.  This is Version B bytes
+    // again -- must NOT prompt.
     reg.dispatchUpdateFound();
     installing.dispatchStateChange('installed');
-    expect(onShow).toHaveBeenCalledTimes(1);
+    expect(onShow).not.toHaveBeenCalled();
+  });
+
+  it('does not re-show banner even when reg.waiting is transiently non-null on the reloaded page', () => {
+    // Models candidate (a)/(b): if reg.waiting is briefly non-null on the
+    // reloaded page (SW still in the INSTALLED->ACTIVATING transition at the
+    // time register() resolves), Case 1 is correctly suppressed by
+    // suppressInitialWaiting.
+    const onShow = vi.fn();
+    const controllerB = mockSw();
+    const reg = makeRegistration({ waiting: mockSw() }); // transient waiting
+
+    watchRegistration(
+      reg as unknown as ServiceWorkerRegistration,
+      () => controllerB,
+      onShow,
+      { suppressInitialWaiting: true },
+    );
+
+    expect(onShow).not.toHaveBeenCalled();
   });
 });
 

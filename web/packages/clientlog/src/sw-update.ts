@@ -59,7 +59,25 @@ export function watchRegistration(
   }
 
   // Case 2: new SW installs while the page is open.
+  //
+  // When suppressInitialWaiting is true the page was reloaded immediately
+  // after the user accepted an update.  The browser fires an update check for
+  // sw.js as a side-effect of the register() call on the reloaded page.  That
+  // check can race with the SW activation event: if the browser's internal
+  // "installed SW" record has not yet been committed when the check runs, the
+  // browser compares the fetched sw.js against the previous (now-superseded)
+  // version and fires updatefound for the same bytes we just activated.
+  //
+  // We suppress the first updatefound in that case.  Any subsequent updatefound
+  // (from startPeriodicUpdateCheck's hourly reg.update() calls or a navigation)
+  // is a genuine new version and is announced normally.
+  let skipNextUpdateFound = options?.suppressInitialWaiting === true;
+
   reg.addEventListener('updatefound', () => {
+    if (skipNextUpdateFound) {
+      skipNextUpdateFound = false;
+      return;
+    }
     const installing = reg.installing;
     if (!installing) return;
     installing.addEventListener('statechange', () => {
