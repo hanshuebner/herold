@@ -197,6 +197,13 @@ export const en = {
   'select.selectAllInFolder': 'Select all {total} messages in this folder',
   'select.wholeMailboxActive': 'All {total} messages in this folder are selected.',
   'select.clearWholeMailbox': 'Select this page only',
+  // Whole-mailbox bulk-job progress banner (issue #149)
+  'bulkJob.preparing': 'Background action is being prepared...',
+  'bulkJob.progress': 'Background action running: {processed} of {total} messages processed.',
+  'bulkJob.done': '{processed} messages processed successfully.',
+  'bulkJob.partial': '{processed} processed, {failed} failed.',
+  'bulkJob.failed': 'Background action failed.',
+  'bulkJob.dismiss': 'Dismiss',
 
   // ── Bulk actions ────────────────────────────────────────────────────
   'bulk.selected': '{count} selected',

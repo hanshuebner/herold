@@ -178,6 +178,19 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldIMAPImport: 'https://netzhansa.com/jmap/imap-import',
+  /**
+   * Whole-mailbox async bulk-mutation capability (issue #149/#161).
+   * Advertised whenever the server registers `Email/setByQuery` and the
+   * `EmailBulkJob` datatype. When present, whole-mailbox bulk actions
+   * (archive / delete / mark read / mark unread) resolve a filter to a
+   * server-side background job instead of refusing with the "not
+   * available" toast.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityEmailBulkMutation.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldEmailBulkMutation: 'https://netzhansa.com/jmap/email-bulk-mutation',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

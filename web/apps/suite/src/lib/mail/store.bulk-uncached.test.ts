@@ -7,14 +7,17 @@
  * (issue #149 comment, ~666-message label) showed that single unchunked
  * Email/set blows REQ-PERF-DEADLINE-01's 1 s method deadline well before
  * mailbox scale -- there is no client-choosable cap that is both useful and
- * safe. The fix removes that path entirely: triggering a bulk action while
- * `listWholeMailboxSelected` is true now refuses with an explanatory toast
- * and issues no JMAP call at all, pending the server-side async job defined
- * in the issue #161 design comment.
+ * safe. That path was removed entirely in favour of the server-side async
+ * job (`Email/setByQuery` + `EmailBulkJob`) defined in the issue #161 design
+ * comment and wired up in store.bulk-job.test.ts.
  *
- * These tests assert the refusal: no Email/set (or any jmap.batch call) is
- * made, the toast fires, and the loaded-window ids passed in are left
- * untouched.
+ * This file covers the fallback boundary that remains: archive / delete /
+ * mark read / mark unread still refuse honestly (no JMAP call, an
+ * explanatory toast) when the server does NOT advertise
+ * `https://netzhansa.com/jmap/email-bulk-mutation` (`jmap.hasCapability`
+ * returns false below); move / label / category refuse unconditionally
+ * regardless of the capability, since their pickers resolve a target from
+ * the loaded/visible selection rather than a server-side filter.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -23,7 +26,7 @@ import type { Mailbox, Email } from './types';
 // ── Module-level mocks (must be before any dynamic import) ────────────────────
 
 vi.mock('../jmap/client', () => ({
-  jmap: { batch: vi.fn() },
+  jmap: { batch: vi.fn(), hasCapability: vi.fn(() => false) },
   strict: (r: unknown[]) => r,
 }));
 

@@ -78,9 +78,14 @@
       // signals "the extimg worker bumped the pending count"
       // (REQ-EXTIMG-BG-INTERNAL-22 / -30). It's always subscribed
       // because the capability is principal-scoped, not chat-gated.
+      // 'EmailBulkJob' likewise subscribes unconditionally (issue #149):
+      // it signals a whole-mailbox bulk job advanced a batch, driving the
+      // mail store's progress banner regardless of whether the server
+      // advertises the capability (the push type simply never fires when
+      // it does not).
       const types = hasCap
-        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress', 'InternalizeStatus']
-        : ['Email', 'Mailbox', 'Thread', 'SeenAddress', 'InternalizeStatus'];
+        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob']
+        : ['Email', 'Mailbox', 'Thread', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob'];
       sync.start(types);
 
       untrack(() => {

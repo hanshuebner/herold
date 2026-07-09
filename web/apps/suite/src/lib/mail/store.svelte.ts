@@ -74,6 +74,32 @@ const SEARCH_HISTORY_MAX = 12;
 const SEARCH_HISTORY_NAME = 'mail.search.history';
 
 /**
+ * Fallback poll cadence for `EmailBulkJob/get` while a whole-mailbox bulk
+ * job is running (issue #149). The server also pushes an `EmailBulkJob`
+ * state-change event once per drained batch (see App.svelte's EventSource
+ * subscription list), so this timer is a safety net for a missed/late
+ * push rather than the primary progress signal.
+ */
+const BULK_JOB_POLL_MS = 2000;
+
+/**
+ * Client-side view of a running/finished `EmailBulkJob` (issue #149/#161).
+ * Drives the persistent progress/completion banner in MailView. `total`
+ * is -1 while the background worker has not yet resolved the target set
+ * ("resolving"); `matchedEstimate` is the request-time indexed-COUNT
+ * estimate shown before that.
+ */
+export interface BulkJobState {
+  id: string;
+  status: 'running' | 'done' | 'partial' | 'failed';
+  matchedEstimate: number;
+  processed: number;
+  total: number;
+  failedIds: string[];
+  errors: string[];
+}
+
+/**
  * Page size for a folder's `Email/query` window (issue #161). Used for the
  * initial `loadFolder` page and every `loadMoreFolder` append; the in-place
  * reconciliation query (`#refreshFolderInPlace`) instead requests
@@ -144,6 +170,16 @@ class MailStore {
    * `toggleSelectAllVisible`, and folder navigation.
    */
   listWholeMailboxSelected = $state(false);
+  /**
+   * The whole-mailbox bulk job most recently started from this session, or
+   * null when none is in flight / to show (issue #149). Set by
+   * `#startWholeMailboxBulk`, advanced by `#pollBulkJob` (driven by the
+   * `EmailBulkJob` EventSource push and a fallback timer), and cleared by
+   * `dismissBulkJob`. MailView renders the progress/completion banner from
+   * this field.
+   */
+  bulkJob = $state<BulkJobState | null>(null);
+  #bulkJobPollTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * True while the current folder's last loaded page came back full
    * (`ids.length === FOLDER_PAGE_SIZE`), meaning an older page likely
@@ -230,6 +266,14 @@ class MailStore {
     sync.on('Mailbox', (newState) => {
       void this.#onMailboxStateChange(newState);
     });
+    // EmailBulkJob push (issue #149): the server bumps this counter once
+    // per drained batch of a whole-mailbox bulk job. Poll the one job we
+    // are currently showing rather than re-deriving anything from the
+    // pushed state string -- EmailBulkJob/get is the source of truth for
+    // processed/total/failures.
+    sync.on('EmailBulkJob', () => {
+      void this.#pollBulkJob();
+    });
     // Search history is not hydrated eagerly here because the account-
     // scoped localStorage key resolves to 'anon' before the session is
     // established. App.svelte calls hydrateSearchHistory() once the
@@ -258,6 +302,9 @@ class MailStore {
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
     this.listWholeMailboxSelected = false;
+    if (this.#bulkJobPollTimer) clearTimeout(this.#bulkJobPollTimer);
+    this.#bulkJobPollTimer = null;
+    this.bulkJob = null;
     this.listHasMore = false;
     this.listLoadingMore = false;
     this.threadLoadStatus = new Map();
@@ -2655,21 +2702,15 @@ class MailStore {
   }
 
   /**
-   * Bulk archive / delete / mark / move / label / category all refuse to
-   * run while `listWholeMailboxSelected` is true, surfacing this toast
-   * instead (issue #149).
-   *
-   * Executing a bulk action against the full server-side result set needs
-   * a query-scoped async job on the server: `Email/set` (or any single-
-   * request equivalent) covering an arbitrarily large selection blows
-   * REQ-PERF-DEADLINE-01's 1 s method deadline well before mailbox scale --
-   * confirmed in production on a ~666-message label, not just on
-   * pathological mailboxes. There is no client-side cap that is both
-   * useful and safe, because the failure threshold depends on server-side
-   * per-row write cost, which the client cannot measure or bound. See the
-   * design comment on issue #161 for the `Email/setByQuery` /
-   * `EmailBulkJob` contract a server specialist needs to build before this
-   * can execute for real.
+   * Fallback for whole-mailbox bulk actions (archive / delete / mark /
+   * move / label / category) when the server does not advertise
+   * `https://netzhansa.com/jmap/email-bulk-mutation` (issue #149). Archive
+   * / delete / mark read / mark unread route through
+   * `#startWholeMailboxBulk` instead when the capability is present; move
+   * / label / category still refuse unconditionally today because their
+   * pickers resolve a target from the loaded/visible selection, which is
+   * not what whole-mailbox mode means (see the design comment on issue
+   * #161 and the "Not done" note in the #149 issue thread).
    */
   wholeMailboxActionUnavailable(): void {
     toast.show({
@@ -2683,7 +2724,9 @@ class MailStore {
   /**
    * Build the `Email/query` filter for the folder currently held in the
    * list slice. Returns undefined for the `all` folder (no filter). Called
-   * by `loadMoreFolder` to reconstruct the same filter `loadFolder` uses.
+   * by `loadMoreFolder` to reconstruct the same filter `loadFolder` uses,
+   * and by `#startWholeMailboxBulk` to scope a whole-mailbox bulk job to
+   * the folder currently shown (issue #149).
    */
   #buildCurrentFolderFilter(): Record<string, unknown> | undefined {
     const folder = this.listFolder;
@@ -2693,6 +2736,158 @@ class MailStore {
     const mailboxId = this.listMailboxId;
     if (mailboxId === null) return undefined;
     return { inMailbox: mailboxId };
+  }
+
+  /**
+   * Start a whole-mailbox async bulk job via `Email/setByQuery` (issue
+   * #149/#161): `patch` is applied server-side, in the background, to
+   * every message matching the current folder's filter. Falls back to
+   * `wholeMailboxActionUnavailable()` when the server does not advertise
+   * `Capability.HeroldEmailBulkMutation`.
+   *
+   * Clears the selection immediately (the job runs independently of
+   * whatever is loaded client-side) and leaves `this.bulkJob` set so
+   * MailView renders the persistent progress/completion banner;
+   * `#pollBulkJob` advances it from there.
+   */
+  async #startWholeMailboxBulk(
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    if (!jmap.hasCapability(Capability.HeroldEmailBulkMutation)) {
+      this.wholeMailboxActionUnavailable();
+      return;
+    }
+    const filter = this.#buildCurrentFolderFilter() ?? null;
+    this.clearSelection();
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/setByQuery',
+          { accountId, filter, patch },
+          [Capability.Mail, Capability.HeroldEmailBulkMutation],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        accountId: string;
+        jobId: string;
+        matchedEstimate: number;
+      }>(responses[0]);
+      this.bulkJob = {
+        id: result.jobId,
+        status: 'running',
+        matchedEstimate: result.matchedEstimate,
+        processed: 0,
+        total: -1,
+        failedIds: [],
+        errors: [],
+      };
+      // The worker has not necessarily ticked yet, so an immediate
+      // EmailBulkJob/get would almost certainly just echo this same
+      // resolving state back. Arm the fallback timer instead; the
+      // EmailBulkJob push (or this timer, whichever fires first) drives
+      // the first real progress update.
+      if (this.#bulkJobPollTimer) clearTimeout(this.#bulkJobPollTimer);
+      this.#bulkJobPollTimer = setTimeout(() => {
+        void this.#pollBulkJob();
+      }, BULK_JOB_POLL_MS);
+    } catch (err) {
+      toast.show({
+        message: errMessage(err, 'Bulk action failed to start'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    }
+  }
+
+  /**
+   * Advance `this.bulkJob` by fetching `EmailBulkJob/get` for the job
+   * currently shown. Called from the `EmailBulkJob` EventSource push
+   * handler and re-armed on a `BULK_JOB_POLL_MS` timer as a fallback
+   * while the job is still running, so a missed/delayed push does not
+   * strand the banner mid-progress. On a terminal status
+   * (done/partial/failed) the folder list and sidebar counts are
+   * refreshed immediately; the ordinary `Email` state-change push
+   * triggered by the job's own batch commits also covers this, but this
+   * call makes the refresh immediate rather than waiting for the next
+   * poll cycle.
+   */
+  async #pollBulkJob(): Promise<void> {
+    const job = this.bulkJob;
+    if (!job || job.status !== 'running') return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    if (this.#bulkJobPollTimer) {
+      clearTimeout(this.#bulkJobPollTimer);
+      this.#bulkJobPollTimer = null;
+    }
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'EmailBulkJob/get',
+          { accountId, ids: [job.id] },
+          [Capability.HeroldEmailBulkMutation],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        list: Array<{
+          id: string;
+          status: string;
+          matchedEstimate: number;
+          processed: number;
+          total: number;
+          failedIds: string[];
+          errors: string[];
+        }>;
+      }>(responses[0]);
+      const found = result.list.find((j) => j.id === job.id);
+      // Stale response for a job the user has since dismissed, or the
+      // server reports it gone -- leave state untouched either way.
+      if (!found || this.bulkJob?.id !== job.id) return;
+      const status =
+        found.status === 'done' ||
+        found.status === 'partial' ||
+        found.status === 'failed'
+          ? found.status
+          : 'running';
+      this.bulkJob = {
+        id: found.id,
+        status,
+        matchedEstimate: found.matchedEstimate,
+        processed: found.processed,
+        total: found.total,
+        failedIds: found.failedIds,
+        errors: found.errors,
+      };
+      if (status === 'running') {
+        this.#bulkJobPollTimer = setTimeout(() => {
+          void this.#pollBulkJob();
+        }, BULK_JOB_POLL_MS);
+        return;
+      }
+      this.#refreshMailboxesSoon();
+      this.#refreshFolderSoon();
+    } catch {
+      // Transient failure -- retry on the next fallback tick rather than
+      // surfacing a toast for what is likely a single missed poll.
+      this.#bulkJobPollTimer = setTimeout(() => {
+        void this.#pollBulkJob();
+      }, BULK_JOB_POLL_MS);
+    }
+  }
+
+  /** Dismiss the whole-mailbox bulk job banner (issue #149). Safe to call
+   * whether the job is still running (hides the banner without
+   * cancelling the server-side job) or already terminal. */
+  dismissBulkJob(): void {
+    if (this.#bulkJobPollTimer) {
+      clearTimeout(this.#bulkJobPollTimer);
+      this.#bulkJobPollTimer = null;
+    }
+    this.bulkJob = null;
   }
 
   /**
@@ -2737,13 +2932,9 @@ class MailStore {
    * same patch -- atomic from the JMAP /set perspective.
    */
   async bulkArchive(ids: string[]): Promise<void> {
-    if (this.listWholeMailboxSelected) {
-      this.wholeMailboxActionUnavailable();
-      return;
-    }
     const inbox = this.inbox;
     const archive = this.archive;
-    if (!inbox || ids.length === 0) return;
+    if (!inbox) return;
     if (!archive) {
       toast.show({
         message: 'Cannot archive: no Archive folder exists on this account.',
@@ -2752,6 +2943,18 @@ class MailStore {
       });
       return;
     }
+    // Whole-mailbox mode (issue #149): `ids` is only the loaded/visible
+    // window, not the full server-side result set, so patch every message
+    // the current folder filter matches via the async bulk-job path
+    // instead of the ids array below.
+    if (this.listWholeMailboxSelected) {
+      await this.#startWholeMailboxBulk({
+        [`mailboxIds/${inbox.id}`]: null,
+        [`mailboxIds/${archive.id}`]: true,
+      });
+      return;
+    }
+    if (ids.length === 0) return;
     ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
     const prevById = new Map<string, Record<string, true>>();
@@ -2864,12 +3067,17 @@ class MailStore {
 
   /** Bulk delete: replace every id's mailboxIds with `{<trashId>: true}`. */
   async bulkDelete(ids: string[]): Promise<void> {
+    const trash = this.trash;
+    if (!trash) return;
+    // Whole-mailbox mode (issue #149): patch every message the current
+    // folder filter matches via the async bulk-job path. `bulkDestroy`
+    // (permanent delete from inside Trash) still refuses -- it has no
+    // patch-shaped equivalent, since `Email/setByQuery` never destroys.
     if (this.listWholeMailboxSelected) {
-      this.wholeMailboxActionUnavailable();
+      await this.#startWholeMailboxBulk({ mailboxIds: { [trash.id]: true } });
       return;
     }
-    const trash = this.trash;
-    if (!trash || ids.length === 0) return;
+    if (ids.length === 0) return;
     // Thread-scoped per REQ-MAIL-52: delete every email in the thread.
     ids = expandToThreadIds(ids, this.threads, this.emails);
     const updates: Record<string, Record<string, unknown>> = {};
@@ -2975,8 +3183,10 @@ class MailStore {
 
   /** Bulk mark-read / mark-unread: set $seen on every id. */
   async bulkSetSeen(ids: string[], seen: boolean): Promise<void> {
+    // Whole-mailbox mode (issue #149): patch every message the current
+    // folder filter matches via the async bulk-job path.
     if (this.listWholeMailboxSelected) {
-      this.wholeMailboxActionUnavailable();
+      await this.#startWholeMailboxBulk({ 'keywords/$seen': seen ? true : null });
       return;
     }
     if (ids.length === 0) return;

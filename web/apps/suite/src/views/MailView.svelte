@@ -1245,6 +1245,48 @@
       {/if}
     {/if}
 
+    <!-- Whole-mailbox bulk-job progress/completion banner (issue #149).
+         Independent of the selection banner above: starting a job clears
+         the selection (the job runs server-side regardless of what is
+         still loaded), so this renders from `mail.bulkJob` alone. Stays
+         visible through the terminal state so the user sees the outcome;
+         dismissed explicitly rather than auto-hiding. -->
+    {#if mail.bulkJob}
+      {@const job = mail.bulkJob}
+      <div
+        class="whole-mailbox-banner whole-mailbox-banner--active"
+        class:whole-mailbox-banner--error={job.status === 'failed' || job.status === 'partial'}
+        role="status"
+        aria-live="polite"
+      >
+        <span class="banner-text">
+          {#if job.status === 'running'}
+            {job.total < 0
+              ? t('bulkJob.preparing')
+              : t('bulkJob.progress', { processed: job.processed, total: job.total })}
+          {:else if job.status === 'done'}
+            {t('bulkJob.done', { processed: job.processed })}
+          {:else if job.status === 'partial'}
+            {t('bulkJob.partial', {
+              processed: job.processed - job.failedIds.length,
+              failed: job.failedIds.length,
+            })}
+          {:else}
+            {t('bulkJob.failed')}
+          {/if}
+        </span>
+        {#if job.status !== 'running'}
+          <button
+            type="button"
+            class="banner-btn banner-btn--secondary"
+            onclick={() => mail.dismissBulkJob()}
+          >
+            {t('bulkJob.dismiss')}
+          </button>
+        {/if}
+      </div>
+    {/if}
+
     {#if showTabs}
       <nav class="tab-strip" aria-label={t('mail.list.tabsAria')}>
         {#each categorySettings.derivedCategories as name (name)}
@@ -1807,6 +1849,10 @@
   }
   .whole-mailbox-banner--active {
     background: var(--layer-03);
+  }
+  .whole-mailbox-banner--error {
+    background: var(--layer-01);
+    border-bottom-color: var(--support-error);
   }
   .banner-text {
     flex: 1;
