@@ -191,6 +191,20 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldEmailBulkMutation: 'https://netzhansa.com/jmap/email-bulk-mutation',
+  /**
+   * Server-side failed-external-image retry capability (issue #162,
+   * 17-external-images.md REQ-EXTIMG-71/73). Signals that `Email`
+   * carries a `failedImageCount` badge property and that
+   * `Email/retryImages` is available to re-attempt the retained
+   * (server-only) failed URLs. The origin URL is never sent to the
+   * client at any point -- only the retried count and the resulting
+   * badge value come back.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityEmailImageRetry.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldEmailImageRetry: 'https://netzhansa.com/jmap/email-image-retry',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

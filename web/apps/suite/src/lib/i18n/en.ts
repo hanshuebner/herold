@@ -282,6 +282,11 @@ export const en = {
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
   'msg.alwaysFrom': 'Always from {sender}',
+  // Failed-image retry (issue #162, REQ-EXTIMG-71/73).
+  'msg.imagesFailed': '{count} images could not be loaded.',
+  'msg.retryImages': 'Retry images',
+  'msg.retryingImages': 'Retrying...',
+  'msg.imagesStillFailed': 'Images still unavailable.',
   // Truncated body recovery banner (Forgejo #48).
   'msg.body.loadingFull': 'Loading complete message...',
   // Accessible label for the spinner shown while the iframe is rendering

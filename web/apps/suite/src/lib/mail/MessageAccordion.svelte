@@ -139,6 +139,37 @@
   );
   let hasExternalImages = $derived(html ? htmlHasExternalImages(html) : false);
 
+  // ── Failed-image retry (issue #162, REQ-EXTIMG-71/73) ─────────────────
+  //
+  // `failedImageCount` is the server-side badge for images that could not
+  // be internalized and were permanently placeholdered in the stored body
+  // (REQ-EXTIMG-BG-14). Retrying re-fetches the retained (server-only)
+  // failed URLs entirely server-side -- the origin URL never reaches this
+  // component or the DOM at any point, only the resulting counts and (on
+  // success) the rewritten body's already-proxied `cid:` image sources.
+  let failedImageCount = $derived(email.failedImageCount ?? 0);
+  let retryingImages = $state(false);
+  // Reset the "still unavailable" note whenever the accordion switches to
+  // a different message, so it never survives across messages.
+  let stillFailedForId = $state<string | null>(null);
+  let showStillFailed = $derived(
+    stillFailedForId === email.id && failedImageCount > 0,
+  );
+
+  async function retryFailedImages(): Promise<void> {
+    if (retryingImages) return;
+    retryingImages = true;
+    stillFailedForId = null;
+    try {
+      const result = await mail.retryEmailImages(email.id);
+      if (result.retriedCount === 0 && result.failedImageCount > 0) {
+        stillFailedForId = email.id;
+      }
+    } finally {
+      retryingImages = false;
+    }
+  }
+
   let senderName = $derived(
     email.from?.[0]?.name?.trim() || email.from?.[0]?.email || '(no sender)',
   );
@@ -739,6 +770,17 @@
             {/if}
           </div>
         {/if}
+        {#if failedImageCount > 0}
+          <div class="image-banner image-banner--failed" role="status">
+            <span>{t('msg.imagesFailed', { count: String(failedImageCount) })}</span>
+            <button type="button" disabled={retryingImages} onclick={retryFailedImages}>
+              {retryingImages ? t('msg.retryingImages') : t('msg.retryImages')}
+            </button>
+            {#if showStillFailed}
+              <span class="still-failed">{t('msg.imagesStillFailed')}</span>
+            {/if}
+          </div>
+        {/if}
         <HtmlBody
           {html}
           {loadImages}
@@ -998,6 +1040,14 @@
   }
   .image-banner button:hover {
     background: var(--layer-02);
+  }
+  .image-banner button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .image-banner .still-failed {
+    color: var(--text-helper);
+    font-style: italic;
   }
 
   .text-body {

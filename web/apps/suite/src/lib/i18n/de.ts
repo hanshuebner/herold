@@ -280,6 +280,11 @@ export const de = {
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
   'msg.alwaysFrom': 'Immer von {sender}',
+  // Failed-image retry (issue #162, REQ-EXTIMG-71/73).
+  'msg.imagesFailed': '{count} Bilder konnten nicht geladen werden.',
+  'msg.retryImages': 'Bilder erneut laden',
+  'msg.retryingImages': 'Lade erneut...',
+  'msg.imagesStillFailed': 'Bilder weiterhin nicht verfügbar.',
   // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
   'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
   // Zugängliche Bezeichnung für den Ladespinner, während der iframe

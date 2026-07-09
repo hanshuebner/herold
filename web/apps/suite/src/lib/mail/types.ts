@@ -235,6 +235,19 @@ export interface Email {
    * properties projection.
    */
   internalizePending?: boolean;
+  /**
+   * Herold extension (issue #162, REQ-EXTIMG-71/73): the number of
+   * external images this message had that could not be internalized
+   * and were permanently placeholdered in the stored body
+   * (REQ-EXTIMG-BG-14). 0 or absent means every image internalized, or
+   * the message never had external images. A message with a positive
+   * count can be retried via `Email/retryImages`
+   * (capability https://netzhansa.com/jmap/email-image-retry); the
+   * origin URLs never reach the client. Optional because the property
+   * is only populated when callers include `failedImageCount` in the
+   * requested properties projection.
+   */
+  failedImageCount?: number;
 }
 
 /** The properties projection the suite requests for list rendering. */
@@ -251,6 +264,7 @@ export const EMAIL_LIST_PROPERTIES = [
   'hasAttachment',
   'snoozedUntil',
   'internalizePending',
+  'failedImageCount',
 ] as const;
 
 /** The properties projection the suite requests for thread / reading-pane rendering. */
@@ -286,6 +300,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'header:X-Face:asText',
   'header:X-Herold-Recipient:asText',
   'internalizePending',
+  'failedImageCount',
 ] as const;
 
 /**

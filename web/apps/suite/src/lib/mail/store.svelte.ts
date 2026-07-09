@@ -2137,6 +2137,78 @@ class MailStore {
   }
 
   /**
+   * Retry a message's previously-failed external images (issue #162,
+   * REQ-EXTIMG-71/73). Calls `Email/retryImages`, which re-fetches the
+   * retained (server-only) failed URLs entirely server-side -- no origin
+   * URL is ever sent to or read by the client, only the resulting counts.
+   *
+   * Falls back to a toast (no call) when the server does not advertise
+   * `Capability.HeroldEmailImageRetry`. When the retry improves anything
+   * (`retriedCount > 0`), re-fetches the message body so the now-
+   * internalized (proxied `cid:`) images render; the badge count is
+   * patched from the response either way without waiting for that
+   * refetch.
+   *
+   * Returns the resulting `{retriedCount, failedImageCount}` so the
+   * caller (MessageAccordion) can show "still unavailable" when
+   * `retriedCount === 0`.
+   */
+  async retryEmailImages(
+    emailId: string,
+  ): Promise<{ retriedCount: number; failedImageCount: number }> {
+    const accountId = this.mailAccountId;
+    const prevCount = this.emails.get(emailId)?.failedImageCount ?? 0;
+    if (!accountId) return { retriedCount: 0, failedImageCount: prevCount };
+    if (!jmap.hasCapability(Capability.HeroldEmailImageRetry)) {
+      toast.show({
+        message: 'This server does not support retrying failed images.',
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return { retriedCount: 0, failedImageCount: prevCount };
+    }
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Email/retryImages',
+          { accountId, id: emailId },
+          [Capability.Mail, Capability.HeroldEmailImageRetry],
+        );
+      });
+      strict(responses);
+      const result = invocationArgs<{
+        accountId: string;
+        id: string;
+        retriedCount: number;
+        failedImageCount: number;
+        newState: string;
+      }>(responses[0]);
+      this.#patchEmail(emailId, { failedImageCount: result.failedImageCount });
+      if (result.retriedCount > 0) {
+        try {
+          await this.loadDraftBody(emailId);
+        } catch (err) {
+          // The badge count already updated above; a failed refetch just
+          // means the newly-internalized images render on the next
+          // natural refresh (e.g. the Email state-change push) instead.
+          console.warn('retryEmailImages: body refetch failed', err);
+        }
+      }
+      return {
+        retriedCount: result.retriedCount,
+        failedImageCount: result.failedImageCount,
+      };
+    } catch (err) {
+      toast.show({
+        message: errMessage(err, 'Image retry failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return { retriedCount: 0, failedImageCount: prevCount };
+    }
+  }
+
+  /**
    * Re-fetch a thread that is already cached as 'ready'. Used by the
    * Email-state-change handler to surface freshly-arrived replies in
    * the open ThreadReader without forcing a full route reload. Keeps
