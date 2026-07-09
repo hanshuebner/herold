@@ -579,6 +579,25 @@
     row?.scrollIntoView({ block: 'nearest' });
   });
 
+  // Infinite scroll (issue #161): observe a bottom sentinel row and load
+  // the next folder page once it enters the viewport. The sentinel is
+  // only rendered while mail.listHasMore is true, so the observer effect
+  // re-runs (and re-observes) whenever that row mounts or unmounts.
+  let loadMoreSentinelEl = $state<HTMLLIElement | null>(null);
+  $effect(() => {
+    if (!isListRoute) return;
+    const el = loadMoreSentinelEl;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void mail.loadMoreFolder();
+      },
+      { root: null, rootMargin: '200px', threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
   // Show a "sorry we're slow" hint after the list has been loading for
   // more than 1 s so the user knows something is being worked on (re #30).
   let loadingSlowly = $state(false);
@@ -1358,6 +1377,15 @@
             </button>
           </li>
         {/each}
+        {#if mail.listHasMore}
+          <li class="load-more-sentinel" role="presentation" bind:this={loadMoreSentinelEl}>
+            {#if mail.listLoadingMore}
+              <span class="load-more-indicator" role="status" aria-live="polite">
+                {t('list.loadingMore')}
+              </span>
+            {/if}
+          </li>
+        {/if}
       </ul>
     {/if}
   {:else}
@@ -1620,6 +1648,17 @@
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+  .load-more-sentinel {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: var(--spacing-08);
+    padding: var(--spacing-04) 0;
+  }
+  .load-more-indicator {
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
   }
   .thread-row {
     display: grid;

@@ -73,6 +73,15 @@ export class IdentitySetError extends Error {
 const SEARCH_HISTORY_MAX = 12;
 const SEARCH_HISTORY_NAME = 'mail.search.history';
 
+/**
+ * Page size for a folder's `Email/query` window (issue #161). Used for the
+ * initial `loadFolder` page and every `loadMoreFolder` append; the in-place
+ * reconciliation query (`#refreshFolderInPlace`) instead requests
+ * `max(current window length, FOLDER_PAGE_SIZE)` so a live push never
+ * truncates a scrolled-open window back to the first page.
+ */
+const FOLDER_PAGE_SIZE = 50;
+
 function readSearchHistory(): string[] {
   try {
     const raw = localStorage.getItem(accountKey(SEARCH_HISTORY_NAME));
@@ -135,6 +144,20 @@ class MailStore {
    * `toggleSelectAllVisible`, and folder navigation.
    */
   listWholeMailboxSelected = $state(false);
+  /**
+   * True while the current folder's last loaded page came back full
+   * (`ids.length === FOLDER_PAGE_SIZE`), meaning an older page likely
+   * exists on the server (issue #161). Drives the bottom sentinel /
+   * IntersectionObserver in MailView; `loadMoreFolder()` is a no-op once
+   * this is false. Recomputed on every load/append/reconciliation from
+   * the page that was actually returned -- never assumed.
+   */
+  listHasMore = $state<boolean>(false);
+  /**
+   * True while a `loadMoreFolder()` page fetch is in flight (issue #161).
+   * Drives the loading-indicator row rendered below the last loaded row.
+   */
+  listLoadingMore = $state<boolean>(false);
 
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
@@ -235,6 +258,8 @@ class MailStore {
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
     this.listWholeMailboxSelected = false;
+    this.listHasMore = false;
+    this.listLoadingMore = false;
     this.threadLoadStatus = new Map();
     this.threadLoadError = new Map();
     this.openThreadId = null;
@@ -1557,6 +1582,8 @@ class MailStore {
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
     this.listWholeMailboxSelected = false;
+    this.listHasMore = false;
+    this.listLoadingMore = false;
     this.listLoadStatus = 'loading';
     this.listError = null;
     try {
@@ -1608,7 +1635,7 @@ class MailStore {
             ...(filter ? { filter } : {}),
             sort: [{ property: sortProperty, isAscending: false }],
             collapseThreads: true,
-            limit: 50,
+            limit: FOLDER_PAGE_SIZE,
             calculateTotal: false,
           },
           [Capability.Mail],
@@ -1666,6 +1693,7 @@ class MailStore {
       for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
       this.listEmailIds = queryResult.ids;
+      this.listHasMore = queryResult.ids.length === FOLDER_PAGE_SIZE;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
       const nextThreads = new Map(this.threads);
@@ -1749,6 +1777,11 @@ class MailStore {
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
       }
 
+      // Re-request at least as many rows as are currently loaded (issue
+      // #161): a live push must not truncate a scrolled-open window back
+      // to the first FOLDER_PAGE_SIZE rows.
+      const requestedLimit = Math.max(this.listEmailIds.length, FOLDER_PAGE_SIZE);
+
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
           'Email/query',
@@ -1757,7 +1790,7 @@ class MailStore {
             ...(filter ? { filter } : {}),
             sort: [{ property: sortProperty, isAscending: false }],
             collapseThreads: true,
-            limit: 50,
+            limit: requestedLimit,
             calculateTotal: false,
           },
           [Capability.Mail],
@@ -1815,6 +1848,7 @@ class MailStore {
       // are not yet in the emails map.
       this.emails = next;
       this.listEmailIds = queryResult.ids;
+      this.listHasMore = queryResult.ids.length === requestedLimit;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
       const nextThreads = new Map(this.threads);
@@ -1824,6 +1858,114 @@ class MailStore {
     } catch (err) {
       this.listLoadStatus = 'error';
       this.listError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /**
+   * Append the next page of the current folder to `listEmailIds` (issue
+   * #161). No-op when the list is not 'ready', the previous page did not
+   * fill (`listHasMore` false), or a page is already in flight.
+   *
+   * The next page's `position` is `this.listEmailIds.length` at call
+   * time -- there is no separately tracked cursor, so nothing can drift
+   * out of sync with the rendered window (a bulk action removing a row
+   * via `#removeFromList` shrinks `listEmailIds` and therefore the next
+   * position in lockstep, with no extra bookkeeping). Ids already present
+   * in `listEmailIds` are filtered out of the appended page as a defensive
+   * guard against a race with a concurrent in-place reconciliation; if
+   * that drops the local view slightly behind the server's true offset,
+   * the following call simply re-requests an overlapping page and dedupes
+   * again, so the list can never show a duplicate or skipped row.
+   */
+  async loadMoreFolder(): Promise<void> {
+    if (this.listLoadStatus !== 'ready') return;
+    if (!this.listHasMore || this.listLoadingMore) return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    const folder = this.listFolder;
+    const position = this.listEmailIds.length;
+    const filter = this.#buildCurrentFolderFilter();
+    const sortProperty: 'receivedAt' | 'sentAt' =
+      folder === 'sent' || folder === 'drafts' ? 'sentAt' : 'receivedAt';
+
+    this.listLoadingMore = true;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Email/query',
+          {
+            accountId,
+            ...(filter ? { filter } : {}),
+            sort: [{ property: sortProperty, isAscending: false }],
+            collapseThreads: true,
+            position,
+            limit: FOLDER_PAGE_SIZE,
+            calculateTotal: false,
+          },
+          [Capability.Mail],
+        );
+        const eg = b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': q.ref('/ids'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+        const tg = b.call(
+          'Thread/get',
+          {
+            accountId,
+            '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': tg.ref('/list/*/emailIds'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+
+      // Guard: bail if the user navigated away while this page was in flight.
+      if (this.listFolder !== folder) return;
+
+      const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
+      const getResult = invocationArgs<{ list: Email[]; state: string }>(
+        responses[1],
+      );
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
+      const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
+
+      const next = new Map(this.emails);
+      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.emails = next;
+
+      const existing = new Set(this.listEmailIds);
+      const appended = queryResult.ids.filter((id) => !existing.has(id));
+      this.listEmailIds = [...this.listEmailIds, ...appended];
+      this.listHasMore = queryResult.ids.length === FOLDER_PAGE_SIZE;
+      if (typeof getResult.state === 'string') this.emailState = getResult.state;
+
+      const nextThreads = new Map(this.threads);
+      for (const t of threadResult.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+    } catch (err) {
+      console.error('loadMoreFolder failed', err);
+      toast.show({
+        message: errMessage(err, 'Weitere Nachrichten konnten nicht geladen werden'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    } finally {
+      this.listLoadingMore = false;
     }
   }
 

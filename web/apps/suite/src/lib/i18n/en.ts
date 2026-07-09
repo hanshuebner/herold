@@ -39,6 +39,8 @@ export const en = {
   'list.refresh': 'Refresh',
   'list.emptyTrash': 'Empty trash',
   'list.loading': 'Loading...',
+  // Infinite-scroll loading row shown while the next page fetches (issue #161).
+  'list.loadingMore': 'Loading more messages...',
   // Slow-load warning shown after 1 s of loading (re #30).
   'list.loadSlow': "Sorry we're slow. There may be a system problem.",
   'list.retry': 'Retry',

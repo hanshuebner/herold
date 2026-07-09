@@ -38,6 +38,8 @@ export const de = {
   'list.refresh': 'Aktualisieren',
   'list.emptyTrash': 'Papierkorb leeren',
   'list.loading': 'Laden...',
+  // Ladezeile beim automatischen Nachladen weiterer Seiten (issue #161).
+  'list.loadingMore': 'Weitere Nachrichten werden geladen...',
   // Langsam-Lade-Hinweis nach 1 s (re #30).
   'list.loadSlow': 'Entschuldigung für die Wartezeit. Möglicherweise liegt ein Systemproblem vor.',
   'list.retry': 'Erneut versuchen',
