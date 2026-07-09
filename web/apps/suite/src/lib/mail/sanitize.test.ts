@@ -706,3 +706,14 @@ describe('sanitizeHtml — script/style filters', () => {
     expect(body).not.toContain('onclick');
   });
 });
+
+describe('sanitizeHtml — iframe body sizing (issue #158)', () => {
+  it('establishes a block formatting context on <body> so a trailing element\'s default UA margin (e.g. a <p>) does not collapse through and disappear from body.scrollHeight, clipping the last line', () => {
+    const out = sanitizeHtml('<p>Liebe Gruesse,<br>Hans</p>', { loadImages: false });
+    // The template declares `html, body { margin: 0; padding: 0; }` first,
+    // then a standalone `body { ... }` rule carrying the font/colour/layout
+    // declarations -- match that second occurrence specifically.
+    const bodyRules = out.match(/(?:^|\n)\s*body\s*\{[^}]*\}/g) ?? [];
+    expect(bodyRules.some((rule) => /display:\s*flow-root/.test(rule))).toBe(true);
+  });
+});

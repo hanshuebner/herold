@@ -181,7 +181,17 @@
   function recomputeHeight(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
-    height = Math.max(doc.body.scrollHeight + 8, 120);
+    // scrollHeight is an integer and can round down by up to a pixel
+    // relative to the true (fractional) layout height, shaving a sliver
+    // off the last line's descenders. getBoundingClientRect().height
+    // reports the fractional value; take whichever of the two is taller,
+    // then round up so the +8 buffer is never eaten by the rounding
+    // itself (issue #158).
+    const measuredHeight = Math.max(
+      doc.body.scrollHeight,
+      doc.body.getBoundingClientRect().height,
+    );
+    height = Math.max(Math.ceil(measuredHeight) + 8, 120);
     // Latch on the first real measurement: cancel the spinner timer, hide the
     // spinner, and reveal the iframe. Subsequent calls (from the body
     // ResizeObserver, image `load` events, or details `toggle` events) still

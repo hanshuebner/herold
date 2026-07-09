@@ -585,6 +585,13 @@ function wrapInIframeDocument(body: string, internalizePending: boolean): string
     color: #161616;
     background: #ffffff;
     word-wrap: break-word;
+    /* Establishes a block formatting context so the bottom margin of the
+       last body child (e.g. a trailing <p>'s default UA margin) stays
+       inside body's own border box instead of collapsing through it.
+       Without this, body.scrollHeight under-reports the true content
+       height by the collapsed margin and the parent HtmlBody.svelte
+       iframe is sized too short, clipping the last line (issue #158). */
+    display: flow-root;
   }
   @media (prefers-color-scheme: dark) {
     body { color: #f4f4f4; background: #161616; }
