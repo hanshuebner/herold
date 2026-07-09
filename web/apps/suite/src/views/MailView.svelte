@@ -203,6 +203,19 @@
           if (id) void mail.toggleFlagged(id);
         },
       },
+      {
+        key: 'x',
+        description: 'Toggle selection',
+        action: () => {
+          const id = focusedSearchId();
+          if (id) mail.toggleSelected(id);
+        },
+      },
+      {
+        key: '*',
+        description: 'Select / deselect all visible',
+        action: () => mail.toggleSelectAllVisible(mail.searchEmailIds),
+      },
     ]);
     return pop;
   });
@@ -902,14 +915,106 @@
     {:else if mail.searchEmails.length === 0}
       <div class="state">{t('mail.search.noMatches')}</div>
     {:else}
+      <!-- Search results share the folder list's toolbar, row template
+           (checkbox, drag handle, draggable), and bulk-selection state
+           (mail.listSelectedIds) so the two views behave identically
+           (re #159). "Empty trash" and the whole-mailbox banner are
+           folder-only concepts and are not shown here. -->
+      <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
+        <SelectChooser visibleEmails={mail.searchEmails} visibleIds={mail.searchEmailIds} />
+        {#if mail.listSelectedIds.size > 0}
+          <span class="bulk-count">
+            {t('bulk.selected', { count: mail.listSelectedIds.size })}
+          </span>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.archive')}
+            title={t('bulk.archive')}
+            onclick={bulkArchive}
+          ><ArchiveIcon size={18} /></button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.markRead')}
+            title={t('bulk.markRead')}
+            onclick={bulkMarkRead}
+          ><MarkReadIcon size={18} /></button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.markUnread')}
+            title={t('bulk.markUnread')}
+            onclick={bulkMarkUnread}
+          ><MarkUnreadIcon size={18} /></button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.move')}
+            title={t('bulk.move')}
+            onclick={bulkMove}
+          ><MoveIcon size={18} /></button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('bulk.label')}
+            title={t('bulk.label')}
+            onclick={() => labelPicker.openBulk(selectedIds())}
+          ><LabelIcon size={18} /></button>
+          {#if categorySettings.available}
+            <button
+              type="button"
+              class="icon-btn"
+              aria-label={t('bulk.category')}
+              title={t('bulk.category')}
+              onclick={() => {
+                const ids = [...mail.listSelectedIds];
+                if (ids.length > 0) categoryPicker.open(ids[0]!);
+              }}
+            ><CategoryIcon size={18} /></button>
+          {/if}
+          <button
+            type="button"
+            class="icon-btn danger"
+            aria-label={t('bulk.delete')}
+            title={t('bulk.delete')}
+            onclick={bulkDelete}
+          ><TrashIcon size={18} /></button>
+        {/if}
+        <span class="list-toolbar-spacer"></span>
+      </div>
+
       <ul class="thread-list" role="listbox" aria-label={t('mail.search.resultsAria')}>
         {#each mail.searchEmails as email, i (email.id)}
           <li
-            class="thread-row search"
+            class="thread-row"
             class:unread={isUnread(email)}
             class:focused={mail.searchFocusedIndex === i}
+            class:selected={mail.listSelectedIds.has(email.id)}
+            class:dragging={threadDnd.current?.ids.includes(email.id) ?? false}
             data-row-index={i}
+            draggable="true"
+            ondragstart={(e) => onRowDragStart(e, email)}
+            ondragend={() => threadDnd.end()}
           >
+            <span class="drag-handle" aria-hidden="true">
+              <svg viewBox="0 0 8 14" width="8" height="14" fill="currentColor">
+                <circle cx="2" cy="2" r="1" />
+                <circle cx="6" cy="2" r="1" />
+                <circle cx="2" cy="7" r="1" />
+                <circle cx="6" cy="7" r="1" />
+                <circle cx="2" cy="12" r="1" />
+                <circle cx="6" cy="12" r="1" />
+              </svg>
+            </span>
+            <input
+              type="checkbox"
+              class="row-check"
+              aria-label={t('mail.row.selectAria')}
+              checked={mail.listSelectedIds.has(email.id)}
+              onchange={() => mail.toggleSelected(email.id)}
+              onclick={(e) => e.stopPropagation()}
+            />
             <button
               type="button"
               class="row-star"
@@ -1523,10 +1628,6 @@
     border-bottom: 1px solid var(--border-subtle-01);
     border-left: 3px solid transparent;
     transition: border-color var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  /* Search rows still use the 2-column layout (no per-row checkbox / handle). */
-  .thread-row.search {
-    grid-template-columns: auto 1fr;
   }
   .drag-handle {
     color: var(--text-helper);

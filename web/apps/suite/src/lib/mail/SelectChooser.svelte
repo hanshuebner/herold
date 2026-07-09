@@ -3,6 +3,7 @@
   import CheckSquareIcon from '../icons/CheckSquareIcon.svelte';
   import ChevronDownIcon from '../icons/ChevronDownIcon.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import type { Email } from './types';
 
   // The chooser sits at the top of the message list and lets the user
   // change the selection set without per-row checkbox bookkeeping. The
@@ -13,18 +14,30 @@
   // The whole-mailbox-selection banner is rendered by MailView (the
   // parent) so it can occupy a dedicated row below the toolbar rather
   // than competing for horizontal space with the bulk-action buttons.
+  //
+  // `visibleEmails`/`visibleIds` default to the folder list; the search
+  // result view passes its own result set so the same chooser and the
+  // same `mail.listSelectedIds` selection apply there too (re #159).
+
+  let {
+    visibleEmails,
+    visibleIds,
+  }: { visibleEmails?: Email[]; visibleIds?: string[] } = $props();
+
+  const effectiveEmails = $derived(visibleEmails ?? mail.listEmails);
+  const effectiveIds = $derived(visibleIds ?? mail.listEmailIds);
 
   let menuOpen = $state(false);
   let rootEl = $state<HTMLElement | null>(null);
 
   const selectedCount = $derived(mail.listSelectedIds.size);
-  const visibleCount = $derived(mail.listEmails.length);
+  const visibleCount = $derived(effectiveEmails.length);
   const allSelected = $derived(visibleCount > 0 && selectedCount === visibleCount);
   const someSelected = $derived(selectedCount > 0 && !allSelected);
 
   function toggleAll(): void {
     if (selectedCount > 0) mail.clearSelection();
-    else mail.selectAllVisible();
+    else mail.selectAllVisible(effectiveIds);
   }
   function close(): void {
     menuOpen = false;
@@ -32,22 +45,22 @@
   function pick(action: 'all' | 'none' | 'read' | 'unread' | 'starred' | 'unstarred'): void {
     switch (action) {
       case 'all':
-        mail.selectAllVisible();
+        mail.selectAllVisible(effectiveIds);
         break;
       case 'none':
         mail.clearSelection();
         break;
       case 'read':
-        mail.selectVisibleWhere((e) => Boolean(e.keywords.$seen));
+        mail.selectVisibleWhere((e) => Boolean(e.keywords.$seen), effectiveEmails);
         break;
       case 'unread':
-        mail.selectVisibleWhere((e) => !e.keywords.$seen);
+        mail.selectVisibleWhere((e) => !e.keywords.$seen, effectiveEmails);
         break;
       case 'starred':
-        mail.selectVisibleWhere((e) => Boolean(e.keywords.$flagged));
+        mail.selectVisibleWhere((e) => Boolean(e.keywords.$flagged), effectiveEmails);
         break;
       case 'unstarred':
-        mail.selectVisibleWhere((e) => !e.keywords.$flagged);
+        mail.selectVisibleWhere((e) => !e.keywords.$flagged, effectiveEmails);
         break;
     }
     close();

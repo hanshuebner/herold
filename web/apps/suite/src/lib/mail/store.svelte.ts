@@ -773,6 +773,11 @@ class MailStore {
     this.searchLoadStatus = 'loading';
     this.searchError = null;
     this.searchFocusedIndex = -1;
+    // The search view shares the folder list's bulk-selection state
+    // (re #159); a new search starts with nothing selected, same as
+    // loadFolder.
+    this.listSelectedIds = new Set();
+    this.listWholeMailboxSelected = false;
 
     try {
       // Make sure mailboxes are warm so `label:` resolves.
@@ -891,6 +896,8 @@ class MailStore {
     this.searchLoadStatus = 'idle';
     this.searchError = null;
     this.searchFocusedIndex = -1;
+    this.listSelectedIds = new Set();
+    this.listWholeMailboxSelected = false;
   }
 
   /** The id of the JMAP Mail account this principal uses. */
@@ -2438,10 +2445,14 @@ class MailStore {
     this.listSelectedIds = next;
   }
 
-  /** Replace the selection with every id currently visible in the list. */
-  selectAllVisible(): void {
+  /**
+   * Replace the selection with every id currently visible in the list.
+   * Defaults to the folder-list ids; pass `visibleIds` explicitly for a
+   * different visible set (e.g. the search-result list, re #159).
+   */
+  selectAllVisible(visibleIds: string[] = this.listEmailIds): void {
     this.listWholeMailboxSelected = false;
-    this.listSelectedIds = new Set(this.listEmailIds);
+    this.listSelectedIds = new Set(visibleIds);
   }
 
   /**
@@ -2468,12 +2479,17 @@ class MailStore {
   /**
    * Replace the selection with every visible email matching a predicate.
    * Used by the message-list select dropdown's Read / Unread / Starred /
-   * Unstarred entries (REQ-MAIL-LIST-SELECT, issue #10).
+   * Unstarred entries (REQ-MAIL-LIST-SELECT, issue #10). Defaults to the
+   * folder-list emails; pass `visibleEmails` explicitly for a different
+   * visible set (e.g. the search-result list, re #159).
    */
-  selectVisibleWhere(predicate: (email: Email) => boolean): void {
+  selectVisibleWhere(
+    predicate: (email: Email) => boolean,
+    visibleEmails: Email[] = this.listEmails,
+  ): void {
     this.listWholeMailboxSelected = false;
     const next = new Set<string>();
-    for (const e of this.listEmails) {
+    for (const e of visibleEmails) {
       if (predicate(e)) next.add(e.id);
     }
     this.listSelectedIds = next;
