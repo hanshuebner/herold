@@ -62,6 +62,7 @@ import (
 	jmapllmtransparency "github.com/hanshuebner/herold/internal/protojmap/llmtransparency"
 	jmapmail "github.com/hanshuebner/herold/internal/protojmap/mail"
 	jmapcatsettings "github.com/hanshuebner/herold/internal/protojmap/mail/categorysettings"
+	jmapemail "github.com/hanshuebner/herold/internal/protojmap/mail/email"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/emailsubmission"
 	jmapfileshare "github.com/hanshuebner/herold/internal/protojmap/mail/fileshare"
 	jmapidentity "github.com/hanshuebner/herold/internal/protojmap/mail/identity"
@@ -1245,6 +1246,19 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return nil
 	})
 
+	// Whole-mailbox async bulk-mutation drain worker (issue #149/#161,
+	// REQ-PROTO-40..48). Bounded by the lifecycle errgroup so shutdown
+	// drains it.
+	if bulkJobWorker := bundle.srvs.emailBulkJobWorker; bulkJobWorker != nil {
+		g.Go(func() error {
+			if err := bulkJobWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.LogAttrs(context.Background(), slog.LevelWarn, "email bulk job worker exited", slog.String("err", err.Error()))
+				return err
+			}
+			return nil
+		})
+	}
+
 	// Attachment-share sweeper (REQ-SHARE-23). Deletes pending shares
 	// older than pending_ttl, active shares whose expires_at has passed,
 	// and revoked shares whose revoked_grace window has closed. The
@@ -2259,6 +2273,11 @@ type suiteServers struct {
 	sendSrv         *protosend.Server
 	webpushDispatch *webpush.Dispatcher
 	jmapSrv         *protojmap.Server
+	// emailBulkJobWorker drains whole-mailbox async bulk-mutation jobs
+	// created via Email/setByQuery (issue #149/#161, REQ-PROTO-40..48).
+	// StartServer runs it under the lifecycle errgroup alongside the
+	// other per-principal sweep workers.
+	emailBulkJobWorker *jmapemail.BulkJobWorker
 }
 
 // composedHandlers is the bundle of HTTP handlers the bind path installs on
@@ -2530,6 +2549,17 @@ func composeAdminAndUI(
 			ExtImg:   extimg.FromSysConfig(cfg.ExternalImages, cfg.Server.Hostname),
 			Hostname: cfg.Server.Hostname,
 		})
+	// Whole-mailbox async bulk-mutation drain worker (issue #149/#161,
+	// REQ-PROTO-40..48). Email/setByQuery + EmailBulkJob/get are
+	// registered above by jmapmail.RegisterWithOptions (via the mail/email
+	// subpackage); the worker that actually applies each job's patch runs
+	// separately so StartServer can bind it to the lifecycle errgroup like
+	// the other per-principal sweep workers.
+	bundle.srvs.emailBulkJobWorker = jmapemail.NewBulkJobWorker(jmapemail.BulkJobWorkerOptions{
+		Store:  st,
+		Logger: logger.With("subsystem", "jmap-email-bulk-job"),
+		Clock:  clk,
+	})
 	// Thread/get + Thread/changes (REQ-PROTO-41).
 	jmapthread.Register(jmapSrv.Registry(), st, logger.With("subsystem", "jmap-thread"), clk)
 	// SearchSnippet/get (REQ-PROTO-41 / REQ-PROTO-47).

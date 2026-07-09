@@ -335,7 +335,7 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 	// urn:netzhansa:params:jmap:internalize-status session capability.
 	// FileShare joins the same row-based set (REQ-SHARE-40): its state
 	// counter is bumped on every FileShare/set mutation.
-	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse", "InternalizeStatus", "FileShare"}
+	rowTypes := []string{"Identity", "EmailSubmission", "VacationResponse", "InternalizeStatus", "FileShare", "EmailBulkJob"}
 	rowNeeded := false
 	for _, t := range rowTypes {
 		if matchesEventSourceTypeName(types, t) {
@@ -362,6 +362,9 @@ func (s *Server) collectStateMap(ctx context.Context, p store.Principal, types m
 		}
 		if matchesEventSourceTypeName(types, "FileShare") {
 			out["FileShare"] = strconv.FormatInt(st.FileShare, 10)
+		}
+		if matchesEventSourceTypeName(types, "EmailBulkJob") {
+			out["EmailBulkJob"] = strconv.FormatInt(st.EmailBulkJob, 10)
 		}
 	}
 	return out, nil

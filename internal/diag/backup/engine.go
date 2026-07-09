@@ -163,6 +163,7 @@ var tableReg = map[string]tableDesc{
 	"session_elevations":         {&SessionElevationRow{}, "session_id"},
 	"clientlog":                  {&ClientLogRow{}, "id"},
 	"system_events":              {&SystemEventRow{}, "id"},
+	"email_bulk_jobs":            {&EmailBulkJobRow{}, "id"},
 }
 
 // colName extracts the SQL column name from a struct field's json tag.

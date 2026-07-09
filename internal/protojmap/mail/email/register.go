@@ -100,6 +100,16 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 	reg.Register(protojmap.CapabilityMail, &copyHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &importHandler{h: h})
 	reg.Register(protojmap.CapabilityMail, &parseHandler{h: h})
+
+	// Whole-mailbox async bulk-mutation vendor extension (issue #149/#161,
+	// REQ-PROTO-40..48). Registered under its own capability so clients can
+	// detect availability before routing whole-mailbox bulk actions here
+	// instead of refusing them. The background drain worker
+	// (BulkJobWorker, bulkjob_worker.go) is started separately by the
+	// composition root (internal/admin/server.go), not by Register.
+	reg.Register(protojmap.CapabilityEmailBulkMutation, setByQueryHandler{h: h})
+	reg.Register(protojmap.CapabilityEmailBulkMutation, bulkJobGetHandler{h: h})
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailBulkMutation, struct{}{})
 }
 
 // WaitBackgroundWrites blocks until all background goroutines started by

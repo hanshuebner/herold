@@ -2440,6 +2440,50 @@ type Metadata interface {
 	// sync state. On conflict (accountID, upstreamFolder, upstreamUID)
 	// the herold-side IDs and LastSyncedFlags are replaced.
 	UpsertIMAPImportMessageState(ctx context.Context, state IMAPImportMessageState) error
+
+	// -- EmailBulkJob (whole-mailbox async bulk mutation) --------------
+
+	// CreateEmailBulkJob inserts a new job row in status=running with
+	// Total=-1 (target set unresolved) and Processed=0. The returned
+	// EmailBulkJob carries the assigned ID.
+	CreateEmailBulkJob(ctx context.Context, create EmailBulkJobCreate) (EmailBulkJob, error)
+
+	// GetEmailBulkJob returns the job row (including Failures) owned by
+	// principalID. Returns ErrNotFound when id does not exist or is
+	// owned by a different principal (the JMAP layer must not leak
+	// cross-account job existence).
+	GetEmailBulkJob(ctx context.Context, principalID PrincipalID, id EmailBulkJobID) (EmailBulkJob, error)
+
+	// ListRunningEmailBulkJobs returns every job with status=running
+	// across all principals, oldest-created first, capped at limit.
+	// The background worker polls this to find work; v1 assumes a
+	// single worker process so no per-node claim/lock is needed.
+	ListRunningEmailBulkJobs(ctx context.Context, limit int) ([]EmailBulkJob, error)
+
+	// ResolveEmailBulkJobTargets records the full ordered target-id
+	// list, Total, and MatchedEstimate for a job whose targets have not
+	// yet been resolved (Total == -1). A no-op returning nil when the
+	// job is already resolved, so a worker restart mid-resolution is
+	// safe to retry with a freshly recomputed list.
+	ResolveEmailBulkJobTargets(ctx context.Context, id EmailBulkJobID, targetIDs []MessageID) error
+
+	// NextEmailBulkJobBatch returns up to limit target message ids
+	// starting at the job's current Processed cursor, without advancing
+	// it. Returns an empty slice once every target has been attempted
+	// or the job's targets are not yet resolved.
+	NextEmailBulkJobBatch(ctx context.Context, id EmailBulkJobID, limit int) ([]MessageID, error)
+
+	// RecordEmailBulkJobBatch advances the job's Processed cursor by
+	// len(outcomes) and appends any failures (outcomes with a non-empty
+	// Err) to the job's failure list. outcomes must be given in the
+	// same order the corresponding ids were returned by
+	// NextEmailBulkJobBatch.
+	RecordEmailBulkJobBatch(ctx context.Context, id EmailBulkJobID, outcomes []EmailBulkJobOutcome) error
+
+	// FinishEmailBulkJob sets the job's terminal status
+	// (done/partial/failed). errMsg is persisted only for
+	// EmailBulkJobStatusFailed.
+	FinishEmailBulkJob(ctx context.Context, id EmailBulkJobID, status EmailBulkJobStatus, errMsg string) error
 }
 
 // BlobReader is a seekable, range-capable blob handle (REQ-STORE-14):

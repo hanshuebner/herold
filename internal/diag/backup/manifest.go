@@ -490,7 +490,18 @@ const CurrentBackupVersion = 1
 //	(global entries); domain operators see nothing from pre-migration
 //	history (correct fail-closed behavior). Index on (domain, id DESC)
 //	WHERE domain != '' supports the IN-list scope filter.
-const CurrentSchemaVersion = 75
+//
+// 76 — 0076_email_bulk_jobs.sql (issue #149/#161, REQ-PROTO-40..48
+//
+//	vendor extension https://netzhansa.com/jmap/email-bulk-mutation).
+//	Adds the email_bulk_jobs table backing `Email/setByQuery` +
+//	`EmailBulkJob/get`: one row per whole-mailbox background bulk
+//	mutation, holding the resolved target-id list, a resumable
+//	processed cursor, and a failures_json array so a partial per-batch
+//	failure never desyncs failedIds/errors. Adds
+//	jmap_states.email_bulk_job_state, the per-principal push counter.
+//	Excluded from herold diag backup: ephemeral operational state.
+const CurrentSchemaVersion = 76
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -678,4 +689,9 @@ var TableNames = []string{
 	// (--include-system-events opts in).  Operational telemetry; not part
 	// of the security/compliance backup set.
 	"system_events",
+	// Whole-mailbox async bulk-mutation jobs (issue #149/#161, migration
+	// 0076). FK to principals(id) ON DELETE CASCADE. Excluded from backup
+	// permanently (like sessions/session_elevations): ephemeral operational
+	// state that a restore cannot meaningfully resume mid-flight.
+	"email_bulk_jobs",
 }

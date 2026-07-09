@@ -1035,6 +1035,10 @@ type JMAPStates struct {
 	// every IMAPImport/set create, update, or destroy so a self-service
 	// client can track drift via IMAPImport/changes.
 	IMAPImport int64
+	// EmailBulkJob is the vendor EmailBulkJob state (whole-mailbox async
+	// bulk mutation). Bumped once per processed batch by the background
+	// worker.
+	EmailBulkJob int64
 	// UpdatedAt is the instant of the most recent increment.
 	UpdatedAt time.Time
 }

@@ -154,6 +154,16 @@ const (
 	// server will serve /share/{id} download URLs. When absent the suite
 	// hides the offload affordance entirely.
 	CapabilityFileShares CapabilityID = "https://netzhansa.com/jmap/file-shares"
+
+	// CapabilityEmailBulkMutation is the whole-mailbox async bulk-mutation
+	// capability (issue #149/#161, REQ-PROTO-40..48 vendor extension).
+	// Signals that `Email/setByQuery` and the `EmailBulkJob` datatype
+	// (`EmailBulkJob/get`) are available: the client resolves a filter to a
+	// server-side background job instead of fetching every matching id and
+	// issuing one large synchronous `Email/set` (which blows the method
+	// response deadline on large mailboxes/labels — REQ-PERF-DEADLINE).
+	// Implemented under internal/protojmap/mail/email (bulkjob_*.go).
+	CapabilityEmailBulkMutation CapabilityID = "https://netzhansa.com/jmap/email-bulk-mutation"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

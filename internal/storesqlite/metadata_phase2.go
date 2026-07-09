@@ -1449,6 +1449,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			       internalize_status_state,
 			       file_share_state,
 			       imap_import_state,
+			       email_bulk_job_state,
 			       updated_at_us
 			  FROM jmap_states WHERE principal_id = ?`, int64(pid))
 		var (
@@ -1456,11 +1457,12 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			conv, msgChat, memb                                int64
 			pushSub, coach, catSettings, managedRule           int64
 			seenAddr, internalizeStatus, fileShare, imapImport int64
+			emailBulkJob                                       int64
 			updatedUs                                          int64
 		)
 		if err := row.Scan(&ppid, &mb, &em, &th, &ide, &es, &vr, &sv, &ab, &ct, &cal, &ce,
 			&conv, &msgChat, &memb, &pushSub, &coach, &catSettings, &managedRule,
-			&seenAddr, &internalizeStatus, &fileShare, &imapImport, &updatedUs); err != nil {
+			&seenAddr, &internalizeStatus, &fileShare, &imapImport, &emailBulkJob, &updatedUs); err != nil {
 			return mapErr(err)
 		}
 		out = store.JMAPStates{
@@ -1487,6 +1489,7 @@ func (m *metadata) GetJMAPStates(ctx context.Context, pid store.PrincipalID) (st
 			InternalizeStatus: internalizeStatus,
 			FileShare:         fileShare,
 			IMAPImport:        imapImport,
+			EmailBulkJob:      emailBulkJob,
 			UpdatedAt:         fromMicros(updatedUs),
 		}
 		return nil
@@ -1578,6 +1581,8 @@ func jmapStateColumn(kind store.JMAPStateKind) (string, error) {
 		return "file_share_state", nil
 	case store.JMAPStateKindIMAPImport:
 		return "imap_import_state", nil
+	case store.JMAPStateKindEmailBulkJob:
+		return "email_bulk_job_state", nil
 	default:
 		return "", fmt.Errorf("storesqlite: unknown JMAPStateKind %d", kind)
 	}

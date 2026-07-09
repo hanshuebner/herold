@@ -456,6 +456,9 @@ func Run(t *testing.T, f Factory) {
 		// Groups all blob_part_index scenarios under one top-level case for
 		// the same Postgres-latency reason as BodyMeta above.
 		{"BlobPartIndex", testBlobPartIndex},
+		// -- whole-mailbox async bulk mutation (issue #149/#161, migration 0076) --
+		{"EmailBulkJob_CreateResolveProcessFinish", testEmailBulkJob_CreateResolveProcessFinish},
+		{"EmailBulkJob_FinishFailed", testEmailBulkJob_FinishFailed},
 	}
 	for _, c := range cases {
 		tc := c

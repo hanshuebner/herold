@@ -959,3 +959,24 @@ type SystemEventRow struct {
 	Domain       string `json:"domain"`
 	MetadataJSON string `json:"metadata_json"`
 }
+
+// EmailBulkJobRow mirrors one row of the email_bulk_jobs table introduced
+// in migration 0076 (issue #149/#161, REQ-PROTO-40..48 vendor extension
+// https://netzhansa.com/jmap/email-bulk-mutation). Excluded from backup
+// permanently: ephemeral operational state a restore cannot meaningfully
+// resume mid-flight. FK to principals(id) ON DELETE CASCADE.
+type EmailBulkJobRow struct {
+	ID              int64  `json:"id"`
+	PrincipalID     int64  `json:"principal_id"`
+	FilterJSON      string `json:"filter_json"`
+	PatchJSON       string `json:"patch_json"`
+	Status          string `json:"status"`
+	MatchedEstimate int64  `json:"matched_estimate"`
+	Total           int64  `json:"total"`
+	Processed       int64  `json:"processed"`
+	TargetIDsJSON   string `json:"target_ids_json"`
+	FailuresJSON    string `json:"failures_json"`
+	ErrorMessage    string `json:"error_message"`
+	CreatedAtUs     int64  `json:"created_at_us"`
+	UpdatedAtUs     int64  `json:"updated_at_us"`
+}

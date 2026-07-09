@@ -104,14 +104,18 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 	for _, table := range TableNames {
 		// clientlog and system_events are excluded from backups by default
 		// (REQ-OPS-206a, REQ-ADM-304); --include-clientlog / --include-system-events opts in.
-		// sessions and session_elevations are excluded permanently: rows expire
-		// naturally and restoring stale session rows would confuse TelemetryGate.
+		// sessions, session_elevations, and email_bulk_jobs are excluded
+		// permanently: sessions/elevations expire naturally and restoring
+		// stale rows would confuse TelemetryGate; email_bulk_jobs is
+		// ephemeral operational state a restore cannot meaningfully resume
+		// mid-flight (issue #149/#161).
 		// In all cases we still write an empty .jsonl so the bundle is
 		// structurally complete and restore / verify do not have to
 		// special-case the absence of the file.
 		if (table == "clientlog" && !b.opts.IncludeClientLog) ||
 			(table == "system_events" && !b.opts.IncludeSystemEvents) ||
-			table == "sessions" || table == "session_elevations" {
+			table == "sessions" || table == "session_elevations" ||
+			table == "email_bulk_jobs" {
 			if err := writeEmptyJSONL(dst, table); err != nil {
 				return Manifest{}, fmt.Errorf("backup: empty %s: %w", table, err)
 			}

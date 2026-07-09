@@ -427,6 +427,14 @@ const (
 	// destroy so a self-service client can track drift via IMAPImport/changes.
 	// The underlying column is jmap_states.imap_import_state.
 	JMAPStateKindIMAPImport
+	// JMAPStateKindEmailBulkJob tracks the vendor `EmailBulkJob` datatype
+	// (whole-mailbox async bulk mutation, capability
+	// https://netzhansa.com/jmap/email-bulk-mutation). Bumped once per
+	// processed batch by the background worker (internal/protojmap/mail/email
+	// bulkjob_worker.go) so EventSource push tells the client to re-fetch
+	// EmailBulkJob/get without per-message churn. The underlying column is
+	// jmap_states.email_bulk_job_state.
+	JMAPStateKindEmailBulkJob
 )
 
 // Chat-side server-enforced caps. CHECK constraints in SQL would
