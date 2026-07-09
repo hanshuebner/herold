@@ -3,9 +3,9 @@
    * Always-visible Reply / Reply All / Forward strip pinned to the
    * bottom of the thread reader. Operates on the most-recent email in
    * the thread (the one a reply would normally target). Reply-All only
-   * appears when the targeted email has more than one recipient (any
-   * second To address or any Cc) — otherwise it is identical to Reply
-   * and just clutters the bar.
+   * appears when the targeted email's To/Cc union contains at least one
+   * address outside the user's registered identities (re #163) —
+   * otherwise it is identical to Reply and just clutters the bar.
    *
    * Per re #98 the bar renders its CTAs with the same visual language
    * as the ThreadToolbar (transparent pill, icon + label). Previously
@@ -22,7 +22,9 @@
    * messages — that logic lives in compose.svelte.ts.
    */
   import { compose } from '../compose/compose.svelte';
+  import { mail } from './store.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import { buildSelfEmailSet } from './identity-match';
   import ReplyIcon from '../icons/ReplyIcon.svelte';
   import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
   import ForwardIcon from '../icons/ForwardIcon.svelte';
@@ -35,9 +37,24 @@
   }
   let { target }: Props = $props();
 
-  let hasMultipleRecipients = $derived(
-    (target.to?.length ?? 0) > 1 || (target.cc?.length ?? 0) > 0,
-  );
+  // Reply-All is shown only when the To/Cc union contains at least one
+  // address outside the user's registered identities — the same
+  // own-email filter computeReplyAllCc (compose.svelte.ts) applies when
+  // building the actual Cc list. Without this filter the button could
+  // appear for a message whose only extra recipients are the user's own
+  // identities, and Reply All would then be identical to plain Reply
+  // with an empty Cc (re #163).
+  let hasMultipleRecipients = $derived.by(() => {
+    const selfEmails = buildSelfEmailSet(mail.identities.values());
+    for (const list of [target.to, target.cc]) {
+      if (!list) continue;
+      for (const addr of list) {
+        const lc = (addr.email ?? '').trim().toLowerCase();
+        if (lc && !selfEmails.has(lc)) return true;
+      }
+    }
+    return false;
+  });
 
   // Hide while the inline composer is open. When the user pops out to the
   // floating window, compose.inlineMode becomes false and this bar reappears.
