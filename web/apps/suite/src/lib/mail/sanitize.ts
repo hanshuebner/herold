@@ -49,6 +49,17 @@ export interface SanitizeOptions {
    * bytes arrive (issue #47). Absent keys leave the image unchanged.
    */
   cidDimensions?: Record<string, { width: number; height: number }>;
+  /**
+   * True when the server has not finished the background internalize pass
+   * for this message (REQ-EXTIMG-BG-INTERNAL-40) -- i.e. `Email/get` sent
+   * `InternalizePending = true` and every external <img src> was rewritten
+   * to `extimg.PlaceholderDataURI`. Gates the iframe stylesheet's
+   * placeholder-sizing rule (see `wrapInIframeDocument`): the rule matches
+   * on a bare data-URI byte prefix, which a genuine already-internalized
+   * tracking pixel can coincidentally share (issue #160), so the rule must
+   * only apply while this specific message is still pending.
+   */
+  internalizePending?: boolean;
 }
 
 const ALLOWED_TAGS = [
@@ -121,7 +132,7 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
   const wrap = document.createElement('div');
   wrap.appendChild(fragment);
   const cleanBody = wrap.innerHTML;
-  return wrapInIframeDocument(cleanBody);
+  return wrapInIframeDocument(cleanBody, options.internalizePending === true);
 }
 
 // Tags whose text content is treated as opaque -- we never rewrite
@@ -522,12 +533,39 @@ function findFirstQuotedRegion(root: ParentNode): Element | null {
 }
 
 /**
+ * Server-emitted internalize placeholder (REQ-EXTIMG-BG-INTERNAL-41).
+ * The selector matches the literal prefix of extimg.PlaceholderDataURI
+ * only -- never a generic data: selector -- so user-supplied bodies
+ * cannot leverage this style for their own data URIs. Sized to a
+ * visible gray box so the user opening an image-heavy email sees
+ * *where* the images will land while the worker drains, instead of
+ * the 1x1 transparent GIF collapsing the layout and orphaning the
+ * "Bilder werden verarbeitet" banner.
+ *
+ * Only injected into the iframe stylesheet when the caller confirms this
+ * specific message is still `InternalizePending` (see `wrapInIframeDocument`).
+ * A prefix-only `img[src^=...]` selector cannot tell "herold's own pending
+ * placeholder" from "a real, already-internalized image that happens to
+ * start with the same bytes" (a minimal transparent tracking-pixel GIF is a
+ * near-universal byte pattern many ESPs reuse verbatim), so gating on the
+ * message's own state is what keeps genuine tracking pixels from being
+ * forced into 96px-tall gray blocks after internalizing finishes (issue #160).
+ */
+const INTERNALIZE_PLACEHOLDER_CSS = `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"] {
+    display: block;
+    min-height: 6em;
+    width: 100%;
+    max-width: 100%;
+    background: #f4f4f4;
+  }`;
+
+/**
  * Wrap the sanitised body in a minimal HTML document with an inline CSP
  * and base styles. The iframe sandbox + same-origin parent combination
  * means `'self'` in the CSP refers to the suite origin where the image
  * proxy lives.
  */
-function wrapInIframeDocument(body: string): string {
+function wrapInIframeDocument(body: string, internalizePending: boolean): string {
   const csp =
     "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self';";
   // The "Hide trimmed content" label is supplied by the iframe's CSS
@@ -553,23 +591,7 @@ function wrapInIframeDocument(body: string): string {
   }
   a { color: #0f62fe; }
   img { max-width: 100%; height: auto; }
-  /*
-   * Server-emitted internalize placeholder (REQ-EXTIMG-BG-INTERNAL-41).
-   * The selector matches the literal prefix of extimg.PlaceholderDataURI
-   * only -- never a generic data: selector -- so user-supplied bodies
-   * cannot leverage this style for their own data URIs. Sized to a
-   * visible gray box so the user opening an image-heavy email sees
-   * *where* the images will land while the worker drains, instead of
-   * the 1x1 transparent GIF collapsing the layout and orphaning the
-   * "Bilder werden verarbeitet" banner.
-   */
-  img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"] {
-    display: block;
-    min-height: 6em;
-    width: 100%;
-    max-width: 100%;
-    background: #f4f4f4;
-  }
+  ${internalizePending ? INTERNALIZE_PLACEHOLDER_CSS : ''}
   blockquote {
     border-left: 3px solid #c6c6c6;
     margin: 0 0 0 8px;

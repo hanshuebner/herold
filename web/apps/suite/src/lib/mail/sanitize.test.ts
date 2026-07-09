@@ -440,9 +440,9 @@ describe('sanitizeHtml — inline raster data: URIs', () => {
 });
 
 describe('sanitizeHtml — internalize placeholder visible box (REQ-EXTIMG-BG-INTERNAL-41 / -66)', () => {
-  it('iframe stylesheet contains the literal selector and a non-zero min-height', () => {
+  it('iframe stylesheet contains the literal selector and a non-zero min-height when the message is still pending', () => {
     // Use a benign body; the assertion is on the wrapping <style>, not on the body.
-    const out = sanitizeHtml('<p>hi</p>', { loadImages: false });
+    const out = sanitizeHtml('<p>hi</p>', { loadImages: false, internalizePending: true });
     expect(out).toContain(
       `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"]`,
     );
@@ -456,6 +456,50 @@ describe('sanitizeHtml — internalize placeholder visible box (REQ-EXTIMG-BG-IN
     expect(styleMatch).not.toBeNull();
     const ruleBody = styleMatch?.[1] ?? '';
     expect(ruleBody).toMatch(/min-height\s*:\s*([1-9][0-9.]*)\s*(em|px|rem|%)/);
+  });
+
+  it('omits the placeholder-sizing rule when the message is not pending (issue #160)', () => {
+    // When internalizePending is absent (the common already-internalized
+    // case) or explicitly false, the stylesheet must not carry the
+    // prefix-match rule at all -- otherwise a genuine already-internalized
+    // tracking pixel whose bytes happen to share the placeholder's prefix
+    // gets forced into an oversized gray block instead of rendering at its
+    // authored size.
+    const outDefault = sanitizeHtml('<p>hi</p>', { loadImages: false });
+    expect(outDefault).not.toContain(
+      `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"]`,
+    );
+    const outExplicitFalse = sanitizeHtml('<p>hi</p>', {
+      loadImages: false,
+      internalizePending: false,
+    });
+    expect(outExplicitFalse).not.toContain(
+      `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"]`,
+    );
+  });
+
+  it('renders a genuine already-internalized tracking pixel at its authored size, not forced full-width (issue #160)', () => {
+    // A minimal transparent-pixel GIF byte-for-byte identical to
+    // extimg.PlaceholderDataURI's prefix, but here appearing in a message
+    // whose internalize pass has already completed (internalizePending
+    // false/absent). The nested-table ESP layout is the shape reported in
+    // #160 (Greenhouse/Mailgun marketing email).
+    const pixel =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    const html = `
+      <table><tr><td>
+        <img src="${pixel}" width="1" height="1" alt="">
+      </td></tr></table>
+    `;
+    const out = sanitizeHtml(html, { loadImages: false });
+    // The image itself passes through (inline raster data URIs are always
+    // allowed) with its authored 1x1 dimensions intact...
+    expect(out).toContain(`src="${pixel}"`);
+    expect(out).toContain('width="1" height="1"');
+    // ...and the stylesheet carries no rule that would override that size.
+    expect(out).not.toContain(
+      `img[src^="${INTERNALIZE_PLACEHOLDER_PREFIX}"]`,
+    );
   });
 });
 

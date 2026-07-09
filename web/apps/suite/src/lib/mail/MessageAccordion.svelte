@@ -739,7 +739,14 @@
             {/if}
           </div>
         {/if}
-        <HtmlBody {html} {loadImages} {cidMap} {cidDimensions} {inlineImageMeta} />
+        <HtmlBody
+          {html}
+          {loadImages}
+          {cidMap}
+          {cidDimensions}
+          {inlineImageMeta}
+          internalizePending={email.internalizePending === true}
+        />
       {:else if text && textSplit}
         {#if textSplit.head}
           <pre class="text-body">{textSplit.head}</pre>

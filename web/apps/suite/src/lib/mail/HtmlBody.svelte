@@ -55,8 +55,25 @@
      * overlay download buttons to the correct blob URL.
      */
     inlineImageMeta?: Record<string, { name: string; downloadUrl: string }>;
+    /**
+     * True while the server's background internalize worker has not yet
+     * finished this message (REQ-EXTIMG-BG-INTERNAL-40). Forwarded to
+     * `sanitizeHtml` so its iframe stylesheet only sizes the "images
+     * pending" placeholder box for messages that are actually still
+     * pending -- otherwise a genuine already-internalized tracking pixel
+     * whose bytes coincidentally share the placeholder's prefix gets
+     * forced into an oversized gray block (issue #160).
+     */
+    internalizePending?: boolean;
   }
-  let { html, loadImages = false, cidMap, cidDimensions, inlineImageMeta }: Props = $props();
+  let {
+    html,
+    loadImages = false,
+    cidMap,
+    cidDimensions,
+    inlineImageMeta,
+    internalizePending = false,
+  }: Props = $props();
 
   let frameEl = $state<HTMLIFrameElement | null>(null);
   let wrapperEl = $state<HTMLDivElement | null>(null);
@@ -102,7 +119,9 @@
   });
 
   // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
-  let srcdoc = $derived(sanitizeHtml(html, { loadImages, cidMap, cidDimensions }));
+  let srcdoc = $derived(
+    sanitizeHtml(html, { loadImages, cidMap, cidDimensions, internalizePending }),
+  );
 
   /**
    * One overlay entry: position relative to the wrapper element, plus
