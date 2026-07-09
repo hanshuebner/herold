@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { router } from '../lib/router/router.svelte';
-  import { mail, WHOLE_MAILBOX_SYNC_CAP, type FolderID } from '../lib/mail/store.svelte';
+  import { mail, type FolderID } from '../lib/mail/store.svelte';
   import { keyboard } from '../lib/keyboard/engine.svelte';
   import { compose } from '../lib/compose/compose.svelte';
   import { confirm } from '../lib/dialog/confirm.svelte';
@@ -686,16 +686,29 @@
   function bulkMarkUnread(): void {
     void mail.bulkSetSeen(selectedIds(), false);
   }
-  async function bulkMove(): Promise<void> {
-    let ids: string[];
+  function bulkMove(): void {
     if (mail.listWholeMailboxSelected) {
-      ids = await mail.fetchAllIds();
-      if (ids.length === 0) return;
-    } else {
-      ids = selectedIds();
-      if (ids.length === 0) return;
+      mail.wholeMailboxActionUnavailable();
+      return;
     }
+    const ids = selectedIds();
+    if (ids.length === 0) return;
     movePicker.openBulk(ids);
+  }
+  function openBulkLabelPicker(): void {
+    if (mail.listWholeMailboxSelected) {
+      mail.wholeMailboxActionUnavailable();
+      return;
+    }
+    labelPicker.openBulk(selectedIds());
+  }
+  function openBulkCategoryPicker(): void {
+    if (mail.listWholeMailboxSelected) {
+      mail.wholeMailboxActionUnavailable();
+      return;
+    }
+    const ids = selectedIds();
+    if (ids.length > 0) categoryPicker.open(ids[0]!);
   }
 
   function emptyMessage(f: FolderID | undefined): string {
@@ -978,7 +991,7 @@
             class="icon-btn"
             aria-label={t('bulk.label')}
             title={t('bulk.label')}
-            onclick={() => labelPicker.openBulk(selectedIds())}
+            onclick={openBulkLabelPicker}
           ><LabelIcon size={18} /></button>
           {#if categorySettings.available}
             <button
@@ -986,10 +999,7 @@
               class="icon-btn"
               aria-label={t('bulk.category')}
               title={t('bulk.category')}
-              onclick={() => {
-                const ids = [...mail.listSelectedIds];
-                if (ids.length > 0) categoryPicker.open(ids[0]!);
-              }}
+              onclick={openBulkCategoryPicker}
             ><CategoryIcon size={18} /></button>
           {/if}
           <button
@@ -1154,7 +1164,7 @@
           class="icon-btn"
           aria-label={t('bulk.label')}
           title={t('bulk.label')}
-          onclick={() => labelPicker.openBulk(selectedIds())}
+          onclick={openBulkLabelPicker}
         ><LabelIcon size={18} /></button>
         {#if categorySettings.available}
           <button
@@ -1162,10 +1172,7 @@
             class="icon-btn"
             aria-label={t('bulk.category')}
             title={t('bulk.category')}
-            onclick={() => {
-              const ids = [...mail.listSelectedIds];
-              if (ids.length > 0) categoryPicker.open(ids[0]!);
-            }}
+            onclick={openBulkCategoryPicker}
           ><CategoryIcon size={18} /></button>
         {/if}
         <button
@@ -1200,13 +1207,16 @@
 
     <!-- Whole-mailbox selection banner (issue #149). Shown below the toolbar
          as a dedicated row so it does not compete for space with the bulk
-         action buttons. Offer state: appears when all visible rows are
-         selected and the folder contains more messages than the 50-row window
-         AND within the synchronous cap (WHOLE_MAILBOX_SYNC_CAP). Active state:
-         appears while whole-mailbox mode is engaged. -->
+         action buttons. Offer state: appears when all currently-loaded rows
+         are selected and the folder contains more messages than are loaded
+         (the loaded count grows via infinite scroll, issue #161, so this is
+         not tied to the 50-row initial page). Active state: appears while
+         whole-mailbox mode is engaged. Selecting is free (no query, no
+         size cap); executing a bulk action while active is a separate
+         question -- see wholeMailboxActionUnavailable in store.svelte.ts. -->
     {#if mail.listSelectedIds.size > 0 && mail.listFolderTotal !== null && mail.listEmails.length > 0}
       {@const folderTotal = mail.listFolderTotal}
-      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length && folderTotal <= WHOLE_MAILBOX_SYNC_CAP}
+      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length}
         <div class="whole-mailbox-banner" role="status" aria-live="polite">
           <span class="banner-text">
             {t('select.allPageSelected', { count: String(mail.listEmails.length) })}

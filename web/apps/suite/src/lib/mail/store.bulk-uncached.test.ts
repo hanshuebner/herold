@@ -1,16 +1,20 @@
 /**
- * Regression test for issue #149: whole-mailbox bulk actions must include
- * UNCACHED emails (those not in the 50-row loaded window) in the JMAP payload.
+ * Regression coverage for issue #149's whole-mailbox bulk-action boundary.
  *
- * Root cause: bulkArchive, bulkDelete, and bulkSetSeen all had
- *   const e = this.emails.get(id); if (!e) continue;
- * which silently dropped uncached IDs from the Email/set update map.  Only the
- * JMAP IDs that happened to be in this.emails (the first 50 rows) were
- * archived/deleted/marked.
+ * A prior fix attempt made bulkArchive/bulkDelete/bulkSetSeen/bulkMoveToMailbox
+ * fetch the full folder ID list (fetchAllIds) and apply a single Email/set to
+ * all of it when `listWholeMailboxSelected` is true. Production evidence
+ * (issue #149 comment, ~666-message label) showed that single unchunked
+ * Email/set blows REQ-PERF-DEADLINE-01's 1 s method deadline well before
+ * mailbox scale -- there is no client-choosable cap that is both useful and
+ * safe. The fix removes that path entirely: triggering a bulk action while
+ * `listWholeMailboxSelected` is true now refuses with an explanatory toast
+ * and issues no JMAP call at all, pending the server-side async job defined
+ * in the issue #161 design comment.
  *
- * Fix (issue #149 pass 2): restructure each method to build the JMAP payload
- * for ALL ids; for uncached ids skip the local optimistic patch but still add
- * to updates[id].  For cached ids retain the existing filter logic.
+ * These tests assert the refusal: no Email/set (or any jmap.batch call) is
+ * made, the toast fires, and the loaded-window ids passed in are left
+ * untouched.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -121,146 +125,123 @@ function makeEmail(id: string, mailboxIds: Record<string, true>): Email {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('whole-mailbox bulk actions include uncached emails (issue #149 regression)', () => {
+describe('whole-mailbox bulk actions refuse to execute (issue #149)', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let jmapMod: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let toastMod: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mailMod: any;
 
   const INBOX_ID = 'mbox-inbox';
   const ARCHIVE_ID = 'mbox-archive';
   const TRASH_ID = 'mbox-trash';
-
-  // Cached email IDs (in this.emails) — first 50-row window.
-  const CACHED_IDS = ['c1', 'c2', 'c3'];
-  // Uncached email IDs — beyond the loaded window (whole-mailbox fetch returns them).
-  const UNCACHED_IDS = ['u1', 'u2'];
-  const ALL_IDS = [...CACHED_IDS, ...UNCACHED_IDS];
+  const LOADED_IDS = ['e1', 'e2', 'e3'];
 
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
 
     jmapMod = await import('../jmap/client');
+    toastMod = await import('../toast/toast.svelte');
     mailMod = await import('./store.svelte');
     const { mail } = mailMod;
 
-    // Seed mailboxes.
     mail.mailboxes = new Map([
       [INBOX_ID, makeMailbox({ id: INBOX_ID, name: 'Inbox', role: 'inbox', totalThreads: 5 })],
       [ARCHIVE_ID, makeMailbox({ id: ARCHIVE_ID, name: 'Archive', role: 'archive' })],
       [TRASH_ID, makeMailbox({ id: TRASH_ID, name: 'Trash', role: 'trash' })],
     ]);
 
-    // Seed cached emails (in the loaded window).
-    for (const id of CACHED_IDS) {
+    for (const id of LOADED_IDS) {
       mail.emails.set(id, makeEmail(id, { [INBOX_ID]: true }));
     }
 
-    // Simulate whole-mailbox mode: all visible rows selected, then
-    // listWholeMailboxSelected activated.
     mail.listFolder = 'inbox';
-    mail.listEmailIds = [...CACHED_IDS];
-    mail.listSelectedIds = new Set(CACHED_IDS);
+    mail.listEmailIds = [...LOADED_IDS];
+    mail.listSelectedIds = new Set(LOADED_IDS);
     mail.listWholeMailboxSelected = true;
   });
 
-  /** Helper: set up jmap.batch to:
-   *   1st call (Email/query from fetchAllIds) → return ALL_IDS
-   *   2nd call (Email/set) → capture the update/destroy payload and return success
-   */
-  function mockJmapForBulkUpdate(): { capturedUpdate: () => Record<string, unknown> } {
-    const state = { update: {} as Record<string, unknown> };
-    let callCount = 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(jmapMod.jmap.batch).mockImplementation(async (builder: any) => {
-      callCount++;
-      if (callCount === 1) {
-        // fetchAllIds → Email/query
-        builder({
-          call: (_name: string, _args: unknown) => ({ ref: () => null }),
-        });
-        return {
-          responses: [['Email/query', { ids: ALL_IDS, total: ALL_IDS.length }, 'c0']],
-          sessionState: 's1',
-        };
-      }
-      // bulkAction → Email/set
-      builder({
-        call: (_name: string, args: Record<string, unknown>) => {
-          if (args['update']) state.update = args['update'] as Record<string, unknown>;
-          return { ref: () => null };
-        },
-      });
-      const updated: Record<string, Record<string, unknown>> = {};
-      for (const id of Object.keys(state.update)) updated[id] = {};
-      return {
-        responses: [['Email/set', { updated, notUpdated: null, newState: 's2' }, 'c1']],
-        sessionState: 's2',
-      };
+  it('bulkArchive: issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkArchive([...LOADED_IDS]);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('bulkDelete: issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkDelete([...LOADED_IDS]);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('bulkDestroy: issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkDestroy([...LOADED_IDS]);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('bulkSetSeen(true): issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkSetSeen([...LOADED_IDS], true);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('bulkSetSeen(false): issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkSetSeen([...LOADED_IDS], false);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('bulkSetLabel: issues no jmap call and shows the unavailable toast', async () => {
+    const { mail } = mailMod;
+    await mail.bulkSetLabel([...LOADED_IDS], ARCHIVE_ID, true);
+    expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+    expect(toastMod.toast.show).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('the loaded window is left untouched by a refused whole-mailbox action', async () => {
+    const { mail } = mailMod;
+    await mail.bulkArchive([...LOADED_IDS]);
+    expect(mail.listEmailIds).toEqual(LOADED_IDS);
+    for (const id of LOADED_IDS) {
+      expect(mail.emails.get(id)?.mailboxIds).toEqual({ [INBOX_ID]: true });
+    }
+  });
+
+  it('selectAllVisible clears whole-mailbox mode, after which bulkArchive executes normally', async () => {
+    const { mail } = mailMod;
+    mail.selectAllVisible(LOADED_IDS);
+    expect(mail.listWholeMailboxSelected).toBe(false);
+
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValue({
+      responses: [
+        [
+          'Email/set',
+          { updated: Object.fromEntries(LOADED_IDS.map((id) => [id, {}])), notUpdated: null, newState: 's2' },
+          'c0',
+        ],
+      ],
     });
-    return { capturedUpdate: () => state.update };
-  }
 
-  it('bulkArchive: includes all cached AND uncached IDs in the JMAP update payload', async () => {
-    const { mail } = mailMod;
-    const { capturedUpdate } = mockJmapForBulkUpdate();
-
-    await mail.bulkArchive([...CACHED_IDS]);
-
-    const updatedIds = Object.keys(capturedUpdate());
-    expect(updatedIds.sort()).toEqual(ALL_IDS.sort());
-    // Each entry must patch both inbox removal and archive addition.
-    for (const id of ALL_IDS) {
-      const patch = capturedUpdate()[id] as Record<string, unknown>;
-      expect(patch[`mailboxIds/${INBOX_ID}`]).toBeNull();
-      expect(patch[`mailboxIds/${ARCHIVE_ID}`]).toBe(true);
-    }
-  });
-
-  it('bulkDelete: includes all cached AND uncached IDs in the JMAP update payload', async () => {
-    const { mail } = mailMod;
-    const { capturedUpdate } = mockJmapForBulkUpdate();
-
-    await mail.bulkDelete([...CACHED_IDS]);
-
-    const updatedIds = Object.keys(capturedUpdate());
-    expect(updatedIds.sort()).toEqual(ALL_IDS.sort());
-    for (const id of ALL_IDS) {
-      const patch = capturedUpdate()[id] as Record<string, unknown>;
-      expect((patch['mailboxIds'] as Record<string, unknown>)[TRASH_ID]).toBe(true);
-    }
-  });
-
-  it('bulkSetSeen(true): includes all cached AND uncached IDs in the JMAP update payload', async () => {
-    const { mail } = mailMod;
-    const { capturedUpdate } = mockJmapForBulkUpdate();
-
-    await mail.bulkSetSeen([...CACHED_IDS], true);
-
-    const updatedIds = Object.keys(capturedUpdate());
-    expect(updatedIds.sort()).toEqual(ALL_IDS.sort());
-    for (const id of ALL_IDS) {
-      const patch = capturedUpdate()[id] as Record<string, unknown>;
-      expect(patch['keywords/$seen']).toBe(true);
-    }
-  });
-
-  it('bulkSetSeen(false): includes all cached AND uncached IDs in the JMAP update payload', async () => {
-    const { mail } = mailMod;
-    // Mark all cached emails as seen so none are skipped by the wasSeen check.
-    for (const id of CACHED_IDS) {
-      mail.emails.get(id)!.keywords.$seen = true;
-    }
-    const { capturedUpdate } = mockJmapForBulkUpdate();
-
-    await mail.bulkSetSeen([...CACHED_IDS], false);
-
-    const updatedIds = Object.keys(capturedUpdate());
-    expect(updatedIds.sort()).toEqual(ALL_IDS.sort());
-    for (const id of ALL_IDS) {
-      const patch = capturedUpdate()[id] as Record<string, unknown>;
-      expect(patch['keywords/$seen']).toBeNull();
-    }
+    await mail.bulkArchive([...LOADED_IDS]);
+    expect(jmapMod.jmap.batch).toHaveBeenCalled();
   });
 });

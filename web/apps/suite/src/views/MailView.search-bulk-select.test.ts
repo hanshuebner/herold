@@ -41,6 +41,8 @@ vi.mock('../lib/mail/store.svelte', () => ({
   mail: {
     listSelectedIds: new Set<string>(['e1']),
     listWholeMailboxSelected: false,
+    listHasMore: false,
+    listLoadingMore: false,
     listEmailIds: [],
     listLoadStatus: 'ready',
     listError: null,
@@ -71,7 +73,8 @@ vi.mock('../lib/mail/store.svelte', () => ({
     bulkDelete: vi.fn().mockResolvedValue(undefined),
     bulkDestroy: vi.fn().mockResolvedValue(undefined),
     bulkSetSeen: vi.fn().mockResolvedValue(undefined),
-    fetchAllIds: vi.fn().mockResolvedValue([]),
+    wholeMailboxActionUnavailable: vi.fn(),
+    loadMoreFolder: vi.fn().mockResolvedValue(undefined),
     archiveEmail: vi.fn().mockResolvedValue(undefined),
     deleteEmail: vi.fn().mockResolvedValue(undefined),
     destroyEmail: vi.fn().mockResolvedValue(undefined),
