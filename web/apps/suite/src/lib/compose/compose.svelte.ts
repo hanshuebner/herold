@@ -450,33 +450,13 @@ class ComposeStore {
   openReplyAll(parent: Email): void {
     const selfEmails = buildSelfEmailSet(mail.identities.values());
     const ownMessage = isFromSelf(parent, selfEmails);
-    let to: string;
-    let cc: Address[];
-    if (ownMessage) {
-      // Reply-all on own sent message: preserve the original recipients.
-      // To = original To (the people who received the message).
-      // Cc = original Cc minus own identity addresses.
-      to = (parent.to ?? []).map(addressToString).join(', ');
-      cc = computeOwnMessageReplyAllCc(parent, selfEmails);
-    } else {
-      to = addressToString(parent.from?.[0]);
-      cc = computeReplyAllCc(parent, selfEmails);
-    }
-    // When the delivery address (X-Herold-Recipient) is an alias or
-    // forwarding target not matching any registered Identity, prepend it
-    // to CC — unless it is already present from the parent's To/Cc scan
-    // above. Outbound messages carry no X-Herold-Recipient (REQ-FLOW-35),
-    // so this is a no-op for ownMessage paths.
+    // Reply-all on own sent message: To = original To (the people who
+    // received the message). Otherwise: To = the sender.
+    const to = ownMessage
+      ? (parent.to ?? []).map(addressToString).join(', ')
+      : addressToString(parent.from?.[0]);
     const identities = Array.from(mail.identities.values());
-    const deliveryAlias = deliveryAliasForCc(parent, identities);
-    if (deliveryAlias) {
-      const alreadyInCc = cc.some(
-        (a) => (a.email ?? '').toLowerCase() === deliveryAlias,
-      );
-      if (!alreadyInCc) {
-        cc = [{ name: null, email: deliveryAlias }, ...cc];
-      }
-    }
+    const cc = computeActualReplyAllCc(parent, selfEmails, identities);
     this.openWith({
       to,
       cc: cc.map(addressToString).join(', '),
@@ -1650,6 +1630,37 @@ function computeOwnMessageReplyAllCc(
     out.push(addr);
   }
   return out;
+}
+
+/**
+ * Compute the exact Cc address list openReplyAll would send for `parent`:
+ * the branch-selected filter (computeOwnMessageReplyAllCc for a message
+ * the user sent, computeReplyAllCc otherwise) with the delivery alias
+ * (X-Herold-Recipient, when present and not already covered) prepended.
+ * Single source of truth for both the compose action and
+ * ThreadReplyBar's Reply-All visibility gate, which shows the button iff
+ * this list is non-empty — so the gate can never drift from what
+ * clicking Reply All actually produces (re #163).
+ */
+export function computeActualReplyAllCc(
+  parent: Email,
+  selfEmails: Set<string>,
+  identities: readonly Identity[],
+): Address[] {
+  const ownMessage = isFromSelf(parent, selfEmails);
+  let cc = ownMessage
+    ? computeOwnMessageReplyAllCc(parent, selfEmails)
+    : computeReplyAllCc(parent, selfEmails);
+  const deliveryAlias = deliveryAliasForCc(parent, identities);
+  if (deliveryAlias) {
+    const alreadyInCc = cc.some(
+      (a) => (a.email ?? '').toLowerCase() === deliveryAlias,
+    );
+    if (!alreadyInCc) {
+      cc = [{ name: null, email: deliveryAlias }, ...cc];
+    }
+  }
+  return cc;
 }
 
 function mergeReferences(parent: Email): string[] {

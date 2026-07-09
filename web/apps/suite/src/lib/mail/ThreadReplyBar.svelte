@@ -3,9 +3,9 @@
    * Always-visible Reply / Reply All / Forward strip pinned to the
    * bottom of the thread reader. Operates on the most-recent email in
    * the thread (the one a reply would normally target). Reply-All only
-   * appears when the targeted email's To/Cc union contains at least one
-   * address outside the user's registered identities (re #163) —
-   * otherwise it is identical to Reply and just clutters the bar.
+   * appears when compose.openReplyAll would actually produce a non-empty
+   * Cc for the targeted email (re #163) — otherwise it is identical to
+   * Reply and just clutters the bar.
    *
    * Per re #98 the bar renders its CTAs with the same visual language
    * as the ThreadToolbar (transparent pill, icon + label). Previously
@@ -21,7 +21,7 @@
    * To/Cc per REQ-MAIL-31..32 and the spec for reply-all on own
    * messages — that logic lives in compose.svelte.ts.
    */
-  import { compose } from '../compose/compose.svelte';
+  import { compose, computeActualReplyAllCc } from '../compose/compose.svelte';
   import { mail } from './store.svelte';
   import { t } from '../i18n/i18n.svelte';
   import { buildSelfEmailSet } from './identity-match';
@@ -37,23 +37,17 @@
   }
   let { target }: Props = $props();
 
-  // Reply-All is shown only when the To/Cc union contains at least one
-  // address outside the user's registered identities — the same
-  // own-email filter computeReplyAllCc (compose.svelte.ts) applies when
-  // building the actual Cc list. Without this filter the button could
-  // appear for a message whose only extra recipients are the user's own
-  // identities, and Reply All would then be identical to plain Reply
-  // with an empty Cc (re #163).
+  // Reply-All is shown iff computeActualReplyAllCc(target, ...) — the
+  // exact same branch-selected, identity-filtered, delivery-alias-aware
+  // Cc computation compose.openReplyAll uses to build the real Cc — is
+  // non-empty. Testing the real computation (rather than a parallel
+  // approximation of its filter) makes the gate correct by construction
+  // for both the received-message and own-sent-message branches, and
+  // keeps it from drifting out of sync with openReplyAll again (re #163).
   let hasMultipleRecipients = $derived.by(() => {
     const selfEmails = buildSelfEmailSet(mail.identities.values());
-    for (const list of [target.to, target.cc]) {
-      if (!list) continue;
-      for (const addr of list) {
-        const lc = (addr.email ?? '').trim().toLowerCase();
-        if (lc && !selfEmails.has(lc)) return true;
-      }
-    }
-    return false;
+    const identities = Array.from(mail.identities.values());
+    return computeActualReplyAllCc(target, selfEmails, identities).length > 0;
   });
 
   // Hide while the inline composer is open. When the user pops out to the

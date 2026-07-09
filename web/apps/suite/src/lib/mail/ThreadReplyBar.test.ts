@@ -1,17 +1,28 @@
 /**
  * Unit tests for ThreadReplyBar's Reply-All visibility gate (re #163).
  *
- * hasMultipleRecipients must filter To/Cc through the user's registered
- * identities before testing whether any recipients remain — mirroring
- * the own-email filter computeReplyAllCc applies in compose.svelte.ts.
- * Without the filter, Reply All appears even when every extra To/Cc
- * entry is the user's own identity, and computeReplyAllCc then strips
- * them all, making Reply All produce an empty Cc identical to Reply.
+ * hasMultipleRecipients must show the button IFF
+ * compose.computeActualReplyAllCc(target, ...) — the exact function
+ * compose.openReplyAll uses to build the real Cc, branching on
+ * isFromSelf(target) between computeReplyAllCc (received message) and
+ * computeOwnMessageReplyAllCc (own-sent message) — is non-empty. The
+ * gate imports and calls the real function rather than approximating
+ * its filter, so it cannot drift out of sync with what clicking Reply
+ * All actually produces, in either branch:
+ *
+ *  - Received message: To/Cc minus own identities minus the sender.
+ *  - Own-sent message: Cc minus own identities. To is NOT part of the
+ *    Cc computation for this branch (it becomes the new message's To),
+ *    so an own-sent message with an external To and no/self-only Cc
+ *    must NOT show Reply All (the regression the coordinator caught:
+ *    the first version of this fix unioned To+Cc unconditionally and
+ *    still showed the button in that case).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import ThreadReplyBar from './ThreadReplyBar.svelte';
+import { buildSelfEmailSet } from './identity-match';
 import type { Email, Identity } from './types';
 
 // ── hoisted fixtures ───────────────────────────────────────────────────────────
@@ -31,7 +42,15 @@ const { mailMock, composeMock } = vi.hoisted(() => {
 });
 
 vi.mock('./store.svelte', () => ({ mail: mailMock }));
-vi.mock('../compose/compose.svelte', () => ({ compose: composeMock }));
+
+// Mock only the `compose` singleton (its network/store side effects); keep
+// the real computeActualReplyAllCc (and the pure helpers it depends on) so
+// the gate is exercised against the exact same code path openReplyAll uses.
+vi.mock('../compose/compose.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../compose/compose.svelte')>();
+  return { ...actual, compose: composeMock };
+});
+
 vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string) => key,
   localeTag: () => 'en',
@@ -39,6 +58,8 @@ vi.mock('../i18n/i18n.svelte', () => ({
 vi.mock('../icons/ReplyIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/ReplyAllIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/ForwardIcon.svelte', () => ({ default: () => null }));
+
+import { computeActualReplyAllCc } from '../compose/compose.svelte';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -77,60 +98,109 @@ function makeEmail(overrides: Partial<Email>): Email {
   };
 }
 
+const ALICE = 'alice@example.local';
+
+/**
+ * Render ThreadReplyBar for `email` and assert the Reply-All button's
+ * presence matches computeActualReplyAllCc(email, ...) — the gate-vs-
+ * click consistency contract. Also returns the computed Cc so callers
+ * can assert on its contents (e.g. that it contains the expected
+ * external address, not just that it is non-empty).
+ */
+function renderAndCheckGateConsistency(email: Email): ReturnType<typeof computeActualReplyAllCc> {
+  const identities = Array.from(mailMock.identities.values());
+  const selfEmails = buildSelfEmailSet(identities);
+  const actualCc = computeActualReplyAllCc(email, selfEmails, identities);
+
+  render(ThreadReplyBar, { props: { target: email } });
+
+  const button = screen.queryByRole('button', { name: 'msg.replyAll' });
+  if (actualCc.length > 0) {
+    expect(button).toBeInTheDocument();
+  } else {
+    expect(button).not.toBeInTheDocument();
+  }
+  return actualCc;
+}
+
 describe('ThreadReplyBar Reply-All visibility (re #163)', () => {
   beforeEach(() => {
-    mailMock.identities = new Map([
-      ['id-alice@example.local', makeIdentity('alice@example.local')],
-    ]);
+    mailMock.identities = new Map([[`id-${ALICE}`, makeIdentity(ALICE)]]);
     composeMock.isOpen = false;
     composeMock.inlineMode = false;
   });
 
-  it('suppresses Reply All when every extra To/Cc entry is the user\'s own identity', () => {
-    const email = makeEmail({
-      to: [{ name: 'Alice', email: 'alice@example.local' }],
-      cc: [{ name: 'Alice', email: 'alice@example.local' }],
+  describe('received message (From is not the signed-in identity)', () => {
+    it("suppresses Reply All when every extra To/Cc entry is the user's own identity", () => {
+      const email = makeEmail({
+        to: [{ name: 'Alice', email: ALICE }],
+        cc: [{ name: 'Alice', email: ALICE }],
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc).toHaveLength(0);
     });
 
-    render(ThreadReplyBar, { props: { target: email } });
+    it('shows Reply All when at least one Cc entry is outside the identity set', () => {
+      const email = makeEmail({
+        to: [{ name: 'Alice', email: ALICE }],
+        cc: [{ name: 'External', email: 'external@example.test' }],
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc.map((a) => a.email)).toEqual(['external@example.test']);
+    });
 
-    expect(screen.getByRole('button', { name: 'msg.reply' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'msg.replyAll' })).not.toBeInTheDocument();
+    it('shows Reply All when To has an external second recipient and no Cc', () => {
+      const email = makeEmail({
+        to: [
+          { name: 'Alice', email: ALICE },
+          { name: 'External', email: 'external@example.test' },
+        ],
+        cc: null,
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc.map((a) => a.email)).toEqual(['external@example.test']);
+    });
+
+    it('suppresses Reply All when To has only the single own-identity recipient and no Cc', () => {
+      const email = makeEmail({ to: [{ name: 'Alice', email: ALICE }], cc: null });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc).toHaveLength(0);
+    });
   });
 
-  it('shows Reply All when at least one To/Cc entry is outside the identity set', () => {
-    const email = makeEmail({
-      to: [{ name: 'Alice', email: 'alice@example.local' }],
-      cc: [{ name: 'External', email: 'external@example.test' }],
+  describe('own-sent message (From IS the signed-in identity)', () => {
+    // computeOwnMessageReplyAllCc only ever draws from parent.cc — the To
+    // list becomes the new message's To, never its Cc — so these cases
+    // hinge entirely on cc, not to.
+
+    it('suppresses Reply All for an external To with no Cc (re #163 regression)', () => {
+      const email = makeEmail({
+        from: [{ name: 'Alice', email: ALICE }],
+        to: [{ name: 'External', email: 'external@example.test' }],
+        cc: null,
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc).toHaveLength(0);
     });
 
-    render(ThreadReplyBar, { props: { target: email } });
-
-    expect(screen.getByRole('button', { name: 'msg.replyAll' })).toBeInTheDocument();
-  });
-
-  it('shows Reply All when To has an external second recipient and no Cc', () => {
-    const email = makeEmail({
-      to: [
-        { name: 'Alice', email: 'alice@example.local' },
-        { name: 'External', email: 'external@example.test' },
-      ],
-      cc: null,
+    it('suppresses Reply All for an external To with a self-only Cc', () => {
+      const email = makeEmail({
+        from: [{ name: 'Alice', email: ALICE }],
+        to: [{ name: 'External', email: 'external@example.test' }],
+        cc: [{ name: 'Alice', email: ALICE }],
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc).toHaveLength(0);
     });
 
-    render(ThreadReplyBar, { props: { target: email } });
-
-    expect(screen.getByRole('button', { name: 'msg.replyAll' })).toBeInTheDocument();
-  });
-
-  it('suppresses Reply All when To has only the single own-identity recipient and no Cc', () => {
-    const email = makeEmail({
-      to: [{ name: 'Alice', email: 'alice@example.local' }],
-      cc: null,
+    it('shows Reply All for an external To with an external Cc', () => {
+      const email = makeEmail({
+        from: [{ name: 'Alice', email: ALICE }],
+        to: [{ name: 'External', email: 'external@example.test' }],
+        cc: [{ name: 'Bob', email: 'bob@example.test' }],
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      expect(cc.map((a) => a.email)).toEqual(['bob@example.test']);
     });
-
-    render(ThreadReplyBar, { props: { target: email } });
-
-    expect(screen.queryByRole('button', { name: 'msg.replyAll' })).not.toBeInTheDocument();
   });
 });
