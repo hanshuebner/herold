@@ -114,6 +114,18 @@ type jmapEmail struct {
 	// non-modal "Images are being processed" indicator.
 	InternalizePending bool `json:"internalizePending,omitempty"`
 
+	// FailedImageCount is the badge property for issue #162 (17-
+	// external-images.md REQ-EXTIMG-71/73, capability
+	// https://netzhansa.com/jmap/email-image-retry): the number of
+	// external images that could not be internalized and were
+	// permanently placeholdered in the body (REQ-EXTIMG-BG-14). Only
+	// the count is exposed here -- never the origin URLs, which stay
+	// server-only. 0 means every image internalized (or the message
+	// never had external images). A client that sees this > 0 can
+	// offer a "N images could not be loaded, retry?" affordance backed
+	// by Email/retryImages.
+	FailedImageCount int `json:"failedImageCount,omitempty"`
+
 	// HeaderProperties holds the decoded values for dynamic header
 	// property accessors (RFC 8621 §4.1.2.4) — keys like
 	// "header:Subject:asText". Serialised directly into the JSON object
@@ -153,6 +165,7 @@ type jmapEmailWire struct {
 	HasAttachment      bool                 `json:"hasAttachment"`
 	Preview            string               `json:"preview,omitempty"`
 	InternalizePending bool                 `json:"internalizePending,omitempty"`
+	FailedImageCount   int                  `json:"failedImageCount,omitempty"`
 }
 
 // MarshalJSON serialises jmapEmail, merging HeaderProperties keys
@@ -188,6 +201,7 @@ func (e jmapEmail) MarshalJSON() ([]byte, error) {
 		HasAttachment:      e.HasAttachment,
 		Preview:            e.Preview,
 		InternalizePending: e.InternalizePending,
+		FailedImageCount:   e.FailedImageCount,
 	}
 	if len(e.HeaderProperties) == 0 {
 		return json.Marshal(wire)

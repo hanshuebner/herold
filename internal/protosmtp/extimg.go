@@ -78,3 +78,28 @@ func (sess *session) logExtImgOutcome(ctx context.Context, sum extimg.AuditSumma
 	}
 	sess.log.LogAttrs(ctx, level, msg, attrs...)
 }
+
+// stashRetainedFailedImages encodes sum's retained failed-image state
+// (issue #162) onto sess.envelope so deliverOne can copy it onto every
+// recipient's store.Message before InsertMessage. No-op when the
+// rewrite left nothing unresolved. Best-effort: an encode failure
+// only costs the retry affordance for this delivery, not the
+// delivered body, which is already placeholdered correctly.
+func (sess *session) stashRetainedFailedImages(ctx context.Context, sum extimg.AuditSummary, verdict extimg.DKIMVerdict) {
+	if len(sum.FailedURLs) == 0 {
+		return
+	}
+	encoded, err := extimg.EncodeRetainedState(extimg.RetainedState{
+		URLs:     sum.FailedURLs,
+		Template: sum.FailedImageTemplate,
+		DKIM:     verdict,
+	})
+	if err != nil {
+		sess.log.WarnContext(ctx, "smtp data: encode retained failed-image state failed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("err", err.Error()))
+		return
+	}
+	sess.envelope.failedImageCount = len(sum.FailedURLs)
+	sess.envelope.failedImageState = encoded
+}

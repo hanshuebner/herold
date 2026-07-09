@@ -172,6 +172,8 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	// prefix + body; extimg may replace it with a rewritten copy.
 	finalBytes := assembledBytes
 	extimgRewritten := false
+	var failedImageCount int
+	var failedImageState string
 
 	// REQ-EXTIMG-02: external-image internalization. Same hook as the
 	// SMTP DATA path; ingest is always inbound so no mode check.
@@ -185,6 +187,25 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			extimgRewritten = true
 			if msg2, perr := mailparse.Parse(bytes.NewReader(finalBytes), mailparse.NewParseOptions()); perr == nil {
 				msg = msg2
+			}
+		}
+		// issue #162: retain failed-image state (URLs + splice-back
+		// template + DKIM verdict) server-side so a later JMAP
+		// Email/retryImages call can re-attempt exactly these URLs.
+		// Best-effort; an encode failure only costs the retry
+		// affordance, not the already-correct placeholdered body.
+		if len(sum.FailedURLs) > 0 {
+			if encoded, eerr := extimg.EncodeRetainedState(extimg.RetainedState{
+				URLs:     sum.FailedURLs,
+				Template: sum.FailedImageTemplate,
+				DKIM:     verdict,
+			}); eerr == nil {
+				failedImageCount = len(sum.FailedURLs)
+				failedImageState = encoded
+			} else {
+				s.log.WarnContext(ctx, "ingest: encode retained failed-image state failed",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("err", eerr.Error()))
 			}
 		}
 		// Server-level log (no session here; emit directly).
@@ -247,7 +268,9 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 				slog.String("remote_addr", req.SourceIP),
 			),
 			envelope: envelope{
-				mailFrom: req.MailFrom,
+				mailFrom:         req.MailFrom,
+				failedImageCount: failedImageCount,
+				failedImageState: failedImageState,
 			},
 		}
 		rcEntry := rcptEntry{

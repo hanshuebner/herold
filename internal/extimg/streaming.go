@@ -129,6 +129,18 @@ func InternalizeReader(
 	}
 
 	if sum.Failed > 0 {
+		// See the matching comment in internalize.go's Internalize:
+		// retain the failed URLs + pre-placeholder HTML server-side
+		// (issue #162) before the placeholder pass below discards the
+		// only copy of that association.
+		if failedCands, ferr := extractCandidates(rewrittenHTML); ferr == nil {
+			urls := make([]string, len(failedCands))
+			for i, c := range failedCands {
+				urls[i] = c.URL
+			}
+			sum.FailedURLs = urls
+			sum.FailedImageTemplate = append([]byte(nil), rewrittenHTML...)
+		}
 		if placeheld, perr := RewriteForPlaceholder(rewrittenHTML); perr == nil {
 			rewrittenHTML = placeheld
 			sum.Placeholdered = sum.Failed

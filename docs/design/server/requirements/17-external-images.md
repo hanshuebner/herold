@@ -107,21 +107,51 @@ that meaningfully decouples delivery from open.
 
 ## Failure handling
 
+*(REQ-EXTIMG-60/63/71/73 rewritten 2026-07-09, issue #162, to agree
+with 23-extimg-background-internalize.md REQ-EXTIMG-BG-14. The
+original wording let the rewritten body keep the raw origin URL (via
+a `data-original-src` breadcrumb) for a client-side "load anyway"
+retry; BG-14 later closed that as a privacy leak — any path that
+bypasses the suite's gate (raw blob download, IMAP FETCH) would
+expose the still-external URL to the sender's origin. The client-side
+retry affordance these four REQs originally specified was never
+built. The wording below describes the server-side retry that
+replaces it: see "Server-side retry" below for the full mechanism.)*
+
 | ID | Requirement |
 |----|-------------|
-| REQ-EXTIMG-60 | When a single image fetch fails (timeout, byte-cap exceeded, 4xx, 5xx, SSRF-blocked, redirect-loop, non-image content type), the rewriter leaves the original URL unchanged in the rewritten body. The user-side renderer falls through to the existing "show images" affordance for that one image. |
+| REQ-EXTIMG-60 | When a single image fetch fails (timeout, byte-cap exceeded, 4xx, 5xx, SSRF-blocked, redirect-loop, non-image content type), the rewriter replaces that image's reference with the herold-local placeholder (`extimg.PlaceholderDataURI`) in the rewritten body — the origin URL is never written into the delivered body. The URL and a splice-back HTML template are retained server-only (never returned to any client), keyed to the message, so a later retry can re-attempt it (REQ-EXTIMG-RETRY-01). |
 | REQ-EXTIMG-61 | When the entire message rewrite fails (HTML parser error, MIME re-emit error, unrecoverable I/O), the message is stored verbatim. Delivery does not fail. |
 | REQ-EXTIMG-62 | Per-message rewrite outcomes are written to an audit record on the message: `internalized = N images, failed = N (with reasons), original_size, rewritten_size, wall_ms`. The operator can query this for debugging without a server-side log dive. |
-| REQ-EXTIMG-63 | A per-message "load originals anyway" affordance survives in the suite (REQ-EXTIMG-70). The rewriter must preserve enough information (the original URL, optionally as a `data-original-src` attribute on the rewritten `<img>`) for that affordance to do something useful when the user clicks. |
+| REQ-EXTIMG-63 | The rewriter preserves enough server-only state to retry a failed fetch later without ever re-deriving the URL from the delivered (placeholder-only) body: the failed URLs, the HTML immediately before the placeholder pass (successes already `cid:`, failures still the raw URL), and the DKIM verdict, so a rebuilt Authentication-Results header matches the original. See REQ-EXTIMG-RETRY-01..08. |
 
 ## Suite UX
 
 | ID | Requirement |
 |----|-------------|
 | REQ-EXTIMG-70 | When `internalize` is the active policy, every successfully-internalized image renders inline with no user action. The "show images" prompt is suppressed for messages whose images all internalized successfully. |
-| REQ-EXTIMG-71 | When some images failed to internalize, the message renders with the successful ones inline and a single per-message "load failed images" affordance for the rest. Clicking it issues per-image fetches from the user's browser to the original URLs (the "old" privacy posture, but now opt-in per message and per failed image, not per message globally). |
+| REQ-EXTIMG-71 | When some images failed to internalize, the message renders with the successful ones inline and the failed ones as placeholders, plus a per-message "N images could not be loaded" affordance with a retry control. Retrying issues `Email/retryImages` (REQ-EXTIMG-RETRY-01): the SERVER re-attempts the retained URLs and, on success, rewrites the stored body in place. The browser never receives an origin URL to fetch itself — this is the privacy-preserving replacement for the pre-BG-14 client-side "load failed images" affordance. |
 | REQ-EXTIMG-72 | When `passthrough` is the active policy, the suite's existing "show images" gating remains and the in-page image-load affordance is unchanged from today. |
-| REQ-EXTIMG-73 | A small badge in the message header indicates the policy applied to this message (`✓ images internalized`, `⚠ N images could not be internalized`, or no badge for passthrough). The badge is informational; clicking it opens a popover with the per-image audit (REQ-EXTIMG-62). |
+| REQ-EXTIMG-73 | A badge on the message (and in the mailbox-row summary) surfaces `Email.failedImageCount` when it is greater than 0 (`"N images could not be loaded"`), backed by the retry control from REQ-EXTIMG-71. No badge when every image internalized or the message never had external images. The badge is a plain count; the failed URLs themselves are never sent to the client. |
+
+## Server-side retry (issue #162)
+
+*(Added 2026-07-09. Reconciles the privacy guarantee added by
+23-extimg-background-internalize.md REQ-EXTIMG-BG-14 — the origin URL
+never reaches the browser, via any path — with the recoverability
+REQ-EXTIMG-71/73 originally promised. The chosen design: badge +
+server-side retry, not a client-side "load anyway".)*
+
+| ID | Requirement |
+|----|-------------|
+| REQ-EXTIMG-RETRY-01 | A new JMAP method `Email/retryImages` (request `{accountId, id}`, response `{accountId, id, retriedCount, failedImageCount, newState}`) re-fetches the message's retained failed-image URLs server-side. Registered under a new vendor capability, `https://netzhansa.com/jmap/email-image-retry`, so clients can detect the affordance. |
+| REQ-EXTIMG-RETRY-02 | The retained state (failed URLs, splice-back HTML template, DKIM verdict) is server-only: a `messages.failed_image_state` column holding an opaque blob the store never interprets, decoded only by the `Email/retryImages` handler. It is never included in `Email/get`, IMAP FETCH, or any other client-facing response. |
+| REQ-EXTIMG-RETRY-03 | `Email.failedImageCount` (a plain integer, `messages.failed_image_count`) is the only client-visible signal. 0 means every image internalized or the message never had external images. |
+| REQ-EXTIMG-RETRY-04 | On a successful retry (some or all retained URLs newly fetched), the server rewrites the stored body in place — real images replace their placeholders — and advances Email state with `cause = 'user'` so `Email/changes` and the EventSource push loop notify the client to re-fetch, exactly like any other user-driven mutation. |
+| REQ-EXTIMG-RETRY-05 | URLs that still fail on retry remain placeholdered in the delivered body (REQ-EXTIMG-BG-14 unchanged) and stay retained server-side for a further retry attempt; `failedImageCount` reflects only the still-unresolved count. |
+| REQ-EXTIMG-RETRY-06 | Partial success is a normal outcome: a message with 5 failed images where 3 now fetch successfully rewrites those 3 and keeps 2 placeholdered/retained. `retriedCount` in the response is the number newly resolved this call, not the total. |
+| REQ-EXTIMG-RETRY-07 | A retry that resolves nothing (still failing, or nothing retained) is a no-op response (`retriedCount = 0`); it does not clear or corrupt the retained state. |
+| REQ-EXTIMG-RETRY-08 | `Email/retryImages` requires the same access the caller would need to mutate the message (owner, or ACL write right for a shared mailbox) — it changes the stored body, so read-only (Lookup) access is insufficient. |
 
 ## Observability
 

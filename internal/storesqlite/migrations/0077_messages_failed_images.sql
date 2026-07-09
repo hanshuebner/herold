@@ -1,0 +1,34 @@
+-- 0077_messages_failed_images.sql -- retained failed-image state for
+-- the server-side retry affordance (issue #162).
+--
+-- 17-external-images.md REQ-EXTIMG-71/73, 23-extimg-background-
+-- internalize.md REQ-EXTIMG-BG-14: when extimg.Internalize (or
+-- InternalizeReader) cannot fetch every external image, the delivered
+-- body is placeholdered -- the origin URL is never written to the
+-- browser-visible/stored delivered body. These two columns retain,
+-- server-only, what's needed to retry:
+--
+--   failed_image_count: the JMAP Email.failedImageCount badge
+--   property (a plain integer read, no JSON parse needed just to
+--   render the badge). 0 means every image internalized, or the
+--   message never had external images.
+--
+--   failed_image_state: an opaque blob produced by
+--   extimg.EncodeRetainedState -- the failed URLs, a splice-back HTML
+--   template (successes as cid:, failures still raw), and the
+--   original DKIM verdict. The store never interprets this value;
+--   only the JMAP Email/retryImages handler decodes it. Never
+--   returned by any JMAP/IMAP read path.
+--
+-- Both reset to 0/'' whenever ReplaceMessageBody swaps the body blob
+-- (a new body invalidates any previously retained state); the worker
+-- and the retry handler re-populate them via SetMessageFailedImages
+-- immediately afterward when images remain unresolved.
+--
+-- Column-only migration on an existing table -- no new backup/adapter
+-- row type needed (mirrors migration 0043's internalize_pending).
+--
+-- Forward-only. Mirrors storepg 0077.
+
+ALTER TABLE messages ADD COLUMN failed_image_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN failed_image_state TEXT NOT NULL DEFAULT '';

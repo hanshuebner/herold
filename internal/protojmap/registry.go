@@ -164,6 +164,21 @@ const (
 	// response deadline on large mailboxes/labels — REQ-PERF-DEADLINE).
 	// Implemented under internal/protojmap/mail/email (bulkjob_*.go).
 	CapabilityEmailBulkMutation CapabilityID = "https://netzhansa.com/jmap/email-bulk-mutation"
+
+	// CapabilityEmailImageRetry is the server-side image-retry
+	// capability (issue #162, 17-external-images.md
+	// REQ-EXTIMG-71/73). REQ-EXTIMG-BG-14 permanently placeholders any
+	// external image herold could not fetch, out of privacy concerns
+	// (the origin URL never survives into the browser-visible
+	// delivered body). This capability signals that the server
+	// separately retains those failed URLs (never client-visible) and
+	// offers `Email/retryImages` to re-attempt them: the Email object
+	// carries a `failedImageCount` badge property, and a successful
+	// retry rewrites the stored body in place and advances Email
+	// state so the client re-renders via the normal Email/changes
+	// mechanism. Implemented under internal/protojmap/mail/email
+	// (retryimages.go).
+	CapabilityEmailImageRetry CapabilityID = "https://netzhansa.com/jmap/email-image-retry"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

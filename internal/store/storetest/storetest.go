@@ -66,6 +66,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueryEmailFast_Keywords", testQueryEmailFastKeywords},
 		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
+		{"MessageFailedImages_Lifecycle", testMessageFailedImagesLifecycle},
 		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
 		{"ListMessagesWithInternalizePendingByReceivedAt_OrdersByReceivedAt", testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt},
 		{"QuotaEnforcement", testQuotaEnforcement},
@@ -2209,6 +2210,96 @@ func testInternalizePendingLifecycle(t *testing.T, s store.Store) {
 	}
 	if err := s.Meta().ClearMessageInternalizePending(ctx, 99999999); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Clear missing: err=%v, want ErrNotFound", err)
+	}
+}
+
+// testMessageFailedImagesLifecycle covers the server-side retry badge
+// state (17-external-images.md REQ-EXTIMG-71/73, issue #162):
+//
+//   - InsertMessage carrying FailedImageCount/FailedImageState persists
+//     both; GetMessage returns them unchanged.
+//   - SetMessageFailedImages updates an already-stored message's count
+//     and opaque state blob.
+//   - ReplaceMessageBody resets both to zero/empty (the body just
+//     changed; stale retained state no longer applies).
+//   - SetMessageFailedImages on a missing id returns ErrNotFound.
+func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "failedimages@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	ref := putBlob(t, s, "message-with-failed-images")
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:      p.ID,
+		Blob:             ref,
+		Size:             ref.Size,
+		FailedImageCount: 2,
+		FailedImageState: `{"urls":["http://example.test/a.png","http://example.test/b.png"]}`,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	listed, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed %d messages, want 1", len(listed))
+	}
+	id := listed[0].ID
+
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.FailedImageCount != 2 {
+		t.Fatalf("FailedImageCount = %d, want 2", got.FailedImageCount)
+	}
+	if got.FailedImageState == "" {
+		t.Fatalf("FailedImageState must round-trip non-empty")
+	}
+
+	// SetMessageFailedImages updates both fields on an existing row.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 1, `{"urls":["http://example.test/b.png"]}`); err != nil {
+		t.Fatalf("SetMessageFailedImages: %v", err)
+	}
+	got, err = s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage after Set: %v", err)
+	}
+	if got.FailedImageCount != 1 {
+		t.Fatalf("FailedImageCount after Set = %d, want 1", got.FailedImageCount)
+	}
+	if got.FailedImageState != `{"urls":["http://example.test/b.png"]}` {
+		t.Fatalf("FailedImageState after Set = %q", got.FailedImageState)
+	}
+
+	// SetMessageFailedImages(0, "") clears both -- the full-resolution case.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 0, ""); err != nil {
+		t.Fatalf("SetMessageFailedImages clear: %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, id)
+	if got.FailedImageCount != 0 || got.FailedImageState != "" {
+		t.Fatalf("expected cleared state, got count=%d state=%q", got.FailedImageCount, got.FailedImageState)
+	}
+
+	// ReplaceMessageBody resets any retained state that was present.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 3, `{"urls":["x","y","z"]}`); err != nil {
+		t.Fatalf("SetMessageFailedImages reseed: %v", err)
+	}
+	newRef := putBlob(t, s, "rewritten-body-after-retry")
+	if err := s.Meta().ReplaceMessageBody(ctx, id, newRef, newRef.Size, got.Envelope); err != nil {
+		t.Fatalf("ReplaceMessageBody: %v", err)
+	}
+	got, _ = s.Meta().GetMessage(ctx, id)
+	if got.FailedImageCount != 0 || got.FailedImageState != "" {
+		t.Fatalf("ReplaceMessageBody must reset failed-image state, got count=%d state=%q",
+			got.FailedImageCount, got.FailedImageState)
+	}
+
+	// SetMessageFailedImages on an unknown id surfaces ErrNotFound.
+	if err := s.Meta().SetMessageFailedImages(ctx, 99999999, 1, "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Set on missing id: err=%v, want ErrNotFound", err)
 	}
 }
 

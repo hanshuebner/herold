@@ -293,6 +293,19 @@ type Metadata interface {
 	// no-op cases. Returns ErrNotFound when msgID is absent.
 	ClearMessageInternalizePending(ctx context.Context, msgID MessageID) error
 
+	// SetMessageFailedImages persists (or clears, when count is 0 and
+	// stateJSON is "") the server-only retained state for images that
+	// failed to internalize (17-external-images.md REQ-EXTIMG-71/73,
+	// issue #162). stateJSON is an opaque blob produced by
+	// extimg.EncodeRetainedState; the store never interprets it. count
+	// is denormalised alongside it so Email/get's failedImageCount
+	// badge property is a plain column read, no JSON decode. Callers:
+	// the extimg internalize-worker after a partial-success rewrite,
+	// and the JMAP Email/retryImages handler after a retry attempt
+	// (whether it fully resolved, partially resolved, or made no
+	// progress). Returns ErrNotFound when msgID is absent.
+	SetMessageFailedImages(ctx context.Context, msgID MessageID, count int, stateJSON string) error
+
 	// ListMessagesWithInternalizePending returns up to limit MessageIDs
 	// in DESCENDING order (newest first) with id < beforeID, scanning
 	// only rows with internalize_pending = 1. Pass beforeID = 0 to

@@ -70,6 +70,25 @@ type AuditSummary struct {
 	// Equals Failed in the success path; 0 when the placeholder pass is
 	// skipped (parse failure, no candidates, passthrough mode).
 	Placeholdered int
+
+	// FailedURLs is the deduplicated, document-order list of external
+	// URLs that failed to internalize and were placeholdered. Empty
+	// unless Failed > 0. Callers that want a user-triggered retry
+	// affordance (issue #162) persist this server-side, keyed to the
+	// message; it is never present in the rewritten body returned
+	// alongside this summary and MUST NOT be serialised into any
+	// client-facing response or bare log line (log only len(FailedURLs)).
+	FailedURLs []string
+
+	// FailedImageTemplate is the rewritten HTML captured immediately
+	// before the placeholder pass: already-successful images carry
+	// cid: references, still-failing ones retain their original
+	// http(s) URL. Nil unless Failed > 0. Same server-only handling
+	// rules as FailedURLs -- RetryFailedImages consumes this to splice
+	// freshly-fetched images back into their original document
+	// position without ever re-deriving a URL from the delivered
+	// (placeholder-only) body.
+	FailedImageTemplate []byte
 }
 
 // Internalize is the top-level entry. raw is the wire bytes accepted
@@ -183,6 +202,22 @@ func Internalize(
 	// download of the raw source, IMAP FETCH) would expose them.
 	// (REQ-EXTIMG-BG-14)
 	if sum.Failed > 0 {
+		// Retain the failed URLs and the pre-placeholder HTML
+		// server-side (issue #162) before placeholdering destroys the
+		// only copy of the association between "this placeholder" and
+		// "that origin URL". extractCandidates walks rewrittenHTML the
+		// same way it walked the original body; anything still
+		// external at this point is, by construction, one of the
+		// candidates whose fetch failed above (successes were already
+		// replaced with cid: references).
+		if failedCands, ferr := extractCandidates(rewrittenHTML); ferr == nil {
+			urls := make([]string, len(failedCands))
+			for i, c := range failedCands {
+				urls[i] = c.URL
+			}
+			sum.FailedURLs = urls
+			sum.FailedImageTemplate = append([]byte(nil), rewrittenHTML...)
+		}
 		if placeheld, perr := RewriteForPlaceholder(rewrittenHTML); perr == nil {
 			rewrittenHTML = placeheld
 			sum.Placeholdered = sum.Failed

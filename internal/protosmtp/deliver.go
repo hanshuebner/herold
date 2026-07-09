@@ -154,6 +154,7 @@ func (sess *session) finishMessage(spill *os.File) {
 				}
 				finalBytes = rewritten
 				sess.logExtImgOutcome(ctx, sum, ierr)
+				sess.stashRetainedFailedImages(ctx, sum, verdict)
 				sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
 				return
 			}
@@ -557,6 +558,12 @@ func (sess *session) deliverOne(
 			ReceivedAt:   sess.srv.clk.Now(),
 			InternalDate: sess.srv.clk.Now(),
 			Envelope:     envelopeFromParsed(msg),
+			// issue #162: every recipient of this delivery shares the
+			// same blob content, so the same retained failed-image
+			// state (computed once in finishMessage) applies to each
+			// recipient's message row.
+			FailedImageCount: sess.envelope.failedImageCount,
+			FailedImageState: sess.envelope.failedImageState,
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)

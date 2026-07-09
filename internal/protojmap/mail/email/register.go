@@ -110,6 +110,13 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 	reg.Register(protojmap.CapabilityEmailBulkMutation, setByQueryHandler{h: h})
 	reg.Register(protojmap.CapabilityEmailBulkMutation, bulkJobGetHandler{h: h})
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailBulkMutation, struct{}{})
+
+	// Server-side image-retry vendor extension (issue #162,
+	// 17-external-images.md REQ-EXTIMG-71/73). Registered under its own
+	// capability so clients can detect the retry affordance before
+	// offering it against the failedImageCount badge property.
+	reg.Register(protojmap.CapabilityEmailImageRetry, retryImagesHandler{h: h})
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailImageRetry, struct{}{})
 }
 
 // WaitBackgroundWrites blocks until all background goroutines started by

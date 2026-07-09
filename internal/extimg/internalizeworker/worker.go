@@ -499,9 +499,34 @@ func (w *Worker) internalize(ctx context.Context, m store.Message) (processResul
 	if err := w.store.Meta().ReplaceMessageBody(ctx, m.ID, ref, int64(len(rewritten)), m.Envelope); err != nil {
 		return resultFailed, err
 	}
+	// ReplaceMessageBody just reset failed_image_count/state to
+	// zero/empty as part of the body swap. When this rewrite still
+	// left images unresolved (sum.Failed > 0), persist the retained
+	// server-only retry state (issue #162): the failed URLs, a
+	// splice-back template, and the DKIM verdict used at this
+	// internalize call (empty for the worker -- it does not have a
+	// live mailauth verification result to hand). Best-effort: a
+	// failure here only costs the retry affordance, not the delivered
+	// body, which is already correct.
+	if len(sum.FailedURLs) > 0 {
+		encoded, eerr := extimg.EncodeRetainedState(extimg.RetainedState{
+			URLs:     sum.FailedURLs,
+			Template: sum.FailedImageTemplate,
+		})
+		if eerr != nil {
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: encode retained failed-image state failed",
+				slog.Uint64("message_id", uint64(m.ID)),
+				slog.String("err", eerr.Error()))
+		} else if err := w.store.Meta().SetMessageFailedImages(ctx, m.ID, len(sum.FailedURLs), encoded); err != nil {
+			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: persist retained failed-image state failed",
+				slog.Uint64("message_id", uint64(m.ID)),
+				slog.String("err", err.Error()))
+		}
+	}
 	w.logger.LogAttrs(ctx, slog.LevelDebug, "extimg-worker: rewrite ok",
 		slog.Uint64("message_id", uint64(m.ID)),
 		slog.Int("internalized", sum.Internalized),
+		slog.Int("failed_images_retained", len(sum.FailedURLs)),
 	)
 	return resultOK, nil
 }

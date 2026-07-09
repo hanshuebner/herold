@@ -592,6 +592,25 @@ type Message struct {
 	// every message stored by live SMTP delivery.
 	InternalizePending bool
 
+	// FailedImageCount is the number of external images that could not
+	// be internalized and were placeholdered instead (17-external-
+	// images.md REQ-EXTIMG-71/73, issue #162). Exposed to JMAP
+	// Email/get as the failedImageCount badge property so the client
+	// can offer a retry affordance. 0 means every image internalized
+	// or the message never carried external images.
+	FailedImageCount int
+
+	// FailedImageState is the opaque, server-only retry record for the
+	// images counted by FailedImageCount: an
+	// extimg.EncodeRetainedState-produced blob carrying the failed
+	// URLs, a splice-back HTML template, and the original DKIM
+	// verdict. The store never interprets this value -- only the JMAP
+	// Email/retryImages handler decodes it (via
+	// extimg.DecodeRetainedState) to drive a retry. It MUST NOT be
+	// serialised into any JMAP/IMAP response; empty string means
+	// nothing is retained.
+	FailedImageState string
+
 	// Preview is the precomputed RFC 8621 Email.preview value: the first
 	// 256 characters of the plain-text body. Empty string when
 	// BodyMetaComputed is false (not yet computed by the background

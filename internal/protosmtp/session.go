@@ -94,6 +94,14 @@ type envelope struct {
 	// nil/0 when no message body has been started; resetEnvelope cleans up.
 	spill     *os.File
 	spillSize int64
+
+	// failedImageCount / failedImageState carry the extimg retry state
+	// (issue #162) computed once per DATA transaction, right after the
+	// RelayIn extimg rewrite runs, and copied onto every recipient's
+	// store.Message before InsertMessage. Zero/empty when the rewrite
+	// had no failed images (the common case) or extimg did not run.
+	failedImageCount int
+	failedImageState string
 }
 
 // mailFromParams records the typed parameters attached to MAIL FROM.

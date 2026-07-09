@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -537,4 +540,145 @@ func TestWorker_NewestByReceivedAtFirst(t *testing.T) {
 	if !oldMsg.InternalizePending {
 		t.Fatalf("older (2018) row was unexpectedly processed; the worker iterated id-DESC instead of received_at-DESC")
 	}
+}
+
+// TestWorker_PersistsFailedImageStateForRetry covers issue #162: when
+// the worker's Internalize call cannot fetch every external image
+// (deterministic connection-refused against a closed loopback port),
+// the message row must carry a failedImageCount > 0 badge and an
+// opaque retained-state blob a later JMAP Email/retryImages call can
+// decode -- not just a placeholdered body with no recovery path.
+func TestWorker_PersistsFailedImageStateForRetry(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID,
+		Name:        "INBOX",
+		Attributes:  store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+
+	// Deterministic connection-refused target: reserve a loopback port
+	// then close it immediately.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().(*net.TCPAddr)
+	l.Close()
+	imgURL := fmt.Sprintf("http://127.0.0.1:%d/missing.png", addr.Port)
+
+	raw := buildHTMLMessageWithImage(t, imgURL)
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:        p.ID,
+		Blob:               ref,
+		Size:               ref.Size,
+		InternalizePending: true,
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	listed, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed %d messages, want 1", len(listed))
+	}
+	id := listed[0].ID
+
+	cfg := extimg.Config{
+		Mode:                   extimg.ModeInternalize,
+		MaxPerImageBytes:       5 << 20,
+		MaxPerMessageImages:    100,
+		MaxPerMessageBytes:     50 << 20,
+		ConcurrentFetches:      4,
+		RequireHTTPS:           false,
+		AllowPrivate:           true,
+		PerImageConnectTimeout: 200 * time.Millisecond,
+		PerImageTotalTimeout:   500 * time.Millisecond,
+		PerMessageTimeout:      2 * time.Second,
+		HostHeader:             "test.local",
+	}
+	w := internalizeworker.New(st, cfg, nil, clk, internalizeworker.Options{
+		Concurrency: 1,
+		BatchSize:   4,
+	})
+	if empty := w.RunBatchForTest(ctx); empty {
+		t.Fatalf("RunBatchForTest returned empty=true; expected the seeded row to be processed")
+	}
+
+	got, err := st.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.InternalizePending {
+		t.Fatalf("InternalizePending should be cleared after the worker processes the row")
+	}
+	if got.FailedImageCount != 1 {
+		t.Fatalf("FailedImageCount = %d, want 1", got.FailedImageCount)
+	}
+	if got.FailedImageState == "" {
+		t.Fatalf("FailedImageState must be populated when an image fails to internalize")
+	}
+	retained, derr := extimg.DecodeRetainedState(got.FailedImageState)
+	if derr != nil {
+		t.Fatalf("DecodeRetainedState: %v", derr)
+	}
+	if len(retained.URLs) != 1 || retained.URLs[0] != imgURL {
+		t.Fatalf("retained URLs = %v, want [%q]", retained.URLs, imgURL)
+	}
+	if len(retained.Template) == 0 {
+		t.Fatalf("retained template must be non-empty")
+	}
+
+	// The delivered body (fetched via the blob store, as Email/get
+	// would) must never carry the origin URL.
+	rc, err := st.Blobs().Get(ctx, got.Blob.Hash)
+	if err != nil {
+		t.Fatalf("Blobs.Get: %v", err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+	if strings.Contains(string(body), imgURL) {
+		t.Fatalf("origin URL leaked into the delivered/stored body: %q", imgURL)
+	}
+	if !strings.Contains(string(body), extimg.PlaceholderDataURI) {
+		t.Fatalf("expected the placeholder data URI in the delivered body")
+	}
+}
+
+// buildHTMLMessageWithImage constructs a minimal RFC 5322 message with
+// a single text/html body referencing imgURL as an external image.
+func buildHTMLMessageWithImage(t *testing.T, imgURL string) []byte {
+	t.Helper()
+	html := `<html><body>Hello.<img src="` + imgURL + `"></body></html>`
+	msg := "From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: test\r\n" +
+		"Content-Type: text/html; charset=\"utf-8\"\r\n" +
+		"\r\n" +
+		html
+	return []byte(msg)
 }

@@ -501,7 +501,21 @@ const CurrentBackupVersion = 1
 //	failure never desyncs failedIds/errors. Adds
 //	jmap_states.email_bulk_job_state, the per-principal push counter.
 //	Excluded from herold diag backup: ephemeral operational state.
-const CurrentSchemaVersion = 76
+//
+// 77 — 0077_messages_failed_images.sql (issue #162). Adds
+//
+//	messages.failed_image_count INTEGER NOT NULL DEFAULT 0 and
+//	messages.failed_image_state TEXT NOT NULL DEFAULT ''. Column-only
+//	migration on an existing table, mirroring migration 43's
+//	internalize_pending column (no new adapter/backup row type
+//	needed). failed_image_count is the JMAP Email.failedImageCount
+//	badge property; failed_image_state is an opaque
+//	extimg.EncodeRetainedState blob (failed URLs + a splice-back HTML
+//	template + the DKIM verdict) that only the JMAP Email/retryImages
+//	handler decodes. Both reset to 0/'' whenever ReplaceMessageBody
+//	swaps the blob, since a new body invalidates any previously
+//	retained failed-fetch state.
+const CurrentSchemaVersion = 77
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

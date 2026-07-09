@@ -54,6 +54,7 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		Size:               m.Size,
 		ReceivedAt:         rfc3339UTC(m.ReceivedAt),
 		InternalizePending: m.InternalizePending,
+		FailedImageCount:   m.FailedImageCount,
 	}
 	if m.SnoozedUntil != nil {
 		s := rfc3339UTC(*m.SnoozedUntil)
