@@ -365,17 +365,21 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 	// "Neu autorisieren" popup flow against the fake IdP + SMTP sink without
 	// a real Gmail account (re #131).
 	//
-	// The stored OAuthAccessCT contains a placeholder token that is
-	// deliberately invalid (extsubmit: open access token will fail at test
-	// time, surfacing the failure modal). The re-auth popup exchanges a fresh
-	// code via the fake IdP, which writes a real sealed token and probes the
-	// fake SMTP sink (which accepts any XOAUTH2 credential), transitioning
-	// the identity to state=ok.
+	// The identity is seeded with a refresh token that the running fakeidp
+	// instance has never issued ("dev-invalid-refresh-for-fakeidp" does not
+	// appear in its in-memory refresh map). RefreshDue is set to now so the
+	// Submitter immediately attempts a token refresh on the first connection
+	// test. The fakeidp /token endpoint returns 400 invalid_grant for the
+	// unknown token, the probe fails, and the failure modal appears with the
+	// "Neu autorisieren" button. Clicking "Neu autorisieren" opens the fakeidp
+	// /authorize popup, which issues a real code; herold exchanges it for valid
+	// access and refresh tokens, probes the fakesmtp (which accepts any XOAUTH2
+	// credential), and transitions the identity to state=ok.
 	if sinkAddr != "" {
 		if gmailProv, ok := cfg.Server.OAuthProviders["gmail"]; ok && gmailProv.TokenURL != "" {
-			oauthAccessCT, oaErr := secrets.Seal(dataKey, []byte("dev-placeholder-oauth-token"))
+			oauthRefreshCT, oaErr := secrets.Seal(dataKey, []byte("dev-invalid-refresh-for-fakeidp"))
 			if oaErr != nil {
-				return fmt.Errorf("dev seed-external-identities: seal oauth placeholder: %w", oaErr)
+				return fmt.Errorf("dev seed-external-identities: seal oauth refresh placeholder: %w", oaErr)
 			}
 			if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
 				IdentityID:         devIdentityOAuthExt,
@@ -383,9 +387,10 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 				SubmitPort:         workingPort,
 				SubmitSecurity:     workingSecurity,
 				SubmitAuthMethod:   "oauth2",
-				OAuthAccessCT:      oauthAccessCT,
+				OAuthRefreshCT:     oauthRefreshCT,
 				OAuthTokenEndpoint: gmailProv.TokenURL,
 				OAuthClientID:      "alice-oauth@" + devSeedForeignDomain,
+				RefreshDue:         now, // trigger immediate refresh attempt
 				State:              store.IdentitySubmissionStateAuthFailed,
 				StateAt:            now,
 				CreatedAt:          now,

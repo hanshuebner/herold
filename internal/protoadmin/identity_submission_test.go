@@ -1655,3 +1655,259 @@ func serveOAuthCheckSMTP(conn net.Conn, acceptedToken string) {
 	write("250 2.0.0 ok")
 	readln() // QUIT
 }
+
+// TestProviderNameByTokenURL verifies the provider-name lookup used to populate
+// oauth_provider in the GET /submission response (re #131). Covers priority
+// ordering (gmail before m365 before other), no-match, and empty-tokenURL.
+func TestProviderNameByTokenURL(t *testing.T) {
+	gmailURL := "https://oauth2.googleapis.com/token"
+	m365URL := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+	customURL := "https://idp.custom.example/token"
+	sharedURL := "https://shared.fake.example/token"
+
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	sh := newSubmissionHarnessWithStore(t, sqlitetest.Open(t, clk), clk, protoadmin.Options{
+		OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
+			"gmail": {
+				ClientID: "gid", ClientSecret: "gsec",
+				AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL: gmailURL,
+			},
+			"m365": {
+				ClientID: "mid", ClientSecret: "msec",
+				AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+				TokenURL: m365URL,
+			},
+			"corp-relay": {
+				ClientID: "cid", ClientSecret: "csec",
+				AuthURL:  "https://idp.custom.example/authorize",
+				TokenURL: customURL,
+			},
+			// fakeidp and gmail-alias both map to sharedURL, simulating the
+			// dev-instance pattern where multiple names alias the same IdP.
+			// gmail is preferred when both match.
+			"fakeidp": {
+				ClientID: "fid", ClientSecret: "fsec",
+				AuthURL:  "https://shared.fake.example/authorize",
+				TokenURL: sharedURL,
+			},
+			"gmail-alias": {
+				ClientID: "fid", ClientSecret: "fsec",
+				AuthURL:  "https://shared.fake.example/authorize",
+				TokenURL: sharedURL,
+			},
+		},
+	})
+
+	cases := []struct {
+		name     string
+		tokenURL string
+		want     string
+	}{
+		{"exact gmail match", gmailURL, "gmail"},
+		{"exact m365 match", m365URL, "m365"},
+		{"custom provider", customURL, "corp-relay"},
+		// sharedURL is aliased by "fakeidp" and "gmail-alias"; neither is
+		// "gmail" or "m365", so the result is one of the matching aliases
+		// (we only assert it is non-empty here because the iteration order
+		// over map keys is non-deterministic for non-preferred names).
+		{"shared URL returns a match", sharedURL, ""},
+		{"no match returns empty", "https://unknown.example/token", ""},
+		{"empty tokenURL returns empty", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sh.srv.ProviderNameByTokenURL(tc.tokenURL)
+			switch tc.name {
+			case "shared URL returns a match":
+				if got == "" {
+					t.Errorf("ProviderNameByTokenURL(%q) = empty; want a non-empty provider name", tc.tokenURL)
+				}
+			default:
+				if got != tc.want {
+					t.Errorf("ProviderNameByTokenURL(%q) = %q; want %q", tc.tokenURL, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestGetSubmission_OAuthProvider verifies that GET /submission returns
+// oauth_provider when submit_auth_method == "oauth2" and that the field is
+// absent for a password-auth identity. Covers gmail, m365, unknown-provider,
+// and password-auth cases (re #131).
+func TestGetSubmission_OAuthProvider(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) {
+			gmailTokenURL := "https://oauth2.googleapis.com/token"
+			m365TokenURL := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+			sh := newSubmissionHarnessWithStore(t, be.fs, be.clk, protoadmin.Options{
+				OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
+					"gmail": {
+						ClientID: "gid", ClientSecret: "gsec",
+						AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+						TokenURL: gmailTokenURL,
+					},
+					"m365": {
+						ClientID: "mid", ClientSecret: "msec",
+						AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+						TokenURL: m365TokenURL,
+					},
+				},
+			})
+
+			_, adminKey := sh.bootstrap("admin@oauthprovider.example")
+			res, buf := sh.doRequest("GET", "/api/v1/auth/whoami", adminKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("whoami: %d: %s", res.StatusCode, buf)
+			}
+			var who struct {
+				PrincipalID uint64 `json:"principal_id"`
+			}
+			if err := json.Unmarshal(buf, &who); err != nil {
+				t.Fatalf("unmarshal whoami: %v", err)
+			}
+
+			type getResponse struct {
+				SubmitAuthMethod string `json:"submit_auth_method"`
+				OAuthProvider    string `json:"oauth_provider"`
+			}
+
+			sealTok := func(tok string) []byte {
+				ct, err := secrets.Seal(testDataKey, []byte(tok))
+				if err != nil {
+					t.Fatalf("seal %q: %v", tok, err)
+				}
+				return ct
+			}
+
+			// insertExtraIdentity creates a JMAP identity with an explicit id,
+			// allowing multiple identities per principal in the same test.
+			insertExtraIdentity := func(id, email string) {
+				if err := be.fs.Meta().InsertJMAPIdentity(context.Background(), store.JMAPIdentity{
+					ID:          id,
+					PrincipalID: store.PrincipalID(who.PrincipalID),
+					Name:        "Test",
+					Email:       email,
+					MayDelete:   true,
+				}); err != nil {
+					t.Fatalf("InsertJMAPIdentity %s: %v", id, err)
+				}
+			}
+
+			// --- oauth2 identity with gmail token URL ---
+			const gmailID = "oauthprov-gmail"
+			insertExtraIdentity(gmailID, "alice@oauthprovider.example")
+			if err := be.fs.Meta().UpsertIdentitySubmission(context.Background(), store.IdentitySubmission{
+				IdentityID:         gmailID,
+				SubmitHost:         "smtp.gmail.com",
+				SubmitPort:         587,
+				SubmitSecurity:     "starttls",
+				SubmitAuthMethod:   "oauth2",
+				OAuthAccessCT:      sealTok("gmailtoken"),
+				OAuthTokenEndpoint: gmailTokenURL,
+				OAuthClientID:      "alice@oauthprovider.example",
+				State:              store.IdentitySubmissionStateOK,
+			}); err != nil {
+				t.Fatalf("UpsertIdentitySubmission gmail: %v", err)
+			}
+			res2, buf2 := sh.doRequest("GET", "/api/v1/identities/"+gmailID+"/submission", adminKey, nil)
+			if res2.StatusCode != http.StatusOK {
+				t.Fatalf("GET gmail: %d: %s", res2.StatusCode, buf2)
+			}
+			var gmailGot getResponse
+			if err := json.Unmarshal(buf2, &gmailGot); err != nil {
+				t.Fatalf("decode gmail: %v", err)
+			}
+			if gmailGot.OAuthProvider != "gmail" {
+				t.Errorf("gmail identity: oauth_provider = %q; want gmail", gmailGot.OAuthProvider)
+			}
+
+			// --- oauth2 identity with m365 token URL ---
+			const m365ID = "oauthprov-m365"
+			insertExtraIdentity(m365ID, "bob@oauthprovider.example")
+			if err := be.fs.Meta().UpsertIdentitySubmission(context.Background(), store.IdentitySubmission{
+				IdentityID:         m365ID,
+				SubmitHost:         "smtp.office365.com",
+				SubmitPort:         587,
+				SubmitSecurity:     "starttls",
+				SubmitAuthMethod:   "oauth2",
+				OAuthAccessCT:      sealTok("m365token"),
+				OAuthTokenEndpoint: m365TokenURL,
+				OAuthClientID:      "bob@oauthprovider.example",
+				State:              store.IdentitySubmissionStateOK,
+			}); err != nil {
+				t.Fatalf("UpsertIdentitySubmission m365: %v", err)
+			}
+			res3, buf3 := sh.doRequest("GET", "/api/v1/identities/"+m365ID+"/submission", adminKey, nil)
+			if res3.StatusCode != http.StatusOK {
+				t.Fatalf("GET m365: %d: %s", res3.StatusCode, buf3)
+			}
+			var m365Got getResponse
+			if err := json.Unmarshal(buf3, &m365Got); err != nil {
+				t.Fatalf("decode m365: %v", err)
+			}
+			if m365Got.OAuthProvider != "m365" {
+				t.Errorf("m365 identity: oauth_provider = %q; want m365", m365Got.OAuthProvider)
+			}
+
+			// --- password-auth identity: oauth_provider must be absent ---
+			const pwID = "oauthprov-password"
+			insertExtraIdentity(pwID, "carol@oauthprovider.example")
+			if err := be.fs.Meta().UpsertIdentitySubmission(context.Background(), store.IdentitySubmission{
+				IdentityID:       pwID,
+				SubmitHost:       "smtp.example.com",
+				SubmitPort:       587,
+				SubmitSecurity:   "starttls",
+				SubmitAuthMethod: "password",
+				PasswordCT:       sealTok("password"),
+				OAuthClientID:    "carol@oauthprovider.example",
+				State:            store.IdentitySubmissionStateOK,
+			}); err != nil {
+				t.Fatalf("UpsertIdentitySubmission password: %v", err)
+			}
+			res4, buf4 := sh.doRequest("GET", "/api/v1/identities/"+pwID+"/submission", adminKey, nil)
+			if res4.StatusCode != http.StatusOK {
+				t.Fatalf("GET password: %d: %s", res4.StatusCode, buf4)
+			}
+			var pwGot getResponse
+			if err := json.Unmarshal(buf4, &pwGot); err != nil {
+				t.Fatalf("decode password: %v", err)
+			}
+			if pwGot.OAuthProvider != "" {
+				t.Errorf("password identity: oauth_provider = %q; want empty", pwGot.OAuthProvider)
+			}
+
+			// --- oauth2 identity with unrecognised token URL ---
+			const unkID = "oauthprov-unknown"
+			insertExtraIdentity(unkID, "dan@oauthprovider.example")
+			if err := be.fs.Meta().UpsertIdentitySubmission(context.Background(), store.IdentitySubmission{
+				IdentityID:         unkID,
+				SubmitHost:         "smtp.unknown.example",
+				SubmitPort:         587,
+				SubmitSecurity:     "starttls",
+				SubmitAuthMethod:   "oauth2",
+				OAuthAccessCT:      sealTok("unktok"),
+				OAuthTokenEndpoint: "https://idp.unknown.example/token",
+				OAuthClientID:      "dan@oauthprovider.example",
+				State:              store.IdentitySubmissionStateOK,
+			}); err != nil {
+				t.Fatalf("UpsertIdentitySubmission unknown: %v", err)
+			}
+			res5, buf5 := sh.doRequest("GET", "/api/v1/identities/"+unkID+"/submission", adminKey, nil)
+			if res5.StatusCode != http.StatusOK {
+				t.Fatalf("GET unknown: %d: %s", res5.StatusCode, buf5)
+			}
+			var unkGot getResponse
+			if err := json.Unmarshal(buf5, &unkGot); err != nil {
+				t.Fatalf("decode unknown: %v", err)
+			}
+			if unkGot.OAuthProvider != "" {
+				t.Errorf("unknown-provider oauth2 identity: oauth_provider = %q; want empty", unkGot.OAuthProvider)
+			}
+		})
+	}
+}

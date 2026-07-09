@@ -15,12 +15,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Aligned with go.mod's `go 1.26.4` directive. Several direct deps
+  # Aligned with go.mod's `go 1.26.5` directive. Several direct deps
   # (golang.org/x/sync, golang.org/x/crypto, golang.org/x/oauth2,
   # coreos/go-oidc/v3, jackc/pgx/v5, the otel/otlptrace exporters)
   # already require Go 1.26 at module level, so the CI floor must match.
   # Per STANDARDS the floor moves with the current stable.
-  GO_VERSION: "1.26.4"
+  # 1.26.5 fixes GO-2026-5856 (crypto/tls ECH privacy leak).
+  GO_VERSION: "1.26.5"
   # Node + pnpm versions for the web/ workspace. Node 20 LTS is the floor.
   NODE_VERSION: "20"
   PNPM_VERSION: "10"

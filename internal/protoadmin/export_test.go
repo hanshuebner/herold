@@ -22,3 +22,10 @@ func GenerateAPIKey() (plaintext, hash string, err error) {
 func (s *Server) Options() Options {
 	return s.opts
 }
+
+// ProviderNameByTokenURL exposes the internal providerNameByTokenURL method
+// to the _test package for unit testing the priority ordering and edge cases
+// (re #131).
+func (s *Server) ProviderNameByTokenURL(tokenURL string) string {
+	return s.providerNameByTokenURL(tokenURL)
+}
