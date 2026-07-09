@@ -166,7 +166,7 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, submissionGetResponse{
+	resp := submissionGetResponse{
 		Configured:              true,
 		SubmitHost:              sub.SubmitHost,
 		SubmitPort:              sub.SubmitPort,
@@ -175,7 +175,37 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		State:                   string(sub.State),
 		AvailableOAuthProviders: providers,
 		DomainAuthoritative:     authoritative,
-	})
+	}
+	if sub.SubmitAuthMethod == "oauth2" {
+		resp.OAuthProvider = s.providerNameByTokenURL(sub.OAuthTokenEndpoint)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// providerNameByTokenURL returns the name of the configured OAuth provider
+// whose TokenURL matches the given tokenURL. When multiple providers share the
+// same token endpoint (e.g. the dev-instance fakeidp, which is aliased as
+// "fakeidp", "gmail", and "m365"), well-known names are preferred in order
+// ("gmail" before "m365" before others) so the Suite receives a name it can
+// use for the re-auth popup. Returns "" when no provider matches.
+func (s *Server) providerNameByTokenURL(tokenURL string) string {
+	if tokenURL == "" {
+		return ""
+	}
+	// Check preferred names first so dev-instance aliases return "gmail"
+	// rather than "fakeidp" (re #131).
+	for _, name := range []string{"gmail", "m365"} {
+		if p, ok := s.opts.OAuthProviders[name]; ok && p.TokenURL == tokenURL {
+			return name
+		}
+	}
+	// Fall back to any matching provider.
+	for name, p := range s.opts.OAuthProviders {
+		if p.TokenURL == tokenURL {
+			return name
+		}
+	}
+	return ""
 }
 
 // sortedConfiguredOAuthProviders returns the sorted list of OAuth provider ids

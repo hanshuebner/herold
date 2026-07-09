@@ -30,6 +30,13 @@ type submissionGetResponse struct {
 	// authoritative on this server. The Suite uses this to recommend external
 	// submission over the local server when false (re #74).
 	DomainAuthoritative bool `json:"domain_authoritative"`
+	// OAuthProvider is the provider name (e.g. "gmail", "m365") whose token
+	// endpoint matches the stored OAuthTokenEndpoint. Populated only when
+	// SubmitAuthMethod == "oauth2" and the token endpoint is found in the
+	// server's configured [server.oauth_providers.*] map. The Suite uses this
+	// to offer the "Neu autorisieren" popup for OAuth identities regardless of
+	// the SMTP host (re #131).
+	OAuthProvider string `json:"oauth_provider,omitempty"`
 }
 
 // submissionTestRequest is the optional wire form accepted by

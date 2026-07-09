@@ -366,14 +366,19 @@ seed_instance() {
             || { cat "$dir/logs/principal-$local_part.err" >&2; die "principal create $local_part failed"; }
     done
 
-    # When external-submission is enabled, seed three foreign-domain JMAP
-    # identities for alice covering the three UI rendering states:
+    # When external-submission is enabled, seed four foreign-domain JMAP
+    # identities for alice covering the four UI rendering states:
     #   800001 = setup-needed    (no submission row)
     #   800002 = working-external (state: ok, pointed at the live fake SMTP sink)
-    #   800003 = broken-external  (state: auth-failed)
+    #   800003 = broken-external  (state: auth-failed, password auth)
+    #   800004 = oauth-broken    (state: auth-failed, oauth2 via gmail/fakeidp,
+    #                             pointed at the live fake SMTP sink; lets the
+    #                             "Verbindung testen" popup re-auth flow be
+    #                             exercised in the dev instance, re #131)
     #
-    # --sink-addr points the working-external identity at the live fake SMTP
-    # sink so the connection-test endpoint and real relay can reach it.
+    # --sink-addr points the working-external and oauth-broken identities at
+    # the live fake SMTP sink so the connection-test endpoint and real relay
+    # can reach them.
     #
     # The command opens the store directly while the server is running; the
     # SQLite WAL mode + 30 s busy timeout serialises it safely against the

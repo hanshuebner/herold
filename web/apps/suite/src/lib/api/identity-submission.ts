@@ -53,6 +53,14 @@ export interface SubmissionStatus {
    * are unavailable, so external SMTP submission is required (re #74).
    */
   domain_authoritative: boolean;
+  /**
+   * OAuth provider name (e.g. "gmail", "m365") for re-authorization.
+   * Populated by the server when submit_auth_method === "oauth2" and the
+   * stored token endpoint matches a configured [server.oauth_providers.*]
+   * entry. The Suite uses this to offer the "Neu autorisieren" popup for
+   * any OAuth identity regardless of SMTP host (re #131).
+   */
+  oauth_provider?: string;
 }
 
 /**
@@ -275,7 +283,7 @@ export async function startOAuth(
  */
 export async function startOAuthPopup(
   identityId: string,
-  provider: OAuthProvider,
+  provider: string,
 ): Promise<Window | null> {
   const returnUrl = encodeURIComponent(window.location.href);
   const url =

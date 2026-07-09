@@ -86,7 +86,7 @@
 
     let popup: Window | null = null;
     try {
-      popup = await startOAuthPopup(ctx.identityId, ctx.provider as 'gmail' | 'm365');
+      popup = await startOAuthPopup(ctx.identityId, ctx.provider);
     } catch (err) {
       const msg =
         err instanceof ApiError

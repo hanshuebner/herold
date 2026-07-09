@@ -32,15 +32,20 @@ import (
 // local domain so GET .../submission returns domain_authoritative=false.
 const devSeedForeignDomain = "foreign.example"
 
-// devIdentityIDs groups the three deterministic identity IDs used by the
+// devIdentityIDs groups the four deterministic identity IDs used by the
 // seed command and readable by dev-instance.sh callers.
 const (
 	devIdentitySetupNeeded = "800001"
 	devIdentityWorkingExt  = "800002"
 	devIdentityBrokenExt   = "800003"
+	// devIdentityOAuthExt is an oauth2-configured identity pointed at the
+	// fakesmtp sink, in auth-failed state. It exists so the "Verbindung
+	// testen" button and the "Neu autorisieren" re-auth popup can be
+	// exercised in the dev instance without a real Gmail account (re #131).
+	devIdentityOAuthExt = "800004"
 )
 
-// devSeedEntries describes the three foreign-domain identity shapes to seed.
+// devSeedEntries describes the four foreign-domain identity shapes to seed.
 // IDs are chosen outside the auto-allocator range (nanosecond timestamps
 // ~1.7e18) so they never collide with identities created at runtime.
 var devSeedEntries = []struct {
@@ -51,6 +56,7 @@ var devSeedEntries = []struct {
 	{devIdentitySetupNeeded, "alice@" + devSeedForeignDomain, "setup-needed"},
 	{devIdentityWorkingExt, "alice-work@" + devSeedForeignDomain, "working-external"},
 	{devIdentityBrokenExt, "alice-broken@" + devSeedForeignDomain, "broken-external"},
+	{devIdentityOAuthExt, "alice-oauth@" + devSeedForeignDomain, "oauth-broken"},
 }
 
 // newDevCmd returns the hidden "dev" command group containing development
@@ -351,8 +357,47 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 		return fmt.Errorf("dev seed-external-identities: upsert broken submission: %w", err)
 	}
 
+	// OAuth external identity: state auth-failed, pointed at the same fake
+	// SMTP sink as the working-external identity. When --sink-addr is provided
+	// and the "gmail" provider is configured in system.toml (set by
+	// dev-instance.sh when HEROLD_DEV_EXTERNAL_SUBMISSION=1), this identity
+	// lets puppeteer drive the full "Verbindung testen" → failure modal →
+	// "Neu autorisieren" popup flow against the fake IdP + SMTP sink without
+	// a real Gmail account (re #131).
+	//
+	// The stored OAuthAccessCT contains a placeholder token that is
+	// deliberately invalid (extsubmit: open access token will fail at test
+	// time, surfacing the failure modal). The re-auth popup exchanges a fresh
+	// code via the fake IdP, which writes a real sealed token and probes the
+	// fake SMTP sink (which accepts any XOAUTH2 credential), transitioning
+	// the identity to state=ok.
+	if sinkAddr != "" {
+		if gmailProv, ok := cfg.Server.OAuthProviders["gmail"]; ok && gmailProv.TokenURL != "" {
+			oauthAccessCT, oaErr := secrets.Seal(dataKey, []byte("dev-placeholder-oauth-token"))
+			if oaErr != nil {
+				return fmt.Errorf("dev seed-external-identities: seal oauth placeholder: %w", oaErr)
+			}
+			if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+				IdentityID:         devIdentityOAuthExt,
+				SubmitHost:         workingHost,
+				SubmitPort:         workingPort,
+				SubmitSecurity:     workingSecurity,
+				SubmitAuthMethod:   "oauth2",
+				OAuthAccessCT:      oauthAccessCT,
+				OAuthTokenEndpoint: gmailProv.TokenURL,
+				OAuthClientID:      "alice-oauth@" + devSeedForeignDomain,
+				State:              store.IdentitySubmissionStateAuthFailed,
+				StateAt:            now,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			}); err != nil {
+				return fmt.Errorf("dev seed-external-identities: upsert oauth submission: %w", err)
+			}
+		}
+	}
+
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "dev-seed: seeded 3 external identities for %s on %s\n", principalEmail, devSeedForeignDomain)
+	fmt.Fprintf(w, "dev-seed: seeded 4 external identities for %s on %s\n", principalEmail, devSeedForeignDomain)
 	for _, entry := range devSeedEntries {
 		fmt.Fprintf(w, "  identity_id=%s  email=%s  note=%s\n", entry.id, entry.email, entry.note)
 	}

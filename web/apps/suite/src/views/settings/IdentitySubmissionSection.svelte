@@ -403,7 +403,8 @@
 
   /**
    * Maps a known SMTP submission host back to its OAuth provider id.
-   * Returns null for custom or unknown hosts.
+   * Returns null for custom or unknown hosts. Used as a fallback when the
+   * server does not return an oauth_provider field (e.g. old server versions).
    */
   function providerFromHost(host: string): string | null {
     if (host === 'smtp.gmail.com') return 'gmail';
@@ -412,13 +413,17 @@
   }
 
   /**
-   * The OAuth provider id inferred from the stored submit_host, or null when
-   * the host is unknown or the submission is not oauth2-configured.
-   * Used to wire the "Verbindung testen" button for oauth2 submissions.
+   * The OAuth provider id for re-authorization, or null when the provider
+   * is not known. Prefers the server-returned oauth_provider field (re #131),
+   * which is populated by looking up the stored token endpoint against the
+   * server's configured [server.oauth_providers.*] map. Falls back to
+   * host-based detection for identities configured before this change.
+   * Used only to wire the "Neu autorisieren" popup; the "Verbindung testen"
+   * button appears for all oauth2-configured identities regardless.
    */
   let oauthConfiguredProvider = $derived(
-    isOAuthConfigured && handle.data?.submit_host
-      ? providerFromHost(handle.data.submit_host)
+    isOAuthConfigured
+      ? (handle.data?.oauth_provider ?? providerFromHost(handle.data?.submit_host ?? ''))
       : null,
   );
 </script>
@@ -632,13 +637,14 @@
                   : t('settings.submission.sendTest')}
               </Button>
             {/if}
-            {#if isOAuthConfigured && oauthConfiguredProvider !== null}
+            {#if isOAuthConfigured}
               <!-- For oauth2-configured identities, "Verbindung testen" runs
                    a silent probe first (re #131): no redirect, no page reload.
                    The server refreshes the token on-demand if needed. The
                    outcome is surfaced in the ConnectionTestDialog modal. A
                    "Neu autorisieren" popup is offered inside the modal only
-                   when the token cannot be refreshed silently. -->
+                   when the token cannot be refreshed silently and the provider
+                   can be determined (oauthConfiguredProvider !== null). -->
               <Button
                 variant="primary"
                 onclick={() => void testOAuthConnection()}
@@ -662,7 +668,7 @@
             {/if}
           </div>
 
-          {#if !isOAuthConfigured || oauthConfiguredProvider === null}
+          {#if !isOAuthConfigured}
             <!-- Description for the manual save+test button: tells the user
                  what the action actually does (connection probe, no message
                  delivered) so the effect is not ambiguous (re #123). -->
