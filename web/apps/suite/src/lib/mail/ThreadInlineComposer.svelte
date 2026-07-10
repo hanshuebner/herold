@@ -34,6 +34,8 @@
   import {
     EMPTY_ACTIVE,
     type ActiveState,
+    applyImage,
+    removeImageBySrc,
     insertHtmlBlockAtEnd,
     removeHtmlBlockByShareUrl,
   } from '../compose/editor';
@@ -297,10 +299,154 @@
     if (diffHours >= 1) return `expires in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
     return 'expires in less than 1 hour';
   }
+
+  // ── Drop zone state (G15 — mirrors ComposeWindow) ─────────────────────
+  //
+  // Container-level drag tracking uses a depth counter to handle the
+  // dragenter/dragleave bubbling cascade across child elements (same
+  // pattern as ComposeWindow, re #67).  The two zone overlays become
+  // visible while dragActive is true and receive files on drop.
+
+  let dragActive = $state(false);
+  let dragDepth = 0;
+  let inlineZoneHover = $state(false);
+  let attachZoneHover = $state(false);
+
+  function hasFiles(e: DragEvent): boolean {
+    return Boolean(e.dataTransfer?.types.includes('Files'));
+  }
+  function hasComposePart(e: DragEvent): boolean {
+    return Boolean(e.dataTransfer?.types.includes('application/x-herold-compose-part'));
+  }
+  function isRelevantDrag(e: DragEvent): boolean {
+    return hasFiles(e) || hasComposePart(e);
+  }
+
+  // Container-level handlers — track depth so dragActive stays true as
+  // the cursor moves between child elements.
+  function onContainerDragEnter(e: DragEvent): void {
+    if (!isRelevantDrag(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    dragActive = true;
+  }
+  function onContainerDragOver(e: DragEvent): void {
+    if (!isRelevantDrag(e)) return;
+    e.preventDefault();
+  }
+  function onContainerDragLeave(): void {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) {
+      dragActive = false;
+      inlineZoneHover = false;
+      attachZoneHover = false;
+    }
+  }
+  function onContainerDrop(e: DragEvent): void {
+    // Catch drops that land outside the two explicit zones (e.g. header,
+    // footer).  preventDefault() suppresses the browser's open-file default;
+    // the file is silently ignored.  Zone handlers call stopPropagation() so
+    // they do not reach here for drops on the zones themselves.
+    e.preventDefault();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+  }
+
+  // Inline zone handlers — see ComposeWindow for the stopPropagation rationale.
+  // Do NOT call stopPropagation in dragenter: the container depth counter must
+  // see every dragenter so it stays balanced with the matching dragleave.
+  function onInlineZoneDragEnter(e: DragEvent): void {
+    e.preventDefault();
+    inlineZoneHover = true;
+  }
+  function onInlineZoneDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }
+  function onInlineZoneDragLeave(e: DragEvent): void {
+    if (!(e.currentTarget as Element).contains(e.relatedTarget as Node | null)) {
+      inlineZoneHover = false;
+    }
+  }
+  function onInlineZoneDrop(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    const images = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (images.length === 0) return;
+    void handleInlineDrop(images);
+  }
+
+  async function handleInlineDrop(files: File[]): Promise<void> {
+    const pending: Array<{ key: string; objectURL: string; file: File }> = [];
+    for (const file of files) {
+      const started = compose.startInlineImage(file);
+      if (!started) continue;
+      applyImage(editorView, started.objectURL, file.name);
+      pending.push({ key: started.key, objectURL: started.objectURL, file });
+    }
+    await Promise.all(
+      pending.map(async ({ key, objectURL, file }) => {
+        const errMsg = await compose.uploadInlineImage(key, file);
+        if (errMsg) {
+          removeImageBySrc(editorView, objectURL);
+        }
+      }),
+    );
+  }
+
+  // Attach zone handlers — do NOT stopPropagation in dragenter (same reason).
+  function onAttachZoneDragEnter(e: DragEvent): void {
+    e.preventDefault();
+    attachZoneHover = true;
+  }
+  function onAttachZoneDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }
+  function onAttachZoneDragLeave(e: DragEvent): void {
+    if (!(e.currentTarget as Element).contains(e.relatedTarget as Node | null)) {
+      attachZoneHover = false;
+    }
+  }
+  function onAttachZoneDrop(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth = 0;
+    dragActive = false;
+    inlineZoneHover = false;
+    attachZoneHover = false;
+
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) void compose.addAttachments(files);
+  }
 </script>
 
 {#if compose.isOpen && compose.inlineMode}
-  <div class="inline-composer" bind:this={containerEl} data-testid="inline-composer">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="inline-composer"
+    bind:this={containerEl}
+    data-testid="inline-composer"
+    ondragenter={onContainerDragEnter}
+    ondragover={onContainerDragOver}
+    ondragleave={onContainerDragLeave}
+    ondrop={onContainerDrop}
+  >
     <header class="composer-header">
       <span class="composer-title">{composeTitle}</span>
       <button
@@ -417,18 +563,50 @@
     </div>
 
     <div class="composer-body">
-      {#key compose.replyContext.parentId ?? '__blank__'}
-        <RichEditor
-          {initialHtml}
-          autofocus={Boolean(compose.replyContext.parentId)}
-          onUpdate={onEditorUpdate}
-          onActiveChange={(a) => (active = a)}
-          onView={(v) => (editorView = v)}
-          {onImageRemoved}
-          {uploadingSrcs}
-        />
-      {/key}
+      <!-- Zone container: the inline drop zone is always in the DOM and
+           toggled via CSS (not {#if}) to avoid spurious dragleave events
+           that would reset the depth counter (re #67). -->
+      <div class="body-zone-container">
+        {#key compose.replyContext.parentId ?? '__blank__'}
+          <RichEditor
+            {initialHtml}
+            autofocus={Boolean(compose.replyContext.parentId)}
+            onUpdate={onEditorUpdate}
+            onActiveChange={(a) => (active = a)}
+            onView={(v) => (editorView = v)}
+            {onImageRemoved}
+            {uploadingSrcs}
+          />
+        {/key}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="inline-drop-zone"
+          class:active={dragActive}
+          class:hover={inlineZoneHover}
+          aria-label={t('compose.dropInline')}
+          ondragenter={onInlineZoneDragEnter}
+          ondragover={onInlineZoneDragOver}
+          ondragleave={onInlineZoneDragLeave}
+          ondrop={onInlineZoneDrop}
+        >
+          <span class="zone-label">{t('compose.dropInline')}</span>
+        </div>
+      </div>
       <ComposeToolbar view={editorView} {active} />
+      <!-- Attach drop zone: appears below the toolbar when a drag is active. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="attach-drop-zone"
+        class:visible={dragActive}
+        class:hover={attachZoneHover}
+        aria-label={t('compose.dropAttach')}
+        ondragenter={onAttachZoneDragEnter}
+        ondragover={onAttachZoneDragOver}
+        ondragleave={onAttachZoneDragLeave}
+        ondrop={onAttachZoneDrop}
+      >
+        <span class="zone-label">{t('compose.dropAttach')}</span>
+      </div>
     </div>
 
     {#if nonInlineAttachments.length > 0}
@@ -636,13 +814,92 @@
     color: var(--text-primary);
   }
 
-  /* ── Body (editor + toolbar) ─────────────────────────────────────────── */
+  /* ── Body (editor + toolbar + drop zones) ───────────────────────────── */
   .composer-body {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 120px;
     overflow: hidden;
+  }
+
+  /* Wraps RichEditor + inline drop zone (absolutely positioned overlay). */
+  .body-zone-container {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Inline drop zone: covers the editor while a drag is active.
+     Always in the DOM (toggled via CSS, not {#if}) to prevent the DOM
+     mutation from generating a spurious dragleave that resets dragDepth. */
+  .inline-drop-zone {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--interactive);
+    font-weight: 600;
+    font-size: var(--type-body-compact-01-size);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .inline-drop-zone.active {
+    pointer-events: all;
+    opacity: 1;
+    border-color: var(--interactive);
+    background: rgba(15, 98, 254, 0.08);
+  }
+  .inline-drop-zone.active.hover {
+    background: rgba(15, 98, 254, 0.2);
+    border-color: var(--interactive);
+  }
+
+  /* Attach drop zone: shown below the toolbar during a drag. */
+  .attach-drop-zone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    border: 2px dashed transparent;
+    border-radius: var(--radius-md);
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    transition: opacity var(--duration-fast-02) var(--easing-productive-enter),
+      height var(--duration-fast-02) var(--easing-productive-enter),
+      background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .attach-drop-zone.visible {
+    height: 40px;
+    opacity: 1;
+    pointer-events: all;
+    border-color: var(--border-strong-01);
+    background: var(--layer-01);
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+  .attach-drop-zone.hover {
+    background: rgba(15, 98, 254, 0.08);
+    border-color: var(--interactive);
+    color: var(--interactive);
+  }
+
+  .zone-label {
+    pointer-events: none;
+    user-select: none;
   }
 
   /* ── Attachment strip ────────────────────────────────────────────────── */
