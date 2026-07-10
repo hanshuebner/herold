@@ -30,6 +30,7 @@
   import RichEditor from '../compose/RichEditor.svelte';
   import ComposeToolbar from '../compose/ComposeToolbar.svelte';
   import RecipientField from '../compose/RecipientField.svelte';
+  import FromPicker from '../compose/FromPicker.svelte';
   import {
     EMPTY_ACTIVE,
     type ActiveState,
@@ -39,12 +40,68 @@
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from '../compose/recipient-parse';
   import { attachmentBadge } from './attachment-icon';
+  import { composeFromGating, shouldShowFromPicker } from '../compose/from-picker';
+  import { submissionStore } from '../identities/identity-submission.svelte';
+  import { hasExternalSubmission } from '../auth/capabilities';
+  import type { Identity } from './types';
+  import type { SubmissionSummary } from '../identities/identity-status';
 
   interface Props {
     /** Thread ID: used to load emails and compute inbox membership. */
     threadId: string;
   }
   let { threadId }: Props = $props();
+
+  // From-identity state — mirrors the same pattern as ComposeWindow (REQ-MAIL-12).
+  let identity = $derived<Identity | null>(
+    compose.selectedIdentity ?? mail.primaryIdentity,
+  );
+  let identitiesList = $derived(Array.from(mail.identities.values()));
+  let showExtSub = $derived(hasExternalSubmission());
+
+  function submissionResolver(id: string): SubmissionSummary | null {
+    if (!showExtSub) return null;
+    const handle = submissionStore.forIdentity(id);
+    void handle.load();
+    const data = handle.data;
+    if (!data) return null;
+    return {
+      configured: data.configured === true,
+      state: data.state ?? null,
+      domainAuthoritative: data.domain_authoritative,
+    };
+  }
+
+  function externalConfigured(id: string): boolean {
+    if (!showExtSub) return false;
+    return submissionStore.forIdentity(id).data?.configured === true;
+  }
+
+  let showPicker = $derived(
+    shouldShowFromPicker(identitiesList, submissionResolver),
+  );
+
+  let fromGating = $derived(
+    composeFromGating(identity, identity ? submissionResolver(identity.id) : null),
+  );
+
+  let fromGatingMessage = $derived(
+    fromGating.allowed
+      ? null
+      : fromGating.reason === 'no-identity'
+        ? t('compose.from.sendDisabled.noIdentity')
+        : fromGating.reason === 'unverified'
+          ? t('compose.from.sendDisabled.unverified')
+          : fromGating.reason === 'verifying'
+            ? t('compose.from.sendDisabled.verifying')
+            : fromGating.reason === 'external-broken'
+              ? t('compose.from.sendDisabled.broken')
+              : t('compose.from.sendDisabled.external'),
+  );
+
+  function onPickIdentity(picked: Identity): void {
+    compose.selectedIdentity = picked;
+  }
 
   // Thread emails and inbox membership for Send + Archive.
   let threadEmails = $derived(mail.threadEmails(threadId));
@@ -142,7 +199,10 @@
   );
 
   let canSend = $derived(
-    compose.status !== 'sending' && !compose.attachmentsBusy && !hasRecipientWarnings,
+    compose.status !== 'sending' &&
+      !compose.attachmentsBusy &&
+      !hasRecipientWarnings &&
+      fromGating.allowed,
   );
 
   // Editor view bridge for the formatting toolbar.
@@ -271,6 +331,31 @@
     </header>
 
     <div class="composer-fields">
+      <div class="field-row from-row">
+        <span class="field-label">{t('compose.from')}</span>
+        {#if showPicker}
+          <FromPicker
+            identities={identitiesList}
+            selected={identity}
+            {submissionResolver}
+            {externalConfigured}
+            onSelect={onPickIdentity}
+            disabled={compose.status === 'sending'}
+          />
+        {:else}
+          <span class="from-display">
+            {#if identity}
+              {identity.name ? `${identity.name} <${identity.email}>` : identity.email}
+            {:else}
+              <span class="muted">Loading identity…</span>
+            {/if}
+          </span>
+        {/if}
+      </div>
+      {#if fromGatingMessage}
+        <p class="field-warning from-gating-banner" role="status">{fromGatingMessage}</p>
+      {/if}
+
       <div class="field-row recipient-row">
         <RecipientField
           label={t('compose.to')}
@@ -493,7 +578,7 @@
     color: var(--text-primary);
   }
 
-  /* ── Fields (recipients) ─────────────────────────────────────────────── */
+  /* ── Fields (recipients + from) ─────────────────────────────────────── */
   .composer-fields {
     border-bottom: 1px solid var(--border-subtle-01);
   }
@@ -508,11 +593,37 @@
   .field-row:last-child {
     border-bottom: none;
   }
+  /* From row aligns the picker vertically centred (the picker uses
+     flex: 1 and is taller than a text baseline). */
+  .from-row {
+    align-items: center;
+  }
+  .field-label {
+    width: 3em;
+    flex: 0 0 auto;
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .from-display {
+    color: var(--text-secondary);
+    font-size: var(--type-body-compact-01-size);
+    flex: 1;
+  }
+  .muted {
+    color: var(--text-helper);
+    font-style: italic;
+  }
   .field-warning {
     padding: var(--spacing-01) var(--spacing-04);
     color: var(--support-warning);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
+  }
+  .from-gating-banner {
+    background: color-mix(in srgb, var(--support-warning) 10%, transparent);
+    border-left: 3px solid var(--support-warning);
+    color: color-mix(in srgb, var(--support-warning) 90%, var(--text-primary));
+    padding: var(--spacing-02) var(--spacing-04);
   }
   .cc-bcc-toggle {
     flex-shrink: 0;
