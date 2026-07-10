@@ -353,7 +353,7 @@
         {/if}
       </div>
       {#if fromGatingMessage}
-        <p class="field-warning from-gating-banner" role="status">{fromGatingMessage}</p>
+        <p class="field-warning from-gating-banner" role="status" data-testid="from-gating-banner">{fromGatingMessage}</p>
       {/if}
 
       <div class="field-row recipient-row">
