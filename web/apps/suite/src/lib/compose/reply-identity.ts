@@ -7,17 +7,21 @@
  *   1. If `parent.from[0].email` matches one of the user's `Identity`
  *      emails (own-sent reply), return that identity verbatim. This
  *      preserves the REQ-MAIL-30a precedence — the own-sent branch
- *      wins over the X-Herold-Recipient match (the header is empty on
- *      outbound anyway, see REQ-FLOW-35).
- *   2. Otherwise, read the parent's `X-Herold-Recipient` header
+ *      wins over the recipient-match rules below (the X-Herold-Recipient
+ *      header is empty on outbound anyway, see REQ-FLOW-35).
+ *   2. Otherwise, scan the parent's `to` and then `cc` lists in order;
+ *      the first hit on a verified Identity wins. This prefers the
+ *      address the sender actually used (visible in To/Cc) over the
+ *      internal forwarding/delivery target.
+ *   3. Otherwise, read the parent's `X-Herold-Recipient` header
  *      (server-injected at fan-out time per REQ-FLOW-34). When the
  *      header value matches a verified Identity, return that identity.
- *   3. Otherwise, scan the parent's `to` and then `cc` lists in order;
- *      the first hit on a verified Identity wins.
+ *      This covers Bcc delivery and list mail where no user identity
+ *      appears in To/Cc.
  *   4. Final fallback: the supplied default identity (REQ-MAIL-12).
  *
- * Verification gate: Unverified Identities NEVER win the X-Herold-
- * Recipient match (step 2) or the To/Cc scan (step 3). Step 1 (own-
+ * Verification gate: Unverified Identities NEVER win the To/Cc scan
+ * (step 2) or the X-Herold-Recipient match (step 3). Step 1 (own-
  * sent) bypasses the verification gate because the user *did send*
  * the message, so the identity is implicitly authorised.
  *
@@ -124,8 +128,8 @@ function firstVerifiedMatch(
  *   1. Own-sent: parent.from[0].email matches an identity (any
  *      verification state — the user already sent the message, so
  *      they're authorised).
- *   2. X-Herold-Recipient header → verified identity.
- *   3. parent.to / parent.cc scan → first verified identity.
+ *   2. parent.to / parent.cc scan → first verified identity.
+ *   3. X-Herold-Recipient header → verified identity.
  *   4. Fallback to `defaultIdentity`.
  *
  * Callers (compose's openReply / openReplyAll / openForward) pass the
@@ -151,18 +155,21 @@ export function selectReplyIdentity(
     if (own) return own;
   }
 
-  // Step 2 — X-Herold-Recipient header (verified gate applies).
+  // Step 2 — scan To then Cc; first verified hit wins. Prefers the
+  // address the sender actually used (visible in To/Cc) over the
+  // internal forwarding/delivery target (X-Herold-Recipient, step 3).
+  const toHit = firstVerifiedMatch(parent.to ?? null, byEmail);
+  if (toHit) return toHit;
+  const ccHit = firstVerifiedMatch(parent.cc ?? null, byEmail);
+  if (ccHit) return ccHit;
+
+  // Step 3 — X-Herold-Recipient header (verified gate applies). Covers
+  // Bcc delivery and list mail where no user identity appears in To/Cc.
   const recipient = readHeraldRecipient(parent);
   if (recipient) {
     const matched = byEmail.get(recipient);
     if (matched && isVerified(matched)) return matched;
   }
-
-  // Step 3 — scan To then Cc; first verified hit wins.
-  const toHit = firstVerifiedMatch(parent.to ?? null, byEmail);
-  if (toHit) return toHit;
-  const ccHit = firstVerifiedMatch(parent.cc ?? null, byEmail);
-  if (ccHit) return ccHit;
 
   // Step 4 — terminal fallback.
   return defaultIdentity;

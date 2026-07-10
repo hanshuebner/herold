@@ -89,7 +89,9 @@ describe('isVerified (verification gate)', () => {
 // ── selectReplyIdentity ──────────────────────────────────────────────
 
 describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
-  it('returns the matching identity when X-Herold-Recipient names a verified identity', () => {
+  it('returns the matching identity when To names a verified identity (step 2)', () => {
+    // To contains alice+work@ which is a verified identity. X-Herold-Recipient
+    // also points there (both agree), but the To scan fires first (step 2).
     const parent = makeEmail({
       from: [{ name: null, email: 'external@elsewhere.test' }],
       to: [{ name: null, email: 'alice+work@example.local' }],
@@ -109,10 +111,11 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     expect(got.email).toBe('alice@example.local'); // default
   });
 
-  it('falls through when X-Herold-Recipient names an UNVERIFIED identity; next signal wins', () => {
-    // alice+work@ is unverified (verifiedAt: null). The header points
-    // at it, but the verification gate forbids selecting it. The
-    // algorithm then scans To/Cc; alice@ is verified, so it wins.
+  it('skips unverified To entries and picks the next verified one (step 2 verification gate)', () => {
+    // To lists alice+work@ (unverified) first, then alice@ (verified).
+    // The step-2 To scan skips the unverified entry and returns the
+    // next verified hit. X-Herold-Recipient also points to alice+work@
+    // but step 3 is never reached.
     const unverifiedWork = makeIdentity('alice+work@example.local', {
       verifiedAt: null,
     });
@@ -135,9 +138,9 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     expect(got.email).toBe('alice@example.local');
   });
 
-  it('scans To/Cc in order when X-Herold-Recipient is absent; first hit wins', () => {
-    // No X-Herold-Recipient. parent.to lists alice@ first, then
-    // alice+work@. The first hit in scan order wins.
+  it('scans To/Cc in order (step 2); first verified hit wins', () => {
+    // parent.to lists alice@ first, then alice+work@. The first hit
+    // in scan order wins regardless of X-Herold-Recipient.
     const parent = makeEmail({
       from: [{ name: null, email: 'external@elsewhere.test' }],
       to: [
@@ -189,13 +192,45 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     expect(got.email).toBe('alice@example.local');
   });
 
-  it('matches X-Herold-Recipient case-insensitively', () => {
+  it('matches X-Herold-Recipient case-insensitively (step 3, no To/Cc identity)', () => {
+    // No identity in To/Cc so step 2 misses; step 3 fires and matches
+    // X-Herold-Recipient case-insensitively.
     const parent = makeEmail({
       from: [{ name: null, email: 'external@elsewhere.test' }],
       'header:X-Herold-Recipient:asText': 'Alice+Work@Example.Local',
     });
     const got = selectReplyIdentity(parent, [ALICE, ALICE_WORK], DEFAULT_ID);
     expect(got.email).toBe('alice+work@example.local');
+  });
+
+  it('prefers To identity over X-Herold-Recipient when they name different identities (forwarded-mail regression)', () => {
+    // Regression for #166: a message forwarded by an external MX arrives
+    // with X-Herold-Recipient pointing at the delivery identity (A) while
+    // To carries the address the original sender used (B). Step 2 (To scan)
+    // should fire before step 3 (X-Herold-Recipient), so B wins.
+    const identityA = makeIdentity('hans@netzhansa.com');
+    const identityB = makeIdentity('hans@huebner.org');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'stranger@external.test' }],
+      to: [{ name: null, email: 'hans@huebner.org' }],
+      'header:X-Herold-Recipient:asText': 'hans@netzhansa.com',
+    });
+    const got = selectReplyIdentity(parent, [identityA, identityB], identityA);
+    expect(got.email).toBe('hans@huebner.org');
+  });
+
+  it('falls back to X-Herold-Recipient identity when no identity appears in To or Cc (Bcc scenario)', () => {
+    // The message was Bcc'd to an identity address: To/Cc carry only
+    // third-party addresses, X-Herold-Recipient names the delivery
+    // identity. Step 2 (To/Cc scan) misses; step 3 picks it up.
+    const identityA = makeIdentity('hans@netzhansa.com');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'stranger@external.test' }],
+      to: [{ name: null, email: 'some-list@mailing.example' }],
+      'header:X-Herold-Recipient:asText': 'hans@netzhansa.com',
+    });
+    const got = selectReplyIdentity(parent, [identityA], ALICE);
+    expect(got.email).toBe('hans@netzhansa.com');
   });
 
   it('scans Cc when To has no match', () => {
