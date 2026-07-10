@@ -411,9 +411,7 @@ class ComposeStore {
     // recipient is the people who received that message (parent.to),
     // not the user's own From address (REQ-MAIL-30).
     const ownMessage = isFromSelf(parent, selfEmails);
-    const to = ownMessage
-      ? (parent.to ?? []).map(addressToString).join(', ')
-      : addressToString(parent.from?.[0]);
+    const to = computeReplyTo(parent, ownMessage);
     // Build the Cc list: collect any "local alias" addresses the original
     // message reached that the user has not registered as a first-class
     // Identity. Two sources are considered by localAliasesForCc:
@@ -458,9 +456,7 @@ class ComposeStore {
     const ownMessage = isFromSelf(parent, selfEmails);
     // Reply-all on own sent message: To = original To (the people who
     // received the message). Otherwise: To = the sender.
-    const to = ownMessage
-      ? (parent.to ?? []).map(addressToString).join(', ')
-      : addressToString(parent.from?.[0]);
+    const to = computeReplyTo(parent, ownMessage);
     const identities = Array.from(mail.identities.values());
     const cc = computeActualReplyAllCc(parent, selfEmails, identities);
     this.openWith({
@@ -1567,6 +1563,28 @@ function addressToString(a: Address | undefined): string {
   return a.name?.trim() ? `${a.name} <${a.email}>` : a.email;
 }
 
+/**
+ * Compute the To string for a Reply or Reply-All compose open.
+ *
+ * When the parent was sent by the user (ownMessage=true), the logical
+ * reply target is the people in parent.to (REQ-MAIL-30). When parent.to
+ * is null, empty, or all addresses stringify to '' (undisclosed recipients,
+ * BCC-only delivery, messages forwarded without a visible To), fall back to
+ * parent.from[0] so the composer is never left with an empty To field
+ * (re #168). The user can edit the fallback address before sending.
+ */
+function computeReplyTo(
+  parent: Pick<Email, 'from' | 'to'>,
+  ownMessage: boolean,
+): string {
+  const fromOwn = ownMessage
+    ? (parent.to ?? []).map(addressToString).join(', ')
+    : null;
+  if (fromOwn?.trim()) return fromOwn;
+  // Either !ownMessage or the own-sent To list is empty: reply to the sender.
+  return addressToString(parent.from?.[0]);
+}
+
 function addressListToString(list: Address[] | null | undefined): string {
   if (!list || list.length === 0) return '';
   return list.map(addressToString).join(', ');
@@ -2305,6 +2323,7 @@ export const _internals_forTest = {
   escapeHtml,
   plainTextToHtml,
   computeReplyAllCc,
+  computeReplyTo,
   isOwnMessage: isFromSelf,
   computeOwnMessageReplyAllCc,
   formatBytes,

@@ -20,6 +20,7 @@ const {
   htmlToPlainText,
   escapeHtml,
   computeReplyAllCc,
+  computeReplyTo,
   computeOwnMessageReplyAllCc,
   formatBytes,
   appendSignature,
@@ -743,5 +744,55 @@ describe('reply recipient derivation for own sent messages', () => {
     const cc = computeReplyAllCc(parent, self);
     // me@example.test stripped (self); alice stripped (From = primary).
     expect(cc.map((a) => a.email)).toEqual(['carol@c.test', 'dave@d.test']);
+  });
+});
+
+describe('computeReplyTo (re #168)', () => {
+  // Minimal Email fixture for computeReplyTo tests.
+  function mkEmail(args: {
+    fromName?: string | null;
+    fromEmail: string;
+    to?: Array<{ name?: string | null; email: string }> | null;
+  }): Pick<Email, 'from' | 'to'> {
+    return {
+      from: [{ name: args.fromName ?? null, email: args.fromEmail }],
+      to: args.to !== undefined ? (args.to ?? null) : null,
+    } as Pick<Email, 'from' | 'to'>;
+  }
+
+  it('non-own-sent message: To = sender address', () => {
+    const parent = mkEmail({ fromEmail: 'alice@a.test', to: [{ email: 'me@x.test' }] });
+    expect(computeReplyTo(parent, false)).toBe('alice@a.test');
+  });
+
+  it('non-own-sent message with display name: To = "Name <email>"', () => {
+    const parent = mkEmail({ fromName: 'Alice A', fromEmail: 'alice@a.test' });
+    expect(computeReplyTo(parent, false)).toBe('Alice A <alice@a.test>');
+  });
+
+  it('own-sent message with recipients: To = original recipients joined', () => {
+    const parent = mkEmail({
+      fromEmail: 'me@x.test',
+      to: [{ email: 'alice@a.test' }, { email: 'bob@b.test' }],
+    });
+    expect(computeReplyTo(parent, true)).toBe('alice@a.test, bob@b.test');
+  });
+
+  it('own-sent message with null To: falls back to sender (re #168)', () => {
+    // Reproduces: Exchange/Outlook message forwarded to herold with no
+    // visible To header (undisclosed recipients / BCC delivery). openReply
+    // detects ownMessage=true but parent.to is null, causing empty To.
+    const parent = mkEmail({ fromEmail: 'me@x.test', to: null });
+    expect(computeReplyTo(parent, true)).toBe('me@x.test');
+  });
+
+  it('own-sent message with empty To array: falls back to sender (re #168)', () => {
+    const parent = mkEmail({ fromEmail: 'me@x.test', to: [] });
+    expect(computeReplyTo(parent, true)).toBe('me@x.test');
+  });
+
+  it('own-sent message with display-name sender, null To: fallback uses display name', () => {
+    const parent = mkEmail({ fromName: 'Me Myself', fromEmail: 'me@x.test', to: null });
+    expect(computeReplyTo(parent, true)).toBe('Me Myself <me@x.test>');
   });
 });
