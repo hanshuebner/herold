@@ -202,5 +202,43 @@ describe('ThreadReplyBar Reply-All visibility (re #163)', () => {
       const cc = renderAndCheckGateConsistency(email);
       expect(cc.map((a) => a.email)).toEqual(['bob@example.test']);
     });
+
+    it('does not add parent.to local-domain alias to Cc on own-sent reply-all (re #146)', () => {
+      // The user (alice@example.local) sent a message To: info@example.local
+      // (a local alias, not a registered identity). On own-sent reply-all,
+      // parent.to becomes the new reply's To field — info@ must NOT also
+      // appear in Cc, even though it shares the identity domain.
+      mailMock.identities = new Map([[`id-${ALICE}`, makeIdentity(ALICE)]]);
+      const email = makeEmail({
+        from: [{ name: 'Alice', email: ALICE }],
+        to: [{ name: null, email: 'info@example.local' }],
+        cc: null,
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      // computeOwnMessageReplyAllCc: draws from parent.cc (null) → empty.
+      // localAliasesForCc: ownMessage=true → skips parent.to → no aliases.
+      expect(cc).toHaveLength(0);
+    });
+  });
+
+  describe('upstream-alias case (re #146)', () => {
+    // X-Herold-Recipient is the resolved mailbox identity; the original alias
+    // survives only in the visible To header.
+    it('shows Reply All and includes the local-domain To alias when X-Herold-Recipient is the resolved registered identity', () => {
+      // info@example.local is a local alias (not registered); alice@example.local
+      // is the resolved identity herold actually received the message at.
+      const email = makeEmail({
+        from: [{ name: 'Sender', email: 'sender@external.test' }],
+        to: [{ name: null, email: 'info@example.local' }],
+        'header:X-Herold-Recipient:asText': ALICE,
+      });
+      const cc = renderAndCheckGateConsistency(email);
+      // computeReplyAllCc: info@ is in To, not a self-address → included.
+      // localAliasesForCc: X-Herold-Recipient is registered → source 1 no-ops;
+      //   To has info@example.local on identity domain → source 2 finds it.
+      //   But it's already in cc from computeReplyAllCc → deduplicated.
+      // Net: cc contains info@example.local (exactly once).
+      expect(cc.map((a) => a.email)).toEqual(['info@example.local']);
+    });
   });
 });

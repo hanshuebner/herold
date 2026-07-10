@@ -46,7 +46,7 @@ import {
   type Recipient,
 } from './recipient-parse';
 import { buildSelfEmailSet, isFromSelf } from '../mail/identity-match';
-import { selectReplyIdentity, deliveryAliasForCc } from './reply-identity';
+import { selectReplyIdentity, localAliasesForCc } from './reply-identity';
 import {
   createFileShare,
   destroyFileShares,
@@ -414,17 +414,23 @@ class ComposeStore {
     const to = ownMessage
       ? (parent.to ?? []).map(addressToString).join(', ')
       : addressToString(parent.from?.[0]);
-    // When the delivery address (X-Herold-Recipient) is an alias or
-    // forwarding target that does not correspond to any registered
-    // Identity, add it to CC so the correspondent continues to see the
-    // address the original message reached. Outbound messages carry no
-    // X-Herold-Recipient (REQ-FLOW-35), so deliveryAliasForCc returns
-    // null for ownMessage paths automatically.
+    // Build the Cc list: collect any "local alias" addresses the original
+    // message reached that the user has not registered as a first-class
+    // Identity. Two sources are considered by localAliasesForCc:
+    //   1. X-Herold-Recipient, when present and not a registered Identity
+    //      (REQ-FLOW-34; absent on outbound per REQ-FLOW-35).
+    //   2. Visible To/Cc addresses on an identity domain that are not
+    //      registered Identities — covers the upstream-expanded-alias case
+    //      where the external MX resolves the alias before herold sees the
+    //      envelope so X-Herold-Recipient already carries the resolved
+    //      mailbox (a registered Identity), not the original alias.
+    // When replying to an own-sent message (ownMessage=true), parent.to
+    // addresses go into the reply's To field, so the scan skips parent.to.
     const identities = Array.from(mail.identities.values());
-    const deliveryAlias = deliveryAliasForCc(parent, identities);
+    const localAliases = localAliasesForCc(parent, identities, ownMessage);
     this.openWith({
       to,
-      cc: deliveryAlias ?? undefined,
+      cc: localAliases.length > 0 ? localAliases.join(', ') : undefined,
       subject: replySubject(parent.subject),
       body: formatReplyQuote(parent),
       replyContext: {
@@ -1651,13 +1657,18 @@ export function computeActualReplyAllCc(
   let cc = ownMessage
     ? computeOwnMessageReplyAllCc(parent, selfEmails)
     : computeReplyAllCc(parent, selfEmails);
-  const deliveryAlias = deliveryAliasForCc(parent, identities);
-  if (deliveryAlias) {
-    const alreadyInCc = cc.some(
-      (a) => (a.email ?? '').toLowerCase() === deliveryAlias,
-    );
-    if (!alreadyInCc) {
-      cc = [{ name: null, email: deliveryAlias }, ...cc];
+  // Prepend any local alias addresses not already represented in cc.
+  // localAliasesForCc covers both the X-Herold-Recipient path (herold-
+  // native alias) and the visible-To/Cc path (upstream-expanded alias
+  // where the external MX resolved the alias before herold saw the
+  // envelope). The ownMessage flag prevents parent.to addresses from
+  // appearing in Cc (they become the reply's To field).
+  const aliases = localAliasesForCc(parent, identities, ownMessage);
+  if (aliases.length > 0) {
+    const existingEmails = new Set(cc.map((a) => (a.email ?? '').toLowerCase()));
+    const toAdd = aliases.filter((a) => !existingEmails.has(a));
+    if (toAdd.length > 0) {
+      cc = [...toAdd.map((a) => ({ name: null, email: a })), ...cc];
     }
   }
   return cc;

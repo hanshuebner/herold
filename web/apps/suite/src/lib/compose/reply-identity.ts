@@ -189,6 +189,11 @@ export function selectReplyIdentity(
  *     carry no X-Herold-Recipient per REQ-FLOW-35.
  *   - the delivery address matches a registered Identity by email (case-
  *     insensitive, same normalisation as `selectReplyIdentity`).
+ *
+ * @deprecated Use `localAliasesForCc` which also covers the
+ * upstream-expanded-alias case where the external MX resolves the alias
+ * before herold sees the envelope, so X-Herold-Recipient ends up as the
+ * resolved mailbox (a registered Identity), not the original alias.
  */
 export function deliveryAliasForCc(
   parent: Email,
@@ -199,6 +204,85 @@ export function deliveryAliasForCc(
   const byEmail = identitiesByEmail(identities);
   if (byEmail.has(recipient)) return null;
   return recipient;
+}
+
+/**
+ * Return all "local alias" addresses that should be added to the reply Cc.
+ *
+ * Two sources are checked in encounter order with global deduplication:
+ *
+ *   1. X-Herold-Recipient (REQ-FLOW-34): when present and not matching a
+ *      registered Identity, this address is an alias herold itself saw in
+ *      the SMTP envelope. It is included so the reply retains the alias.
+ *
+ *   2. Visible To/Cc addresses: any address in the parent's To or Cc header
+ *      whose domain appears in at least one registered Identity email and
+ *      which is not itself a registered Identity. This covers the
+ *      upstream-expanded-alias case where an external MX resolves a local
+ *      alias before herold sees the envelope; X-Herold-Recipient then
+ *      carries the resolved mailbox (a registered Identity) and source 1
+ *      correctly no-ops, but the original alias survives in the visible
+ *      To/Cc header and must be preserved in the reply Cc.
+ *
+ * `ownMessage` must be true when the caller is replying to one of the
+ * user's own sent messages. In that case `parent.to` becomes the reply's
+ * To field, so those addresses must not be scanned for Cc additions.
+ * `parent.cc` is always scanned regardless of `ownMessage`. Outbound
+ * messages carry no X-Herold-Recipient per REQ-FLOW-35, so source 1 is
+ * automatically a no-op for own-sent messages.
+ *
+ * Returns lower-cased, deduplicated addresses in encounter order.
+ * Returns an empty array when there are no qualifying addresses.
+ */
+export function localAliasesForCc(
+  parent: Email,
+  identities: readonly Identity[],
+  ownMessage?: boolean,
+): string[] {
+  const byEmail = identitiesByEmail(identities);
+  const result: string[] = [];
+  const seen = new Set<string>();
+
+  // Source 1 — X-Herold-Recipient. Same logic as deliveryAliasForCc.
+  const recipient = readHeraldRecipient(parent);
+  if (recipient && !byEmail.has(recipient)) {
+    seen.add(recipient);
+    result.push(recipient);
+  }
+
+  // Source 2 — visible To/Cc scan against identity domains.
+  if (byEmail.size > 0) {
+    // Build the set of domains owned by registered identities. Only
+    // addresses on these domains can be "local aliases"; external-domain
+    // To/Cc recipients are never candidates.
+    const identityDomains = new Set<string>();
+    for (const email of byEmail.keys()) {
+      const at = email.indexOf('@');
+      if (at >= 0) identityDomains.add(email.slice(at + 1));
+    }
+    // When replying to an own-sent message, parent.to addresses will
+    // become the reply's To field — skip them here to avoid duplicating
+    // those addresses in Cc. parent.cc is always scanned.
+    const listsToScan: (Address[] | null | undefined)[] = ownMessage
+      ? [parent.cc]
+      : [parent.to, parent.cc];
+    for (const list of listsToScan) {
+      if (!list) continue;
+      for (const addr of list) {
+        const lc = (addr.email ?? '').toLowerCase().trim();
+        if (!lc || seen.has(lc)) continue;
+        seen.add(lc);
+        if (byEmail.has(lc)) continue; // registered identity — skip
+        const at = lc.indexOf('@');
+        if (at < 0) continue;
+        if (identityDomains.has(lc.slice(at + 1))) {
+          result.push(lc);
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 /**

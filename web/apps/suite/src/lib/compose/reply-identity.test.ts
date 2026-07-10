@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectReplyIdentity, deliveryAliasForCc, _internals_forTest } from './reply-identity';
+import { selectReplyIdentity, deliveryAliasForCc, localAliasesForCc, _internals_forTest } from './reply-identity';
 import type { Email, Identity } from '../mail/types';
 
 const { isVerified } = _internals_forTest;
@@ -288,6 +288,126 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     const parent = makeEmail();
     const got = selectReplyIdentity(parent, [ALICE], DEFAULT_ID);
     expect(got).toBe(DEFAULT_ID);
+  });
+});
+
+// ── localAliasesForCc ───────────────────────────────────────────────────
+
+describe('localAliasesForCc', () => {
+  // Fixture: alice@example.local is a registered identity;
+  // alias@example.local is NOT (same domain).
+  const VORSITZ = makeIdentity('vorsitz@classic-computing.de');
+
+  it('returns the upstream-alias address from visible To when X-Herold-Recipient is a registered identity (primary fix)', () => {
+    // Scenario: external MX resolved info@classic-computing.de →
+    // vorsitz@classic-computing.de before herold saw the envelope.
+    // X-Herold-Recipient = vorsitz@ (registered) — deliveryAliasForCc
+    // correctly no-ops, but info@ must still be added to reply Cc.
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const aliases = localAliasesForCc(parent, [VORSITZ]);
+    expect(aliases).toEqual(['info@classic-computing.de']);
+  });
+
+  it('returns the X-Herold-Recipient address when it is not a registered identity (herold-native alias path)', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alias@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alias@example.local',
+    });
+    const aliases = localAliasesForCc(parent, [ALICE, BOB]);
+    expect(aliases).toEqual(['alias@example.local']);
+  });
+
+  it('returns empty when X-Herold-Recipient is a registered identity and To has no same-domain non-identity addresses', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alice@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alice@example.local',
+    });
+    const aliases = localAliasesForCc(parent, [ALICE, BOB]);
+    expect(aliases).toEqual([]);
+  });
+
+  it('returns empty when X-Herold-Recipient is absent and all To addresses are registered identities', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alice@example.local' }],
+    });
+    const aliases = localAliasesForCc(parent, [ALICE]);
+    expect(aliases).toEqual([]);
+  });
+
+  it('returns empty when X-Herold-Recipient is absent and To addresses are on an external domain', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'someone@external.test' }],
+    });
+    const aliases = localAliasesForCc(parent, [ALICE]);
+    expect(aliases).toEqual([]);
+  });
+
+  it('matches To address domain case-insensitively against identity domains', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'Alias@Example.Local' }],
+    });
+    const aliases = localAliasesForCc(parent, [ALICE]);
+    // Alice owns example.local; Alias@ is on that domain and not an identity.
+    expect(aliases).toEqual(['alias@example.local']);
+  });
+
+  it('deduplicates when X-Herold-Recipient matches a To address (both sources overlap)', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alias@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alias@example.local',
+    });
+    // alias@ appears in both source 1 (X-Herold-Recipient) and source 2
+    // (visible To on identity domain). Must not appear twice.
+    const aliases = localAliasesForCc(parent, [ALICE]);
+    expect(aliases).toEqual(['alias@example.local']);
+  });
+
+  it('collects multiple aliases from To and Cc', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'list@example.local' }],
+      cc: [{ name: null, email: 'team@example.local' }],
+    });
+    const aliases = localAliasesForCc(parent, [ALICE]);
+    expect(aliases).toEqual(['list@example.local', 'team@example.local']);
+  });
+
+  it('skips parent.to scan when ownMessage=true (own-sent reply: To goes to reply To, not Cc)', () => {
+    // The user sent a message to info@classic-computing.de; on own-sent
+    // reply-all, parent.to becomes the new reply's To. localAliasesForCc
+    // must NOT add those addresses to Cc as well.
+    const parent = makeEmail({
+      from: [{ name: null, email: 'vorsitz@classic-computing.de' }],
+      to: [{ name: null, email: 'info@classic-computing.de' }],
+      cc: [{ name: null, email: 'team@classic-computing.de' }],
+    });
+    const aliases = localAliasesForCc(parent, [VORSITZ], /* ownMessage */ true);
+    // parent.to is skipped; parent.cc alias is included.
+    expect(aliases).toEqual(['team@classic-computing.de']);
+  });
+
+  it('still includes X-Herold-Recipient non-identity when ownMessage=true', () => {
+    // Even for own-sent messages, X-Herold-Recipient (source 1) is checked.
+    // In practice X-Herold-Recipient is absent on outbound (REQ-FLOW-35),
+    // so this case tests the logic in isolation.
+    const parent = makeEmail({
+      from: [{ name: null, email: 'alice@example.local' }],
+      to: [{ name: null, email: 'alice@example.local' }],
+      'header:X-Herold-Recipient:asText': 'alias@example.local',
+    });
+    const aliases = localAliasesForCc(parent, [ALICE], /* ownMessage */ true);
+    // parent.to is skipped (ownMessage); X-Herold-Recipient alias included.
+    expect(aliases).toEqual(['alias@example.local']);
   });
 });
 
