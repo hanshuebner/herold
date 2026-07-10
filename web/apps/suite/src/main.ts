@@ -2,6 +2,7 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { keyboard } from './lib/keyboard/engine.svelte';
 import { initClientlog } from './lib/clientlog/clientlog.svelte';
+import { initDiagnosticsProvider } from './lib/diagnostics/provider';
 import { wrapFetch } from '@herold/clientlog';
 import './app.css';
 
@@ -11,6 +12,11 @@ import './app.css';
 // request carries X-Request-Id for cross-source correlation (REQ-CLOG-20).
 const clientlog = initClientlog();
 globalThis.fetch = wrapFetch(globalThis.fetch.bind(globalThis));
+
+// Install the webapp-diagnostics/1 provider so an external bug-reporter
+// browser extension can pull app state (route, auth, debug ring) into a
+// bug report. Same-origin postMessage handshake only; see lib/diagnostics.
+initDiagnosticsProvider();
 
 // Expose a test-only throw shim so the e2e spec can force a runtime error
 // without reaching into internals. Guarded by import.meta.env.DEV so it is
