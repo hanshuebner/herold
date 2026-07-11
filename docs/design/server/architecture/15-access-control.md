@@ -32,12 +32,14 @@ permission logic.
 
 ## Storage
 
-One grant table in the metadata store (SQLite + Postgres parity):
+One grant table in the metadata store (SQLite + Postgres parity), plus two small
+tables for authorization groups (REQ-AC-80..89):
 
 ```
   grant(
     id            u64 primary,
-    principal_id  fk,
+    subject_kind  text,        -- 'principal' | 'group'
+    subject_id    fk,          -- principal id, or authz_group id
     resource_kind text,        -- server | domain | list | mailbox
     resource_id   text,        -- '' for server; domain name; list id; mailbox id
     level         text,        -- per-kind enum (07-access-control.md)
@@ -45,17 +47,37 @@ One grant table in the metadata store (SQLite + Postgres parity):
     granted_by    fk,          -- actor principal, or null for idp-derived
     granted_at    ts,
     last_asserted_at ts null,  -- idp-derived only; drives the staleness sweep
-    unique(principal_id, resource_kind, resource_id, provenance)
+    unique(subject_kind, subject_id, resource_kind, resource_id, provenance)
   )
   index (resource_kind, resource_id)      -- "who can touch this resource"
-  index (principal_id)                    -- "what can this principal touch" (whoami)
+  index (subject_kind, subject_id)        -- "what can this subject touch" (whoami)
+
+  authz_group(
+    id          u64 primary,
+    name        text unique,
+    manager_id  fk,            -- principal who manages membership (REQ-AC-83)
+    created_by  fk,
+    created_at  ts
+  )
+  authz_group_member(
+    group_id     fk,
+    principal_id fk,
+    added_by     fk,
+    added_at     ts,
+    primary key (group_id, principal_id)
+  )
+  index (principal_id)                    -- "which groups is this principal in"
 ```
 
-`local` and `idp:<provider>` grants for the same (principal, resource) are
-distinct rows (the unique key includes provenance), so reconciliation of IdP
-grants never disturbs a local grant (REQ-AC-61). Implicit ownership
-(REQ-AC-02) is not stored — a principal's own mailboxes and a domain/list's sole
-owner are resolved structurally, not via grant rows.
+`subject_kind='group'` grants are never assigned `provenance='idp:*'` in v1 and
+never `server:superadmin` (REQ-AC-85). Migration maps existing rows to
+`subject_kind='principal'`, `subject_id=principal_id`.
+
+`local` and `idp:<provider>` grants for the same (subject, resource) are distinct
+rows (the unique key includes provenance), so reconciliation of IdP grants never
+disturbs a local grant (REQ-AC-61). Implicit ownership (REQ-AC-02) is not stored
+— a principal's own mailboxes and a domain/list's sole owner are resolved
+structurally, not via grant rows.
 
 ## Resolution
 
@@ -69,13 +91,19 @@ max over:
    domain's lists and the relevant management level on the domain's mailboxes
    (REQ-AC-42). Containment is domain -> {its lists, its principals' admin
    surfaces}, not a general cross-kind inheritance.
-4. **Explicit grants** — union of `local` + `idp:*` grant rows for
-   (principal, resource), taking the highest `level` (REQ-AC-03 total order).
+4. **Explicit grants** — union of `local` + `idp:*` grant rows whose subject is
+   the principal **or any authz group the principal belongs to** (REQ-AC-80),
+   taking the highest `level` (REQ-AC-03 total order). Group membership is the
+   `authz_group_member` lookup on `principal_id`; a `server:superadmin` grant is
+   never group-sourced (REQ-AC-85), so the superadmin short-circuit in step 1
+   consults direct grants only.
 
 Resolution is a small number of indexed lookups; results are cached per request
-(an authorized session touches the same few resources repeatedly). Grant writes
-bump a per-principal authz epoch so long-lived IMAP/JMAP sessions re-resolve
-rather than serve a stale cache.
+(an authorized session touches the same few resources repeatedly). A grant write,
+a change to a group's grants, or a membership change bumps the authz epoch of
+every affected principal — for a group edit that fans out to all current members
+(via the `authz_group_member` index) — so long-lived IMAP/JMAP sessions
+re-resolve rather than serve a stale cache.
 
 ## IMAP RFC 4314 mapping
 
@@ -126,6 +154,35 @@ association deletes that provider's `idp:*` rows synchronously.
 Reconciliation changes *what grants exist*; it never changes the elevation gate.
 An IdP-derived `domain:operator` still cannot perform a mutating admin action
 without a live TOTP elevation record (REQ-AC-11 / REQ-AC-64).
+
+## Authorization groups
+
+A group generalises the grant *subject* from a principal to a named set of
+principals (REQ-AC-80..89). Two authorities are checked separately, and the
+distinction is what keeps groups safe:
+
+- **Attaching a grant to a group** goes through the same delegation check as any
+  grant (`authz.CanDelegate(actor, resource, level)`, REQ-AC-05) — the group
+  subject does not relax it.
+- **Adding a member** is gated by `authz.CanManageMembers(actor, group)`, which is
+  manager-or-superadmin (REQ-AC-83) **and** the escalation rail: the actor must
+  be able to confer *every* grant the group currently holds (REQ-AC-84). Concretely,
+  `add-member` iterates the group's grants and runs the REQ-AC-05 delegation check
+  on each; any failure rejects the whole add. This makes membership authority the
+  intersection of the actor's delegable authority over the group's grants, so a
+  manager cannot mint authority they could not grant directly. Removing a member
+  needs only manager authority.
+
+Groups are `local`-only in v1: `ReconcileIdP` (above) writes principal-subject
+grants and never touches `authz_group_member`, so an IdP claim confers a grant
+directly rather than through group membership. Mapping an IdP claim onto group
+membership is a deferred composition, noted as a non-goal in the requirements.
+
+`whoami` walks both the principal's own grants and its group memberships and
+tags each returned grant with its source (`direct` / `idp:<provider>` /
+`group:<name>`, REQ-AC-87). Deleting a group is one transaction that drops its
+grant rows and `authz_group_member` rows and bumps the ex-members' epochs
+(REQ-AC-88); deleting a principal cascades its memberships.
 
 ## Interaction with elevation
 

@@ -21,12 +21,18 @@ We simplify").
 
 ## The model
 
-Authorization is expressed as **grants**. A grant binds a principal to an access
-**level** on a **resource**:
+Authorization is expressed as **grants**. A grant binds a **subject** to an
+access **level** on a **resource**:
 
 ```
-  grant { principal_id, resource_kind, resource_id, level, provenance, ... }
+  grant { subject, resource_kind, resource_id, level, provenance, ... }
 ```
+
+The subject is a principal or an **authorization group** (a named set of
+principals — REQ-AC-80). Most grants name a principal; a group subject lets one
+authority set apply to many principals and be changed in one place. A group is a
+set of subjects, not a permission bundle — permissions are still grants — so it
+does not reintroduce the stored role attribute REQ-AC-01 forbids.
 
 There are four resource kinds, each with a small fixed level set:
 
@@ -39,7 +45,7 @@ There are four resource kinds, each with a small fixed level set:
 
 | ID | Requirement |
 |----|-------------|
-| REQ-AC-01 | Authorization is the union of the acting principal's grants. A principal with no grants beyond its own resources is an ordinary end user; there is no separate stored "role" attribute. "Being an admin" is emergent: a principal is an administrator of something iff it holds an `operator`/`owner`/`admin`/`superadmin` grant on some resource. |
+| REQ-AC-01 | Authorization is the union of the acting principal's grants and the grants of any authorization group it belongs to (REQ-AC-80). A principal with no grants beyond its own resources is an ordinary end user; there is no separate stored "role" attribute. "Being an admin" is emergent: a principal is an administrator of something iff it holds an `operator`/`owner`/`admin`/`superadmin` grant on some resource, directly or via a group. |
 | REQ-AC-02 | Every resource has exactly one implicit `owner`-equivalent by construction: a principal owns its own principal-scoped resources (its mailboxes, its identities). A domain has one `owner` (REQ-AUTH-80 preserved). A list has one `owner`. `server:superadmin` is the site root. These implicit owners need no explicit grant row; grants express access **granted to other principals**. |
 | REQ-AC-03 | Access levels within a kind are totally ordered; a higher level implies every lower level's capabilities on that resource (`domain owner` implies `operator`; `mailbox admin` implies `write` implies `read`). There is no cross-kind inheritance. |
 | REQ-AC-04 | The `server:superadmin` grant is the only site-wide authority. The bootstrap principal receives it (REQ-AUTH-61 preserved: at least one `superadmin` always exists; removing the last is rejected). `server:superadmin` implies the ability to act on every domain, list, and mailbox on the node. |
@@ -114,6 +120,32 @@ authentication-only stance.
 | REQ-AC-69 | Administrative-level mapped grants (any level above the mailbox reading tier, and any `operator`/`owner`/`admin` level) MUST NOT be applied during the same login that auto-provisions a new principal (REQ-AUTH-56). A newly self-provisioned identity receives at most end-user access on its first login; administrative mapped grants require a pre-existing principal, closing the self-provision-and-escalate window. |
 | REQ-AC-70 | Reconciliation is **fail-safe and atomic**. If the mapping rules cannot be loaded or a claim cannot be evaluated, the principal's existing `idp:` grants are left unchanged (never mass-revoked on error) and the failure is audited; partial application is not permitted. A transient rules-store outage neither escalates nor locks out. |
 
+## Authorization groups (grant-to-group)
+
+A grant's subject may be a single principal or an **authorization group**: a
+named, node-local set of principals. Attaching a grant to a group confers it on
+every member, and membership is managed in one place — the proportionate answer
+to "the same set of people repeatedly needs the same authority" without a
+permission-bundle role. Groups generalise the grant *subject*; permissions
+remain grants, so REQ-AC-01's "no stored role attribute" is preserved (a group
+is a set of subjects, not a named set of permissions). This is the deliberately
+smaller step chosen over reusable roles: it delivers assign-once-to-many and
+change-in-one-place while keeping the grant as herold's single authorization
+primitive.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AC-80 | A grant's **subject** is either a principal or an **authorization group** — a named, node-local set of principals. A grant whose subject is a group confers its (resource, level) on every current member; effective authorization (REQ-AC-01) is the union over the principal's own grants and the grants of every group it belongs to, with the per-kind total order (REQ-AC-03) selecting the highest level. A group carries no authority except the grants attached to it. |
+| REQ-AC-81 | Authorization groups are **distinct from the mailing-list Group principal** (REQ-AC-52, `28-mailing-lists.md`): the two rosters are separate and neither confers the other. Distribution-list membership never grants authorization, and authz-group membership never subscribes a principal to mail. |
+| REQ-AC-82 | Groups are **flat** — members are principals only; a group cannot contain another group (the no-inheritance-trees non-goal holds). Groups, their manager, and their memberships are `local`-provenance state in the metadata store (SQLite + Postgres parity), managed via the admin REST API + CLI and audited (REQ-ADM-300), never in `system.toml`. |
+| REQ-AC-83 | Two **independent** authorizations govern a group. (a) *Attaching or revoking a grant on a group* is REQ-AC-05 unchanged — the actor must hold delegable authority (`owner`/`superadmin`) on that resource; the subject being a group does not relax it. (b) *Managing membership and the group itself* (add/remove members, rename, delete, reassign the manager) requires being the group's **manager** or a `server:superadmin`. The manager is set at creation (the creator by default) and is reassignable by the current manager or a superadmin. |
+| REQ-AC-84 | **Adding a member is bounded by the group's conferred authority.** To add a principal to a group, the actor MUST additionally hold, for *every* grant the group carries, the delegable authority to confer that grant directly (REQ-AC-05). A manager who could not grant one of the group's grants directly cannot add members to that group — closing the escalation in which a low-authority manager mints high authority by adding members (mirrors REQ-AC-13, "a key can never exceed its creator's authority"). Removing a member requires only manager authority (reducing access is always safe). Attaching a grant to a non-empty group requires that same resource authority and is audited as conferring the grant on every current member. |
+| REQ-AC-85 | `server:superadmin` **MUST NOT** be attached to a group (parallel to REQ-AC-64's bar on IdP-derived superadmin); it is held only directly by a principal with `local` provenance. The "at least one superadmin always exists" invariant (REQ-AC-04) is evaluated over direct superadmin grants only, so no group edit can remove the last root. |
+| REQ-AC-86 | Group-derived administrative grants **still require local TOTP elevation to exercise** for mutating operations, exactly as direct grants do (REQ-AC-11). A `domain:operator` held via a group determines *which* authority applies; it does not satisfy the second factor. |
+| REQ-AC-87 | The `whoami` grant summary (REQ-AC-14) **labels each effective grant with its source** — `direct`, `idp:<provider>`, or `group:<name>` — so a principal and an auditing operator can see that e.g. `domain:operator on example.com` is held via group `Board`, not directly. Visibility is a client hint; REQ-AC-10's per-resource server check remains the authority. |
+| REQ-AC-88 | **Lifecycle is closed.** Deleting a group removes its grants and memberships in one transaction and the access it conferred evaporates immediately; deleting a principal removes its memberships. A membership change or a change to a group's grants bumps the authz epoch of every affected member so long-lived IMAP/JMAP sessions re-resolve. Fail-closed (REQ-AC-12) applies: if a principal's memberships or a group's grants cannot be resolved, the surface shows nothing. |
+| REQ-AC-89 | Group create/delete/rename, manager reassignment, membership add/remove, and grant attach/revoke on a group are **audited** (REQ-ADM-300). Because a membership change silently alters a member's effective authority without touching any grant on that principal, membership events record both the group and the affected principal, so "why does this principal hold this grant" (REQ-AC-65) resolves through the group. |
+
 ## Amendments to existing requirements
 
 This model supersedes or amends the following. These are called out so the older
@@ -138,6 +170,10 @@ superseding notes in the source documents.
 - **No multi-tenant isolation (NG3).** Grants delegate within one node; they are not a tenancy boundary.
 - **`server:superadmin` is never IdP-derivable.** (REQ-AC-64.)
 - **No `deny` grants in v1.** Grants are additive; to remove access, remove the grant or the mapping rule. A local override-deny is a possible future extension, not v1.
+- **No permission-bundle roles.** grant-to-group (REQ-AC-80..89) assigns one authority set to many principals by generalising the grant *subject*; it does not introduce a named bundle of permissions assigned to principals. REQ-AC-01's "no stored role attribute" stands.
+- **No nested groups.** Authorization groups are flat (REQ-AC-82); a group's members are principals only.
+- **`server:superadmin` is never group-derivable.** (REQ-AC-85, parallel to the IdP bar.)
+- **IdP claim-mapping targets grants, not group membership (v1).** A mapping rule confers a grant directly (REQ-AC-60); mapping an IdP claim onto authz-group membership is a possible future composition, not v1.
 
 ## Cross-references
 
