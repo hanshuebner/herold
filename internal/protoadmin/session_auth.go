@@ -636,14 +636,34 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// auditLoginFailure writes a failed-login audit record. The actor is
-// always actor=system (we do not trust the supplied email to identify
-// a real principal); the subject carries the attempted email so an
-// operator searching the audit log for "email:alice@example.com" sees
-// every attempt against that account, including pre-existence ones.
-// principalID is non-zero only when the post-Authenticate steps fail
-// (TOTP, disabled-account); the record's metadata carries it.
+// auditLoginFailure writes a failed-login audit record under action
+// "auth.login". Thin wrapper over auditAuthFailure kept so every existing
+// call site (all in the login/whoami/step-up flow) keeps its original
+// action string.
 func (s *Server) auditLoginFailure(r *http.Request, attemptedEmail string, principalID directory.PrincipalID, message string) {
+	s.auditAuthFailure(r, "auth.login", attemptedEmail, principalID, message)
+}
+
+// auditDeviceTokenFailure writes a failed-device-token-issuance audit
+// record under action "auth.device_token.issue" -- the same action the
+// success path already uses (device_token.go). Without this, every
+// failure at POST /api/v1/auth/device-token (bad password, unknown
+// email, rate-limited, TOTP required) would be indistinguishable from
+// ordinary login brute-force when an operator filters the audit log by
+// action (issue #199 security review).
+func (s *Server) auditDeviceTokenFailure(r *http.Request, attemptedEmail string, principalID directory.PrincipalID, message string) {
+	s.auditAuthFailure(r, "auth.device_token.issue", attemptedEmail, principalID, message)
+}
+
+// auditAuthFailure writes a failed-credential-exchange audit record
+// under the given action. The actor is always actor=system (we do not
+// trust the supplied email to identify a real principal); the subject
+// carries the attempted email so an operator searching the audit log
+// for "email:alice@example.com" sees every attempt against that
+// account, including pre-existence ones. principalID is non-zero only
+// when the post-Authenticate steps fail (TOTP, disabled-account); the
+// record's metadata carries it.
+func (s *Server) auditAuthFailure(r *http.Request, action, attemptedEmail string, principalID directory.PrincipalID, message string) {
 	meta := map[string]string{
 		"remote":          remoteHost(r.RemoteAddr),
 		"attempted_email": attemptedEmail,
@@ -652,7 +672,7 @@ func (s *Server) auditLoginFailure(r *http.Request, attemptedEmail string, princ
 		meta["principal_id"] = strconv.FormatUint(uint64(principalID), 10)
 	}
 	s.appendAudit(r.Context(),
-		"auth.login",
+		action,
 		"email:"+attemptedEmail,
 		store.OutcomeFailure,
 		message,

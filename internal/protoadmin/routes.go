@@ -48,6 +48,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	//                          session_expires_at} for the Suite SPA's
 	//                          page-reload session probe (re #58).
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	// Bearer-token grant for native clients (issue #199): unauthenticated
+	// credential exchange -- {email, password, totp_code?, device_label?}
+	// -- that mints a long-lived "hk_..." Bearer token instead of a
+	// cookie. Rate-limited per source IP the same way login is.
+	mux.HandleFunc("POST /api/v1/auth/device-token", s.handleIssueDeviceToken)
 	// Step-up: TOTP verification that creates a server-side elevation record
 	// gating admin endpoints (REQ-AUTH-74, issue #79). Requires a cookie session
 	// and CSRF check (auth1 enforces the CSRF gate on POST).
