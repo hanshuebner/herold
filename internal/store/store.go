@@ -597,6 +597,33 @@ type Metadata interface {
 	// rather than global super-admins. Results are in ascending ID order.
 	ListDomainOperators(ctx context.Context) ([]Principal, error)
 
+	// -- Resource grants (epic #182, REQ-AC-01..05) ---------------------
+
+	// InsertGrant writes a grant row. It is idempotent on the natural key
+	// (SubjectKind, SubjectID, ResourceKind, ResourceID, Provenance):
+	// re-inserting an identical grant is not an error and does not create a
+	// duplicate or overwrite the existing GrantedAt. GrantedAt is assigned
+	// by the store from its clock; the GrantedAt field of g is ignored. An
+	// empty SubjectKind defaults to GrantSubjectPrincipal and an empty
+	// Provenance defaults to GrantProvenanceLocal. Returns the stored Grant
+	// with its assigned ID (or the pre-existing row on an idempotent insert).
+	InsertGrant(ctx context.Context, g Grant) (Grant, error)
+
+	// DeleteGrant removes the grant identified by the natural key of g
+	// (SubjectKind, SubjectID, ResourceKind, ResourceID, Provenance). Empty
+	// SubjectKind / Provenance default as in InsertGrant. Returns ErrNotFound
+	// when no matching row exists.
+	DeleteGrant(ctx context.Context, g Grant) error
+
+	// ListGrantsForPrincipal returns every grant whose subject is the given
+	// principal (SubjectKind == GrantSubjectPrincipal), in ascending ID
+	// order. Returns an empty slice when none exist.
+	ListGrantsForPrincipal(ctx context.Context, principalID PrincipalID) ([]Grant, error)
+
+	// ListGrantsOnResource returns every grant on the given resource, in
+	// ascending ID order. Returns an empty slice when none exist.
+	ListGrantsOnResource(ctx context.Context, resourceKind GrantResourceKind, resourceID string) ([]Grant, error)
+
 	// InsertOIDCProvider records a new OIDC provider configuration.
 	// Returns ErrConflict on duplicate Name.
 	InsertOIDCProvider(ctx context.Context, p OIDCProvider) error

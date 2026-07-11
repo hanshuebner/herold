@@ -693,3 +693,92 @@ func TestMigration0070RethreadSameMsgid(t *testing.T) {
 		t.Errorf("row 4 effective thread = %d, want self id %d", effThread(got[3]), got[3].id)
 	}
 }
+
+// TestMigration0078GrantBackfill verifies that migration 0078 auto-maps
+// existing authority into grant rows on upgrade (epic #182 acceptance:
+// "migration auto-maps existing admins to server:superadmin with no lockout").
+//
+// The migration back-fill runs against rows present when 0078 applies. Open
+// runs every migration on a fresh (empty) DB, so the back-fill sees nothing
+// there. This test reproduces the upgrade path: seed a super-admin and a
+// domain operator (with a managed domain) after migration, drop the empty
+// grants table, and re-run the verbatim 0078 body so its INSERT...SELECT
+// back-fill executes against the seeded rows.
+func TestMigration0078GrantBackfill(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+
+	s, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	sa, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "sa@x.test",
+		Flags:          store.PrincipalFlagAdmin | store.PrincipalFlagSuperAdmin,
+	})
+	if err != nil {
+		t.Fatalf("insert super-admin: %v", err)
+	}
+	op, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "op@x.test",
+		Flags:          store.PrincipalFlagAdmin,
+	})
+	if err != nil {
+		t.Fatalf("insert operator: %v", err)
+	}
+	if err := s.Meta().AssignManagedDomain(ctx, op.ID, "d.example"); err != nil {
+		t.Fatalf("assign managed domain: %v", err)
+	}
+	// No grants exist yet: the migration ran on an empty DB.
+	if g, _ := s.Meta().ListGrantsForPrincipal(ctx, sa.ID); len(g) != 0 {
+		t.Fatalf("expected no grants before back-fill, got %d", len(g))
+	}
+	_ = s.Close()
+
+	// Simulate the upgrade back-fill: drop the empty grants table and re-run
+	// the verbatim 0078 body against the seeded principals + managed domains.
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `DROP TABLE grants`); err != nil {
+		t.Fatalf("drop grants: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, storesqlite.Migration0078SQL); err != nil {
+		t.Fatalf("re-run 0078 body: %v", err)
+	}
+	_ = raw.Close()
+
+	s2, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	defer s2.Close()
+
+	saGrants, err := s2.Meta().ListGrantsForPrincipal(ctx, sa.ID)
+	if err != nil {
+		t.Fatalf("list super-admin grants: %v", err)
+	}
+	if len(saGrants) != 1 || saGrants[0].ResourceKind != store.GrantResourceServer ||
+		saGrants[0].Level != store.GrantLevelSuperadmin || saGrants[0].Provenance != store.GrantProvenanceLocal {
+		t.Errorf("super-admin back-fill = %+v; want one local server:superadmin grant", saGrants)
+	}
+
+	opGrants, err := s2.Meta().ListGrantsForPrincipal(ctx, op.ID)
+	if err != nil {
+		t.Fatalf("list operator grants: %v", err)
+	}
+	if len(opGrants) != 1 || opGrants[0].ResourceKind != store.GrantResourceDomain ||
+		opGrants[0].ResourceID != "d.example" || opGrants[0].Level != store.GrantLevelOperator {
+		t.Errorf("operator back-fill = %+v; want one domain:operator on d.example", opGrants)
+	}
+	// The operator must not be promoted to any server-level grant.
+	for _, g := range opGrants {
+		if g.ResourceKind == store.GrantResourceServer {
+			t.Errorf("operator wrongly received a server grant: %+v", g)
+		}
+	}
+}

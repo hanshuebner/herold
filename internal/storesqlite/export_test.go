@@ -45,3 +45,15 @@ var Migration0070SQL = func() string {
 	}
 	return string(body)
 }()
+
+// Migration0078SQL is the verbatim 0078_grants.sql body, re-exported for the
+// grant-backfill migration test in storesqlite_test.go so the test exercises
+// the production migration text (including the auto-mapping back-fill) and
+// never drifts from it.
+var Migration0078SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0078_grants.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()
