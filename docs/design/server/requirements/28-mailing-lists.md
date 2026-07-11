@@ -151,6 +151,36 @@ header contract are chosen once, but each is delivered independently.
 - **List archive search as a public web surface.** The archive is a normal mailbox searched through the member's client (IMAP/JMAP/Suite); herold does not publish a standalone public archive site.
 - **Detecting inbound list mail** from other hosts — that is the consumer side (`../../web/requirements/16-mailing-lists.md`), not this document.
 
+## Build ordering and the access-control dependency
+
+The list stages do not stack on themselves alone; two of them gate on the
+access-control substrate (`07-access-control.md`). The ordering:
+
+- **Phase A - access-control core.** Grant table, `internal/authz` resolver, and
+  enforcement seam for the `server`/`domain`/`list` resource kinds. This is a
+  prerequisite for list *administration*, because "a domain admin maintains the
+  list" is a `domain:operator` grant and list ownership is a `list:owner` grant
+  (REQ-MLIST-05, REQ-AC-40..42). Absorbs and generalises the existing REQ-ADM-307
+  domain-operator mechanism.
+- **Phase B - MList S1** on Phase A: fan-out, `List-*` headers, ARC-seal, admin
+  CRUD.
+- **Phase C - MList S2 then S3** (VERP/bounce, then self-subscribe): no new
+  access-control dependency; sequential product value. IdP claim-to-grant mapping
+  (REQ-AC-60..70) is an independent parallel track on Phase A.
+- **Phase D - mailbox-grant substrate** (REQ-AC-50..53; RFC 4314 ACL realised as
+  mailbox grants; shared mailboxes, REQ-PROTO-33). A substantial piece shared
+  with general shared-mailbox support.
+- **Phase E - MList S4** (archive mailbox + `nomail` + read access) on Phase D.
+  Moderation (the v2 milestone, REQ-MLIST-80) needs only the `list` grants from
+  Phase A, so it is independent of Phase D and may land any time after B.
+
+Critical-path note: the access-control core is not deferrable to "after mailing
+lists" - a slice of it (server/domain/list grants) is on the path to S1. The
+heavier mailbox-grant substrate is the hard gate for S4 only. Shipping S1's
+administration against the soon-to-be-superseded REQ-ADM-307 mechanism instead of
+Phase A is possible but incurs a retrofit when the grant model lands; the clean
+path is Phase A first.
+
 ## Cross-references
 
 - `02-identity-and-auth.md` — Group principal (REQ-AUTH-01/10) that a list extends.

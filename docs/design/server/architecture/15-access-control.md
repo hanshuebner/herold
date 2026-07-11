@@ -98,16 +98,24 @@ subset get the enclosing tier; this is the documented simplification.)
 ## IdP claim reconciliation
 
 On successful OIDC login, `internal/directoryoidc` hands the validated token's
-claims to `authz.ReconcileIdP(principal, provider, claims)`:
+claims to `authz.ReconcileIdP(principal, provider, claims)`, which is a no-op
+unless the provider is flagged `authz_trusted` by a `server:superadmin` (REQ-AC-66
+— authenticating a login never by itself authorizes grants):
 
-1. Load the provider's claim-mapping rules (DB-backed admin state, REQ-AC-60).
-2. Evaluate each rule against the claims to produce the **desired** `idp:<provider>`
-   grant set, filtered through the safety rails (REQ-AC-64: drop any rule
-   targeting `server:superadmin` or a resource outside the rule author's
-   authority).
-3. Diff against the principal's current `idp:<provider>` rows: insert new,
-   delete no-longer-matched, refresh `last_asserted_at` on survivors. `local`
-   rows untouched.
+1. Load the provider's claim-mapping rules and its authorization-claim allowlist
+   (DB-backed admin state, REQ-AC-60/67). Only allowlisted claims from *this*
+   provider's token are considered.
+2. Evaluate each rule to produce the **desired** `idp:<provider>` grant set,
+   filtered through the safety rails: drop any rule targeting `server:superadmin`
+   (REQ-AC-64), any rule whose author no longer holds sufficient authority on the
+   target (REQ-AC-68, re-validated here — not trusted from rule-creation time),
+   and, when this login is also auto-provisioning a brand-new principal
+   (REQ-AUTH-56), any administrative-level grant (REQ-AC-69).
+3. Diff against the principal's current `idp:<provider>` rows in one transaction:
+   insert new, delete no-longer-matched, refresh `last_asserted_at` on survivors;
+   `local` rows untouched. If rules cannot load or a claim cannot be evaluated,
+   the step is abandoned with existing `idp:` rows left intact (REQ-AC-70 — fail
+   safe, never partial, never mass-revoke on error).
 4. Emit audit events with actor `idp:<provider>` (REQ-AC-65).
 
 A periodic **staleness sweep** (a maintenance worker) deletes `idp:*` grants
