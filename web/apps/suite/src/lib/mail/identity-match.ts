@@ -32,3 +32,33 @@ export function isFromSelf(
   const lc = raw.trim().toLowerCase();
   return lc !== '' && selfEmails.has(lc);
 }
+
+/**
+ * True when `email` was actually sent by the signed-in user through
+ * herold, as opposed to merely being *from* an address that happens to
+ * match one of the user's registered Identities.
+ *
+ * Every message herold delivers (REQ-FLOW-34, `../../server/requirements/03-mail-flow.md`)
+ * carries a server-injected `X-Herold-Recipient` header regardless of
+ * who sent it; genuinely outbound messages never carry it (REQ-FLOW-35,
+ * stripped unconditionally at submission). So a delivered message whose
+ * From coincidentally matches one of the user's other identities — a
+ * self-addressed test message, or mail from an address the user also
+ * registered as an Identity for outbound use — is not an own-sent
+ * message: it must route like any other received mail (reply goes back
+ * to the sender), not like a continuation of the user's own
+ * conversation (reply goes to the original recipients).
+ *
+ * Used to gate Reply / Reply-all `To`/`Cc` routing (REQ-MAIL-30a/31) and
+ * `selectReplyIdentity`'s own-sent branch (REQ-MAIL-12a). NOT used for
+ * the "Du"/self-card visual treatment (`isFromSelf` above), which labels
+ * any message the user authored regardless of transport.
+ */
+export function isOwnSentMessage(
+  email: { from?: Array<Address> | null; 'header:X-Herold-Recipient:asText'?: string | null },
+  selfEmails: Set<string>,
+): boolean {
+  if (!isFromSelf(email, selfEmails)) return false;
+  const recipient = email['header:X-Herold-Recipient:asText'];
+  return recipient == null || recipient.trim() === '';
+}

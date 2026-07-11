@@ -45,7 +45,7 @@ import {
   recipientToString,
   type Recipient,
 } from './recipient-parse';
-import { buildSelfEmailSet, isFromSelf } from '../mail/identity-match';
+import { buildSelfEmailSet, isFromSelf, isOwnSentMessage } from '../mail/identity-match';
 import { selectReplyIdentity, localAliasesForCc } from './reply-identity';
 import {
   createFileShare,
@@ -395,7 +395,7 @@ class ComposeStore {
   async openReply(parent: Email): Promise<void> {
     // Defensive: if identities have not loaded yet (race between
     // landing on a thread URL and the auth-ready prime), wait for
-    // them. Without identities populated, isFromSelf cannot detect
+    // them. Without identities populated, isOwnSentMessage cannot detect
     // an own-sent message and the To field would silently fall back
     // to the user's own address. App.svelte primes them on auth-ready
     // already; this guard catches the degenerate timing.
@@ -407,10 +407,13 @@ class ComposeStore {
       }
     }
     const selfEmails = buildSelfEmailSet(mail.identities.values());
-    // When replying to a message the user themselves sent, the logical
-    // recipient is the people who received that message (parent.to),
-    // not the user's own From address (REQ-MAIL-30).
-    const ownMessage = isFromSelf(parent, selfEmails);
+    // When replying to a message the user themselves sent through herold,
+    // the logical recipient is the people who received that message
+    // (parent.to), not the user's own From address (REQ-MAIL-30). A
+    // delivered message whose From coincidentally matches one of the
+    // user's identities (it carries X-Herold-Recipient) is not own-sent —
+    // see isOwnSentMessage.
+    const ownMessage = isOwnSentMessage(parent, selfEmails);
     const to = computeReplyTo(parent, ownMessage);
     // Build the Cc list: collect any "local alias" addresses the original
     // message reached that the user has not registered as a first-class
@@ -453,7 +456,7 @@ class ComposeStore {
    */
   openReplyAll(parent: Email): void {
     const selfEmails = buildSelfEmailSet(mail.identities.values());
-    const ownMessage = isFromSelf(parent, selfEmails);
+    const ownMessage = isOwnSentMessage(parent, selfEmails);
     // Reply-all on own sent message: To = original To (the people who
     // received the message). Otherwise: To = the sender.
     const to = computeReplyTo(parent, ownMessage);
@@ -1671,7 +1674,7 @@ export function computeActualReplyAllCc(
   selfEmails: Set<string>,
   identities: readonly Identity[],
 ): Address[] {
-  const ownMessage = isFromSelf(parent, selfEmails);
+  const ownMessage = isOwnSentMessage(parent, selfEmails);
   let cc = ownMessage
     ? computeOwnMessageReplyAllCc(parent, selfEmails)
     : computeReplyAllCc(parent, selfEmails);

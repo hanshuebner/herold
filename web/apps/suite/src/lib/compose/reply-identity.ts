@@ -4,11 +4,20 @@
  * Implements the algorithm specified by REQ-MAIL-12a in
  * `docs/design/web/requirements/02-mail-basics.md`:
  *
- *   1. If `parent.from[0].email` matches one of the user's `Identity`
- *      emails (own-sent reply), return that identity verbatim. This
- *      preserves the REQ-MAIL-30a precedence — the own-sent branch
- *      wins over the recipient-match rules below (the X-Herold-Recipient
- *      header is empty on outbound anyway, see REQ-FLOW-35).
+ *   1. If the parent carries no `X-Herold-Recipient` header (i.e. it is
+ *      genuinely outbound — the user sent it through herold, see
+ *      REQ-FLOW-35) AND `parent.from[0].email` matches one of the
+ *      user's `Identity` emails (own-sent reply), return that identity
+ *      verbatim. This preserves the REQ-MAIL-30a precedence — the
+ *      own-sent branch wins over the recipient-match rules below. The
+ *      header check matters because every message herold actually
+ *      *delivers* (REQ-FLOW-34) carries the header regardless of who
+ *      sent it — so a delivered message whose From coincidentally
+ *      matches one of the user's other identities (e.g. a self-
+ *      addressed test message, or mail from an address the user also
+ *      registered as an Identity) is NOT an own-sent reply and must not
+ *      hijack the From selection away from the identity it was
+ *      actually delivered to (steps 2/3 below).
  *   2. Otherwise, scan the parent's `to` and then `cc` lists in order;
  *      the first hit on a verified Identity wins. This prefers the
  *      address the sender actually used (visible in To/Cc) over the
@@ -125,7 +134,8 @@ function firstVerifiedMatch(
  * The four-step algorithm is implemented inline so the precedence is
  * easy to audit:
  *
- *   1. Own-sent: parent.from[0].email matches an identity (any
+ *   1. Own-sent: no X-Herold-Recipient header (genuinely outbound, see
+ *      REQ-FLOW-35) AND parent.from[0].email matches an identity (any
  *      verification state — the user already sent the message, so
  *      they're authorised).
  *   2. parent.to / parent.cc scan → first verified identity.
@@ -144,15 +154,23 @@ export function selectReplyIdentity(
 ): Identity {
   const byEmail = identitiesByEmail(identities);
 
-  // Step 1 — own-sent. REQ-MAIL-30a takes precedence over the
-  // recipient-match rule below: when the user authored the parent,
-  // continue the conversation from the same identity regardless of
-  // any X-Herold-Recipient header (which is anyway absent on outbound
-  // per REQ-FLOW-35).
-  const fromEmail = (parent.from?.[0]?.email ?? '').toLowerCase().trim();
-  if (fromEmail) {
-    const own = byEmail.get(fromEmail);
-    if (own) return own;
+  // Read once — used to gate step 1 and, when step 1 doesn't apply, to
+  // match step 3.
+  const recipient = readHeraldRecipient(parent);
+
+  // Step 1 — own-sent. Only applies to messages the user genuinely
+  // sent through herold (no X-Herold-Recipient header). Every message
+  // herold delivers carries the header regardless of who sent it
+  // (REQ-FLOW-34), so a delivered message whose From coincidentally
+  // matches one of the user's other identities must fall through to
+  // the recipient-match rules below rather than hijacking the From
+  // selection.
+  if (recipient == null) {
+    const fromEmail = (parent.from?.[0]?.email ?? '').toLowerCase().trim();
+    if (fromEmail) {
+      const own = byEmail.get(fromEmail);
+      if (own) return own;
+    }
   }
 
   // Step 2 — scan To then Cc; first verified hit wins. Prefers the
@@ -165,7 +183,6 @@ export function selectReplyIdentity(
 
   // Step 3 — X-Herold-Recipient header (verified gate applies). Covers
   // Bcc delivery and list mail where no user identity appears in To/Cc.
-  const recipient = readHeraldRecipient(parent);
   if (recipient) {
     const matched = byEmail.get(recipient);
     if (matched && isVerified(matched)) return matched;

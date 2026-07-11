@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildSelfEmailSet, isFromSelf } from './identity-match';
+import { buildSelfEmailSet, isFromSelf, isOwnSentMessage } from './identity-match';
 import type { Identity } from './types';
 
 // ── buildSelfEmailSet ─────────────────────────────────────────────────────────
@@ -108,5 +108,45 @@ describe('isFromSelf', () => {
 
   it('returns false when the From email is an empty string', () => {
     expect(isFromSelf({ from: [{ name: 'Name Only', email: '' }] }, self)).toBe(false);
+  });
+});
+
+// ── isOwnSentMessage (re #166) ──────────────────────────────────────────────
+
+describe('isOwnSentMessage', () => {
+  const self = new Set(['me@example.test', 'other-mine@example.org']);
+
+  it('returns true for a genuinely outbound message (From matches, no X-Herold-Recipient)', () => {
+    const email = { from: [{ name: 'Me', email: 'me@example.test' }] };
+    expect(isOwnSentMessage(email, self)).toBe(true);
+  });
+
+  it('returns false for a delivered message whose From coincidentally matches another of the user\'s identities (re #166)', () => {
+    // The user registered both me@example.test and other-mine@example.org
+    // as Identities. A message From other-mine@example.org was delivered
+    // (herold injects X-Herold-Recipient on every delivered copy) rather
+    // than sent by the user through herold — it must not be treated as
+    // own-sent even though From matches an Identity.
+    const email = {
+      from: [{ name: null, email: 'other-mine@example.org' }],
+      'header:X-Herold-Recipient:asText': 'me@example.test',
+    };
+    expect(isOwnSentMessage(email, self)).toBe(false);
+  });
+
+  it('returns false when From does not match self, regardless of the header', () => {
+    const email = {
+      from: [{ name: null, email: 'stranger@example.test' }],
+      'header:X-Herold-Recipient:asText': 'me@example.test',
+    };
+    expect(isOwnSentMessage(email, self)).toBe(false);
+  });
+
+  it('treats an empty-string header value the same as absent (still own-sent)', () => {
+    const email = {
+      from: [{ name: null, email: 'me@example.test' }],
+      'header:X-Herold-Recipient:asText': '   ',
+    };
+    expect(isOwnSentMessage(email, self)).toBe(true);
   });
 });

@@ -152,17 +152,53 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     expect(got.email).toBe('alice@example.local');
   });
 
-  it('own-sent (parent.from matches identity) wins over X-Herold-Recipient (REQ-MAIL-30a precedence)', () => {
-    // parent.from is alice@ (the user). X-Herold-Recipient is
-    // alice+work@. REQ-MAIL-30a says the own-sent identity wins; the
-    // X-Herold-Recipient match must not override.
+  it('own-sent (parent.from matches identity) wins when genuinely outbound (no X-Herold-Recipient)', () => {
+    // parent.from is alice@ (the user) and the message carries no
+    // X-Herold-Recipient header — a genuinely outbound message the user
+    // sent through herold. REQ-MAIL-30a: the own-sent identity wins.
+    const parent = makeEmail({
+      from: [{ name: null, email: 'alice@example.local' }],
+      to: [{ name: null, email: 'someone@elsewhere.test' }],
+    });
+    const got = selectReplyIdentity(parent, [ALICE, ALICE_WORK], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local');
+  });
+
+  it('does not treat a message as own-sent when X-Herold-Recipient is present, even if From matches an identity (re #166)', () => {
+    // parent.from is alice@ (one of the user's own identities) but the
+    // message carries X-Herold-Recipient: alice+work@ — herold injects
+    // this header on every message it delivers (REQ-FLOW-34), regardless
+    // of who sent it. This is a delivered message whose From coincides
+    // with one of the user's registered identities (e.g. a self-addressed
+    // test message, or mail from an address the user also uses to send),
+    // not a message the user sent through herold. There is no To/Cc match
+    // here (step 2 misses), so step 3's X-Herold-Recipient match decides.
     const parent = makeEmail({
       from: [{ name: null, email: 'alice@example.local' }],
       to: [{ name: null, email: 'someone@elsewhere.test' }],
       'header:X-Herold-Recipient:asText': 'alice+work@example.local',
     });
     const got = selectReplyIdentity(parent, [ALICE, ALICE_WORK], DEFAULT_ID);
-    expect(got.email).toBe('alice@example.local');
+    expect(got.email).toBe('alice+work@example.local');
+  });
+
+  it('prefers the delivered-to identity over the coincidentally-matching From identity (re #166 concrete repro)', () => {
+    // Reproduction from issuecomment-2070: the message was delivered To
+    // hans@netzhansa.com (a registered identity) and happens to be From
+    // hans.huebner@gmail.com (also a registered identity of the same
+    // account, registered for outbound use). Since the message carries
+    // X-Herold-Recipient (it was delivered, not sent by this user through
+    // herold), step 1 must not fire; step 2's To scan picks the identity
+    // the message was actually delivered to.
+    const netzhansa = makeIdentity('hans@netzhansa.com');
+    const gmail = makeIdentity('hans.huebner@gmail.com');
+    const parent = makeEmail({
+      from: [{ name: 'Hans Huebner', email: 'hans.huebner@gmail.com' }],
+      to: [{ name: null, email: 'hans@netzhansa.com' }],
+      'header:X-Herold-Recipient:asText': 'hans@netzhansa.com',
+    });
+    const got = selectReplyIdentity(parent, [netzhansa, gmail], netzhansa);
+    expect(got.email).toBe('hans@netzhansa.com');
   });
 
   it('returns the default identity when nothing matches', () => {
@@ -177,9 +213,11 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
 
   // ── Extra coverage on edge cases ───────────────────────────────────
 
-  it('owns precedence even when the user is also in To and X-Herold-Recipient points elsewhere', () => {
-    // Defensive: own-sent is detected purely from parent.from; the
-    // user appearing in To (Bcc-to-self pattern) doesn't change that.
+  it('To scan (step 2) wins when X-Herold-Recipient is present, even though From also matches an identity', () => {
+    // parent.from matches alice@ but X-Herold-Recipient is present, so
+    // this is a delivered message, not own-sent — step 1 does not apply
+    // (re #166). Step 2's To scan fires instead and picks the first
+    // verified hit in order.
     const parent = makeEmail({
       from: [{ name: null, email: 'alice@example.local' }],
       to: [
