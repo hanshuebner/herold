@@ -303,7 +303,7 @@
     const addrs = vm.emails.map((e) => e.address).filter(Boolean);
     if (addrs.length === 0) return '#/mail';
     const q = addrs.join(' OR ');
-    return `#/mail/search?q=${encodeURIComponent(q)}`;
+    return `#/mail/search/${encodeURIComponent(q)}`;
   }
 
   function contextLabel(ctx: { home: boolean; work: boolean; other: boolean }, prefix: string): string {
