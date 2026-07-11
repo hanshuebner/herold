@@ -17,6 +17,7 @@ package protoadmin_test
 //     itself) makes the token unusable immediately after
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 func TestDeviceToken_Success(t *testing.T) {
@@ -122,6 +124,103 @@ func TestDeviceToken_BadPassword(t *testing.T) {
 	})
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d body=%s, want 401", res.StatusCode, buf)
+	}
+}
+
+// TestDeviceToken_FailuresAuditedUnderOwnAction is the security-review
+// regression for issue #199: every failed attempt at
+// POST /api/v1/auth/device-token (bad password, TOTP step-up required,
+// rate-limited) MUST be durably audited as action="auth.device_token.issue",
+// never as action="auth.login" -- otherwise brute-force against this
+// unauthenticated, long-lived-credential-minting endpoint is
+// indistinguishable from ordinary login brute-force when an operator
+// filters the audit log by action.
+func TestDeviceToken_FailuresAuditedUnderOwnAction(t *testing.T) {
+	sh := newSessionHarness(t)
+	email, password, _, totpSecret := sh.bootstrapAdminAndEnrollTOTP("device-token-audit@example.com")
+	ctx := context.Background()
+
+	const auditAction = "auth.device_token.issue"
+
+	countByAction := func(action string) int {
+		entries, err := sh.h.Store.Meta().ListAuditLog(ctx, store.AuditLogFilter{Action: action, Limit: 50})
+		if err != nil {
+			t.Fatalf("ListAuditLog(%q): %v", action, err)
+		}
+		return len(entries)
+	}
+	loginCountBefore := countByAction("auth.login")
+
+	// Bad password.
+	res, buf := sh.doRequest("POST", "/api/v1/auth/device-token", "", map[string]any{
+		"email":    email,
+		"password": "totally-wrong",
+	})
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad password: status=%d body=%s", res.StatusCode, buf)
+	}
+
+	// TOTP step-up required (no code supplied, password already correct).
+	res2, buf2 := sh.doRequest("POST", "/api/v1/auth/device-token", "", map[string]any{
+		"email":    email,
+		"password": password,
+	})
+	if res2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("totp required: status=%d body=%s", res2.StatusCode, buf2)
+	}
+
+	entries, err := sh.h.Store.Meta().ListAuditLog(ctx, store.AuditLogFilter{Action: auditAction, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAuditLog(%q): %v", auditAction, err)
+	}
+	if len(entries) < 2 {
+		t.Fatalf("expected at least 2 %q audit entries (bad password + totp required), got %d: %+v",
+			auditAction, len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Outcome != store.OutcomeFailure {
+			continue
+		}
+		if e.Action != auditAction {
+			t.Fatalf("failure entry has action=%q, want %q: %+v", e.Action, auditAction, e)
+		}
+	}
+
+	// Regression guard: neither failure above should have been recorded
+	// under the login action.
+	if got := countByAction("auth.login"); got != loginCountBefore {
+		t.Fatalf("auth.login audit count changed from %d to %d; device-token failures must not be recorded as auth.login",
+			loginCountBefore, got)
+	}
+
+	// Correct TOTP code succeeds and is still audited under the same
+	// action, this time with outcome=success (mirrors the existing
+	// device_token_issued success path).
+	code, err := otpGenerateCode(totpSecret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+	res3, buf3 := sh.doRequest("POST", "/api/v1/auth/device-token", "", map[string]any{
+		"email":     email,
+		"password":  password,
+		"totp_code": code,
+	})
+	if res3.StatusCode != http.StatusCreated {
+		t.Fatalf("correct code: status=%d body=%s", res3.StatusCode, buf3)
+	}
+	allEntries, err := sh.h.Store.Meta().ListAuditLog(ctx, store.AuditLogFilter{Action: auditAction, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	foundSuccess := false
+	for _, e := range allEntries {
+		if e.Outcome == store.OutcomeSuccess {
+			foundSuccess = true
+			break
+		}
+	}
+	if !foundSuccess {
+		t.Fatalf("expected a success entry under %q, got %+v", auditAction, allEntries)
 	}
 }
 

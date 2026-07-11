@@ -203,12 +203,12 @@ func (s *Server) appendAudit(
 			"activity", observe.ActivityInternal,
 			"err", err, "action", action, "subject", subject)
 	}
-	// Emit a real-time slog line. Auth events (login/logout) are already
-	// logged separately with activity=audit; suppress the duplicate here
-	// to avoid double-counting those records. All other mutations that
-	// land in the audit log are operator-visible state changes and carry
-	// activity=user at info.
-	if action != "auth.login" && action != "auth.logout" {
+	// Emit a real-time slog line. Auth events (login/logout/device-token
+	// issuance) are already logged separately with activity=audit;
+	// suppress the duplicate here to avoid double-counting those
+	// records. All other mutations that land in the audit log are
+	// operator-visible state changes and carry activity=user at info.
+	if action != "auth.login" && action != "auth.logout" && action != "auth.device_token.issue" {
 		lvl := slog.LevelInfo
 		activity := observe.ActivityUser
 		if outcome == store.OutcomeFailure {

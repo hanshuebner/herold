@@ -97,7 +97,7 @@ func (s *Server) handleIssueDeviceToken(w http.ResponseWriter, r *http.Request) 
 			// memory (REQ-AS-15 parity for a native client).
 			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.device_token_step_up",
 				"activity", observe.ActivityAudit, "email", req.Email)
-			s.auditLoginFailure(r, req.Email, 0, "totp step-up required")
+			s.auditDeviceTokenFailure(r, req.Email, 0, "totp step-up required")
 			writeProblemWithExtras(w, r, http.StatusUnauthorized,
 				"step_up_required", "TOTP code required", "",
 				map[string]any{"step_up_required": true})
@@ -105,14 +105,14 @@ func (s *Server) handleIssueDeviceToken(w http.ResponseWriter, r *http.Request) 
 		case errors.Is(err, directory.ErrRateLimited):
 			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.device_token_rate_limited",
 				"activity", observe.ActivityAudit, "email", req.Email)
-			s.auditLoginFailure(r, req.Email, 0, "rate limited")
+			s.auditDeviceTokenFailure(r, req.Email, 0, "rate limited")
 			writeProblem(w, r, http.StatusTooManyRequests,
 				"rate_limited", "too many attempts; please wait and try again", "")
 			return
 		default:
 			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.device_token_failed",
 				"activity", observe.ActivityAudit, "email", req.Email)
-			s.auditLoginFailure(r, req.Email, 0, humanLoginError(err))
+			s.auditDeviceTokenFailure(r, req.Email, 0, humanLoginError(err))
 			writeProblem(w, r, http.StatusUnauthorized,
 				"unauthorized", humanLoginError(err), "")
 			return
