@@ -1,14 +1,22 @@
 ---
-description: Triage local bug-reporter drops in ~/herold-bugs and file them as Forgejo tickets
+description: Triage local herold-triage drops in ~/herold-bugs -- file reports as Forgejo tickets and apply review decisions
 argument-hint: (none) | <drop-id>
 ---
 
-Process bug reports captured by the in-browser bug reporter. The extension writes
-each report to disk with no server: a self-contained bundle lands in
-`~/Downloads/herold-bugs/<id>.heroldbug.json`. This command expands each bundle
-into a drop directory under `~/herold-bugs/<id>/`, then files it as a ticket.
-(If the optional `herold bug-sink` server is used instead, drops appear directly
-under `~/herold-bugs/` already expanded and this expansion step is a no-op.)
+Process drops captured by the in-browser herold-triage panel. The extension
+writes each drop to disk with no server: a self-contained bundle lands in
+`~/Downloads/herold-bugs/<id>.heroldbug.json`. A drop is one of two kinds:
+
+- a **report** (`meta.kind` is `bug` or `feature`) -- file it as a new ticket;
+- a **review hand-back** (`meta.kind` is `review`) -- comment on an existing
+  `waiting-for-feedback` ticket with the captured screenshots and strip the
+  label, dropping it back into the fix loop. (A verified close is applied in the
+  panel directly against Forgejo and never reaches a drop.)
+
+This command expands each bundle into a drop directory under `~/herold-bugs/<id>/`,
+then processes it by kind. (If the optional `herold bug-sink` server is used
+instead, drops appear directly under `~/herold-bugs/` already expanded and this
+expansion step is a no-op.)
 
 ## Hard rule: the private zone never enters a ticket
 
@@ -17,7 +25,7 @@ cookies, app state). It exists so you can REPRODUCE the bug locally. It must
 NEVER be read into a ticket body, a comment, or any Forgejo API call. Only
 `report.md`, `report.json`, `logs.txt`, and the `screenshot-*.png` files are
 ticket-eligible. Do not open `private/` unless the maintainer explicitly asks
-you to reproduce the bug.
+you to reproduce the bug. This applies to review drops exactly as to reports.
 
 ## 0. Expand downloaded bundles
 
@@ -43,18 +51,23 @@ List `~/herold-bugs/*/` whose `STATUS` file contains `new`, oldest first by
 directory name. If `$ARGUMENTS` names a specific drop id, process only that one.
 If nothing is `new`, say so and stop.
 
-For each drop, read `report.json`. Report the work-list to the maintainer before
-filing: drop id, kind (bug/feature), the first line of the sketch, the app +
-principal, and the screenshot count.
+For each drop, read `report.json` and note `meta.kind`. Report the work-list to
+the maintainer before acting:
 
-## 2. Per drop: dedup, then file
+- reports: drop id, kind (bug/feature), the first line of `meta.sketch`, the app
+  + principal, and the screenshot count;
+- reviews: drop id, `kind=review`, the target issue `#meta.review.issue`, and
+  the screenshot count. These are hand-backs; the reviewer's note is
+  `meta.review.comment`.
 
-For each drop, in order:
+## 2a. Report drops: dedup, then file
+
+For each report drop (`meta.kind` in `bug` / `feature`), in order:
 
 1. **Dedup.** Search open issues (`mcp__forgejo__issue_list`, and keyword search)
    for an existing ticket describing the same problem. If one clearly matches,
    do NOT open a duplicate: note the match, and instead add the new screenshots
-   and any new detail as a single comment on that issue. Then go to step 3.
+   and any new detail as a single comment on that issue. Then record the outcome.
 
 2. **File via ticket-clerk.** Dispatch the **ticket-clerk** agent
    (`subagent_type: "ticket-clerk"`) with: the sketch, the `context` and `logs`
@@ -73,13 +86,49 @@ For each drop, in order:
 3. **Record the outcome.** Write the filed issue number back to the drop's
    `STATUS` file as `filed:#<N>` (or `comment:#<N>` when you commented on an
    existing issue). This prevents re-filing on the next run. Never delete the
-   drop — the `private/` bundle stays on disk for repro.
+   drop -- the `private/` bundle stays on disk for repro.
+
+## 2b. Review hand-backs: comment, then strip the label
+
+For each review drop (`meta.kind` is `review`), in order. The target is
+`meta.review.issue`. These are hand-backs -- tickets the reviewer sent back as
+still-broken. No dedup step -- a review names its ticket.
+
+1. **Sanity-check the target.** Read the issue (`mcp__forgejo__issue_get`). If it
+   is already closed, or no longer carries `waiting-for-feedback`, do not act
+   blindly: note the mismatch, leave `STATUS` as `new`, and report it. Otherwise
+   continue.
+
+2. **Compose the comment.** Body = the reviewer's `meta.review.comment`, followed
+   by the embedded screenshots. Upload each `screenshot-*.png` to the Forgejo
+   issue-asset endpoint with `$FORGEJO_TOKEN` via curl (the MCP/fj paths cannot
+   attach binaries) and reference the returned attachment URLs. Prefix the line
+   "Still failing -- handed back." Post it with
+   `mcp__forgejo__issue_comment_create`. Do NOT read or reference anything under
+   `private/`.
+
+3. **Strip the label.** Remove `waiting-for-feedback`
+   (`mcp__forgejo__issue_labels_remove`); the ticket re-enters the normal bugfix
+   queue.
+
+4. **Record the outcome.** Write the drop's `STATUS` as `reviewed:#<N>`. Never
+   delete the drop.
+
+If a drop unexpectedly carries `meta.review.action: "close"` (a legacy drop --
+the panel now closes directly), additionally set the issue closed
+(`mcp__forgejo__issue_set_state` to `closed`) and record `STATUS` as
+`closed:#<N>`.
 
 ## 3. Report
 
-Relay, per drop: the drop id, the issue number + URL filed or commented on, the
-labels applied, and whether screenshots were attached. If any drop failed to
-file, leave its `STATUS` as `new` and say which one and why.
+Relay, per drop:
+
+- reports: the drop id, the issue number + URL filed or commented on, the labels
+  applied, and whether screenshots were attached;
+- reviews: the drop id, the target issue, that the hand-back comment was posted
+  and the label stripped, and whether screenshots were attached.
+
+If any drop failed, leave its `STATUS` as `new` and say which one and why.
 
 ## Reproducing (only on explicit request)
 
