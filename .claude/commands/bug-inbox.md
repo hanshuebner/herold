@@ -133,6 +133,7 @@ If any drop failed, leave its `STATUS` as `new` and say which one and why.
 ## Reproducing (only on explicit request)
 
 If the maintainer asks you to reproduce a specific drop, THEN you may read its
-`private/private.json` to recover the session cookies and app state, and drive
-puppeteer against an instance with that session. This data stays local; it does
-not go into the issue.
+`private/private.json` to recover the session cookies, app state, and the
+captured browser console (`private.console`, un-redacted -- useful for
+diagnosing without re-reproducing), and drive puppeteer against an instance with
+that session. This data stays local; it does not go into the issue.
