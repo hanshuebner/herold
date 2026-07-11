@@ -1,0 +1,8 @@
+# Competitor app screenshots captured during the emulator visual pass
+# (see ../competitive-review.md). They contain the maintainer's REAL mailbox
+# content (sender names, subjects, personal correspondence) and copyrighted
+# third-party app UI. This repo mirrors to a public GitHub remote, so the
+# images are kept locally alongside the doc but excluded from version control.
+# Remove this rule only after redacting personal content and confirming the
+# publishing implications.
+*.png
