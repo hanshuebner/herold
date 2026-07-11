@@ -458,6 +458,17 @@ function parseNameVM(name: Record<string, unknown> | undefined): NameVM {
       }
     }
   }
+  const full = String(name.full ?? '');
+  // Fall back to deriving given/surname from `full` when the Card carries no
+  // recognized given/surname component (e.g. a component with an empty or
+  // unrecognized `kind`, written by an older buggy write path). This lets the
+  // edit form populate Vorname/Nachname for such contacts without a server-side
+  // data migration.
+  if (!given && !surname && full.trim()) {
+    const split = splitDisplayName(full);
+    given = split.given;
+    surname = split.surname;
+  }
   const sortAsMap = name.sortAs as Record<string, string> | undefined;
   const sortAs = sortAsMap ? (sortAsMap['surname'] ?? sortAsMap['given'] ?? '') : '';
   return {
@@ -467,10 +478,23 @@ function parseNameVM(name: Record<string, unknown> | undefined): NameVM {
     prefix,
     suffix,
     credential,
-    full: String(name.full ?? ''),
+    full,
     sortAs,
     isOrdered: !!(name.isOrdered),
   };
+}
+
+/**
+ * Split a single display-name string into given/surname parts: the first
+ * whitespace-separated token becomes the given name, the remainder (if any)
+ * becomes the surname. Used both as a name-parsing fallback (REQ-CONT-01)
+ * and by contact-creation call sites that only have a display name on hand
+ * (mail sender "Add contact", compose recipient "Save to contacts").
+ */
+export function splitDisplayName(displayName: string): { given: string; surname: string } {
+  const parts = displayName.trim().split(/\s+/);
+  if (parts.length <= 1) return { given: parts[0] ?? '', surname: '' };
+  return { given: parts[0]!, surname: parts.slice(1).join(' ') };
 }
 
 function parseAddressVM(key: string, a: JsAddress): AddressVM {
@@ -1080,4 +1104,5 @@ export const _internals_forTest = {
   extractPhotoFromCard,
   buildMediaWithPhoto,
   buildMediaWithPhotoRemoved,
+  splitDisplayName,
 };

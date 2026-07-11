@@ -164,6 +164,53 @@ describe('RecipientField saveToContacts — notCreated error handling (re #68)',
     expect(call.message).toContain('addressBookId is required');
   });
 
+  it('writes structured given/surname name components split from the chip name (re #169)', async () => {
+    const { jmap, strict } = await getJmapMock();
+
+    const fakeResponses = [
+      [
+        'Contact/set',
+        {
+          accountId: 'acc-1',
+          oldState: '0',
+          newState: '1',
+          created: { new1: { id: 'contact-42' } },
+          notCreated: {},
+          updated: {},
+          destroyed: [],
+        },
+        'c0',
+      ],
+    ];
+    let capturedArgs: Record<string, unknown> | undefined;
+    vi.mocked(jmap.batch).mockImplementation(async (builder: (b: unknown) => void) => {
+      builder({
+        call: (name: string, args: Record<string, unknown>) => {
+          if (name === 'Contact/set') capturedArgs = args;
+          return { ref: (p: string) => ({ resultOf: 'c0', name, path: p }) };
+        },
+      });
+      return { responses: fakeResponses, sessionState: 'state-1' };
+    });
+    vi.mocked(strict).mockReturnValue(fakeResponses as never);
+
+    renderField();
+
+    const saveBtn = screen.getByRole('button', { name: /save.*contacts/i });
+    await fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(capturedArgs).toBeDefined();
+    });
+
+    const create = capturedArgs!.create as Record<string, { name?: { components?: unknown[] } }>;
+    // The rendered chip's name is "Seen User" (see renderField() above).
+    expect(create['new1']?.name?.components).toEqual([
+      { kind: 'given', value: 'Seen' },
+      { kind: 'surname', value: 'User' },
+    ]);
+  });
+
   it('does not show an error toast when the server creates the contact successfully', async () => {
     const { jmap, strict } = await getJmapMock();
 

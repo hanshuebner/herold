@@ -18,6 +18,7 @@
   } from './person-resolver.svelte';
   import { mail } from './store.svelte';
   import { contacts } from '../contacts/store.svelte';
+  import { splitDisplayName } from '../contacts/jscontact';
   import { compose } from '../compose/compose.svelte';
   import { jmap, strict } from '../jmap/client';
   import { Capability } from '../jmap/types';
@@ -252,12 +253,14 @@
             create: {
               new1: {
                 name: current.displayName
-                  ? {
-                      full: current.displayName,
-                      components: [
-                        { type: 'personal', value: current.displayName },
-                      ],
-                    }
+                  ? (() => {
+                      const { given, surname } = splitDisplayName(current.displayName);
+                      const components = [
+                        ...(given ? [{ kind: 'given', value: given }] : []),
+                        ...(surname ? [{ kind: 'surname', value: surname }] : []),
+                      ];
+                      return { full: current.displayName, components };
+                    })()
                   : undefined,
                 emails: { primary: { address: current.email } },
               },

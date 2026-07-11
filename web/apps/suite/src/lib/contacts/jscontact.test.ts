@@ -18,6 +18,7 @@ import {
   extractPhotoFromCard,
   buildMediaWithPhoto,
   buildMediaWithPhotoRemoved,
+  splitDisplayName,
   MAX_PHOTO_SIZE,
   type ContactEditVM,
   type NameVM,
@@ -123,6 +124,69 @@ describe('cardToVM: name', () => {
     expect(vm.name.given).toBe('');
     expect(vm.name.surname).toBe('');
     expect(vm.name.full).toBe('');
+  });
+
+  it('derives given/surname from full when no component has a recognized kind (re #169)', () => {
+    // Reproduces the stored shape written by the pre-fix "Add contact" /
+    // "Save to contacts" flows: a component with an empty kind, carrying
+    // the whole display name as its value.
+    const raw = {
+      id: 'c1',
+      name: {
+        components: [{ kind: '', value: 'Torsten Bülck' }],
+        full: 'Torsten Bülck',
+      },
+    };
+    const vm = cardToVM(raw);
+    expect(vm.name.given).toBe('Torsten');
+    expect(vm.name.surname).toBe('Bülck');
+    expect(vm.name.full).toBe('Torsten Bülck');
+  });
+
+  it('derives given/surname from full when name.components is entirely absent', () => {
+    const raw = { id: 'c1', name: { full: 'Madonna' } };
+    const vm = cardToVM(raw);
+    expect(vm.name.given).toBe('Madonna');
+    expect(vm.name.surname).toBe('');
+  });
+
+  it('does not override given/surname when a recognized component already supplies them', () => {
+    const raw = {
+      id: 'c1',
+      name: {
+        components: [
+          { kind: 'given', value: 'Alice' },
+          { kind: 'surname', value: 'Smith' },
+        ],
+        full: 'Dr. Alice Smith Jr.',
+      },
+    };
+    const vm = cardToVM(raw);
+    expect(vm.name.given).toBe('Alice');
+    expect(vm.name.surname).toBe('Smith');
+  });
+});
+
+describe('splitDisplayName', () => {
+  it('splits a two-word name into given + surname', () => {
+    expect(splitDisplayName('Torsten Bülck')).toEqual({
+      given: 'Torsten',
+      surname: 'Bülck',
+    });
+  });
+
+  it('keeps a multi-word surname together', () => {
+    expect(splitDisplayName('Mary Anne Smith')).toEqual({
+      given: 'Mary',
+      surname: 'Anne Smith',
+    });
+  });
+
+  it('leaves surname empty for a single-word name', () => {
+    expect(splitDisplayName('Madonna')).toEqual({
+      given: 'Madonna',
+      surname: '',
+    });
   });
 });
 

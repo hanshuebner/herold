@@ -15,6 +15,7 @@
    */
   import { contacts, type ContactSuggestion } from '../contacts/store.svelte';
   import { seenAddresses } from '../contacts/seen-addresses.svelte';
+  import { splitDisplayName } from '../contacts/jscontact';
   import { hasDirectoryAutocomplete } from '../auth/capabilities';
   import { jmap, strict } from '../jmap/client';
   import { Capability } from '../jmap/types';
@@ -344,10 +345,14 @@
             create: {
               new1: {
                 name: chip.name
-                  ? {
-                      full: chip.name,
-                      components: [{ type: 'personal', value: chip.name }],
-                    }
+                  ? (() => {
+                      const { given, surname } = splitDisplayName(chip.name);
+                      const components = [
+                        ...(given ? [{ kind: 'given', value: given }] : []),
+                        ...(surname ? [{ kind: 'surname', value: surname }] : []),
+                      ];
+                      return { full: chip.name, components };
+                    })()
                   : undefined,
                 emails: {
                   primary: { address: chip.email },

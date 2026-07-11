@@ -335,4 +335,49 @@ describe('RecipientHoverCard handleAddContact (re #62)', () => {
       expect.objectContaining({ kind: 'error' }),
     );
   });
+
+  it('writes structured given/surname name components split from the display name (re #169)', async () => {
+    const fakeResponse = {
+      responses: [
+        [
+          'Contact/set',
+          {
+            accountId: 'acc-1',
+            oldState: '0',
+            newState: '1',
+            created: { new1: { id: 'c-42', addressBookId: 'ab-1' } },
+            notCreated: {},
+            updated: {},
+            destroyed: [],
+          },
+          'c0',
+        ],
+      ],
+    };
+    vi.mocked(jmap.batch).mockResolvedValue(fakeResponse as never);
+    vi.mocked(strict).mockReturnValue(fakeResponse.responses as never);
+
+    render(RecipientHoverCard);
+    const addBtn = await openCardAndFindAddButton();
+    await fireEvent.click(addBtn);
+
+    await waitFor(() => {
+      expect(jmap.batch).toHaveBeenCalled();
+    });
+
+    // Replay the builder function passed to jmap.batch to capture the
+    // Contact/set args actually sent for creation.
+    const builder = vi.mocked(jmap.batch).mock.calls[0]![0] as (b: unknown) => void;
+    let capturedArgs: Record<string, unknown> | undefined;
+    builder({
+      call: (name: string, args: Record<string, unknown>) => {
+        if (name === 'Contact/set') capturedArgs = args;
+        return { ref: () => undefined };
+      },
+    });
+
+    const create = capturedArgs?.create as Record<string, { name?: { components?: unknown[] } }>;
+    const name = create['new1']?.name;
+    expect(name?.components).toEqual([{ kind: 'given', value: 'Bob' }]);
+  });
 });
