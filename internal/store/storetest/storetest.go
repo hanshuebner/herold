@@ -427,6 +427,12 @@ func Run(t *testing.T, f Factory) {
 		{"ManagedDomains_CascadeOnDeletePrincipal", testManagedDomains_CascadeOnDeletePrincipal},
 		{"ListDomainOperators", testListDomainOperators},
 		{"MigrationAutoPromotion_SuperAdminFlagRoundtrip", testMigrationAutoPromotion},
+		// -- Resource grants (epic #182, REQ-AC-01..05, migration 0079) --
+		{"Grants_InsertListDelete", testGrants_InsertListDelete},
+		{"Grants_InsertIdempotent", testGrants_InsertIdempotent},
+		{"Grants_ProvenanceDistinct", testGrants_ProvenanceDistinct},
+		{"Grants_DeleteNotFound", testGrants_DeleteNotFound},
+		{"Grants_ListOrderedByID", testGrants_ListOrderedByID},
 		// -- System events ring-buffer (REQ-ADM-304, migration 0073, re #142) --
 		{"SystemEvents_AppendList", testSystemEvents_AppendList},
 		{"SystemEvents_NewestFirst", testSystemEvents_NewestFirst},

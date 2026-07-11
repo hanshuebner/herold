@@ -57,6 +57,23 @@ type PrincipalManagedDomainRow struct {
 	Domain      string `json:"domain"`
 }
 
+// GrantRow mirrors the grants table introduced in migration 0079 (epic #182,
+// REQ-AC-01..05). subject_id is polymorphic (no FK) and granted_by FKs
+// principals(id) ON DELETE SET NULL, so it is restored after principals.
+// GrantedBy and LastAssertedAtUs are nullable and modelled as pointers.
+type GrantRow struct {
+	ID               int64  `json:"id"`
+	SubjectKind      string `json:"subject_kind"`
+	SubjectID        int64  `json:"subject_id"`
+	ResourceKind     string `json:"resource_kind"`
+	ResourceID       string `json:"resource_id"`
+	Level            string `json:"level"`
+	Provenance       string `json:"provenance"`
+	GrantedBy        *int64 `json:"granted_by,omitempty"`
+	GrantedAtUs      int64  `json:"granted_at_us"`
+	LastAssertedAtUs *int64 `json:"last_asserted_at_us,omitempty"`
+}
+
 type OIDCProviderRow struct {
 	Name            string `json:"name"`
 	IssuerURL       string `json:"issuer_url"`

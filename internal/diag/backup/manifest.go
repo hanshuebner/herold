@@ -523,7 +523,19 @@ const CurrentBackupVersion = 1
 //	migration on an existing table; no new adapter/backup row type
 //	needed (push_subscription's backup encoding already round-trips
 //	unknown-to-it columns via the existing row scan).
-const CurrentSchemaVersion = 78
+//
+// 79 — 0079_grants.sql (epic #182, REQ-AC-01..05).
+//
+//	Adds the grants table: the unified resource-grant authorization
+//	substrate. One row binds a subject (principal today; the
+//	subject_kind column admits 'group' later) to a per-kind access
+//	level on a typed resource (server/domain/list/mailbox), with a
+//	provenance ('local' | 'idp:<provider>') keeping operator-assigned
+//	and IdP-derived grants independent. Back-fills server:superadmin
+//	from PrincipalFlagSuperAdmin and domain:operator from
+//	principal_managed_domains so the table is a faithful projection of
+//	existing authority on upgrade.
+const CurrentSchemaVersion = 79
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -571,6 +583,12 @@ var TableNames = []string{
 	// re #145). FK to principals(id) ON DELETE CASCADE; restored after principals
 	// so the parent rows are in place before the association rows arrive.
 	"principal_managed_domains",
+	// Unified resource-grant authorization substrate (epic #182,
+	// REQ-AC-01..05, migration 0079). subject_id is polymorphic (no FK);
+	// granted_by FKs principals(id) ON DELETE SET NULL, so grants is
+	// restored after principals. Authorization data — backed up (unlike
+	// the ephemeral session/elevation tables).
+	"grants",
 	// Phase 3 Wave 3.8a JMAP PushSubscription (REQ-PROTO-120..122,
 	// migration 0017). FK to principals(id); restored after the
 	// principals row is in place. No child tables of its own — the
