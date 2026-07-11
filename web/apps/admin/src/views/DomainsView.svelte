@@ -3,6 +3,7 @@
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatDateOnly } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   let createOpen = $state(false);
   let createName = $state('');
@@ -47,14 +48,14 @@
 <div class="domains-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Domains</h1>
+      <h1 class="page-title">{t('domains.title')}</h1>
       {#if domains.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Loading"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
     <div class="page-header-right">
       <button type="button" class="btn-primary" onclick={openCreate}>
-        New domain
+        {t('domains.new')}
       </button>
     </div>
   </div>
@@ -68,8 +69,8 @@
       <table class="table">
         <thead>
           <tr>
-            <th class="col-name">Name</th>
-            <th class="col-created">Created</th>
+            <th class="col-name">{t('domains.table.name')}</th>
+            <th class="col-created">{t('domains.table.created')}</th>
           </tr>
         </thead>
         <tbody>
@@ -82,7 +83,7 @@
             </tr>
           {:else}
             <tr>
-              <td colspan="2" class="empty-row">No domains found.</td>
+              <td colspan="2" class="empty-row">{t('domains.empty')}</td>
             </tr>
           {/each}
         </tbody>
@@ -97,24 +98,24 @@
           onclick={() => void domains.loadMore()}
           disabled={domains.status === 'loading'}
         >
-          {domains.status === 'loading' ? 'Loading...' : 'Load more'}
+          {domains.status === 'loading' ? t('common.loading') : t('domains.loadMore')}
         </button>
       </div>
     {/if}
   {:else if domains.status !== 'loading' && domains.status !== 'idle'}
-    <p class="empty-state">No domains found.</p>
+    <p class="empty-state">{t('domains.empty')}</p>
   {/if}
 </div>
 
-<Dialog bind:open={createOpen} title="New domain">
+<Dialog bind:open={createOpen} title={t('domains.create.title')}>
   <form class="create-form" onsubmit={handleCreate} novalidate>
     <div class="field">
-      <label for="cd-name" class="label">Domain name</label>
+      <label for="cd-name" class="label">{t('domains.create.name')}</label>
       <input
         id="cd-name"
         type="text"
         class="input input-mono"
-        placeholder="example.com"
+        placeholder={t('domains.create.namePlaceholder')}
         autocomplete="off"
         required
         bind:value={createName}
@@ -133,10 +134,10 @@
         onclick={() => { createOpen = false; }}
         disabled={createSubmitting}
       >
-        Cancel
+        {t('common.cancel')}
       </button>
       <button type="submit" class="btn-primary" disabled={createSubmitting || !createName.trim()}>
-        {createSubmitting ? 'Creating...' : 'Create domain'}
+        {createSubmitting ? t('domains.create.submitting') : t('domains.create.submit')}
       </button>
     </div>
   </form>

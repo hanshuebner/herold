@@ -3,6 +3,7 @@
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatDateOnly } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   interface Props {
     name: string;
@@ -22,7 +23,7 @@
     e.preventDefault();
     if (deleteSubmitting) return;
     if (deleteConfirmName !== name) {
-      deleteError = 'Domain name does not match.';
+      deleteError = t('domainDetail.danger.nameMismatch');
       return;
     }
     deleteSubmitting = true;
@@ -122,7 +123,7 @@
     e.preventDefault();
     if (aliasSubmitting) return;
     if (!aliasPrincipalId) {
-      aliasError = 'Select a principal from the list.';
+      aliasError = t('domainDetail.alias.selectPrincipal');
       return;
     }
     aliasError = null;
@@ -161,7 +162,7 @@
   }
 
   function formatDate(iso: string | null | undefined): string {
-    if (!iso) return 'never';
+    if (!iso) return t('domainDetail.aliases.neverExpires');
     return formatDateOnly(iso);
   }
 </script>
@@ -172,9 +173,9 @@
       type="button"
       class="back-btn"
       onclick={() => router.navigate('/domains')}
-      aria-label="Back to domains"
+      aria-label={t('domainDetail.backAriaLabel')}
     >
-      Back
+      {t('domainDetail.back')}
     </button>
     {#if domainDetail.domain}
       <div class="header-info">
@@ -186,10 +187,10 @@
         onclick={() => { deleteConfirmName = ''; deleteError = null; }}
         aria-controls="delete-zone"
       >
-        Delete domain
+        {t('domainDetail.deleteDomain')}
       </button>
     {:else if domainDetail.status === 'loading'}
-      <div class="spinner" role="status" aria-label="Loading"></div>
+      <div class="spinner" role="status" aria-label={t('common.loading')}></div>
     {/if}
   </div>
 
@@ -201,9 +202,9 @@
     <!-- Aliases section -->
     <div class="section">
       <div class="section-header">
-        <h2 class="section-title">Aliases</h2>
+        <h2 class="section-title">{t('domainDetail.aliases.title')}</h2>
         <button type="button" class="btn-primary" onclick={openAlias}>
-          New alias
+          {t('domainDetail.aliases.new')}
         </button>
       </div>
 
@@ -215,9 +216,9 @@
         <table class="table">
           <thead>
             <tr>
-              <th class="col-local">Local part</th>
-              <th class="col-target">Target principal ID</th>
-              <th class="col-expires">Expires</th>
+              <th class="col-local">{t('domainDetail.aliases.table.local')}</th>
+              <th class="col-target">{t('domainDetail.aliases.table.target')}</th>
+              <th class="col-expires">{t('domainDetail.aliases.table.expires')}</th>
               <th class="col-actions"></th>
             </tr>
           </thead>
@@ -234,20 +235,20 @@
                 <td class="col-actions">
                   {#if deleteAliasConfirmId === alias.id}
                     <div class="inline-confirm">
-                      <span class="confirm-label">Delete?</span>
+                      <span class="confirm-label">{t('domainDetail.aliases.deleteConfirm')}</span>
                       <button
                         type="button"
                         class="btn-danger-sm"
                         onclick={() => void confirmDeleteAlias(alias.id)}
                       >
-                        Confirm
+                        {t('domainDetail.aliases.confirm')}
                       </button>
                       <button
                         type="button"
                         class="btn-ghost-sm"
                         onclick={() => { deleteAliasConfirmId = null; }}
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </button>
                     </div>
                   {:else}
@@ -256,14 +257,14 @@
                       class="btn-ghost-sm"
                       onclick={() => { deleteAliasConfirmId = alias.id; deleteAliasError = null; }}
                     >
-                      Delete
+                      {t('domainDetail.aliases.delete')}
                     </button>
                   {/if}
                 </td>
               </tr>
             {:else}
               <tr>
-                <td colspan="4" class="empty-row">No aliases for this domain.</td>
+                <td colspan="4" class="empty-row">{t('domainDetail.aliases.empty')}</td>
               </tr>
             {/each}
           </tbody>
@@ -273,13 +274,13 @@
 
     <!-- Delete domain zone -->
     <div class="danger-zone" id="delete-zone">
-      <h3 class="danger-title">Delete this domain</h3>
+      <h3 class="danger-title">{t('domainDetail.danger.title')}</h3>
       <p class="danger-desc">
-        Permanently removes the domain and all its aliases. This cannot be undone.
+        {t('domainDetail.danger.description')}
       </p>
       <form class="danger-form" onsubmit={deleteDomain} novalidate>
         <label for="dd-confirm" class="label">
-          Type the domain name to confirm: <strong class="mono">{domainDetail.domain.name}</strong>
+          {t('domainDetail.danger.confirmLabel')} <strong class="mono">{domainDetail.domain.name}</strong>
         </label>
         <div class="input-row">
           <input
@@ -296,7 +297,7 @@
             class="btn-danger"
             disabled={deleteSubmitting || deleteConfirmName !== domainDetail.domain.name}
           >
-            {deleteSubmitting ? 'Deleting...' : 'Delete'}
+            {deleteSubmitting ? t('domainDetail.danger.deleting') : t('domainDetail.danger.delete')}
           </button>
         </div>
         {#if deleteError}
@@ -308,10 +309,10 @@
 </div>
 
 <!-- New alias dialog -->
-<Dialog bind:open={aliasOpen} title="New alias" width="520px">
+<Dialog bind:open={aliasOpen} title={t('domainDetail.alias.dialogTitle')} width="520px">
   <form class="create-form" onsubmit={handleCreateAlias} novalidate>
     <div class="field">
-      <label for="ca-local" class="label">Local part</label>
+      <label for="ca-local" class="label">{t('domainDetail.alias.local')}</label>
       <div class="alias-address-row">
         <input
           id="ca-local"
@@ -327,23 +328,23 @@
     </div>
 
     <div class="field">
-      <label for="ca-principal" class="label">Target principal</label>
+      <label for="ca-principal" class="label">{t('domainDetail.alias.targetPrincipal')}</label>
       <div class="autocomplete-wrapper">
         <input
           id="ca-principal"
           type="text"
           class="input"
-          placeholder="Search by email..."
+          placeholder={t('domainDetail.alias.searchPlaceholder')}
           autocomplete="off"
           bind:value={aliasPrincipalSearch}
           oninput={onPrincipalInput}
           disabled={aliasSubmitting}
         />
         {#if principalSearching}
-          <div class="ac-spinner" aria-label="Searching"></div>
+          <div class="ac-spinner" aria-label={t('domainDetail.alias.searching')}></div>
         {/if}
         {#if principalDropdownOpen && principalOptions.length > 0}
-          <ul class="ac-dropdown" role="listbox" aria-label="Principal options">
+          <ul class="ac-dropdown" role="listbox" aria-label={t('domainDetail.alias.optionsAriaLabel')}>
             {#each principalOptions as opt (opt.id)}
               <li
                 class="ac-option"
@@ -362,13 +363,13 @@
       </div>
       {#if aliasPrincipalId}
         <p class="field-hint">
-          Selected: <span class="mono">{aliasPrincipalEmail}</span> (ID {aliasPrincipalId})
+          {t('domainDetail.alias.selected', { email: aliasPrincipalEmail, id: aliasPrincipalId })}
         </p>
       {/if}
     </div>
 
     <div class="field">
-      <label for="ca-expires" class="label">Expires at (optional)</label>
+      <label for="ca-expires" class="label">{t('domainDetail.alias.expiresAt')}</label>
       <input
         id="ca-expires"
         type="datetime-local"
@@ -389,10 +390,10 @@
         onclick={() => { aliasOpen = false; }}
         disabled={aliasSubmitting}
       >
-        Cancel
+        {t('common.cancel')}
       </button>
       <button type="submit" class="btn-primary" disabled={aliasSubmitting || !aliasLocal.trim() || !aliasPrincipalId}>
-        {aliasSubmitting ? 'Creating...' : 'Create alias'}
+        {aliasSubmitting ? t('domainDetail.alias.creating') : t('domainDetail.alias.create')}
       </button>
     </div>
   </form>

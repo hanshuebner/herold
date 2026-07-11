@@ -7,6 +7,7 @@
  */
 
 import { apiGet, apiPost } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface DomainSummary {
   name: string;
@@ -37,7 +38,7 @@ class DomainsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load domains';
+      this.errorMessage = result.errorMessage ?? t('domains.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -57,7 +58,7 @@ class DomainsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load more domains';
+      this.errorMessage = result.errorMessage ?? t('domains.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }
@@ -75,7 +76,7 @@ class DomainsState {
   async create(payload: { name: string }): Promise<{ ok: boolean; errorMessage: string | null }> {
     const result = await apiPost<DomainSummary>('/api/v1/domains', payload);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Create failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('domains.error.createFailed') };
     }
     await this.load();
     return { ok: true, errorMessage: null };

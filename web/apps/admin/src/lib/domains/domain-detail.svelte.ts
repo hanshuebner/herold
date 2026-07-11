@@ -10,6 +10,7 @@
  */
 
 import { apiGet, apiPost, apiDelete } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface DomainRecord {
   name: string;
@@ -63,15 +64,15 @@ class DomainDetailState {
       if (found) {
         this.domain = found;
       } else {
-        this.errorMessage = 'Domain not found.';
+        this.errorMessage = t('domainDetail.error.notFound');
         this.status = 'error';
         return;
       }
     } else {
       this.errorMessage =
         domainsResult.status === 'fulfilled'
-          ? (domainsResult.value.errorMessage ?? 'Failed to load domain')
-          : 'Network error';
+          ? (domainsResult.value.errorMessage ?? t('domainDetail.error.loadFailed'))
+          : t('domainDetail.error.networkError');
       this.status = 'error';
       return;
     }
@@ -97,7 +98,7 @@ class DomainDetailState {
   async createAlias(payload: CreateAliasPayload): Promise<OpResult> {
     const result = await apiPost<AliasRecord>('/api/v1/aliases', payload);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Create alias failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('domainDetail.error.createAliasFailed') };
     }
     // Refresh the alias list.
     if (this.domain) {
@@ -109,7 +110,7 @@ class DomainDetailState {
   async deleteAlias(id: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/aliases/${id}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Delete alias failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('domainDetail.error.deleteAliasFailed') };
     }
     this.aliases = this.aliases.filter((a) => a.id !== id);
     return { ok: true, errorMessage: null };
@@ -118,7 +119,7 @@ class DomainDetailState {
   async deleteDomain(name: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/domains/${encodeURIComponent(name)}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Delete domain failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('domainDetail.error.deleteDomainFailed') };
     }
     return { ok: true, errorMessage: null };
   }
