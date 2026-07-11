@@ -4,6 +4,13 @@ Reference inventory of the Gmail features this client considers, with their disp
 
 This is not a requirement doc; it is a single-page index of "did we think about that?". Definitive scope is `../00-scope.md`.
 
+> **Dispositions below predate scope revs 4-11.** Several rows in the
+> "Capture-driven" and "Out" tables are superseded: Chat/Spaces, LLM
+> categorisation, snooze, vacation responder, per-Identity signatures, send-as,
+> and JMAP Calendar/Contacts are now in scope; 1:1 video calls are in scope
+> (group Meet is not). For the current comparison against Gmail's documented
+> feature set, see `gmail-gap-analysis.md`.
+
 ## In v1 (capture-driven enrichment expected)
 
 | Gmail feature | Disposition | Where specified |
