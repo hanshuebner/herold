@@ -1,0 +1,45 @@
+name: Close pull requests
+
+# github.com/hanshuebner/herold is a read-only code mirror of the Forgejo
+# repository at code.netzhansa.com/herold/herold. GitHub has no setting to
+# disable pull requests, so any PR opened against the mirror is closed
+# immediately with a pointer to the development forge.
+#
+# The job is guarded to github.com. The workflow file also lives in the mirror
+# because the Forgejo push mirror force-replaces the GitHub tree on every sync,
+# so a file present only on GitHub would be wiped. On Forgejo the guard skips
+# the job, so Forgejo pull requests are never touched.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                'This repository is a read-only code mirror.',
+                '',
+                'Development, issues and pull requests live at',
+                'https://code.netzhansa.com/herold/herold. Pull requests opened',
+                'here are closed automatically.',
+              ].join('\n'),
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              state: 'closed',
+            });
