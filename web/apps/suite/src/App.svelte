@@ -84,8 +84,8 @@
       // advertises the capability (the push type simply never fires when
       // it does not).
       const types = hasCap
-        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob']
-        : ['Email', 'Mailbox', 'Thread', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob'];
+        ? ['Email', 'Mailbox', 'Thread', 'Conversation', 'Message', 'Membership', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob', 'Contact']
+        : ['Email', 'Mailbox', 'Thread', 'SeenAddress', 'InternalizeStatus', 'EmailBulkJob', 'Contact'];
       sync.start(types);
 
       untrack(() => {
@@ -439,6 +439,11 @@
     description: 'Go to Help',
     action: () => router.navigate('/help'),
   });
+  keyboard.registerGlobal({
+    key: 'g c',
+    description: 'Go to Contacts',
+    action: () => router.navigate('/contacts'),
+  });
 </script>
 
 <svelte:boundary
@@ -627,6 +632,17 @@
       {#if hasChatCap}
         <SidebarChats />
       {/if}
+
+      <div class="sidebar-app-nav">
+        <button
+          type="button"
+          class="sidebar-app-nav-btn"
+          class:active={router.matches('contacts')}
+          onclick={() => router.navigate('/contacts')}
+        >
+          {t('sidebar.contacts')}
+        </button>
+      </div>
 
       <div class="sidebar-bottom">
         <button
@@ -845,6 +861,38 @@
     flex-shrink: 0;
     border: 1px solid rgba(0, 0, 0, 0.15);
     margin-right: var(--spacing-02);
+  }
+
+  /* Contacts (and future app-switch) nav section in the sidebar. */
+  .sidebar-app-nav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-01);
+    padding-top: var(--spacing-02);
+    border-top: 1px solid var(--border-subtle-01);
+  }
+
+  .sidebar-app-nav-btn {
+    display: flex;
+    align-items: center;
+    padding: var(--spacing-02) var(--spacing-04);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    min-height: var(--touch-min);
+    text-align: left;
+    font-size: var(--type-body-compact-01-size);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .sidebar-app-nav-btn:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+
+  .sidebar-app-nav-btn.active {
+    background: var(--layer-02);
+    color: var(--text-primary);
+    font-weight: 600;
   }
 
   /* Sidebar bottom: settings + help links pinned to the bottom rail. */
