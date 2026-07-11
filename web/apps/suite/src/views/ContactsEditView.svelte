@@ -499,7 +499,10 @@
 
   function toggleEmailPref(key: string): void {
     if (!vm) return;
-    vm.emails = vm.emails.map((e) => ({ ...e, pref: e.key === key ? !e.pref : false }));
+    const email = vm.emails.find((e) => e.key === key);
+    if (email?.pref) {
+      vm.emails.forEach((e) => { if (e.key !== key) e.pref = false; });
+    }
     markDirty();
   }
 
@@ -519,7 +522,10 @@
 
   function togglePhonePref(key: string): void {
     if (!vm) return;
-    vm.phones = vm.phones.map((p) => ({ ...p, pref: p.key === key ? !p.pref : false }));
+    const phone = vm.phones.find((p) => p.key === key);
+    if (phone?.pref) {
+      vm.phones.forEach((p) => { if (p.key !== key) p.pref = false; });
+    }
     markDirty();
   }
 

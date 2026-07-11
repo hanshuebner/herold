@@ -26,6 +26,7 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'contacts.list.title': 'Kontakte',
       'contacts.edit.autosaveBlocked': 'Nicht gespeichert — bitte markiertes Feld korrigieren.',
       'contacts.edit.removeEntry': 'Entfernen',
+      'contacts.edit.email.pref': 'Bevorzugt',
       'settings.identityEdit.saving': 'Saving…',
       'settings.identityEdit.saved': 'Saved',
       'settings.identityEdit.saveFailed': 'Could not save',
@@ -198,5 +199,72 @@ describe('ContactsEditView — immediate save (re #190)', () => {
     await fireEvent.click(firstRemoveButton!);
 
     expect(screen.queryByDisplayValue('alice@example.local')).toBeNull();
+  });
+
+  describe('Bevorzugt/Preferred checkbox exclusivity and persistence (re #194)', () => {
+    const CARD_2 = {
+      id: '2',
+      '@type': 'Card',
+      version: '1.0',
+      uid: 'uid-2',
+      kind: 'individual',
+      name: { full: 'Bob Example', components: [{ kind: 'given', value: 'Bob' }, { kind: 'surname', value: 'Example' }] },
+      emails: {
+        e1: { address: 'primary@example.local' },
+        e2: { address: 'secondary@example.local' },
+      },
+    };
+
+    beforeEach(() => {
+      vi.mocked(jmap.batch).mockImplementation(
+        async (configure: any) => {
+          const calls: unknown[][] = [];
+          configure({ call: (...args: unknown[]) => calls.push(args) });
+          const [method] = calls[0] as [string, Record<string, unknown>];
+          if (method === 'Contact/get') {
+            return { responses: [['Contact/get', { list: [CARD_2] }, 'c1']], sessionState: 's1' };
+          }
+          return { responses: [['Contact/set', { updated: { '2': null } }, 'c1']], sessionState: 's1' };
+        },
+      );
+    });
+
+    it('toggles pref on click, clears it from the other email, and patches Contact/set (re #194)', async () => {
+      render(ContactsEditView, { props: { contactId: '2' } });
+      await screen.findByDisplayValue('primary@example.local');
+
+      const checkboxes = screen.getAllByRole('checkbox', { name: 'Bevorzugt' });
+      expect(checkboxes).toHaveLength(2);
+      expect((checkboxes[0] as HTMLInputElement).checked).toBe(false);
+      expect((checkboxes[1] as HTMLInputElement).checked).toBe(false);
+
+      // A single click must land as checked and stay checked — the bug
+      // inverted it right back via toggleEmailPref's stale `!e.pref`.
+      await fireEvent.click(checkboxes[0]!);
+      expect((checkboxes[0] as HTMLInputElement).checked).toBe(true);
+      expect((checkboxes[1] as HTMLInputElement).checked).toBe(false);
+
+      // Preferring the second email must clear the first (exclusivity).
+      await fireEvent.click(checkboxes[1]!);
+      expect((checkboxes[0] as HTMLInputElement).checked).toBe(false);
+      expect((checkboxes[1] as HTMLInputElement).checked).toBe(true);
+
+      await fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+      await vi.waitFor(() => {
+        const setCall = vi.mocked(jmap.batch).mock.calls.find((_, i) => i > 0);
+        expect(setCall).toBeDefined();
+      });
+      const [configure] = vi.mocked(jmap.batch).mock.calls.at(-1)! as [
+        (b: { call: (...args: unknown[]) => void }) => void,
+      ];
+      const calls: unknown[][] = [];
+      configure({ call: (...args: unknown[]) => calls.push(args) });
+      const [, callArgs] = calls[0] as [string, { update: Record<string, Record<string, unknown>> }];
+      const patch = callArgs.update['2']!;
+      const emails = patch.emails as Record<string, { pref?: number }>;
+      expect(emails.e1?.pref).toBeUndefined();
+      expect(emails.e2?.pref).toBe(1);
+    });
   });
 });
