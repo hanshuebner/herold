@@ -13,10 +13,10 @@
    *                              there is no double-hash and the router parses
    *                              it cleanly).
    *
-   * i18n: The admin SPA does not yet have an i18n system. The `t` prop is omitted
-   * so the Manual component falls back to its built-in `defaultT` function, which
-   * returns the correct English strings for all `manual.*` keys. When i18n is
-   * added to the admin SPA, import and pass the real t() function here.
+   * i18n: the `t` prop is wired to the admin catalogue's t() function (re
+   * #180, re #90) so the Manual chrome (search, TOC, callouts, requirement
+   * labels, code-copy button) renders in the active locale instead of the
+   * component's built-in English defaultT fallback.
    *
    * Fallback: if admin.json fails to load (e.g. the bundle step was not run),
    * an inline error is displayed instead of crashing the SPA.
@@ -24,6 +24,7 @@
   import Manual from '@herold/manual';
   import type { ManualBundle } from '@herold/manual';
   import { router } from '../lib/router/router.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // parts: ['help'] | ['help', slug] | ['help', slug, headingId]
   const slug = $derived(router.parts[1] ?? null);
@@ -53,14 +54,16 @@
       if (!res.ok) {
         // Not crash-worthy: bundle may be absent in dev builds. Show a
         // friendly message and let the rest of the SPA keep working.
-        errorMessage = `Manual bundle not available (HTTP ${res.status}). Run the bundle step to generate it.`;
+        errorMessage = t('help.error.bundleNotAvailable', { status: res.status });
         bundleStatus = 'error';
         return;
       }
       bundle = (await res.json()) as ManualBundle;
       bundleStatus = 'ready';
     } catch (err) {
-      errorMessage = `Failed to load manual: ${err instanceof Error ? err.message : String(err)}`;
+      errorMessage = t('help.error.loadFailed', {
+        message: err instanceof Error ? err.message : String(err),
+      });
       bundleStatus = 'error';
     }
   }
@@ -76,11 +79,11 @@
   {#if bundleStatus === 'loading'}
     <div class="help-loading" role="status" aria-live="polite">
       <div class="spinner" aria-hidden="true"></div>
-      <span>Loading manual...</span>
+      <span>{t('help.loading')}</span>
     </div>
   {:else if bundleStatus === 'error'}
     <div class="help-error" role="alert">
-      <h1 class="help-error-title">Manual unavailable</h1>
+      <h1 class="help-error-title">{t('help.unavailable')}</h1>
       <p class="help-error-message">{errorMessage}</p>
     </div>
   {:else if bundle !== null}
@@ -89,6 +92,7 @@
       {slug}
       hash={activeHash}
       onNavigate={handleNavigate}
+      {t}
     />
   {/if}
 </div>

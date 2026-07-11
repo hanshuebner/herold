@@ -440,4 +440,26 @@ export const en = {
     'When enabled, this worker sends fine-grained events (connection lifecycle, IDLE wake, folder syncs) to the events view, filtered by the account ID as actor. Overhead is limited to inactive accounts.',
   'imapImports.error.loadFailed': 'Failed to load IMAP import status',
   'imapImports.error.setDebugLogFailed': 'Failed to change debug logging',
+
+  // ── Not found ─────────────────────────────────────────────────────────
+  'notFound.title': 'Not found',
+  'notFound.lead': 'No view registered for',
+  'notFound.goToDashboard': 'Go to dashboard',
+
+  // ── Help (manual viewer) ──────────────────────────────────────────────
+  'help.loading': 'Loading manual...',
+  'help.unavailable': 'Manual unavailable',
+  'help.error.bundleNotAvailable': 'Manual bundle not available (HTTP {status}). Run the bundle step to generate it.',
+  'help.error.loadFailed': 'Failed to load manual: {message}',
+  'manual.toc.label': 'Table of contents',
+  'manual.onthispage.label': 'On this page',
+  'manual.search.placeholder': 'Search topics...',
+  'manual.search.label': 'Search manual',
+  'manual.search.noResults': 'No matching topics.',
+  'manual.callout.info': 'Note',
+  'manual.callout.warning': 'Warning',
+  'manual.callout.caution': 'Caution',
+  'manual.req.label': 'Requirement',
+  'manual.code.copy': 'Copy',
+  'manual.code.copied': 'Copied',
 };

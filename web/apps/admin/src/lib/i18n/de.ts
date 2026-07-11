@@ -441,4 +441,27 @@ export const de = {
     'Wenn aktiviert, sendet dieser Worker feingliedrige Ereignisse (Verbindungslebenszyklus, IDLE-Wachzustand, Ordner-Syncs) an den Ereignisse-View, gefiltert nach der Konto-ID als Akteur. Der Overhead wird auf inaktive Konten beschränkt.',
   'imapImports.error.loadFailed': 'IMAP-Import-Status konnte nicht geladen werden',
   'imapImports.error.setDebugLogFailed': 'Debug-Protokollierung konnte nicht geändert werden',
+
+  // ── Not found ─────────────────────────────────────────────────────────
+  'notFound.title': 'Nicht gefunden',
+  'notFound.lead': 'Keine Ansicht registriert für',
+  'notFound.goToDashboard': 'Zum Dashboard',
+
+  // ── Help (manual viewer) ──────────────────────────────────────────────
+  'help.loading': 'Handbuch wird geladen...',
+  'help.unavailable': 'Handbuch nicht verfügbar',
+  'help.error.bundleNotAvailable':
+    'Handbuch-Bundle nicht verfügbar (HTTP {status}). Führen Sie den Bundle-Schritt aus, um es zu erzeugen.',
+  'help.error.loadFailed': 'Handbuch konnte nicht geladen werden: {message}',
+  'manual.toc.label': 'Inhaltsverzeichnis',
+  'manual.onthispage.label': 'Auf dieser Seite',
+  'manual.search.placeholder': 'Themen suchen...',
+  'manual.search.label': 'Handbuch durchsuchen',
+  'manual.search.noResults': 'Keine passenden Themen.',
+  'manual.callout.info': 'Hinweis',
+  'manual.callout.warning': 'Warnung',
+  'manual.callout.caution': 'Vorsicht',
+  'manual.req.label': 'Anforderung',
+  'manual.code.copy': 'Kopieren',
+  'manual.code.copied': 'Kopiert',
 };
