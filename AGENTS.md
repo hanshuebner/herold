@@ -28,6 +28,7 @@ Each owns an area of the code tree. Ownership is where design and first-pass rev
 | `http-api-implementor` | `internal/protoadmin`, `internal/protosend`, `internal/protowebhook`, `internal/protoevents` | own REST shapes; HMAC for webhooks; NATS for default event publisher |
 | `ops-observability-implementor` | `internal/sysconfig`, `internal/appconfig`, `internal/observe`, `internal/tls` (loader), `internal/admin` CLI glue, boot / reload / shutdown | n/a |
 | `web-frontend-implementor` | `web/` (suite + admin SPAs + design-system), `internal/webspa`, `scripts/build-web.sh`, the web CI lane | Svelte 5, Vite 6, pnpm 10, Bits UI, Carbon-derived tokens; Web Push (RFC 8030 + 8291 + 8292) on the client side |
+| `mobile` | `mobile/` (KMP shared core + native Android Compose app), `docs/design/android/`, the parity matrix, the mobile CI lane | 8620, 8621, JMAP for Calendars/Contacts; Kotlin Multiplatform, Jetpack Compose, SQLDelight, FCM. Tracks the Suite's mail feature set (`web-frontend-implementor`'s surface) via `docs/design/android/notes/parity-matrix.md` |
 
 ## Cross-cutting roster
 
