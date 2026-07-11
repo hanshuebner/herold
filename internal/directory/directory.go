@@ -456,6 +456,32 @@ func (d *Directory) ResolveAddress(ctx context.Context, local, domain string) (P
 	return 0, fmt.Errorf("%w: %s@%s", ErrNotFound, local, domain)
 }
 
+// ResolveExternalAlias looks up local@domain among alias rows whose
+// target is an address outside this deployment (re #181). It is a
+// separate lookup from ResolveAddress (which only ever yields an
+// internal PrincipalID): callers try ResolveAddress first and fall back
+// to ResolveExternalAlias on ErrNotFound, so an internal-target alias
+// or canonical address always wins over a same-named external one.
+// Returns ErrNotFound when local@domain has no external-target alias.
+func (d *Directory) ResolveExternalAlias(ctx context.Context, local, domain string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	local = strings.ToLower(strings.TrimSpace(local))
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if local == "" || domain == "" {
+		return "", ErrInvalidEmail
+	}
+	addr, err := d.meta.ResolveAliasExternalTarget(ctx, local, domain)
+	if err == nil {
+		return addr, nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return "", fmt.Errorf("%w: %s@%s", ErrNotFound, local, domain)
+	}
+	return "", fmt.Errorf("directory: resolve external alias: %w", err)
+}
+
 // audit records a mutation to the durable audit log (REQ-AUTH-62) and
 // emits a matching INFO-level slog entry for real-time log collectors.
 // The slog attrs are captured as structured Metadata on the audit

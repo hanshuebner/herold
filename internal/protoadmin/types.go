@@ -107,12 +107,17 @@ type operatorDTO struct {
 	ManagedDomains []string `json:"managed_domains"`
 }
 
-// aliasDTO is the wire representation of an Alias row.
+// aliasDTO is the wire representation of an Alias row. Exactly one of
+// TargetPrincipalID / TargetAddress is populated (re #181):
+// TargetPrincipalID for the pre-existing internal-target shape,
+// TargetAddress for an alias that forwards to an address outside this
+// deployment.
 type aliasDTO struct {
 	ID                uint64     `json:"id"`
 	LocalPart         string     `json:"local"`
 	Domain            string     `json:"domain"`
-	TargetPrincipalID uint64     `json:"target_principal_id"`
+	TargetPrincipalID uint64     `json:"target_principal_id,omitempty"`
+	TargetAddress     string     `json:"target_address,omitempty"`
 	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 }
@@ -123,6 +128,7 @@ func toAliasDTO(a store.Alias) aliasDTO {
 		LocalPart:         a.LocalPart,
 		Domain:            a.Domain,
 		TargetPrincipalID: uint64(a.TargetPrincipal),
+		TargetAddress:     a.TargetAddress,
 		ExpiresAt:         a.ExpiresAt,
 		CreatedAt:         a.CreatedAt,
 	}

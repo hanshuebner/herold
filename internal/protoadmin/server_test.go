@@ -625,6 +625,94 @@ func TestAliases_CRUD_ScopedByDomain(t *testing.T) {
 	}
 }
 
+// TestAliases_ExternalTarget covers issue #181: an alias may forward to
+// an address outside this deployment instead of an internal principal.
+func TestAliases_ExternalTarget(t *testing.T) {
+	h := newHarness(t)
+	_, key := h.bootstrap("admin@example.com")
+
+	// Reproduction of the reported gap: creating an alias with only an
+	// external address (no target_principal_id) used to be rejected.
+	res, buf := h.doRequest("POST", "/api/v1/aliases", key, map[string]any{
+		"local":          "sales",
+		"domain":         "example.com",
+		"target_address": "Sales@External.Example",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create external-target alias = %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID                uint64 `json:"id"`
+		TargetPrincipalID uint64 `json:"target_principal_id"`
+		TargetAddress     string `json:"target_address"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, buf)
+	}
+	if created.TargetPrincipalID != 0 {
+		t.Fatalf("TargetPrincipalID = %d, want 0", created.TargetPrincipalID)
+	}
+	if created.TargetAddress != "sales@external.example" {
+		t.Fatalf("TargetAddress = %q, want lower-cased sales@external.example", created.TargetAddress)
+	}
+
+	// Neither target set is rejected.
+	res, _ = h.doRequest("POST", "/api/v1/aliases", key, map[string]any{
+		"local":  "neither",
+		"domain": "example.com",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with neither target = %d, want 400", res.StatusCode)
+	}
+
+	// Both targets set is rejected.
+	pid := h.createPrincipal(key, "target2@example.com")
+	res, _ = h.doRequest("POST", "/api/v1/aliases", key, map[string]any{
+		"local":               "both",
+		"domain":              "example.com",
+		"target_principal_id": pid,
+		"target_address":      "x@external.example",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with both targets = %d, want 400", res.StatusCode)
+	}
+
+	// Malformed external address is rejected.
+	res, _ = h.doRequest("POST", "/api/v1/aliases", key, map[string]any{
+		"local":          "badaddr",
+		"domain":         "example.com",
+		"target_address": "not-an-email",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with malformed target_address = %d, want 400", res.StatusCode)
+	}
+
+	// The list surface shows the external target.
+	res, buf = h.doRequest("GET", "/api/v1/aliases?domain=example.com", key, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list = %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []struct {
+			ID            uint64 `json:"id"`
+			TargetAddress string `json:"target_address"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(buf, &page)
+	var found bool
+	for _, it := range page.Items {
+		if it.ID == created.ID {
+			found = true
+			if it.TargetAddress != "sales@external.example" {
+				t.Fatalf("list TargetAddress = %q", it.TargetAddress)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("external-target alias %d not found in list: %s", created.ID, buf)
+	}
+}
+
 func TestOIDCProviders_CRUD(t *testing.T) {
 	h := newHarness(t)
 	_, key := h.bootstrap("admin@example.com")

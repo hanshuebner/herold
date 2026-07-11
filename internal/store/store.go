@@ -539,12 +539,26 @@ type Metadata interface {
 	) (map[uint64][]ThreadMessageRow, error)
 
 	// InsertAlias creates an alias mapping. Returns ErrConflict on
-	// duplicate (local_part, domain).
+	// duplicate (local_part, domain). Returns ErrInvalidArgument unless
+	// exactly one of a.TargetPrincipal / a.TargetAddress is set (re #181).
 	InsertAlias(ctx context.Context, a Alias) (Alias, error)
 
 	// ResolveAlias looks up the principal an address routes to. Returns
-	// ErrNotFound if no matching alias or canonical address exists.
+	// ErrNotFound if no matching internal-target alias or canonical
+	// address exists. An alias whose target is an external address
+	// (Alias.TargetAddress) is invisible here — it is not a principal —
+	// and also yields ErrNotFound; callers that need to route external-
+	// target aliases use ResolveAliasExternalTarget instead (re #181).
 	ResolveAlias(ctx context.Context, localPart, domain string) (PrincipalID, error)
+
+	// ResolveAliasExternalTarget looks up localPart@domain among alias
+	// rows whose target is an external address rather than a local
+	// principal, returning that address. Returns ErrNotFound when no
+	// such alias exists — including when the address instead resolves,
+	// via ResolveAlias, to an internal principal. Callers that need
+	// "does this address route anywhere" try ResolveAlias first and
+	// fall back to this method on ErrNotFound (re #181).
+	ResolveAliasExternalTarget(ctx context.Context, localPart, domain string) (string, error)
 
 	// ListAliases returns every alias row whose Domain matches, in
 	// ascending LocalPart order. An empty domain argument returns every

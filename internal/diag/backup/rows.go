@@ -102,12 +102,17 @@ type APIKeyRow struct {
 }
 
 type AliasRow struct {
-	ID              int64  `json:"id"`
-	LocalPart       string `json:"local_part"`
-	Domain          string `json:"domain"`
-	TargetPrincipal int64  `json:"target_principal"`
-	ExpiresAtUs     *int64 `json:"expires_at_us,omitempty"`
-	CreatedAtUs     int64  `json:"created_at_us"`
+	ID        int64  `json:"id"`
+	LocalPart string `json:"local_part"`
+	Domain    string `json:"domain"`
+	// TargetPrincipal and TargetAddress are mutually exclusive
+	// (migration 0078, issue #181): an internal-target alias carries
+	// TargetPrincipal, an external-target alias carries TargetAddress.
+	// Pre-migration rows always carry TargetPrincipal.
+	TargetPrincipal *int64  `json:"target_principal,omitempty"`
+	TargetAddress   *string `json:"target_address,omitempty"`
+	ExpiresAtUs     *int64  `json:"expires_at_us,omitempty"`
+	CreatedAtUs     int64   `json:"created_at_us"`
 }
 
 type SieveScriptRow struct {

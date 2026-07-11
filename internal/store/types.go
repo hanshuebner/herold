@@ -187,8 +187,15 @@ type NamedSieveScript struct {
 	UpdatedAt time.Time
 }
 
-// Alias maps an email address to a target Principal. See REQ-STORE
-// (aliases table in docs/design/server/architecture/02-storage-architecture.md §Schema).
+// Alias maps an email address to a target Principal or to an external
+// email address. See REQ-STORE (aliases table in
+// docs/design/server/architecture/02-storage-architecture.md §Schema).
+//
+// Exactly one of TargetPrincipal / TargetAddress is set (issue #181):
+// TargetPrincipal != 0 for an internal alias (the pre-existing shape);
+// TargetAddress != "" for an alias that forwards inbound mail to an
+// address outside this deployment. The store's InsertAlias enforces
+// the invariant and returns ErrInvalidArgument on violation.
 type Alias struct {
 	// ID is the stable primary key.
 	ID AliasID
@@ -196,8 +203,16 @@ type Alias struct {
 	LocalPart string
 	// Domain is the domain portion of the alias address (after '@').
 	Domain string
-	// TargetPrincipal is the principal receiving mail sent to this alias.
+	// TargetPrincipal is the principal receiving mail sent to this
+	// alias. Zero when TargetAddress is set instead.
 	TargetPrincipal PrincipalID
+	// TargetAddress is the external email address (full addr-spec,
+	// lower-cased) this alias forwards inbound mail to. Empty when
+	// TargetPrincipal is set instead. Forwarding mechanics (return-path
+	// handling, loop protection, DSN ownership) live in
+	// internal/protosmtp; the store only persists the routing target
+	// (re #181, riding the #63 redirect-to-outbound-queue substrate).
+	TargetAddress string
 	// ExpiresAt is non-nil when the alias is time-limited; the store
 	// treats expired aliases as non-existent for routing purposes.
 	ExpiresAt *time.Time

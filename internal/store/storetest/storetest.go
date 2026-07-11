@@ -710,6 +710,77 @@ func testAliases(t *testing.T, s store.Store) {
 	if _, err := s.Meta().ResolveAlias(ctx, "nobody", "example.com"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("ResolveAlias(absent) = %v", err)
 	}
+
+	// External-target alias (issue #181): forwards to an address outside
+	// this deployment instead of a local principal.
+	extAlias, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart:     "sales",
+		Domain:        "example.com",
+		TargetAddress: "Sales@External.Example",
+	})
+	if err != nil {
+		t.Fatalf("InsertAlias(external): %v", err)
+	}
+	if extAlias.TargetPrincipal != 0 {
+		t.Fatalf("InsertAlias(external) TargetPrincipal = %d, want 0", extAlias.TargetPrincipal)
+	}
+	if extAlias.TargetAddress != "sales@external.example" {
+		t.Fatalf("InsertAlias(external) TargetAddress = %q, want lower-cased", extAlias.TargetAddress)
+	}
+	// ResolveAlias (internal-only) must NOT surface the external-target
+	// row as if it routed to principal 0 — that would misroute delivery
+	// to a nonexistent principal.
+	if _, err := s.Meta().ResolveAlias(ctx, "sales", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAlias(external-target alias) = %v, want ErrNotFound", err)
+	}
+	extTarget, err := s.Meta().ResolveAliasExternalTarget(ctx, "sales", "example.com")
+	if err != nil {
+		t.Fatalf("ResolveAliasExternalTarget: %v", err)
+	}
+	if extTarget != "sales@external.example" {
+		t.Fatalf("ResolveAliasExternalTarget = %q, want sales@external.example", extTarget)
+	}
+	if _, err := s.Meta().ResolveAliasExternalTarget(ctx, "bob.alias", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAliasExternalTarget(internal-target alias) = %v, want ErrNotFound", err)
+	}
+	if _, err := s.Meta().ResolveAliasExternalTarget(ctx, "nobody", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAliasExternalTarget(absent) = %v, want ErrNotFound", err)
+	}
+
+	// Neither / both target fields set is a validation error.
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{LocalPart: "neither", Domain: "example.com"}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("InsertAlias(neither target) = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart:       "both",
+		Domain:          "example.com",
+		TargetPrincipal: p.ID,
+		TargetAddress:   "x@external.example",
+	}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("InsertAlias(both targets) = %v, want ErrInvalidArgument", err)
+	}
+
+	// ListAliases surfaces the external-target row with TargetAddress set
+	// and TargetPrincipal zero.
+	all, err := s.Meta().ListAliases(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListAliases: %v", err)
+	}
+	var foundExternal bool
+	for _, row := range all {
+		if row.ID == extAlias.ID {
+			foundExternal = true
+			if row.TargetAddress != "sales@external.example" {
+				t.Fatalf("ListAliases external row TargetAddress = %q", row.TargetAddress)
+			}
+			if row.TargetPrincipal != 0 {
+				t.Fatalf("ListAliases external row TargetPrincipal = %d, want 0", row.TargetPrincipal)
+			}
+		}
+	}
+	if !foundExternal {
+		t.Fatalf("ListAliases: external-target alias %d not found", extAlias.ID)
+	}
 }
 
 func testOIDC(t *testing.T, s store.Store) {

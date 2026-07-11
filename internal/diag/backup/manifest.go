@@ -515,7 +515,15 @@ const CurrentBackupVersion = 1
 //	handler decodes. Both reset to 0/'' whenever ReplaceMessageBody
 //	swaps the blob, since a new body invalidates any previously
 //	retained failed-fetch state.
-const CurrentSchemaVersion = 77
+//
+// 78 — 0078_alias_external_target.sql (issue #181). aliases.target_principal
+//
+//	becomes nullable and a new nullable target_address column carries an
+//	external forwarding addr-spec; exactly one of the two is set (CHECK
+//	constraint + store.Metadata.InsertAlias validation). No new backup
+//	row type: AliasRow.TargetPrincipal becomes *int64 and gains
+//	TargetAddress *string, both nil for pre-migration rows.
+const CurrentSchemaVersion = 78
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
