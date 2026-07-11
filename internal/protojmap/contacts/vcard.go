@@ -764,7 +764,7 @@ func parseTel(p *vcardProp) Phone {
 }
 
 // parseADR maps a vCard ADR structured property to a JSContact Address.
-// ADR component order: pobox;ext;street;city;region;postcode;country
+// ADR component order: pobox;ext;street;locality;region;postcode;country
 func parseADR(p *vcardProp) Address {
 	a := Address{}
 	a.Contexts = addrTypesToContexts(getPropTypes(p))
@@ -778,7 +778,7 @@ func parseADR(p *vcardProp) Address {
 		"postOfficeBox",
 		"extension",
 		"name",     // street address
-		"city",     // locality
+		"locality", // city (RFC 9553 JSContact kind)
 		"region",   // state/region
 		"postcode", // postal code
 		"country",  // country name
@@ -1189,7 +1189,7 @@ func generateN(n *Name) string {
 }
 
 // buildADRValue converts a JSContact Address to a vCard ADR value.
-// Output: pobox;ext;street;city;region;postcode;country
+// Output: pobox;ext;street;locality;region;postcode;country
 func buildADRValue(a Address) string {
 	fields := make([]string, 7)
 	assign := func(idx int, v string) {
@@ -1206,7 +1206,7 @@ func buildADRValue(a Address) string {
 		case "name", "number", "building", "direction", "block",
 			"subdistrict", "landmark":
 			assign(2, comp.Value)
-		case "city", "district", "county":
+		case "locality", "city", "district", "county":
 			assign(3, comp.Value)
 		case "province", "region", "state":
 			assign(4, comp.Value)

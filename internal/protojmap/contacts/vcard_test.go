@@ -112,7 +112,7 @@ func TestVCard_ParseFull(t *testing.T) {
 		if a.CountryCode != "GB" {
 			t.Errorf("CountryCode = %q, want GB", a.CountryCode)
 		}
-		assertAddrComponent(t, a, "city", "London")
+		assertAddrComponent(t, a, "locality", "London")
 		assertAddrComponent(t, a, "postcode", "SW1A 2AA")
 	}
 
@@ -139,6 +139,31 @@ func TestVCard_ParseFull(t *testing.T) {
 	assertRawJSONHasURL(t, c, "https://lovelace.example.test")
 	assertRawJSONHasBirthday(t, c, 1815, 12, 10)
 	assertRawJSONHasAnniversary(t, c, 0, 12, 25)
+}
+
+// TestVCard_ParseADR_LocalityKind guards against the ADR locality
+// component being mapped to a non-standard JSContact kind (re #196):
+// the web client only recognizes RFC 9553's "locality" kind, so a
+// mismatch there silently drops the Stadt field after vCard import.
+func TestVCard_ParseADR_LocalityKind(t *testing.T) {
+	vcf := "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Test\r\nUID:urn:uuid:adr\r\n" +
+		"ADR;TYPE=HOME:;;63 Strelitzer Str;Berlin;;10115;Deutschland\r\n" +
+		"END:VCARD\r\n"
+
+	results := contacts.ParseVCards([]byte(vcf), nil)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Error != nil {
+		t.Fatalf("parse error: %v", results[0].Error)
+	}
+	c := results[0].Card
+	if len(c.Addresses) != 1 {
+		t.Fatalf("Addresses count = %d, want 1", len(c.Addresses))
+	}
+	for _, a := range c.Addresses {
+		assertAddrComponent(t, a, "locality", "Berlin")
+	}
 }
 
 func TestVCard_ParseMultiple(t *testing.T) {
@@ -414,7 +439,7 @@ func TestVCard_GenerateFull(t *testing.T) {
 			"a0": {
 				Components: []contacts.AddressComponent{
 					{Kind: "name", Value: "10 Downing Street"},
-					{Kind: "city", Value: "London"},
+					{Kind: "locality", Value: "London"},
 					{Kind: "postcode", Value: "SW1A 2AA"},
 					{Kind: "country", Value: "United Kingdom"},
 				},
@@ -572,7 +597,7 @@ func TestVCard_RoundTrip_Individual(t *testing.T) {
 			"work": {
 				Components: []contacts.AddressComponent{
 					{Kind: "name", Value: "123 Main St"},
-					{Kind: "city", Value: "Springfield"},
+					{Kind: "locality", Value: "Springfield"},
 					{Kind: "region", Value: "IL"},
 					{Kind: "postcode", Value: "62701"},
 					{Kind: "country", Value: "USA"},
