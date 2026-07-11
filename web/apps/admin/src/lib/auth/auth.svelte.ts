@@ -25,6 +25,7 @@
  */
 
 import { router } from '../router/router.svelte';
+import { t } from '../i18n/i18n.svelte';
 
 export type AuthStatus =
   | 'idle'
@@ -274,7 +275,7 @@ class Auth {
 
       if (response.status !== 200) {
         this.status = 'unauthenticated';
-        this.errorMessage = `Unexpected response: HTTP ${response.status}`;
+        this.errorMessage = t('auth.error.unexpectedResponse', { status: response.status });
         return;
       }
 
@@ -424,12 +425,12 @@ class Auth {
 
       if (response.status === 401) {
         let stepUpRequired = false;
-        let errorMessage = 'Invalid email or password.';
+        let errorMessage = t('auth.error.invalidCredentials');
         try {
           const body = (await response.json()) as LoginErrorResponse;
           if (body.step_up_required) {
             stepUpRequired = true;
-            errorMessage = 'Two-factor authentication code required.';
+            errorMessage = t('auth.error.totpRequired');
           } else if (body.message) {
             errorMessage = body.message;
           }
@@ -442,10 +443,10 @@ class Auth {
       return {
         ok: false,
         stepUpRequired: false,
-        errorMessage: `Unexpected response: HTTP ${response.status}`,
+        errorMessage: t('auth.error.unexpectedResponse', { status: response.status }),
       };
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Network error';
+      const errorMessage = err instanceof Error ? err.message : t('auth.error.networkError');
       return { ok: false, stepUpRequired: false, errorMessage };
     }
   }

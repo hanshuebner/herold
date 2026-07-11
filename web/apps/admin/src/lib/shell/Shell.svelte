@@ -1,25 +1,27 @@
 <script lang="ts">
   import { auth } from '../auth/auth.svelte';
   import { router } from '../router/router.svelte';
+  import { settings } from '../settings/settings.svelte';
+  import { t, LOCALES, type Locale } from '../i18n/i18n.svelte';
 
   interface NavItem {
-    label: string;
+    labelKey: string;
     path: string;
     segment: string;
     soon?: boolean;
   }
 
   const navItems: NavItem[] = [
-    { label: 'Dashboard', path: '/dashboard', segment: 'dashboard' },
-    { label: 'Principals', path: '/principals', segment: 'principals' },
-    { label: 'Domains', path: '/domains', segment: 'domains' },
-    { label: 'Queue', path: '/queue', segment: 'queue' },
-    { label: 'Audit', path: '/audit', segment: 'audit' },
-    { label: 'Ereignisse', path: '/events', segment: 'events' },
-    { label: 'IMAP-Import', path: '/imap-imports', segment: 'imap-imports' },
-    { label: 'Client logs', path: '/clientlog', segment: 'clientlog' },
-    { label: 'Nachrichtenrecherche', path: '/message-research', segment: 'message-research' },
-    { label: 'Help', path: '/help', segment: 'help' },
+    { labelKey: 'shell.nav.dashboard', path: '/dashboard', segment: 'dashboard' },
+    { labelKey: 'shell.nav.principals', path: '/principals', segment: 'principals' },
+    { labelKey: 'shell.nav.domains', path: '/domains', segment: 'domains' },
+    { labelKey: 'shell.nav.queue', path: '/queue', segment: 'queue' },
+    { labelKey: 'shell.nav.audit', path: '/audit', segment: 'audit' },
+    { labelKey: 'shell.nav.events', path: '/events', segment: 'events' },
+    { labelKey: 'shell.nav.imapImports', path: '/imap-imports', segment: 'imap-imports' },
+    { labelKey: 'shell.nav.clientlog', path: '/clientlog', segment: 'clientlog' },
+    { labelKey: 'shell.nav.messageResearch', path: '/message-research', segment: 'message-research' },
+    { labelKey: 'shell.nav.help', path: '/help', segment: 'help' },
   ];
 
   interface Props {
@@ -33,8 +35,21 @@
        the wordmark once a shared component package or inlined copy is
        wired for the admin SPA. Admin is the 'admin' currentApp entry. -->
   <header class="topbar">
-    <span class="wordmark">Herold admin</span>
+    <span class="wordmark">{t('shell.wordmark')}</span>
     <div class="topbar-right">
+      <div class="lang-switch" role="radiogroup" aria-label={t('shell.language.label')}>
+        {#each LOCALES as locale}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={settings.locale === locale}
+            class:on={settings.locale === locale}
+            onclick={() => settings.setLocale(locale as Locale)}
+          >
+            {t(`shell.language.${locale}`)}
+          </button>
+        {/each}
+      </div>
       {#if auth.principal}
         <span class="principal-email">{auth.principal.email}</span>
         <button
@@ -42,14 +57,14 @@
           class="logout-btn"
           onclick={() => void auth.logout()}
         >
-          Sign out
+          {t('shell.signOut')}
         </button>
       {/if}
     </div>
   </header>
 
   <div class="body">
-    <nav class="rail" aria-label="Main navigation">
+    <nav class="rail" aria-label={t('shell.mainNavigation')}>
       <ul class="nav-list">
         {#each navItems as item (item.segment)}
           <li class:active={router.matches(item.segment)}>
@@ -60,11 +75,11 @@
               }}
               aria-current={router.matches(item.segment) ? 'page' : undefined}
               class:nav-soon={item.soon}
-              title={item.soon ? 'Coming soon' : undefined}
+              title={item.soon ? t('shell.nav.comingSoon') : undefined}
             >
-              {item.label}
+              {t(item.labelKey)}
               {#if item.soon}
-                <span class="soon-badge" aria-hidden="true">soon</span>
+                <span class="soon-badge" aria-hidden="true">{t('shell.nav.soonBadge')}</span>
               {/if}
             </button>
           </li>
@@ -112,6 +127,34 @@
   .principal-email {
     font-size: var(--type-body-compact-01-size);
     color: var(--text-secondary);
+  }
+  .lang-switch {
+    display: inline-flex;
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+  }
+  .lang-switch button {
+    padding: var(--spacing-01) var(--spacing-03);
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    cursor: pointer;
+    min-height: var(--touch-min);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .lang-switch button:not(:last-child) {
+    border-right: 1px solid var(--border-subtle-01);
+  }
+  .lang-switch button:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+  .lang-switch button.on {
+    background: var(--interactive);
+    color: var(--text-on-color);
   }
   .logout-btn {
     font-size: var(--type-body-compact-01-size);

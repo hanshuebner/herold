@@ -4,6 +4,9 @@
   import Shell from './lib/shell/Shell.svelte';
   import { router } from './lib/router/router.svelte';
   import { keyboard } from './lib/keyboard/engine.svelte';
+  import { auth } from './lib/auth/auth.svelte';
+  import { settings } from './lib/settings/settings.svelte';
+  import { t } from './lib/i18n/i18n.svelte';
   import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from '@herold/clientlog/sw-update';
   import DashboardView from './views/DashboardView.svelte';
   import PrincipalsView from './views/PrincipalsView.svelte';
@@ -23,53 +26,65 @@
   // Admin-global keyboard shortcuts.
   keyboard.registerGlobal({
     key: 'g d',
-    description: 'Go to Dashboard',
+    description: t('shortcuts.goDashboard'),
     action: () => router.navigate('/dashboard'),
   });
   keyboard.registerGlobal({
     key: 'g p',
-    description: 'Go to Principals',
+    description: t('shortcuts.goPrincipals'),
     action: () => router.navigate('/principals'),
   });
   keyboard.registerGlobal({
     key: 'g o',
-    description: 'Go to Domains',
+    description: t('shortcuts.goDomains'),
     action: () => router.navigate('/domains'),
   });
   keyboard.registerGlobal({
     key: 'g q',
-    description: 'Go to Queue',
+    description: t('shortcuts.goQueue'),
     action: () => router.navigate('/queue'),
   });
   keyboard.registerGlobal({
     key: 'g a',
-    description: 'Go to Audit',
+    description: t('shortcuts.goAudit'),
     action: () => router.navigate('/audit'),
   });
   keyboard.registerGlobal({
     key: 'g e',
-    description: 'Go to Events',
+    description: t('shortcuts.goEvents'),
     action: () => router.navigate('/events'),
   });
   keyboard.registerGlobal({
     key: 'g i',
-    description: 'Go to IMAP imports',
+    description: t('shortcuts.goImapImports'),
     action: () => router.navigate('/imap-imports'),
   });
   keyboard.registerGlobal({
     key: 'g l',
-    description: 'Go to Client logs',
+    description: t('shortcuts.goClientlog'),
     action: () => router.navigate('/clientlog'),
   });
   keyboard.registerGlobal({
     key: 'g r',
-    description: 'Go to Message research',
+    description: t('shortcuts.goMessageResearch'),
     action: () => router.navigate('/message-research'),
   });
   keyboard.registerGlobal({
     key: 'g h',
-    description: 'Go to Help',
+    description: t('shortcuts.goHelp'),
     action: () => router.navigate('/help'),
+  });
+
+  // Hydrate the locale (and any future settings) once the principal is
+  // known and admin content is about to render (re #180). Mirrors the
+  // suite's App.svelte pattern of hydrating settings.hydrate() on
+  // auth.status === 'ready'.
+  $effect(() => {
+    if (auth.status === 'ready') {
+      untrack(() => {
+        settings.hydrate();
+      });
+    }
   });
 
   // ── SW update notification (REQ-PUSH-72 / REQ-MOB-75) ───────────────────
@@ -223,9 +238,9 @@
 <!-- SW update banner (REQ-PUSH-72 / REQ-MOB-75). -->
 {#if showSwUpdateBanner}
   <div class="sw-update-banner" role="status" aria-live="polite">
-    <span>A new version is available.</span>
-    <button type="button" onclick={reloadAfterSwUpdate}>Reload</button>
-    <button type="button" aria-label="Dismiss" onclick={() => (showSwUpdateBanner = false)}>
+    <span>{t('sw.updateAvailable')}</span>
+    <button type="button" onclick={reloadAfterSwUpdate}>{t('sw.reload')}</button>
+    <button type="button" aria-label={t('sw.dismiss')} onclick={() => (showSwUpdateBanner = false)}>
       &#10005;
     </button>
   </div>

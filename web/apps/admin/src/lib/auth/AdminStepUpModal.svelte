@@ -15,6 +15,7 @@
   import { auth } from './auth.svelte';
   import { adminStepUp } from './step-up.svelte';
   import CodeInput from '@herold/design-system/CodeInput.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   let isBootstrap = $derived(auth.status === 'step_up_pending');
   let visible = $derived(isBootstrap || adminStepUp.visible);
@@ -127,10 +128,9 @@
     >
       {#if adminStepUp.enrollRequired}
         <!-- Enrollment required variant (REQ-AS-25) -->
-        <h2 id="su-title" class="title">Two-factor authentication required</h2>
+        <h2 id="su-title" class="title">{t('stepup.enroll.title')}</h2>
         <p id="su-desc" class="body">
-          Admin access requires TOTP two-factor authentication. Enrol a TOTP
-          authenticator app to continue.
+          {t('stepup.enroll.body')}
         </p>
         <div class="actions">
           <button
@@ -138,24 +138,24 @@
             class="btn btn-secondary"
             onclick={() => adminStepUp.cancel(isBootstrap)}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
         </div>
       {:else}
         <!-- Code-entry variant (REQ-AS-20) -->
-        <h2 id="su-title" class="title">Confirm your identity</h2>
+        <h2 id="su-title" class="title">{t('stepup.code.title')}</h2>
         <p id="su-desc" class="body">
-          Confirm your identity to continue — enter your authenticator code.
+          {t('stepup.code.body')}
         </p>
 
         <form onsubmit={handleSubmit} class="form" novalidate>
           <div class="field">
-            <span class="label">Authenticator code</span>
+            <span class="label">{t('stepup.code.label')}</span>
             <CodeInput
               bind:value={code}
               disabled={adminStepUp.submitting || lockoutSeconds > 0}
               invalid={adminStepUp.error !== null}
-              ariaLabel="Authenticator code"
+              ariaLabel={t('stepup.code.label')}
               testid="su-code"
               autofocus
             />
@@ -166,7 +166,7 @@
             {/if}
             {#if lockoutSeconds > 0}
               <p class="lockout-text" role="status" aria-live="polite">
-                Too many attempts. Try again in {formatCountdown(lockoutSeconds)}.
+                {t('stepup.lockout', { countdown: formatCountdown(lockoutSeconds) })}
               </p>
             {/if}
           </div>
@@ -178,7 +178,7 @@
               onclick={() => adminStepUp.cancel(isBootstrap)}
               disabled={adminStepUp.submitting}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </form>

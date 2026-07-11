@@ -1,0 +1,98 @@
+/**
+ * German message catalogue for the admin SPA. Mirrors the keys in `en.ts`;
+ * see that file's header for the catalogue's conventions (re #180).
+ */
+export const de = {
+  // ── Common ───────────────────────────────────────────────────────────
+  'common.cancel': 'Abbrechen',
+  'common.save': 'Speichern',
+  'common.saving': 'Wird gespeichert...',
+  'common.saved': 'Gespeichert',
+  'common.close': 'Schließen',
+  'common.delete': 'Löschen',
+  'common.confirm': 'Bestätigen',
+  'common.retry': 'Erneut versuchen',
+  'common.loading': 'Wird geladen...',
+  'common.back': 'Zurück',
+  'common.next': 'Weiter',
+  'common.previous': 'Zurück',
+  'common.none': 'Keine',
+  'common.yes': 'Ja',
+  'common.no': 'Nein',
+  'common.copy': 'Kopieren',
+  'common.copied': 'Kopiert',
+  'common.refresh': 'Aktualisieren',
+  'common.search': 'Suchen',
+  'common.error': 'Fehler',
+  'common.unknown': 'Unbekannt',
+
+  // ── Shell / top bar / nav ────────────────────────────────────────────
+  'shell.wordmark': 'Herold admin',
+  'shell.signOut': 'Abmelden',
+  'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.principals': 'Principals',
+  'shell.nav.domains': 'Domains',
+  'shell.nav.queue': 'Warteschlange',
+  'shell.nav.audit': 'Audit',
+  'shell.nav.events': 'Ereignisse',
+  'shell.nav.imapImports': 'IMAP-Import',
+  'shell.nav.clientlog': 'Client-Logs',
+  'shell.nav.messageResearch': 'Nachrichtenrecherche',
+  'shell.nav.help': 'Hilfe',
+  'shell.nav.comingSoon': 'Demnächst verfügbar',
+  'shell.nav.soonBadge': 'bald',
+  'shell.mainNavigation': 'Hauptnavigation',
+  'shell.swUpdateAvailable': 'Eine neue Version ist verfügbar.',
+  'shell.swUpdateReload': 'Neu laden',
+  'shell.swUpdateDismiss': 'Verwerfen',
+  'shell.language.en': 'EN',
+  'shell.language.de': 'DE',
+  'shell.language.label': 'Sprache',
+
+  // ── Auth gate / connecting splash ────────────────────────────────────
+  'auth.connecting': 'Verbindung wird hergestellt...',
+  'auth.error.invalidCredentials': 'Ungültige E-Mail-Adresse oder ungültiges Passwort.',
+  'auth.error.totpRequired': 'Zwei-Faktor-Authentifizierungscode erforderlich.',
+  'auth.error.unexpectedResponse': 'Unerwartete Antwort: HTTP {status}',
+  'auth.error.networkError': 'Netzwerkfehler',
+
+  // ── Login ────────────────────────────────────────────────────────────
+  'login.email': 'E-Mail-Adresse',
+  'login.password': 'Passwort',
+  'login.totpCode': 'Authenticator-Code',
+  'login.totpPlaceholder': '6-stelliger Code',
+  'login.stepUpRequired': 'Geben Sie Ihren Zwei-Faktor-Authentifizierungscode ein, um fortzufahren.',
+  'login.signIn': 'Anmelden',
+  'login.signingIn': 'Anmeldung läuft...',
+
+  // ── TOTP step-up modal ───────────────────────────────────────────────
+  'stepup.enroll.title': 'Zwei-Faktor-Authentifizierung erforderlich',
+  'stepup.enroll.body':
+    'Der Admin-Zugriff erfordert eine TOTP-Zwei-Faktor-Authentifizierung. Richte eine TOTP-Authenticator-App ein, um fortzufahren.',
+  'stepup.code.title': 'Identität bestätigen',
+  'stepup.code.body':
+    'Bestätigen Sie Ihre Identität, um fortzufahren — geben Sie Ihren Authenticator-Code ein.',
+  'stepup.code.label': 'Authenticator-Code',
+  'stepup.lockout': 'Zu viele Versuche. Versuche es erneut in {countdown}.',
+  'stepup.error.invalidRequest': 'Ungültige Anfrage.',
+  'stepup.error.wrongCode': 'Falscher Code — bitte erneut versuchen.',
+  'stepup.error.unexpectedResponse': 'Unerwartete Antwort: HTTP {status}.',
+  'stepup.error.networkError': 'Netzwerkfehler — bitte erneut versuchen.',
+
+  // ── Global keyboard shortcuts (help overlay, currently unrendered) ──
+  'shortcuts.goDashboard': 'Zum Dashboard',
+  'shortcuts.goPrincipals': 'Zu Principals',
+  'shortcuts.goDomains': 'Zu Domains',
+  'shortcuts.goQueue': 'Zur Warteschlange',
+  'shortcuts.goAudit': 'Zum Audit',
+  'shortcuts.goEvents': 'Zu Ereignissen',
+  'shortcuts.goImapImports': 'Zum IMAP-Import',
+  'shortcuts.goClientlog': 'Zu Client-Logs',
+  'shortcuts.goMessageResearch': 'Zur Nachrichtenrecherche',
+  'shortcuts.goHelp': 'Zur Hilfe',
+
+  // ── SW update banner ─────────────────────────────────────────────────
+  'sw.updateAvailable': 'Eine neue Version ist verfügbar.',
+  'sw.reload': 'Neu laden',
+  'sw.dismiss': 'Verwerfen',
+};

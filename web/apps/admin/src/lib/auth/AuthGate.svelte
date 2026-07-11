@@ -2,6 +2,7 @@
   import { auth } from './auth.svelte';
   import LoginView from '../../views/LoginView.svelte';
   import AdminStepUpModal from './AdminStepUpModal.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     children?: import('svelte').Snippet;
@@ -24,8 +25,8 @@
   <!-- bootstrapping / step_up_pending: show centered spinner -->
   <div class="splash" role="status" aria-live="polite">
     <div class="card">
-      <h1 class="wordmark">Herold admin</h1>
-      <p class="message">Connecting...</p>
+      <h1 class="wordmark">{t('shell.wordmark')}</h1>
+      <p class="message">{t('auth.connecting')}</p>
       <div class="spinner" aria-hidden="true"></div>
     </div>
   </div>

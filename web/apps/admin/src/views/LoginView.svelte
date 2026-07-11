@@ -1,5 +1,6 @@
 <script lang="ts">
   import { auth } from '../lib/auth/auth.svelte';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   let email = $state('');
   let password = $state('');
@@ -29,7 +30,7 @@
 
     if (result.stepUpRequired && !showTotp) {
       showTotp = true;
-      errorMessage = 'Enter your two-factor authentication code to continue.';
+      errorMessage = t('login.stepUpRequired');
       return;
     }
 
@@ -39,11 +40,11 @@
 
 <div class="login-page">
   <div class="login-card">
-    <h1 class="wordmark">Herold admin</h1>
+    <h1 class="wordmark">{t('shell.wordmark')}</h1>
 
     <form class="form" onsubmit={handleSubmit} novalidate>
       <div class="field">
-        <label for="email" class="label">Email address</label>
+        <label for="email" class="label">{t('login.email')}</label>
         <input
           id="email"
           type="email"
@@ -57,7 +58,7 @@
       </div>
 
       <div class="field">
-        <label for="password" class="label">Password</label>
+        <label for="password" class="label">{t('login.password')}</label>
         <input
           id="password"
           type="password"
@@ -72,7 +73,7 @@
 
       {#if showTotp}
         <div class="field">
-          <label for="totp-code" class="label">Authenticator code</label>
+          <label for="totp-code" class="label">{t('login.totpCode')}</label>
           <input
             id="totp-code"
             type="text"
@@ -81,7 +82,7 @@
             inputmode="numeric"
             autocomplete="one-time-code"
             pattern="[0-9]*"
-            placeholder="6-digit code"
+            placeholder={t('login.totpPlaceholder')}
             bind:value={totpCode}
             disabled={submitting}
           />
@@ -93,7 +94,7 @@
       {/if}
 
       <button type="submit" class="submit-btn" disabled={submitting}>
-        {submitting ? 'Signing in...' : 'Sign in'}
+        {submitting ? t('login.signingIn') : t('login.signIn')}
       </button>
     </form>
   </div>

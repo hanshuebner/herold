@@ -1,0 +1,99 @@
+/**
+ * English message catalogue for the admin SPA. Source-of-truth -- every
+ * key in any other locale must exist here. Keys are dot-grouped by
+ * surface to keep future additions discoverable. Mirrors the structure
+ * of `web/apps/suite/src/lib/i18n/en.ts` (re #180).
+ */
+export const en = {
+  // ── Common ───────────────────────────────────────────────────────────
+  'common.cancel': 'Cancel',
+  'common.save': 'Save',
+  'common.saving': 'Saving...',
+  'common.saved': 'Saved',
+  'common.close': 'Close',
+  'common.delete': 'Delete',
+  'common.confirm': 'Confirm',
+  'common.retry': 'Retry',
+  'common.loading': 'Loading...',
+  'common.back': 'Back',
+  'common.next': 'Next',
+  'common.previous': 'Previous',
+  'common.none': 'None',
+  'common.yes': 'Yes',
+  'common.no': 'No',
+  'common.copy': 'Copy',
+  'common.copied': 'Copied',
+  'common.refresh': 'Refresh',
+  'common.search': 'Search',
+  'common.error': 'Error',
+  'common.unknown': 'Unknown',
+
+  // ── Shell / top bar / nav ────────────────────────────────────────────
+  'shell.wordmark': 'Herold admin',
+  'shell.signOut': 'Sign out',
+  'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.principals': 'Principals',
+  'shell.nav.domains': 'Domains',
+  'shell.nav.queue': 'Queue',
+  'shell.nav.audit': 'Audit',
+  'shell.nav.events': 'Events',
+  'shell.nav.imapImports': 'IMAP import',
+  'shell.nav.clientlog': 'Client logs',
+  'shell.nav.messageResearch': 'Message research',
+  'shell.nav.help': 'Help',
+  'shell.nav.comingSoon': 'Coming soon',
+  'shell.nav.soonBadge': 'soon',
+  'shell.mainNavigation': 'Main navigation',
+  'shell.swUpdateAvailable': 'A new version is available.',
+  'shell.swUpdateReload': 'Reload',
+  'shell.swUpdateDismiss': 'Dismiss',
+  'shell.language.en': 'EN',
+  'shell.language.de': 'DE',
+  'shell.language.label': 'Language',
+
+  // ── Auth gate / connecting splash ────────────────────────────────────
+  'auth.connecting': 'Connecting...',
+  'auth.error.invalidCredentials': 'Invalid email or password.',
+  'auth.error.totpRequired': 'Two-factor authentication code required.',
+  'auth.error.unexpectedResponse': 'Unexpected response: HTTP {status}',
+  'auth.error.networkError': 'Network error',
+
+  // ── Login ────────────────────────────────────────────────────────────
+  'login.email': 'Email address',
+  'login.password': 'Password',
+  'login.totpCode': 'Authenticator code',
+  'login.totpPlaceholder': '6-digit code',
+  'login.stepUpRequired': 'Enter your two-factor authentication code to continue.',
+  'login.signIn': 'Sign in',
+  'login.signingIn': 'Signing in...',
+
+  // ── TOTP step-up modal ───────────────────────────────────────────────
+  'stepup.enroll.title': 'Two-factor authentication required',
+  'stepup.enroll.body':
+    'Admin access requires TOTP two-factor authentication. Enrol a TOTP authenticator app to continue.',
+  'stepup.code.title': 'Confirm your identity',
+  'stepup.code.body': 'Confirm your identity to continue — enter your authenticator code.',
+  'stepup.code.label': 'Authenticator code',
+  'stepup.lockout': 'Too many attempts. Try again in {countdown}.',
+  'stepup.error.invalidRequest': 'Invalid request.',
+  'stepup.error.wrongCode': 'Incorrect code — try again.',
+  'stepup.error.unexpectedResponse': 'Unexpected response: HTTP {status}.',
+  'stepup.error.networkError': 'Network error — please try again.',
+
+  // ── Global keyboard shortcuts (help overlay, currently unrendered) ──
+  'shortcuts.goDashboard': 'Go to Dashboard',
+  'shortcuts.goPrincipals': 'Go to Principals',
+  'shortcuts.goDomains': 'Go to Domains',
+  'shortcuts.goQueue': 'Go to Queue',
+  'shortcuts.goAudit': 'Go to Audit',
+  'shortcuts.goEvents': 'Go to Events',
+  'shortcuts.goImapImports': 'Go to IMAP imports',
+  'shortcuts.goClientlog': 'Go to Client logs',
+  'shortcuts.goMessageResearch': 'Go to Message research',
+  'shortcuts.goHelp': 'Go to Help',
+
+  // ── SW update banner ─────────────────────────────────────────────────
+  'sw.updateAvailable': 'A new version is available.',
+  'sw.reload': 'Reload',
+  'sw.dismiss': 'Dismiss',
+};

@@ -23,6 +23,7 @@
 
 import { auth } from './auth.svelte';
 import { readAdminCsrfToken, setAdminOnStepUpRequired } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 interface PendingElevation {
   resolve: () => void;
@@ -122,15 +123,15 @@ class AdminStepUpStore {
             this.enrollRequired = true;
             return;
           }
-          this.error = body.message ?? 'Invalid request.';
+          this.error = body.message ?? t('stepup.error.invalidRequest');
         } catch {
-          this.error = 'Invalid request.';
+          this.error = t('stepup.error.invalidRequest');
         }
         return;
       }
 
       if (response.status === 401) {
-        this.error = 'Incorrect code — try again.';
+        this.error = t('stepup.error.wrongCode');
         return;
       }
 
@@ -142,9 +143,9 @@ class AdminStepUpStore {
         return;
       }
 
-      this.error = `Unexpected response: HTTP ${response.status}.`;
+      this.error = t('stepup.error.unexpectedResponse', { status: response.status });
     } catch {
-      this.error = 'Network error — please try again.';
+      this.error = t('stepup.error.networkError');
     } finally {
       this.submitting = false;
     }
