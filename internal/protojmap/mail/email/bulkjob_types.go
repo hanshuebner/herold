@@ -8,13 +8,16 @@ import (
 )
 
 // This file declares the wire types for the whole-mailbox async
-// bulk-mutation vendor extension (issue #149/#161, REQ-PROTO-40..48,
+// bulk-mutation vendor extension (issue #149/#161/#179, REQ-PROTO-40..48,
 // capability https://netzhansa.com/jmap/email-bulk-mutation):
 //
 //   - Email/setByQuery resolves a filter (the same criterion shape
 //     Email/query accepts) to a match ESTIMATE only and acks
 //     immediately with a jobId (REQ-PERF-DEADLINE — see
-//     bulkjob_methods.go).
+//     bulkjob_methods.go). The request carries either `patch` (an
+//     Email/set-shaped update patch, applied to every match) or
+//     `destroy: true` (permanently removes every match from every
+//     mailbox, issue #179) — mutually exclusive.
 //   - EmailBulkJob/get reports the background job's progress, backed
 //     by the row bulkjob_worker.go drains in batches.
 
@@ -43,7 +46,15 @@ type setByQueryRequest struct {
 	// Patch is the same per-object update-patch shape Email/set's
 	// `update` map values accept (e.g. `keywords/$seen`, `mailboxIds`,
 	// `mailboxIds/<id>`). Applied to every message the filter matches.
+	// Mutually exclusive with Destroy; exactly one of the two must be
+	// given.
 	Patch json.RawMessage `json:"patch"`
+	// Destroy, when true, permanently removes every message the filter
+	// matches from every mailbox it belongs to (issue #179) — the
+	// query-scoped equivalent of `Email/set { destroy: [...] }`, run as
+	// the same background job archive/delete/label/mark use. Mutually
+	// exclusive with Patch.
+	Destroy bool `json:"destroy,omitempty"`
 }
 
 // setByQueryResponse is the wire-form Email/setByQuery response. The

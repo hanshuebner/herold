@@ -76,7 +76,9 @@ type BulkJobWorker struct {
 	// h applies each message's patch via the exact same updateEmail
 	// path Email/set uses (keywords, mailboxIds full/incremental patch,
 	// snooze atomicity, …) so a bulk archive/mark-read/move behaves
-	// identically to the equivalent per-message Email/set call.
+	// identically to the equivalent per-message Email/set call. Destroy
+	// jobs (issue #179) go through the same destroyEmail path Email/set
+	// { destroy } uses instead.
 	h *handlerSet
 }
 
@@ -309,12 +311,28 @@ func (w *BulkJobWorker) finish(
 
 // applyPatch applies patchJSON to message mid via the same updateEmail
 // path Email/set uses, with the job's owning principal as both caller
-// and account owner (v1 scope: bulk jobs never cross accounts). Returns
-// "" on success, or a description string recorded as this message's
-// failure otherwise. A patch-application error here is a per-message
-// outcome, never a job-level failure — the caller always proceeds to
-// the next message in the batch.
+// and account owner (v1 scope: bulk jobs never cross accounts). An
+// empty patchJSON is the destroy-job sentinel (issue #179): the message
+// is permanently removed from every mailbox via the same destroyEmail
+// path Email/set { destroy } uses, instead of being patched. Returns ""
+// on success, or a description string recorded as this message's
+// failure otherwise. A per-message error here is never a job-level
+// failure — the caller always proceeds to the next message in the
+// batch.
 func (w *BulkJobWorker) applyPatch(ctx context.Context, pid store.PrincipalID, mid store.MessageID, patchJSON string) string {
+	if patchJSON == "" {
+		serr, err := w.h.destroyEmail(ctx, pid, pid, mid)
+		if err != nil {
+			return err.Error()
+		}
+		if serr != nil {
+			if serr.Description != "" {
+				return serr.Type + ": " + serr.Description
+			}
+			return serr.Type
+		}
+		return ""
+	}
 	serr, err := w.h.updateEmail(ctx, pid, pid, mid, json.RawMessage(patchJSON))
 	if err != nil {
 		return err.Error()

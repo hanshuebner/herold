@@ -2581,7 +2581,7 @@ class MailStore {
     // than refusing.
     if (this.listWholeMailboxSelected) {
       await this.#startWholeMailboxBulk({
-        [`mailboxIds/${mailboxId}`]: on ? true : null,
+        patch: { [`mailboxIds/${mailboxId}`]: on ? true : null },
       });
       return;
     }
@@ -2634,15 +2634,32 @@ class MailStore {
 
   /**
    * Permanently delete every email currently in the Trash mailbox.
-   * Issues Email/query to enumerate the ids, then a single Email/set
-   * with `destroy: [...]`. No undo: destroy is final.
    *
-   * Returns the number of emails deleted, or 0 on failure (with toast).
+   * When the server advertises `Capability.HeroldEmailBulkMutation`
+   * (issue #179), this always runs as the same whole-mailbox async
+   * bulk-destroy job archive/delete/label/mark use, scoped explicitly
+   * to the Trash mailbox regardless of the current folder or selection
+   * state -- Trash can hold arbitrarily many messages, well past what a
+   * synchronous request can process within REQ-PERF-DEADLINE. Returns
+   * -1 immediately in that case (the destroyed count is not known
+   * synchronously; MailView's bulk-job banner reports progress and the
+   * eventual completion count).
+   *
+   * Falls back to the old synchronous path -- Email/query to enumerate
+   * up to 10000 ids, then a single Email/set { destroy: [...] } -- on a
+   * server that does not advertise the capability. No undo either way:
+   * destroy is final. Returns the number of emails deleted, or 0 on
+   * failure (with toast).
    */
   async emptyTrash(): Promise<number> {
     const accountId = this.mailAccountId;
     const trash = this.trash;
     if (!accountId || !trash) return 0;
+
+    if (jmap.hasCapability(Capability.HeroldEmailBulkMutation)) {
+      await this.#startWholeMailboxBulk({ destroy: true }, { inMailbox: trash.id });
+      return -1;
+    }
 
     let ids: string[] = [];
     try {
@@ -2820,17 +2837,18 @@ class MailStore {
   }
 
   /**
-   * Fallback for whole-mailbox bulk actions (archive / delete / mark /
-   * label / move / category) when the server does not advertise
+   * Fallback for whole-mailbox bulk actions (archive / delete / destroy /
+   * mark / label / move / category) when the server does not advertise
    * `https://netzhansa.com/jmap/email-bulk-mutation` (issue #149). Archive
-   * / delete / mark read / mark unread / label all route through
+   * / delete / destroy / mark read / mark unread / label all route through
    * `#startWholeMailboxBulk` instead when the capability is present
    * (label as of issue #178, since a label is a mailbox membership and
    * `Email/setByQuery`'s patch already accepts the `mailboxIds/<id>`
-   * shape); move / category still refuse unconditionally today because
-   * their pickers resolve a target from the loaded/visible selection,
-   * which is not what whole-mailbox mode means (see the design comment on
-   * issue #161 and the "Not done" note in the #149 issue thread).
+   * shape; permanent destroy as of issue #179, via `destroy: true`);
+   * move / category still refuse unconditionally today because their
+   * pickers resolve a target from the loaded/visible selection, which is
+   * not what whole-mailbox mode means (see the design comment on issue
+   * #161 and the "Not done" note in the #149 issue thread).
    */
   wholeMailboxActionUnavailable(): void {
     toast.show({
@@ -2860,10 +2878,13 @@ class MailStore {
 
   /**
    * Start a whole-mailbox async bulk job via `Email/setByQuery` (issue
-   * #149/#161): `patch` is applied server-side, in the background, to
-   * every message matching the current folder's filter. Falls back to
-   * `wholeMailboxActionUnavailable()` when the server does not advertise
-   * `Capability.HeroldEmailBulkMutation`.
+   * #149/#161/#179): either a `patch` (applied server-side, in the
+   * background, to every match) or `destroy: true` (permanently removes
+   * every match — issue #179), scoped to the current folder's filter by
+   * default, or to `filterOverride` when given (e.g. `emptyTrash`,
+   * which always targets the Trash mailbox regardless of the folder
+   * currently shown). Falls back to `wholeMailboxActionUnavailable()`
+   * when the server does not advertise `Capability.HeroldEmailBulkMutation`.
    *
    * Clears the selection immediately (the job runs independently of
    * whatever is loaded client-side) and leaves `this.bulkJob` set so
@@ -2871,7 +2892,8 @@ class MailStore {
    * `#pollBulkJob` advances it from there.
    */
   async #startWholeMailboxBulk(
-    patch: Record<string, unknown>,
+    mutation: { patch: Record<string, unknown> } | { destroy: true },
+    filterOverride?: Record<string, unknown> | null,
   ): Promise<void> {
     const accountId = this.mailAccountId;
     if (!accountId) return;
@@ -2879,13 +2901,16 @@ class MailStore {
       this.wholeMailboxActionUnavailable();
       return;
     }
-    const filter = this.#buildCurrentFolderFilter() ?? null;
+    const filter =
+      filterOverride !== undefined ? filterOverride : (this.#buildCurrentFolderFilter() ?? null);
     this.clearSelection();
     try {
       const { responses } = await jmap.batch((b) => {
         b.call(
           'Email/setByQuery',
-          { accountId, filter, patch },
+          'destroy' in mutation
+            ? { accountId, filter, destroy: true }
+            : { accountId, filter, patch: mutation.patch },
           [Capability.Mail, Capability.HeroldEmailBulkMutation],
         );
       });
@@ -3069,8 +3094,10 @@ class MailStore {
     // instead of the ids array below.
     if (this.listWholeMailboxSelected) {
       await this.#startWholeMailboxBulk({
-        [`mailboxIds/${inbox.id}`]: null,
-        [`mailboxIds/${archive.id}`]: true,
+        patch: {
+          [`mailboxIds/${inbox.id}`]: null,
+          [`mailboxIds/${archive.id}`]: true,
+        },
       });
       return;
     }
@@ -3117,10 +3144,16 @@ class MailStore {
   /**
    * Permanently destroy a list of emails (Email/set { destroy: [...] }).
    * Use only after the user confirms; there is no undo. Issue #29.
+   *
+   * Whole-mailbox mode (issue #179): `ids` is only the loaded/visible
+   * window, not the full server-side result set, so permanently destroy
+   * every message the current folder filter matches via the same
+   * async bulk-job path the patch-based bulk actions use, with
+   * `destroy: true` instead of a patch.
    */
   async bulkDestroy(ids: string[]): Promise<void> {
     if (this.listWholeMailboxSelected) {
-      this.wholeMailboxActionUnavailable();
+      await this.#startWholeMailboxBulk({ destroy: true });
       return;
     }
     if (ids.length === 0) return;
@@ -3190,11 +3223,11 @@ class MailStore {
     const trash = this.trash;
     if (!trash) return;
     // Whole-mailbox mode (issue #149): patch every message the current
-    // folder filter matches via the async bulk-job path. `bulkDestroy`
-    // (permanent delete from inside Trash) still refuses -- it has no
-    // patch-shaped equivalent, since `Email/setByQuery` never destroys.
+    // folder filter matches via the async bulk-job path. Permanent
+    // delete from inside Trash routes through `bulkDestroy`, which uses
+    // the same job substrate with `destroy: true` (issue #179).
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({ mailboxIds: { [trash.id]: true } });
+      await this.#startWholeMailboxBulk({ patch: { mailboxIds: { [trash.id]: true } } });
       return;
     }
     if (ids.length === 0) return;
@@ -3306,7 +3339,7 @@ class MailStore {
     // Whole-mailbox mode (issue #149): patch every message the current
     // folder filter matches via the async bulk-job path.
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({ 'keywords/$seen': seen ? true : null });
+      await this.#startWholeMailboxBulk({ patch: { 'keywords/$seen': seen ? true : null } });
       return;
     }
     if (ids.length === 0) return;

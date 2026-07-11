@@ -52,7 +52,11 @@ type EmailBulkJob struct {
 	// package interprets it).
 	FilterJSON string
 	// PatchJSON is the raw JMAP Email/set per-object update patch
-	// applied to every matched message (opaque to the store).
+	// applied to every matched message (opaque to the store). Empty
+	// string is a reserved sentinel meaning "destroy every matched
+	// message" instead of patching it (issue #179) — Email/setByQuery
+	// never persists an empty patch for a patch job (validated at the
+	// JMAP handler), so the two cases can never collide.
 	PatchJSON string
 	Status    EmailBulkJobStatus
 	// MatchedEstimate is the best-effort count computed synchronously
@@ -74,6 +78,8 @@ type EmailBulkJob struct {
 }
 
 // EmailBulkJobCreate is the input to Metadata.CreateEmailBulkJob.
+// PatchJSON == "" creates a destroy job (issue #179); see the
+// EmailBulkJob.PatchJSON doc comment.
 type EmailBulkJobCreate struct {
 	PrincipalID     PrincipalID
 	FilterJSON      string

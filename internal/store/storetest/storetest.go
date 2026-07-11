@@ -461,6 +461,8 @@ func Run(t *testing.T, f Factory) {
 		// -- whole-mailbox async bulk mutation (issue #149/#161, migration 0076) --
 		{"EmailBulkJob_CreateResolveProcessFinish", testEmailBulkJob_CreateResolveProcessFinish},
 		{"EmailBulkJob_FinishFailed", testEmailBulkJob_FinishFailed},
+		// -- whole-mailbox permanent-delete bulk job (issue #179) --
+		{"EmailBulkJob_DestroyJobPatchJSONSentinel", testEmailBulkJob_DestroyJobPatchJSONSentinel},
 	}
 	for _, c := range cases {
 		tc := c
