@@ -123,6 +123,34 @@ verification when puppeteer is the documented requirement. Pre-commit
 and CI catch type errors and snapshot drift; only the live browser
 catches the bugs the maintainer actually files.
 
+#### The `beforeunload` dirty-form dialog stalls the session
+
+When a form holds unsaved changes AND the page has a `beforeunload`
+guard registered (e.g. the contacts edit form's dirty-form guard), a
+**full-page** unload — `puppeteer_navigate` to a new URL, a reload, or
+a tab close — makes Chrome raise the native "Leave site? Changes you
+made may not be saved" dialog. The headful MCP browser has nothing to
+auto-accept it, so the dialog blocks and the next puppeteer command
+hangs (looks like the session froze). Prevent it, in this order:
+
+1. **Navigate within the SPA, not the browser.** Click the app's own
+   sidebar / router links instead of `puppeteer_navigate`-to-URL or a
+   reload. SPA route changes go through the app's *in-app* unsaved-
+   changes guard, never the native dialog.
+2. **Clear the dirty state before leaving.** In an autosaving edit view,
+   wait for the save indicator to settle to idle; in a create / genuinely
+   dirty form, click the app's Save or Cancel so the guard releases.
+3. **Neutralize the guard before an unavoidable reload:**
+   `mcp__puppeteer__puppeteer_evaluate` with
+   `() => { window.onbeforeunload = null }` immediately before the
+   navigate/reload. (Reliable when the guard is set via `onbeforeunload`;
+   an `addEventListener('beforeunload', … preventDefault)` guard needs a
+   capture-phase `stopImmediatePropagation` shim or an app test hook.)
+
+If a native dialog does appear and the session hangs, that is a
+"cannot-verify" stall, not a passing run — recover and re-drive rather
+than reporting the truncated flow as verified.
+
 Manual loop (the user, on the reserved 8080 / 5173):
 `pnpm -C web dev --filter @herold/suite` (or `--filter
 @herold/admin`) starts Vite at `http://localhost:5173/` (suite) or
