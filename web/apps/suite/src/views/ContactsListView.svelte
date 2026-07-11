@@ -2,11 +2,13 @@
   /**
    * Contacts list view — browses, searches, and sorts the principal's contacts.
    *
-   * Implements REQ-CONT-20..26:
+   * Implements REQ-CONT-20..26, REQ-CONT-70..72:
    *   - Paged Contact/query + narrow Contact/get (virtualised via sentinel scroll).
    *   - Live search with 300 ms debounce.
    *   - Sort by displayName / created / updated; sort reflected in URL.
-   *   - Address book scope selector (hidden with single book).
+   *   - Address book scope selector (hidden with single book and no groups).
+   *   - Group scope: groups shown alongside address books in the scope selector.
+   *   - Group management: create, rename, delete groups inline.
    *   - Empty states for no-contacts and no-search-match.
    *   - Live updates from sync channel (Contact/changes).
    */
@@ -14,10 +16,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { contactsListStore, type SortProp } from '../lib/contacts/list-store.svelte';
   import { deriveFallbackInitial } from '../lib/contacts/list-store.svelte';
+  import { groupsStore } from '../lib/contacts/groups.svelte';
   import { router } from '../lib/router/router.svelte';
   import { jmap } from '../lib/jmap/client';
   import { Capability } from '../lib/jmap/types';
   import { auth } from '../lib/auth/auth.svelte';
+  import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import ContactsIcon from '../lib/icons/ContactsIcon.svelte';
 
@@ -75,19 +79,149 @@
     setupObserver(sentinelEl);
   });
 
+  // ── Group management dialogs ─────────────────────────────────────────────
+
+  let showCreateDialog = $state(false);
+  let createGroupName = $state('');
+  let createGroupBusy = $state(false);
+
+  let showRenameDialog = $state(false);
+  let renameGroupName = $state('');
+  let renameGroupBusy = $state(false);
+
+  let showDeleteDialog = $state(false);
+  let deleteGroupBusy = $state(false);
+
+  function openCreateDialog(): void {
+    createGroupName = '';
+    createGroupBusy = false;
+    showCreateDialog = true;
+    // Focus the input after DOM settles.
+    setTimeout(() => {
+      document.getElementById('create-group-name-input')?.focus();
+    }, 0);
+  }
+
+  function closeCreateDialog(): void {
+    showCreateDialog = false;
+    createGroupName = '';
+  }
+
+  async function submitCreate(): Promise<void> {
+    const name = createGroupName.trim();
+    if (!name) return;
+    const addressBookId = contactsListStore.addressBooks[0]?.id ?? '';
+    if (!addressBookId) return;
+    createGroupBusy = true;
+    const newId = await groupsStore.createGroup(name, addressBookId);
+    createGroupBusy = false;
+    if (!newId) {
+      toast.show({ message: t('contacts.groups.createError'), kind: 'error' });
+      return;
+    }
+    closeCreateDialog();
+    // Switch to the new group immediately.
+    const newGroup = groupsStore.getGroup(newId);
+    if (newGroup) {
+      contactsListStore.setGroup(newId, Object.keys(newGroup.members));
+    }
+  }
+
+  function openRenameDialog(): void {
+    const group = groupsStore.getGroup(contactsListStore.activeGroupId ?? '');
+    if (!group) return;
+    renameGroupName = group.name;
+    renameGroupBusy = false;
+    showRenameDialog = true;
+    setTimeout(() => {
+      document.getElementById('rename-group-name-input')?.focus();
+    }, 0);
+  }
+
+  function closeRenameDialog(): void {
+    showRenameDialog = false;
+    renameGroupName = '';
+  }
+
+  async function submitRename(): Promise<void> {
+    const groupId = contactsListStore.activeGroupId;
+    if (!groupId) return;
+    const name = renameGroupName.trim();
+    if (!name) return;
+    renameGroupBusy = true;
+    const ok = await groupsStore.renameGroup(groupId, name);
+    renameGroupBusy = false;
+    if (!ok) {
+      toast.show({ message: t('contacts.groups.renameError'), kind: 'error' });
+    }
+    closeRenameDialog();
+  }
+
+  function openDeleteDialog(): void {
+    deleteGroupBusy = false;
+    showDeleteDialog = true;
+  }
+
+  function closeDeleteDialog(): void {
+    showDeleteDialog = false;
+  }
+
+  async function submitDelete(): Promise<void> {
+    const groupId = contactsListStore.activeGroupId;
+    if (!groupId) return;
+    deleteGroupBusy = true;
+    const ok = await groupsStore.deleteGroup(groupId);
+    deleteGroupBusy = false;
+    if (!ok) {
+      toast.show({ message: t('contacts.groups.deleteError'), kind: 'error' });
+      closeDeleteDialog();
+      return;
+    }
+    closeDeleteDialog();
+    // Return to "all contacts" view.
+    contactsListStore.setGroup(null, null);
+  }
+
+  // ── Scope selector ───────────────────────────────────────────────────────
+
+  let scopeValue = $derived(
+    contactsListStore.activeGroupId
+      ? `group:${contactsListStore.activeGroupId}`
+      : contactsListStore.activeBookId
+        ? `book:${contactsListStore.activeBookId}`
+        : '',
+  );
+
+  function handleScopeChange(e: Event): void {
+    const select = e.target as HTMLSelectElement;
+    const val = select.value;
+    if (val === '') {
+      contactsListStore.setAddressBook(null);
+      contactsListStore.setGroup(null, null);
+    } else if (val.startsWith('book:')) {
+      contactsListStore.setAddressBook(val.slice(5));
+    } else if (val.startsWith('group:')) {
+      const groupId = val.slice(6);
+      const group = groupsStore.getGroup(groupId);
+      contactsListStore.setGroup(groupId, group ? Object.keys(group.members) : []);
+    }
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   onMount(() => {
-    // Apply URL sort param before loading.
     const urlSort = sortFromParam();
     contactsListStore.sort = urlSort;
-    void contactsListStore.init();
+    void groupsStore.load().then(() => {
+      void contactsListStore.init();
+    });
   });
 
   onDestroy(() => {
     observer?.disconnect();
     observer = null;
     contactsListStore.destroy();
+    groupsStore.destroy();
   });
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -104,11 +238,6 @@
     router.setParam('sort', val === 'displayName' ? null : val);
   }
 
-  function handleBookChange(e: Event): void {
-    const select = e.target as HTMLSelectElement;
-    contactsListStore.setAddressBook(select.value || null);
-  }
-
   function clearSearch(): void {
     contactsListStore.setSearch('');
     contactsListStore.searchText = '';
@@ -118,17 +247,133 @@
     router.navigate(`/contacts/${encodeURIComponent(id)}`);
   }
 
+  // ── Derived ───────────────────────────────────────────────────────────────
+
   // Capability check (REQ-CONT-03).
   let hasContactsCap = $derived(
     auth.status === 'ready' && jmap.hasCapability(Capability.Contacts),
   );
 
-  let showBookFilter = $derived(contactsListStore.addressBooks.length > 1);
-  let isSearching = $derived(contactsListStore.searchText.trim().length > 0);
-  let isEmpty = $derived(
-    contactsListStore.status === 'ready' && contactsListStore.rows.length === 0,
+  // Show scope selector when there are multiple address books or any groups.
+  let showScopeSelector = $derived(
+    contactsListStore.addressBooks.length > 1 || groupsStore.groups.length > 0,
   );
+
+  let isSearching = $derived(contactsListStore.searchText.trim().length > 0);
+
+  // Filter group cards out of the normal "all contacts" view so they don't
+  // appear as regular rows. In group mode, rows are already member contacts.
+  let visibleRows = $derived(
+    contactsListStore.activeGroupId !== null
+      ? contactsListStore.rows
+      : contactsListStore.rows.filter((r) => !groupsStore.groupIds.has(r.id)),
+  );
+
+  let isEmpty = $derived(
+    contactsListStore.status === 'ready' && visibleRows.length === 0,
+  );
+
+  // The group currently selected in the scope selector.
+  let activeGroup = $derived(
+    contactsListStore.activeGroupId
+      ? groupsStore.getGroup(contactsListStore.activeGroupId)
+      : undefined,
+  );
+
+  let activeGroupForDelete = $derived(activeGroup?.name ?? '');
 </script>
+
+<!-- Group create dialog -->
+{#if showCreateDialog}
+  <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.groups.createDialog.title')}>
+    <div class="dialog">
+      <h2 class="dialog-title">{t('contacts.groups.createDialog.title')}</h2>
+      <label class="dialog-label" for="create-group-name-input">
+        {t('contacts.groups.createDialog.label')}
+      </label>
+      <input
+        id="create-group-name-input"
+        class="dialog-input"
+        type="text"
+        placeholder={t('contacts.groups.createDialog.placeholder')}
+        bind:value={createGroupName}
+        onkeydown={(e) => { if (e.key === 'Enter') void submitCreate(); if (e.key === 'Escape') closeCreateDialog(); }}
+        autocomplete="off"
+      />
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="dialog-btn primary"
+          onclick={() => void submitCreate()}
+          disabled={createGroupBusy || !createGroupName.trim()}
+        >
+          {t('contacts.groups.createDialog.confirm')}
+        </button>
+        <button type="button" class="dialog-btn secondary" onclick={closeCreateDialog} disabled={createGroupBusy}>
+          {t('contacts.groups.createDialog.cancel')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Group rename dialog -->
+{#if showRenameDialog}
+  <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.groups.renameDialog.title')}>
+    <div class="dialog">
+      <h2 class="dialog-title">{t('contacts.groups.renameDialog.title')}</h2>
+      <label class="dialog-label" for="rename-group-name-input">
+        {t('contacts.groups.renameDialog.label')}
+      </label>
+      <input
+        id="rename-group-name-input"
+        class="dialog-input"
+        type="text"
+        bind:value={renameGroupName}
+        onkeydown={(e) => { if (e.key === 'Enter') void submitRename(); if (e.key === 'Escape') closeRenameDialog(); }}
+        autocomplete="off"
+      />
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="dialog-btn primary"
+          onclick={() => void submitRename()}
+          disabled={renameGroupBusy || !renameGroupName.trim()}
+        >
+          {t('contacts.groups.renameDialog.confirm')}
+        </button>
+        <button type="button" class="dialog-btn secondary" onclick={closeRenameDialog} disabled={renameGroupBusy}>
+          {t('contacts.groups.renameDialog.cancel')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Group delete confirmation -->
+{#if showDeleteDialog}
+  <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.groups.deleteDialog.title')}>
+    <div class="dialog">
+      <h2 class="dialog-title">{t('contacts.groups.deleteDialog.title')}</h2>
+      <p class="dialog-msg">
+        {t('contacts.groups.deleteDialog.message', { name: activeGroupForDelete })}
+      </p>
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="dialog-btn danger"
+          onclick={() => void submitDelete()}
+          disabled={deleteGroupBusy}
+        >
+          {t('contacts.groups.deleteDialog.confirm')}
+        </button>
+        <button type="button" class="dialog-btn secondary" onclick={closeDeleteDialog} disabled={deleteGroupBusy}>
+          {t('contacts.groups.deleteDialog.cancel')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <div class="contacts-list-view" role="main" aria-label={t('contacts.list.ariaLabel')}>
   {#if !hasContactsCap && auth.status === 'ready'}
@@ -138,7 +383,7 @@
       <p class="unavailable-msg">{t('contacts.unavailable')}</p>
     </div>
   {:else}
-    <!-- Header: search + sort + optional book filter -->
+    <!-- Header: search + controls -->
     <div class="list-header">
       <div class="search-row">
         <label class="sr-only" for="contacts-search">{t('contacts.list.searchLabel')}</label>
@@ -153,19 +398,30 @@
           spellcheck={false}
         />
         <div class="header-controls">
-          {#if showBookFilter}
-            <label class="sr-only" for="contacts-book">{t('contacts.list.bookLabel')}</label>
-            <select
-              id="contacts-book"
+          {#if showScopeSelector}
+            <label class="sr-only" for="contacts-scope">{t('contacts.list.bookLabel')}</label>
+              <select
+              id="contacts-scope"
               class="filter-select"
-              value={contactsListStore.activeBookId ?? ''}
-              onchange={handleBookChange}
+              value={scopeValue}
+              onchange={handleScopeChange}
               aria-label={t('contacts.list.bookLabel')}
             >
               <option value="">{t('contacts.list.allContacts')}</option>
-              {#each contactsListStore.addressBooks as book (book.id)}
-                <option value={book.id}>{book.name}</option>
-              {/each}
+              {#if contactsListStore.addressBooks.length > 1}
+                <optgroup label={t('contacts.list.scopeBooks')}>
+                  {#each contactsListStore.addressBooks as book (book.id)}
+                    <option value={`book:${book.id}`}>{book.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+              {#if groupsStore.groups.length > 0}
+                <optgroup label={t('contacts.list.scopeGroups')}>
+                  {#each groupsStore.groups as group (group.id)}
+                    <option value={`group:${group.id}`}>{group.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
             </select>
           {/if}
           <label class="sr-only" for="contacts-sort">{t('contacts.list.sortLabel')}</label>
@@ -180,8 +436,38 @@
             <option value="created">{t('contacts.list.sort.created')}</option>
             <option value="updated">{t('contacts.list.sort.updated')}</option>
           </select>
+          <button
+            type="button"
+            class="new-group-btn"
+            onclick={openCreateDialog}
+            aria-label={t('contacts.list.newGroup')}
+            title={t('contacts.list.newGroup')}
+          >
+            {t('contacts.list.newGroup')}
+          </button>
         </div>
       </div>
+
+      <!-- Group management toolbar (visible when a group is selected) -->
+      {#if contactsListStore.activeGroupId && activeGroup}
+        <div class="group-toolbar" role="toolbar" aria-label={activeGroup.name}>
+          <span class="group-toolbar-name">{activeGroup.name}</span>
+          <button
+            type="button"
+            class="group-action-btn"
+            onclick={openRenameDialog}
+          >
+            {t('contacts.list.renameGroup')}
+          </button>
+          <button
+            type="button"
+            class="group-action-btn danger"
+            onclick={openDeleteDialog}
+          >
+            {t('contacts.list.deleteGroup')}
+          </button>
+        </div>
+      {/if}
     </div>
 
     <!-- List body -->
@@ -248,7 +534,7 @@
         aria-label={t('contacts.list.ariaLabel')}
         onkeydown={handleListKeydown}
       >
-        {#each contactsListStore.rows as row, i (row.id)}
+        {#each visibleRows as row, i (row.id)}
           <li role="option" aria-selected="false">
             <button
               type="button"
@@ -277,8 +563,8 @@
         {/each}
       </ul>
 
-      <!-- Sentinel for infinite scroll (REQ-CONT-21) -->
-      {#if contactsListStore.hasMore}
+      <!-- Sentinel for infinite scroll (REQ-CONT-21) — not shown in group mode -->
+      {#if contactsListStore.hasMore && contactsListStore.activeGroupId === null}
         <div
           class="sentinel"
           bind:this={sentinelEl}
@@ -341,6 +627,7 @@
     gap: var(--spacing-02);
     align-items: center;
     flex-shrink: 0;
+    flex-wrap: wrap;
   }
 
   .filter-select {
@@ -357,6 +644,186 @@
   .filter-select:focus {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
+  }
+
+  .new-group-btn {
+    height: 36px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .new-group-btn:hover {
+    background: var(--layer-02);
+  }
+
+  .new-group-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  /* ── Group toolbar ───────────────────────────────────────────────────── */
+
+  .group-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding-top: var(--spacing-03);
+    flex-wrap: wrap;
+  }
+
+  .group-toolbar-name {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .group-action-btn {
+    height: 28px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .group-action-btn:hover {
+    background: var(--layer-02);
+  }
+
+  .group-action-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .group-action-btn.danger {
+    color: var(--support-error);
+    border-color: var(--support-error);
+  }
+
+  .group-action-btn.danger:hover {
+    background: var(--support-error-bg, rgba(218, 30, 40, 0.1));
+  }
+
+  /* ── Dialogs ─────────────────────────────────────────────────────────── */
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+
+  .dialog {
+    background: var(--layer-01);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-06);
+    max-width: 360px;
+    width: 100%;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-04);
+  }
+
+  .dialog-title {
+    font-size: var(--type-heading-03-size);
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  .dialog-label {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+    display: block;
+  }
+
+  .dialog-input {
+    width: 100%;
+    height: 36px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-01-size);
+    box-sizing: border-box;
+  }
+
+  .dialog-input:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .dialog-msg {
+    font-size: var(--type-body-01-size);
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .dialog-actions {
+    display: flex;
+    gap: var(--spacing-03);
+  }
+
+  .dialog-btn {
+    padding: var(--spacing-03) var(--spacing-05);
+    border-radius: var(--radius-md);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    min-height: var(--touch-min);
+  }
+
+  .dialog-btn.primary {
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-color: var(--interactive);
+  }
+
+  .dialog-btn.primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .dialog-btn.secondary {
+    background: transparent;
+    color: var(--text-primary);
+    border-color: var(--border-subtle-01);
+  }
+
+  .dialog-btn.secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .dialog-btn.danger {
+    background: var(--support-error);
+    color: #fff;
+    border-color: var(--support-error);
+  }
+
+  .dialog-btn.danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* ── List ────────────────────────────────────────────────────────────── */

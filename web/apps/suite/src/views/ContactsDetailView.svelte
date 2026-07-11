@@ -22,6 +22,7 @@
   import { auth } from '../lib/auth/auth.svelte';
   import { contacts } from '../lib/contacts/store.svelte';
   import { contactsListStore } from '../lib/contacts/list-store.svelte';
+  import { groupsStore } from '../lib/contacts/groups.svelte';
   import { router } from '../lib/router/router.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
@@ -148,7 +149,48 @@
     }
   }
 
-  // Build "all mail with this person" URL.
+  // ── Group membership ────────────────────────────────────────────────────────
+
+  // Groups this contact belongs to (derived reactively from the groups store).
+  let memberGroups = $derived(
+    contactId ? groupsStore.getGroupsForContact(contactId) : [],
+  );
+
+  // Groups the contact is NOT a member of (available to add).
+  let nonMemberGroups = $derived(
+    groupsStore.groups.filter((g) => g.members[contactId ?? ''] !== true),
+  );
+
+  let addGroupBusy = $state(false);
+  let showAddGroupSelect = $state(false);
+  let addGroupSelectedId = $state('');
+
+  function openAddGroupSelect(): void {
+    addGroupSelectedId = nonMemberGroups[0]?.id ?? '';
+    showAddGroupSelect = true;
+  }
+
+  function closeAddGroupSelect(): void {
+    showAddGroupSelect = false;
+    addGroupSelectedId = '';
+  }
+
+  async function handleAddToGroup(): Promise<void> {
+    if (!contactId || !addGroupSelectedId) return;
+    addGroupBusy = true;
+    const ok = await groupsStore.addMember(addGroupSelectedId, contactId);
+    addGroupBusy = false;
+    closeAddGroupSelect();
+    if (!ok) toast.show({ message: t('contacts.groups.memberError'), kind: 'error' });
+  }
+
+  async function handleRemoveFromGroup(groupId: string): Promise<void> {
+    if (!contactId) return;
+    const ok = await groupsStore.removeMember(groupId, contactId);
+    if (!ok) toast.show({ message: t('contacts.groups.memberError'), kind: 'error' });
+  }
+
+  // ── Build "all mail with this person" URL. ──────────────────────────────
   function allMailUrl(): string {
     if (!vm) return '#/mail';
     const addrs = vm.emails.map((e) => e.address).filter(Boolean);
@@ -399,6 +441,76 @@
               </div>
             {/if}
           {/each}
+        </section>
+      {/if}
+
+      <!-- Groups (REQ-CONT-71) — shown for individual contacts only -->
+      {#if vm.kind !== 'group'}
+        <section class="section" aria-label={t('contacts.detail.section.groups')}>
+          <h2 class="section-heading">{t('contacts.detail.section.groups')}</h2>
+          <div class="groups-row">
+            {#each memberGroups as group (group.id)}
+              <span class="group-chip">
+                <button
+                  type="button"
+                  class="group-chip-name"
+                  onclick={() => {
+                    contactsListStore.setGroup(group.id, Object.keys(group.members));
+                    router.navigate('/contacts');
+                  }}
+                >
+                  {group.name}
+                </button>
+                <button
+                  type="button"
+                  class="group-chip-remove"
+                  aria-label={t('contacts.detail.groups.removeFromGroup', { name: group.name })}
+                  title={t('contacts.detail.groups.removeFromGroup', { name: group.name })}
+                  onclick={() => void handleRemoveFromGroup(group.id)}
+                >
+                  &times;
+                </button>
+              </span>
+            {/each}
+            {#if !showAddGroupSelect && nonMemberGroups.length > 0}
+              <button
+                type="button"
+                class="add-group-btn"
+                onclick={openAddGroupSelect}
+              >
+                + {t('contacts.detail.groups.addToGroup')}
+              </button>
+            {/if}
+            {#if showAddGroupSelect}
+              <div class="add-group-inline">
+                <select
+                  class="add-group-select"
+                  bind:value={addGroupSelectedId}
+                  aria-label={t('contacts.detail.groups.addToGroup')}
+                >
+                  {#each nonMemberGroups as g (g.id)}
+                    <option value={g.id}>{g.name}</option>
+                  {/each}
+                </select>
+                <button
+                  type="button"
+                  class="add-group-confirm"
+                  onclick={() => void handleAddToGroup()}
+                  disabled={addGroupBusy || !addGroupSelectedId}
+                >
+                  {t('contacts.groups.createDialog.confirm')}
+                </button>
+                <button
+                  type="button"
+                  class="add-group-cancel"
+                  onclick={closeAddGroupSelect}
+                  disabled={addGroupBusy}
+                >
+                  {t('contacts.groups.createDialog.cancel')}
+                </button>
+              </div>
+            {/if}
+          </div>
         </section>
       {/if}
 
@@ -668,6 +780,127 @@
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  /* Groups section */
+  .groups-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+    align-items: center;
+  }
+
+  .group-chip {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    background: var(--layer-02);
+    overflow: hidden;
+  }
+
+  .group-chip-name {
+    padding: 2px var(--spacing-02) 2px var(--spacing-03);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--interactive);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    line-height: 1.4;
+  }
+
+  .group-chip-name:hover {
+    text-decoration: underline;
+  }
+
+  .group-chip-name:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .group-chip-remove {
+    padding: 2px var(--spacing-02);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-helper);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    line-height: 1;
+    border-left: 1px solid var(--border-subtle-01);
+  }
+
+  .group-chip-remove:hover {
+    color: var(--support-error);
+    background: var(--support-error-bg, rgba(218, 30, 40, 0.1));
+  }
+
+  .group-chip-remove:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .add-group-btn {
+    padding: 2px var(--spacing-03);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--interactive);
+    background: transparent;
+    border: 1px dashed var(--interactive);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    line-height: 1.4;
+  }
+
+  .add-group-btn:hover {
+    background: var(--layer-02);
+  }
+
+  .add-group-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .add-group-inline {
+    display: flex;
+    gap: var(--spacing-02);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .add-group-select {
+    height: 28px;
+    padding: 0 var(--spacing-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  .add-group-confirm,
+  .add-group-cancel {
+    height: 28px;
+    padding: 0 var(--spacing-03);
+    border-radius: var(--radius-md);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+  }
+
+  .add-group-confirm {
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border: none;
+  }
+
+  .add-group-confirm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .add-group-cancel {
+    background: transparent;
+    border: 1px solid var(--border-subtle-01);
+    color: var(--text-primary);
   }
 
   /* Footer actions */

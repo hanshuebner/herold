@@ -16,6 +16,12 @@ import { sync } from '../jmap/sync.svelte';
 
 export type SortProp = 'displayName' | 'created' | 'updated';
 
+/** Scope the list to a specific group (by JMAP contact IDs of its members). */
+export interface GroupScope {
+  groupId: string;
+  memberIds: string[];
+}
+
 export interface ContactListRow {
   id: string;
   displayName: string;
@@ -165,6 +171,7 @@ class ContactsListStore {
 
   addressBooks = $state<AddressBook[]>([]);
   activeBookId = $state<string | null>(null);
+  activeGroupId = $state<string | null>(null);
   sort = $state<SortProp>('displayName');
   searchText = $state('');
 
@@ -181,6 +188,7 @@ class ContactsListStore {
   #queryState: string | null = null;
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
   #unregisterSync: (() => void) | null = null;
+  #activeGroupMemberIds: string[] | null = null;
 
   /**
    * Call once when the list view mounts: loads address books and the first
@@ -228,8 +236,22 @@ class ContactsListStore {
 
   /** Scope the list to a specific address book (or null = all). Reloads. */
   setAddressBook(id: string | null): void {
-    if (this.activeBookId === id) return;
+    if (this.activeBookId === id && this.activeGroupId === null) return;
     this.activeBookId = id;
+    this.activeGroupId = null;
+    this.#activeGroupMemberIds = null;
+    void this.#reload();
+  }
+
+  /**
+   * Scope the list to a specific group's members. Pass null/null to clear
+   * group scope and return to the normal (address-book-scoped) view.
+   */
+  setGroup(groupId: string | null, memberIds: string[] | null): void {
+    if (this.activeGroupId === groupId) return;
+    this.activeGroupId = groupId;
+    this.#activeGroupMemberIds = memberIds;
+    if (groupId !== null) this.activeBookId = null;
     void this.#reload();
   }
 
@@ -275,6 +297,12 @@ class ContactsListStore {
   }
 
   async #loadPage(position: number, append: boolean): Promise<void> {
+    // Group scope: fetch only the group's member contacts directly.
+    if (this.activeGroupId !== null) {
+      await this.#loadGroupMembers();
+      return;
+    }
+
     const accountId = this.#accountId();
     if (!accountId) {
       this.status = 'error';
@@ -346,10 +374,75 @@ class ContactsListStore {
     }
   }
 
+  /**
+   * Group scope load: fetch member contacts directly by ID, bypassing
+   * Contact/query. No pagination — group member counts are expected to be
+   * small relative to maxObjectsInGet (500).
+   */
+  async #loadGroupMembers(): Promise<void> {
+    const accountId = this.#accountId();
+    if (!accountId) {
+      this.status = 'error';
+      this.errorMessage = 'no-account';
+      return;
+    }
+
+    const memberIds = this.#activeGroupMemberIds ?? [];
+    if (memberIds.length === 0) {
+      this.rows = [];
+      this.total = 0;
+      this.#queryState = null;
+      this.status = 'ready';
+      return;
+    }
+
+    this.status = 'loading';
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Contact/get',
+          { accountId, ids: memberIds, properties: LIST_ROW_PROPERTIES },
+          [Capability.Contacts],
+        );
+      });
+
+      const gResp = responses[0];
+      if (!gResp || gResp[0] === 'error') {
+        this.status = 'error';
+        this.errorMessage = 'fetch-failed';
+        return;
+      }
+      const gArgs = gResp[1] as { list?: unknown[] };
+
+      const newRows = (gArgs.list ?? []).flatMap((card) => {
+        if (typeof card !== 'object' || card === null) return [];
+        const row = parseRow(card as Record<string, unknown>);
+        return row.id ? [row] : [];
+      });
+
+      // Sort by display name in group view.
+      newRows.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+      this.rows = newRows;
+      this.total = newRows.length;
+      this.#queryState = null;
+      this.status = 'ready';
+    } catch {
+      this.status = 'error';
+      this.errorMessage = 'fetch-failed';
+    }
+  }
+
   async #handleContactChange(_newState: string, accountId: string): Promise<void> {
     const myAccountId = this.#accountId();
     if (accountId !== myAccountId) return;
     if (this.status !== 'ready') return;
+
+    // In group mode, reload the member list directly (queryState is not tracked).
+    if (this.activeGroupId !== null) {
+      void this.#reload();
+      return;
+    }
 
     const prevState = this.#queryState;
     if (!prevState) {

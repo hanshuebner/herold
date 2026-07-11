@@ -136,6 +136,12 @@ export interface JsCard {
   links?: Record<string, JsLink>;
   notes?: Record<string, JsNote>;
   anniversaries?: Record<string, JsAnniversary>;
+  /**
+   * Group membership: present only when kind="group".
+   * Keys are JMAP contact IDs (NOT UIDs); values are always true.
+   * Confirmed wire format via round-trip (2026-07-11).
+   */
+  members?: Record<string, boolean>;
   [key: string]: unknown;
 }
 
