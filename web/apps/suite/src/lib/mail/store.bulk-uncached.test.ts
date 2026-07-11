@@ -12,10 +12,10 @@
  * comment and wired up in store.bulk-job.test.ts.
  *
  * This file covers the fallback boundary that remains: archive / delete /
- * mark read / mark unread still refuse honestly (no JMAP call, an
- * explanatory toast) when the server does NOT advertise
+ * mark read / mark unread / label add-remove still refuse honestly (no
+ * JMAP call, an explanatory toast) when the server does NOT advertise
  * `https://netzhansa.com/jmap/email-bulk-mutation` (`jmap.hasCapability`
- * returns false below); move / label / category refuse unconditionally
+ * returns false below); move / category refuse unconditionally
  * regardless of the capability, since their pickers resolve a target from
  * the loaded/visible selection rather than a server-side filter.
  */

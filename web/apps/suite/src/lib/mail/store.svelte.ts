@@ -2555,8 +2555,15 @@ class MailStore {
     mailboxId: string,
     on: boolean,
   ): Promise<void> {
+    // Whole-mailbox mode (issue #149/#178): `ids` is only the loaded/visible
+    // window, not the full server-side result set. Labels are mailbox
+    // memberships, so patch every message the current folder filter
+    // matches via the same async bulk-job path bulkArchive uses, rather
+    // than refusing.
     if (this.listWholeMailboxSelected) {
-      this.wholeMailboxActionUnavailable();
+      await this.#startWholeMailboxBulk({
+        [`mailboxIds/${mailboxId}`]: on ? true : null,
+      });
       return;
     }
     if (ids.length === 0) return;
@@ -2775,14 +2782,16 @@ class MailStore {
 
   /**
    * Fallback for whole-mailbox bulk actions (archive / delete / mark /
-   * move / label / category) when the server does not advertise
+   * label / move / category) when the server does not advertise
    * `https://netzhansa.com/jmap/email-bulk-mutation` (issue #149). Archive
-   * / delete / mark read / mark unread route through
-   * `#startWholeMailboxBulk` instead when the capability is present; move
-   * / label / category still refuse unconditionally today because their
-   * pickers resolve a target from the loaded/visible selection, which is
-   * not what whole-mailbox mode means (see the design comment on issue
-   * #161 and the "Not done" note in the #149 issue thread).
+   * / delete / mark read / mark unread / label all route through
+   * `#startWholeMailboxBulk` instead when the capability is present
+   * (label as of issue #178, since a label is a mailbox membership and
+   * `Email/setByQuery`'s patch already accepts the `mailboxIds/<id>`
+   * shape); move / category still refuse unconditionally today because
+   * their pickers resolve a target from the loaded/visible selection,
+   * which is not what whole-mailbox mode means (see the design comment on
+   * issue #161 and the "Not done" note in the #149 issue thread).
    */
   wholeMailboxActionUnavailable(): void {
     toast.show({

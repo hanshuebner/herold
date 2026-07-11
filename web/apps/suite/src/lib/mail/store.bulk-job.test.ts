@@ -2,8 +2,9 @@
  * Coverage for the whole-mailbox async bulk-job path (issue #149/#161).
  *
  * When the server advertises `https://netzhansa.com/jmap/email-bulk-
- * mutation`, archive / delete / mark read / mark unread no longer refuse
- * while `listWholeMailboxSelected` is true. They call `Email/setByQuery`
+ * mutation`, archive / delete / mark read / mark unread / label add-remove
+ * (issue #178) no longer refuse while `listWholeMailboxSelected` is true.
+ * They call `Email/setByQuery`
  * with the current folder's filter and an update-patch, populate
  * `mail.bulkJob` from the ack response, and poll `EmailBulkJob/get` (via
  * the `EmailBulkJob` EventSource push, or a fallback timer) until the job
@@ -294,6 +295,61 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
       usingSet: () => new Set(),
     });
     expect(sentPatch).toEqual({ 'keywords/$seen': null });
+  });
+
+  it('bulkSetLabel(on=true) calls Email/setByQuery with a mailboxIds/<id> patch (issue #178)', async () => {
+    const { mail } = mailMod;
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [
+        invocation('Email/setByQuery', {
+          accountId: 'acct-1',
+          jobId: '49',
+          matchedEstimate: 200,
+        }),
+      ],
+    });
+
+    await mail.bulkSetLabel(['e1'], ARCHIVE_ID, true);
+
+    expect(jmapMod.jmap.batch).toHaveBeenCalledTimes(1);
+    const builder = vi.mocked(jmapMod.jmap.batch).mock.calls[0][0];
+    let sentPatch: unknown;
+    builder({
+      call: (_name: string, args: { patch: unknown }) => {
+        sentPatch = args.patch;
+        return { ref: () => ({}) };
+      },
+      usingSet: () => new Set(),
+    });
+    expect(sentPatch).toEqual({ [`mailboxIds/${ARCHIVE_ID}`]: true });
+    expect(mail.listWholeMailboxSelected).toBe(false);
+    expect(mail.bulkJob?.id).toBe('49');
+  });
+
+  it('bulkSetLabel(on=false) sends a null mailboxIds/<id> patch (issue #178)', async () => {
+    const { mail } = mailMod;
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [
+        invocation('Email/setByQuery', {
+          accountId: 'acct-1',
+          jobId: '50',
+          matchedEstimate: 200,
+        }),
+      ],
+    });
+
+    await mail.bulkSetLabel(['e1'], ARCHIVE_ID, false);
+
+    const builder = vi.mocked(jmapMod.jmap.batch).mock.calls[0][0];
+    let sentPatch: unknown;
+    builder({
+      call: (_name: string, args: { patch: unknown }) => {
+        sentPatch = args.patch;
+        return { ref: () => ({}) };
+      },
+      usingSet: () => new Set(),
+    });
+    expect(sentPatch).toEqual({ [`mailboxIds/${ARCHIVE_ID}`]: null });
   });
 
   it('the EmailBulkJob push handler advances mail.bulkJob to done and stops polling', async () => {

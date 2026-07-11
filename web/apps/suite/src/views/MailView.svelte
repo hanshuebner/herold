@@ -696,10 +696,11 @@
     movePicker.openBulk(ids);
   }
   function openBulkLabelPicker(): void {
-    if (mail.listWholeMailboxSelected) {
-      mail.wholeMailboxActionUnavailable();
-      return;
-    }
+    // Whole-mailbox mode routes through mail.bulkSetLabel's async
+    // bulk-job path (issue #178) same as archive/delete/mark, so the
+    // picker opens unconditionally here; toggle() calls bulkSetLabel
+    // with the loaded/visible ids as membership-display hints only --
+    // the actual patch targets the full folder server-side.
     labelPicker.openBulk(selectedIds());
   }
   function openBulkCategoryPicker(): void {
