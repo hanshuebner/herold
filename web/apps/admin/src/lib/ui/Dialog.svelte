@@ -14,6 +14,7 @@
 -->
 <script lang="ts">
   import { Dialog as BitsDialog } from 'bits-ui';
+  import { t } from '../i18n/i18n.svelte';
 
   interface Props {
     open?: boolean;
@@ -55,7 +56,7 @@
         {#if description}
           <BitsDialog.Description class="dialog-description">{description}</BitsDialog.Description>
         {/if}
-        <BitsDialog.Close class="dialog-close" aria-label="Close dialog">
+        <BitsDialog.Close class="dialog-close" aria-label={t('common.closeDialog')}>
           <span aria-hidden="true">x</span>
         </BitsDialog.Close>
       </div>

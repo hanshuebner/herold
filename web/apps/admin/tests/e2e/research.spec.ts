@@ -155,21 +155,21 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
+    await page.getByRole('button', { name: 'Message research' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // All filter inputs should be present.
-    await expect(page.getByLabel('Nach Absender filtern')).toBeVisible();
-    await expect(page.getByLabel('Nach Empfänger filtern')).toBeVisible();
-    await expect(page.getByLabel('Nach Betreff filtern')).toBeVisible();
-    await expect(page.getByLabel('Nach Nachrichten-ID filtern')).toBeVisible();
-    await expect(page.getByLabel('Von (Datum)')).toBeVisible();
-    await expect(page.getByLabel('Bis (Datum)')).toBeVisible();
+    await expect(page.getByLabel('Filter by sender')).toBeVisible();
+    await expect(page.getByLabel('Filter by recipient')).toBeVisible();
+    await expect(page.getByLabel('Filter by subject')).toBeVisible();
+    await expect(page.getByLabel('Filter by message ID')).toBeVisible();
+    await expect(page.getByLabel('From date')).toBeVisible();
+    await expect(page.getByLabel('To date')).toBeVisible();
 
     // Action buttons.
-    await expect(page.getByRole('button', { name: 'Suchen' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Zurücksetzen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Search', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Clear' })).toBeVisible();
   });
 
   test('received hit renders source badge, envelope fields, mailbox and spam verdict', async ({ page }) => {
@@ -182,11 +182,11 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // Source badge "Empfangen" (CSS text-transform: uppercase; DOM text is "Empfangen").
-    await expect(page.locator('.source-badge').filter({ hasText: 'Empfangen' })).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'Received' })).toBeVisible();
 
     // Envelope fields.
     await expect(page.getByText('kunde@example.com')).toBeVisible();
@@ -208,8 +208,8 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // The Junk chip and mailbox name both contain "Junk" — use the chip locator.
     await expect(page.locator('.chip').filter({ hasText: 'Junk' }).first()).toBeVisible();
@@ -227,8 +227,8 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // Source badge "SMTP" — use the badge locator to avoid substring matches on action names.
     await expect(page.locator('.source-badge').filter({ hasText: 'SMTP' })).toBeVisible();
@@ -250,11 +250,11 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // Source badge "AUSGANG".
-    await expect(page.locator('.source-badge').filter({ hasText: 'AUSGANG' })).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'OUTGOING' })).toBeVisible();
 
     // Addresses, state, attempts, error.
     await expect(page.getByText('alice@example.local')).toBeVisible();
@@ -275,13 +275,13 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // All three badge types visible.
-    await expect(page.locator('.source-badge').filter({ hasText: 'EMPFANGEN' }).first()).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'RECEIVED' }).first()).toBeVisible();
     await expect(page.locator('.source-badge').filter({ hasText: 'SMTP' }).first()).toBeVisible();
-    await expect(page.locator('.source-badge').filter({ hasText: 'AUSGANG' }).first()).toBeVisible();
+    await expect(page.locator('.source-badge').filter({ hasText: 'OUTGOING' }).first()).toBeVisible();
   });
 
   test('sender filter sends sender query parameter', async ({ page }) => {
@@ -297,11 +297,11 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
-    await page.getByLabel('Nach Absender filtern').fill('kunde@example.com');
-    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.getByLabel('Filter by sender').fill('kunde@example.com');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     await page.waitForTimeout(200);
     const senderRequests = requests.filter((u) => u.includes('sender='));
@@ -322,11 +322,11 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
-    await page.getByLabel('Nach Empfänger filtern').fill('alice@example.local');
-    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.getByLabel('Filter by recipient').fill('alice@example.local');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     await page.waitForTimeout(200);
     const recipientRequests = requests.filter((u) => u.includes('recipient='));
@@ -347,11 +347,11 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
-    await page.getByLabel('Nach Betreff filtern').fill('Bestellung');
-    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.getByLabel('Filter by subject').fill('Bestellung');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     await page.waitForTimeout(200);
     const subjectRequests = requests.filter((u) => u.includes('subject='));
@@ -372,12 +372,12 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     await page.locator('#mr-date-from').fill('2024-06-01T00:00');
     await page.locator('#mr-date-to').fill('2024-06-02T00:00');
-    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     await page.waitForTimeout(200);
     const fromRequests = requests.filter((u) => u.includes('date_from='));
@@ -411,14 +411,14 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // First page results visible.
     await expect(page.getByText('kunde@example.com')).toBeVisible();
 
     // "Weitere laden" visible when next cursor is set.
-    const loadMoreBtn = page.getByRole('button', { name: 'Weitere laden' });
+    const loadMoreBtn = page.getByRole('button', { name: 'Load more' });
     await expect(loadMoreBtn).toBeVisible();
     await loadMoreBtn.click();
 
@@ -441,27 +441,27 @@ test.describe('message-research', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
     // Apply a sender filter.
-    await page.getByLabel('Nach Absender filtern').fill('test@example.com');
-    await page.getByRole('button', { name: 'Suchen' }).click();
+    await page.getByLabel('Filter by sender').fill('test@example.com');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
     await page.waitForTimeout(100);
 
     // Reset.
-    await page.getByRole('button', { name: 'Zurücksetzen' }).click();
+    await page.getByRole('button', { name: 'Clear' }).click();
     await page.waitForTimeout(100);
 
     // Filter input should be cleared.
-    await expect(page.getByLabel('Nach Absender filtern')).toHaveValue('');
+    await expect(page.getByLabel('Filter by sender')).toHaveValue('');
 
     // The last request should not contain the sender param.
     const lastRequest = requests[requests.length - 1];
     expect(lastRequest).not.toContain('sender=test%40example.com');
   });
 
-  test('empty result set shows "Keine Nachrichten gefunden"', async ({ page }) => {
+  test('empty result set shows "No messages found"', async ({ page }) => {
     await page.route('/api/v1/admin/message-research*', (route) =>
       route.fulfill({
         status: 200,
@@ -471,9 +471,9 @@ test.describe('message-research', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Nachrichtenrecherche' }).click();
-    await expect(page.getByRole('heading', { name: 'Nachrichtenrecherche' })).toBeVisible();
+    await page.getByRole('button', { name: 'Message research' }).click();
+    await expect(page.getByRole('heading', { name: 'Message research' })).toBeVisible();
 
-    await expect(page.getByText('Keine Nachrichten gefunden.')).toBeVisible();
+    await expect(page.getByText('No messages found.')).toBeVisible();
   });
 });

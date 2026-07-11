@@ -19,6 +19,7 @@
 -->
 <script lang="ts">
   import { Tabs as BitsTabs } from 'bits-ui';
+  import { t } from '../i18n/i18n.svelte';
 
   export interface TabDef {
     value: string;
@@ -46,7 +47,7 @@
 </script>
 
 <BitsTabs.Root bind:value class="tabs-root">
-  <BitsTabs.List class="tabs-list" aria-label="Tab navigation">
+  <BitsTabs.List class="tabs-list" aria-label={t('common.tabNavigation')}>
     {#each tabs as tab (tab.value)}
       <BitsTabs.Trigger
         value={tab.value}

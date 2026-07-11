@@ -66,19 +66,19 @@ test.describe('imap-imports', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'IMAP-Import' }).click();
-    await expect(page.getByRole('heading', { name: 'IMAP-Import-Diagnose' })).toBeVisible();
+    await page.getByRole('button', { name: 'IMAP import' }).click();
+    await expect(page.getByRole('heading', { name: 'IMAP import diagnostics' })).toBeVisible();
 
     // First worker (connected)
     await expect(page.getByTestId('worker-card-acc-001')).toBeVisible();
     await expect(page.getByTestId('worker-card-acc-001').getByTestId('worker-account-name')).toHaveText('Gmail (alice)');
-    await expect(page.getByTestId('worker-card-acc-001').getByTestId('worker-connected')).toHaveText('Verbunden');
+    await expect(page.getByTestId('worker-card-acc-001').getByTestId('worker-connected')).toHaveText('Connected');
     await expect(page.getByTestId('worker-card-acc-001').getByTestId('worker-phase')).toHaveText('idle');
     await expect(page.getByTestId('worker-card-acc-001').getByTestId('worker-messages-fetched')).toHaveText('257');
 
     // Second worker (errored)
     await expect(page.getByTestId('worker-card-acc-002')).toBeVisible();
-    await expect(page.getByTestId('worker-card-acc-002').getByTestId('worker-connected')).toHaveText('Getrennt');
+    await expect(page.getByTestId('worker-card-acc-002').getByTestId('worker-connected')).toHaveText('Disconnected');
     await expect(page.getByTestId('worker-card-acc-002').getByTestId('worker-phase')).toHaveText('backoff');
     await expect(page.getByTestId('worker-card-acc-002').getByTestId('worker-last-error')).toContainText(
       'authentication failed: invalid credentials',
@@ -105,7 +105,7 @@ test.describe('imap-imports', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'IMAP-Import' }).click();
+    await page.getByRole('button', { name: 'IMAP import' }).click();
     await expect(page.getByTestId('worker-card-acc-001')).toBeVisible();
 
     // Toggle is initially unchecked (debug_log: false)
@@ -128,7 +128,7 @@ test.describe('imap-imports', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'IMAP-Import' }).click();
+    await page.getByRole('button', { name: 'IMAP import' }).click();
     await expect(page.getByTestId('worker-card-acc-002')).toBeVisible();
 
     // debug_log is true for WORKER_ERRORED — toggle should be checked
@@ -146,11 +146,11 @@ test.describe('imap-imports', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'IMAP-Import' }).click();
+    await page.getByRole('button', { name: 'IMAP import' }).click();
     await expect(page.getByTestId('imap-imports-empty')).toBeVisible();
   });
 
-  test('"Ereignisse filtern" button navigates to events view', async ({ page }) => {
+  test('"Filter events" button navigates to events view', async ({ page }) => {
     await page.route('/api/v1/imap-imports/status', (route) =>
       route.fulfill({
         status: 200,
@@ -168,11 +168,11 @@ test.describe('imap-imports', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'IMAP-Import' }).click();
+    await page.getByRole('button', { name: 'IMAP import' }).click();
     await expect(page.getByTestId('worker-card-acc-001')).toBeVisible();
 
     await page.getByTestId('worker-events-btn-acc-001').click();
 
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
   });
 });

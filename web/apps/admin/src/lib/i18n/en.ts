@@ -27,6 +27,9 @@ export const en = {
   'common.search': 'Search',
   'common.error': 'Error',
   'common.unknown': 'Unknown',
+  'common.closeDialog': 'Close dialog',
+  'common.tabNavigation': 'Tab navigation',
+  'common.parseResponseFailed': 'Failed to parse response body',
 
   // ── Shell / top bar / nav ────────────────────────────────────────────
   'shell.wordmark': 'Herold admin',

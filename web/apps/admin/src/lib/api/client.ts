@@ -19,6 +19,8 @@
  * waits for elevation, then retries the request once (REQ-AS-20..23, re #79).
  */
 
+import { t } from '../i18n/i18n.svelte';
+
 export interface ApiResponse<T> {
   ok: boolean;
   status: number;
@@ -182,7 +184,7 @@ async function request<T>(
       ok: false,
       status: response.status,
       data: null,
-      errorMessage: 'Failed to parse response body',
+      errorMessage: t('common.parseResponseFailed'),
     };
   }
 }

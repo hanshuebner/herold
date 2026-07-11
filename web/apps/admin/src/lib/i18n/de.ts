@@ -25,6 +25,9 @@ export const de = {
   'common.search': 'Suchen',
   'common.error': 'Fehler',
   'common.unknown': 'Unbekannt',
+  'common.closeDialog': 'Dialog schließen',
+  'common.tabNavigation': 'Tab-Navigation',
+  'common.parseResponseFailed': 'Antwort konnte nicht verarbeitet werden',
 
   // ── Shell / top bar / nav ────────────────────────────────────────────
   'shell.wordmark': 'Herold admin',

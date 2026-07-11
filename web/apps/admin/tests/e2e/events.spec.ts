@@ -55,14 +55,14 @@ test.describe('events', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
     // Check table headers.
-    await expect(page.getByRole('columnheader', { name: 'Zeitpunkt' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Aktion' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Konto' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Ergebnis' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'When' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Action' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Principal' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Outcome' })).toBeVisible();
 
     // Check first entry renders.
     await expect(page.getByText('smtp.rcpt.resolve')).toBeVisible();
@@ -70,7 +70,7 @@ test.describe('events', () => {
     await expect(page.getByText('success').first()).toBeVisible();
 
     // Verify "Weitere laden" button is visible when next cursor is present.
-    await expect(page.getByRole('button', { name: 'Weitere laden' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Load more' })).toBeVisible();
   });
 
   test('entries are displayed newest-first', async ({ page }) => {
@@ -83,8 +83,8 @@ test.describe('events', () => {
     );
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
     const rows = page.getByRole('row');
     // Row 0 is the header; row 1 is the first data row (newest).
@@ -115,11 +115,11 @@ test.describe('events', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
-    await page.getByRole('textbox', { name: /nach aktion filtern/i }).fill('smtp.rcpt.resolve');
-    await page.getByRole('button', { name: 'Anwenden' }).click();
+    await page.getByRole('textbox', { name: /filter by action/i }).fill('smtp.rcpt.resolve');
+    await page.getByRole('button', { name: 'Apply' }).click();
 
     await page.waitForTimeout(200);
     const filtered = requests.filter((u) => u.includes('action='));
@@ -140,11 +140,11 @@ test.describe('events', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
-    await page.getByRole('textbox', { name: /nach konto filtern/i }).fill('alice@example.local');
-    await page.getByRole('button', { name: 'Anwenden' }).click();
+    await page.getByRole('textbox', { name: /filter by principal/i }).fill('alice@example.local');
+    await page.getByRole('button', { name: 'Apply' }).click();
 
     await page.waitForTimeout(200);
     const actorFiltered = requests.filter((u) => u.includes('actor_id='));
@@ -161,12 +161,12 @@ test.describe('events', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
     await page.locator('#events-since').fill('2024-06-01T00:00');
     await page.locator('#events-until').fill('2024-06-02T00:00');
-    await page.getByRole('button', { name: 'Anwenden' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
 
     await page.waitForTimeout(200);
     const sinceRequests = requests.filter((u) => u.includes('since='));
@@ -201,11 +201,11 @@ test.describe('events', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
     await expect(page.getByText('smtp.rcpt.resolve')).toBeVisible();
 
-    const loadMoreBtn = page.getByRole('button', { name: 'Weitere laden' });
+    const loadMoreBtn = page.getByRole('button', { name: 'Load more' });
     await expect(loadMoreBtn).toBeVisible();
     await loadMoreBtn.click();
 
@@ -223,17 +223,17 @@ test.describe('events', () => {
     });
 
     await page.goto('/admin/');
-    await page.getByRole('button', { name: 'Ereignisse' }).click();
-    await expect(page.getByRole('heading', { name: 'Systemereignisse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Events' }).click();
+    await expect(page.getByRole('heading', { name: 'System events' })).toBeVisible();
 
-    await page.getByRole('textbox', { name: /nach aktion filtern/i }).fill('smtp.some.action');
-    await page.getByRole('button', { name: 'Anwenden' }).click();
+    await page.getByRole('textbox', { name: /filter by action/i }).fill('smtp.some.action');
+    await page.getByRole('button', { name: 'Apply' }).click();
     await page.waitForTimeout(100);
 
-    await page.getByRole('button', { name: 'Zurücksetzen' }).click();
+    await page.getByRole('button', { name: 'Clear' }).click();
     await page.waitForTimeout(100);
 
-    await expect(page.getByRole('textbox', { name: /nach aktion filtern/i })).toHaveValue('');
+    await expect(page.getByRole('textbox', { name: /filter by action/i })).toHaveValue('');
     const lastRequest = requests[requests.length - 1];
     expect(lastRequest).not.toContain('action=smtp.some.action');
   });
