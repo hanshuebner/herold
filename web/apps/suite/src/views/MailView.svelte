@@ -1042,8 +1042,18 @@
               class="row-check"
               aria-label={t('mail.row.selectAria')}
               checked={mail.listSelectedIds.has(email.id)}
+              onclick={(e) => {
+                e.stopPropagation();
+                if (e.shiftKey) {
+                  // Shift-click replaces native single-row toggling with a
+                  // range select (re #202); suppress the native toggle (and
+                  // the `change` event it would fire) so the plain-click
+                  // path below stays untouched.
+                  e.preventDefault();
+                  mail.selectRowClick(email.id, true, mail.searchEmailIds);
+                }
+              }}
               onchange={() => mail.toggleSelected(email.id)}
-              onclick={(e) => e.stopPropagation()}
             />
             <button
               type="button"
@@ -1367,8 +1377,18 @@
               class="row-check"
               aria-label={t('mail.row.selectAria')}
               checked={mail.listSelectedIds.has(email.id)}
+              onclick={(e) => {
+                e.stopPropagation();
+                if (e.shiftKey) {
+                  // Shift-click replaces native single-row toggling with a
+                  // range select (re #202); suppress the native toggle (and
+                  // the `change` event it would fire) so the plain-click
+                  // path below stays untouched.
+                  e.preventDefault();
+                  mail.selectRowClick(email.id, true, effectiveListEmailIds);
+                }
+              }}
               onchange={() => mail.toggleSelected(email.id)}
-              onclick={(e) => e.stopPropagation()}
             />
             <button
               type="button"

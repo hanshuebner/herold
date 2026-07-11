@@ -13,6 +13,7 @@ import { jmap } from '../jmap/client';
 import { Capability } from '../jmap/types';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
+import { computeShiftClickRange } from '../list-selection/range-select';
 
 export type SortProp = 'displayName' | 'created' | 'updated';
 
@@ -181,6 +182,12 @@ class ContactsListStore {
    * reload) so a stale selection never survives onto a different list.
    */
   selectedIds = $state<Set<string>>(new Set());
+  /**
+   * Id of the row a plain (non-shift) selection click last targeted --
+   * the shift-click range anchor (re #202). Reset alongside
+   * `selectedIds` whenever the visible row set changes wholesale.
+   */
+  selectAnchorId = $state<string | null>(null);
 
   /** True when there are more pages to load. */
   get hasMore(): boolean {
@@ -277,6 +284,24 @@ class ContactsListStore {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     this.selectedIds = next;
+    this.selectAnchorId = id;
+  }
+
+  /**
+   * Handle a row-selection click on the bulk-select checkbox (re #202).
+   * Shift-click, with a prior anchor still present in `visibleIds`,
+   * replaces the selection with the contiguous range between the anchor
+   * and `id`, inclusive, and leaves the anchor unchanged so repeated
+   * shift-clicks keep extending from the same starting point. A plain
+   * click falls back to the existing per-row toggle and moves the anchor
+   * to `id`.
+   */
+  selectRowClick(id: string, shiftKey: boolean, visibleIds: string[]): void {
+    if (shiftKey && this.selectAnchorId !== null) {
+      this.selectedIds = computeShiftClickRange(visibleIds, this.selectAnchorId, id);
+      return;
+    }
+    this.toggleSelected(id);
   }
 
   /** Select every id currently in `ids` (typically the visible rows). */
@@ -284,8 +309,9 @@ class ContactsListStore {
     this.selectedIds = new Set(ids);
   }
 
-  /** Clear the selection set. */
+  /** Clear the selection set and the shift-click anchor. */
   clearSelection(): void {
+    this.selectAnchorId = null;
     if (this.selectedIds.size === 0) return;
     this.selectedIds = new Set();
   }

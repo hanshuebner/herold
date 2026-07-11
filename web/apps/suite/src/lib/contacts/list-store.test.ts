@@ -3,15 +3,21 @@
  *
  * Tests cover the pure projection helpers that derive list-row values from
  * raw JSContact Card objects: deriveDisplayName, deriveSecondary,
- * deriveFallbackInitial, and parseRow.
+ * deriveFallbackInitial, and parseRow. A second describe block below covers
+ * the shift-click range-selection anchor logic (re #202): those methods
+ * (toggleSelected/selectRowClick/clearSelection) touch only in-memory
+ * `$state`, not the JMAP client, so they are exercised directly against the
+ * exported singleton.
  *
- * The stateful store (init, loadMore, sync handler) uses the JMAP client
- * and is covered by integration tests against a running instance.
+ * The rest of the stateful store (init, loadMore, sync handler) uses the
+ * JMAP client and is covered by integration tests against a running
+ * instance.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _internals_forTest,
+  contactsListStore,
 } from './list-store.svelte';
 
 const { deriveDisplayName, deriveSecondary, deriveFallbackInitial, parseRow } =
@@ -205,5 +211,58 @@ describe('parseRow', () => {
   it('converts id to string', () => {
     const row = parseRow({ id: 42, name: { full: 'Dave' } } as unknown as Record<string, unknown>);
     expect(row.id).toBe('42');
+  });
+});
+
+// ── Selection: anchor + shift-click range (re #202) ────────────────────────────
+
+describe('contacts list selection: anchor + shift-click range', () => {
+  const ids = ['c1', 'c2', 'c3', 'c4', 'c5'];
+
+  beforeEach(() => {
+    contactsListStore.clearSelection();
+  });
+
+  it('toggleSelected sets the clicked row as the anchor', () => {
+    contactsListStore.toggleSelected('c2');
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2']));
+    expect(contactsListStore.selectAnchorId).toBe('c2');
+  });
+
+  it('selectRowClick without shiftKey behaves like a plain toggle and moves the anchor', () => {
+    contactsListStore.toggleSelected('c1');
+    contactsListStore.selectRowClick('c3', false, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c1', 'c3']));
+    expect(contactsListStore.selectAnchorId).toBe('c3');
+  });
+
+  it('shift-click selects the forward range from the anchor, inclusive', () => {
+    contactsListStore.toggleSelected('c2'); // anchor = c2
+    contactsListStore.selectRowClick('c4', true, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2', 'c3', 'c4']));
+    expect(contactsListStore.selectAnchorId).toBe('c2');
+  });
+
+  it('shift-click selects the backward range when the clicked row precedes the anchor', () => {
+    contactsListStore.toggleSelected('c4'); // anchor = c4
+    contactsListStore.selectRowClick('c2', true, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2', 'c3', 'c4']));
+    expect(contactsListStore.selectAnchorId).toBe('c4');
+  });
+
+  it('shift-click with no prior anchor falls back to selecting only the clicked row', () => {
+    contactsListStore.selectRowClick('c3', true, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c3']));
+    expect(contactsListStore.selectAnchorId).toBe('c3');
+  });
+
+  it('clearSelection resets the anchor as well as the selection set', () => {
+    contactsListStore.toggleSelected('c2');
+    contactsListStore.clearSelection();
+    expect(contactsListStore.selectedIds.size).toBe(0);
+    expect(contactsListStore.selectAnchorId).toBeNull();
+
+    contactsListStore.selectRowClick('c4', true, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c4']));
   });
 });
