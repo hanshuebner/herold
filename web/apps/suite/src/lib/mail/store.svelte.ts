@@ -33,6 +33,7 @@ import { router } from '../router/router.svelte';
 import { appendEvent } from '../debug-ring/debug-ring';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 import { resolveDefault } from '../identities/identity-status';
+import { computeShiftClickRange } from '../list-selection/range-select';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -161,6 +162,14 @@ class MailStore {
   listFocusedIndex = $state<number>(-1);
   /** Bulk-selected email ids in the current list view. Cleared on folder switch. */
   listSelectedIds = $state(new Set<string>());
+  /**
+   * Id of the row a plain (non-shift) selection click last targeted --
+   * the shift-click range anchor (re #202). Reset alongside
+   * `listSelectedIds` whenever the visible list is replaced wholesale
+   * (folder switch, new search, clear) so a stale anchor never survives
+   * onto a different list.
+   */
+  listSelectAnchorId = $state<string | null>(null);
   /**
    * True while the user has accepted the "select all M messages in this folder"
    * offer from the SelectChooser banner (issue #149). While true, bulk actions
@@ -301,6 +310,7 @@ class MailStore {
     this.listError = null;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
+    this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
     if (this.#bulkJobPollTimer) clearTimeout(this.#bulkJobPollTimer);
     this.#bulkJobPollTimer = null;
@@ -849,6 +859,7 @@ class MailStore {
     // (re #159); a new search starts with nothing selected, same as
     // loadFolder.
     this.listSelectedIds = new Set();
+    this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
 
     try {
@@ -969,6 +980,7 @@ class MailStore {
     this.searchError = null;
     this.searchFocusedIndex = -1;
     this.listSelectedIds = new Set();
+    this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
   }
 
@@ -1634,6 +1646,7 @@ class MailStore {
     this.listFolder = folder;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
+    this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
     this.listHasMore = false;
     this.listLoadingMore = false;
@@ -2721,6 +2734,25 @@ class MailStore {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     this.listSelectedIds = next;
+    this.listSelectAnchorId = id;
+  }
+
+  /**
+   * Handle a row-selection click on the bulk-select checkbox (re #202).
+   * Shift-click, with a prior anchor still present in `visibleIds`,
+   * replaces the selection with the contiguous range between the anchor
+   * and `id`, inclusive, and leaves the anchor unchanged so repeated
+   * shift-clicks keep extending from the same starting point. A plain
+   * click falls back to the existing per-row toggle and moves the anchor
+   * to `id`.
+   */
+  selectRowClick(id: string, shiftKey: boolean, visibleIds: string[] = this.listEmailIds): void {
+    if (shiftKey && this.listSelectAnchorId !== null) {
+      this.listWholeMailboxSelected = false;
+      this.listSelectedIds = computeShiftClickRange(visibleIds, this.listSelectAnchorId, id);
+      return;
+    }
+    this.toggleSelected(id);
   }
 
   /**
@@ -2747,8 +2779,9 @@ class MailStore {
     }
   }
 
-  /** Clear the bulk selection set and the whole-mailbox selection flag. */
+  /** Clear the bulk selection set, the shift-click anchor, and the whole-mailbox selection flag. */
   clearSelection(): void {
+    this.listSelectAnchorId = null;
     if (this.listSelectedIds.size === 0 && !this.listWholeMailboxSelected) return;
     this.listSelectedIds = new Set();
     this.listWholeMailboxSelected = false;
