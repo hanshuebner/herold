@@ -269,6 +269,27 @@ func TestVCard_ParseEscaping(t *testing.T) {
 	assertRawJSONHasNote(t, c, `Back\slash`)
 }
 
+func TestVCard_ParseEscaping_UnrecognizedEscape(t *testing.T) {
+	// Gmail's vCard export escapes ':' in URL values with a backslash
+	// even though RFC 6350 sec 3.4 does not define '\:' as an escape
+	// sequence. Unrecognized 'backslash + X' sequences must drop the
+	// backslash and keep the literal character, matching how other
+	// vCard importers handle this widespread non-conformant export.
+	vcf := "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:esc-url\r\n" +
+		`FN:Test User` + "\r\n" +
+		`URL:http\://www.google.com/profiles/109420793905830628166` + "\r\n" +
+		`NOTE:Value with a\:colon` + "\r\n" +
+		"END:VCARD\r\n"
+
+	results := contacts.ParseVCards([]byte(vcf), nil)
+	if len(results) != 1 || results[0].Error != nil {
+		t.Fatalf("unexpected error: %v", results[0].Error)
+	}
+	c := results[0].Card
+	assertRawJSONHasURL(t, c, "http://www.google.com/profiles/109420793905830628166")
+	assertRawJSONHasNote(t, c, "Value with a:colon")
+}
+
 func TestVCard_ParseNonUTF8(t *testing.T) {
 	vcf := "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:enc\r\nFN:Test\xff\xfe\r\nEND:VCARD\r\n"
 	results := contacts.ParseVCards([]byte(vcf), nil)

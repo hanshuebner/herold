@@ -1420,7 +1420,11 @@ func unescapeValue(s string) string {
 			case ';':
 				buf.WriteByte(';')
 			default:
-				buf.WriteByte(s[i])
+				// RFC 6350 sec 3.4 defines only the escapes above; any
+				// other "\X" sequence is not conformant. Some exporters
+				// (e.g. Gmail) escape characters like ':' anyway
+				// (`http\://...`), so treat an unrecognized escape as a
+				// literal character and drop the backslash.
 				buf.WriteByte(s[i+1])
 			}
 			i += 2
