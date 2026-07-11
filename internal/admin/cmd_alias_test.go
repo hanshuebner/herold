@@ -86,9 +86,57 @@ func TestCLIAliasAdd_UnknownTarget(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertDomain: %v", err)
 	}
+	// ghost@test.local looks like a valid email but is on a domain this
+	// deployment is authoritative for and matches no principal: this
+	// must stay an error, not silently become an external-target alias
+	// (re #181 — an address on a locally hosted domain is never a
+	// genuine external forward).
 	_, _, err := env.run("alias", "add", "alias@test.local", "ghost@test.local")
 	if err == nil {
 		t.Fatalf("expected error for unknown target")
+	}
+}
+
+// TestCLIAliasAdd_ExternalTarget covers issue #181: `herold alias add`
+// accepts an external email address as <target> and creates an
+// alias that forwards to it.
+func TestCLIAliasAdd_ExternalTarget(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	if err := env.store.Meta().InsertDomain(context.Background(), store.Domain{
+		Name:    "test.local",
+		IsLocal: true,
+	}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+
+	out, _, err := env.run("alias", "add", "sales@test.local", "sales@external.example", "--json")
+	if err != nil {
+		t.Fatalf("alias add (external target): %v", err)
+	}
+	if !strings.Contains(out, "sales@external.example") {
+		t.Fatalf("expected target_address in add output: %s", out)
+	}
+
+	rows, err := env.store.Meta().ListAliases(context.Background(), "test.local")
+	if err != nil {
+		t.Fatalf("ListAliases: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 alias row, got %d", len(rows))
+	}
+	if rows[0].TargetAddress != "sales@external.example" {
+		t.Fatalf("TargetAddress = %q, want sales@external.example", rows[0].TargetAddress)
+	}
+	if rows[0].TargetPrincipal != 0 {
+		t.Fatalf("TargetPrincipal = %d, want 0", rows[0].TargetPrincipal)
+	}
+
+	out, _, err = env.run("alias", "list", "--json")
+	if err != nil {
+		t.Fatalf("alias list: %v", err)
+	}
+	if !strings.Contains(out, "sales@external.example") {
+		t.Fatalf("expected target_address in list output: %s", out)
 	}
 }
 
