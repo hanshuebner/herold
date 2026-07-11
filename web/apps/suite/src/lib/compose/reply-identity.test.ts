@@ -408,6 +408,167 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     const got = selectReplyIdentity(parent, [defaultId, unverified], defaultId);
     expect(got.email).toBe('hans@huebner.org');
   });
+
+  it('does not let a coincidental To/Cc domain match hijack the From when X-Herold-Recipient names an unrelated domain (fix-verifier deviation #1)', () => {
+    // Multi-domain account: identities on huebner.org (default) and
+    // the-retro-heaven.de (a decoy that happens to share a domain with
+    // the To address). The message was genuinely delivered to
+    // vorsitz@classic-computing.de (X-Herold-Recipient) — a domain
+    // neither identity owns. Because X-Herold-Recipient IS present and
+    // is the authoritative delivery signal, its failure to match must
+    // NOT fall through to a coincidental To/Cc domain hit on the
+    // unrelated the-retro-heaven.de identity; the account default wins.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const decoy = makeIdentity('someone@the-retro-heaven.de');
+    const parent = makeEmail({
+      from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+      to: [{ name: 'dreams', email: 'dreams@the-retro-heaven.de' }],
+      cc: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, decoy], defaultId);
+    expect(got.email).toBe('hans@huebner.org');
+  });
+});
+
+// ── REQ-MAIL-12a acceptance / contract test ─────────────────────────────
+//
+// This is #166's THIRD point-fix on selectReplyIdentity (e6234574 →
+// 658c945b → 5930528f/this commit), each correcting one symptom with its
+// own narrowly-scoped test. Per the project's cap-fix-on-fix rule, a
+// third symptom on one flow owes a single pinned end-to-end test of the
+// WHOLE step-ordering contract, not another symptom-only test — so a
+// fourth divergence on this flow is caught here instead of requiring a
+// fourth round-trip through the issue queue.
+//
+// One row per REQ-MAIL-12a step (1, 2, 3, 3a, 4) plus the three real-world
+// repro cases this issue accumulated (issuecomment-2070, issuecomment-2238,
+// issuecomment-2281) and the deviation the fix-verifier caught on the first
+// pass at 3a (a coincidental To/Cc domain match must not override an
+// authoritative-but-unmatched X-Herold-Recipient domain).
+describe('selectReplyIdentity — REQ-MAIL-12a acceptance/contract test (pins the full step order, cap-fix-on-fix depth 3)', () => {
+  const HANS_HUEBNER = makeIdentity('hans@huebner.org', { isDefault: true });
+  const HANS_NETZHANSA = makeIdentity('hans@netzhansa.com');
+  const HANS_GMAIL = makeIdentity('hans.huebner@gmail.com');
+  const CLASSIC_PRESSE = makeIdentity('presse@classic-computing.de');
+  const RETRO_DECOY = makeIdentity('someone@the-retro-heaven.de');
+
+  type Case = {
+    name: string;
+    parent: Partial<Email>;
+    identities: Identity[];
+    defaultIdentity: Identity;
+    expectedEmail: string;
+  };
+
+  const cases: Case[] = [
+    {
+      name: 'step 1 — own-sent: From matches an identity and no X-Herold-Recipient header (genuinely outbound)',
+      parent: {
+        from: [{ name: null, email: 'alice@example.local' }],
+        to: [{ name: null, email: 'someone@elsewhere.test' }],
+      },
+      identities: [ALICE, ALICE_WORK],
+      defaultIdentity: DEFAULT_ID,
+      expectedEmail: 'alice@example.local',
+    },
+    {
+      name: 'step 2 — To/Cc exact match wins over a present-but-different X-Herold-Recipient identity',
+      parent: {
+        from: [{ name: null, email: 'external@elsewhere.test' }],
+        to: [{ name: null, email: 'alice+work@example.local' }],
+        'header:X-Herold-Recipient:asText': 'alice@example.local',
+      },
+      identities: [ALICE, ALICE_WORK],
+      defaultIdentity: DEFAULT_ID,
+      expectedEmail: 'alice+work@example.local',
+    },
+    {
+      name: 'step 3 — X-Herold-Recipient exact match wins when To/Cc have no identity (Bcc/list mail)',
+      parent: {
+        from: [{ name: null, email: 'stranger@external.test' }],
+        to: [{ name: null, email: 'some-list@mailing.example' }],
+        'header:X-Herold-Recipient:asText': 'hans@netzhansa.com',
+      },
+      identities: [HANS_NETZHANSA],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'hans@netzhansa.com',
+    },
+    {
+      name: 'step 3a — domain fallback wins when X-Herold-Recipient matches no identity exactly but shares a domain with one',
+      parent: {
+        from: [{ name: null, email: 'walter-buehler-erben@posteo.de' }],
+        to: [{ name: null, email: 'dreams@the-retro-heaven.de' }],
+        cc: [{ name: null, email: 'info@classic-computing.de' }],
+        'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+      },
+      identities: [HANS_HUEBNER, CLASSIC_PRESSE],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'presse@classic-computing.de',
+    },
+    {
+      name: 'step 4 — terminal fallback to the default identity when nothing matches at any step',
+      parent: {
+        from: [{ name: null, email: 'external@elsewhere.test' }],
+        to: [{ name: null, email: 'unrelated@nowhere.test' }],
+        cc: [{ name: null, email: 'also-unrelated@nowhere.test' }],
+      },
+      identities: [ALICE, ALICE_WORK],
+      defaultIdentity: DEFAULT_ID,
+      expectedEmail: 'alice@example.local',
+    },
+    {
+      name: 'repro: issuecomment-2070 — delivered-to identity wins over a coincidentally-matching From identity',
+      parent: {
+        from: [{ name: 'Hans Huebner', email: 'hans.huebner@gmail.com' }],
+        to: [{ name: null, email: 'hans@netzhansa.com' }],
+        'header:X-Herold-Recipient:asText': 'hans@netzhansa.com',
+      },
+      identities: [HANS_NETZHANSA, HANS_GMAIL],
+      defaultIdentity: HANS_NETZHANSA,
+      expectedEmail: 'hans@netzhansa.com',
+    },
+    {
+      name: 'repro: issuecomment-2238 — own-sent does not fire when X-Herold-Recipient is present, even if From matches an identity',
+      parent: {
+        from: [{ name: null, email: 'alice@example.local' }],
+        to: [{ name: null, email: 'someone@elsewhere.test' }],
+        'header:X-Herold-Recipient:asText': 'alice+work@example.local',
+      },
+      identities: [ALICE, ALICE_WORK],
+      defaultIdentity: DEFAULT_ID,
+      expectedEmail: 'alice+work@example.local',
+    },
+    {
+      name: 'repro: issuecomment-2281 — delivered-to role/alias address (not a registered identity) resolves via same-domain fallback, not the unrelated global default',
+      parent: {
+        from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+        to: [{ name: 'dreams', email: 'dreams@the-retro-heaven.de' }],
+        cc: [{ name: null, email: 'info@classic-computing.de' }],
+        'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+      },
+      identities: [HANS_HUEBNER, CLASSIC_PRESSE],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'presse@classic-computing.de',
+    },
+    {
+      name: 'fix-verifier deviation #1 — an unmatched X-Herold-Recipient domain must not fall through to a coincidental To/Cc domain hit on an unrelated identity',
+      parent: {
+        from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+        to: [{ name: 'dreams', email: 'dreams@the-retro-heaven.de' }],
+        cc: [{ name: null, email: 'info@classic-computing.de' }],
+        'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+      },
+      identities: [HANS_HUEBNER, RETRO_DECOY],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'hans@huebner.org',
+    },
+  ];
+
+  it.each(cases)('$name', ({ parent, identities, defaultIdentity, expectedEmail }) => {
+    const got = selectReplyIdentity(makeEmail(parent), identities, defaultIdentity);
+    expect(got.email).toBe(expectedEmail);
+  });
 });
 
 // ── localAliasesForCc ───────────────────────────────────────────────────

@@ -31,12 +31,18 @@
  *       on a domain the account holds an Identity for) route mail into
  *       the mailbox without being registered as a first-class Identity
  *       themselves (see #146/#147/#164). When neither the exact-address
- *       steps above nor the To/Cc scan produced a match, but the
- *       `X-Herold-Recipient` address (or, failing that, a To/Cc
- *       address) shares its domain with a verified Identity, that
- *       identity wins. This keeps the reply's From on the account's
- *       side of the conversation domain instead of falling through to
- *       an unrelated global default.
+ *       steps above nor the To/Cc scan produced a match, and
+ *       `X-Herold-Recipient` is present, its domain (and ONLY its
+ *       domain — To/Cc are not consulted) is checked against a verified
+ *       Identity's domain; a match wins. `X-Herold-Recipient` is the
+ *       authoritative delivery signal, so when it names a domain none
+ *       of the user's identities own, the fallback stops there rather
+ *       than reaching into To/Cc, where an unrelated third-party
+ *       address could otherwise coincidentally share a domain with a
+ *       *different* one of the user's identities and hijack the From
+ *       to an identity the message was never delivered to. Only when
+ *       `X-Herold-Recipient` is absent entirely (older messages) does
+ *       the domain fallback consult To then Cc.
  *   4. Final fallback: the supplied default identity (REQ-MAIL-12).
  *
  * Verification gate: Unverified Identities NEVER win the To/Cc scan
@@ -200,9 +206,12 @@ function firstDomainMatch(
  *      they're authorised).
  *   2. parent.to / parent.cc scan → first verified identity.
  *   3. X-Herold-Recipient header → verified identity.
- *   3a. Domain fallback: X-Herold-Recipient, then parent.to, then
- *       parent.cc, matched by domain (not exact address) against a
- *       verified identity's domain.
+ *   3a. Domain fallback: when X-Herold-Recipient is present, ONLY its
+ *       domain is matched against a verified identity's domain (To/Cc
+ *       are not consulted — an unmatched delivery domain is
+ *       authoritative and must not fall through to a coincidental
+ *       To/Cc domain hit). When X-Herold-Recipient is absent entirely,
+ *       parent.to then parent.cc are matched by domain instead.
  *   4. Fallback to `defaultIdentity`.
  *
  * Callers (compose's openReply / openReplyAll / openForward) pass the
@@ -251,24 +260,40 @@ export function selectReplyIdentity(
     if (matched && isVerified(matched)) return matched;
   }
 
-  // Step 3a — domain fallback. The delivered-to address (or a To/Cc
-  // address) may be a role/alias address that routes into the mailbox
-  // without being a registered Identity itself (#146/#147/#164). When
-  // its domain matches a verified identity's domain, that identity is
-  // still a better From than the account's unrelated global default.
+  // Step 3a — domain fallback. The delivered-to address may be a
+  // role/alias address that routes into the mailbox without being a
+  // registered Identity itself (#146/#147/#164). When its domain
+  // matches a verified identity's domain, that identity is still a
+  // better From than the account's unrelated global default.
+  //
+  // X-Herold-Recipient is the authoritative delivery signal, so it is
+  // the ONLY source consulted when present: if its domain matches no
+  // identity, the message was genuinely delivered to a domain the
+  // account has no identity for, and the fallback must not reach into
+  // To/Cc — an unrelated third-party address in To/Cc could otherwise
+  // coincidentally share a domain with a *different* one of the
+  // user's identities (e.g. a multi-domain account CC'd by a
+  // correspondent whose own address happens to sit on one of the
+  // user's other domains) and hijack the From to an identity the
+  // message was never delivered to. To/Cc domain matching is only
+  // consulted when there is no X-Herold-Recipient at all (older
+  // messages that predate the header, or messages where the server
+  // never stamped it).
   const byDomain = firstVerifiedIdentityByDomain(identities);
   if (byDomain.size > 0) {
     if (recipient) {
       const domain = domainOf(recipient);
-      if (domain) {
-        const domainHit = byDomain.get(domain);
-        if (domainHit) return domainHit;
-      }
+      const domainHit = domain ? byDomain.get(domain) : undefined;
+      if (domainHit) return domainHit;
+      // Recipient known but its domain matches nothing — the delivery
+      // domain is authoritative and unrelated; do not fall through to
+      // To/Cc domain guessing.
+    } else {
+      const toDomainHit = firstDomainMatch(parent.to ?? null, byDomain);
+      if (toDomainHit) return toDomainHit;
+      const ccDomainHit = firstDomainMatch(parent.cc ?? null, byDomain);
+      if (ccDomainHit) return ccDomainHit;
     }
-    const toDomainHit = firstDomainMatch(parent.to ?? null, byDomain);
-    if (toDomainHit) return toDomainHit;
-    const ccDomainHit = firstDomainMatch(parent.cc ?? null, byDomain);
-    if (ccDomainHit) return ccDomainHit;
   }
 
   // Step 4 — terminal fallback.
