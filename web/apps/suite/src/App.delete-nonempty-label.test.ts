@@ -82,6 +82,7 @@ vi.mock('./lib/notifications/sounds.svelte', () => ({
 vi.mock('./lib/i18n/i18n.svelte', () => ({
   t: (key: string) => key,
   localeTag: () => 'en-US',
+  i18n: { t: (key: string, params?: Record<string, string | number>) => (params ? `${key}:${JSON.stringify(params)}` : key) },
 }));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

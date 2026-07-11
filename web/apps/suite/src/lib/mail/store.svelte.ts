@@ -1226,10 +1226,16 @@ class MailStore {
       const next = new Map(this.mailboxes);
       next.delete(id);
       this.mailboxes = next;
-      toast.show({ message: `Deleted ${prev.name}` });
-      // If we were viewing this mailbox, fall back to the inbox.
+      toast.show({ message: i18n.t('sidebar.editFolder.toastDeleted', { name: prev.name }) });
+      // If the URL is currently routed to this mailbox, both reset the
+      // internal list state and move the router off the now-dead
+      // `/mail/folder/<id>` route -- otherwise MailView's `folder` derived
+      // value keeps resolving to `undefined` (the id is gone from
+      // `mailboxes`) and renders the not-found view, even though
+      // `listFolder` was reset internally (re #201).
       if (this.listFolder === id) {
         void this.loadFolder('inbox');
+        router.navigate('/mail');
       }
       return true;
     } catch (err) {

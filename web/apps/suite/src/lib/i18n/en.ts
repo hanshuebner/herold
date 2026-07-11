@@ -30,6 +30,7 @@ export const en = {
   'sidebar.editFolder.title': 'Edit label',
   'sidebar.editFolder.confirm': 'Change',
   'sidebar.editFolder.toastChanged': 'Changed',
+  'sidebar.editFolder.toastDeleted': 'Deleted {name}',
   'sidebar.deleteFolder.title': 'Delete label "{name}"?',
   'sidebar.deleteFolder.message':
     "Messages it contains will remain in any other labels they're in (otherwise they go to Trash on the server).",

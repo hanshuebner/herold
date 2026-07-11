@@ -29,6 +29,7 @@ export const de = {
   'sidebar.editFolder.title': 'Label bearbeiten',
   'sidebar.editFolder.confirm': 'Ändern',
   'sidebar.editFolder.toastChanged': 'Geändert',
+  'sidebar.editFolder.toastDeleted': '"{name}" gelöscht',
   'sidebar.deleteFolder.title': 'Label "{name}" löschen?',
   'sidebar.deleteFolder.message':
     'Enthaltene Nachrichten bleiben in anderen Labels erhalten (andernfalls werden sie in den Papierkorb verschoben).',
