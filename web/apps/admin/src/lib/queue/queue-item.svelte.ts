@@ -7,6 +7,7 @@
 
 import { apiGet, apiPost, apiDelete } from '../api/client';
 import type { QueueItem } from './queue.svelte';
+import { t } from '../i18n/i18n.svelte';
 
 export type QueueItemStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -28,7 +29,7 @@ class QueueItemState {
     const result = await apiGet<QueueItem>(`/api/v1/queue/${id}`);
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load queue item';
+      this.errorMessage = result.errorMessage ?? t('queueItem.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -40,7 +41,7 @@ class QueueItemState {
   async retry(id: string): Promise<OpResult> {
     const result = await apiPost<unknown>(`/api/v1/queue/${id}/retry`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Retry failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('queueItem.error.retryFailed') };
     }
     await this.load(id);
     return { ok: true, errorMessage: null };
@@ -49,7 +50,7 @@ class QueueItemState {
   async hold(id: string): Promise<OpResult> {
     const result = await apiPost<unknown>(`/api/v1/queue/${id}/hold`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Hold failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('queueItem.error.holdFailed') };
     }
     await this.load(id);
     return { ok: true, errorMessage: null };
@@ -58,7 +59,7 @@ class QueueItemState {
   async release(id: string): Promise<OpResult> {
     const result = await apiPost<unknown>(`/api/v1/queue/${id}/release`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Release failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('queueItem.error.releaseFailed') };
     }
     await this.load(id);
     return { ok: true, errorMessage: null };
@@ -67,7 +68,7 @@ class QueueItemState {
   async deleteItem(id: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/queue/${id}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Delete failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('queueItem.error.deleteFailed') };
     }
     return { ok: true, errorMessage: null };
   }

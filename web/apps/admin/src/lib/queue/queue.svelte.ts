@@ -9,6 +9,7 @@
  */
 
 import { apiGet, apiPost } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface QueueItem {
   id: string;
@@ -86,7 +87,7 @@ class QueueState {
     const result = await apiGet<{ items: QueueItem[]; next: string | null }>(this.buildUrl());
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load queue';
+      this.errorMessage = result.errorMessage ?? t('queue.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -106,7 +107,7 @@ class QueueState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load more queue items';
+      this.errorMessage = result.errorMessage ?? t('queue.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }
@@ -120,7 +121,7 @@ class QueueState {
   async flush(): Promise<{ ok: boolean; errorMessage: string | null; flushed?: number }> {
     const result = await apiPost<{ flushed: number }>('/api/v1/queue/flush?state=deferred');
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Flush failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('queue.error.flushFailed') };
     }
     await this.load();
     return { ok: true, errorMessage: null, flushed: result.data?.flushed };

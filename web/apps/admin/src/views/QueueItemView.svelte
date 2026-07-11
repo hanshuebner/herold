@@ -2,6 +2,7 @@
   import { queueItem } from '../lib/queue/queue-item.svelte';
   import { router } from '../lib/router/router.svelte';
   import { formatAbsolute, DATE_TIME_WITH_SECONDS } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   interface Props {
     id: string;
@@ -77,14 +78,14 @@
       type="button"
       class="back-btn"
       onclick={() => router.navigate('/queue')}
-      aria-label="Back to queue"
+      aria-label={t('queueItem.backAriaLabel')}
     >
-      Back
+      {t('queueItem.back')}
     </button>
     {#if queueItem.item}
-      <h1 class="page-title">Queue item <span class="id-mono">{queueItem.item.id}</span></h1>
+      <h1 class="page-title">{t('queueItem.title')} <span class="id-mono">{queueItem.item.id}</span></h1>
     {:else if queueItem.status === 'loading'}
-      <div class="spinner" role="status" aria-label="Loading"></div>
+      <div class="spinner" role="status" aria-label={t('common.loading')}></div>
     {/if}
   </div>
 
@@ -97,31 +98,31 @@
     <div class="action-bar">
       {#if item.state === 'deferred' || item.state === 'failed'}
         <button type="button" class="btn-primary" onclick={() => void doRetry()} disabled={actionWorking}>
-          {actionWorking ? 'Working...' : 'Retry'}
+          {actionWorking ? t('queueItem.working') : t('queueItem.retry')}
         </button>
       {/if}
       {#if item.state !== 'held' && item.state !== 'done'}
         <button type="button" class="btn-secondary" onclick={() => void doHold()} disabled={actionWorking}>
-          Hold
+          {t('queueItem.hold')}
         </button>
       {/if}
       {#if item.state === 'held'}
         <button type="button" class="btn-primary" onclick={() => void doRelease()} disabled={actionWorking}>
-          {actionWorking ? 'Working...' : 'Release'}
+          {actionWorking ? t('queueItem.working') : t('queueItem.release')}
         </button>
       {/if}
 
       {#if deleteConfirmOpen}
-        <span class="confirm-inline">Delete?</span>
+        <span class="confirm-inline">{t('queueItem.deleteConfirm')}</span>
         <button type="button" class="btn-danger" onclick={() => void doDelete()} disabled={actionWorking}>
-          {actionWorking ? 'Deleting...' : 'Confirm delete'}
+          {actionWorking ? t('queueItem.deleting') : t('queueItem.confirmDelete')}
         </button>
         <button type="button" class="btn-ghost" onclick={() => { deleteConfirmOpen = false; }}>
-          Cancel
+          {t('common.cancel')}
         </button>
       {:else}
         <button type="button" class="btn-danger-outline" onclick={() => { deleteConfirmOpen = true; }}>
-          Delete
+          {t('queueItem.delete')}
         </button>
       {/if}
     </div>
@@ -133,74 +134,74 @@
     <!-- Detail definition list -->
     <dl class="detail-list">
       <div class="detail-row">
-        <dt>ID</dt>
+        <dt>{t('queueItem.field.id')}</dt>
         <dd class="mono">{item.id}</dd>
       </div>
       <div class="detail-row">
-        <dt>State</dt>
+        <dt>{t('queueItem.field.state')}</dt>
         <dd>
           <span class="chip {stateChipClass(item.state)}">{item.state}</span>
         </dd>
       </div>
       <div class="detail-row">
-        <dt>Principal ID</dt>
+        <dt>{t('queueItem.field.principalId')}</dt>
         <dd class="mono">{item.principal_id}</dd>
       </div>
       <div class="detail-row">
-        <dt>Sender</dt>
+        <dt>{t('queueItem.field.sender')}</dt>
         <dd class="mono">{item.mail_from}</dd>
       </div>
       <div class="detail-row">
-        <dt>Recipient</dt>
+        <dt>{t('queueItem.field.recipient')}</dt>
         <dd class="mono">{item.rcpt_to}</dd>
       </div>
       <div class="detail-row">
-        <dt>Envelope ID</dt>
+        <dt>{t('queueItem.field.envelopeId')}</dt>
         <dd class="mono">{item.envelope_id}</dd>
       </div>
       <div class="detail-row">
-        <dt>Attempts</dt>
+        <dt>{t('queueItem.field.attempts')}</dt>
         <dd>{item.attempts}</dd>
       </div>
       {#if item.created_at}
         <div class="detail-row">
-          <dt>Created</dt>
+          <dt>{t('queueItem.field.created')}</dt>
           <dd>{formatDate(item.created_at)}</dd>
         </div>
       {/if}
       {#if item.last_attempt_at}
         <div class="detail-row">
-          <dt>Last attempt</dt>
+          <dt>{t('queueItem.field.lastAttempt')}</dt>
           <dd>{formatDate(item.last_attempt_at)}</dd>
         </div>
       {/if}
       {#if item.next_attempt_at}
         <div class="detail-row">
-          <dt>Next attempt</dt>
+          <dt>{t('queueItem.field.nextAttempt')}</dt>
           <dd>{formatDate(item.next_attempt_at)}</dd>
         </div>
       {/if}
       {#if item.last_error}
         <div class="detail-row">
-          <dt>Last error</dt>
+          <dt>{t('queueItem.field.lastError')}</dt>
           <dd class="error-text">{item.last_error}</dd>
         </div>
       {/if}
       {#if item.idempotency_key}
         <div class="detail-row">
-          <dt>Idempotency key</dt>
+          <dt>{t('queueItem.field.idempotencyKey')}</dt>
           <dd class="mono">{item.idempotency_key}</dd>
         </div>
       {/if}
       {#if item.body_blob_hash}
         <div class="detail-row">
-          <dt>Body blob hash</dt>
+          <dt>{t('queueItem.field.bodyBlobHash')}</dt>
           <dd class="mono small">{item.body_blob_hash}</dd>
         </div>
       {/if}
       {#if item.headers_blob_hash}
         <div class="detail-row">
-          <dt>Headers blob hash</dt>
+          <dt>{t('queueItem.field.headersBlobHash')}</dt>
           <dd class="mono small">{item.headers_blob_hash}</dd>
         </div>
       {/if}

@@ -3,6 +3,7 @@
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatRelative } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   let flushDialogOpen = $state(false);
   let flushing = $state(false);
@@ -15,14 +16,14 @@
     }
   });
 
-  const stateOptions: { value: QueueStateFilter; label: string }[] = [
-    { value: 'all', label: 'All states' },
-    { value: 'queued', label: 'Queued' },
-    { value: 'deferred', label: 'Deferred' },
-    { value: 'held', label: 'Held' },
-    { value: 'failed', label: 'Failed' },
-    { value: 'inflight', label: 'Inflight' },
-    { value: 'done', label: 'Done' },
+  const stateOptions: { value: QueueStateFilter; labelKey: string }[] = [
+    { value: 'all', labelKey: 'queue.state.all' },
+    { value: 'queued', labelKey: 'queue.state.queued' },
+    { value: 'deferred', labelKey: 'queue.state.deferred' },
+    { value: 'held', labelKey: 'queue.state.held' },
+    { value: 'failed', labelKey: 'queue.state.failed' },
+    { value: 'inflight', labelKey: 'queue.state.inflight' },
+    { value: 'done', labelKey: 'queue.state.done' },
   ];
 
   function onStateChange(e: Event): void {
@@ -70,14 +71,14 @@
 <div class="queue-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Queue</h1>
+      <h1 class="page-title">{t('queue.title')}</h1>
       {#if queue.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Loading"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
     <div class="page-header-right">
       <button type="button" class="btn-secondary" onclick={openFlushDialog}>
-        Flush deferred
+        {t('queue.flushDeferred')}
       </button>
     </div>
   </div>
@@ -88,19 +89,19 @@
       class="select"
       value={queue.stateFilter}
       onchange={onStateChange}
-      aria-label="State filter"
+      aria-label={t('queue.stateFilterAriaLabel')}
     >
       {#each stateOptions as opt (opt.value)}
-        <option value={opt.value}>{opt.label}</option>
+        <option value={opt.value}>{t(opt.labelKey)}</option>
       {/each}
     </select>
 
     <input
       type="search"
       class="search-input"
-      placeholder="Search sender or recipient..."
+      placeholder={t('queue.searchPlaceholder')}
       bind:value={queue.search}
-      aria-label="Search by sender or recipient"
+      aria-label={t('queue.searchAriaLabel')}
     />
   </div>
 
@@ -110,7 +111,11 @@
 
   {#if isFiltering}
     <p class="filter-note">
-      Showing {totalFiltered} of {totalLoaded} loaded{queue.hasMore ? ' -- load more to widen the search' : ''}.
+      {t('queue.filterNote', {
+        filtered: totalFiltered,
+        total: totalLoaded,
+        more: queue.hasMore ? t('queue.filterNote.loadMoreHint') : '',
+      })}
     </p>
   {/if}
 
@@ -119,12 +124,12 @@
       <table class="table">
         <thead>
           <tr>
-            <th class="col-id">ID</th>
-            <th class="col-state">State</th>
-            <th class="col-from">Sender</th>
-            <th class="col-to">Recipient</th>
-            <th class="col-attempts">Attempts</th>
-            <th class="col-next">Next retry</th>
+            <th class="col-id">{t('queue.table.id')}</th>
+            <th class="col-state">{t('queue.table.state')}</th>
+            <th class="col-from">{t('queue.table.sender')}</th>
+            <th class="col-to">{t('queue.table.recipient')}</th>
+            <th class="col-attempts">{t('queue.table.attempts')}</th>
+            <th class="col-next">{t('queue.table.nextRetry')}</th>
           </tr>
         </thead>
         <tbody>
@@ -150,7 +155,7 @@
           {:else}
             <tr>
               <td colspan="6" class="empty-row">
-                {queue.search ? 'No items match the search.' : 'No queue items found.'}
+                {queue.search ? t('queue.noMatch') : t('queue.empty')}
               </td>
             </tr>
           {/each}
@@ -166,31 +171,32 @@
           onclick={() => void queue.loadMore()}
           disabled={queue.status === 'loading'}
         >
-          {queue.status === 'loading' ? 'Loading...' : 'Load more'}
+          {queue.status === 'loading' ? t('common.loading') : t('queue.loadMore')}
         </button>
       </div>
     {/if}
   {:else if queue.status !== 'loading' && queue.status !== 'idle'}
-    <p class="empty-state">No queue items found.</p>
+    <p class="empty-state">{t('queue.empty')}</p>
   {/if}
 </div>
 
 <!-- Flush deferred dialog -->
-<Dialog bind:open={flushDialogOpen} title="Flush deferred items">
+<Dialog bind:open={flushDialogOpen} title={t('queue.flush.dialogTitle')}>
   <div class="flush-dialog">
     {#if flushResult !== null}
       <p class="form-success" role="status">
-        Flushed {flushResult.flushed} deferred item{flushResult.flushed !== 1 ? 's' : ''}.
+        {flushResult.flushed !== 1
+          ? t('queue.flush.resultPlural', { count: flushResult.flushed })
+          : t('queue.flush.result', { count: flushResult.flushed })}
       </p>
       <div class="form-actions">
         <button type="button" class="btn-primary" onclick={() => { flushDialogOpen = false; }}>
-          Close
+          {t('queue.flush.close')}
         </button>
       </div>
     {:else}
       <p class="flush-desc">
-        This will move all deferred items back to the active queue immediately.
-        The scheduler will attempt delivery at its next pass.
+        {t('queue.flush.description')}
       </p>
       {#if flushError}
         <p class="form-error" role="alert">{flushError}</p>
@@ -202,7 +208,7 @@
           onclick={() => { flushDialogOpen = false; }}
           disabled={flushing}
         >
-          Cancel
+          {t('common.cancel')}
         </button>
         <button
           type="button"
@@ -210,7 +216,7 @@
           onclick={() => void confirmFlush()}
           disabled={flushing}
         >
-          {flushing ? 'Flushing...' : 'Flush deferred'}
+          {flushing ? t('queue.flush.flushing') : t('queue.flushDeferred')}
         </button>
       </div>
     {/if}
