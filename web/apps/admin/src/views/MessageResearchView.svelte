@@ -7,6 +7,7 @@
     type MessageResearchHit,
   } from '../lib/message-research/message-research.svelte';
   import { formatRelative, formatAbsolute } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // Load recent entries on first visit.
   $effect(() => {
@@ -48,12 +49,12 @@
     }
   }
 
-  /** German label for the source badge. */
+  /** Label for the source badge. */
   function sourceLabel(hit: MessageResearchHit): string {
     switch (hit.source) {
-      case 'received': return 'Empfangen';
-      case 'smtp_event': return 'SMTP';
-      case 'send_outcome': return 'Ausgang';
+      case 'received': return t('messageResearch.source.received');
+      case 'smtp_event': return t('messageResearch.source.smtp');
+      case 'send_outcome': return t('messageResearch.source.sendOutcome');
       default: return '';
     }
   }
@@ -111,16 +112,16 @@
   }
 
   function formatFrom(from: string): string {
-    return from || '(unbekannt)';
+    return from || t('messageResearch.unknown');
   }
 </script>
 
 <div class="research-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Nachrichtenrecherche</h1>
+      <h1 class="page-title">{t('messageResearch.title')}</h1>
       {#if messageResearch.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Wird geladen"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
   </div>
@@ -128,71 +129,71 @@
   <!-- Search form -->
   <div class="filter-grid">
     <div class="filter-field">
-      <label for="mr-sender" class="filter-label">Absender</label>
+      <label for="mr-sender" class="filter-label">{t('messageResearch.filter.sender')}</label>
       <input
         id="mr-sender"
         type="text"
         class="input"
-        placeholder="Adresse oder Teilstring"
+        placeholder={t('messageResearch.filter.senderPlaceholder')}
         bind:value={messageResearch.senderFilter}
         onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-        aria-label="Nach Absender filtern"
+        aria-label={t('messageResearch.filter.senderAriaLabel')}
       />
     </div>
     <div class="filter-field">
-      <label for="mr-recipient" class="filter-label">Empfänger</label>
+      <label for="mr-recipient" class="filter-label">{t('messageResearch.filter.recipient')}</label>
       <input
         id="mr-recipient"
         type="text"
         class="input"
-        placeholder="Adresse oder Teilstring"
+        placeholder={t('messageResearch.filter.recipientPlaceholder')}
         bind:value={messageResearch.recipientFilter}
         onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-        aria-label="Nach Empfänger filtern"
+        aria-label={t('messageResearch.filter.recipientAriaLabel')}
       />
     </div>
     <div class="filter-field">
-      <label for="mr-subject" class="filter-label">Betreff</label>
+      <label for="mr-subject" class="filter-label">{t('messageResearch.filter.subject')}</label>
       <input
         id="mr-subject"
         type="text"
         class="input"
-        placeholder="Teilstring"
+        placeholder={t('messageResearch.filter.subjectPlaceholder')}
         bind:value={messageResearch.subjectFilter}
         onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-        aria-label="Nach Betreff filtern"
+        aria-label={t('messageResearch.filter.subjectAriaLabel')}
       />
     </div>
     <div class="filter-field">
-      <label for="mr-message-id" class="filter-label">Nachrichten-ID</label>
+      <label for="mr-message-id" class="filter-label">{t('messageResearch.filter.messageId')}</label>
       <input
         id="mr-message-id"
         type="text"
         class="input"
-        placeholder="Message-ID (exakt)"
+        placeholder={t('messageResearch.filter.messageIdPlaceholder')}
         bind:value={messageResearch.messageIdFilter}
         onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-        aria-label="Nach Nachrichten-ID filtern"
+        aria-label={t('messageResearch.filter.messageIdAriaLabel')}
       />
     </div>
     <div class="filter-field filter-date">
-      <label for="mr-date-from" class="filter-label">Von</label>
+      <label for="mr-date-from" class="filter-label">{t('messageResearch.filter.from')}</label>
       <input
         id="mr-date-from"
         type="datetime-local"
         class="input"
         bind:value={messageResearch.dateFromFilter}
-        aria-label="Von (Datum)"
+        aria-label={t('messageResearch.filter.fromAriaLabel')}
       />
     </div>
     <div class="filter-field filter-date">
-      <label for="mr-date-to" class="filter-label">Bis</label>
+      <label for="mr-date-to" class="filter-label">{t('messageResearch.filter.to')}</label>
       <input
         id="mr-date-to"
         type="datetime-local"
         class="input"
         bind:value={messageResearch.dateToFilter}
-        aria-label="Bis (Datum)"
+        aria-label={t('messageResearch.filter.toAriaLabel')}
       />
     </div>
     <div class="filter-actions">
@@ -202,7 +203,7 @@
         onclick={applyFilters}
         disabled={messageResearch.status === 'loading'}
       >
-        {messageResearch.status === 'loading' ? 'Wird geladen...' : 'Suchen'}
+        {messageResearch.status === 'loading' ? t('common.loading') : t('messageResearch.filter.search')}
       </button>
       <button
         type="button"
@@ -210,7 +211,7 @@
         onclick={resetFilters}
         disabled={messageResearch.status === 'loading'}
       >
-        Zurücksetzen
+        {t('messageResearch.filter.reset')}
       </button>
     </div>
   </div>
@@ -221,7 +222,7 @@
 
   {#if messageResearch.status === 'ready' || messageResearch.items.length > 0}
     {#if messageResearch.items.length === 0}
-      <p class="empty-state">Keine Nachrichten gefunden.</p>
+      <p class="empty-state">{t('messageResearch.empty')}</p>
     {:else}
       <div class="timeline">
         {#each messageResearch.items as hit, i (hit.at + i)}
@@ -238,34 +239,34 @@
               <!-- Received mail disposition -->
               <div class="entry-body">
                 <div class="entry-row">
-                  <span class="entry-key">Von</span>
+                  <span class="entry-key">{t('messageResearch.field.from')}</span>
                   <span class="entry-val mono-sm">{formatFrom(hit.envelope.from)}</span>
                 </div>
                 {#if hit.envelope.to}
                   <div class="entry-row">
-                    <span class="entry-key">An</span>
+                    <span class="entry-key">{t('messageResearch.field.to')}</span>
                     <span class="entry-val mono-sm">{hit.envelope.to}</span>
                   </div>
                 {/if}
                 {#if hit.envelope.subject}
                   <div class="entry-row">
-                    <span class="entry-key">Betreff</span>
+                    <span class="entry-key">{t('messageResearch.field.subject')}</span>
                     <span class="entry-val">{hit.envelope.subject}</span>
                   </div>
                 {/if}
                 <div class="entry-row">
-                  <span class="entry-key">Postfach</span>
-                  <span class="entry-val mono-sm">{hit.mailbox_name || '(unbekannt)'}</span>
+                  <span class="entry-key">{t('messageResearch.field.mailbox')}</span>
+                  <span class="entry-val mono-sm">{hit.mailbox_name || t('messageResearch.unknown')}</span>
                 </div>
                 {#if hit.is_junk}
                   <div class="entry-row">
-                    <span class="entry-key">Junk</span>
-                    <span class="chip chip-amber">Junk</span>
+                    <span class="entry-key">{t('messageResearch.field.junk')}</span>
+                    <span class="chip chip-amber">{t('messageResearch.field.junk')}</span>
                   </div>
                 {/if}
                 {#if hit.spam_verdict}
                   <div class="entry-row">
-                    <span class="entry-key">Spam-Bewertung</span>
+                    <span class="entry-key">{t('messageResearch.field.spamVerdict')}</span>
                     <span class="chip {verdictChipClass(hit.spam_verdict)}">{hit.spam_verdict}</span>
                     {#if hit.spam_confidence !== undefined && hit.spam_confidence !== null}
                       <span class="confidence">({Math.round(hit.spam_confidence * 100)}%)</span>
@@ -274,7 +275,7 @@
                 {/if}
                 {#if hit.envelope.message_id}
                   <div class="entry-row">
-                    <span class="entry-key">Message-ID</span>
+                    <span class="entry-key">{t('messageResearch.field.messageId')}</span>
                     <span class="entry-val mono-sm">{truncate(hit.envelope.message_id, 60)}</span>
                   </div>
                 {/if}
@@ -284,40 +285,40 @@
               <!-- SMTP event (accept/reject/defer at SMTP time) -->
               <div class="entry-body">
                 <div class="entry-row">
-                  <span class="entry-key">Aktion</span>
+                  <span class="entry-key">{t('messageResearch.field.action')}</span>
                   <span class="entry-val mono-sm">{hit.action}</span>
                 </div>
                 {#if hit.subject}
                   <div class="entry-row">
-                    <span class="entry-key">Empfänger</span>
+                    <span class="entry-key">{t('messageResearch.field.recipient')}</span>
                     <span class="entry-val mono-sm">{hit.subject}</span>
                   </div>
                 {/if}
                 <div class="entry-row">
-                  <span class="entry-key">Ergebnis</span>
+                  <span class="entry-key">{t('messageResearch.field.outcome')}</span>
                   <span class="chip {outcomeChipClass(hit.outcome)}">{hit.outcome}</span>
                 </div>
                 {#if hit.actor_id}
                   <div class="entry-row">
-                    <span class="entry-key">Konto</span>
+                    <span class="entry-key">{t('messageResearch.field.principal')}</span>
                     <span class="entry-val mono-sm">{hit.actor_id}</span>
                   </div>
                 {/if}
                 {#if hit.domain}
                   <div class="entry-row">
-                    <span class="entry-key">Domäne</span>
+                    <span class="entry-key">{t('messageResearch.field.domain')}</span>
                     <span class="entry-val mono-sm">{hit.domain}</span>
                   </div>
                 {/if}
                 {#if hit.message}
                   <div class="entry-row">
-                    <span class="entry-key">Meldung</span>
+                    <span class="entry-key">{t('messageResearch.field.message')}</span>
                     <span class="entry-val">{truncate(hit.message)}</span>
                   </div>
                 {/if}
                 {#if hit.remote_addr}
                   <div class="entry-row">
-                    <span class="entry-key">IP-Adresse</span>
+                    <span class="entry-key">{t('messageResearch.field.ipAddress')}</span>
                     <span class="entry-val mono-sm">{hit.remote_addr}</span>
                   </div>
                 {/if}
@@ -327,30 +328,30 @@
               <!-- Outbound send outcome -->
               <div class="entry-body">
                 <div class="entry-row">
-                  <span class="entry-key">Von</span>
+                  <span class="entry-key">{t('messageResearch.field.from')}</span>
                   <span class="entry-val mono-sm">{hit.mail_from}</span>
                 </div>
                 <div class="entry-row">
-                  <span class="entry-key">An</span>
+                  <span class="entry-key">{t('messageResearch.field.to')}</span>
                   <span class="entry-val mono-sm">{hit.rcpt_to}</span>
                 </div>
                 <div class="entry-row">
-                  <span class="entry-key">Status</span>
+                  <span class="entry-key">{t('messageResearch.field.state')}</span>
                   <span class="chip {stateChipClass(hit.state)}">{hit.state}</span>
                 </div>
                 <div class="entry-row">
-                  <span class="entry-key">Versuche</span>
+                  <span class="entry-key">{t('messageResearch.field.attempts')}</span>
                   <span class="entry-val">{hit.attempts}</span>
                 </div>
                 {#if hit.last_error}
                   <div class="entry-row">
-                    <span class="entry-key">Letzter Fehler</span>
+                    <span class="entry-key">{t('messageResearch.field.lastError')}</span>
                     <span class="entry-val error-text">{truncate(hit.last_error)}</span>
                   </div>
                 {/if}
                 {#if hit.envelope_id}
                   <div class="entry-row">
-                    <span class="entry-key">Envelope-ID</span>
+                    <span class="entry-key">{t('messageResearch.field.envelopeId')}</span>
                     <span class="entry-val mono-sm">{hit.envelope_id}</span>
                   </div>
                 {/if}
@@ -368,13 +369,13 @@
             onclick={() => void messageResearch.loadMore()}
             disabled={messageResearch.status === 'loading'}
           >
-            {messageResearch.status === 'loading' ? 'Wird geladen...' : 'Weitere laden'}
+            {messageResearch.status === 'loading' ? t('common.loading') : t('messageResearch.loadMore')}
           </button>
         </div>
       {/if}
     {/if}
   {:else if messageResearch.status !== 'loading' && messageResearch.status !== 'idle'}
-    <p class="empty-state">Keine Nachrichten gefunden.</p>
+    <p class="empty-state">{t('messageResearch.empty')}</p>
   {/if}
 </div>
 

@@ -10,6 +10,7 @@
  */
 
 import { apiGet } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 // --- Type definitions -------------------------------------------------------
 
@@ -137,7 +138,7 @@ class MessageResearchState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Nachrichten konnten nicht geladen werden';
+      this.errorMessage = result.errorMessage ?? t('messageResearch.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -157,7 +158,7 @@ class MessageResearchState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Weitere Nachrichten konnten nicht geladen werden';
+      this.errorMessage = result.errorMessage ?? t('messageResearch.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }
