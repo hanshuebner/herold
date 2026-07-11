@@ -177,13 +177,24 @@ describe('ContactsEditView — immediate save (re #190)', () => {
     expect(status?.getAttribute('data-save-state')).toBe('error');
   });
 
-  it('removes an email row via the icon remove control (re #193)', async () => {
+  it('renders the email remove control as an icon outside the chip row, and removes the row when clicked (re #193)', async () => {
     render(ContactsEditView, { props: { contactId: '1' } });
     const emailInput = await screen.findByDisplayValue('alice@example.local');
     expect(emailInput).toBeInTheDocument();
 
     const [firstRemoveButton] = screen.getAllByRole('button', { name: 'Entfernen' });
     expect(firstRemoveButton).toBeInTheDocument();
+
+    // Icon control, not a plain text link: renders an <svg> (TrashIcon) and
+    // carries no visible "Entfernen" text node — the old plain-text button
+    // had no <svg> and its whole accessible name was its rendered text.
+    expect(firstRemoveButton!.querySelector('svg')).not.toBeNull();
+    expect(firstRemoveButton!.textContent?.trim()).toBe('');
+
+    // Right-aligned outside the chip strip: no longer sits inline after the
+    // "Bevorzugt" checkbox inside .chips-row.
+    expect(firstRemoveButton!.closest('.chips-row')).toBeNull();
+
     await fireEvent.click(firstRemoveButton!);
 
     expect(screen.queryByDisplayValue('alice@example.local')).toBeNull();
