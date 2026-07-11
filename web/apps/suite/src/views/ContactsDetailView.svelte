@@ -42,6 +42,12 @@
     clusterDuplicates,
     loadDismissedPairs,
   } from '../lib/contacts/dedup';
+  import {
+    buildExportArgs,
+    triggerDownload,
+    type ExportResponse,
+    type UnrepresentableProperty,
+  } from '../lib/contacts/vcard-import';
 
   // The contact id is the second route segment: /contacts/<id>.
   let contactId = $derived(decodeURIComponent(router.parts[1] ?? ''));
@@ -315,6 +321,61 @@
 
   function mapUrl(addr: string): string {
     return `https://www.openstreetmap.org/search?query=${encodeURIComponent(addr)}`;
+  }
+
+  // ── vCard export (REQ-CONT-81, 33) ───────────────────────────────────────
+
+  let exporting = $state(false);
+  let exportWarnings = $state<UnrepresentableProperty[]>([]);
+  let showExportWarnings = $state(false);
+
+  async function exportContact(): Promise<void> {
+    const id = vm?.id;
+    if (!id) return;
+    const accountId =
+      auth.session?.primaryAccounts[Capability.Contacts] ?? null;
+    if (!accountId) return;
+
+    exporting = true;
+    exportWarnings = [];
+    showExportWarnings = false;
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Contact/export',
+          buildExportArgs(accountId, { ids: [id] }),
+          [Capability.Contacts],
+        );
+      });
+
+      const resp = responses[0];
+      if (!resp || resp[0] === 'error') {
+        toast.show({ message: t('contacts.export.error'), kind: 'error' });
+        return;
+      }
+
+      const args = resp[1] as ExportResponse;
+      const filename = `${(displayName || 'contact').replace(/[^a-z0-9_-]/gi, '_')}.vcf`;
+      const url = jmap.downloadUrl({
+        accountId,
+        blobId: args.blobId,
+        type: 'text/vcard',
+        name: filename,
+      });
+      if (url) {
+        triggerDownload(url, filename);
+      }
+
+      if ((args.unrepresentable?.length ?? 0) > 0) {
+        exportWarnings = args.unrepresentable ?? [];
+        showExportWarnings = true;
+      }
+    } catch {
+      toast.show({ message: t('contacts.export.error'), kind: 'error' });
+    } finally {
+      exporting = false;
+    }
   }
 </script>
 
@@ -626,10 +687,49 @@
       <!-- Footer actions -->
       <div class="footer-actions">
         <a href={allMailUrl()} class="footer-link">{t('contacts.detail.allMail')}</a>
-        <button type="button" class="footer-link" onclick={() => toast.show({ message: t('contacts.detail.export'), kind: 'info' })}>
-          {t('contacts.detail.export')}
+        <button
+          type="button"
+          class="footer-link"
+          onclick={() => void exportContact()}
+          disabled={exporting}
+          aria-label={t('contacts.detail.export')}
+        >
+          {exporting ? t('contacts.export.exporting') : t('contacts.detail.export')}
         </button>
       </div>
+
+      <!-- Export warnings dialog (REQ-CONT-83) -->
+      {#if showExportWarnings}
+        <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.export.warnings.heading')}>
+          <div class="dialog">
+            <h2 class="dialog-title">{t('contacts.export.warnings.heading')}</h2>
+            <p class="dialog-msg">
+              {exportWarnings.length === 1
+                ? t('contacts.export.warnings.text', { n: exportWarnings.length })
+                : t('contacts.export.warnings.text_many', { n: exportWarnings.length })}
+            </p>
+            <ul class="warnings-list">
+              {#each exportWarnings as w, i (i)}
+                <li class="warning-item">
+                  <span class="warning-type">{w.type}</span>
+                  {#if w.detail}
+                    <span class="warning-detail">{w.detail}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            <div class="dialog-actions">
+              <button
+                type="button"
+                class="dialog-btn secondary"
+                onclick={() => { showExportWarnings = false; }}
+              >
+                {t('contacts.export.warnings.dismiss')}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -1004,6 +1104,7 @@
     padding-top: var(--spacing-04);
     border-top: 1px solid var(--border-subtle-01);
     flex-wrap: wrap;
+    align-items: center;
   }
 
   .footer-link {
@@ -1018,5 +1119,41 @@
 
   .footer-link:hover {
     text-decoration: underline;
+  }
+
+  .footer-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* Export warnings */
+  .warnings-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+  }
+
+  .warning-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--spacing-02) var(--spacing-03);
+    background: var(--layer-02);
+    border-radius: var(--radius-md);
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  .warning-type {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .warning-detail {
+    color: var(--text-secondary);
   }
 </style>

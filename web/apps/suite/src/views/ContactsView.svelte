@@ -19,14 +19,16 @@
   import ContactsEditView from './ContactsEditView.svelte';
   import ContactsDuplicatesView from './ContactsDuplicatesView.svelte';
   import ContactsMergeView from './ContactsMergeView.svelte';
+  import ContactsImportView from './ContactsImportView.svelte';
 
   let segment1 = $derived(router.parts[1] ?? '');
   let segment2 = $derived(router.parts[2] ?? '');
 
-  type ContactView = 'list' | 'new' | 'duplicates' | 'merge' | 'edit' | 'detail';
+  type ContactView = 'list' | 'new' | 'import' | 'duplicates' | 'merge' | 'edit' | 'detail';
   let view = $derived<ContactView>(
     !segment1 ? 'list' :
     segment1 === 'new' ? 'new' :
+    segment1 === 'import' ? 'import' :
     segment1 === 'duplicates' ? 'duplicates' :
     segment1 === 'merge' ? 'merge' :
     segment2 === 'edit' ? 'edit' :
@@ -38,6 +40,8 @@
   <ContactsListView />
 {:else if view === 'new'}
   <ContactsEditView contactId={null} />
+{:else if view === 'import'}
+  <ContactsImportView />
 {:else if view === 'duplicates'}
   <ContactsDuplicatesView />
 {:else if view === 'merge'}

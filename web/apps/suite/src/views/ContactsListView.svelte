@@ -25,6 +25,12 @@
   import { t } from '../lib/i18n/i18n.svelte';
   import ContactsIcon from '../lib/icons/ContactsIcon.svelte';
   import ContactAvatar from '../lib/contacts/ContactAvatar.svelte';
+  import {
+    buildExportArgs,
+    triggerDownload,
+    type ExportResponse,
+    type UnrepresentableProperty,
+  } from '../lib/contacts/vcard-import';
 
   // ── URL sort param sync ───────────────────────────────────────────────────
 
@@ -282,6 +288,60 @@
   );
 
   let activeGroupForDelete = $derived(activeGroup?.name ?? '');
+
+  // ── Export state (REQ-CONT-81, 83) ───────────────────────────────────────
+
+  let exporting = $state(false);
+  let exportWarnings = $state<UnrepresentableProperty[]>([]);
+  let showExportWarnings = $state(false);
+
+  async function exportContacts(): Promise<void> {
+    const accountId =
+      auth.session?.primaryAccounts[Capability.Contacts] ?? null;
+    if (!accountId) return;
+
+    exporting = true;
+    exportWarnings = [];
+    showExportWarnings = false;
+
+    try {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Contact/export',
+          buildExportArgs(accountId, {
+            addressBookId: contactsListStore.activeBookId ?? undefined,
+          }),
+          [Capability.Contacts],
+        );
+      });
+
+      const resp = responses[0];
+      if (!resp || resp[0] === 'error') {
+        toast.show({ message: t('contacts.export.error'), kind: 'error' });
+        return;
+      }
+
+      const args = resp[1] as ExportResponse;
+      const url = jmap.downloadUrl({
+        accountId,
+        blobId: args.blobId,
+        type: 'text/vcard',
+        name: 'contacts.vcf',
+      });
+      if (url) {
+        triggerDownload(url, 'contacts.vcf');
+      }
+
+      if ((args.unrepresentable?.length ?? 0) > 0) {
+        exportWarnings = args.unrepresentable ?? [];
+        showExportWarnings = true;
+      }
+    } catch {
+      toast.show({ message: t('contacts.export.error'), kind: 'error' });
+    } finally {
+      exporting = false;
+    }
+  }
 </script>
 
 <!-- Group create dialog -->
@@ -454,8 +514,58 @@
           >
             {t('contacts.list.duplicates')}
           </button>
+          <button
+            type="button"
+            class="import-btn"
+            onclick={() => router.navigate('/contacts/import')}
+            title={t('contacts.list.import')}
+          >
+            {t('contacts.list.import')}
+          </button>
+          <button
+            type="button"
+            class="export-btn"
+            onclick={() => void exportContacts()}
+            disabled={exporting}
+            title={t('contacts.list.export')}
+          >
+            {exporting ? t('contacts.export.exporting') : t('contacts.list.export')}
+          </button>
         </div>
       </div>
+
+      <!-- Export warnings dialog (REQ-CONT-83) -->
+      {#if showExportWarnings}
+        <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.export.warnings.heading')}>
+          <div class="dialog">
+            <h2 class="dialog-title">{t('contacts.export.warnings.heading')}</h2>
+            <p class="dialog-msg">
+              {exportWarnings.length === 1
+                ? t('contacts.export.warnings.text', { n: exportWarnings.length })
+                : t('contacts.export.warnings.text_many', { n: exportWarnings.length })}
+            </p>
+            <ul class="warnings-list">
+              {#each exportWarnings as w, i (i)}
+                <li class="warning-item">
+                  <span class="warning-type">{w.type}</span>
+                  {#if w.detail}
+                    <span class="warning-detail">{w.detail}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            <div class="dialog-actions">
+              <button
+                type="button"
+                class="dialog-btn primary"
+                onclick={() => { showExportWarnings = false; }}
+              >
+                {t('contacts.export.warnings.dismiss')}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
 
       <!-- Group management toolbar (visible when a group is selected) -->
       {#if contactsListStore.activeGroupId && activeGroup}
@@ -693,6 +803,83 @@
   .duplicates-btn:focus {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
+  }
+
+  .import-btn {
+    height: 36px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .import-btn:hover {
+    background: var(--layer-02);
+  }
+
+  .import-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .export-btn {
+    height: 36px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .export-btn:hover:not(:disabled) {
+    background: var(--layer-02);
+  }
+
+  .export-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .export-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .warnings-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+  }
+
+  .warning-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--spacing-02) var(--spacing-03);
+    background: var(--layer-02);
+    border-radius: var(--radius-md);
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  .warning-type {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .warning-detail {
+    color: var(--text-secondary);
   }
 
   /* ── Group toolbar ───────────────────────────────────────────────────── */
