@@ -210,6 +210,7 @@ func Run(t *testing.T, f Factory) {
 		{"FileShare_Sweep_ExpiredActive", testFileShareSweepExpiredActive},
 		{"FileShare_Sweep_Revoked", testFileShareSweepRevoked},
 		{"FileShare_BlobGC_Liveness", testFileShareBlobGCLiveness},
+		{"ContactPhoto_BlobGC_Liveness", testContactPhotoBlobGCLiveness},
 		{"FileShare_PrincipalCascade", testFileSharePrincipalCascade},
 		{"FileShare_InvalidArguments", testFileShareInvalidArguments},
 		{"FileShare_Password", testFileSharePassword},

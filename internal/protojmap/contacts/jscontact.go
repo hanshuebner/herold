@@ -445,6 +445,56 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// MediaResource is one entry in the Card.media map (RFC 9553 §2.3.1).
+// The JMAP-Contacts binding replaces the inline `uri` with a `blobId`
+// for server-stored blobs (REQ-CTS-01). When `blobId` is present the
+// server validates existence and ownership; when only `uri` is present
+// the entry is treated as an opaque external reference and round-trips
+// unchanged without blob lifecycle management.
+type MediaResource struct {
+	// BlobID is the JMAP blob reference (64-char BLAKE3 hex hash).
+	// Non-empty when the photo is stored in the JMAP blob store.
+	BlobID string `json:"blobId,omitempty"`
+	// URI is an external photo URL. Mutually exclusive with BlobID in
+	// practice; both are accepted for round-trip fidelity.
+	URI string `json:"uri,omitempty"`
+	// MediaType is the MIME type, e.g. "image/jpeg".
+	MediaType string `json:"mediaType,omitempty"`
+	// Kind classifies the media entry, e.g. "photo", "logo".
+	Kind string `json:"kind,omitempty"`
+}
+
+// extractPhotoBlobIDs returns the distinct, non-empty blobId values
+// present in the Card's `media` map. Only entries that carry a blobId
+// (i.e. server-hosted blobs) are returned; URI-only entries are
+// ignored. The result slice has no duplicates but is unordered.
+//
+// Used by the Contact/set handlers to build the incRef / decRef delta
+// when a contact is created, updated, or destroyed.
+func extractPhotoBlobIDs(js []byte) []string {
+	if len(js) == 0 {
+		return nil
+	}
+	var probe struct {
+		Media map[string]json.RawMessage `json:"media"`
+	}
+	if err := json.Unmarshal(js, &probe); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, v := range probe.Media {
+		var r MediaResource
+		if err := json.Unmarshal(v, &r); err == nil && r.BlobID != "" {
+			if !seen[r.BlobID] {
+				seen[r.BlobID] = true
+				ids = append(ids, r.BlobID)
+			}
+		}
+	}
+	return ids
+}
+
 // mustMarshal panics on a json.Marshal error; used only for value types
 // whose encoding cannot fail (strings, primitive maps, nested struct
 // types defined in this file).

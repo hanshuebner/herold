@@ -466,5 +466,24 @@ func (m *metadata) DeleteContact(ctx context.Context, id store.ContactID) error 
 	})
 }
 
+// IsContactPhotoBlobReferenced returns true when hash appears as a
+// blobId reference in any live contacts row's jscontact_json. Used for
+// GC-liveness assertions in tests; production liveness is maintained
+// via IncRefBlob / DecRefBlob ref-counting (REQ-CTS-02, REQ-CTS-03).
+func (m *metadata) IsContactPhotoBlobReferenced(ctx context.Context, hash string) (bool, error) {
+	var count int64
+	// instr() searches for the byte/text substring within the BLOB
+	// column. The pattern '"blobId":"<hash>"' is deterministic because
+	// the JSContact JSON is produced by canonicalJSONObject which never
+	// adds whitespace around keys or values.
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM contacts WHERE instr(jscontact_json, ?) > 0`,
+		`"blobId":"`+hash+`"`).Scan(&count)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	return count > 0, nil
+}
+
 // silence unused-import warnings in case time is removed by future edits
 var _ = time.Time{}

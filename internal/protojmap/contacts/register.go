@@ -31,6 +31,27 @@ type AccountLimits struct {
 	MaxContactsPerAddressBook int `json:"maxContactsPerAddressBook"`
 	// MaxSizePerContactBlob caps the JSContact body size in bytes.
 	MaxSizePerContactBlob int `json:"maxSizePerContactBlob"`
+	// MaxPhotoBlobSize caps the byte size of a blob referenced as a
+	// contact photo (REQ-CTS-05). 0 means no limit. The blob size is
+	// checked via Blobs().Stat before the reference is stored.
+	MaxPhotoBlobSize int `json:"maxPhotoBlobSize"`
+	// AllowedPhotoTypes is the list of MIME types accepted for photo
+	// blobs (REQ-CTS-05). nil / empty means any "image/*" type is
+	// accepted.
+	AllowedPhotoTypes []string `json:"allowedPhotoTypes,omitempty"`
+}
+
+// DefaultAllowedPhotoTypes returns the default set of accepted photo
+// MIME types. The set covers the common lossless and lossy image
+// formats; operators can narrow or widen via AllowedPhotoTypes.
+func DefaultAllowedPhotoTypes() []string {
+	return []string{
+		"image/jpeg",
+		"image/png",
+		"image/gif",
+		"image/webp",
+		"image/avif",
+	}
 }
 
 // DefaultLimits returns the binding-draft conservative defaults.
@@ -39,6 +60,8 @@ func DefaultLimits() AccountLimits {
 		MaxAddressBooksPerAccount: 50,
 		MaxContactsPerAddressBook: 50000,
 		MaxSizePerContactBlob:     256 * 1024,
+		MaxPhotoBlobSize:          10 * 1024 * 1024,
+		AllowedPhotoTypes:         DefaultAllowedPhotoTypes(),
 	}
 }
 

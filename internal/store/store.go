@@ -2324,6 +2324,13 @@ type Metadata interface {
 	// extend the referenced set beyond message blobs.
 	IsFileShareBlobReferenced(ctx context.Context, hash string) (bool, error)
 
+	// IsContactPhotoBlobReferenced returns true when any live contacts
+	// row carries hash as a blobId reference in its jscontact_json media
+	// map (REQ-CTS-02, REQ-CTS-03). Used as a GC-liveness assertion in
+	// tests; production liveness is maintained via IncRefBlob /
+	// DecRefBlob ref-counting.
+	IsContactPhotoBlobReferenced(ctx context.Context, hash string) (bool, error)
+
 	// UpdateFileShareExpiry shortens the expiry on an active or pending
 	// share owned by principalID. newExpiry must be in the future and
 	// strictly earlier than the share's current ExpiresAt (only

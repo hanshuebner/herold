@@ -13,6 +13,152 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// -- Photo blob helpers -----------------------------------------------
+
+// photoBlobRef pairs a blob hash with its store-reported size. Used to
+// carry both values together so the caller can incRef with the correct
+// size without a second Stat call.
+type photoBlobRef struct {
+	hash string
+	size int64
+}
+
+// validatePhotoBlobRefs inspects the `media` map inside probe (the
+// pre-parsed JSContact object), validates every entry that carries a
+// `blobId`:
+//
+//   - the blob must exist in the store (Blobs().Stat)
+//   - the blob size must not exceed limits.MaxPhotoBlobSize (when > 0)
+//   - the media type must pass limits.AllowedPhotoTypes (or be image/*
+//     when AllowedPhotoTypes is nil/empty)
+//
+// On the first violation it returns a SetError for the caller to
+// propagate without storing anything. On success it returns the
+// validated refs (hash + size) so the caller can incRef them.
+// The function never calls IncRefBlob itself; that is the caller's
+// responsibility after a successful return.
+func validatePhotoBlobRefs(
+	ctx context.Context,
+	probe map[string]json.RawMessage,
+	h *handlerSet,
+) ([]photoBlobRef, *setError) {
+	mediaRaw, ok := probe["media"]
+	if !ok || string(mediaRaw) == "null" || len(mediaRaw) == 0 {
+		return nil, nil
+	}
+	var mediaMap map[string]json.RawMessage
+	if err := json.Unmarshal(mediaRaw, &mediaMap); err != nil {
+		return nil, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"media"},
+			Description: "media must be an object",
+		}
+	}
+	seen := map[string]bool{}
+	var refs []photoBlobRef
+	for key, entryRaw := range mediaMap {
+		var entry MediaResource
+		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+			return nil, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"media/" + key},
+				Description: "media entry is not a valid MediaResource",
+			}
+		}
+		if entry.BlobID == "" {
+			// URI-only entry: no blob lifecycle management needed.
+			continue
+		}
+		// Validate media type before touching the blob store.
+		if serr := validatePhotoMediaType(entry.MediaType, h.limits); serr != nil {
+			serr.Properties = []string{"media/" + key + "/mediaType"}
+			return nil, serr
+		}
+		// Check blob existence and size.
+		blobSize, _, err := h.store.Blobs().Stat(ctx, entry.BlobID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"media/" + key + "/blobId"},
+					Description: "blobId " + entry.BlobID + " not found",
+				}
+			}
+			return nil, &setError{
+				Type:        "serverFail",
+				Description: "blob stat failed: " + err.Error(),
+			}
+		}
+		if h.limits.MaxPhotoBlobSize > 0 && blobSize > int64(h.limits.MaxPhotoBlobSize) {
+			return nil, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"media/" + key + "/blobId"},
+				Description: "photo blob exceeds maxPhotoBlobSize",
+			}
+		}
+		if !seen[entry.BlobID] {
+			seen[entry.BlobID] = true
+			refs = append(refs, photoBlobRef{hash: entry.BlobID, size: blobSize})
+		}
+	}
+	return refs, nil
+}
+
+// validatePhotoMediaType checks that the media type is acceptable for a
+// photo blob. When AllowedPhotoTypes is nil/empty, any "image/*" type
+// passes. When AllowedPhotoTypes is set, the type must be in the list.
+// An empty mediaType is accepted without restriction (the client did not
+// supply one; the blob itself is validated by existence).
+func validatePhotoMediaType(mediaType string, limits AccountLimits) *setError {
+	if mediaType == "" {
+		return nil
+	}
+	if len(limits.AllowedPhotoTypes) == 0 {
+		// Default: any image/* type.
+		if !strings.HasPrefix(mediaType, "image/") {
+			return &setError{
+				Type:        "invalidProperties",
+				Description: "photo mediaType must be an image/* type, got " + mediaType,
+			}
+		}
+		return nil
+	}
+	for _, allowed := range limits.AllowedPhotoTypes {
+		if mediaType == allowed {
+			return nil
+		}
+	}
+	return &setError{
+		Type:        "invalidProperties",
+		Description: "photo mediaType " + mediaType + " is not in allowedPhotoTypes",
+	}
+}
+
+// photoBlobDelta computes the incRef and decRef sets when a contact's
+// photo blobs change from oldRefs to newRefs. A blobId present in both
+// lists is unchanged and contributes nothing to either set. Returns
+// (toAdd, toRemove) where toAdd carries the (hash,size) pairs that need
+// IncRefBlob and toRemove carries hashes that need DecRefBlob.
+func photoBlobDelta(oldIDs []string, newRefs []photoBlobRef) (toAdd []photoBlobRef, toRemove []string) {
+	oldSet := map[string]bool{}
+	for _, h := range oldIDs {
+		oldSet[h] = true
+	}
+	newSet := map[string]bool{}
+	for _, r := range newRefs {
+		newSet[r.hash] = true
+		if !oldSet[r.hash] {
+			toAdd = append(toAdd, r)
+		}
+	}
+	for _, h := range oldIDs {
+		if !newSet[h] {
+			toRemove = append(toRemove, h)
+		}
+	}
+	return toAdd, toRemove
+}
+
 // -- Contact/get ------------------------------------------------------
 
 type contactGetRequest struct {
@@ -440,6 +586,14 @@ func (h *handlerSet) createContact(
 	delete(probe, "id")
 	delete(probe, "myRights")
 
+	// Validate photo blob references before any further processing
+	// (REQ-CTS-01, REQ-CTS-05). This rejects unknown/foreign blobIds
+	// and non-image / oversized blobs with a SetError.
+	photoRefs, serr := validatePhotoBlobRefs(ctx, probe, h)
+	if serr != nil {
+		return store.Contact{}, serr, nil
+	}
+
 	// Round-trip to a Card to populate the typed fields, mint a UID if
 	// the client omitted one, default the version to "1.0" so the v1
 	// validator passes, and validate.
@@ -491,6 +645,16 @@ func (h *handlerSet) createContact(
 		}
 		return store.Contact{}, nil, fmt.Errorf("contacts: insert: %w", err)
 	}
+
+	// Root photo blobs against GC (REQ-CTS-02). IncRefBlob is called
+	// after the contact row is committed; the blob GC grace window
+	// (ref_count stays > 0) prevents any TOCTOU gap.
+	for _, ref := range photoRefs {
+		if err := h.store.Meta().IncRefBlob(ctx, ref.hash, ref.size); err != nil {
+			return store.Contact{}, nil, fmt.Errorf("contacts: incref blob %s: %w", ref.hash, err)
+		}
+	}
+
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindContact); err != nil {
 		return store.Contact{}, nil, fmt.Errorf("contacts: bump state: %w", err)
 	}
@@ -538,6 +702,10 @@ func (h *handlerSet) updateContact(
 			return &setError{Type: "invalidProperties", Description: err.Error()}, nil
 		}
 	}
+
+	// Capture old photo blobIds before applying the patch so we can
+	// compute the GC delta after the update (REQ-CTS-02, REQ-CTS-03).
+	oldPhotoBlobIDs := extractPhotoBlobIDs(c.JSContactJSON)
 
 	// Merge patch onto the stored body.
 	var stored map[string]json.RawMessage
@@ -594,6 +762,14 @@ func (h *handlerSet) updateContact(
 	if h.limits.MaxSizePerContactBlob > 0 && len(body) > h.limits.MaxSizePerContactBlob {
 		return &setError{Type: "tooLarge", Description: "merged contact blob exceeds maxSizePerContactBlob"}, nil
 	}
+
+	// Validate new photo blob references in the merged body before
+	// persisting (REQ-CTS-01, REQ-CTS-05).
+	photoRefs, serr := validatePhotoBlobRefs(ctx, stored, h)
+	if serr != nil {
+		return serr, nil
+	}
+
 	var card Card
 	if err := card.UnmarshalJSON(body); err != nil {
 		return &setError{Type: "invalidProperties", Description: err.Error()}, nil
@@ -627,6 +803,22 @@ func (h *handlerSet) updateContact(
 		}
 		return nil, fmt.Errorf("contacts: update: %w", err)
 	}
+
+	// Update blob GC roots for changed photo references (REQ-CTS-02,
+	// REQ-CTS-03). IncRef new blobs, DecRef removed blobs. Blobs that
+	// appear in both old and new are unchanged and need no action.
+	toAdd, toRemove := photoBlobDelta(oldPhotoBlobIDs, photoRefs)
+	for _, ref := range toAdd {
+		if err := h.store.Meta().IncRefBlob(ctx, ref.hash, ref.size); err != nil {
+			return nil, fmt.Errorf("contacts: incref blob %s: %w", ref.hash, err)
+		}
+	}
+	for _, hash := range toRemove {
+		if err := h.store.Meta().DecRefBlob(ctx, hash); err != nil {
+			return nil, fmt.Errorf("contacts: decref blob %s: %w", hash, err)
+		}
+	}
+
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindContact); err != nil {
 		return nil, fmt.Errorf("contacts: bump state: %w", err)
 	}
@@ -648,12 +840,26 @@ func (h *handlerSet) destroyContact(
 	if c.PrincipalID != pid {
 		return &setError{Type: "notFound"}, nil
 	}
+	// Capture photo blobIds before deleting so we can release GC roots
+	// after the row is gone (REQ-CTS-03).
+	photoBlobIDs := extractPhotoBlobIDs(c.JSContactJSON)
+
 	if err := h.store.Meta().DeleteContact(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return &setError{Type: "notFound"}, nil
 		}
 		return nil, fmt.Errorf("contacts: delete: %w", err)
 	}
+
+	// DecRef each photo blob so it becomes GC-eligible once no other
+	// reference holds it (REQ-CTS-03). DecRefBlob is a no-op when the
+	// blob is also referenced by another contact or datatype.
+	for _, hash := range photoBlobIDs {
+		if err := h.store.Meta().DecRefBlob(ctx, hash); err != nil {
+			return nil, fmt.Errorf("contacts: decref blob %s: %w", hash, err)
+		}
+	}
+
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, pid, store.JMAPStateKindContact); err != nil {
 		return nil, fmt.Errorf("contacts: bump state: %w", err)
 	}

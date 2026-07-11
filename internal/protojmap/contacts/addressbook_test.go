@@ -31,6 +31,12 @@ type fixture struct {
 
 func setupFixture(t *testing.T) *fixture {
 	t.Helper()
+	return setupFixtureLimits(t, contacts.DefaultLimits())
+}
+
+// setupFixtureLimits creates a fixture with custom AccountLimits.
+func setupFixtureLimits(t *testing.T, limits contacts.AccountLimits) *fixture {
+	t.Helper()
 	srv, _ := testharness.Start(t, testharness.Options{
 		Listeners: []testharness.ListenerSpec{{Name: "jmap", Protocol: "jmap"}},
 	})
@@ -55,7 +61,7 @@ func setupFixture(t *testing.T) *fixture {
 
 	dir := directory.New(srv.Store.Meta(), srv.Logger, srv.Clock, nil)
 	jmapServ := protojmap.NewServer(srv.Store, dir, nil, srv.Logger, srv.Clock, protojmap.Options{})
-	contacts.Register(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock)
+	contacts.RegisterWithLimits(jmapServ.Registry(), srv.Store, srv.Logger, srv.Clock, limits)
 
 	if err := srv.AttachJMAP("jmap", jmapServ, protojmap.ListenerModePlain); err != nil {
 		t.Fatalf("AttachJMAP: %v", err)
