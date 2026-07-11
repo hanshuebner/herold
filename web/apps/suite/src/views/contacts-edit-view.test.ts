@@ -25,6 +25,7 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'contacts.detail.backToDetail': 'Zurück',
       'contacts.list.title': 'Kontakte',
       'contacts.edit.autosaveBlocked': 'Nicht gespeichert — bitte markiertes Feld korrigieren.',
+      'contacts.edit.removeEntry': 'Entfernen',
       'settings.identityEdit.saving': 'Saving…',
       'settings.identityEdit.saved': 'Saved',
       'settings.identityEdit.saveFailed': 'Could not save',
@@ -174,5 +175,17 @@ describe('ContactsEditView — immediate save (re #190)', () => {
     });
     const status = document.querySelector('[data-testid="identity-save-status"]');
     expect(status?.getAttribute('data-save-state')).toBe('error');
+  });
+
+  it('removes an email row via the icon remove control (re #193)', async () => {
+    render(ContactsEditView, { props: { contactId: '1' } });
+    const emailInput = await screen.findByDisplayValue('alice@example.local');
+    expect(emailInput).toBeInTheDocument();
+
+    const [firstRemoveButton] = screen.getAllByRole('button', { name: 'Entfernen' });
+    expect(firstRemoveButton).toBeInTheDocument();
+    await fireEvent.click(firstRemoveButton!);
+
+    expect(screen.queryByDisplayValue('alice@example.local')).toBeNull();
   });
 });

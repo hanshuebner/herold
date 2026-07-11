@@ -40,6 +40,7 @@
   import { t } from '../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
   import ContactPhotoEditor from '../lib/contacts/ContactPhotoEditor.svelte';
+  import TrashIcon from '../lib/icons/TrashIcon.svelte';
   import SaveStatus from './settings/SaveStatus.svelte';
   import { AutosaveController } from './settings/autosave.svelte';
   import {
@@ -785,6 +786,16 @@
                 <span class="field-label">{t('contacts.edit.email.label')}</span>
                 <input class="field-input narrow" type="text" bind:value={email.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeEmail(email.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
+              </button>
             </div>
             <div class="chips-row">
               <button type="button" class="chip" class:chip-on={email.contextHome} onclick={() => { email.contextHome = !email.contextHome; markDirty(); }} disabled={isCreate && saving}>
@@ -800,9 +811,6 @@
                 <input type="checkbox" bind:checked={email.pref} onchange={() => { toggleEmailPref(email.key); }} disabled={isCreate && saving} />
                 {t('contacts.edit.email.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removeEmail(email.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
-              </button>
             </div>
             {#if hasError('emails.pref')}
               <span class="input-error-msg">{errorFor('emails.pref')}</span>
@@ -835,6 +843,16 @@
                 <span class="field-label">{t('contacts.edit.phone.label')}</span>
                 <input class="field-input narrow" type="text" bind:value={phone.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removePhone(phone.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
+              </button>
             </div>
             <div class="chips-row">
               <button type="button" class="chip" class:chip-on={phone.contextHome} onclick={() => { phone.contextHome = !phone.contextHome; markDirty(); }} disabled={isCreate && saving}>
@@ -856,9 +874,6 @@
                 <input type="checkbox" bind:checked={phone.pref} onchange={() => { togglePhonePref(phone.key); }} disabled={isCreate && saving} />
                 {t('contacts.edit.phone.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removePhone(phone.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
-              </button>
             </div>
           </div>
         {/each}
@@ -872,10 +887,22 @@
         <legend class="section-legend">{t('contacts.edit.section.address')}</legend>
         {#each vm.addresses as addr (addr.key)}
           <div class="entry-block">
-            <label class="field-block">
-              <span class="field-label">{t('contacts.edit.address.street')}</span>
-              <input class="field-input" type="text" bind:value={addr.street} oninput={markDirty} autocomplete="off" disabled={isCreate && saving} />
-            </label>
+            <div class="entry-row">
+              <label class="field-block flex-grow">
+                <span class="field-label">{t('contacts.edit.address.street')}</span>
+                <input class="field-input" type="text" bind:value={addr.street} oninput={markDirty} autocomplete="off" disabled={isCreate && saving} />
+              </label>
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeAddress(addr.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
+              </button>
+            </div>
             <div class="field-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.address.locality')}</span>
@@ -907,9 +934,6 @@
                 <input type="checkbox" bind:checked={addr.pref} onchange={() => { if (addr.pref) { vm!.addresses.forEach((a) => { if (a.key !== addr.key) a.pref = false; }); } markDirty(); }} disabled={isCreate && saving} />
                 {t('contacts.edit.address.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removeAddress(addr.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
-              </button>
             </div>
           </div>
         {/each}
@@ -928,8 +952,15 @@
                 <span class="field-label">{t('contacts.edit.org.name')}</span>
                 <input class="field-input" type="text" bind:value={org.name} oninput={markDirty} disabled={isCreate && saving} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeOrg(org.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeOrg(org.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
               </button>
             </div>
             {#each org.units as unit, i (i)}
@@ -938,8 +969,15 @@
                   <span class="field-label">{t('contacts.edit.org.unit')}</span>
                   <input class="field-input" type="text" bind:value={org.units[i]} oninput={markDirty} disabled={isCreate && saving} />
                 </label>
-                <button type="button" class="remove-btn self-end" onclick={() => removeOrgUnit(org.key, i)} disabled={isCreate && saving}>
-                  {t('contacts.edit.removeEntry')}
+                <button
+                  type="button"
+                  class="remove-btn self-end"
+                  aria-label={t('contacts.edit.removeEntry')}
+                  title={t('contacts.edit.removeEntry')}
+                  onclick={() => removeOrgUnit(org.key, i)}
+                  disabled={isCreate && saving}
+                >
+                  <TrashIcon size={16} />
                 </button>
               </div>
             {/each}
@@ -970,8 +1008,15 @@
                   <option value="role">{t('contacts.edit.title.kind.role')}</option>
                 </select>
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeTitle(title.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeTitle(title.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
               </button>
             </div>
             {#if vm.orgs.length > 0}
@@ -1001,8 +1046,15 @@
               <span class="field-label">{t('contacts.edit.nickname.name')}</span>
               <input class="field-input" type="text" bind:value={nn.name} oninput={markDirty} disabled={isCreate && saving} />
             </label>
-            <button type="button" class="remove-btn self-end" onclick={() => removeNickname(nn.key)} disabled={isCreate && saving}>
-              {t('contacts.edit.removeEntry')}
+            <button
+              type="button"
+              class="remove-btn self-end"
+              aria-label={t('contacts.edit.removeEntry')}
+              title={t('contacts.edit.removeEntry')}
+              onclick={() => removeNickname(nn.key)}
+              disabled={isCreate && saving}
+            >
+              <TrashIcon size={16} />
             </button>
           </div>
         {/each}
@@ -1025,8 +1077,15 @@
                 <span class="field-label">{t('contacts.edit.url.label')}</span>
                 <input class="field-input" type="text" bind:value={link.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeLink(link.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeLink(link.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
               </button>
             </div>
           </div>
@@ -1052,8 +1111,15 @@
                   rows="3"
                 ></textarea>
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeNote(note.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeNote(note.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
               </button>
             </div>
           </div>
@@ -1089,8 +1155,15 @@
                 <span class="field-label">{t('contacts.edit.anniversary.year')}</span>
                 <input class="field-input" type="number" min="1" max="9999" bind:value={ann.year} oninput={markDirty} disabled={isCreate && saving} placeholder={t('contacts.edit.anniversary.year')} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeAnniversary(ann.key)} disabled={isCreate && saving}>
-                {t('contacts.edit.removeEntry')}
+              <button
+                type="button"
+                class="remove-btn self-end"
+                aria-label={t('contacts.edit.removeEntry')}
+                title={t('contacts.edit.removeEntry')}
+                onclick={() => removeAnniversary(ann.key)}
+                disabled={isCreate && saving}
+              >
+                <TrashIcon size={16} />
               </button>
             </div>
           </div>
@@ -1376,21 +1449,34 @@
     padding-left: var(--spacing-04);
   }
 
+  /* Row/card remove control — icon-only, right-aligned to the enclosing
+     card via flex order (last child of a full-width row). */
   .remove-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     align-self: center;
-    color: var(--support-error);
-    font-size: var(--type-body-compact-01-size);
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
     background: none;
     border: none;
+    border-radius: var(--radius-pill);
     cursor: pointer;
     padding: 0;
-    white-space: nowrap;
-    flex-shrink: 0;
+    margin-left: auto;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .remove-btn:hover {
+    background: var(--layer-hover-01);
+    color: var(--support-error);
   }
 
   .remove-btn.self-end {
     align-self: flex-end;
-    margin-bottom: 2px;
   }
 
   .remove-btn:disabled {
