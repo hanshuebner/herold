@@ -1,8 +1,11 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/mail"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,10 +25,11 @@ func newAliasCmd() *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <addr> <target>",
 		Short: "create an alias from <addr> to <target>",
-		Long: "create an alias row that maps <addr> (local@domain) to <target> (an email " +
-			"that resolves to a principal). Single-target only; multi-target fanout " +
-			"is not yet wired in the REST surface — for fanout, create multiple alias " +
-			"rows with the same <addr>.",
+		Long: "create an alias row that maps <addr> (local@domain) to <target>. <target> is " +
+			"either an internal principal (a numeric principal id or a local principal's " +
+			"canonical email) or an external email address the alias forwards inbound mail " +
+			"to (re #181). Single-target only; multi-target fanout is not yet wired in the " +
+			"REST surface — for fanout, create multiple alias rows with the same <addr>.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
@@ -37,14 +41,17 @@ func newAliasCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("alias add: addr: %w", err)
 			}
-			pid, err := resolvePrincipalID(cmd.Context(), client, args[1])
-			if err != nil {
-				return fmt.Errorf("alias add: target: %w", err)
-			}
 			body := map[string]any{
-				"local":               local,
-				"domain":              domain,
-				"target_principal_id": mustParseUint(pid),
+				"local":  local,
+				"domain": domain,
+			}
+			switch kind, val, terr := resolveAliasTarget(cmd.Context(), client, args[1]); {
+			case terr != nil:
+				return fmt.Errorf("alias add: target: %w", terr)
+			case kind == aliasTargetPrincipal:
+				body["target_principal_id"] = mustParseUint(val)
+			default: // aliasTargetExternal
+				body["target_address"] = val
 			}
 			var out map[string]any
 			err = client.do(cmd.Context(), "POST", "/api/v1/aliases", body, &out)
@@ -133,4 +140,57 @@ func mustParseUint(s string) uint64 {
 		n = n*10 + uint64(r-'0')
 	}
 	return n
+}
+
+// aliasTargetKind distinguishes the two shapes `herold alias add`
+// accepts for its <target> argument (re #181).
+type aliasTargetKind int
+
+const (
+	// aliasTargetPrincipal means the returned value is a numeric
+	// principal id (for "target_principal_id").
+	aliasTargetPrincipal aliasTargetKind = iota
+	// aliasTargetExternal means the returned value is a lower-cased
+	// external addr-spec (for "target_address").
+	aliasTargetExternal
+)
+
+// resolveAliasTarget classifies <target> for `herold alias add`: a
+// numeric principal id or a local principal's canonical email resolves
+// to aliasTargetPrincipal; any other well-formed email address is
+// treated as an external forwarding target (aliasTargetExternal,
+// re #181). Anything else is a validation error.
+func resolveAliasTarget(ctx context.Context, client *Client, ref string) (aliasTargetKind, string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return 0, "", errors.New("target required")
+	}
+	if _, err := strconv.ParseUint(ref, 10, 64); err == nil {
+		return aliasTargetPrincipal, ref, nil
+	}
+	// List principals (the admin REST does not expose a by-email lookup
+	// endpoint in Phase 1; scanning the first page is enough for the
+	// "small operator team" case the CLI is built for).
+	var out struct {
+		Items []struct {
+			ID             uint64 `json:"id"`
+			CanonicalEmail string `json:"canonical_email"`
+		} `json:"items"`
+	}
+	if err := client.do(ctx, "GET", "/api/v1/principals?limit=1000", nil, &out); err != nil {
+		return 0, "", fmt.Errorf("list principals: %w", err)
+	}
+	lower := strings.ToLower(ref)
+	for _, p := range out.Items {
+		if strings.EqualFold(p.CanonicalEmail, lower) {
+			return aliasTargetPrincipal, strconv.FormatUint(p.ID, 10), nil
+		}
+	}
+	// Not a local principal. Accept it as an external forwarding target
+	// when it is a well-formed email address.
+	addr, err := mail.ParseAddress(ref)
+	if err != nil {
+		return 0, "", fmt.Errorf("%q is neither a known principal (id or email) nor a valid external email address", ref)
+	}
+	return aliasTargetExternal, strings.ToLower(addr.Address), nil
 }

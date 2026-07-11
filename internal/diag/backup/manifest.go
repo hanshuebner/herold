@@ -535,7 +535,15 @@ const CurrentBackupVersion = 1
 //	from PrincipalFlagSuperAdmin and domain:operator from
 //	principal_managed_domains so the table is a faithful projection of
 //	existing authority on upgrade.
-const CurrentSchemaVersion = 79
+//
+// 80 — 0080_alias_external_target.sql (issue #181). aliases.target_principal
+//
+//	becomes nullable and a new nullable target_address column carries an
+//	external forwarding addr-spec; exactly one of the two is set (CHECK
+//	constraint + store.Metadata.InsertAlias validation). No new backup
+//	row type: AliasRow.TargetPrincipal becomes *int64 and gains
+//	TargetAddress *string, both nil for pre-migration rows.
+const CurrentSchemaVersion = 80
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

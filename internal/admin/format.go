@@ -256,6 +256,16 @@ func writeDomainListHuman(w io.Writer, out map[string]any) error {
 
 // ---- aliases ---------------------------------------------------------------
 
+// aliasTargetDisplay renders an alias's target for human output: the
+// external address when set (re #181), otherwise the internal
+// principal id.
+func aliasTargetDisplay(it map[string]any) string {
+	if addr := sval(it, "target_address"); addr != "" {
+		return addr + " (external)"
+	}
+	return fval(it, "target_principal_id")
+}
+
 // writeAliasListHuman renders the alias list page as a table.
 func writeAliasListHuman(w io.Writer, out map[string]any) error {
 	items := itemsFrom(out)
@@ -264,13 +274,13 @@ func writeAliasListHuman(w io.Writer, out map[string]any) error {
 		return nil
 	}
 	t := cliout.NewTable(w)
-	t.Header("ID", "ADDRESS", "TARGET-PRINCIPAL-ID", "CREATED")
+	t.Header("ID", "ADDRESS", "TARGET", "CREATED")
 	for _, it := range items {
 		addr := sval(it, "local") + "@" + sval(it, "domain")
 		t.Row(
 			fval(it, "id"),
 			addr,
-			fval(it, "target_principal_id"),
+			aliasTargetDisplay(it),
 			tval(it, "created_at"),
 		)
 	}
@@ -283,7 +293,7 @@ func writeAliasHuman(w io.Writer, out map[string]any) error {
 	cliout.KV(w, [][2]string{
 		{"id", fval(out, "id")},
 		{"address", addr},
-		{"target_principal_id", fval(out, "target_principal_id")},
+		{"target", aliasTargetDisplay(out)},
 		{"created_at", tval(out, "created_at")},
 	})
 	return nil

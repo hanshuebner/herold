@@ -139,6 +139,12 @@ type rcptEntry struct {
 	// the connection-level SMTP log line: "internal" | "plugin:<name>" |
 	// "catchall" (REQ-DIR-RCPT-09).
 	decisionSource string
+	// externalForward is set when this recipient resolved to an alias
+	// whose target is an address outside this deployment (re #181).
+	// principalID stays 0; DATA-time dispatch re-injects the message
+	// into the outbound queue toward this address instead of local
+	// mailbox delivery, reusing the #63 redirect-to-queue mechanics.
+	externalForward string
 }
 
 // runSession is invoked by Server.Serve for each accepted connection.
@@ -731,12 +737,27 @@ func (sess *session) cmdRCPT(rest string) bool {
 			entry.principalID = pid
 			entry.decisionSource = "internal"
 		} else if errors.Is(err, directory.ErrNotFound) {
-			// Non-local recipient on submission listener -> outbound
-			// queue path. principalID stays 0; the DATA loop reads
-			// sess.mode and routes to queue.Submit (REQ-PROTO-42 /
-			// REQ-FLOW-* parity with JMAP EmailSubmission and the
-			// HTTP send API).
-			entry.decisionSource = "submission_outbound"
+			// re #181: local@domain may be an alias whose target is an
+			// external address rather than a principal. Distinguish that
+			// case from a genuinely external recipient (e.g. a literal
+			// bob@gmail.com the MUA typed) before falling through to the
+			// outbound-queue path below — otherwise a domain we are
+			// authoritative for would be MX-resolved as if it were
+			// someone else's, which cannot succeed.
+			if target, everr := sess.srv.dir.ResolveExternalAlias(sess.ctx, local, domain); everr == nil {
+				entry.externalForward = target
+				entry.decisionSource = "alias_external"
+			} else if errors.Is(everr, directory.ErrNotFound) {
+				// Non-local recipient on submission listener -> outbound
+				// queue path. principalID stays 0; the DATA loop reads
+				// sess.mode and routes to queue.Submit (REQ-PROTO-42 /
+				// REQ-FLOW-* parity with JMAP EmailSubmission and the
+				// HTTP send API).
+				entry.decisionSource = "submission_outbound"
+			} else {
+				sess.writeReply("451 4.3.0 directory lookup failed")
+				return false
+			}
 		} else {
 			sess.writeReply("451 4.3.0 directory lookup failed")
 			return false
@@ -801,6 +822,23 @@ func (sess *session) runRcptResolutionChain(entry *rcptEntry) rcptResolveOutcome
 	if !errors.Is(err, directory.ErrNotFound) && !errors.Is(err, directory.ErrInvalidEmail) {
 		sess.writeReply("451 4.3.0 directory lookup failed")
 		return rcptOutcomeRefused
+	}
+
+	// Step 2a: external-target alias (re #181). local@domain may be an
+	// alias that forwards to an address outside this deployment. The
+	// recipient is still accepted here (we are authoritative for the
+	// domain) but principalID stays 0; entry.externalForward carries the
+	// destination so DATA-time dispatch re-injects the message into the
+	// outbound queue instead of a mailbox.
+	if errors.Is(err, directory.ErrNotFound) {
+		if target, everr := dir.ResolveExternalAlias(sess.ctx, entry.localPart, entry.domain); everr == nil {
+			entry.externalForward = target
+			entry.decisionSource = "alias_external"
+			return rcptOutcomeAccept
+		} else if !errors.Is(everr, directory.ErrNotFound) {
+			sess.writeReply("451 4.3.0 directory lookup failed")
+			return rcptOutcomeRefused
+		}
 	}
 
 	// Step 2b: RFC 5233 sub-addressing fallback (REQ-TAG-01, REQ-TAG-20).

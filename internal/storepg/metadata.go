@@ -255,6 +255,15 @@ func (m *metadata) DeleteDomain(ctx context.Context, name string) error {
 // -- aliases ----------------------------------------------------------
 
 func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias, error) {
+	// Exactly one of TargetPrincipal / TargetAddress (re #181). The
+	// schema's CHECK constraint enforces this too (defence in depth for
+	// direct-SQL access), but a store-level check gives callers a clear
+	// ErrInvalidArgument instead of a generic constraint-violation error.
+	hasPrincipal := a.TargetPrincipal != 0
+	hasAddress := strings.TrimSpace(a.TargetAddress) != ""
+	if hasPrincipal == hasAddress {
+		return store.Alias{}, fmt.Errorf("%w: alias must set exactly one of target_principal / target_address", store.ErrInvalidArgument)
+	}
 	now := m.s.clock.Now().UTC()
 	var id int64
 	var expiresUs *int64
@@ -262,12 +271,21 @@ func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias,
 		x := usMicros(*a.ExpiresAt)
 		expiresUs = &x
 	}
+	var targetPrincipal *int64
+	var targetAddress *string
+	if hasPrincipal {
+		v := int64(a.TargetPrincipal)
+		targetPrincipal = &v
+	} else {
+		v := strings.ToLower(strings.TrimSpace(a.TargetAddress))
+		targetAddress = &v
+	}
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO aliases (local_part, domain, target_principal, expires_at_us, created_at_us)
-			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			INSERT INTO aliases (local_part, domain, target_principal, target_address, expires_at_us, created_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 			strings.ToLower(a.LocalPart), strings.ToLower(a.Domain),
-			int64(a.TargetPrincipal), expiresUs, usMicros(now)).Scan(&id); err != nil {
+			targetPrincipal, targetAddress, expiresUs, usMicros(now)).Scan(&id); err != nil {
 			return fmt.Errorf("alias %s@%s: %w", strings.ToLower(a.LocalPart), strings.ToLower(a.Domain), mapErr(err))
 		}
 		return nil
@@ -278,6 +296,9 @@ func (m *metadata) InsertAlias(ctx context.Context, a store.Alias) (store.Alias,
 	a.ID = store.AliasID(id)
 	a.LocalPart = strings.ToLower(a.LocalPart)
 	a.Domain = strings.ToLower(a.Domain)
+	if hasAddress {
+		a.TargetAddress = *targetAddress
+	}
 	a.CreatedAt = now
 	return a, nil
 }
@@ -286,14 +307,14 @@ func (m *metadata) ResolveAlias(ctx context.Context, localPart, domain string) (
 	lp := strings.ToLower(localPart)
 	dom := strings.ToLower(domain)
 	now := m.s.clock.Now().UnixMicro()
-	var target int64
+	var target *int64
 	err := m.s.pool.QueryRow(ctx, `
 		SELECT target_principal FROM aliases
-		 WHERE local_part = $1 AND domain = $2
+		 WHERE local_part = $1 AND domain = $2 AND target_principal IS NOT NULL
 		   AND (expires_at_us IS NULL OR expires_at_us > $3)`,
 		lp, dom, now).Scan(&target)
 	if err == nil {
-		return store.PrincipalID(target), nil
+		return store.PrincipalID(*target), nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, mapErr(err)
@@ -307,6 +328,25 @@ func (m *metadata) ResolveAlias(ctx context.Context, localPart, domain string) (
 	return store.PrincipalID(pid), nil
 }
 
+// ResolveAliasExternalTarget looks up localPart@domain among alias rows
+// whose target is an external address (re #181). See the store.Metadata
+// doc comment for the ErrNotFound / ResolveAlias interplay.
+func (m *metadata) ResolveAliasExternalTarget(ctx context.Context, localPart, domain string) (string, error) {
+	lp := strings.ToLower(localPart)
+	dom := strings.ToLower(domain)
+	now := m.s.clock.Now().UnixMicro()
+	var target string
+	err := m.s.pool.QueryRow(ctx, `
+		SELECT target_address FROM aliases
+		 WHERE local_part = $1 AND domain = $2 AND target_address IS NOT NULL
+		   AND (expires_at_us IS NULL OR expires_at_us > $3)`,
+		lp, dom, now).Scan(&target)
+	if err != nil {
+		return "", mapErr(err)
+	}
+	return target, nil
+}
+
 func (m *metadata) ListAliases(ctx context.Context, domain string) ([]store.Alias, error) {
 	dom := strings.ToLower(strings.TrimSpace(domain))
 	var (
@@ -315,11 +355,11 @@ func (m *metadata) ListAliases(ctx context.Context, domain string) ([]store.Alia
 	)
 	if dom == "" {
 		rows, err = m.s.pool.Query(ctx, `
-			SELECT id, local_part, domain, target_principal, expires_at_us, created_at_us
+			SELECT id, local_part, domain, target_principal, target_address, expires_at_us, created_at_us
 			  FROM aliases ORDER BY domain, local_part`)
 	} else {
 		rows, err = m.s.pool.Query(ctx, `
-			SELECT id, local_part, domain, target_principal, expires_at_us, created_at_us
+			SELECT id, local_part, domain, target_principal, target_address, expires_at_us, created_at_us
 			  FROM aliases WHERE domain = $1 ORDER BY local_part`, dom)
 	}
 	if err != nil {
@@ -329,14 +369,21 @@ func (m *metadata) ListAliases(ctx context.Context, domain string) ([]store.Alia
 	out := make([]store.Alias, 0)
 	for rows.Next() {
 		var a store.Alias
-		var id, target int64
+		var id int64
+		var target *int64
+		var targetAddr *string
 		var expires *int64
 		var createdUs int64
-		if err := rows.Scan(&id, &a.LocalPart, &a.Domain, &target, &expires, &createdUs); err != nil {
+		if err := rows.Scan(&id, &a.LocalPart, &a.Domain, &target, &targetAddr, &expires, &createdUs); err != nil {
 			return nil, mapErr(err)
 		}
 		a.ID = store.AliasID(id)
-		a.TargetPrincipal = store.PrincipalID(target)
+		if target != nil {
+			a.TargetPrincipal = store.PrincipalID(*target)
+		}
+		if targetAddr != nil {
+			a.TargetAddress = *targetAddr
+		}
 		if expires != nil && *expires != 0 {
 			t := fromMicros(*expires)
 			a.ExpiresAt = &t
