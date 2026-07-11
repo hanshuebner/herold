@@ -15,6 +15,7 @@
  */
 
 import { apiGet, apiPost, apiDelete } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 import { encodeFilters, DEFAULT_FILTERS } from './filters';
 import type { ClientlogFilters } from './filters';
 import { symbolicateStack, SymbolicateError } from './symbolicate';
@@ -169,7 +170,7 @@ class ClientlogState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load client logs';
+      this.errorMessage = result.errorMessage ?? t('clientlog.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -189,7 +190,7 @@ class ClientlogState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load more entries';
+      this.errorMessage = result.errorMessage ?? t('clientlog.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }
@@ -268,7 +269,7 @@ class ClientlogState {
     );
 
     if (!result.ok || result.data === null) {
-      this.timelineError = result.errorMessage ?? 'Failed to load timeline';
+      this.timelineError = result.errorMessage ?? t('clientlog.error.timelineFailed');
       this.timelineStatus = 'error';
       return;
     }
@@ -297,7 +298,7 @@ class ClientlogState {
     );
 
     if (!result.ok || result.data === null) {
-      this.livetailError = result.errorMessage ?? 'Failed to enable live-tail';
+      this.livetailError = result.errorMessage ?? t('clientlog.error.livetailEnableFailed');
       this.livetailStatus = 'error';
       return;
     }
@@ -316,7 +317,7 @@ class ClientlogState {
     );
 
     if (!result.ok) {
-      this.livetailError = result.errorMessage ?? 'Failed to disable live-tail';
+      this.livetailError = result.errorMessage ?? t('clientlog.error.livetailDisableFailed');
       this.livetailStatus = 'active';
       return;
     }
@@ -336,7 +337,7 @@ class ClientlogState {
     const result = await apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats');
 
     if (!result.ok || result.data === null) {
-      this.statsError = result.errorMessage ?? 'Failed to load stats';
+      this.statsError = result.errorMessage ?? t('clientlog.error.statsFailed');
       this.statsStatus = 'error';
       return;
     }

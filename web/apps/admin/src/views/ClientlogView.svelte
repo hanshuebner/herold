@@ -3,6 +3,7 @@
   import { clientlog } from '../lib/clientlog/clientlog.svelte';
   import type { VitalData } from '../lib/clientlog/clientlog.svelte';
   import { formatRelative, formatAbsolute, DATE_TIME_WITH_SECONDS } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // REQ-ADM-234: 'errors' is the default sub-view (kind=error).
   // 'performance' maps to kind=vital (web-vitals telemetry).
@@ -74,25 +75,25 @@
   function livetailCountdown(until: string | null): string {
     if (!until) return '';
     const ms = new Date(until).getTime() - Date.now();
-    if (ms <= 0) return 'expired';
+    if (ms <= 0) return t('clientlog.livetail.expired');
     const s = Math.floor(ms / 1000);
-    if (s < 60) return `${s}s remaining`;
-    return `${Math.floor(s / 60)}m ${s % 60}s remaining`;
+    const time = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+    return t('clientlog.livetail.remaining', { time });
   }
 </script>
 
 <div class="clientlog-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Client logs</h1>
+      <h1 class="page-title">{t('clientlog.title')}</h1>
       {#if clientlog.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Loading"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
   </div>
 
   <!-- Sub-view tabs (REQ-ADM-234) -->
-  <div class="subview-tabs" role="tablist" aria-label="Log sub-view">
+  <div class="subview-tabs" role="tablist" aria-label={t('clientlog.subviewTabsAriaLabel')}>
     <button
       type="button"
       class="subview-tab"
@@ -102,7 +103,7 @@
       onclick={switchToErrors}
       disabled={clientlog.status === 'loading'}
     >
-      Errors
+      {t('clientlog.tab.errors')}
     </button>
     <button
       type="button"
@@ -113,7 +114,7 @@
       onclick={switchToPerformance}
       disabled={clientlog.status === 'loading'}
     >
-      Performance
+      {t('clientlog.tab.performance')}
     </button>
   </div>
 
@@ -122,7 +123,7 @@
     <div class="filter-row">
       <!-- Slice toggle -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-slice">Slice</label>
+        <label class="filter-label" for="cl-slice">{t('clientlog.filter.slice')}</label>
         <select id="cl-slice" class="select" bind:value={clientlog.filters.slice} onchange={applyFilters}>
           <option value="auth">auth</option>
           <option value="public">public</option>
@@ -131,9 +132,9 @@
 
       <!-- App filter -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-app">App</label>
+        <label class="filter-label" for="cl-app">{t('clientlog.filter.app')}</label>
         <select id="cl-app" class="select" bind:value={clientlog.filters.app} onchange={applyFilters}>
-          <option value="">all</option>
+          <option value="">{t('clientlog.filter.appAll')}</option>
           <option value="suite">suite</option>
           <option value="admin">admin</option>
         </select>
@@ -141,9 +142,9 @@
 
       <!-- Kind filter -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-kind">Kind</label>
+        <label class="filter-label" for="cl-kind">{t('clientlog.filter.kind')}</label>
         <select id="cl-kind" class="select" bind:value={clientlog.filters.kind} onchange={applyFilters}>
-          <option value="">all</option>
+          <option value="">{t('clientlog.filter.kindAll')}</option>
           <option value="error">error</option>
           <option value="log">log</option>
           <option value="vital">vital</option>
@@ -152,9 +153,9 @@
 
       <!-- Level filter -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-level">Level</label>
+        <label class="filter-label" for="cl-level">{t('clientlog.filter.level')}</label>
         <select id="cl-level" class="select" bind:value={clientlog.filters.level} onchange={applyFilters}>
-          <option value="">all</option>
+          <option value="">{t('clientlog.filter.levelAll')}</option>
           <option value="trace">trace</option>
           <option value="debug">debug</option>
           <option value="info">info</option>
@@ -167,51 +168,51 @@
     <div class="filter-row">
       <!-- Since -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-since">Since</label>
+        <label class="filter-label" for="cl-since">{t('clientlog.filter.since')}</label>
         <input
           id="cl-since"
           type="datetime-local"
           class="input"
           bind:value={clientlog.filters.since}
-          aria-label="Since date"
+          aria-label={t('clientlog.filter.sinceAriaLabel')}
         />
       </div>
 
       <!-- Until -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-until">Until</label>
+        <label class="filter-label" for="cl-until">{t('clientlog.filter.until')}</label>
         <input
           id="cl-until"
           type="datetime-local"
           class="input"
           bind:value={clientlog.filters.until}
-          aria-label="Until date"
+          aria-label={t('clientlog.filter.untilAriaLabel')}
         />
       </div>
 
       <!-- User -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-user">User</label>
+        <label class="filter-label" for="cl-user">{t('clientlog.filter.user')}</label>
         <input
           id="cl-user"
           type="text"
           class="input"
-          placeholder="user ID"
+          placeholder={t('clientlog.filter.userPlaceholder')}
           bind:value={clientlog.filters.user}
-          aria-label="Filter by user ID"
+          aria-label={t('clientlog.filter.userAriaLabel')}
         />
       </div>
 
       <!-- Route (text, displayed as monospace, no href per REQ-OPS-218) -->
       <div class="filter-field">
-        <label class="filter-label" for="cl-route">Route</label>
+        <label class="filter-label" for="cl-route">{t('clientlog.filter.route')}</label>
         <input
           id="cl-route"
           type="text"
           class="input"
-          placeholder="/mail/inbox"
+          placeholder={t('clientlog.filter.routePlaceholder')}
           bind:value={clientlog.filters.route}
-          aria-label="Filter by route"
+          aria-label={t('clientlog.filter.routeAriaLabel')}
         />
       </div>
     </div>
@@ -219,15 +220,15 @@
     <div class="filter-row">
       <!-- Free text -->
       <div class="filter-field filter-field-grow">
-        <label class="filter-label" for="cl-text">Search</label>
+        <label class="filter-label" for="cl-text">{t('clientlog.filter.search')}</label>
         <input
           id="cl-text"
           type="text"
           class="input"
-          placeholder="substring match on msg or stack"
+          placeholder={t('clientlog.filter.searchPlaceholder')}
           bind:value={clientlog.filters.text}
           onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-          aria-label="Free text search"
+          aria-label={t('clientlog.filter.searchAriaLabel')}
         />
       </div>
 
@@ -238,14 +239,14 @@
           onclick={applyFilters}
           disabled={clientlog.status === 'loading'}
         >
-          {clientlog.status === 'loading' ? 'Loading...' : 'Apply'}
+          {clientlog.status === 'loading' ? t('common.loading') : t('clientlog.filter.apply')}
         </button>
         <button
           type="button"
           class="btn-secondary"
           onclick={clearFilters}
         >
-          Clear
+          {t('clientlog.filter.clear')}
         </button>
       </div>
     </div>
@@ -265,11 +266,11 @@
             <table class="table">
               <thead>
                 <tr>
-                  <th class="col-when">When</th>
-                  <th class="col-app">App</th>
-                  <th class="col-metric">Metric</th>
-                  <th class="col-value">Value</th>
-                  <th class="col-vital-id">Vital ID</th>
+                  <th class="col-when">{t('clientlog.table.when')}</th>
+                  <th class="col-app">{t('clientlog.table.app')}</th>
+                  <th class="col-metric">{t('clientlog.table.metric')}</th>
+                  <th class="col-value">{t('clientlog.table.value')}</th>
+                  <th class="col-vital-id">{t('clientlog.table.vitalId')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -308,7 +309,7 @@
                   </tr>
                 {:else}
                   <tr>
-                    <td colspan="5" class="empty-row">No performance entries found.</td>
+                    <td colspan="5" class="empty-row">{t('clientlog.empty.performance')}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -318,12 +319,12 @@
             <table class="table">
               <thead>
                 <tr>
-                  <th class="col-when">When</th>
-                  <th class="col-app">App</th>
-                  <th class="col-kind">Kind</th>
-                  <th class="col-level">Level</th>
-                  <th class="col-route">Route</th>
-                  <th class="col-msg">Message</th>
+                  <th class="col-when">{t('clientlog.table.when')}</th>
+                  <th class="col-app">{t('clientlog.table.app')}</th>
+                  <th class="col-kind">{t('clientlog.table.kind')}</th>
+                  <th class="col-level">{t('clientlog.table.level')}</th>
+                  <th class="col-route">{t('clientlog.table.route')}</th>
+                  <th class="col-msg">{t('clientlog.table.message')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -363,7 +364,7 @@
                   </tr>
                 {:else}
                   <tr>
-                    <td colspan="6" class="empty-row">No log entries found.</td>
+                    <td colspan="6" class="empty-row">{t('clientlog.empty.errors')}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -379,12 +380,12 @@
               onclick={() => void clientlog.loadMore()}
               disabled={clientlog.status === 'loading'}
             >
-              {clientlog.status === 'loading' ? 'Loading...' : 'Load more'}
+              {clientlog.status === 'loading' ? t('common.loading') : t('clientlog.loadMore')}
             </button>
           </div>
         {/if}
       {:else if clientlog.status !== 'loading' && clientlog.status !== 'idle'}
-        <p class="empty-state">No log entries found.</p>
+        <p class="empty-state">{t('clientlog.empty.errors')}</p>
       {/if}
     </div>
 
@@ -393,12 +394,12 @@
       {@const row = clientlog.selected}
       <div class="detail-pane">
         <div class="detail-header">
-          <h2 class="detail-title">Detail</h2>
+          <h2 class="detail-title">{t('clientlog.detail.title')}</h2>
           <button
             type="button"
             class="close-btn"
             onclick={() => clientlog.closePane()}
-            aria-label="Close detail pane"
+            aria-label={t('clientlog.detail.closeAriaLabel')}
           >
             x
           </button>
@@ -410,10 +411,10 @@
              scrolling past all metadata, stack, breadcrumbs, and timeline. -->
         {#if row.user_id}
           <div class="action-section action-section-top">
-            <h3 class="section-title">Live-tail</h3>
+            <h3 class="section-title">{t('clientlog.livetail.title')}</h3>
             {#if clientlog.livetailStatus === 'active' && clientlog.livetailUntil}
               <p class="livetail-countdown">
-                Active -- {livetailCountdown(clientlog.livetailUntil)}
+                {t('clientlog.livetail.active', { countdown: livetailCountdown(clientlog.livetailUntil) })}
               </p>
               <button
                 type="button"
@@ -421,7 +422,7 @@
                 onclick={() => void clientlog.disableLivetail()}
                 disabled={(clientlog.livetailStatus as string) === 'pending'}
               >
-                {(clientlog.livetailStatus as string) === 'pending' ? 'Working...' : 'Disable live-tail'}
+                {(clientlog.livetailStatus as string) === 'pending' ? t('clientlog.livetail.working') : t('clientlog.livetail.disable')}
               </button>
             {:else}
               <button
@@ -430,7 +431,7 @@
                 onclick={() => void clientlog.enableLivetail('15m')}
                 disabled={clientlog.livetailStatus === 'pending'}
               >
-                {clientlog.livetailStatus === 'pending' ? 'Working...' : 'Enable live-tail (15 min)'}
+                {clientlog.livetailStatus === 'pending' ? t('clientlog.livetail.working') : t('clientlog.livetail.enable')}
               </button>
             {/if}
             {#if clientlog.livetailError}
@@ -441,72 +442,72 @@
 
         <dl class="detail-list">
           <div class="detail-row">
-            <dt>ID</dt>
+            <dt>{t('clientlog.field.id')}</dt>
             <dd class="mono">{row.id}</dd>
           </div>
           <div class="detail-row">
-            <dt>Slice</dt>
+            <dt>{t('clientlog.field.slice')}</dt>
             <dd class="mono">{row.slice}</dd>
           </div>
           <div class="detail-row">
-            <dt>App</dt>
+            <dt>{t('clientlog.field.app')}</dt>
             <dd class="mono">{row.app}</dd>
           </div>
           <div class="detail-row">
-            <dt>Kind</dt>
+            <dt>{t('clientlog.field.kind')}</dt>
             <dd><span class="chip {kindChipClass(row.kind)}">{row.kind}</span></dd>
           </div>
           <div class="detail-row">
-            <dt>Level</dt>
+            <dt>{t('clientlog.field.level')}</dt>
             <dd><span class="chip {levelChipClass(row.level)}">{row.level}</span></dd>
           </div>
           <div class="detail-row">
-            <dt>Server time</dt>
+            <dt>{t('clientlog.field.serverTime')}</dt>
             <dd class="mono" title={row.server_ts}>{formatAbsolute(row.server_ts, DATE_TIME_WITH_SECONDS)}</dd>
           </div>
           <div class="detail-row">
-            <dt>Client time</dt>
+            <dt>{t('clientlog.field.clientTime')}</dt>
             <dd class="mono" title={row.client_ts}>{formatAbsolute(row.client_ts, DATE_TIME_WITH_SECONDS)}</dd>
           </div>
           <div class="detail-row">
-            <dt>Clock skew</dt>
+            <dt>{t('clientlog.field.clockSkew')}</dt>
             <dd class="mono">{formatSkew(row.clock_skew_ms)}</dd>
           </div>
           {#if row.user_id}
             <div class="detail-row">
-              <dt>User</dt>
+              <dt>{t('clientlog.field.user')}</dt>
               <dd class="mono">{row.user_id}</dd>
             </div>
           {/if}
           {#if row.session_id}
             <div class="detail-row">
-              <dt>Session</dt>
+              <dt>{t('clientlog.field.session')}</dt>
               <dd class="mono">{row.session_id}</dd>
             </div>
           {/if}
           {#if row.request_id}
             <div class="detail-row">
-              <dt>Request ID</dt>
+              <dt>{t('clientlog.field.requestId')}</dt>
               <dd class="mono">{row.request_id}</dd>
             </div>
           {/if}
           {#if row.route}
             <!-- REQ-OPS-218: route displayed as plain monospace text, no href -->
             <div class="detail-row">
-              <dt>Route</dt>
+              <dt>{t('clientlog.field.route')}</dt>
               <dd class="mono">{row.route}</dd>
             </div>
           {/if}
           <div class="detail-row">
-            <dt>Build</dt>
+            <dt>{t('clientlog.field.build')}</dt>
             <dd class="mono">{row.build_sha}</dd>
           </div>
           <div class="detail-row">
-            <dt>UA</dt>
+            <dt>{t('clientlog.field.ua')}</dt>
             <dd class="mono small ua-text">{row.ua}</dd>
           </div>
           <div class="detail-row detail-row-full">
-            <dt>Message</dt>
+            <dt>{t('clientlog.field.message')}</dt>
             <dd class="pre-wrap">{row.msg}</dd>
           </div>
         </dl>
@@ -515,23 +516,23 @@
         {#if row.stack}
           <div class="stack-section">
             <div class="stack-header">
-              <span class="stack-label">Stack trace</span>
+              <span class="stack-label">{t('clientlog.stack.title')}</span>
               {#if clientlog.symbolicateStatus !== 'done'}
                 <button
                   type="button"
                   class="btn-small"
                   onclick={() => void clientlog.symbolicate()}
                   disabled={clientlog.symbolicateStatus === 'loading'}
-                  aria-label="Symbolicate stack trace"
+                  aria-label={t('clientlog.stack.symbolicateAriaLabel')}
                 >
-                  {clientlog.symbolicateStatus === 'loading' ? 'Loading map...' : 'Symbolicate'}
+                  {clientlog.symbolicateStatus === 'loading' ? t('clientlog.stack.loadingMap') : t('clientlog.stack.symbolicate')}
                 </button>
               {/if}
             </div>
 
             {#if clientlog.symbolicateStatus === 'error'}
               <div class="inline-warn">
-                Symbolication failed: {clientlog.symbolicateError} -- showing raw stack.
+                {t('clientlog.stack.failed', { error: clientlog.symbolicateError ?? '' })}
               </div>
             {/if}
 
@@ -544,18 +545,18 @@
         {#if row.kind === 'vital' && row.payload?.raw?.vital}
           {@const vital = row.payload.raw.vital}
           <div class="vitals-section">
-            <h3 class="section-title">Web Vital</h3>
+            <h3 class="section-title">{t('clientlog.vital.title')}</h3>
             <dl class="detail-list">
               <div class="detail-row">
-                <dt>Metric</dt>
+                <dt>{t('clientlog.vital.metric')}</dt>
                 <dd class="mono">{vital.name}</dd>
               </div>
               <div class="detail-row">
-                <dt>Value</dt>
+                <dt>{t('clientlog.vital.value')}</dt>
                 <dd class="mono vital-value">{vital.value.toFixed(vital.name === 'CLS' ? 4 : 0)}{vital.name === 'CLS' ? '' : ' ms'}</dd>
               </div>
               <div class="detail-row">
-                <dt>ID</dt>
+                <dt>{t('clientlog.vital.id')}</dt>
                 <dd class="mono small">{vital.id}</dd>
               </div>
             </dl>
@@ -565,11 +566,9 @@
         <!-- Breadcrumbs (stored at payload.raw.breadcrumbs in enriched envelope) -->
         {#if row.payload?.raw?.breadcrumbs && row.payload.raw.breadcrumbs.length > 0}
           <div class="breadcrumbs-section">
-            <h3 class="section-title">Breadcrumbs</h3>
+            <h3 class="section-title">{t('clientlog.breadcrumbs.title')}</h3>
             <p class="breadcrumbs-desc">
-              Activity captured in the ring buffer before this error (up to 32 entries, oldest first):
-              route navigations, outbound API requests (method, path, HTTP status), and
-              console.warn / console.error messages.
+              {t('clientlog.breadcrumbs.description')}
             </p>
             <ol class="breadcrumb-list">
               {#each row.payload.raw.breadcrumbs as bc, i (i)}
@@ -603,7 +602,7 @@
               onclick={() => void clientlog.loadTimeline()}
               disabled={clientlog.timelineStatus === 'loading'}
             >
-              {clientlog.timelineStatus === 'loading' ? 'Loading...' : 'View request timeline'}
+              {clientlog.timelineStatus === 'loading' ? t('common.loading') : t('clientlog.timeline.viewButton')}
             </button>
           </div>
 
@@ -613,11 +612,9 @@
 
           {#if clientlog.timelineStatus === 'ready' && clientlog.timelineEntries.length > 0}
             <div class="timeline-section">
-              <h3 class="section-title">Request timeline</h3>
+              <h3 class="section-title">{t('clientlog.timeline.title')}</h3>
               <p class="timeline-note">
-                Client-side entries for request {row.request_id}.
-                Server-side log entries will populate once the slog file-sink scan
-                lands in a future release.
+                {t('clientlog.timeline.note', { requestId: row.request_id ?? '' })}
               </p>
               <ol class="timeline-list">
                 {#each clientlog.timelineEntries as entry, i (i)}
