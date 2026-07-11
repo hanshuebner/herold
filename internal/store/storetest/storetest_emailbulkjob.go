@@ -165,6 +165,62 @@ func testEmailBulkJob_CreateResolveProcessFinish(t *testing.T, s store.Store) {
 	}
 }
 
+// testEmailBulkJob_DestroyJobPatchJSONSentinel verifies that a destroy
+// job (PatchJSON == "", issue #179) round-trips its empty PatchJSON
+// faithfully on both backends -- CreateEmailBulkJob's caller relies on
+// this staying distinct from every patch job, which always has a
+// non-empty PatchJSON (validated at the JMAP handler).
+func testEmailBulkJob_DestroyJobPatchJSONSentinel(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "bulkjob-destroy@example.com")
+
+	job, err := s.Meta().CreateEmailBulkJob(ctx, store.EmailBulkJobCreate{
+		PrincipalID:     p.ID,
+		FilterJSON:      `{"inMailbox":"1"}`,
+		PatchJSON:       "",
+		MatchedEstimate: 2,
+	})
+	if err != nil {
+		t.Fatalf("CreateEmailBulkJob: %v", err)
+	}
+	if job.PatchJSON != "" {
+		t.Errorf("PatchJSON = %q, want empty (destroy sentinel)", job.PatchJSON)
+	}
+
+	got, err := s.Meta().GetEmailBulkJob(ctx, p.ID, job.ID)
+	if err != nil {
+		t.Fatalf("GetEmailBulkJob: %v", err)
+	}
+	if got.PatchJSON != "" {
+		t.Errorf("GetEmailBulkJob: PatchJSON = %q, want empty (destroy sentinel)", got.PatchJSON)
+	}
+
+	// The rest of the lifecycle (resolve/drain/finish) is identical to
+	// the patch case and already covered by
+	// testEmailBulkJob_CreateResolveProcessFinish; this test only pins
+	// down that the empty-string sentinel itself survives a round trip.
+	if err := s.Meta().ResolveEmailBulkJobTargets(ctx, job.ID, []store.MessageID{201, 202}); err != nil {
+		t.Fatalf("ResolveEmailBulkJobTargets: %v", err)
+	}
+	if err := s.Meta().RecordEmailBulkJobBatch(ctx, job.ID, []store.EmailBulkJobOutcome{
+		{MessageID: 201, Err: ""},
+		{MessageID: 202, Err: ""},
+	}); err != nil {
+		t.Fatalf("RecordEmailBulkJobBatch: %v", err)
+	}
+	if err := s.Meta().FinishEmailBulkJob(ctx, job.ID, store.EmailBulkJobStatusDone, ""); err != nil {
+		t.Fatalf("FinishEmailBulkJob: %v", err)
+	}
+	got, err = s.Meta().GetEmailBulkJob(ctx, p.ID, job.ID)
+	if err != nil {
+		t.Fatalf("GetEmailBulkJob after finish: %v", err)
+	}
+	if got.Status != store.EmailBulkJobStatusDone || got.Processed != 2 {
+		t.Errorf("got %+v, want status=done processed=2", got)
+	}
+}
+
 // testEmailBulkJob_FinishFailed verifies the job-level failure path
 // (target resolution itself errored, distinct from a per-message
 // failure) persists the error message.

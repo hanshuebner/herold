@@ -352,6 +352,80 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
     expect(sentPatch).toEqual({ [`mailboxIds/${ARCHIVE_ID}`]: null });
   });
 
+  it('bulkDestroy calls Email/setByQuery with destroy: true and the inbox filter (issue #179)', async () => {
+    const { mail } = mailMod;
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [
+        invocation('Email/setByQuery', {
+          accountId: 'acct-1',
+          jobId: '51',
+          matchedEstimate: 200,
+        }),
+      ],
+    });
+
+    await mail.bulkDestroy(['e1']);
+
+    expect(jmapMod.jmap.batch).toHaveBeenCalledTimes(1);
+    const builder = vi.mocked(jmapMod.jmap.batch).mock.calls[0][0];
+    const calls: Array<[string, unknown]> = [];
+    builder({
+      call: (name: string, args: unknown) => {
+        calls.push([name, args]);
+        return { ref: () => ({}) };
+      },
+      usingSet: () => new Set(),
+    });
+    expect(calls[0]?.[0]).toBe('Email/setByQuery');
+    expect(calls[0]?.[1]).toEqual({
+      accountId: 'acct-1',
+      filter: { inMailbox: INBOX_ID },
+      destroy: true,
+    });
+    expect(mail.listWholeMailboxSelected).toBe(false);
+    expect(mail.bulkJob?.id).toBe('51');
+  });
+
+  it('emptyTrash calls Email/setByQuery with destroy: true scoped to the Trash mailbox regardless of the current folder (issue #179)', async () => {
+    const { mail } = mailMod;
+    // The current folder slice is Inbox, not Trash -- emptyTrash must
+    // still scope its filter to the Trash mailbox explicitly rather than
+    // via #buildCurrentFolderFilter (which would resolve to Inbox here).
+    mail.listFolder = 'inbox';
+    mail.listWholeMailboxSelected = false;
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [
+        invocation('Email/setByQuery', {
+          accountId: 'acct-1',
+          jobId: '52',
+          matchedEstimate: 1200,
+        }),
+      ],
+    });
+
+    const result = await mail.emptyTrash();
+
+    expect(jmapMod.jmap.batch).toHaveBeenCalledTimes(1);
+    const builder = vi.mocked(jmapMod.jmap.batch).mock.calls[0][0];
+    const calls: Array<[string, unknown]> = [];
+    builder({
+      call: (name: string, args: unknown) => {
+        calls.push([name, args]);
+        return { ref: () => ({}) };
+      },
+      usingSet: () => new Set(),
+    });
+    expect(calls[0]?.[0]).toBe('Email/setByQuery');
+    expect(calls[0]?.[1]).toEqual({
+      accountId: 'acct-1',
+      filter: { inMailbox: TRASH_ID },
+      destroy: true,
+    });
+    expect(result).toBe(-1);
+    expect(mail.bulkJob?.id).toBe('52');
+    expect(mail.bulkJob?.matchedEstimate).toBe(1200);
+  });
+
   it('the EmailBulkJob push handler advances mail.bulkJob to done and stops polling', async () => {
     const { mail } = mailMod;
     vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({

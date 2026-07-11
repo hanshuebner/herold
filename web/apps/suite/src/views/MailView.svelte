@@ -626,7 +626,10 @@
   }
 
   async function confirmEmptyTrash(): Promise<void> {
-    const n = mail.listEmails.length;
+    // Issue #179: show the true folder total (not just the loaded
+    // window) so the confirmation makes the scale of a permanent,
+    // whole-mailbox delete explicit before the job starts.
+    const n = mail.listFolderTotal ?? mail.listEmails.length;
     const ok = await confirm.ask({
       title: t('mail.emptyTrash.title'),
       message: t(n === 1 ? 'mail.emptyTrash.messageOne' : 'mail.emptyTrash.messageMany', {
@@ -657,13 +660,17 @@
   }
 
   async function bulkDelete(): Promise<void> {
+    const wholeMailbox = mail.listWholeMailboxSelected;
     const ids = selectedIds();
-    if (ids.length === 0) return;
+    if (!wholeMailbox && ids.length === 0) return;
     // Issue #29: moving to trash is reversible (Undo + Trash retains
     // the messages), so it should not prompt. Permanently destroying
     // from inside Trash is not reversible -- prompt for confirmation.
     if (folder === 'trash') {
-      const n = ids.length;
+      // Issue #179: in whole-mailbox mode `ids` is only the
+      // loaded/visible window -- show the true folder total so the
+      // confirmation makes the scale of the permanent delete explicit.
+      const n = wholeMailbox && mail.listFolderTotal !== null ? mail.listFolderTotal : ids.length;
       const ok = await confirm.ask({
         title: t(n === 1 ? 'mail.deleteMsgs.titleOne' : 'mail.deleteMsgs.titleMany', {
           n: String(n),

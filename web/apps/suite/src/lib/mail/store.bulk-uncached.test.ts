@@ -229,6 +229,32 @@ describe('whole-mailbox bulk actions refuse to execute (issue #149)', () => {
     }
   });
 
+  it('emptyTrash falls back to the synchronous Email/query + Email/set destroy path when the bulk-mutation capability is absent (issue #179)', async () => {
+    const { mail } = mailMod;
+    vi.mocked(jmapMod.jmap.batch)
+      .mockResolvedValueOnce({
+        responses: [['Email/query', { ids: ['t1', 't2'] }, 'c0']],
+      })
+      .mockResolvedValueOnce({
+        responses: [
+          ['Email/set', { destroyed: ['t1', 't2'], notDestroyed: null }, 'c0'],
+        ],
+      })
+      // A coalesced Mailbox/get count refresh (issue #24) fires on a
+      // queued microtask after the destroy call resolves; give it a
+      // response too so it does not log an unrelated warning.
+      .mockResolvedValue({ responses: [['Mailbox/get', { list: [] }, 'c0']] });
+
+    const result = await mail.emptyTrash();
+
+    // At least the Email/query + Email/set destroy round trip; a third
+    // coalesced Mailbox/get count refresh (issue #24) may also have
+    // fired by now depending on microtask ordering.
+    expect(vi.mocked(jmapMod.jmap.batch).mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(result).toBe(2);
+    expect(mail.bulkJob).toBeNull();
+  });
+
   it('selectAllVisible clears whole-mailbox mode, after which bulkArchive executes normally', async () => {
     const { mail } = mailMod;
     mail.selectAllVisible(LOADED_IDS);

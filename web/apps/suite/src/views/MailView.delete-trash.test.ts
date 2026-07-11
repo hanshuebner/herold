@@ -21,6 +21,8 @@ const { mailMock, confirmMock, routerState } = vi.hoisted(() => {
     listFocusedIndex: -1,
     listEmails: [] as unknown[],
     listFolder: 'inbox' as string,
+    listWholeMailboxSelected: false,
+    listFolderTotal: null as number | null,
     get listFolderLabel() {
       return this.listFolder === 'trash' ? 'Trash' : 'Inbox';
     },
@@ -147,7 +149,11 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'mail.deleteMsgs.confirm': 'Delete permanently',
       'common.cancel': 'Cancel',
     };
-    return map[key] ?? key;
+    const template = map[key] ?? key;
+    if (!args) return template;
+    return template.replace(/\{(\w+)\}/g, (_, name: string) =>
+      String(args[name] ?? `{${name}}`),
+    );
   },
   localeTag: () => 'en',
 }));
@@ -190,6 +196,8 @@ describe('MailView delete-button: inside Trash (re #29)', () => {
   beforeEach(() => {
     mailMock.listFolder = 'trash';
     routerState.folder = 'trash';
+    mailMock.listWholeMailboxSelected = false;
+    mailMock.listFolderTotal = null;
     mailMock.bulkDelete.mockClear();
     mailMock.bulkDestroy.mockClear();
     confirmMock.ask.mockClear();
@@ -219,6 +227,33 @@ describe('MailView delete-button: inside Trash (re #29)', () => {
     await flushMicrotasks();
     expect(mailMock.bulkDestroy).toHaveBeenCalled();
     expect(mailMock.bulkDelete).not.toHaveBeenCalled();
+  });
+
+  it('whole-mailbox selection: the confirm dialog shows the true folder total, not the loaded window (issue #179)', async () => {
+    mailMock.listWholeMailboxSelected = true;
+    mailMock.listFolderTotal = 1555;
+    confirmMock.ask.mockResolvedValue(false);
+    render(MailView);
+    const btn = screen.getByRole('button', { name: 'Delete' });
+    await fireEvent.click(btn);
+    await flushMicrotasks();
+    expect(confirmMock.ask).toHaveBeenCalledOnce();
+    const req = confirmMock.ask.mock.calls[0]?.[0] as { message?: string };
+    // listSelectedIds only has 2 loaded ids; the dialog must reflect the
+    // folder's true total (1555), not that loaded-window count.
+    expect(req.message).toMatch(/1555/);
+    expect(req.message).not.toMatch(/\b2\b/);
+  });
+
+  it('whole-mailbox selection: confirming routes through bulkDestroy (issue #179)', async () => {
+    mailMock.listWholeMailboxSelected = true;
+    mailMock.listFolderTotal = 1555;
+    confirmMock.ask.mockResolvedValue(true);
+    render(MailView);
+    const btn = screen.getByRole('button', { name: 'Delete' });
+    await fireEvent.click(btn);
+    await flushMicrotasks();
+    expect(mailMock.bulkDestroy).toHaveBeenCalled();
   });
 
   it('does NOT call bulkDestroy when user cancels the dialog', async () => {

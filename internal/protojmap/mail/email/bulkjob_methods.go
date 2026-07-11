@@ -14,15 +14,15 @@ import (
 // -- Email/setByQuery ----------------------------------------------------
 
 // setByQueryHandler implements the vendor extension Email/setByQuery
-// (issue #149/#161, REQ-PROTO-40..48, capability
+// (issue #149/#161/#179, REQ-PROTO-40..48, capability
 // https://netzhansa.com/jmap/email-bulk-mutation). It resolves `filter`
 // to a match estimate ONLY (an indexed SQL COUNT on the SQL-pushable
 // fast path, or 0) and acks immediately with a jobId; the actual
-// per-message patch application happens in the background
-// (bulkjob_worker.go). This is the whole point: a synchronous
-// Email/set over an unbounded id list already demonstrated it blows
-// the 1s method deadline on a real ~666-message label
-// (REQ-PERF-DEADLINE).
+// per-message patch application (or, when `destroy: true`, permanent
+// removal — issue #179) happens in the background (bulkjob_worker.go).
+// This is the whole point: a synchronous Email/set over an unbounded id
+// list already demonstrated it blows the 1s method deadline on a real
+// ~666-message label (REQ-PERF-DEADLINE).
 type setByQueryHandler struct{ h *handlerSet }
 
 func (setByQueryHandler) Method() string { return "Email/setByQuery" }
@@ -47,13 +47,22 @@ func (s setByQueryHandler) Execute(ctx context.Context, args json.RawMessage) (a
 		return nil, protojmap.NewMethodError("accountNotFound",
 			"Email/setByQuery only operates on the caller's own account")
 	}
-	if len(req.Patch) == 0 || string(req.Patch) == "null" {
-		return nil, protojmap.NewMethodError("invalidArguments", "patch is required")
-	}
-	var patchObj map[string]json.RawMessage
-	if err := json.Unmarshal(req.Patch, &patchObj); err != nil {
-		return nil, protojmap.NewMethodError("invalidArguments",
-			"patch must be a JSON object: "+err.Error())
+	hasPatch := len(req.Patch) > 0 && string(req.Patch) != "null"
+	if req.Destroy {
+		if hasPatch {
+			return nil, protojmap.NewMethodError("invalidArguments",
+				"patch and destroy are mutually exclusive")
+		}
+	} else {
+		if !hasPatch {
+			return nil, protojmap.NewMethodError("invalidArguments",
+				"patch is required unless destroy is true")
+		}
+		var patchObj map[string]json.RawMessage
+		if err := json.Unmarshal(req.Patch, &patchObj); err != nil {
+			return nil, protojmap.NewMethodError("invalidArguments",
+				"patch must be a JSON object: "+err.Error())
+		}
 	}
 	filter, ferr := decodeFilter(req.Filter)
 	if ferr != nil {
@@ -73,10 +82,17 @@ func (s setByQueryHandler) Execute(ctx context.Context, args json.RawMessage) (a
 	if req.Filter != nil {
 		filterJSON = string(*req.Filter)
 	}
+	// PatchJSON == "" is the destroy-job sentinel the worker branches on
+	// (issue #179) -- guaranteed distinct from every patch job, which
+	// requires a non-empty patch above.
+	patchJSON := ""
+	if hasPatch {
+		patchJSON = string(req.Patch)
+	}
 	job, err := s.h.store.Meta().CreateEmailBulkJob(ctx, store.EmailBulkJobCreate{
 		PrincipalID:     pid,
 		FilterJSON:      filterJSON,
-		PatchJSON:       string(req.Patch),
+		PatchJSON:       patchJSON,
 		MatchedEstimate: estimate,
 	})
 	if err != nil {
