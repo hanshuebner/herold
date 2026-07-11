@@ -15,6 +15,7 @@
 
 import { apiGet } from '../api/client';
 import type { ClientlogStats } from '../clientlog/clientlog.svelte';
+import { t } from '../i18n/i18n.svelte';
 
 export interface QueueStats {
   queued?: number;
@@ -83,8 +84,8 @@ class DashboardState {
       this.queueStats = null;
       this.queueError =
         queueResult.status === 'fulfilled'
-          ? (queueResult.value.errorMessage ?? 'Failed to load queue stats')
-          : 'Network error loading queue stats';
+          ? (queueResult.value.errorMessage ?? t('dashboard.error.queueStats'))
+          : t('dashboard.error.queueStatsNetwork');
     }
 
     // Audit entries -- API may return array or {entries:[...]} envelope
@@ -96,8 +97,8 @@ class DashboardState {
       this.auditEntries = [];
       this.auditError =
         auditResult.status === 'fulfilled'
-          ? (auditResult.value.errorMessage ?? 'Failed to load audit log')
-          : 'Network error loading audit log';
+          ? (auditResult.value.errorMessage ?? t('dashboard.error.auditLog'))
+          : t('dashboard.error.auditLogNetwork');
     }
 
     // Domains
@@ -108,8 +109,8 @@ class DashboardState {
       this.domains = [];
       this.domainsError =
         domainsResult.status === 'fulfilled'
-          ? (domainsResult.value.errorMessage ?? 'Failed to load domains')
-          : 'Network error loading domains';
+          ? (domainsResult.value.errorMessage ?? t('dashboard.error.domains'))
+          : t('dashboard.error.domainsNetwork');
     }
 
     // Client-log stats (REQ-ADM-233)
@@ -124,8 +125,8 @@ class DashboardState {
       this.clientlogStats = null;
       this.clientlogStatsError =
         clientlogResult.status === 'fulfilled'
-          ? (clientlogResult.value.errorMessage ?? 'Failed to load client-log stats')
-          : 'Network error loading client-log stats';
+          ? (clientlogResult.value.errorMessage ?? t('dashboard.error.clientlogStats'))
+          : t('dashboard.error.clientlogStatsNetwork');
     }
 
     this.status = 'ready';

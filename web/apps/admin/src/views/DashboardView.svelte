@@ -2,6 +2,7 @@
   import { dashboard } from '../lib/dashboard/dashboard.svelte';
   import { router } from '../lib/router/router.svelte';
   import { formatRelative } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // Load on mount.
   $effect(() => {
@@ -21,9 +22,9 @@
 
 <div class="dashboard">
   <div class="page-header">
-    <h1 class="page-title">Dashboard</h1>
+    <h1 class="page-title">{t('dashboard.title')}</h1>
     {#if dashboard.status === 'loading'}
-      <div class="spinner" role="status" aria-label="Loading"></div>
+      <div class="spinner" role="status" aria-label={t('dashboard.loading')}></div>
     {/if}
   </div>
 
@@ -31,13 +32,13 @@
     <!-- Queue summary card -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Queue</h2>
+        <h2 class="card-title">{t('dashboard.queue.title')}</h2>
         <button
           type="button"
           class="card-link"
           onclick={() => router.navigate('/queue')}
         >
-          View all
+          {t('dashboard.viewAll')}
         </button>
       </div>
 
@@ -45,7 +46,7 @@
         <p class="inline-error">{dashboard.queueError}</p>
       {:else}
         <p class="card-stat">{dashboard.queueTotal}</p>
-        <p class="card-stat-label">active messages</p>
+        <p class="card-stat-label">{t('dashboard.queue.activeMessages')}</p>
         {#if dashboard.queueStats}
           <dl class="stat-list">
             {#each Object.entries(dashboard.queueStats) as [state, count] (state)}
@@ -64,20 +65,20 @@
     <!-- Recent activity card -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Recent activity</h2>
+        <h2 class="card-title">{t('dashboard.activity.title')}</h2>
         <button
           type="button"
           class="card-link"
           onclick={() => router.navigate('/audit')}
         >
-          View all
+          {t('dashboard.viewAll')}
         </button>
       </div>
 
       {#if dashboard.auditError}
         <p class="inline-error">{dashboard.auditError}</p>
       {:else if dashboard.auditEntries.length === 0 && dashboard.status === 'ready'}
-        <p class="empty">No recent activity.</p>
+        <p class="empty">{t('dashboard.activity.empty')}</p>
       {:else}
         <ul class="audit-list">
           {#each dashboard.auditEntries.slice(0, 8) as entry (entry.id)}
@@ -96,13 +97,13 @@
     <!-- Domains overview card -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Domains</h2>
+        <h2 class="card-title">{t('dashboard.domains.title')}</h2>
         <button
           type="button"
           class="card-link"
           onclick={() => router.navigate('/domains')}
         >
-          View all
+          {t('dashboard.viewAll')}
         </button>
       </div>
 
@@ -110,18 +111,24 @@
         <p class="inline-error">{dashboard.domainsError}</p>
       {:else}
         <p class="card-stat">{dashboard.domains.length}</p>
-        <p class="card-stat-label">local domain{dashboard.domains.length !== 1 ? 's' : ''}</p>
+        <p class="card-stat-label">
+          {dashboard.domains.length !== 1
+            ? t('dashboard.domains.localDomains')
+            : t('dashboard.domains.oneLocalDomain')}
+        </p>
         {#if dashboard.domains.length > 0}
           <ul class="domain-list">
             {#each dashboard.domains.slice(0, 5) as domain (domain.name)}
               <li class="domain-item">{domain.name}</li>
             {/each}
             {#if dashboard.domains.length > 5}
-              <li class="domain-item domain-more">+ {dashboard.domains.length - 5} more</li>
+              <li class="domain-item domain-more">
+                {t('dashboard.domains.more', { count: dashboard.domains.length - 5 })}
+              </li>
             {/if}
           </ul>
         {:else if dashboard.status === 'ready'}
-          <p class="empty">No domains configured.</p>
+          <p class="empty">{t('dashboard.domains.empty')}</p>
         {/if}
       {/if}
     </div>
@@ -129,13 +136,13 @@
     <!-- Client-log stats card (REQ-ADM-233) -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Client logs</h2>
+        <h2 class="card-title">{t('dashboard.clientlog.title')}</h2>
         <button
           type="button"
           class="card-link"
           onclick={() => router.navigate('/clientlog')}
         >
-          View all
+          {t('dashboard.viewAll')}
         </button>
       </div>
 
@@ -144,7 +151,7 @@
       {:else if dashboard.clientlogStats}
         <div class="stat-cols">
           <div class="stat-col">
-            <h3 class="stat-col-title">Received</h3>
+            <h3 class="stat-col-title">{t('dashboard.clientlog.received')}</h3>
             <dl class="stat-list">
               {#each Object.entries(dashboard.clientlogStats.received_total) as [key, val] (key)}
                 <div class="stat-row">
@@ -153,14 +160,14 @@
                 </div>
               {:else}
                 <div class="stat-row">
-                  <dt class="stat-key">none</dt>
+                  <dt class="stat-key">{t('dashboard.clientlog.none')}</dt>
                   <dd class="stat-val">0</dd>
                 </div>
               {/each}
             </dl>
           </div>
           <div class="stat-col">
-            <h3 class="stat-col-title">Ring buffer</h3>
+            <h3 class="stat-col-title">{t('dashboard.clientlog.ringBuffer')}</h3>
             <dl class="stat-list">
               {#each Object.entries(dashboard.clientlogStats.ring_buffer_rows) as [key, val] (key)}
                 <div class="stat-row">
@@ -169,7 +176,7 @@
                 </div>
               {:else}
                 <div class="stat-row">
-                  <dt class="stat-key">none</dt>
+                  <dt class="stat-key">{t('dashboard.clientlog.none')}</dt>
                   <dd class="stat-val">0</dd>
                 </div>
               {/each}
@@ -177,7 +184,7 @@
           </div>
         </div>
       {:else if dashboard.status === 'ready'}
-        <p class="empty">No client-log data.</p>
+        <p class="empty">{t('dashboard.clientlog.empty')}</p>
       {/if}
     </div>
   </div>
