@@ -1,6 +1,7 @@
 <script lang="ts">
   import { events } from '../lib/events/events.svelte';
   import { formatRelative, formatAbsolute } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   $effect(() => {
     if (events.status === 'idle') {
@@ -29,9 +30,9 @@
 <div class="events-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Systemereignisse</h1>
+      <h1 class="page-title">{t('events.title')}</h1>
       {#if events.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Wird geladen"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
   </div>
@@ -41,37 +42,37 @@
     <input
       type="text"
       class="input"
-      placeholder="Aktion (exakt)"
+      placeholder={t('events.filter.actionPlaceholder')}
       bind:value={events.actionFilter}
       onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-      aria-label="Nach Aktion filtern"
+      aria-label={t('events.filter.actionAriaLabel')}
     />
     <input
       type="text"
       class="input"
-      placeholder="Konto (actor_id)"
+      placeholder={t('events.filter.actorPlaceholder')}
       bind:value={events.actorIdFilter}
       onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-      aria-label="Nach Konto filtern"
+      aria-label={t('events.filter.actorAriaLabel')}
     />
     <div class="date-pair">
-      <label for="events-since" class="date-label">Von</label>
+      <label for="events-since" class="date-label">{t('events.filter.since')}</label>
       <input
         id="events-since"
         type="datetime-local"
         class="input"
         bind:value={events.sinceFilter}
-        aria-label="Von (Datum)"
+        aria-label={t('events.filter.sinceAriaLabel')}
       />
     </div>
     <div class="date-pair">
-      <label for="events-until" class="date-label">Bis</label>
+      <label for="events-until" class="date-label">{t('events.filter.until')}</label>
       <input
         id="events-until"
         type="datetime-local"
         class="input"
         bind:value={events.untilFilter}
-        aria-label="Bis (Datum)"
+        aria-label={t('events.filter.untilAriaLabel')}
       />
     </div>
     <button
@@ -80,7 +81,7 @@
       onclick={applyFilters}
       disabled={events.status === 'loading'}
     >
-      {events.status === 'loading' ? 'Wird geladen...' : 'Anwenden'}
+      {events.status === 'loading' ? t('common.loading') : t('events.filter.apply')}
     </button>
     <button
       type="button"
@@ -93,7 +94,7 @@
         applyFilters();
       }}
     >
-      Zurücksetzen
+      {t('events.filter.clear')}
     </button>
   </div>
 
@@ -106,13 +107,13 @@
       <table class="table">
         <thead>
           <tr>
-            <th class="col-time">Zeitpunkt</th>
-            <th class="col-action">Aktion</th>
-            <th class="col-actor">Konto</th>
-            <th class="col-domain">Domäne</th>
-            <th class="col-outcome">Ergebnis</th>
-            <th class="col-subject">Objekt</th>
-            <th class="col-message">Meldung</th>
+            <th class="col-time">{t('events.table.when')}</th>
+            <th class="col-action">{t('events.table.action')}</th>
+            <th class="col-actor">{t('events.table.actor')}</th>
+            <th class="col-domain">{t('events.table.domain')}</th>
+            <th class="col-outcome">{t('events.table.outcome')}</th>
+            <th class="col-subject">{t('events.table.subject')}</th>
+            <th class="col-message">{t('events.table.message')}</th>
           </tr>
         </thead>
         <tbody>
@@ -144,7 +145,7 @@
             </tr>
           {:else}
             <tr>
-              <td colspan="7" class="empty-row">Keine Systemereignisse gefunden.</td>
+              <td colspan="7" class="empty-row">{t('events.empty')}</td>
             </tr>
           {/each}
         </tbody>
@@ -159,12 +160,12 @@
           onclick={() => void events.loadMore()}
           disabled={events.status === 'loading'}
         >
-          {events.status === 'loading' ? 'Wird geladen...' : 'Weitere laden'}
+          {events.status === 'loading' ? t('common.loading') : t('events.loadMore')}
         </button>
       </div>
     {/if}
   {:else if events.status !== 'loading' && events.status !== 'idle'}
-    <p class="empty-state">Keine Systemereignisse gefunden.</p>
+    <p class="empty-state">{t('events.empty')}</p>
   {/if}
 </div>
 

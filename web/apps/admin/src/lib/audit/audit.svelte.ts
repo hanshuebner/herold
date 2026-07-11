@@ -9,6 +9,7 @@
  */
 
 import { apiGet } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface AuditEntry {
   id: string;
@@ -74,7 +75,7 @@ class AuditState {
     const result = await apiGet<{ items: AuditEntry[]; next: string | null }>(this.buildUrl());
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load audit log';
+      this.errorMessage = result.errorMessage ?? t('audit.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -94,7 +95,7 @@ class AuditState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load more audit entries';
+      this.errorMessage = result.errorMessage ?? t('audit.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }

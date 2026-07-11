@@ -12,6 +12,7 @@
  */
 
 import { apiGet } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface SystemEvent {
   id: number;
@@ -78,7 +79,7 @@ class EventsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Systemereignisse konnten nicht geladen werden';
+      this.errorMessage = result.errorMessage ?? t('events.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -98,7 +99,7 @@ class EventsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Weitere Ereignisse konnten nicht geladen werden';
+      this.errorMessage = result.errorMessage ?? t('events.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }

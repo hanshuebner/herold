@@ -1,6 +1,7 @@
 <script lang="ts">
   import { audit } from '../lib/audit/audit.svelte';
   import { formatRelative, formatAbsolute } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   $effect(() => {
     if (audit.status === 'idle') {
@@ -29,9 +30,9 @@
 <div class="audit-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Audit log</h1>
+      <h1 class="page-title">{t('audit.title')}</h1>
       {#if audit.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Loading"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
   </div>
@@ -41,37 +42,37 @@
     <input
       type="text"
       class="input"
-      placeholder="Action contains..."
+      placeholder={t('audit.filter.actionPlaceholder')}
       bind:value={audit.actionFilter}
       onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-      aria-label="Filter by action"
+      aria-label={t('audit.filter.actionAriaLabel')}
     />
     <input
       type="text"
       class="input"
-      placeholder="Principal ID"
+      placeholder={t('audit.filter.principalIdPlaceholder')}
       bind:value={audit.principalIdFilter}
       onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-      aria-label="Filter by principal ID"
+      aria-label={t('audit.filter.principalIdAriaLabel')}
     />
     <div class="date-pair">
-      <label for="audit-since" class="date-label">Since</label>
+      <label for="audit-since" class="date-label">{t('audit.filter.since')}</label>
       <input
         id="audit-since"
         type="datetime-local"
         class="input"
         bind:value={audit.sinceFilter}
-        aria-label="Since date"
+        aria-label={t('audit.filter.sinceAriaLabel')}
       />
     </div>
     <div class="date-pair">
-      <label for="audit-until" class="date-label">Until</label>
+      <label for="audit-until" class="date-label">{t('audit.filter.until')}</label>
       <input
         id="audit-until"
         type="datetime-local"
         class="input"
         bind:value={audit.untilFilter}
-        aria-label="Until date"
+        aria-label={t('audit.filter.untilAriaLabel')}
       />
     </div>
     <button
@@ -80,7 +81,7 @@
       onclick={applyFilters}
       disabled={audit.status === 'loading'}
     >
-      {audit.status === 'loading' ? 'Loading...' : 'Apply'}
+      {audit.status === 'loading' ? t('common.loading') : t('audit.filter.apply')}
     </button>
     <button
       type="button"
@@ -93,7 +94,7 @@
         applyFilters();
       }}
     >
-      Clear
+      {t('audit.filter.clear')}
     </button>
   </div>
 
@@ -106,12 +107,12 @@
       <table class="table">
         <thead>
           <tr>
-            <th class="col-time">When</th>
-            <th class="col-actor">Actor</th>
-            <th class="col-action">Action</th>
-            <th class="col-subject">Subject</th>
-            <th class="col-outcome">Outcome</th>
-            <th class="col-message">Message</th>
+            <th class="col-time">{t('audit.table.when')}</th>
+            <th class="col-actor">{t('audit.table.actor')}</th>
+            <th class="col-action">{t('audit.table.action')}</th>
+            <th class="col-subject">{t('audit.table.subject')}</th>
+            <th class="col-outcome">{t('audit.table.outcome')}</th>
+            <th class="col-message">{t('audit.table.message')}</th>
           </tr>
         </thead>
         <tbody>
@@ -140,7 +141,7 @@
             </tr>
           {:else}
             <tr>
-              <td colspan="6" class="empty-row">No audit entries found.</td>
+              <td colspan="6" class="empty-row">{t('audit.empty')}</td>
             </tr>
           {/each}
         </tbody>
@@ -155,12 +156,12 @@
           onclick={() => void audit.loadMore()}
           disabled={audit.status === 'loading'}
         >
-          {audit.status === 'loading' ? 'Loading...' : 'Load more'}
+          {audit.status === 'loading' ? t('common.loading') : t('audit.loadMore')}
         </button>
       </div>
     {/if}
   {:else if audit.status !== 'loading' && audit.status !== 'idle'}
-    <p class="empty-state">No audit entries found.</p>
+    <p class="empty-state">{t('audit.empty')}</p>
   {/if}
 </div>
 
