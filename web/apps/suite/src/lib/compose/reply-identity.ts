@@ -27,6 +27,16 @@
  *      header value matches a verified Identity, return that identity.
  *      This covers Bcc delivery and list mail where no user identity
  *      appears in To/Cc.
+ *   3a. Domain fallback: role/alias addresses (e.g. `info@` / `vorsitz@`
+ *       on a domain the account holds an Identity for) route mail into
+ *       the mailbox without being registered as a first-class Identity
+ *       themselves (see #146/#147/#164). When neither the exact-address
+ *       steps above nor the To/Cc scan produced a match, but the
+ *       `X-Herold-Recipient` address (or, failing that, a To/Cc
+ *       address) shares its domain with a verified Identity, that
+ *       identity wins. This keeps the reply's From on the account's
+ *       side of the conversation domain instead of falling through to
+ *       an unrelated global default.
  *   4. Final fallback: the supplied default identity (REQ-MAIL-12).
  *
  * Verification gate: Unverified Identities NEVER win the To/Cc scan
@@ -127,6 +137,56 @@ function firstVerifiedMatch(
   return null;
 }
 
+/** Lower-cased domain (part after `@`) of an email address, or null. */
+function domainOf(email: string): string | null {
+  const at = email.indexOf('@');
+  return at >= 0 ? email.slice(at + 1) : null;
+}
+
+/**
+ * Build a lower-cased lookup table from identity domain to the first
+ * verified identity registered on that domain (encounter order in
+ * `identities` wins on a tie). Used by the step-3a domain fallback: a
+ * role/alias address that is not itself a registered Identity (e.g.
+ * `vorsitz@` routing into a mailbox whose registered Identity is
+ * `presse@` on the same domain) still resolves to an identity on the
+ * conversation's own domain rather than falling through to an
+ * unrelated global default.
+ */
+function firstVerifiedIdentityByDomain(
+  identities: readonly Identity[],
+): Map<string, Identity> {
+  const map = new Map<string, Identity>();
+  for (const id of identities) {
+    if (!isVerified(id)) continue;
+    const domain = domainOf((id.email ?? '').toLowerCase().trim());
+    if (!domain) continue;
+    if (!map.has(domain)) map.set(domain, id);
+  }
+  return map;
+}
+
+/**
+ * Return the first address in `list` whose domain (case-insensitive)
+ * appears in `byDomain`, mapped to its identity. Used for the step-3a
+ * domain fallback's To/Cc source.
+ */
+function firstDomainMatch(
+  list: Address[] | null | undefined,
+  byDomain: Map<string, Identity>,
+): Identity | null {
+  if (!list) return null;
+  for (const addr of list) {
+    const key = (addr.email ?? '').toLowerCase().trim();
+    if (!key) continue;
+    const domain = domainOf(key);
+    if (!domain) continue;
+    const id = byDomain.get(domain);
+    if (id) return id;
+  }
+  return null;
+}
+
 /**
  * Select the From identity for a reply / reply-all / forward against
  * `parent`. See the file header for the spec reference (REQ-MAIL-12a).
@@ -140,6 +200,9 @@ function firstVerifiedMatch(
  *      they're authorised).
  *   2. parent.to / parent.cc scan → first verified identity.
  *   3. X-Herold-Recipient header → verified identity.
+ *   3a. Domain fallback: X-Herold-Recipient, then parent.to, then
+ *       parent.cc, matched by domain (not exact address) against a
+ *       verified identity's domain.
  *   4. Fallback to `defaultIdentity`.
  *
  * Callers (compose's openReply / openReplyAll / openForward) pass the
@@ -186,6 +249,26 @@ export function selectReplyIdentity(
   if (recipient) {
     const matched = byEmail.get(recipient);
     if (matched && isVerified(matched)) return matched;
+  }
+
+  // Step 3a — domain fallback. The delivered-to address (or a To/Cc
+  // address) may be a role/alias address that routes into the mailbox
+  // without being a registered Identity itself (#146/#147/#164). When
+  // its domain matches a verified identity's domain, that identity is
+  // still a better From than the account's unrelated global default.
+  const byDomain = firstVerifiedIdentityByDomain(identities);
+  if (byDomain.size > 0) {
+    if (recipient) {
+      const domain = domainOf(recipient);
+      if (domain) {
+        const domainHit = byDomain.get(domain);
+        if (domainHit) return domainHit;
+      }
+    }
+    const toDomainHit = firstDomainMatch(parent.to ?? null, byDomain);
+    if (toDomainHit) return toDomainHit;
+    const ccDomainHit = firstDomainMatch(parent.cc ?? null, byDomain);
+    if (ccDomainHit) return ccDomainHit;
   }
 
   // Step 4 — terminal fallback.
@@ -312,4 +395,6 @@ export const _internals_forTest = {
   identitiesByEmail,
   readHeraldRecipient,
   firstVerifiedMatch,
+  firstVerifiedIdentityByDomain,
+  firstDomainMatch,
 };

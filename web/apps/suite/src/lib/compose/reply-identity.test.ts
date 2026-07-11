@@ -327,6 +327,87 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     const got = selectReplyIdentity(parent, [ALICE], DEFAULT_ID);
     expect(got).toBe(DEFAULT_ID);
   });
+
+  // ── Step 3a: domain fallback (re #166, comment-2281 handback) ──────
+
+  it('prefers a same-domain identity over the unrelated default when the delivered-to address is an unregistered role alias', () => {
+    // Real headers from issuecomment-2281: delivered to
+    // vorsitz@classic-computing.de (X-Herold-Recipient), To is a third
+    // party, Cc carries info@classic-computing.de (also not a
+    // registered identity). Neither is registered, but the account
+    // holds presse@classic-computing.de — same domain, different local
+    // part. That identity must win over the account's global default
+    // (hans@huebner.org), which shares neither the address nor the
+    // domain.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const classicComputing = makeIdentity('presse@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+      to: [{ name: 'dreams', email: 'dreams@the-retro-heaven.de' }],
+      cc: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, classicComputing], defaultId);
+    expect(got.email).toBe('presse@classic-computing.de');
+  });
+
+  it('exact X-Herold-Recipient match (step 3) still wins over the domain fallback when the delivered-to address is itself registered', () => {
+    // Same shape as the comment-2281 repro, but this time
+    // vorsitz@classic-computing.de IS a registered identity — step 3
+    // must return it verbatim rather than falling through to step 3a's
+    // domain match (which would also find it, but for the wrong reason).
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const vorsitz = makeIdentity('vorsitz@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+      to: [{ name: 'dreams', email: 'dreams@the-retro-heaven.de' }],
+      cc: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, vorsitz], defaultId);
+    expect(got.email).toBe('vorsitz@classic-computing.de');
+  });
+
+  it('domain fallback via Cc when X-Herold-Recipient is absent', () => {
+    // No X-Herold-Recipient at all, but Cc carries a role address on a
+    // domain the account holds an identity for.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const classicComputing = makeIdentity('presse@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'dreams@the-retro-heaven.de' }],
+      cc: [{ name: null, email: 'info@classic-computing.de' }],
+    });
+    const got = selectReplyIdentity(parent, [defaultId, classicComputing], defaultId);
+    expect(got.email).toBe('presse@classic-computing.de');
+  });
+
+  it('does not apply the domain fallback when no identity shares the delivered-to domain', () => {
+    // No identity anywhere shares classic-computing.de — the domain
+    // fallback must not fire and the account default wins, as before.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const other = makeIdentity('other@netzhansa.com');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'dreams@the-retro-heaven.de' }],
+      cc: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, other], defaultId);
+    expect(got.email).toBe('hans@huebner.org');
+  });
+
+  it('domain fallback skips an unverified same-domain identity', () => {
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const unverified = makeIdentity('presse@classic-computing.de', { verifiedAt: null });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'dreams@the-retro-heaven.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, unverified], defaultId);
+    expect(got.email).toBe('hans@huebner.org');
+  });
 });
 
 // ── localAliasesForCc ───────────────────────────────────────────────────
