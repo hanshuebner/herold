@@ -1320,6 +1320,7 @@
     color: var(--text-helper);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    white-space: nowrap;
   }
 
   .field-input {

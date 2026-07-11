@@ -11,6 +11,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
+// Vite's ?raw suffix imports the file as a plain string, for asserting on a
+// CSS rule happy-dom cannot cascade into getComputedStyle (see
+// MailView.date-alignment.test.ts for the established pattern).
+import contactsEditViewSource from './ContactsEditView.svelte?raw';
 
 // ── Mock dependencies ─────────────────────────────────────────────────────
 
@@ -27,6 +31,14 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'contacts.edit.autosaveBlocked': 'Nicht gespeichert — bitte markiertes Feld korrigieren.',
       'contacts.edit.removeEntry': 'Entfernen',
       'contacts.edit.email.pref': 'Bevorzugt',
+      'contacts.edit.addAnniversary': 'Datum hinzufügen',
+      'contacts.edit.anniversary.kind': 'Typ',
+      'contacts.edit.anniversary.kind.birth': 'Geburtstag',
+      'contacts.edit.anniversary.kind.wedding': 'Jahrestag',
+      'contacts.edit.anniversary.kind.other': 'Sonstiges',
+      'contacts.edit.anniversary.day': 'Tag',
+      'contacts.edit.anniversary.month': 'Monat',
+      'contacts.edit.anniversary.year': 'Jahr (optional)',
       'settings.identityEdit.saving': 'Saving…',
       'settings.identityEdit.saved': 'Saved',
       'settings.identityEdit.saveFailed': 'Could not save',
@@ -199,6 +211,49 @@ describe('ContactsEditView — immediate save (re #190)', () => {
     await fireEvent.click(firstRemoveButton!);
 
     expect(screen.queryByDisplayValue('alice@example.local')).toBeNull();
+  });
+
+  describe('Wichtiges Datum "Jahr (optional)" label never wraps (re #195)', () => {
+    /**
+     * Extract the declarations inside the first occurrence of
+     * `selector { ... }` from a CSS string. Mirrors the helper in
+     * MailView.date-alignment.test.ts — happy-dom does not cascade scoped
+     * Svelte component styles into getComputedStyle, so a style-block rule
+     * pin is the established fallback for this suite.
+     */
+    function extractRuleBody(css: string, selector: string): string {
+      const escaped = selector.replace(/[.[\]]/g, (c) => `\\${c}`);
+      const re = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`);
+      const m = css.match(re);
+      return m?.[1] ?? '';
+    }
+
+    function contactsEditViewStyles(): string {
+      const match = contactsEditViewSource.match(/<style>([\s\S]*?)<\/style>/);
+      if (!match?.[1]) throw new Error('Could not find <style> block in ContactsEditView.svelte');
+      return match[1];
+    }
+
+    it('renders the "Jahr (optional)" label in the anniversary row when a date entry is added', async () => {
+      render(ContactsEditView, { props: { contactId: null } });
+
+      const addBtn = await screen.findByText('+ Datum hinzufügen');
+      await fireEvent.click(addBtn);
+
+      expect(screen.getByText('Jahr (optional)')).toBeInTheDocument();
+    });
+
+    it('applies white-space: nowrap to .field-label in the component stylesheet', () => {
+      const css = contactsEditViewStyles();
+      const body = extractRuleBody(css, '.field-label');
+      // With the flex item's default min-width: auto, a nowrap label's
+      // intrinsic minimum width becomes its full unwrapped text width — so a
+      // too-narrow row wraps the whole field-block to the next flex line
+      // instead of breaking "Jahr (optional)" mid-word inside a squeezed
+      // column (which desynced TYP/TAG/MONAT/JAHR vertical alignment under
+      // .entry-row's align-items: flex-start).
+      expect(body.replace(/\s+/g, ' ')).toContain('white-space: nowrap');
+    });
   });
 
   describe('Bevorzugt/Preferred checkbox exclusivity and persistence (re #194)', () => {
