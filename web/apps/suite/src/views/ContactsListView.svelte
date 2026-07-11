@@ -446,6 +446,14 @@
           >
             {t('contacts.list.newGroup')}
           </button>
+          <button
+            type="button"
+            class="duplicates-btn"
+            onclick={() => router.navigate('/contacts/duplicates')}
+            title={t('contacts.list.duplicates')}
+          >
+            {t('contacts.list.duplicates')}
+          </button>
         </div>
       </div>
 
@@ -662,6 +670,27 @@
   }
 
   .new-group-btn:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .duplicates-btn {
+    height: 36px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--interactive);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .duplicates-btn:hover {
+    background: var(--layer-02);
+  }
+
+  .duplicates-btn:focus {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
   }

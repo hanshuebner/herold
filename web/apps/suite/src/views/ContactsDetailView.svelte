@@ -14,7 +14,7 @@
    *   - Anniversaries (birthday, wedding, etc.)
    *
    * Actions: Edit, Delete (optimistic with confirmation), Export (stub),
-   *          Merge (stub), "All mail with this person" (REQ-CONT-31..33).
+   *          Merge duplicates (REQ-CONT-33), "All mail with this person" (REQ-CONT-31..33).
    */
 
   import { jmap } from '../lib/jmap/client';
@@ -37,6 +37,11 @@
     formatAnniversary,
     type ContactEditVM,
   } from '../lib/contacts/jscontact';
+  import {
+    extractCandidate,
+    clusterDuplicates,
+    loadDismissedPairs,
+  } from '../lib/contacts/dedup';
 
   // The contact id is the second route segment: /contacts/<id>.
   let contactId = $derived(decodeURIComponent(router.parts[1] ?? ''));
@@ -47,6 +52,10 @@
   let notFound = $state(false);
   let deleting = $state(false);
   let showDeleteConfirm = $state(false);
+
+  // ── Duplicate candidate IDs for this contact (REQ-CONT-33) ─────────────────
+  // Set after the contact loads; used to show/hide the "Merge duplicates" button.
+  let duplicateCandidateIds = $state<string[]>([]);
 
   // Derived display values.
   let displayName = $derived(vm ? vmDisplayName(vm) : '');
@@ -92,8 +101,97 @@
       raw = rawCard as Record<string, unknown>;
       vm = cardToVM(raw);
       loadStatus = 'ready';
+      // Non-blocking: detect duplicate candidates for this contact.
+      void detectDuplicatesForContact(id, accountId, rawCard as Record<string, unknown>);
     } catch {
       loadStatus = 'error';
+    }
+  }
+
+  /**
+   * After loading the contact, do a cheap duplicate check using the text filter
+   * over its primary email / display name. If any other contacts match, expose
+   * the "Merge duplicates" entry point (REQ-CONT-33).
+   */
+  async function detectDuplicatesForContact(
+    id: string,
+    accountId: string,
+    card: Record<string, unknown>,
+  ): Promise<void> {
+    duplicateCandidateIds = [];
+    const candidate = extractCandidate(card);
+    // Build a set of query texts: primary email and display name.
+    const queryTexts = new Set<string>();
+    if (candidate.emails.length > 0) queryTexts.add(candidate.emails[0]!);
+    if (candidate.displayName.trim()) queryTexts.add(candidate.displayName.trim());
+    if (queryTexts.size === 0) return;
+
+    const principalId = auth.principalId ?? 'unknown';
+    const dismissed = loadDismissedPairs(principalId);
+
+    // Run a Contact/query text filter for each query text and collect IDs.
+    const allCandidates: Record<string, unknown>[] = [card]; // include self
+    for (const text of queryTexts) {
+      try {
+        const { responses } = await jmap.batch((b) => {
+          const q = b.call(
+            'Contact/query',
+            {
+              accountId,
+              filter: { text },
+              sort: [{ property: 'displayName', isAscending: true }],
+              position: 0,
+              limit: 20,
+            },
+            [Capability.Contacts],
+          );
+          b.call(
+            'Contact/get',
+            {
+              accountId,
+              '#ids': q.ref('/ids'),
+              properties: ['id', 'name', 'emails', 'phones'],
+            },
+            [Capability.Contacts],
+          );
+        });
+        const gResp = responses[1];
+        if (!gResp || gResp[0] === 'error') continue;
+        const gArgs = gResp[1] as { list?: unknown[] };
+        for (const c of gArgs.list ?? []) {
+          if (typeof c !== 'object' || c === null) continue;
+          const rc = c as Record<string, unknown>;
+          const cid = String(rc.id ?? '');
+          if (cid && !allCandidates.some((ex) => String(ex.id ?? '') === cid)) {
+            allCandidates.push(rc);
+          }
+        }
+      } catch {
+        // Soft fail — duplicate check is non-critical.
+      }
+    }
+
+    if (allCandidates.length < 2) return;
+
+    const candidates = allCandidates.map(extractCandidate);
+    const clusters = clusterDuplicates(candidates, dismissed);
+    // Keep only clusters that contain this contact.
+    const myCluster = clusters.find((cl) => cl.contacts.some((c) => c.id === id));
+    if (!myCluster) return;
+
+    duplicateCandidateIds = myCluster.contacts
+      .filter((c) => c.id !== id)
+      .map((c) => c.id);
+  }
+
+  function mergeDuplicates(): void {
+    if (duplicateCandidateIds.length > 0) {
+      // Navigate directly to merge with this contact + its candidates.
+      const ids = [contactId, ...duplicateCandidateIds].join(',');
+      router.navigate(`/contacts/merge?ids=${encodeURIComponent(ids)}`);
+    } else {
+      // Fall back to the full duplicates review.
+      router.navigate('/contacts/duplicates');
     }
   }
 
@@ -291,6 +389,11 @@
           <Button variant="secondary" compact onclick={confirmDelete} disabled={deleting}>
             {t('contacts.detail.delete')}
           </Button>
+          {#if duplicateCandidateIds.length > 0}
+            <Button variant="secondary" compact onclick={mergeDuplicates} disabled={deleting}>
+              {t('contacts.detail.merge')}
+            </Button>
+          {/if}
         </div>
       </div>
 
