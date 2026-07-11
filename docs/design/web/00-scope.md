@@ -8,7 +8,7 @@ The suite is one cohesive product name. It comprises three planned web applicati
 
 - **the suite** — the email client. v1 is in flight; this docs/ tree currently describes it.
 - **the calendar app** — calendar UI over JMAP for Calendars (RFC 8984 + the JMAP-Calendars binding). Future; not started.
-- **the contacts app** — contacts UI over JMAP for Contacts (RFC 9553 + the JMAP-Contacts binding). Future; not started.
+- **the contacts app** — contacts UI over JMAP for Contacts (RFC 9553 + the JMAP-Contacts binding). Requirements: `requirements/27-contacts.md`; architecture: `architecture/09-contacts.md`; server extensions: `../server/requirements/27-contacts.md`.
 - **chat (built into the suite shell)** — DMs, Spaces, 1:1 video calls. Not a separate app — a persistent panel rendered by the suite shell, plus a `/chat/*` fullscreen route. See `requirements/08-chat.md`, `requirements/21-video-calls.md`, `architecture/07-chat-protocol.md`.
 
 The suite ships as **one SPA shell** with client-side routing (`architecture/01-system-overview.md` § Suite shape). Per-app code organises into `apps/{suite,mail,calendar,contacts,chat}` packages but builds into a single bundle. The persistent chat panel forces this shape: it must outlive route changes, so the apps cannot be separately-bundled SPAs.
