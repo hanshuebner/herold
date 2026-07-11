@@ -315,11 +315,14 @@ func (s *Server) writeSecurityHeaders(w http.ResponseWriter) {
 // non-empty so the SPA's WebSocket client can dial /chat/ws on the
 // same origin without falling foul of CSP; an empty publicHost emits
 // connect-src 'self' which already covers same-origin relative WS
-// URLs in every contemporary browser.
+// URLs in every contemporary browser. https://www.gravatar.com is
+// always permitted so the avatar resolver's Gravatar HEAD probe
+// (REQ-MAIL-44 tier 3b, REQ-SET-17) does not throw a CSP violation;
+// the probe itself is gated client-side by the privacy toggle.
 func buildCSP(publicHost string) string {
-	connect := "connect-src 'self'"
+	connect := "connect-src 'self' https://www.gravatar.com"
 	if h := strings.TrimSpace(publicHost); h != "" {
-		connect = fmt.Sprintf("connect-src 'self' wss://%s", h)
+		connect = fmt.Sprintf("connect-src 'self' https://www.gravatar.com wss://%s", h)
 	}
 	return strings.Join([]string{
 		"default-src 'self'",

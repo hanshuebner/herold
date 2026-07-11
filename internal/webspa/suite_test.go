@@ -222,7 +222,7 @@ func TestSpa_CSP_Header_Set(t *testing.T) {
 				"script-src 'self'",
 				"style-src 'self' 'unsafe-inline'",
 				"img-src 'self' https: data: blob:",
-				"connect-src 'self' wss://mail.example.com",
+				"connect-src 'self' https://www.gravatar.com wss://mail.example.com",
 				"font-src 'self' data:",
 				"frame-ancestors 'none'",
 				"base-uri 'self'",
@@ -251,8 +251,8 @@ func TestSpa_CSP_Header_NoPublicHost(t *testing.T) {
 	resp := do(t, s, "/")
 	defer resp.Body.Close()
 	csp := resp.Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "connect-src 'self'") {
-		t.Errorf("CSP=%q must contain connect-src 'self'", csp)
+	if !strings.Contains(csp, "connect-src 'self' https://www.gravatar.com") {
+		t.Errorf("CSP=%q must contain connect-src 'self' https://www.gravatar.com", csp)
 	}
 	if strings.Contains(csp, "wss://") {
 		t.Errorf("CSP=%q should not include wss:// when PublicHost empty", csp)
