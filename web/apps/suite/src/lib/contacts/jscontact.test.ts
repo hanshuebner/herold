@@ -14,6 +14,11 @@ import {
   validateVM,
   formatAddress,
   nextKey,
+  validatePhotoFile,
+  extractPhotoFromCard,
+  buildMediaWithPhoto,
+  buildMediaWithPhotoRemoved,
+  MAX_PHOTO_SIZE,
   type ContactEditVM,
   type NameVM,
   type EmailVM,
@@ -578,6 +583,155 @@ describe('nextKey', () => {
     const k3 = nextKey();
     expect(k1).not.toBe(k2);
     expect(k2).not.toBe(k3);
+  });
+});
+
+// ── validatePhotoFile (REQ-CONT-61) ──────────────────────────────────────────
+
+describe('validatePhotoFile', () => {
+  function makeFile(name: string, type: string, sizeBytes: number): File {
+    const buf = new ArrayBuffer(sizeBytes);
+    return new File([buf], name, { type });
+  }
+
+  it('accepts supported types under the size limit', () => {
+    for (const type of ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif']) {
+      const file = makeFile('photo.jpg', type, 1024);
+      expect(validatePhotoFile(file)).toBeNull();
+    }
+  });
+
+  it('rejects files over 10 MiB', () => {
+    const file = makeFile('big.jpg', 'image/jpeg', MAX_PHOTO_SIZE + 1);
+    const err = validatePhotoFile(file);
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/10 MiB/);
+  });
+
+  it('rejects unsupported MIME types', () => {
+    const file = makeFile('video.mp4', 'video/mp4', 1024);
+    const err = validatePhotoFile(file);
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/Unsupported/);
+  });
+
+  it('rejects application/pdf', () => {
+    const file = makeFile('doc.pdf', 'application/pdf', 1024);
+    expect(validatePhotoFile(file)).not.toBeNull();
+  });
+
+  it('accepts exactly at the size limit', () => {
+    const file = makeFile('max.jpg', 'image/jpeg', MAX_PHOTO_SIZE);
+    expect(validatePhotoFile(file)).toBeNull();
+  });
+});
+
+// ── extractPhotoFromCard (REQ-CONT-60) ────────────────────────────────────────
+
+describe('extractPhotoFromCard', () => {
+  it('returns null when no media map', () => {
+    expect(extractPhotoFromCard({ id: 'c1' })).toBeNull();
+  });
+
+  it('returns null when media map is empty', () => {
+    expect(extractPhotoFromCard({ id: 'c1', media: {} })).toBeNull();
+  });
+
+  it('returns null when media entries have no kind=photo', () => {
+    const raw = {
+      id: 'c1',
+      media: {
+        logo1: { '@type': 'MediaResource', kind: 'logo', blobId: 'abc123', mediaType: 'image/jpeg' },
+      },
+    };
+    expect(extractPhotoFromCard(raw)).toBeNull();
+  });
+
+  it('extracts blobId and mediaType from a photo entry', () => {
+    const blobId = 'a'.repeat(64);
+    const raw = {
+      id: 'c1',
+      media: {
+        photo1: { '@type': 'MediaResource', kind: 'photo', blobId, mediaType: 'image/png' },
+      },
+    };
+    const result = extractPhotoFromCard(raw);
+    expect(result).not.toBeNull();
+    expect(result!.blobId).toBe(blobId);
+    expect(result!.mediaType).toBe('image/png');
+  });
+
+  it('defaults mediaType to image/jpeg when absent', () => {
+    const raw = {
+      id: 'c1',
+      media: {
+        photo1: { '@type': 'MediaResource', kind: 'photo', blobId: 'xyz' },
+      },
+    };
+    const result = extractPhotoFromCard(raw);
+    expect(result!.mediaType).toBe('image/jpeg');
+  });
+});
+
+// ── buildMediaWithPhoto ───────────────────────────────────────────────────────
+
+describe('buildMediaWithPhoto', () => {
+  it('creates a media map with a photo entry when original is undefined', () => {
+    const media = buildMediaWithPhoto(undefined, 'blob1', 'image/jpeg');
+    const photo = media['photo1'] as Record<string, unknown>;
+    expect(photo['@type']).toBe('MediaResource');
+    expect(photo.kind).toBe('photo');
+    expect(photo.blobId).toBe('blob1');
+    expect(photo.mediaType).toBe('image/jpeg');
+  });
+
+  it('replaces an existing photo entry', () => {
+    const original = {
+      photo1: { '@type': 'MediaResource', kind: 'photo', blobId: 'old', mediaType: 'image/jpeg' },
+    };
+    const media = buildMediaWithPhoto(original, 'new', 'image/png');
+    const photo = media['photo1'] as Record<string, unknown>;
+    expect(photo.blobId).toBe('new');
+    expect(photo.mediaType).toBe('image/png');
+  });
+
+  it('preserves non-photo entries from the original media map', () => {
+    const original = {
+      logo1: { '@type': 'MediaResource', kind: 'logo', blobId: 'logo', mediaType: 'image/png' },
+    };
+    const media = buildMediaWithPhoto(original, 'photo', 'image/jpeg');
+    expect('logo1' in media).toBe(true);
+    expect('photo1' in media).toBe(true);
+  });
+});
+
+// ── buildMediaWithPhotoRemoved ────────────────────────────────────────────────
+
+describe('buildMediaWithPhotoRemoved', () => {
+  it('returns null when original media is undefined', () => {
+    expect(buildMediaWithPhotoRemoved(undefined)).toBeNull();
+  });
+
+  it('returns null when all entries are photos (nothing left)', () => {
+    const original = {
+      photo1: { '@type': 'MediaResource', kind: 'photo', blobId: 'x', mediaType: 'image/jpeg' },
+    };
+    expect(buildMediaWithPhotoRemoved(original)).toBeNull();
+  });
+
+  it('returns a map without photo entries but with non-photo entries preserved', () => {
+    const original = {
+      photo1: { '@type': 'MediaResource', kind: 'photo', blobId: 'x', mediaType: 'image/jpeg' },
+      logo1: { '@type': 'MediaResource', kind: 'logo', blobId: 'y', mediaType: 'image/png' },
+    };
+    const result = buildMediaWithPhotoRemoved(original);
+    expect(result).not.toBeNull();
+    expect('photo1' in result!).toBe(false);
+    expect('logo1' in result!).toBe(true);
+  });
+
+  it('returns null for an empty original media map', () => {
+    expect(buildMediaWithPhotoRemoved({})).toBeNull();
   });
 });
 

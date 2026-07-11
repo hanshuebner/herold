@@ -1313,6 +1313,20 @@ export const de = {
   'contacts.edit.validation.emailBad': 'Keine gültige E-Mail-Adresse.',
   'contacts.edit.validation.multiPref': 'Es kann höchstens ein Eintrag bevorzugt sein.',
 
+  // ── Kontakte → Foto (REQ-CONT-60..63) ──────────────────────────────
+  'contacts.edit.section.photo': 'Foto',
+  'contacts.edit.photo.changeLabel': 'Foto ändern – klicken oder Bild ablegen',
+  'contacts.edit.photo.changeHint': 'Ändern',
+  'contacts.edit.photo.dropHint': 'Bild hierher ziehen',
+  'contacts.edit.photo.previewAlt': 'Fotovorschau',
+  'contacts.edit.photo.remove': 'Foto entfernen',
+  'contacts.edit.photo.removeLabel': 'Kontaktfoto entfernen',
+  'contacts.edit.photo.restore': 'Wiederherstellen',
+  'contacts.edit.photo.cropError': 'Bild konnte nicht zugeschnitten werden. Bitte eine andere Datei verwenden.',
+  'contacts.edit.photo.uploadError': 'Foto konnte nicht hochgeladen werden.',
+  'contacts.edit.photo.tooBig': 'Foto muss kleiner als 10 MiB sein.',
+  'contacts.edit.photo.badType': 'Nicht unterstütztes Bildformat. Bitte JPEG, PNG, GIF, WebP oder AVIF verwenden.',
+
   // ── Kontakte → Gruppen (REQ-CONT-71..72) ───────────────────────────
   'contacts.list.scopeGroups': 'Gruppen',
   'contacts.list.scopeBooks': 'Adressbücher',

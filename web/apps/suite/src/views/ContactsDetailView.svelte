@@ -27,10 +27,12 @@
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import ContactAvatar from '../lib/contacts/ContactAvatar.svelte';
   import {
     cardToVM,
     vmDisplayName,
     vmMonogram,
+    extractPhotoFromCard,
     formatAddress,
     formatAnniversary,
     type ContactEditVM,
@@ -49,6 +51,7 @@
   // Derived display values.
   let displayName = $derived(vm ? vmDisplayName(vm) : '');
   let monogram = $derived(vm ? vmMonogram(vm) : '?');
+  let photoBlobId = $derived(raw ? (extractPhotoFromCard(raw)?.blobId ?? null) : null);
   // Pre-computed filtered lists to avoid TypeScript narrowing issues inside callbacks.
   let standaloneOrgs = $derived(
     vm ? (vm.orgs.length === 0 ? vm.titles.filter((tt) => !tt.orgId) : []) : []
@@ -264,9 +267,12 @@
     <div class="contact-card">
       <!-- Header: avatar + name + action buttons -->
       <div class="contact-header">
-        <div class="avatar" aria-hidden="true">
-          {monogram}
-        </div>
+        <ContactAvatar
+          blobId={photoBlobId}
+          fallbackInitial={monogram}
+          displayName={displayName}
+          size={56}
+        />
         <div class="header-body">
           <h1 class="contact-name">
             {displayName || t('contacts.list.unnamed')}
@@ -626,21 +632,6 @@
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-04);
-  }
-
-  .avatar {
-    width: 56px;
-    height: 56px;
-    min-width: 56px;
-    border-radius: 50%;
-    background: var(--interactive);
-    color: var(--text-on-color);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.5rem;
-    font-weight: 600;
-    flex-shrink: 0;
   }
 
   .header-body {

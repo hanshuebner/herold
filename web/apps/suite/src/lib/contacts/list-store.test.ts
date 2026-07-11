@@ -184,11 +184,11 @@ describe('parseRow', () => {
     expect(row.photoBlobId).toBeNull();
   });
 
-  it('extracts photoBlobId from media map', () => {
+  it('extracts photoBlobId from media map (kind=photo per JSContact wire format)', () => {
     const row = parseRow({
       id: 'c2',
       name: { full: 'Bob' },
-      media: { m1: { type: 'photo', blobId: 'blob-abc-123' } },
+      media: { m1: { '@type': 'MediaResource', kind: 'photo', blobId: 'blob-abc-123', mediaType: 'image/jpeg' } },
     });
     expect(row.photoBlobId).toBe('blob-abc-123');
   });
@@ -197,7 +197,7 @@ describe('parseRow', () => {
     const row = parseRow({
       id: 'c3',
       name: { full: 'Carol' },
-      media: { m1: { type: 'logo', blobId: 'blob-xyz' } },
+      media: { m1: { '@type': 'MediaResource', kind: 'logo', blobId: 'blob-xyz', mediaType: 'image/png' } },
     });
     expect(row.photoBlobId).toBeNull();
   });

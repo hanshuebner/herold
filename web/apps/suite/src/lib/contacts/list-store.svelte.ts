@@ -145,7 +145,7 @@ function derivePhotoBlobId(card: Record<string, unknown>): string | null {
     for (const v of Object.values(media)) {
       if (typeof v === 'object' && v !== null) {
         const obj = v as Record<string, unknown>;
-        if (obj.type === 'photo' && typeof obj.blobId === 'string') return obj.blobId;
+        if (obj.kind === 'photo' && typeof obj.blobId === 'string') return obj.blobId;
       }
     }
   }

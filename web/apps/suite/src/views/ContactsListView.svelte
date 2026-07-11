@@ -24,6 +24,7 @@
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import ContactsIcon from '../lib/icons/ContactsIcon.svelte';
+  import ContactAvatar from '../lib/contacts/ContactAvatar.svelte';
 
   // ── URL sort param sync ───────────────────────────────────────────────────
 
@@ -543,13 +544,11 @@
               onclick={() => openContact(row.id)}
               onfocus={() => { focusedIndex = i; }}
             >
-              <span
-                class="row-avatar"
-                aria-hidden="true"
-                title={row.displayName}
-              >
-                {deriveFallbackInitial(row.displayName || row.secondary)}
-              </span>
+              <ContactAvatar
+                blobId={row.photoBlobId}
+                fallbackInitial={deriveFallbackInitial(row.displayName || row.secondary)}
+                size={36}
+              />
               <span class="row-text">
                 <span class="row-name">
                   {row.displayName || row.secondary || t('contacts.list.unnamed')}
@@ -860,22 +859,6 @@
     outline: 2px solid var(--focus);
     outline-offset: -2px;
     background: var(--layer-03);
-  }
-
-  /* Avatar monogram fallback (REQ-CONT-62) */
-  .row-avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-pill);
-    background: var(--interactive);
-    color: var(--text-on-color);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 600;
-    font-size: var(--type-body-compact-01-size);
-    flex-shrink: 0;
-    overflow: hidden;
   }
 
   .row-text {

@@ -29,12 +29,17 @@
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import ContactPhotoEditor from '../lib/contacts/ContactPhotoEditor.svelte';
   import {
     cardToVM,
     vmToCard,
     vmToPatch,
     validateVM,
     nextKey,
+    vmMonogram,
+    extractPhotoFromCard,
+    buildMediaWithPhoto,
+    buildMediaWithPhotoRemoved,
     type ContactEditVM,
     type EmailVM,
     type PhoneVM,
@@ -61,12 +66,25 @@
   let loadStatus = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
   let saving = $state(false);
   let vm = $state<ContactEditVM | null>(null);
+
+  // Fallback initial for the photo editor monogram (derived from the live VM).
+  let photoFallbackInitial = $derived(vm ? vmMonogram(vm) : '?');
   let originalRaw = $state<Record<string, unknown>>({});
   let showMoreName = $state(false);
   let validationErrors = $state<ValidationError[]>([]);
 
   // Dirty-form guard: track whether the form has unsaved changes.
   let isDirty = $state(false);
+
+  // ── Photo state (REQ-CONT-60..61) ─────────────────────────────────────────
+  // currentPhotoBlobId: the blobId already on the server for this contact.
+  let currentPhotoBlobId = $state<string | null>(null);
+  // photoAction: what to do with the photo on save.
+  let photoAction = $state<'keep' | 'replace' | 'remove'>('keep');
+  // photoPendingFile: cropped JPEG Blob to upload (when photoAction === 'replace').
+  let photoPendingFile = $state<Blob | null>(null);
+  let photoPendingMediaType = $state('');
+  let photoPendingPreviewUrl = $state<string | null>(null);
 
   // Keyboard shortcut: Ctrl/Cmd+S saves the form.
   function handleKeydown(e: KeyboardEvent): void {
@@ -105,6 +123,12 @@
   });
 
   function emptyVM(): ContactEditVM {
+    // Reset photo state for a new (create) form.
+    currentPhotoBlobId = null;
+    photoAction = 'keep';
+    photoPendingFile = null;
+    photoPendingMediaType = '';
+    photoPendingPreviewUrl = null;
     return {
       id: null,
       kind: 'individual',
@@ -138,6 +162,13 @@
       const rawCard = raw as Record<string, unknown>;
       originalRaw = rawCard;
       vm = cardToVM(rawCard);
+      // Extract current photo for the photo editor.
+      const photo = extractPhotoFromCard(rawCard);
+      currentPhotoBlobId = photo?.blobId ?? null;
+      photoAction = 'keep';
+      photoPendingFile = null;
+      photoPendingMediaType = '';
+      photoPendingPreviewUrl = null;
       isDirty = false;
       loadStatus = 'ready';
     } catch {
@@ -175,6 +206,22 @@
   async function createContact(accountId: string): Promise<void> {
     if (!vm) return;
     const card = vmToCard(vm);
+
+    // Upload photo if one was set (REQ-CONT-60).
+    if (photoAction === 'replace' && photoPendingFile) {
+      try {
+        const result = await jmap.uploadBlob({
+          accountId,
+          body: photoPendingFile,
+          type: photoPendingMediaType || 'image/jpeg',
+        });
+        card.media = buildMediaWithPhoto(undefined, result.blobId, result.type || photoPendingMediaType);
+      } catch {
+        toast.show({ message: t('contacts.edit.photo.uploadError'), kind: 'error' });
+        return;
+      }
+    }
+
     const { responses } = await jmap.batch((b) => {
       b.call(
         'Contact/set',
@@ -209,8 +256,38 @@
   async function updateContact(accountId: string): Promise<void> {
     if (!vm || !vm.id) return;
     const { changed, patch } = vmToPatch(originalRaw, vm);
-    if (!changed) {
-      // No changes — exit silently (REQ-CONT-49).
+
+    // Compute media patch for photo change (REQ-CONT-60).
+    let mediaPatch: Record<string, unknown> | null | undefined = undefined; // undefined = no change
+    if (photoAction === 'replace' && photoPendingFile) {
+      try {
+        const result = await jmap.uploadBlob({
+          accountId,
+          body: photoPendingFile,
+          type: photoPendingMediaType || 'image/jpeg',
+        });
+        mediaPatch = buildMediaWithPhoto(
+          originalRaw.media as Record<string, unknown> | undefined,
+          result.blobId,
+          result.type || photoPendingMediaType,
+        );
+      } catch {
+        toast.show({ message: t('contacts.edit.photo.uploadError'), kind: 'error' });
+        return;
+      }
+    } else if (photoAction === 'remove') {
+      mediaPatch = buildMediaWithPhotoRemoved(
+        originalRaw.media as Record<string, unknown> | undefined,
+      );
+    }
+
+    // Apply media patch to the field patch.
+    if (mediaPatch !== undefined) {
+      patch.media = mediaPatch;
+    }
+
+    if (!changed && mediaPatch === undefined) {
+      // No changes at all — exit silently (REQ-CONT-49).
       router.navigate(`/contacts/${encodeURIComponent(vm.id)}`);
       return;
     }
@@ -454,6 +531,20 @@
       {#if hasError('general')}
         <div class="form-error" role="alert">{errorFor('general')}</div>
       {/if}
+
+      <!-- ── Photo section (REQ-CONT-60..61) ────────────────────────────── -->
+      <fieldset class="form-section">
+        <legend class="section-legend">{t('contacts.edit.section.photo')}</legend>
+        <ContactPhotoEditor
+          currentBlobId={currentPhotoBlobId}
+          fallbackInitial={photoFallbackInitial}
+          disabled={saving}
+          bind:action={photoAction}
+          bind:pendingFile={photoPendingFile}
+          bind:pendingMediaType={photoPendingMediaType}
+          bind:pendingPreviewUrl={photoPendingPreviewUrl}
+        />
+      </fieldset>
 
       <!-- ── Name section ──────────────────────────────────────────────── -->
       <fieldset class="form-section">

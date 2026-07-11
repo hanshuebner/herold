@@ -1299,6 +1299,20 @@ export const en = {
   'contacts.edit.validation.emailBad': 'Not a valid email address.',
   'contacts.edit.validation.multiPref': 'At most one entry can be preferred.',
 
+  // ── Contacts → Photo (REQ-CONT-60..63) ──────────────────────────────
+  'contacts.edit.section.photo': 'Photo',
+  'contacts.edit.photo.changeLabel': 'Change photo — click or drop an image',
+  'contacts.edit.photo.changeHint': 'Change',
+  'contacts.edit.photo.dropHint': 'Drop image here',
+  'contacts.edit.photo.previewAlt': 'Photo preview',
+  'contacts.edit.photo.remove': 'Remove photo',
+  'contacts.edit.photo.removeLabel': 'Remove contact photo',
+  'contacts.edit.photo.restore': 'Restore',
+  'contacts.edit.photo.cropError': 'Could not crop image. Please try a different file.',
+  'contacts.edit.photo.uploadError': 'Could not upload photo.',
+  'contacts.edit.photo.tooBig': 'Photo must be under 10 MiB.',
+  'contacts.edit.photo.badType': 'Unsupported image type. Use JPEG, PNG, GIF, WebP, or AVIF.',
+
   // ── Contacts → Groups (REQ-CONT-71..72) ─────────────────────────────
   'contacts.list.scopeGroups': 'Groups',
   'contacts.list.scopeBooks': 'Address books',

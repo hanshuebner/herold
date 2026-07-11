@@ -93,6 +93,15 @@ export interface JsLink {
   contexts?: Record<string, boolean>;
 }
 
+export interface JsMediaResource {
+  '@type': 'MediaResource';
+  kind?: string;
+  blobId?: string;
+  mediaType?: string;
+  uri?: string;
+  label?: string;
+}
+
 export interface JsNote {
   note: string;
   author?: unknown;
@@ -136,6 +145,12 @@ export interface JsCard {
   links?: Record<string, JsLink>;
   notes?: Record<string, JsNote>;
   anniversaries?: Record<string, JsAnniversary>;
+  /**
+   * Contact photos and other media resources (JSContact media map).
+   * Photo entries carry kind="photo" and a blobId referencing the JMAP blob.
+   * REQ-CONT-60.
+   */
+  media?: Record<string, JsMediaResource>;
   /**
    * Group membership: present only when kind="group".
    * Keys are JMAP contact IDs (NOT UIDs); values are always true.
@@ -949,6 +964,101 @@ function buildAnniversaryMap(anniversaries: AnniversaryVM[]): Record<string, unk
   return map;
 }
 
+// ── Photo helpers (REQ-CONT-60..63) ──────────────────────────────────────────
+
+/** MIME types accepted for contact photos (server-enforced; reject client-side first). */
+export const SUPPORTED_PHOTO_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+] as const;
+
+/** Maximum photo blob size the server enforces (10 MiB). */
+export const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
+
+/**
+ * Validate a photo file before upload (REQ-CONT-61).
+ * Returns an error message string when the file is invalid, or null when valid.
+ */
+export function validatePhotoFile(file: File): string | null {
+  if (file.size > MAX_PHOTO_SIZE) {
+    const mb = (file.size / 1024 / 1024).toFixed(1);
+    return `Photo must be under 10 MiB (this file is ${mb} MiB).`;
+  }
+  if (!(SUPPORTED_PHOTO_TYPES as readonly string[]).includes(file.type)) {
+    return `Unsupported image type: ${file.type || '(unknown)'}. Supported: JPEG, PNG, GIF, WebP, AVIF.`;
+  }
+  return null;
+}
+
+/**
+ * Extract the current photo from a raw JSContact Card.
+ * Returns { blobId, mediaType } or null when the Card has no photo.
+ */
+export function extractPhotoFromCard(
+  raw: Record<string, unknown>,
+): { blobId: string; mediaType: string } | null {
+  const media = raw.media as Record<string, unknown> | undefined;
+  if (!media) return null;
+  for (const v of Object.values(media)) {
+    if (typeof v === 'object' && v !== null) {
+      const obj = v as Record<string, unknown>;
+      if (obj.kind === 'photo' && typeof obj.blobId === 'string') {
+        return {
+          blobId: obj.blobId,
+          mediaType: typeof obj.mediaType === 'string' ? obj.mediaType : 'image/jpeg',
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a media map that includes a photo entry for the given blobId.
+ * Non-photo entries from the original media map are preserved.
+ * The photo entry uses the key "photo1".
+ */
+export function buildMediaWithPhoto(
+  originalMedia: Record<string, unknown> | undefined,
+  blobId: string,
+  mediaType: string,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (originalMedia) {
+    for (const [key, v] of Object.entries(originalMedia)) {
+      if (typeof v === 'object' && v !== null) {
+        const obj = v as Record<string, unknown>;
+        if (obj.kind === 'photo') continue; // remove old photo entry
+      }
+      result[key] = v;
+    }
+  }
+  result['photo1'] = { '@type': 'MediaResource', kind: 'photo', blobId, mediaType };
+  return result;
+}
+
+/**
+ * Build a media map with all photo entries removed.
+ * Returns null when no non-photo entries remain (JSON Merge Patch: delete the key).
+ */
+export function buildMediaWithPhotoRemoved(
+  originalMedia: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  if (!originalMedia) return null;
+  const result: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(originalMedia)) {
+    if (typeof v === 'object' && v !== null) {
+      const obj = v as Record<string, unknown>;
+      if (obj.kind === 'photo') continue;
+    }
+    result[key] = v;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // ── Validators ────────────────────────────────────────────────────────────────
 
 /** Minimal RFC 5322 email syntax check. */
@@ -966,4 +1076,8 @@ export const _internals_forTest = {
   buildName,
   formatAddress,
   isValidEmail,
+  validatePhotoFile,
+  extractPhotoFromCard,
+  buildMediaWithPhoto,
+  buildMediaWithPhotoRemoved,
 };
