@@ -12,6 +12,7 @@
   import { events } from '../lib/events/events.svelte';
   import { router } from '../lib/router/router.svelte';
   import { formatAbsolute, formatRelative, DATE_TIME_SHORT } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   $effect(() => {
     if (imapImports.status === 'idle') {
@@ -80,9 +81,9 @@
 <div class="imap-imports-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">IMAP-Import-Diagnose</h1>
+      <h1 class="page-title">{t('imapImports.title')}</h1>
       {#if imapImports.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Wird geladen"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
     <button
@@ -92,23 +93,22 @@
       disabled={imapImports.status === 'loading'}
       data-testid="imap-imports-refresh"
     >
-      Aktualisieren
+      {t('imapImports.refresh')}
     </button>
   </div>
 
   <p class="page-hint">
-    Live-Worker-Status aller IMAP-Import-Konten. Debug-Protokollierung sendet
-    feingliedrige Ereignisse mit der Konto-ID als Akteur an den
+    {t('imapImports.hint.prefix')}
     <button type="button" class="link-btn" onclick={() => router.navigate('/events')}>
-      Ereignisse-View
-    </button>.
+      {t('imapImports.hint.eventsLink')}
+    </button>{t('imapImports.hint.suffix')}
   </p>
 
   {#if imapImports.status === 'error'}
     <div class="page-error" role="alert">{imapImports.errorMessage}</div>
   {:else if imapImports.status === 'ready' && imapImports.workers.length === 0}
     <p class="empty-state" data-testid="imap-imports-empty">
-      Keine aktiven IMAP-Import-Worker. Worker starten, sobald ein Konto aktiviert wird.
+      {t('imapImports.empty')}
     </p>
   {:else if imapImports.workers.length > 0}
     <div class="workers-list" data-testid="imap-imports-list">
@@ -125,7 +125,7 @@
                 class="badge {worker.connected ? 'badge-success' : 'badge-neutral'}"
                 data-testid="worker-connected"
               >
-                {worker.connected ? 'Verbunden' : 'Getrennt'}
+                {worker.connected ? t('imapImports.connected') : t('imapImports.disconnected')}
               </span>
               <span
                 class="badge {phaseClass(worker.phase)}"
@@ -140,69 +140,69 @@
           <dl class="worker-detail">
             {#if worker.watch_mode}
               <div class="detail-row">
-                <dt>Überwachungsmodus</dt>
+                <dt>{t('imapImports.field.watchMode')}</dt>
                 <dd data-testid="worker-watch-mode">{worker.watch_mode}</dd>
               </div>
             {/if}
             {#if worker.conn_mode}
               <div class="detail-row">
-                <dt>Verbindungsmodus</dt>
+                <dt>{t('imapImports.field.connMode')}</dt>
                 <dd>{worker.conn_mode}</dd>
               </div>
             {/if}
             <div class="detail-row">
-              <dt>Phase seit</dt>
+              <dt>{t('imapImports.field.phaseSince')}</dt>
               <dd title={formatDate(worker.phase_since)}>
                 {formatRelativeDate(worker.phase_since)}
               </dd>
             </div>
             {#if worker.last_sync_at}
               <div class="detail-row">
-                <dt>Letzter Abgleich</dt>
+                <dt>{t('imapImports.field.lastSync')}</dt>
                 <dd data-testid="worker-last-sync">{formatDate(worker.last_sync_at)}</dd>
               </div>
             {/if}
             <div class="detail-row">
-              <dt>Nachrichten abgerufen</dt>
+              <dt>{t('imapImports.field.messagesFetched')}</dt>
               <dd data-testid="worker-messages-fetched">{worker.messages_fetched}</dd>
             </div>
             <div class="detail-row">
-              <dt>Flags propagiert</dt>
+              <dt>{t('imapImports.field.flagsPropagated')}</dt>
               <dd>{worker.flags_propagated}</dd>
             </div>
             {#if worker.consecutive_failures > 0}
               <div class="detail-row">
-                <dt>Aufeinanderfolgende Fehler</dt>
+                <dt>{t('imapImports.field.consecutiveFailures')}</dt>
                 <dd class="text-error">{worker.consecutive_failures}</dd>
               </div>
             {/if}
             {#if worker.current_folder}
               <div class="detail-row">
-                <dt>Aktueller Ordner</dt>
+                <dt>{t('imapImports.field.currentFolder')}</dt>
                 <dd>{worker.current_folder}</dd>
               </div>
             {/if}
             {#if worker.next_poll_at}
               <div class="detail-row">
-                <dt>Nächster Poll</dt>
+                <dt>{t('imapImports.field.nextPoll')}</dt>
                 <dd title={formatDate(worker.next_poll_at)}>
                   {formatRelativeDate(worker.next_poll_at)}
                 </dd>
               </div>
             {/if}
             <div class="detail-row">
-              <dt>Konto-ID</dt>
+              <dt>{t('imapImports.field.accountId')}</dt>
               <dd class="mono">{worker.account_id}</dd>
             </div>
             <div class="detail-row">
-              <dt>Prinzipal-ID</dt>
+              <dt>{t('imapImports.field.principalId')}</dt>
               <dd class="mono">{worker.principal_id}</dd>
             </div>
           </dl>
 
           {#if worker.last_error}
             <div class="worker-error" data-testid="worker-last-error">
-              <span class="error-label">Letzter Fehler:</span>
+              <span class="error-label">{t('imapImports.lastError')}</span>
               <span class="error-text">{worker.last_error}</span>
             </div>
           {/if}
@@ -217,9 +217,9 @@
                 onchange={() =>
                   void toggleDebugLog(worker.principal_id, worker.account_id, worker.debug_log)}
                 data-testid="worker-debug-toggle-{worker.account_id}"
-                aria-label="Debug-Protokollierung für {worker.account_name}"
+                aria-label={t('imapImports.debugLoggingFor', { name: worker.account_name })}
               />
-              Debug-Protokollierung
+              {t('imapImports.debugLogging')}
               {#if toggleInFlight[worker.account_id]}
                 <span class="saving-hint">…</span>
               {/if}
@@ -231,7 +231,7 @@
               onclick={() => goToEventsForAccount(worker.account_id)}
               data-testid="worker-events-btn-{worker.account_id}"
             >
-              Ereignisse filtern
+              {t('imapImports.filterEvents')}
             </button>
           </div>
 
@@ -240,10 +240,7 @@
           {/if}
 
           <p class="debug-hint">
-            Wenn aktiviert, sendet dieser Worker feingliedrige Ereignisse
-            (Verbindungslebenszyklus, IDLE-Wachzustand, Ordner-Syncs) an den
-            Ereignisse-View, gefiltert nach der Konto-ID als Akteur.
-            Der Overhead wird auf inaktive Konten beschränkt.
+            {t('imapImports.debugHint')}
           </p>
         </div>
       {/each}

@@ -9,6 +9,7 @@
  */
 
 import { apiGet, apiPatch } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 /** Wire shape of one item from GET /api/v1/imap-imports/status. */
 export interface IMAPImportWorkerStatus {
@@ -53,7 +54,7 @@ class IMAPImportsState {
     this.errorMessage = null;
     const result = await apiGet<StatusPage>('/api/v1/imap-imports/status');
     if (!result.ok || !result.data) {
-      this.errorMessage = result.errorMessage ?? 'IMAP-Import-Status konnte nicht geladen werden';
+      this.errorMessage = result.errorMessage ?? t('imapImports.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -84,7 +85,7 @@ class IMAPImportsState {
     if (!result.ok) {
       return {
         ok: false,
-        errorMessage: result.errorMessage ?? 'Debug-Protokollierung konnte nicht geändert werden',
+        errorMessage: result.errorMessage ?? t('imapImports.error.setDebugLogFailed'),
       };
     }
     // Optimistically update local state so the toggle reflects immediately.
