@@ -3,6 +3,7 @@
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatDateOnly } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   let createOpen = $state(false);
   let createEmail = $state('');
@@ -80,21 +81,21 @@
 <div class="principals-page">
   <div class="page-header">
     <div class="page-header-left">
-      <h1 class="page-title">Principals</h1>
+      <h1 class="page-title">{t('principals.title')}</h1>
       {#if principals.status === 'loading'}
-        <div class="spinner" role="status" aria-label="Loading"></div>
+        <div class="spinner" role="status" aria-label={t('common.loading')}></div>
       {/if}
     </div>
     <div class="page-header-right">
       <input
         type="search"
         class="search-input"
-        placeholder="Filter by email..."
+        placeholder={t('principals.filterPlaceholder')}
         bind:value={principals.search}
-        aria-label="Filter principals"
+        aria-label={t('principals.filterAriaLabel')}
       />
       <button type="button" class="btn-primary" onclick={openCreate}>
-        New principal
+        {t('principals.newPrincipal')}
       </button>
     </div>
   </div>
@@ -108,10 +109,10 @@
       <table class="table">
         <thead>
           <tr>
-            <th class="col-email">Email</th>
-            <th class="col-name">Display name</th>
-            <th class="col-flags">Flags</th>
-            <th class="col-created">Created</th>
+            <th class="col-email">{t('principals.table.email')}</th>
+            <th class="col-name">{t('principals.table.displayName')}</th>
+            <th class="col-flags">{t('principals.table.flags')}</th>
+            <th class="col-created">{t('principals.table.created')}</th>
           </tr>
         </thead>
         <tbody>
@@ -124,13 +125,13 @@
               <td class="col-flags">
                 <div class="chips">
                   {#if p.flags & FLAG_ADMIN}
-                    <span class="chip chip-admin">admin</span>
+                    <span class="chip chip-admin">{t('principals.flag.admin')}</span>
                   {/if}
                   {#if p.flags & FLAG_TOTP_ENABLED}
-                    <span class="chip chip-totp">2fa</span>
+                    <span class="chip chip-totp">{t('principals.flag.totp')}</span>
                   {/if}
                   {#if p.flags & FLAG_DISABLED}
-                    <span class="chip chip-disabled">disabled</span>
+                    <span class="chip chip-disabled">{t('principals.flag.disabled')}</span>
                   {/if}
                 </div>
               </td>
@@ -139,7 +140,7 @@
           {:else}
             <tr>
               <td colspan="4" class="empty-row">
-                {principals.search ? 'No principals match this filter.' : 'No principals found.'}
+                {principals.search ? t('principals.noMatch') : t('principals.empty')}
               </td>
             </tr>
           {/each}
@@ -155,20 +156,20 @@
           onclick={() => void principals.loadMore()}
           disabled={principals.status === 'loading'}
         >
-          {principals.status === 'loading' ? 'Loading...' : 'Load more'}
+          {principals.status === 'loading' ? t('common.loading') : t('principals.loadMore')}
         </button>
       </div>
     {/if}
   {:else if principals.status !== 'loading' && principals.status !== 'idle'}
-    <p class="empty-state">No principals found.</p>
+    <p class="empty-state">{t('principals.empty')}</p>
   {/if}
 </div>
 
 <!-- Create principal dialog -->
-<Dialog bind:open={createOpen} title="New principal" width="520px">
+<Dialog bind:open={createOpen} title={t('principals.create.title')} width="520px">
   <form class="create-form" onsubmit={handleCreate} novalidate>
     <div class="field">
-      <label for="cp-email" class="label">Email address</label>
+      <label for="cp-email" class="label">{t('principals.create.email')}</label>
       <input
         id="cp-email"
         type="email"
@@ -181,7 +182,7 @@
     </div>
 
     <div class="field">
-      <label for="cp-display-name" class="label">Display name</label>
+      <label for="cp-display-name" class="label">{t('principals.create.displayName')}</label>
       <input
         id="cp-display-name"
         type="text"
@@ -193,14 +194,14 @@
 
     <div class="field">
       <div class="password-header">
-        <label for="cp-password" class="label">Password</label>
+        <label for="cp-password" class="label">{t('principals.create.password')}</label>
         <label class="auto-label">
           <input
             type="checkbox"
             bind:checked={createAutoPassword}
             disabled={createSubmitting}
           />
-          Auto-generate
+          {t('principals.create.autoGenerate')}
         </label>
       </div>
       <input
@@ -222,7 +223,7 @@
           bind:checked={createAdmin}
           disabled={createSubmitting}
         />
-        Grant admin privileges
+        {t('principals.create.grantAdmin')}
       </label>
     </div>
 
@@ -237,10 +238,10 @@
         onclick={() => { createOpen = false; }}
         disabled={createSubmitting}
       >
-        Cancel
+        {t('common.cancel')}
       </button>
       <button type="submit" class="btn-primary" disabled={createSubmitting}>
-        {createSubmitting ? 'Creating...' : 'Create principal'}
+        {createSubmitting ? t('principals.create.submitting') : t('principals.create.submit')}
       </button>
     </div>
   </form>

@@ -7,6 +7,7 @@
  */
 
 import { apiGet, apiPost } from '../api/client';
+import { t } from '../i18n/i18n.svelte';
 
 export interface PrincipalSummary {
   id: string;
@@ -70,7 +71,7 @@ class PrincipalsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load principals';
+      this.errorMessage = result.errorMessage ?? t('principals.error.loadFailed');
       this.status = 'error';
       return;
     }
@@ -93,7 +94,7 @@ class PrincipalsState {
     );
 
     if (!result.ok || result.data === null) {
-      this.errorMessage = result.errorMessage ?? 'Failed to load more principals';
+      this.errorMessage = result.errorMessage ?? t('principals.error.loadMoreFailed');
       this.status = 'ready';
       return;
     }
@@ -114,7 +115,7 @@ class PrincipalsState {
   async create(payload: CreatePrincipalPayload): Promise<{ ok: boolean; errorMessage: string | null; id?: string }> {
     const result = await apiPost<{ id: string }>('/api/v1/principals', payload);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Create failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principals.error.createFailed') };
     }
     // Reload the full list so the new item appears.
     await this.load();
