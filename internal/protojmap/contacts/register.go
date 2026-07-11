@@ -39,6 +39,10 @@ type AccountLimits struct {
 	// blobs (REQ-CTS-05). nil / empty means any "image/*" type is
 	// accepted.
 	AllowedPhotoTypes []string `json:"allowedPhotoTypes,omitempty"`
+	// MaxVCardImportSize caps the byte size of a .vcf blob accepted by
+	// Contact/import (REQ-CTS-41). 0 falls back to
+	// defaultMaxVCardImportSize (50 MiB).
+	MaxVCardImportSize int `json:"maxVCardImportSize,omitempty"`
 }
 
 // DefaultAllowedPhotoTypes returns the default set of accepted photo
@@ -108,6 +112,10 @@ func RegisterWithLimits(
 	register(&contactSetHandler{h: h})
 	register(&contactQueryHandler{h: h})
 	register(contactQueryChangesHandler{h: h})
+
+	// vCard 4.0 import / export transport (REQ-CTS-20..24).
+	register(&contactImportHandler{h: h})
+	register(&contactExportHandler{h: h})
 
 	// Per the JMAP-Contacts binding draft, the per-account capability
 	// descriptor advertises the limits the server enforces. The
