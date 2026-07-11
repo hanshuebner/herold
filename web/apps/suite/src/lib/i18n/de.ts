@@ -1416,6 +1416,17 @@ export const de = {
   'contacts.export.warnings.text_many': '{n} Eigenschaften konnten nicht im vCard-Format dargestellt werden.',
   'contacts.export.warnings.dismiss': 'Schließen',
 
+  // ── Kontakte: Mehrfachauswahl und Sammelaktionen (re #191) ───────────
+  'contacts.list.selectRowAria': 'Kontakt auswählen',
+  'contacts.bulk.deleteConfirm.titleOne': 'Kontakt löschen?',
+  'contacts.bulk.deleteConfirm.titleMany': '{n} Kontakte löschen?',
+  'contacts.bulk.deleteConfirm.messageOne': 'Dieser Kontakt wird endgültig entfernt.',
+  'contacts.bulk.deleteConfirm.messageMany': 'Diese {n} Kontakte werden endgültig entfernt.',
+  'contacts.bulk.deleteConfirm.confirm': 'Löschen',
+  'contacts.bulk.deleteConfirm.cancel': 'Abbrechen',
+  'contacts.bulk.deleteError': '{n} der ausgewählten Kontakte konnten nicht gelöscht werden.',
+  'contacts.bulk.exportError': 'Die ausgewählten Kontakte konnten nicht exportiert werden.',
+
   // ── Einstellungen → Adress-Tags (re #30, REQ-SET-TAG-01..21) ───────
   'settings.taggedAddresses': 'Adress-Tags',
   'settings.taggedAddresses.heading': 'Adress-Tags',

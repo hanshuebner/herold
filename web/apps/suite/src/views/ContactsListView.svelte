@@ -22,9 +22,12 @@
   import { Capability } from '../lib/jmap/types';
   import { auth } from '../lib/auth/auth.svelte';
   import { toast } from '../lib/toast/toast.svelte';
+  import { confirm } from '../lib/dialog/confirm.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import ContactsIcon from '../lib/icons/ContactsIcon.svelte';
   import ContactAvatar from '../lib/contacts/ContactAvatar.svelte';
+  import TrashIcon from '../lib/icons/TrashIcon.svelte';
+  import CheckSquareIcon from '../lib/icons/CheckSquareIcon.svelte';
   import {
     buildExportArgs,
     triggerDownload,
@@ -295,7 +298,12 @@
   let exportWarnings = $state<UnrepresentableProperty[]>([]);
   let showExportWarnings = $state(false);
 
-  async function exportContacts(): Promise<void> {
+  /**
+   * Export contacts as `.vcf`. With no `ids`, exports the current
+   * address-book/group scope (REQ-CONT-81); with `ids`, exports just that
+   * selection (bulk export, re #191) regardless of scope.
+   */
+  async function exportContacts(ids?: string[]): Promise<void> {
     const accountId =
       auth.session?.primaryAccounts[Capability.Contacts] ?? null;
     if (!accountId) return;
@@ -308,16 +316,18 @@
       const { responses } = await jmap.batch((b) => {
         b.call(
           'Contact/export',
-          buildExportArgs(accountId, {
-            addressBookId: contactsListStore.activeBookId ?? undefined,
-          }),
+          ids
+            ? buildExportArgs(accountId, { ids })
+            : buildExportArgs(accountId, {
+                addressBookId: contactsListStore.activeBookId ?? undefined,
+              }),
           [Capability.Contacts],
         );
       });
 
       const resp = responses[0];
       if (!resp || resp[0] === 'error') {
-        toast.show({ message: t('contacts.export.error'), kind: 'error' });
+        toast.show({ message: t(ids ? 'contacts.bulk.exportError' : 'contacts.export.error'), kind: 'error' });
         return;
       }
 
@@ -337,10 +347,58 @@
         showExportWarnings = true;
       }
     } catch {
-      toast.show({ message: t('contacts.export.error'), kind: 'error' });
+      toast.show({ message: t(ids ? 'contacts.bulk.exportError' : 'contacts.export.error'), kind: 'error' });
     } finally {
       exporting = false;
     }
+  }
+
+  // ── Bulk selection & actions (re #191) ───────────────────────────────────
+
+  let selectedCount = $derived(contactsListStore.selectedIds.size);
+  let allVisibleSelected = $derived(
+    visibleRows.length > 0 && selectedCount === visibleRows.length,
+  );
+  let someVisibleSelected = $derived(selectedCount > 0 && !allVisibleSelected);
+  let bulkDeleting = $state(false);
+
+  function toggleSelectAllVisible(): void {
+    if (selectedCount > 0) contactsListStore.clearSelection();
+    else contactsListStore.selectAllVisible(visibleRows.map((r) => r.id));
+  }
+
+  async function bulkDeleteSelected(): Promise<void> {
+    const ids = [...contactsListStore.selectedIds];
+    if (ids.length === 0) return;
+    const n = ids.length;
+    const ok = await confirm.ask({
+      title: t(n === 1 ? 'contacts.bulk.deleteConfirm.titleOne' : 'contacts.bulk.deleteConfirm.titleMany', {
+        n: String(n),
+      }),
+      message: t(n === 1 ? 'contacts.bulk.deleteConfirm.messageOne' : 'contacts.bulk.deleteConfirm.messageMany', {
+        n: String(n),
+      }),
+      confirmLabel: t('contacts.bulk.deleteConfirm.confirm'),
+      cancelLabel: t('contacts.bulk.deleteConfirm.cancel'),
+      kind: 'danger',
+    });
+    if (!ok) return;
+
+    bulkDeleting = true;
+    try {
+      const failed = await contactsListStore.bulkDelete(ids);
+      if (failed.length > 0) {
+        toast.show({ message: t('contacts.bulk.deleteError', { n: String(failed.length) }), kind: 'error' });
+      }
+    } finally {
+      bulkDeleting = false;
+    }
+  }
+
+  function bulkExportSelected(): void {
+    const ids = [...contactsListStore.selectedIds];
+    if (ids.length === 0) return;
+    void exportContacts(ids);
   }
 </script>
 
@@ -645,6 +703,45 @@
         </div>
       </div>
     {:else}
+      <!-- Bulk-selection toolbar (re #191): select-all control plus, once at
+           least one contact is selected, the count and bulk actions. -->
+      <div class="bulk-toolbar" role="toolbar" aria-label={t('bulk.selected', { count: selectedCount })}>
+        <button
+          type="button"
+          class="select-all-btn"
+          aria-label={allVisibleSelected ? t('select.deselectAll') : t('select.selectAll')}
+          aria-pressed={allVisibleSelected}
+          title={allVisibleSelected ? t('select.deselectAll') : t('select.selectAll')}
+          onclick={toggleSelectAllVisible}
+        >
+          <CheckSquareIcon size={18} checked={allVisibleSelected} indeterminate={someVisibleSelected} />
+        </button>
+        {#if selectedCount > 0}
+          <span class="bulk-count">{t('bulk.selected', { count: selectedCount })}</span>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={t('contacts.list.export')}
+            title={t('contacts.list.export')}
+            onclick={bulkExportSelected}
+            disabled={exporting}
+          >
+            {t('contacts.list.export')}
+          </button>
+          <button
+            type="button"
+            class="icon-btn danger"
+            aria-label={t('bulk.delete')}
+            title={t('bulk.delete')}
+            onclick={() => void bulkDeleteSelected()}
+            disabled={bulkDeleting}
+          >
+            <TrashIcon size={16} />
+            {t('bulk.delete')}
+          </button>
+        {/if}
+      </div>
+
       <!-- Contact rows -->
       <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
       <ul
@@ -654,7 +751,15 @@
         onkeydown={handleListKeydown}
       >
         {#each visibleRows as row, i (row.id)}
-          <li role="option" aria-selected="false">
+          <li role="option" aria-selected={contactsListStore.selectedIds.has(row.id)} class:selected={contactsListStore.selectedIds.has(row.id)}>
+            <input
+              type="checkbox"
+              class="row-check"
+              aria-label={t('contacts.list.selectRowAria')}
+              checked={contactsListStore.selectedIds.has(row.id)}
+              onchange={() => contactsListStore.toggleSelected(row.id)}
+              onclick={(e) => e.stopPropagation()}
+            />
             <button
               type="button"
               class="contact-row"
@@ -1052,7 +1157,22 @@
   }
 
   .contact-list li {
+    display: flex;
+    align-items: center;
     border-bottom: 1px solid var(--border-subtle-01);
+  }
+
+  .contact-list li.selected {
+    background: var(--layer-02);
+  }
+
+  .row-check {
+    flex-shrink: 0;
+    margin: 0 0 0 var(--spacing-04);
+    width: 16px;
+    height: 16px;
+    accent-color: var(--interactive);
+    cursor: pointer;
   }
 
   .contact-row {
@@ -1075,6 +1195,74 @@
     outline: 2px solid var(--focus);
     outline-offset: -2px;
     background: var(--layer-03);
+  }
+
+  /* ── Bulk-selection toolbar (re #191) ─────────────────────────────────── */
+
+  .bulk-toolbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-04);
+    border-bottom: 1px solid var(--border-subtle-01);
+    background: var(--layer-01);
+  }
+
+  .select-all-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    color: var(--text-secondary);
+    background: transparent;
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .select-all-btn:hover {
+    background: var(--layer-02);
+    color: var(--text-primary);
+  }
+
+  .bulk-count {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .bulk-toolbar .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    height: 32px;
+    padding: 0 var(--spacing-03);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    background: var(--field-01);
+    color: var(--text-primary);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .bulk-toolbar .icon-btn:hover:not(:disabled) {
+    background: var(--layer-02);
+  }
+
+  .bulk-toolbar .icon-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .bulk-toolbar .icon-btn.danger {
+    color: var(--support-error);
+    border-color: var(--support-error);
+  }
+
+  .bulk-toolbar .icon-btn.danger:hover:not(:disabled) {
+    background: var(--support-error-bg, rgba(218, 30, 40, 0.1));
   }
 
   .row-text {

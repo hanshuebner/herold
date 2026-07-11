@@ -1402,6 +1402,17 @@ export const en = {
   'contacts.export.warnings.text_many': '{n} properties could not be represented in vCard format.',
   'contacts.export.warnings.dismiss': 'Dismiss',
 
+  // ── Contacts: multi-select and bulk actions (re #191) ────────────────
+  'contacts.list.selectRowAria': 'Select contact',
+  'contacts.bulk.deleteConfirm.titleOne': 'Delete contact?',
+  'contacts.bulk.deleteConfirm.titleMany': 'Delete {n} contacts?',
+  'contacts.bulk.deleteConfirm.messageOne': 'This contact will be permanently removed.',
+  'contacts.bulk.deleteConfirm.messageMany': 'These {n} contacts will be permanently removed.',
+  'contacts.bulk.deleteConfirm.confirm': 'Delete',
+  'contacts.bulk.deleteConfirm.cancel': 'Cancel',
+  'contacts.bulk.deleteError': 'Could not delete {n} of the selected contacts.',
+  'contacts.bulk.exportError': 'Could not export the selected contacts.',
+
   // ── Settings → Tagged addresses (re #30, REQ-SET-TAG-01..21) ────────
   'settings.taggedAddresses': 'Tagged addresses',
   'settings.taggedAddresses.heading': 'Tagged addresses',

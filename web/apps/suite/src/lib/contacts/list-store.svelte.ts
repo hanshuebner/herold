@@ -175,6 +175,13 @@ class ContactsListStore {
   sort = $state<SortProp>('displayName');
   searchText = $state('');
 
+  /**
+   * Multi-select state for bulk actions (delete, export). Cleared whenever
+   * the visible row set changes wholesale (scope switch, search, sort, or
+   * reload) so a stale selection never survives onto a different list.
+   */
+  selectedIds = $state<Set<string>>(new Set());
+
   /** True when there are more pages to load. */
   get hasMore(): boolean {
     return this.total !== null && this.rows.length < this.total;
@@ -262,6 +269,60 @@ class ContactsListStore {
     await this.#loadPage(this.rows.length, true);
   }
 
+  // ── Multi-select (bulk actions) ────────────────────────────────────────
+
+  /** Toggle whether `id` is in the selection set. */
+  toggleSelected(id: string): void {
+    const next = new Set(this.selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this.selectedIds = next;
+  }
+
+  /** Select every id currently in `ids` (typically the visible rows). */
+  selectAllVisible(ids: string[]): void {
+    this.selectedIds = new Set(ids);
+  }
+
+  /** Clear the selection set. */
+  clearSelection(): void {
+    if (this.selectedIds.size === 0) return;
+    this.selectedIds = new Set();
+  }
+
+  /**
+   * Destroy the given contacts via a single Contact/set call. Removes
+   * destroyed rows from the list and the selection set immediately rather
+   * than waiting for the Contact/changes sync round-trip. Returns the ids
+   * that could not be destroyed (empty on full success).
+   */
+  async bulkDelete(ids: string[]): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const accountId = this.#accountId();
+    if (!accountId) return ids;
+
+    const { responses } = await jmap.batch((b) => {
+      b.call('Contact/set', { accountId, destroy: ids }, [Capability.Contacts]);
+    });
+
+    const resp = responses[0];
+    if (!resp || resp[0] === 'error') return ids;
+
+    const args = resp[1] as { destroyed?: string[]; notDestroyed?: Record<string, unknown> };
+    const destroyed = new Set(args.destroyed ?? []);
+    const failed = ids.filter((id) => !destroyed.has(id));
+
+    if (destroyed.size > 0) {
+      this.rows = this.rows.filter((r) => !destroyed.has(r.id));
+      if (this.total !== null) this.total = Math.max(0, this.total - destroyed.size);
+      const nextSelected = new Set(this.selectedIds);
+      for (const id of destroyed) nextSelected.delete(id);
+      this.selectedIds = nextSelected;
+    }
+
+    return failed;
+  }
+
   #accountId(): string | null {
     return auth.session?.primaryAccounts[Capability.Contacts] ?? null;
   }
@@ -293,6 +354,7 @@ class ContactsListStore {
     this.total = null;
     this.#queryState = null;
     this.errorMessage = null;
+    this.clearSelection();
     await this.#loadPage(0, false);
   }
 
@@ -490,6 +552,11 @@ class ContactsListStore {
         const destroyedSet = new Set(destroyed);
         this.rows = this.rows.filter((r) => !destroyedSet.has(r.id));
         if (this.total !== null) this.total = Math.max(0, this.total - destroyed.length);
+        if (this.selectedIds.size > 0) {
+          const nextSelected = new Set(this.selectedIds);
+          for (const id of destroyedSet) nextSelected.delete(id);
+          this.selectedIds = nextSelected;
+        }
       }
 
       const toFetch = [...created, ...updated];
