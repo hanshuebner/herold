@@ -19,12 +19,13 @@ const pushSubscriptionSelectColumnsPG = `
 	expires_at_us, types_csv, verification_code, verified,
 	vapid_key_at_registration, notification_rules_json,
 	quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
-	created_at_us, updated_at_us`
+	created_at_us, updated_at_us, transport, fcm_token`
 
 func scanPushSubscriptionPG(row pgx.Row) (store.PushSubscription, error) {
 	var (
 		id, pid                                        int64
 		device, url, typesCSV, verCode, vapidKey, qhTZ string
+		transport, fcmToken                            string
 		p256dh, authKey, rulesJSON                     []byte
 		verified                                       bool
 		expiresAtUs                                    *int64
@@ -35,7 +36,7 @@ func scanPushSubscriptionPG(row pgx.Row) (store.PushSubscription, error) {
 		&expiresAtUs, &typesCSV, &verCode, &verified,
 		&vapidKey, &rulesJSON,
 		&quietStart, &quietEnd, &qhTZ,
-		&createdUs, &updatedUs)
+		&createdUs, &updatedUs, &transport, &fcmToken)
 	if err != nil {
 		return store.PushSubscription{}, mapErr(err)
 	}
@@ -43,6 +44,8 @@ func scanPushSubscriptionPG(row pgx.Row) (store.PushSubscription, error) {
 		ID:                     store.PushSubscriptionID(id),
 		PrincipalID:            store.PrincipalID(pid),
 		DeviceClientID:         device,
+		Transport:              store.PushTransport(transport),
+		FCMToken:               fcmToken,
 		URL:                    url,
 		P256DH:                 p256dh,
 		Auth:                   authKey,
@@ -113,14 +116,14 @@ func (m *metadata) InsertPushSubscription(ctx context.Context, ps store.PushSubs
 				expires_at_us, types_csv, verification_code, verified,
 				vapid_key_at_registration, notification_rules_json,
 				quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
-				created_at_us, updated_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+				created_at_us, updated_at_us, transport, fcm_token)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 			RETURNING id`,
 			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, bytesOrEmpty(ps.P256DH), bytesOrEmpty(ps.Auth),
 			expiresArg, joinTypesCSVPG(ps.Types), ps.VerificationCode, ps.Verified,
 			ps.VAPIDKeyAtRegistration, rulesArg,
 			qhStart, qhEnd, ps.QuietHoursTZ,
-			usMicros(now), usMicros(now)).Scan(&id)
+			usMicros(now), usMicros(now), string(ps.Transport.Normalized()), ps.FCMToken).Scan(&id)
 		if err != nil {
 			return mapErr(err)
 		}

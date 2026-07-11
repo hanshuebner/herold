@@ -53,11 +53,13 @@ func renderSubscription(ps store.PushSubscription) jmapPushSubscription {
 	out := jmapPushSubscription{
 		ID:             jmapIDFromPush(ps.ID),
 		DeviceClientID: ps.DeviceClientID,
+		Kind:           string(ps.Transport.Normalized()),
 		URL:            ps.URL,
 		Keys: jmapKeys{
 			P256DH: base64.RawURLEncoding.EncodeToString(ps.P256DH),
 			Auth:   base64.RawURLEncoding.EncodeToString(ps.Auth),
 		},
+		FCMToken:               ps.FCMToken,
 		Types:                  ps.Types,
 		VAPIDKeyAtRegistration: ps.VAPIDKeyAtRegistration,
 	}
@@ -198,8 +200,10 @@ type setResponse struct {
 // (verificationCode is server-minted and returned in the response).
 type pushCreateInput struct {
 	DeviceClientID         string          `json:"deviceClientId"`
+	Kind                   string          `json:"kind,omitempty"`
 	URL                    string          `json:"url"`
 	Keys                   jmapKeys        `json:"keys"`
+	FCMToken               string          `json:"fcmToken,omitempty"`
 	Expires                *string         `json:"expires"`
 	Types                  []string        `json:"types"`
 	NotificationRules      json.RawMessage `json:"notificationRules,omitempty"`
@@ -315,21 +319,93 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 	return resp, nil
 }
 
+// parseTransportKind validates the wire-form "kind" property (re
+// #200). Empty defaults to Web Push (the pre-existing shape); any
+// other value must be exactly "webpush" or "fcm".
+func parseTransportKind(kind string) (store.PushTransport, *setError) {
+	switch kind {
+	case "", string(store.PushTransportWebPush):
+		return store.PushTransportWebPush, nil
+	case string(store.PushTransportFCM):
+		return store.PushTransportFCM, nil
+	default:
+		return "", &setError{
+			Type: "invalidProperties", Properties: []string{"kind"},
+			Description: `kind must be "webpush" or "fcm"`,
+		}
+	}
+}
+
 // createSubscription validates a /set { create } payload, allocates
 // the verification code, persists the row, and returns the freshly
-// loaded store.PushSubscription so the caller can render it.
+// loaded store.PushSubscription so the caller can render it. Branches
+// on the wire "kind" property (re #200): a Web Push row requires
+// url + optional keys per RFC 8620 §7.2; an FCM row requires
+// fcmToken and leaves url/keys empty.
 func (h *handlerSet) createSubscription(ctx context.Context, pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError, error) {
+	transport, serr := parseTransportKind(in.Kind)
+	if serr != nil {
+		return store.PushSubscription{}, serr, nil
+	}
+	var row store.PushSubscription
+	if transport == store.PushTransportFCM {
+		row, serr = buildFCMCreateRow(pid, in)
+	} else {
+		row, serr = buildWebPushCreateRow(pid, in)
+	}
+	if serr != nil {
+		return store.PushSubscription{}, serr, nil
+	}
+	return h.finishCreate(ctx, pid, row, in)
+}
+
+// buildFCMCreateRow validates and builds the store row for a kind="fcm"
+// /set { create } payload (re #200). url/keys are not accepted for
+// this transport — the mobile client registers a device token instead
+// of a Web Push endpoint.
+func buildFCMCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError) {
+	if strings.TrimSpace(in.FCMToken) == "" {
+		return store.PushSubscription{}, &setError{
+			Type: "invalidProperties", Properties: []string{"fcmToken"},
+			Description: "fcmToken is required when kind is \"fcm\"",
+		}
+	}
+	if in.URL != "" {
+		return store.PushSubscription{}, &setError{
+			Type: "invalidProperties", Properties: []string{"url"},
+			Description: "url must not be supplied when kind is \"fcm\"",
+		}
+	}
+	if in.Keys.P256DH != "" || in.Keys.Auth != "" {
+		return store.PushSubscription{}, &setError{
+			Type: "invalidProperties", Properties: []string{"keys"},
+			Description: "keys must not be supplied when kind is \"fcm\"",
+		}
+	}
+	return store.PushSubscription{
+		PrincipalID:    pid,
+		DeviceClientID: in.DeviceClientID,
+		Transport:      store.PushTransportFCM,
+		FCMToken:       in.FCMToken,
+		Types:          in.Types,
+	}, nil
+}
+
+// buildWebPushCreateRow validates and builds the store row for a
+// kind="webpush" (or omitted-kind) /set { create } payload — the
+// pre-existing RFC 8620 §7.2 shape.
+func buildWebPushCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError) {
 	if strings.TrimSpace(in.URL) == "" {
 		return store.PushSubscription{}, &setError{
 			Type: "invalidProperties", Properties: []string{"url"},
 			Description: "url is required",
-		}, nil
+		}
 	}
 	if !strings.HasPrefix(in.URL, "https://") {
 		return store.PushSubscription{}, &setError{
 			Type: "invalidProperties", Properties: []string{"url"},
 			Description: "url must use https",
-		}, nil
+		}
 	}
 	// RFC 8620 §7.2: keys is optional. When provided (Web Push encrypted
 	// delivery) both p256dh and auth must be present and well-formed.
@@ -345,7 +421,7 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 			return store.PushSubscription{}, &setError{
 				Type: "invalidProperties", Properties: []string{"keys"},
 				Description: "keys.p256dh and keys.auth must both be supplied when keys is present",
-			}, nil
+			}
 		}
 		var err error
 		p256dh, err = decodeBase64URL(in.Keys.P256DH)
@@ -353,37 +429,46 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 			return store.PushSubscription{}, &setError{
 				Type: "invalidProperties", Properties: []string{"keys"},
 				Description: "keys.p256dh: " + err.Error(),
-			}, nil
+			}
 		}
 		if len(p256dh) != 65 || p256dh[0] != 0x04 {
 			return store.PushSubscription{}, &setError{
 				Type: "invalidProperties", Properties: []string{"keys"},
 				Description: "keys.p256dh must be the 65-byte uncompressed P-256 form",
-			}, nil
+			}
 		}
 		authBytes, err = decodeBase64URL(in.Keys.Auth)
 		if err != nil {
 			return store.PushSubscription{}, &setError{
 				Type: "invalidProperties", Properties: []string{"keys"},
 				Description: "keys.auth: " + err.Error(),
-			}, nil
+			}
 		}
 		if len(authBytes) != 16 {
 			return store.PushSubscription{}, &setError{
 				Type: "invalidProperties", Properties: []string{"keys"},
 				Description: "keys.auth must be 16 bytes",
-			}, nil
+			}
 		}
 	}
-	row := store.PushSubscription{
+	return store.PushSubscription{
 		PrincipalID:            pid,
 		DeviceClientID:         in.DeviceClientID,
+		Transport:              store.PushTransportWebPush,
 		URL:                    in.URL,
 		P256DH:                 p256dh,
 		Auth:                   authBytes,
 		Types:                  in.Types,
 		VAPIDKeyAtRegistration: in.VAPIDKeyAtRegistration,
-	}
+	}, nil
+}
+
+// finishCreate applies the transport-agnostic optional fields
+// (expires, notificationRules, quietHours), mints the verification
+// code, persists row, bumps the JMAP state, and fires the
+// asynchronous verification ping. Shared by both the Web Push and
+// FCM create paths (re #200).
+func (h *handlerSet) finishCreate(ctx context.Context, pid store.PrincipalID, row store.PushSubscription, in pushCreateInput) (store.PushSubscription, *setError, error) {
 	if in.Expires != nil && *in.Expires != "" {
 		t, err := time.Parse(time.RFC3339, *in.Expires)
 		if err != nil {
@@ -490,7 +575,7 @@ func (h *handlerSet) updateSubscription(ctx context.Context, pid store.Principal
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &rawMap)
 	}
-	for _, k := range []string{"id", "deviceClientId", "url", "keys", "vapidKeyAtRegistration"} {
+	for _, k := range []string{"id", "deviceClientId", "kind", "url", "keys", "fcmToken", "vapidKeyAtRegistration"} {
 		if _, present := rawMap[k]; present {
 			return &setError{
 				Type: "invalidProperties", Properties: []string{k},

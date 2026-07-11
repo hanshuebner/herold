@@ -860,13 +860,17 @@ type IMAPImportMessageStateRow struct {
 }
 
 // PushSubscriptionRow mirrors the push_subscription table introduced
-// in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122). The
-// JMAP keys.p256dh / keys.auth byte slices are persisted verbatim;
-// JSON serialisation handles []byte as base64 automatically.
+// in migration 0017 (Phase 3 Wave 3.8a, REQ-PROTO-120..122), extended
+// in migration 0078 (re #200) with transport + fcm_token for the FCM
+// delivery path alongside Web Push. The JMAP keys.p256dh / keys.auth
+// byte slices are persisted verbatim; JSON serialisation handles
+// []byte as base64 automatically.
 type PushSubscriptionRow struct {
 	ID                     int64  `json:"id"`
 	PrincipalID            int64  `json:"principal_id"`
 	DeviceClientID         string `json:"device_client_id"`
+	Transport              string `json:"transport"`
+	FCMToken               string `json:"fcm_token"`
 	URL                    string `json:"url"`
 	P256DH                 []byte `json:"p256dh"`
 	Auth                   []byte `json:"auth"`

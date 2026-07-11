@@ -16,6 +16,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/cursors"
+	"github.com/hanshuebner/herold/internal/fcm"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/vapid"
@@ -43,6 +44,13 @@ type Options struct {
 	Clock    clock.Clock
 	Logger   *slog.Logger
 	HTTPDoer HTTPDoer
+
+	// FCM is the Firebase Cloud Messaging sender (re #200) the
+	// dispatcher hands PushTransportFCM subscriptions to. nil means
+	// the FCM transport is unconfigured: matching subscriptions are
+	// logged-and-skipped rather than causing an error, mirroring how
+	// an unconfigured VAPID manager leaves the Web Push path idle.
+	FCM *fcm.Sender
 
 	// Hostname is used to build the default subject claim
 	// ("mailto:postmaster@<hostname>") when sysconfig leaves
@@ -99,6 +107,7 @@ type HTTPDoer interface {
 type Dispatcher struct {
 	store    store.Store
 	vapid    *vapid.Manager
+	fcm      *fcm.Sender
 	doer     HTTPDoer
 	clock    clock.Clock
 	logger   *slog.Logger
@@ -224,6 +233,7 @@ func New(opts Options) (*Dispatcher, error) {
 	d := &Dispatcher{
 		store:          opts.Store,
 		vapid:          opts.VAPID,
+		fcm:            opts.FCM,
 		doer:           opts.HTTPDoer,
 		clock:          opts.Clock,
 		logger:         opts.Logger,
@@ -269,9 +279,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		Subsystem: "webpush",
 	}.Flush()
 
-	if !d.vapid.Configured() {
+	if !d.vapid.Configured() && d.fcm == nil {
+		// Neither transport is configured (re #200: FCM is a second,
+		// independent delivery backend — a deployment may run FCM-only
+		// for a mobile-only rollout, so this guard does not gate on
+		// VAPID alone).
 		d.logger.LogAttrs(ctx, slog.LevelInfo,
-			"webpush: VAPID not configured; dispatcher idle")
+			"webpush: no transport configured (VAPID and FCM both unset); dispatcher idle")
 		// Stay alive so the lifecycle errgroup does not see an early
 		// return; the operator may load a key later. We just block on
 		// ctx.
@@ -566,7 +580,7 @@ func (d *Dispatcher) sendOne(
 	urgency := urgencyForKind(kind)
 	if payload.CoalesceTag == "" {
 		// No tag => no coalescing window applies. Push immediately.
-		d.deliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
+		d.dispatchDeliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
 		return
 	}
 	if d.tryCoalesce(ctx, sub, payload.JSON, payload.CoalesceTag, urgency) {
@@ -577,7 +591,26 @@ func (d *Dispatcher) sendOne(
 	// Window elapsed (or first event for this tag): emit now and
 	// record lastSentAt so subsequent events within the window
 	// defer.
-	d.deliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
+	d.dispatchDeliver(ctx, sub, payload.JSON, payload.CoalesceTag, urgency)
+}
+
+// dispatchDeliver routes to the transport-specific delivery path
+// (re #200). Every subscription reaches here having already passed
+// the shared rule-evaluation, rate-limit, and coalescing gates in
+// sendOne / flushCoalesced — only the low-level "how do I actually
+// reach this device" step differs between Web Push and FCM.
+func (d *Dispatcher) dispatchDeliver(
+	ctx context.Context,
+	sub store.PushSubscription,
+	payload []byte,
+	coalesceTag, urgency string,
+) {
+	switch sub.Transport.Normalized() {
+	case store.PushTransportFCM:
+		d.deliverFCM(ctx, sub, payload, coalesceTag)
+	default:
+		d.deliver(ctx, sub, payload, coalesceTag, urgency)
+	}
 }
 
 // tryCoalesce inspects the per-(sub, tag) state and either defers the
@@ -672,7 +705,7 @@ func (d *Dispatcher) flushCoalesced(
 	st.pendingTimer = nil
 	st.lastSentAt = d.clock.Now()
 	d.coalesceMu.Unlock()
-	d.deliver(ctx, sub, payload, tag, urgency)
+	d.dispatchDeliver(ctx, sub, payload, tag, urgency)
 }
 
 // markCoalesceSent records a successful (or attempted) send for
@@ -774,6 +807,9 @@ func verificationEnvelope(sub store.PushSubscription) verificationBody {
 }
 
 func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSubscription) error {
+	if sub.Transport.Normalized() == store.PushTransportFCM {
+		return d.sendVerificationPingFCM(ctx, sub)
+	}
 	if !d.vapid.Configured() {
 		return vapid.ErrNotConfigured
 	}
@@ -815,6 +851,46 @@ func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSub
 	default:
 		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
 		return fmt.Errorf("webpush: gateway returned %d on verification ping", resp.StatusCode)
+	}
+}
+
+// sendVerificationPingFCM is SendVerificationPing's FCM counterpart
+// (re #200): it sends the same RFC 8620 §7.2.2 PushVerification
+// envelope through the FCM transport, under a distinct "verification"
+// data field so the Android client can tell a verification ping apart
+// from a regular payload push. The client still confirms receipt by
+// echoing verificationCode via PushSubscription/set { update } exactly
+// as the Web Push flow requires — only the outbound leg differs.
+func (d *Dispatcher) sendVerificationPingFCM(ctx context.Context, sub store.PushSubscription) error {
+	if d.fcm == nil {
+		return errors.New("webpush: FCM transport not configured")
+	}
+	body, err := json.Marshal(verificationEnvelope(sub))
+	if err != nil {
+		return fmt.Errorf("webpush: marshal verification payload: %w", err)
+	}
+	status, _, err := d.fcm.Send(ctx, fcm.Message{
+		Token: sub.FCMToken,
+		Data:  map[string]string{"verification": string(body)},
+	})
+	if err != nil {
+		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm verification ping failed",
+			slog.Uint64("subscription", uint64(sub.ID)),
+			slog.String("err", err.Error()))
+		return err
+	}
+	switch {
+	case status >= 200 && status < 300:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success").Inc()
+		return nil
+	case status == http.StatusNotFound:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone").Inc()
+		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
+		d.rl.Forget(sub.ID)
+		return fmt.Errorf("webpush: fcm returned %d on verification ping; subscription deleted", status)
+	default:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		return fmt.Errorf("webpush: fcm returned %d on verification ping", status)
 	}
 }
 
@@ -891,6 +967,88 @@ func (d *Dispatcher) deliver(
 	default:
 		// 1xx / 3xx: unexpected. Log and treat as non-success.
 		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+	}
+}
+
+// deliverFCM sends payload to sub via the FCM HTTP v1 transport
+// (re #200). It applies the same outcome handling as deliver (Web
+// Push's RFC 8030 POST path) so the shared retry/backoff state in
+// d.attempt and the coalesce bookkeeping in d.coalesce behave
+// identically regardless of transport — success clears retry state and
+// records the coalesce send, "gone" destroys the subscription, 5xx
+// retries with the existing backoff schedule, and other 4xx get the
+// bounded retry-then-destroy budget.
+//
+// FCM HTTP v1 status mapping: 200 success; 404 is FCM's UNREGISTERED
+// error (the token is stale — app uninstalled or reinstalled with a
+// fresh token), the same "gone" handling Web Push applies on 404/410;
+// 5xx is transient (UNAVAILABLE/INTERNAL); other 4xx covers
+// INVALID_ARGUMENT (400), SENDER_ID_MISMATCH (403), and
+// QUOTA_EXCEEDED (429).
+//
+// The payload carries the same JMAP StateChange envelope BuildPayload
+// produces for Web Push, as a single data field: FCM's "data" map is
+// string-valued, so there is nothing to flatten beyond that.
+func (d *Dispatcher) deliverFCM(
+	ctx context.Context,
+	sub store.PushSubscription,
+	payload []byte,
+	coalesceTag string,
+) {
+	if d.fcm == nil {
+		d.logger.LogAttrs(ctx, slog.LevelWarn,
+			"webpush: FCM transport not configured; dropping FCM subscription's push",
+			slog.Uint64("subscription", uint64(sub.ID)))
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_not_configured").Inc()
+		return
+	}
+	startedAt := d.clock.Now()
+	status, body, err := d.fcm.Send(ctx, fcm.Message{
+		Token: sub.FCMToken,
+		Data:  map[string]string{"payload": string(payload)},
+	})
+	if err != nil {
+		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm send",
+			slog.Uint64("subscription", uint64(sub.ID)),
+			slog.String("err", err.Error()))
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		d.scheduleRetry(sub, true)
+		return
+	}
+	observe.WebPushDeliverySeconds.Observe(d.clock.Now().Sub(startedAt).Seconds())
+
+	switch {
+	case status >= 200 && status < 300:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success").Inc()
+		d.clearRetry(sub.ID)
+		d.markCoalesceSent(sub.ID, coalesceTag)
+		_ = d.store.Meta().UpdatePushSubscription(ctx, sub)
+	case status == http.StatusNotFound:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone").Inc()
+		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
+		d.clearRetry(sub.ID)
+		d.dropCoalesce(sub.ID)
+		d.rl.Forget(sub.ID)
+	case status >= 500:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry").Inc()
+		d.scheduleRetry(sub, true)
+	case status >= 400:
+		exhausted := d.scheduleRetry(sub, false)
+		if exhausted {
+			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+			_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
+			d.clearRetry(sub.ID)
+			d.dropCoalesce(sub.ID)
+			d.rl.Forget(sub.ID)
+		} else {
+			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry").Inc()
+		}
+	default:
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm unexpected status",
+			slog.Uint64("subscription", uint64(sub.ID)),
+			slog.Int("status", status),
+			slog.String("body", string(body)))
 	}
 }
 

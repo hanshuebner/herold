@@ -128,6 +128,19 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		"vapidkey2", nil,
 		nil, nil, "",
 		int64(3000000), int64(4000000))
+	// FCM-transport row (re #200): url/p256dh/auth empty, transport +
+	// fcm_token carry the device registration instead.
+	exec(`INSERT INTO push_subscription (id, principal_id, device_client_id, url,
+	        p256dh, auth, expires_at_us, types_csv, verification_code, verified,
+	        vapid_key_at_registration, notification_rules_json,
+	        quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
+	        created_at_us, updated_at_us, transport, fcm_token)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		3, 1, "dev-android", "",
+		[]byte{}, []byte{}, nil, "Email", "code3", 1,
+		"", nil,
+		nil, nil, "",
+		int64(7000000), int64(8000000), "fcm", "fcm-token-abc123")
 
 	// oidc_providers
 	exec(`INSERT INTO oidc_providers (name, issuer_url, client_id, client_secret_ref, scopes_csv, auto_provision, created_at_us)

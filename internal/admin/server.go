@@ -37,6 +37,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/extimg/internalizeworker"
 	"github.com/hanshuebner/herold/internal/extsubmit"
+	"github.com/hanshuebner/herold/internal/fcm"
 	"github.com/hanshuebner/herold/internal/identityverify"
 	"github.com/hanshuebner/herold/internal/imapimport"
 	"github.com/hanshuebner/herold/internal/linkpreview"
@@ -2791,9 +2792,34 @@ func composeAdminAndUI(
 			DialContext: pushDialer.DialContext,
 		},
 	}
+	// FCM transport (re #200): a second, independent delivery backend
+	// for the native Android client, alongside Web Push above. Absent
+	// [server.push].fcm_service_account_json_env/_file, fcmSender
+	// stays nil and the dispatcher logs-and-skips FCM-kind
+	// subscriptions rather than erroring — the same "unconfigured is a
+	// valid posture" shape VAPID uses.
+	var fcmSender *fcm.Sender
+	if ref := cfg.Server.Push.FCMServiceAccountJSONRef(); ref != "" {
+		raw, err := sysconfig.ResolveSecretStrict(ref)
+		if err != nil {
+			logger.Warn("fcm: failed to resolve FCM service-account JSON; FCM push disabled",
+				slog.String("err", err.Error()))
+		} else if sender, err := fcm.New(fcm.Options{
+			ServiceAccountJSON: []byte(raw),
+			ProjectID:          cfg.Server.Push.FCMProjectID,
+			HTTPDoer:           pushHTTPClient,
+		}); err != nil {
+			logger.Warn("fcm: failed to construct FCM sender; FCM push disabled",
+				slog.String("err", err.Error()))
+		} else {
+			fcmSender = sender
+			logger.Info("fcm: FCM service-account credential loaded; FCM push enabled")
+		}
+	}
 	pushDispatcher, err := webpush.New(webpush.Options{
 		Store:              st,
 		VAPID:              vapidMgr,
+		FCM:                fcmSender,
 		Clock:              clk,
 		Logger:             logger.With("subsystem", "webpush"),
 		HTTPDoer:           pushHTTPClient,

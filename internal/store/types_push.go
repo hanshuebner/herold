@@ -24,6 +24,35 @@ import "time"
 // stringified value).
 type PushSubscriptionID uint64
 
+// PushTransport discriminates the outbound delivery mechanism a
+// PushSubscription row uses (re #200). PushTransportWebPush is the
+// RFC 8030/8291/8292 Web Push path the suite's service worker uses;
+// PushTransportFCM is the Firebase Cloud Messaging path the native
+// Android client uses. The zero value ("") is treated as
+// PushTransportWebPush throughout for backward compatibility with
+// rows written before this field existed.
+type PushTransport string
+
+const (
+	// PushTransportWebPush is the default transport: URL/P256DH/Auth
+	// carry the RFC 8291 Web Push endpoint + encryption keys.
+	PushTransportWebPush PushTransport = "webpush"
+	// PushTransportFCM is the Firebase Cloud Messaging transport:
+	// FCMToken carries the device registration token; URL/P256DH/Auth
+	// are unused (stored empty).
+	PushTransportFCM PushTransport = "fcm"
+)
+
+// Normalized returns t, treating the zero value as
+// PushTransportWebPush so callers never need to special-case an
+// empty string.
+func (t PushTransport) Normalized() PushTransport {
+	if t == "" {
+		return PushTransportWebPush
+	}
+	return t
+}
+
 // PushSubscription is one push-endpoint registration owned by a
 // principal. Fields map 1:1 to the columns in
 // migrations/0017_push_subscription.sql. The wire-form (RFC 8620 §7.2)
@@ -38,8 +67,16 @@ type PushSubscription struct {
 	// the client uses to detect duplicate subscriptions across page
 	// reloads. Opaque to the server.
 	DeviceClientID string
+	// Transport selects the outbound delivery mechanism (re #200).
+	// Empty is treated as PushTransportWebPush (see Normalized).
+	Transport PushTransport
+	// FCMToken is the Firebase Cloud Messaging registration token the
+	// dispatcher's FCM transport sends to. Populated only when
+	// Transport == PushTransportFCM; empty for Web Push rows.
+	FCMToken string
 	// URL is the push endpoint the dispatcher POSTs to (e.g.
-	// "https://fcm.googleapis.com/fcm/send/...").
+	// "https://updates.push.services.mozilla.com/wpush/..."). Empty
+	// for FCM subscriptions, which route through FCMToken instead.
 	URL string
 	// P256DH is the RFC 8291 P-256 ECDH client public key (raw bytes;
 	// length 65 for the uncompressed SEC1 form). Combined with Auth it

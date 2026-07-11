@@ -54,10 +54,19 @@ type jmapQuietHours struct {
 // extension fields keeps responses small for clients that did not
 // register them.
 type jmapPushSubscription struct {
-	ID                     jmapID          `json:"id"`
-	DeviceClientID         string          `json:"deviceClientId"`
-	URL                    string          `json:"url"`
-	Keys                   jmapKeys        `json:"keys"`
+	ID             jmapID `json:"id"`
+	DeviceClientID string `json:"deviceClientId"`
+	// Kind selects the outbound transport (re #200): "webpush" (the
+	// default, matches the RFC 8620 §7.2 shape below) or "fcm" (the
+	// native Android client, carrying fcmToken instead of url/keys).
+	// Omitted on the wire when empty so existing Web Push clients see
+	// no new required field.
+	Kind string   `json:"kind,omitempty"`
+	URL  string   `json:"url"`
+	Keys jmapKeys `json:"keys"`
+	// FCMToken is the Firebase Cloud Messaging registration token for
+	// kind="fcm" subscriptions. Empty (and omitted) for Web Push.
+	FCMToken               string          `json:"fcmToken,omitempty"`
 	VerificationCode       *string         `json:"verificationCode,omitempty"`
 	Expires                *string         `json:"expires"`
 	Types                  []string        `json:"types"`
