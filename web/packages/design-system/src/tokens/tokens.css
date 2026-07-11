@@ -128,6 +128,12 @@
   --support-warning: #f1c21b;
   --support-info: #4589ff;
 
+  /* Carbon layer-hover: background on hover for layer-01 elements. */
+  --layer-hover-01: #333333;
+
+  /* Shadow scale for elevated surfaces (tooltips, dialogs, dropdowns). */
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.48);
+
   /* Inline code text color: Carbon Teal-40. Distinguishes monospace code
      from surrounding prose without reading as a link (blue) or error (red). */
   --text-code: #3ddbd9;
@@ -174,6 +180,10 @@
   --support-warning: #f1c21b;
   --support-info: #0043ce;
 
+  --layer-hover-01: #e8e8e8;
+
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.18);
+
   /* Inline code text color: Carbon Teal-70. Contrast 6.8:1 on white. */
   --text-code: #005d5d;
 
@@ -213,6 +223,10 @@
     --support-success: #198038;
     --support-warning: #f1c21b;
     --support-info: #0043ce;
+
+    --layer-hover-01: #e8e8e8;
+
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.18);
 
     /* Inline code text color: Carbon Teal-70. Contrast 6.8:1 on white. */
     --text-code: #005d5d;

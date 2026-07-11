@@ -1,42 +1,57 @@
 <script lang="ts">
   /**
-   * Contact detail / edit view — reached via /contacts/<contactId>.
+   * Contact detail view — renders every populated section of a JSContact
+   * Card fetched via Contact/get (REQ-CONT-30..34).
    *
-   * Fetches the full JSContact card for the given id and renders a
-   * summary with inline editing. The Edit button switches all fields to
-   * form inputs; Save issues a Contact/set update via JMAP and reloads
-   * the contacts suggestions cache so the hover card reflects the change
-   * immediately (re #75).
+   * Sections rendered (empty sections omitted per REQ-CONT-30):
+   *   - Monogram avatar + display name + nicknames
+   *   - Organizations + titles
+   *   - Emails (actionable: compose)
+   *   - Phones (actionable: tel:)
+   *   - Addresses (actionable: map link)
+   *   - Links / URLs (actionable: new tab)
+   *   - Notes
+   *   - Anniversaries (birthday, wedding, etc.)
+   *
+   * Actions: Edit, Delete (optimistic with confirmation), Export (stub),
+   *          Merge (stub), "All mail with this person" (REQ-CONT-31..33).
    */
 
-  import { jmap, strict } from '../lib/jmap/client';
+  import { jmap } from '../lib/jmap/client';
   import { Capability } from '../lib/jmap/types';
   import { auth } from '../lib/auth/auth.svelte';
   import { contacts } from '../lib/contacts/store.svelte';
+  import { contactsListStore } from '../lib/contacts/list-store.svelte';
   import { router } from '../lib/router/router.svelte';
   import { toast } from '../lib/toast/toast.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+  import {
+    cardToVM,
+    vmDisplayName,
+    vmMonogram,
+    formatAddress,
+    formatAnniversary,
+    type ContactEditVM,
+  } from '../lib/contacts/jscontact';
 
   // The contact id is the second route segment: /contacts/<id>.
   let contactId = $derived(decodeURIComponent(router.parts[1] ?? ''));
 
-  interface ContactCard {
-    id: string;
-    name: string;
-    emails: string[];
-    phones: { type: string; number: string }[];
-  }
-
   let loadStatus = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  let contact = $state<ContactCard | null>(null);
+  let raw = $state<Record<string, unknown> | null>(null);
+  let vm = $state<ContactEditVM | null>(null);
   let notFound = $state(false);
+  let deleting = $state(false);
+  let showDeleteConfirm = $state(false);
 
-  // Edit mode state.
-  let editing = $state(false);
-  let saving = $state(false);
-  let editName = $state('');
-  let editEmail = $state('');
+  // Derived display values.
+  let displayName = $derived(vm ? vmDisplayName(vm) : '');
+  let monogram = $derived(vm ? vmMonogram(vm) : '?');
+  // Pre-computed filtered lists to avoid TypeScript narrowing issues inside callbacks.
+  let standaloneOrgs = $derived(
+    vm ? (vm.orgs.length === 0 ? vm.titles.filter((tt) => !tt.orgId) : []) : []
+  );
 
   $effect(() => {
     const id = contactId;
@@ -51,186 +66,117 @@
       return;
     }
     loadStatus = 'loading';
-    contact = null;
+    raw = null;
+    vm = null;
     notFound = false;
-    editing = false;
     try {
       const { responses } = await jmap.batch((b) => {
-        b.call(
-          'Contact/get',
-          { accountId, ids: [id] },
-          [Capability.Contacts],
-        );
+        b.call('Contact/get', { accountId, ids: [id] }, [Capability.Contacts]);
       });
       const resp = responses[0];
       if (!resp || resp[0] === 'error') {
         loadStatus = 'error';
         return;
       }
-      const args = resp[1] as { list: unknown[] };
-      const raw = args.list[0];
-      if (!raw || typeof raw !== 'object') {
+      const args = resp[1] as { list: unknown[]; notFound?: string[] };
+      const rawCard = args.list[0];
+      if (!rawCard || typeof rawCard !== 'object') {
         notFound = true;
         loadStatus = 'error';
         return;
       }
-      contact = parseContact(id, raw as Record<string, unknown>);
+      raw = rawCard as Record<string, unknown>;
+      vm = cardToVM(raw);
       loadStatus = 'ready';
     } catch {
       loadStatus = 'error';
     }
   }
 
-  function parseContact(id: string, obj: Record<string, unknown>): ContactCard {
-    const nameObj = obj.name as Record<string, unknown> | undefined;
-    let name = '';
-    if (nameObj && typeof nameObj.full === 'string' && nameObj.full.trim()) {
-      name = nameObj.full.trim();
-    } else if (nameObj && Array.isArray(nameObj.components)) {
-      const parts: string[] = [];
-      for (const c of nameObj.components) {
-        if (typeof c === 'object' && c !== null) {
-          const v = (c as Record<string, unknown>).value;
-          if (typeof v === 'string') parts.push(v);
-        }
-      }
-      name = parts.join(' ').trim();
-    }
-
-    const emailMap = obj.emails as Record<string, unknown> | undefined;
-    const emails: string[] = [];
-    if (emailMap) {
-      for (const v of Object.values(emailMap)) {
-        if (typeof v === 'object' && v !== null) {
-          const addr = (v as Record<string, unknown>).address;
-          if (typeof addr === 'string' && addr.includes('@')) emails.push(addr);
-        }
-      }
-    }
-
-    // Phones is a map (RFC 9553 §2.5.3), not an array.
-    const phoneMap = obj.phones as Record<string, unknown> | undefined;
-    const phones: { type: string; number: string }[] = [];
-    if (phoneMap) {
-      for (const v of Object.values(phoneMap)) {
-        if (typeof v === 'object' && v !== null) {
-          const p = v as Record<string, unknown>;
-          const num = typeof p.number === 'string' ? p.number.trim() : '';
-          if (num) {
-            const contexts = p.contexts as Record<string, boolean> | undefined;
-            const type = contexts ? Object.keys(contexts)[0] ?? '' : '';
-            phones.push({ type, number: num });
-          }
-        }
-      }
-    }
-
-    return { id, name, emails, phones };
+  function editContact(): void {
+    router.navigate(`/contacts/${encodeURIComponent(contactId)}/edit`);
   }
 
-  function startEdit(): void {
-    if (!contact) return;
-    editName = contact.name;
-    editEmail = contact.emails[0] ?? '';
-    editing = true;
+  function confirmDelete(): void {
+    showDeleteConfirm = true;
   }
 
-  function cancelEdit(): void {
-    editing = false;
+  function cancelDelete(): void {
+    showDeleteConfirm = false;
   }
 
-  async function saveContact(): Promise<void> {
-    if (!contact) return;
+  async function performDelete(): Promise<void> {
+    if (!vm?.id) return;
     const accountId = auth.session?.primaryAccounts[Capability.Contacts] ?? null;
-    if (!accountId) {
-      toast.show({ message: t('contact.view.saveError'), kind: 'error' });
-      return;
-    }
-    saving = true;
+    if (!accountId) return;
+    showDeleteConfirm = false;
+    deleting = true;
+
+    // Optimistic: navigate away immediately (REQ-CONT-34).
+    const deletedId = vm.id;
+    const savedVm = vm;
+    router.navigate('/contacts');
+
     try {
-      const trimmedName = editName.trim();
-      const trimmedEmail = editEmail.trim();
-      const patch: Record<string, unknown> = {};
-      if (trimmedName !== contact.name) {
-        patch['name'] = trimmedName
-          ? { full: trimmedName, components: [{ type: 'personal', value: trimmedName }] }
-          : null;
-      }
-      // Replace the primary email address while preserving other emails.
-      // Use the opaque key 'primary' — same convention as the Add flow in
-      // RecipientHoverCard.
-      if (trimmedEmail && trimmedEmail !== contact.emails[0]) {
-        patch['emails/primary'] = { address: trimmedEmail };
-      }
-
-      if (Object.keys(patch).length === 0) {
-        // No changes detected — exit edit mode silently.
-        editing = false;
-        return;
-      }
-
       const { responses } = await jmap.batch((b) => {
         b.call(
           'Contact/set',
-          {
-            accountId,
-            update: { [contact!.id]: patch },
-          },
+          { accountId, destroy: [deletedId] },
           [Capability.Contacts],
         );
       });
-      strict(responses);
-      const args = responses[0]![1] as {
-        updated?: Record<string, unknown | null>;
-        notUpdated?: Record<string, { type: string; description?: string } | null>;
-      };
-      const notUpdated = args.notUpdated?.[contact.id];
-      if (notUpdated) {
-        const desc = notUpdated.description ?? notUpdated.type;
-        toast.show({ message: `${t('contact.view.saveError')}: ${desc}`, kind: 'error' });
-        return;
+      const resp = responses[0];
+      const args = (resp?.[1] ?? {}) as { notDestroyed?: Record<string, unknown> };
+      if (args.notDestroyed?.[deletedId]) {
+        // Revert — navigate back to the contact and show error.
+        toast.show({ message: t('contacts.detail.deleteReverted'), kind: 'error' });
+        raw = savedVm.rawCard;
+        vm = savedVm;
+        router.navigate(`/contacts/${encodeURIComponent(deletedId)}`);
+      } else {
+        // Success: refresh both caches.
+        void contacts.reload();
+        void contactsListStore.init();
       }
-
-      // Reflect updated values in local state immediately.
-      contact = {
-        ...contact,
-        name: trimmedName || contact.name,
-        emails: trimmedEmail
-          ? [trimmedEmail, ...contact.emails.slice(1)]
-          : contact.emails,
-      };
-      editing = false;
-      toast.show({ message: t('contact.view.saveSuccess'), kind: 'info' });
-      // Reload suggestions cache so compose autocomplete and hover card
-      // reflect the change without requiring a full page reload.
-      void contacts.reload();
-    } catch (err) {
-      console.error('saveContact failed', err);
-      toast.show({ message: t('contact.view.saveError'), kind: 'error' });
+    } catch {
+      toast.show({ message: t('contacts.detail.deleteError'), kind: 'error' });
+      raw = savedVm.rawCard;
+      vm = savedVm;
+      router.navigate(`/contacts/${encodeURIComponent(deletedId)}`);
     } finally {
-      saving = false;
+      deleting = false;
     }
   }
 
-  // Phone-row label localisation: map the JSContact context string to a
-  // translation key. Unknown types fall back to the `contact.phone.other` label.
-  function phoneLabel(type: string): string {
-    const lc = type.trim().toLowerCase();
-    const known: Record<string, string> = {
-      mobile: 'contact.phone.mobile',
-      cell: 'contact.phone.mobile',
-      work: 'contact.phone.work',
-      home: 'contact.phone.home',
-      fax: 'contact.phone.fax',
-    };
-    const key = known[lc];
-    if (key) return t(key);
-    if (lc) return type;
-    return t('contact.phone.other');
+  // Build "all mail with this person" URL.
+  function allMailUrl(): string {
+    if (!vm) return '#/mail';
+    const addrs = vm.emails.map((e) => e.address).filter(Boolean);
+    if (addrs.length === 0) return '#/mail';
+    const q = addrs.join(' OR ');
+    return `#/mail/search?q=${encodeURIComponent(q)}`;
+  }
+
+  function contextLabel(ctx: { home: boolean; work: boolean; other: boolean }, prefix: string): string {
+    if (ctx.home) return t(`${prefix}.home` as Parameters<typeof t>[0]);
+    if (ctx.work) return t(`${prefix}.work` as Parameters<typeof t>[0]);
+    if (ctx.other) return t(`${prefix}.other` as Parameters<typeof t>[0]);
+    return '';
+  }
+
+  function anniversaryLabel(kind: string): string {
+    if (kind === 'birth') return t('contacts.detail.anniversary.birth');
+    if (kind === 'wedding') return t('contacts.detail.anniversary.wedding');
+    return kind || t('contacts.detail.section.anniversary');
+  }
+
+  function mapUrl(addr: string): string {
+    return `https://www.openstreetmap.org/search?query=${encodeURIComponent(addr)}`;
   }
 </script>
 
-<div class="contacts-detail-view">
+<div class="detail-view">
+  <!-- Toolbar -->
   <div class="toolbar">
     <button
       type="button"
@@ -241,10 +187,10 @@
     </button>
   </div>
 
+  <!-- Loading / error states -->
   {#if loadStatus === 'loading'}
     <p class="state-msg">{t('contact.view.loading')}</p>
   {:else if loadStatus === 'error' && notFound}
-    <!-- REQ-CONT-12: unknown/destroyed contactId — not-found state -->
     <p class="state-msg error">{t('contacts.detail.notFound')}</p>
     <button type="button" class="back-link" onclick={() => router.navigate('/contacts')}>
       {t('contacts.list.title')}
@@ -254,83 +200,221 @@
     <button type="button" class="back-link" onclick={() => router.navigate('/contacts')}>
       {t('contacts.list.title')}
     </button>
-  {:else if loadStatus === 'ready' && contact}
-    <div class="card">
-      {#if editing}
-        <!-- Edit form -->
-        <form
-          class="edit-form"
-          onsubmit={(e) => { e.preventDefault(); void saveContact(); }}
-        >
-          <div class="field">
-            <label class="field-label" for="cv-name">{t('contact.view.name')}</label>
-            <input
-              id="cv-name"
-              class="field-input"
-              type="text"
-              bind:value={editName}
-              disabled={saving}
-              autocomplete="off"
-            />
-          </div>
-          <div class="field">
-            <label class="field-label" for="cv-email">{t('contact.view.email')}</label>
-            <input
-              id="cv-email"
-              class="field-input"
-              type="email"
-              bind:value={editEmail}
-              disabled={saving}
-              autocomplete="off"
-            />
-          </div>
-          <div class="form-actions">
-            <Button type="submit" variant="primary" disabled={saving}>
-              {t('contact.view.save')}
+  {:else if loadStatus === 'ready' && vm}
+    <!-- Delete confirmation dialog -->
+    {#if showDeleteConfirm}
+      <div class="overlay" role="dialog" aria-modal="true" aria-label={t('contacts.detail.deleteConfirm.title')}>
+        <div class="dialog">
+          <h2 class="dialog-title">{t('contacts.detail.deleteConfirm.title')}</h2>
+          <p class="dialog-msg">{t('contacts.detail.deleteConfirm.message')}</p>
+          <div class="dialog-actions">
+            <Button variant="danger" onclick={() => void performDelete()}>
+              {t('contacts.detail.deleteConfirm.confirm')}
             </Button>
-            <Button variant="secondary" disabled={saving} onclick={cancelEdit}>
-              {t('contact.view.cancel')}
+            <Button variant="secondary" onclick={cancelDelete}>
+              {t('contacts.detail.deleteConfirm.cancel')}
             </Button>
           </div>
-        </form>
-      {:else}
-        <!-- Read view with Edit button -->
-        <div class="read-header">
-          <h1 class="contact-name">{contact.name || contact.emails[0] || t('contact.view.title')}</h1>
-          <Button variant="secondary" compact onclick={startEdit}>
-            {t('contact.view.edit')}
+        </div>
+      </div>
+    {/if}
+
+    <div class="contact-card">
+      <!-- Header: avatar + name + action buttons -->
+      <div class="contact-header">
+        <div class="avatar" aria-hidden="true">
+          {monogram}
+        </div>
+        <div class="header-body">
+          <h1 class="contact-name">
+            {displayName || t('contacts.list.unnamed')}
+          </h1>
+          <!-- nicknames -->
+          {#if vm.nicknames.length > 0}
+            <p class="nicknames">
+              {vm.nicknames.map((n) => n.name).filter(Boolean).join(', ')}
+            </p>
+          {/if}
+        </div>
+        <div class="header-actions">
+          <Button variant="secondary" compact onclick={editContact} disabled={deleting}>
+            {t('contacts.detail.edit')}
+          </Button>
+          <Button variant="secondary" compact onclick={confirmDelete} disabled={deleting}>
+            {t('contacts.detail.delete')}
           </Button>
         </div>
-        {#if contact.emails.length > 0}
-          <section class="section">
-            <h2 class="section-title">{t('contact.view.emailHeading')}</h2>
-            <ul class="addr-list">
-              {#each contact.emails as email (email)}
-                <li><a href="mailto:{email}">{email}</a></li>
+      </div>
+
+      <!-- Organizations + Titles -->
+      {#if vm.orgs.length > 0 || vm.titles.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.org')}>
+          <h2 class="section-heading">{t('contacts.detail.section.org')}</h2>
+          {#each vm.orgs as org (org.key)}
+            <div class="org-block">
+              <span class="org-name">{org.name}</span>
+              {#if org.units.length > 0}
+                <span class="org-units">{org.units.join(' · ')}</span>
+              {/if}
+              {#each vm.titles.filter((tt) => !tt.orgId || tt.orgId === org.key) as title (title.key)}
+                <span class="title-name">
+                  {title.name}
+                  {#if title.kind}
+                    <span class="title-kind">
+                      ({title.kind === 'title' ? t('contacts.detail.title.title') : t('contacts.detail.title.role')})
+                    </span>
+                  {/if}
+                </span>
               {/each}
-            </ul>
-          </section>
-        {/if}
-        {#if contact.phones.length > 0}
-          <section class="section">
-            <h2 class="section-title">{t('contact.view.phoneHeading')}</h2>
-            <ul class="addr-list">
-              {#each contact.phones as p (`${p.type}:${p.number}`)}
-                <li>
-                  {#if p.type}<span class="phone-type">{phoneLabel(p.type)} &mdash; </span>{/if}
-                  <a href="tel:{p.number}">{p.number}</a>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/if}
+            </div>
+          {/each}
+          <!-- Titles not bound to an org -->
+          {#each standaloneOrgs as title (title.key)}
+            <div class="org-block">
+              <span class="title-name">{title.name}</span>
+            </div>
+          {/each}
+        </section>
       {/if}
+
+      <!-- Emails -->
+      {#if vm.emails.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.email')}>
+          <h2 class="section-heading">{t('contacts.detail.section.email')}</h2>
+          {#each vm.emails as email (email.key)}
+            <div class="field-row">
+              <a
+                href="mailto:{email.address}"
+                class="field-value link"
+                onclick={(e) => { e.preventDefault(); router.navigate(`/compose?to=${encodeURIComponent(email.address)}`); }}
+              >
+                {email.address}
+              </a>
+              <span class="field-meta">
+                {#if email.pref}<span class="badge">{t('contacts.detail.pref')}</span>{/if}
+                {contextLabel({ home: email.contextHome, work: email.contextWork, other: email.contextOther }, 'contacts.detail.email')}
+                {#if email.label}&nbsp;{email.label}{/if}
+              </span>
+            </div>
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Phones -->
+      {#if vm.phones.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.phone')}>
+          <h2 class="section-heading">{t('contacts.detail.section.phone')}</h2>
+          {#each vm.phones as phone (phone.key)}
+            <div class="field-row">
+              <a href="tel:{phone.number}" class="field-value link">{phone.number}</a>
+              <span class="field-meta">
+                {#if phone.pref}<span class="badge">{t('contacts.detail.pref')}</span>{/if}
+                {#if phone.featureCell}{t('contacts.detail.phone.mobile')}{:else if phone.featureFax}{t('contacts.detail.phone.fax')}{:else}{contextLabel({ home: phone.contextHome, work: phone.contextWork, other: phone.contextOther }, 'contacts.detail.phone')}{/if}
+                {#if phone.label}&nbsp;{phone.label}{/if}
+              </span>
+            </div>
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Addresses -->
+      {#if vm.addresses.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.address')}>
+          <h2 class="section-heading">{t('contacts.detail.section.address')}</h2>
+          {#each vm.addresses as addr (addr.key)}
+            {@const formatted = formatAddress(addr)}
+            {#if formatted}
+              <div class="field-row addr-row">
+                <div class="addr-lines">
+                  {#if addr.street}<div>{addr.street}</div>{/if}
+                  {#if addr.postcode || addr.locality}
+                    <div>{[addr.postcode, addr.locality].filter(Boolean).join(' ')}</div>
+                  {/if}
+                  {#if addr.region}<div>{addr.region}</div>{/if}
+                  {#if addr.country}<div>{addr.country}</div>{/if}
+                  {#if !addr.street && !addr.locality && addr.full}<div>{addr.full}</div>{/if}
+                </div>
+                <span class="field-meta">
+                  {#if addr.pref}<span class="badge">{t('contacts.detail.pref')}</span>{/if}
+                  {contextLabel({ home: addr.contextHome, work: addr.contextWork, other: addr.contextOther }, 'contacts.detail.address')}
+                  {#if addr.label}&nbsp;{addr.label}{/if}
+                  &nbsp;
+                  <a
+                    href={mapUrl(formatted)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="map-link"
+                  >{t('contacts.detail.mapLink')}</a>
+                </span>
+              </div>
+            {/if}
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Links / URLs -->
+      {#if vm.links.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.url')}>
+          <h2 class="section-heading">{t('contacts.detail.section.url')}</h2>
+          {#each vm.links as link (link.key)}
+            {#if link.uri}
+              <div class="field-row">
+                <a
+                  href={link.uri}
+                  class="field-value link"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {link.label || link.uri}
+                </a>
+                {#if link.kind}
+                  <span class="field-meta">{link.kind}</span>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Notes -->
+      {#if vm.notes.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.note')}>
+          <h2 class="section-heading">{t('contacts.detail.section.note')}</h2>
+          {#each vm.notes as note (note.key)}
+            <p class="note-text">{note.note}</p>
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Anniversaries -->
+      {#if vm.anniversaries.length > 0}
+        <section class="section" aria-label={t('contacts.detail.section.anniversary')}>
+          <h2 class="section-heading">{t('contacts.detail.section.anniversary')}</h2>
+          {#each vm.anniversaries as ann (ann.key)}
+            {@const formatted = formatAnniversary(ann, 'en')}
+            {#if formatted}
+              <div class="field-row">
+                <span class="field-value">{formatted}</span>
+                <span class="field-meta">{anniversaryLabel(ann.kind)}</span>
+              </div>
+            {/if}
+          {/each}
+        </section>
+      {/if}
+
+      <!-- Footer actions -->
+      <div class="footer-actions">
+        <a href={allMailUrl()} class="footer-link">{t('contacts.detail.allMail')}</a>
+        <button type="button" class="footer-link" onclick={() => toast.show({ message: t('contacts.detail.export'), kind: 'info' })}>
+          {t('contacts.detail.export')}
+        </button>
+      </div>
     </div>
   {/if}
 </div>
 
 <style>
-  .contacts-detail-view {
+  .detail-view {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -338,123 +422,274 @@
     padding: var(--spacing-05);
     box-sizing: border-box;
   }
+
   .toolbar {
     margin-bottom: var(--spacing-05);
   }
+
   .back-btn {
     color: var(--interactive);
     font-weight: 500;
     font-size: var(--type-body-compact-01-size);
     padding: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
   }
+
   .back-btn::before {
     content: '\2190\00a0';
   }
+
+  .back-link {
+    color: var(--interactive);
+    font-weight: 500;
+    margin-top: var(--spacing-04);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    font-size: var(--type-body-compact-01-size);
+  }
+
   .state-msg {
     color: var(--text-secondary);
     font-size: var(--type-body-01-size);
+    margin: 0;
   }
+
   .state-msg.error {
     color: var(--support-error);
   }
-  .card {
-    max-width: 480px;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-05);
-  }
-  .read-header {
+
+  /* Delete confirmation overlay */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+
+  .dialog {
+    background: var(--layer-01);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-06);
+    max-width: 360px;
+    width: 100%;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
     gap: var(--spacing-04);
   }
-  .contact-name {
+
+  .dialog-title {
+    font-size: var(--type-heading-03-size);
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  .dialog-msg {
+    font-size: var(--type-body-01-size);
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .dialog-actions {
+    display: flex;
+    gap: var(--spacing-03);
+  }
+
+  /* Contact card layout */
+  .contact-card {
+    max-width: 560px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-06);
+  }
+
+  .contact-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-04);
+  }
+
+  .avatar {
+    width: 56px;
+    height: 56px;
+    min-width: 56px;
+    border-radius: 50%;
+    background: var(--interactive);
+    color: var(--text-on-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .header-body {
     flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .contact-name {
     font-size: var(--type-heading-03-size);
     line-height: var(--type-heading-03-line);
     margin: 0;
     color: var(--text-primary);
+    word-break: break-word;
   }
+
+  .nicknames {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+    margin: var(--spacing-01) 0 0;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: var(--spacing-02);
+    flex-shrink: 0;
+    align-items: flex-start;
+  }
+
+  /* Sections */
   .section {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-02);
   }
-  .section-title {
+
+  .section-heading {
     font-size: var(--type-body-compact-01-size);
     font-weight: 600;
     color: var(--text-helper);
     margin: 0;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-  }
-  .addr-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-01);
-  }
-  .addr-list a {
-    color: var(--text-primary);
-    text-decoration: none;
-    font-size: var(--type-body-01-size);
-  }
-  .addr-list a:hover {
-    text-decoration: underline;
-    color: var(--interactive);
-  }
-  .phone-type {
-    color: var(--text-helper);
-    font-size: var(--type-body-compact-01-size);
-  }
-  .back-link {
-    color: var(--interactive);
-    font-weight: 500;
-    margin-top: var(--spacing-04);
   }
 
-  /* Edit form */
-  .edit-form {
+  /* Field rows */
+  .field-row {
     display: flex;
-    flex-direction: column;
-    gap: var(--spacing-05);
-  }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-02);
-  }
-  .field-label {
-    font-size: var(--type-body-compact-01-size);
-    font-weight: 600;
-    color: var(--text-helper);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .field-input {
-    height: 36px;
-    padding: 0 var(--spacing-03);
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-md);
-    background: var(--field-01);
-    color: var(--text-primary);
-    font-size: var(--type-body-01-size);
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .field-input:focus {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
-  }
-  .field-input:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  .form-actions {
-    display: flex;
+    align-items: baseline;
     gap: var(--spacing-03);
+    flex-wrap: wrap;
+  }
+
+  .field-value {
+    font-size: var(--type-body-01-size);
+    color: var(--text-primary);
+  }
+
+  .field-value.link {
+    color: var(--interactive);
+    text-decoration: none;
+  }
+
+  .field-value.link:hover {
+    text-decoration: underline;
+  }
+
+  .field-meta {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-helper);
+    display: flex;
+    gap: var(--spacing-02);
     align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    font-size: var(--type-label-01-size, 0.7rem);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: 2px;
+    padding: 0 var(--spacing-02);
+    line-height: 1.4;
+  }
+
+  .map-link {
+    color: var(--interactive);
+    text-decoration: none;
+    font-size: var(--type-body-compact-01-size);
+  }
+
+  .map-link:hover {
+    text-decoration: underline;
+  }
+
+  /* Address block */
+  .addr-row {
+    align-items: flex-start;
+  }
+
+  .addr-lines {
+    font-size: var(--type-body-01-size);
+    color: var(--text-primary);
+    line-height: 1.5;
+  }
+
+  /* Organizations */
+  .org-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .org-name {
+    font-size: var(--type-body-01-size);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .org-units {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+  }
+
+  .title-name {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+  }
+
+  .title-kind {
+    color: var(--text-helper);
+  }
+
+  /* Notes */
+  .note-text {
+    font-size: var(--type-body-01-size);
+    color: var(--text-primary);
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* Footer actions */
+  .footer-actions {
+    display: flex;
+    gap: var(--spacing-04);
+    padding-top: var(--spacing-04);
+    border-top: 1px solid var(--border-subtle-01);
+    flex-wrap: wrap;
+  }
+
+  .footer-link {
+    color: var(--interactive);
+    font-size: var(--type-body-compact-01-size);
+    text-decoration: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .footer-link:hover {
+    text-decoration: underline;
   }
 </style>
