@@ -92,6 +92,7 @@ export const de = {
 
   // ── Globale Leiste ───────────────────────────────────────────────────
   'globalBar.searchPlaceholder': 'Nachrichten suchen',
+  'globalBar.searchPlaceholderContacts': 'Kontakte suchen',
   'globalBar.advancedSearch': 'Erweiterte Suche',
   'globalBar.help': 'Hilfe',
   'globalBar.shortcuts': 'Tastaturkürzel',

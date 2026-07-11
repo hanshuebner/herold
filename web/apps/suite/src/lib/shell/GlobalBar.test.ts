@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 
 // ── mocks (hoisted before component imports) ─────────────────────────────────
 //
@@ -35,12 +35,28 @@ vi.mock('../../lib/jmap/sync.svelte', () => ({
   },
 }));
 
+const { routerMatches, routerNavigate } = vi.hoisted(() => ({
+  routerMatches: vi.fn((..._prefix: string[]) => false),
+  routerNavigate: vi.fn(),
+}));
+
 vi.mock('../../lib/router/router.svelte', () => ({
   router: {
-    matches: () => false,
+    matches: (...args: string[]) => routerMatches(...args),
     parts: [],
-    navigate: vi.fn(),
+    navigate: routerNavigate,
   },
+}));
+
+const { contactsListStoreMock } = vi.hoisted(() => ({
+  contactsListStoreMock: {
+    searchText: '',
+    setSearch: vi.fn(),
+  },
+}));
+
+vi.mock('../contacts/list-store.svelte', () => ({
+  contactsListStore: contactsListStoreMock,
 }));
 
 vi.mock('../help/help.svelte', () => ({
@@ -61,6 +77,7 @@ vi.mock('../i18n/i18n.svelte', () => ({
   t: (key: string): string => {
     const map: Record<string, string> = {
       'globalBar.searchPlaceholder': 'Search mail',
+      'globalBar.searchPlaceholderContacts': 'Search contacts',
       'globalBar.advancedSearch': 'Advanced search',
       'globalBar.help': 'Help',
       'globalBar.shortcuts': 'Keyboard shortcuts',
@@ -189,7 +206,11 @@ import Shell from './Shell.svelte';
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  // Nothing to reset for this suite.
+  routerMatches.mockReset();
+  routerMatches.mockReturnValue(false);
+  routerNavigate.mockClear();
+  contactsListStoreMock.searchText = '';
+  contactsListStoreMock.setSearch.mockReset();
 });
 
 describe('GlobalBar — brand mark (re #31)', () => {
@@ -294,5 +315,65 @@ describe('Shell — no .brand-row after #31 fix', () => {
 
     expect(barIdx).toBeGreaterThanOrEqual(0);
     expect(middleIdx).toBeGreaterThan(barIdx);
+  });
+});
+
+describe('GlobalBar — contacts-aware search (re #192)', () => {
+  it('shows the mail placeholder and the advanced-search funnel icon on mail routes', () => {
+    routerMatches.mockImplementation(() => false);
+    render(GlobalBar);
+
+    const input = screen.getByPlaceholderText('Search mail');
+    expect(input).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /advanced search/i })).toBeInTheDocument();
+  });
+
+  it('shows the contacts placeholder when the contacts route is active', () => {
+    routerMatches.mockImplementation((...args: string[]) => args[0] === 'contacts');
+    render(GlobalBar);
+
+    expect(screen.getByPlaceholderText('Search contacts')).toBeInTheDocument();
+    // The mail-only advanced-search funnel icon must not be reachable here --
+    // its own submit always routes to /mail/search.
+    expect(screen.queryByRole('button', { name: /advanced search/i })).toBeNull();
+  });
+
+  it('mirrors contactsListStore.searchText into the input on contacts routes', () => {
+    routerMatches.mockImplementation((...args: string[]) => args[0] === 'contacts');
+    contactsListStoreMock.searchText = 'Jane Doe';
+    render(GlobalBar);
+
+    expect(screen.getByPlaceholderText('Search contacts')).toHaveValue('Jane Doe');
+  });
+
+  it('submitting the top-bar search on a contacts route maps to Contact/query and stays on /contacts', () => {
+    routerMatches.mockImplementation((...args: string[]) => args[0] === 'contacts');
+    render(GlobalBar);
+
+    const input = screen.getByPlaceholderText('Search contacts');
+    fireEvent.input(input, { target: { value: 'Jane Doe' } });
+    const form = input.closest('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form!);
+
+    expect(contactsListStoreMock.setSearch).toHaveBeenCalledWith('Jane Doe');
+    expect(routerNavigate).toHaveBeenCalledWith('/contacts');
+    expect(routerNavigate).not.toHaveBeenCalledWith(
+      expect.stringContaining('/mail/search'),
+    );
+  });
+
+  it('submitting the top-bar search on a mail route still routes to /mail/search (regression)', () => {
+    routerMatches.mockImplementation(() => false);
+    render(GlobalBar);
+
+    const input = screen.getByPlaceholderText('Search mail');
+    fireEvent.input(input, { target: { value: 'Jane Doe' } });
+    const form = input.closest('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form!);
+
+    expect(routerNavigate).toHaveBeenCalledWith('/mail/search/Jane%20Doe');
+    expect(contactsListStoreMock.setSearch).not.toHaveBeenCalled();
   });
 });

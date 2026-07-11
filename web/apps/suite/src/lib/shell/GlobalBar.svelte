@@ -9,6 +9,7 @@
   import { router } from '../../lib/router/router.svelte';
   import { help } from '../help/help.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import { contactsListStore } from '../contacts/list-store.svelte';
 
   interface Props {
     placeholder?: string;
@@ -48,13 +49,28 @@
   }
 
   const buildInfo = readBuildMeta();
-  let searchPlaceholder = $derived(placeholder ?? t('globalBar.searchPlaceholder'));
 
-  // Local state mirrors the active search query in the URL when present.
+  // The bar is mounted once by Shell.svelte and wraps every route (re #192),
+  // so it re-targets its search behind whichever app the route names --
+  // currently mail (default) and contacts.
+  let isContactsRoute = $derived(router.matches('contacts'));
+
+  let searchPlaceholder = $derived(
+    placeholder ??
+      (isContactsRoute
+        ? t('globalBar.searchPlaceholderContacts')
+        : t('globalBar.searchPlaceholder')),
+  );
+
+  // Local state mirrors the active search query: the /mail/search/<query>
+  // URL segment on mail routes, contactsListStore.searchText on contacts
+  // routes (so it stays in sync with the list's own inline search box).
   let query = $state('');
 
   $effect(() => {
-    if (router.matches('mail', 'search')) {
+    if (isContactsRoute) {
+      query = contactsListStore.searchText;
+    } else if (router.matches('mail', 'search')) {
       query = decodeURIComponent(router.parts[2] ?? '');
     } else if (!router.matches('mail', 'thread')) {
       // Navigating away from /mail/search clears the input. (Thread routes
@@ -71,6 +87,14 @@
   function onSubmit(e: Event): void {
     e.preventDefault();
     const trimmed = query.trim();
+    if (isContactsRoute) {
+      // Map to Contact/query filter.text and stay in the Contacts app
+      // (re #192) -- never fall through to /mail/search.
+      contactsListStore.setSearch(trimmed);
+      router.navigate('/contacts');
+      panelOpen = false;
+      return;
+    }
     if (trimmed) {
       router.navigate(`/mail/search/${encodeURIComponent(trimmed)}`);
     } else {
@@ -137,17 +161,22 @@
   {/if}
 
   <div class="controls">
-    <button
-      type="button"
-      class="icon-btn"
-      class:active={panelOpen}
-      aria-label={t('globalBar.advancedSearch')}
-      aria-expanded={panelOpen}
-      title={t('globalBar.advancedSearch')}
-      onclick={togglePanel}
-    >
-      <FilterIcon size={18} />
-    </button>
+    {#if !isContactsRoute}
+      <!-- Mail-only filter builder (re #192): its own submit always routes
+           to /mail/search, so it is hidden outside the mail app rather than
+           reintroducing the "navigates away to mail search" defect. -->
+      <button
+        type="button"
+        class="icon-btn"
+        class:active={panelOpen}
+        aria-label={t('globalBar.advancedSearch')}
+        aria-expanded={panelOpen}
+        title={t('globalBar.advancedSearch')}
+        onclick={togglePanel}
+      >
+        <FilterIcon size={18} />
+      </button>
+    {/if}
     <button
       type="button"
       class="icon-btn"
@@ -161,7 +190,7 @@
   </div>
 </header>
 
-{#if panelOpen}
+{#if panelOpen && !isContactsRoute}
   <!-- Transparent backdrop captures click-outside to dismiss the panel. -->
   <div
     class="search-panel-backdrop"

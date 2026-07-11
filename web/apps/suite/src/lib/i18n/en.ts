@@ -95,6 +95,7 @@ export const en = {
 
   // ── Global bar ───────────────────────────────────────────────────────
   'globalBar.searchPlaceholder': 'Search mail',
+  'globalBar.searchPlaceholderContacts': 'Search contacts',
   'globalBar.advancedSearch': 'Advanced search',
   'globalBar.help': 'Help',
   'globalBar.shortcuts': 'Keyboard shortcuts',
