@@ -11,6 +11,7 @@
 
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete } from '../api/client';
 import { FLAG_TOTP_ENABLED } from './principals.svelte';
+import { t } from '../i18n/i18n.svelte';
 
 export interface PrincipalDetail {
   id: string;
@@ -86,8 +87,8 @@ class PrincipalDetailState {
     } else {
       const msg =
         principalResult.status === 'fulfilled'
-          ? (principalResult.value.errorMessage ?? 'Failed to load principal')
-          : 'Network error';
+          ? (principalResult.value.errorMessage ?? t('principalDetail.error.loadFailed'))
+          : t('principalDetail.error.networkError');
       this.errorMessage = msg;
       this.status = 'error';
       return;
@@ -111,7 +112,7 @@ class PrincipalDetailState {
   async updateProfile(id: string, patch: { display_name?: string; quota_bytes?: number; flags?: number }): Promise<OpResult> {
     const result = await apiPatch<PrincipalDetail>(`/api/v1/principals/${id}`, patch);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Update failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.updateFailed') };
     }
     if (result.data) {
       this.principal = result.data;
@@ -122,7 +123,7 @@ class PrincipalDetailState {
   async changePassword(id: string, payload: { current_password?: string; new_password: string }): Promise<OpResult> {
     const result = await apiPut<unknown>(`/api/v1/principals/${id}/password`, payload);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Password change failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.passwordChangeFailed') };
     }
     return { ok: true, errorMessage: null };
   }
@@ -130,7 +131,7 @@ class PrincipalDetailState {
   async enrollTOTP(id: string): Promise<TOTPEnrollResult> {
     const result = await apiPost<{ provisioning_uri: string; secret?: string }>(`/api/v1/principals/${id}/totp/enroll`);
     if (!result.ok || !result.data) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'TOTP enroll failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.totpEnrollFailed') };
     }
     return { ok: true, errorMessage: null, provisioning_uri: result.data.provisioning_uri };
   }
@@ -138,7 +139,7 @@ class PrincipalDetailState {
   async confirmTOTP(id: string, code: string): Promise<OpResult> {
     const result = await apiPost<unknown>(`/api/v1/principals/${id}/totp/confirm`, { code });
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'TOTP confirm failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.totpConfirmFailed') };
     }
     // Refresh principal to update flags.
     await this.load(id);
@@ -148,7 +149,7 @@ class PrincipalDetailState {
   async disableTOTP(id: string, current_password: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/principals/${id}/totp`, { current_password });
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'TOTP disable failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.totpDisableFailed') };
     }
     // Refresh principal to update flags.
     await this.load(id);
@@ -161,7 +162,7 @@ class PrincipalDetailState {
       scopes: payload.scopes,
     });
     if (!result.ok || !result.data) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Key creation failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.keyCreationFailed') };
     }
     // Refresh keys list.
     const keysResult = await apiGet<APIKey[]>(`/api/v1/principals/${id}/api-keys`);
@@ -185,7 +186,7 @@ class PrincipalDetailState {
   async revokeAPIKey(principalId: string, keyId: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/api-keys/${keyId}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Revoke failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.revokeFailed') };
     }
     this.apiKeys = this.apiKeys.filter((k) => k.id !== keyId);
     return { ok: true, errorMessage: null };
@@ -194,7 +195,7 @@ class PrincipalDetailState {
   async beginOIDCLink(id: string, providerId: string): Promise<{ ok: boolean; auth_url?: string; errorMessage: string | null }> {
     const result = await apiPost<{ auth_url: string; state: string }>(`/api/v1/principals/${id}/oidc-links/begin`, { provider_id: providerId });
     if (!result.ok || !result.data) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'OIDC link begin failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.oidcLinkBeginFailed') };
     }
     return { ok: true, auth_url: result.data.auth_url, errorMessage: null };
   }
@@ -202,7 +203,7 @@ class PrincipalDetailState {
   async unlinkOIDC(id: string, provider: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/principals/${id}/oidc-links/${provider}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Unlink failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.unlinkFailed') };
     }
     this.oidcLinks = this.oidcLinks.filter((l) => l.provider_id !== provider);
     return { ok: true, errorMessage: null };
@@ -211,7 +212,7 @@ class PrincipalDetailState {
   async deletePrincipal(id: string): Promise<OpResult> {
     const result = await apiDelete<unknown>(`/api/v1/principals/${id}`);
     if (!result.ok) {
-      return { ok: false, errorMessage: result.errorMessage ?? 'Delete failed' };
+      return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.deleteFailed') };
     }
     return { ok: true, errorMessage: null };
   }

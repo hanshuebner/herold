@@ -6,6 +6,7 @@
   import Tabs from '../lib/ui/Tabs.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatAbsolute, DATE_TIME_SHORT } from '../lib/format';
+  import { t } from '../lib/i18n/i18n.svelte';
 
   // Import qrcode-svg via the CJS interop. Vite handles require-style modules.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -18,14 +19,14 @@
 
   let activeTab = $state('profile');
 
-  const tabs = [
-    { value: 'profile', label: 'Profile' },
-    { value: 'password', label: 'Password' },
-    { value: 'totp', label: 'Two-factor' },
-    { value: 'apikeys', label: 'API keys' },
-    { value: 'oidc', label: 'OIDC' },
-    { value: 'danger', label: 'Danger zone' },
-  ];
+  const tabs = $derived([
+    { value: 'profile', label: t('principalDetail.tab.profile') },
+    { value: 'password', label: t('principalDetail.tab.password') },
+    { value: 'totp', label: t('principalDetail.tab.totp') },
+    { value: 'apikeys', label: t('principalDetail.tab.apikeys') },
+    { value: 'oidc', label: t('principalDetail.tab.oidc') },
+    { value: 'danger', label: t('principalDetail.tab.danger') },
+  ]);
 
   // Load on mount / when id changes.
   $effect(() => {
@@ -78,7 +79,7 @@
     if (!result.ok) {
       profileError = result.errorMessage;
     } else {
-      profileSuccess = 'Profile updated.';
+      profileSuccess = t('principalDetail.profile.updated');
     }
   }
 
@@ -108,11 +109,11 @@
     pwSuccess = null;
 
     if (pwNew !== pwConfirm) {
-      pwError = 'Passwords do not match.';
+      pwError = t('principalDetail.password.mismatch');
       return;
     }
     if (pwNew.length < 12) {
-      pwError = 'Password must be at least 12 characters.';
+      pwError = t('principalDetail.password.tooShort');
       return;
     }
     pwSaving = true;
@@ -127,7 +128,7 @@
     if (!result.ok) {
       pwError = result.errorMessage;
     } else {
-      pwSuccess = 'Password changed.';
+      pwSuccess = t('principalDetail.password.changed');
       pwCurrent = '';
       pwNew = '';
       pwConfirm = '';
@@ -186,7 +187,7 @@
     if (!result.ok) {
       totpConfirmError = result.errorMessage;
     } else {
-      totpConfirmSuccess = 'Two-factor authentication enabled.';
+      totpConfirmSuccess = t('principalDetail.totp.enabled');
       totpProvisioningUri = null;
       totpQrSvg = null;
       totpCode = '';
@@ -202,7 +203,7 @@
     if (!result.ok) {
       totpDisableError = result.errorMessage;
     } else {
-      totpDisableSuccess = 'Two-factor authentication disabled.';
+      totpDisableSuccess = t('principalDetail.totp.disabled');
       totpDisablePassword = '';
     }
   }
@@ -323,7 +324,7 @@
     e.preventDefault();
     if (!principalDetail.principal) return;
     if (deleteConfirmEmail !== principalDetail.principal.email) {
-      deleteError = 'Email does not match.';
+      deleteError = t('principalDetail.danger.emailMismatch');
       return;
     }
     deleteSubmitting = true;
@@ -355,9 +356,9 @@
       type="button"
       class="back-btn"
       onclick={() => router.navigate('/principals')}
-      aria-label="Back to principals"
+      aria-label={t('principalDetail.backAriaLabel')}
     >
-      Back
+      {t('principalDetail.back')}
     </button>
     {#if principalDetail.principal}
       <div class="header-info">
@@ -367,7 +368,7 @@
         {/if}
       </div>
     {:else if principalDetail.status === 'loading'}
-      <div class="spinner" role="status" aria-label="Loading"></div>
+      <div class="spinner" role="status" aria-label={t('common.loading')}></div>
     {/if}
   </div>
 
@@ -379,7 +380,7 @@
       {#if activeTab === 'profile'}
         <form class="tab-form" onsubmit={saveProfile} novalidate>
           <div class="field">
-            <label for="pd-display-name" class="label">Display name</label>
+            <label for="pd-display-name" class="label">{t('principalDetail.profile.displayName')}</label>
             <input
               id="pd-display-name"
               type="text"
@@ -390,7 +391,7 @@
           </div>
 
           <div class="field">
-            <label for="pd-quota" class="label">Quota (bytes)</label>
+            <label for="pd-quota" class="label">{t('principalDetail.profile.quota')}</label>
             <input
               id="pd-quota"
               type="number"
@@ -407,15 +408,15 @@
           <div class="field-group">
             <label class="check-label">
               <input type="checkbox" bind:checked={profileAdmin} disabled={profileSaving} />
-              Admin
+              {t('principalDetail.profile.admin')}
             </label>
             <label class="check-label">
               <input type="checkbox" bind:checked={profileDisabled} disabled={profileSaving} />
-              Disabled
+              {t('principalDetail.profile.disabled')}
             </label>
             <label class="check-label">
               <input type="checkbox" bind:checked={profileIgnoreLimits} disabled={profileSaving} />
-              Ignore download limits
+              {t('principalDetail.profile.ignoreLimits')}
             </label>
           </div>
 
@@ -428,18 +429,18 @@
 
           <div class="form-actions">
             <button type="submit" class="btn-primary" disabled={profileSaving}>
-              {profileSaving ? 'Saving...' : 'Save changes'}
+              {profileSaving ? t('principalDetail.profile.saving') : t('principalDetail.profile.save')}
             </button>
           </div>
         </form>
 
         <dl class="meta-list">
           <div class="meta-row">
-            <dt>Principal ID</dt>
+            <dt>{t('principalDetail.profile.principalId')}</dt>
             <dd class="mono">{principalDetail.principal.id}</dd>
           </div>
           <div class="meta-row">
-            <dt>Created</dt>
+            <dt>{t('principalDetail.profile.created')}</dt>
             <dd>{formatDate(principalDetail.principal.created_at)}</dd>
           </div>
         </dl>
@@ -450,7 +451,7 @@
         <form class="tab-form" onsubmit={savePassword} novalidate>
           {#if !isAdminOverride}
             <div class="field">
-              <label for="pd-pw-current" class="label">Current password</label>
+              <label for="pd-pw-current" class="label">{t('principalDetail.password.current')}</label>
               <input
                 id="pd-pw-current"
                 type="password"
@@ -462,12 +463,12 @@
             </div>
           {:else}
             <p class="admin-override-note">
-              As an admin you can set a new password without supplying the current one.
+              {t('principalDetail.password.adminOverrideNote')}
             </p>
           {/if}
 
           <div class="field">
-            <label for="pd-pw-new" class="label">New password</label>
+            <label for="pd-pw-new" class="label">{t('principalDetail.password.new')}</label>
             <input
               id="pd-pw-new"
               type="password"
@@ -479,7 +480,7 @@
           </div>
 
           <div class="field">
-            <label for="pd-pw-confirm" class="label">Confirm password</label>
+            <label for="pd-pw-confirm" class="label">{t('principalDetail.password.confirm')}</label>
             <input
               id="pd-pw-confirm"
               type="password"
@@ -499,7 +500,7 @@
 
           <div class="form-actions">
             <button type="submit" class="btn-primary" disabled={pwSaving}>
-              {pwSaving ? 'Changing...' : 'Change password'}
+              {pwSaving ? t('principalDetail.password.changing') : t('principalDetail.password.submit')}
             </button>
           </div>
         </form>
@@ -511,11 +512,11 @@
           {#if principalDetail.totpEnabled}
             <!-- Enrolled: show disable form -->
             <div class="totp-status totp-enabled">
-              Two-factor authentication is currently enabled.
+              {t('principalDetail.totp.enabledStatus')}
             </div>
             {#if !totpDisableSuccess}
               <div class="totp-disable-form">
-                <label for="totp-disable-pw" class="label">Current password to disable 2FA</label>
+                <label for="totp-disable-pw" class="label">{t('principalDetail.totp.currentPasswordLabel')}</label>
                 <div class="input-row">
                   <input
                     id="totp-disable-pw"
@@ -530,7 +531,7 @@
                     onclick={disableTOTP}
                     disabled={totpLoading || !totpDisablePassword}
                   >
-                    {totpLoading ? 'Disabling...' : 'Disable 2FA'}
+                    {totpLoading ? t('principalDetail.totp.disabling') : t('principalDetail.totp.disable')}
                   </button>
                 </div>
                 {#if totpDisableError}
@@ -543,7 +544,7 @@
           {:else}
             <!-- Not enrolled -->
             <div class="totp-status">
-              Two-factor authentication is not enabled.
+              {t('principalDetail.totp.disabledStatus')}
             </div>
 
             {#if !totpProvisioningUri}
@@ -556,31 +557,31 @@
                   onclick={startTOTPEnroll}
                   disabled={totpLoading}
                 >
-                  {totpLoading ? 'Enrolling...' : 'Enable two-factor authentication'}
+                  {totpLoading ? t('principalDetail.totp.enrolling') : t('principalDetail.totp.enable')}
                 </button>
               {/if}
             {:else}
               <!-- Show provisioning QR + confirm -->
               <div class="totp-enroll">
                 <p class="totp-instructions">
-                  Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.
+                  {t('principalDetail.totp.instructions')}
                 </p>
 
                 {#if totpQrSvg}
-                  <div class="totp-qr" aria-label="TOTP QR code">
+                  <div class="totp-qr" aria-label={t('principalDetail.totp.qrAriaLabel')}>
                     <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                     {@html totpQrSvg}
                   </div>
                 {/if}
 
-                <p class="totp-uri-label">Provisioning URI</p>
+                <p class="totp-uri-label">{t('principalDetail.totp.provisioningUriLabel')}</p>
                 <input
                   type="text"
                   class="input input-mono totp-uri-input"
                   readonly
                   value={totpProvisioningUri}
                   onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
-                  aria-label="TOTP provisioning URI"
+                  aria-label={t('principalDetail.totp.provisioningUriAriaLabel')}
                 />
 
                 <div class="totp-confirm-row">
@@ -590,10 +591,10 @@
                     inputmode="numeric"
                     autocomplete="one-time-code"
                     pattern="[0-9]*"
-                    placeholder="6-digit code"
+                    placeholder={t('principalDetail.totp.codePlaceholder')}
                     bind:value={totpCode}
                     disabled={totpLoading}
-                    aria-label="Authenticator code"
+                    aria-label={t('principalDetail.totp.codeAriaLabel')}
                   />
                   <button
                     type="button"
@@ -601,7 +602,7 @@
                     onclick={confirmTOTP}
                     disabled={totpLoading || !totpCode}
                   >
-                    {totpLoading ? 'Confirming...' : 'Confirm'}
+                    {totpLoading ? t('principalDetail.totp.confirming') : t('principalDetail.totp.confirm')}
                   </button>
                 </div>
 
@@ -618,9 +619,9 @@
       {#if activeTab === 'apikeys'}
         <div class="tab-section">
           <div class="section-header">
-            <h3 class="section-title">API keys</h3>
+            <h3 class="section-title">{t('principalDetail.apikeys.title')}</h3>
             <button type="button" class="btn-primary" onclick={openKeyDialog}>
-              New API key
+              {t('principalDetail.apikeys.new')}
             </button>
           </div>
 
@@ -637,9 +638,9 @@
                         {/each}
                       </div>
                     {/if}
-                    <span class="key-meta">Created {formatDate(key.created_at)}</span>
+                    <span class="key-meta">{t('principalDetail.apikeys.created', { date: formatDate(key.created_at) })}</span>
                     {#if key.last_used_at}
-                      <span class="key-meta">Last used {formatDate(key.last_used_at)}</span>
+                      <span class="key-meta">{t('principalDetail.apikeys.lastUsed', { date: formatDate(key.last_used_at) })}</span>
                     {/if}
                   </div>
                   <button
@@ -647,13 +648,13 @@
                     class="btn-danger-sm"
                     onclick={() => void revokeKey(key.id)}
                   >
-                    Revoke
+                    {t('principalDetail.apikeys.revoke')}
                   </button>
                 </div>
               {/each}
             </div>
           {:else}
-            <p class="empty-state">No API keys.</p>
+            <p class="empty-state">{t('principalDetail.apikeys.empty')}</p>
           {/if}
         </div>
       {/if}
@@ -667,7 +668,7 @@
 
           <!-- Linked providers -->
           <div class="section-header">
-            <h3 class="section-title">Linked providers</h3>
+            <h3 class="section-title">{t('principalDetail.oidc.linkedTitle')}</h3>
           </div>
 
           {#if principalDetail.oidcLinks.length > 0}
@@ -677,28 +678,28 @@
                   <div class="oidc-info">
                     <span class="oidc-provider">{link.provider_name ?? link.provider_id}</span>
                     <span class="oidc-subject mono">{link.subject}</span>
-                    <span class="key-meta">Linked {formatDate(link.linked_at)}</span>
+                    <span class="key-meta">{t('principalDetail.oidc.linked', { date: formatDate(link.linked_at) })}</span>
                   </div>
                   <button
                     type="button"
                     class="btn-danger-sm"
                     onclick={() => void unlinkOIDC(link.provider_id)}
                   >
-                    Unlink
+                    {t('principalDetail.oidc.unlink')}
                   </button>
                 </div>
               {/each}
             </div>
           {:else}
-            <p class="empty-state">No linked OIDC providers.</p>
+            <p class="empty-state">{t('principalDetail.oidc.noneLinked')}</p>
           {/if}
 
           <!-- Available (unlinked) providers -->
           {#if oidcProvidersLoading}
-            <div class="spinner" role="status" aria-label="Loading providers" style="margin-top: var(--spacing-05)"></div>
+            <div class="spinner" role="status" aria-label={t('principalDetail.oidc.loadingProviders')} style="margin-top: var(--spacing-05)"></div>
           {:else if unlinkedProviders.length > 0}
             <div class="section-header" style="margin-top: var(--spacing-06)">
-              <h3 class="section-title">Link a provider</h3>
+              <h3 class="section-title">{t('principalDetail.oidc.linkProviderTitle')}</h3>
             </div>
             <div class="oidc-list">
               {#each unlinkedProviders as prov (prov.id)}
@@ -712,15 +713,15 @@
                     class="btn-secondary"
                     onclick={() => void linkOIDC(prov.id)}
                   >
-                    Link
+                    {t('principalDetail.oidc.link')}
                   </button>
                 </div>
               {/each}
             </div>
           {:else if oidcProviders.length > 0}
-            <p class="empty-state" style="margin-top: var(--spacing-05)">All configured providers are already linked.</p>
+            <p class="empty-state" style="margin-top: var(--spacing-05)">{t('principalDetail.oidc.allLinked')}</p>
           {:else}
-            <p class="empty-state" style="margin-top: var(--spacing-05)">No OIDC providers are configured on this server.</p>
+            <p class="empty-state" style="margin-top: var(--spacing-05)">{t('principalDetail.oidc.noneConfigured')}</p>
           {/if}
         </div>
       {/if}
@@ -728,14 +729,14 @@
       <!-- Danger zone -->
       {#if activeTab === 'danger'}
         <div class="danger-zone">
-          <h3 class="danger-title">Delete this principal</h3>
+          <h3 class="danger-title">{t('principalDetail.danger.title')}</h3>
           <p class="danger-desc">
-            This permanently deletes the principal, all their API keys, OIDC links, and
-            associated mailbox data. This cannot be undone.
+            {t('principalDetail.danger.description')}
           </p>
           <form class="danger-form" onsubmit={deletePrincipal} novalidate>
             <label for="pd-delete-confirm" class="label">
-              Type the email address to confirm: <strong>{principalDetail.principal.email}</strong>
+              {t('principalDetail.danger.confirmLabel')}
+              <strong>{principalDetail.principal.email}</strong>
             </label>
             <div class="input-row">
               <input
@@ -752,7 +753,7 @@
                 class="btn-danger"
                 disabled={deleteSubmitting || deleteConfirmEmail !== principalDetail.principal.email}
               >
-                {deleteSubmitting ? 'Deleting...' : 'Delete'}
+                {deleteSubmitting ? t('principalDetail.danger.deleting') : t('principalDetail.danger.delete')}
               </button>
             </div>
             {#if deleteError}
@@ -766,12 +767,12 @@
 </div>
 
 <!-- New API key dialog -->
-<Dialog bind:open={keyDialogOpen} title="New API key">
+<Dialog bind:open={keyDialogOpen} title={t('principalDetail.apikeys.dialogTitle')}>
   {#if newKeyPlaintext && !newKeyConfirmed}
     <!-- Show plaintext key with copy button -->
     <div class="key-reveal">
       <p class="key-reveal-warning">
-        Copy this key now. It will not be shown again.
+        {t('principalDetail.apikeys.revealWarning')}
       </p>
       <div class="key-reveal-display">
         <input
@@ -780,10 +781,10 @@
           readonly
           value={newKeyPlaintext}
           onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
-          aria-label="New API key"
+          aria-label={t('principalDetail.apikeys.newKeyAriaLabel')}
         />
         <button type="button" class="btn-secondary" onclick={copyKey}>
-          Copy
+          {t('principalDetail.apikeys.copy')}
         </button>
       </div>
       <div class="form-actions" style="margin-top: var(--spacing-05)">
@@ -795,26 +796,26 @@
             keyDialogOpen = false;
           }}
         >
-          I have saved this key
+          {t('principalDetail.apikeys.savedConfirm')}
         </button>
       </div>
     </div>
   {:else}
     <form class="create-form" onsubmit={createKey} novalidate>
       <div class="field">
-        <label for="key-label" class="label">Label</label>
+        <label for="key-label" class="label">{t('principalDetail.apikeys.label')}</label>
         <input
           id="key-label"
           type="text"
           class="input"
-          placeholder="e.g. ci-deploy"
+          placeholder={t('principalDetail.apikeys.labelPlaceholder')}
           bind:value={keyLabel}
           disabled={keyCreating}
         />
       </div>
 
       <div class="field">
-        <span class="label">Scopes</span>
+        <span class="label">{t('principalDetail.apikeys.scopes')}</span>
         <div class="scope-checks">
           {#each availableScopes as scope (scope)}
             <label class="check-label">
@@ -841,10 +842,10 @@
           onclick={() => { keyDialogOpen = false; }}
           disabled={keyCreating}
         >
-          Cancel
+          {t('common.cancel')}
         </button>
         <button type="submit" class="btn-primary" disabled={keyCreating}>
-          {keyCreating ? 'Creating...' : 'Create key'}
+          {keyCreating ? t('principalDetail.apikeys.creating') : t('principalDetail.apikeys.createKey')}
         </button>
       </div>
     </form>
