@@ -17,6 +17,16 @@
    *
    * Unknown top-level Card properties are preserved via vmToPatch (REQ-CONT-01).
    * uid is never fabricated on create (REQ-CONT-02).
+   *
+   * Edit mode (an existing contactId) saves immediately: every field change
+   * schedules a debounced patch to Contact/set, using the same shared
+   * AutosaveController/SaveStatus indicator as the Settings identity editor
+   * (Item 7) so the "Saving…/Saved" affordance is consistent across the
+   * Suite. There is no Speichern/Abbrechen commit step — a failed patch
+   * reverts the form to the server's last-known state (REQ-CONT-51) and
+   * the indicator surfaces the error inline. Create mode has no id to
+   * patch yet, so it keeps the explicit Erstellen/Abbrechen commit
+   * (re #190).
    */
 
   import { onDestroy } from 'svelte';
@@ -30,6 +40,8 @@
   import { t } from '../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
   import ContactPhotoEditor from '../lib/contacts/ContactPhotoEditor.svelte';
+  import SaveStatus from './settings/SaveStatus.svelte';
+  import { AutosaveController } from './settings/autosave.svelte';
   import {
     cardToVM,
     vmToCard,
@@ -76,6 +88,21 @@
   // Dirty-form guard: track whether the form has unsaved changes.
   let isDirty = $state(false);
 
+  // ── Autosave (edit mode only) ──────────────────────────────────────────────
+  // Every field change (markDirty) resets this timer; when the form goes
+  // idle for AUTOSAVE_IDLE_MS the pending edits are patched to Contact/set.
+  // Create mode has no id to patch against and keeps the explicit
+  // Erstellen/Abbrechen commit instead. The shared AutosaveController
+  // drives the "Saving…/Saved" indicator (same class the Settings identity
+  // editor uses — see views/settings/autosave.svelte.ts).
+  const AUTOSAVE_IDLE_MS = 900;
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  // A change arriving while a save is already in flight is not dropped: it
+  // re-runs autosaveNow once the in-flight save settles.
+  let autosavePendingRetry = false;
+  const autosave = new AutosaveController();
+  onDestroy(() => autosave.dispose());
+
   // ── Photo state (REQ-CONT-60..61) ─────────────────────────────────────────
   // currentPhotoBlobId: the blobId already on the server for this contact.
   let currentPhotoBlobId = $state<string | null>(null);
@@ -86,11 +113,18 @@
   let photoPendingMediaType = $state('');
   let photoPendingPreviewUrl = $state<string | null>(null);
 
-  // Keyboard shortcut: Ctrl/Cmd+S saves the form.
+  // Keyboard shortcut: Ctrl/Cmd+S saves the form. In create mode this runs
+  // the explicit create; in edit mode it flushes any pending autosave
+  // immediately instead of waiting out the idle timer.
   function handleKeydown(e: KeyboardEvent): void {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault();
-      if (!saving && vm) void handleSave();
+      if (!vm) return;
+      if (isCreate) {
+        if (!saving) void handleSave();
+      } else {
+        flushAutosave();
+      }
     }
   }
 
@@ -176,10 +210,12 @@
     }
   }
 
-  // ── Save ──────────────────────────────────────────────────────────────────
+  // ── Save (create mode) ──────────────────────────────────────────────────────
+  // Create mode has no id to patch against yet, so it keeps the explicit
+  // Erstellen commit. Edit mode autosaves instead (see below).
 
   async function handleSave(): Promise<void> {
-    if (!vm) return;
+    if (!vm || !isCreate) return;
     const accountId = auth.session?.primaryAccounts[Capability.Contacts] ?? null;
     if (!accountId) {
       toast.show({ message: t('contacts.edit.saveError'), kind: 'error' });
@@ -193,11 +229,7 @@
 
     saving = true;
     try {
-      if (isCreate) {
-        await createContact(accountId);
-      } else {
-        await updateContact(accountId);
-      }
+      await createContact(accountId);
     } finally {
       saving = false;
     }
@@ -253,28 +285,40 @@
     }
   }
 
-  async function updateContact(accountId: string): Promise<void> {
+  // ── Autosave (edit mode) ─────────────────────────────────────────────────────
+  //
+  // markDirty schedules autosaveNow after AUTOSAVE_IDLE_MS of inactivity.
+  // persistUpdate does the actual Contact/set patch and, on success, folds
+  // the applied patch into originalRaw so the next diff compares against
+  // the server's last-known state — the optimistic-save-with-revert
+  // contract of REQ-CONT-51, run continuously instead of once per click.
+  // persistUpdate throws on failure so autosave.run() (the same contract
+  // IdentityEditPage's Reply-To/Bcc autosave uses) surfaces the error on
+  // the shared SaveStatus indicator.
+
+  /** Patch the current vm to the server. */
+  async function persistUpdate(accountId: string): Promise<void> {
     if (!vm || !vm.id) return;
     const { changed, patch } = vmToPatch(originalRaw, vm);
 
     // Compute media patch for photo change (REQ-CONT-60).
     let mediaPatch: Record<string, unknown> | null | undefined = undefined; // undefined = no change
     if (photoAction === 'replace' && photoPendingFile) {
+      let result;
       try {
-        const result = await jmap.uploadBlob({
+        result = await jmap.uploadBlob({
           accountId,
           body: photoPendingFile,
           type: photoPendingMediaType || 'image/jpeg',
         });
-        mediaPatch = buildMediaWithPhoto(
-          originalRaw.media as Record<string, unknown> | undefined,
-          result.blobId,
-          result.type || photoPendingMediaType,
-        );
       } catch {
-        toast.show({ message: t('contacts.edit.photo.uploadError'), kind: 'error' });
-        return;
+        throw new Error(t('contacts.edit.photo.uploadError'));
       }
+      mediaPatch = buildMediaWithPhoto(
+        originalRaw.media as Record<string, unknown> | undefined,
+        result.blobId,
+        result.type || photoPendingMediaType,
+      );
     } else if (photoAction === 'remove') {
       mediaPatch = buildMediaWithPhotoRemoved(
         originalRaw.media as Record<string, unknown> | undefined,
@@ -287,8 +331,8 @@
     }
 
     if (!changed && mediaPatch === undefined) {
-      // No changes at all — exit silently (REQ-CONT-49).
-      router.navigate(`/contacts/${encodeURIComponent(vm.id)}`);
+      // No changes at all — nothing to send (REQ-CONT-49).
+      isDirty = false;
       return;
     }
 
@@ -309,26 +353,97 @@
       // Revert local state to originalRaw (REQ-CONT-51).
       vm = cardToVM(originalRaw);
       isDirty = false;
-      const desc = notUpdated.description ?? notUpdated.type;
-      toast.show({ message: `${t('contacts.edit.saveError')}: ${desc}`, kind: 'error' });
-      return;
+      throw new Error(notUpdated.description ?? notUpdated.type);
     }
-    toast.show({ message: t('contacts.edit.saveSuccess'), kind: 'info' });
+
+    // Fold the applied patch into originalRaw (JSON Merge Patch semantics:
+    // null deletes the key, otherwise the key is replaced wholesale) so the
+    // next autosave diffs against what the server now has.
+    for (const key of Object.keys(patch)) {
+      const val = patch[key];
+      if (val === null) {
+        delete originalRaw[key];
+      } else {
+        originalRaw[key] = val;
+      }
+    }
+    // The photo action was one-shot; reset it so a later, unrelated
+    // autosave does not re-upload or re-delete the same photo.
+    if (photoAction === 'replace') {
+      currentPhotoBlobId = extractPhotoFromCard(originalRaw)?.blobId ?? currentPhotoBlobId;
+      photoAction = 'keep';
+      photoPendingFile = null;
+      photoPendingMediaType = '';
+      photoPendingPreviewUrl = null;
+    } else if (photoAction === 'remove') {
+      currentPhotoBlobId = null;
+      photoAction = 'keep';
+    }
+
     isDirty = false;
     void contacts.reload();
     void contactsListStore.init();
-    router.navigate(`/contacts/${encodeURIComponent(vm.id)}`);
+  }
+
+  /** Validate and persist the current vm; re-runs itself if edits arrive mid-flight. */
+  async function autosaveNow(): Promise<void> {
+    if (!vm || isCreate || !vm.id) return;
+    if (autosave.state === 'saving') {
+      autosavePendingRetry = true;
+      return;
+    }
+    const accountId = auth.session?.primaryAccounts[Capability.Contacts] ?? null;
+    if (!accountId) return;
+
+    // Client-side validation (REQ-CONT-50): an invalid form is not sent —
+    // the inline field errors say what to fix, and the shared save-status
+    // indicator flags that nothing was saved (beforeunload/isDirty still
+    // protects the unsent edit).
+    const errs = validateVM(vm);
+    validationErrors = errs;
+    if (errs.length > 0) {
+      autosave.state = 'error';
+      autosave.errorMessage = t('contacts.edit.autosaveBlocked');
+      return;
+    }
+
+    const { changed } = vmToPatch(originalRaw, vm);
+    if (!changed && photoAction === 'keep') {
+      // Nothing to send (REQ-CONT-49) — skip the "Saved" flash too.
+      isDirty = false;
+      return;
+    }
+
+    await autosave.run(() => persistUpdate(accountId));
+    if (autosavePendingRetry) {
+      autosavePendingRetry = false;
+      void autosaveNow();
+    }
+  }
+
+  /** Cancel the idle timer and save right away (Ctrl+S, back navigation). */
+  function flushAutosave(): void {
+    if (autosaveTimer !== null) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+    void autosaveNow();
   }
 
   function handleCancel(): void {
-    if (isDirty) {
-      if (!confirm(t('contacts.edit.discardGuard.message'))) return;
+    if (isCreate) {
+      if (isDirty) {
+        if (!confirm(t('contacts.edit.discardGuard.message'))) return;
+      }
+      isDirty = false;
+      router.navigate('/contacts');
+      return;
     }
-    isDirty = false;
+    // Edit mode autosaves as you type; flush any pending debounce so a
+    // fast back-click right after typing is not lost to the idle timer.
+    if (isDirty) flushAutosave();
     if (contactId) {
       router.navigate(`/contacts/${encodeURIComponent(contactId)}`);
-    } else {
-      router.navigate('/contacts');
     }
   }
 
@@ -337,7 +452,35 @@
   function markDirty(): void {
     isDirty = true;
     validationErrors = [];
+    if (isCreate) return;
+    if (autosaveTimer !== null) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
+      void autosaveNow();
+    }, AUTOSAVE_IDLE_MS);
   }
+
+  // Flush a pending autosave when the form unmounts by any navigation path
+  // (sidebar click, browser back, etc.), not just the in-view back button.
+  onDestroy(() => {
+    if (!isCreate && autosaveTimer !== null) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+      void autosaveNow();
+    }
+  });
+
+  // The photo editor mutates photoAction/photoPendingFile directly via
+  // bind:, with no discrete input/change event the form can hook — so a
+  // photo-only edit (no other field touched) needs its own dirty trigger
+  // to schedule the autosave (REQ-CONT-60/REQ-CONT-51 for photos).
+  $effect(() => {
+    const action = photoAction;
+    const file = photoPendingFile;
+    if (loadStatus !== 'ready' || isCreate) return;
+    if (action === 'keep' && !file) return;
+    markDirty();
+  });
 
   // ── Email list ────────────────────────────────────────────────────────────
 
@@ -511,6 +654,9 @@
     <button type="button" class="back-btn" onclick={handleCancel}>
       {isCreate ? t('contacts.list.title') : t('contacts.detail.backToDetail')}
     </button>
+    {#if !isCreate && loadStatus === 'ready'}
+      <SaveStatus state={autosave.state} errorMessage={autosave.errorMessage} />
+    {/if}
   </div>
 
   {#if loadStatus === 'loading'}
@@ -520,7 +666,10 @@
   {:else if loadStatus === 'ready' && vm}
     <form
       class="edit-form"
-      onsubmit={(e) => { e.preventDefault(); void handleSave(); }}
+      onsubmit={(e) => {
+        e.preventDefault();
+        if (isCreate) { void handleSave(); } else { flushAutosave(); }
+      }}
       novalidate
     >
       <h1 class="form-title">
@@ -538,7 +687,7 @@
         <ContactPhotoEditor
           currentBlobId={currentPhotoBlobId}
           fallbackInitial={photoFallbackInitial}
-          disabled={saving}
+          disabled={isCreate && saving}
           bind:action={photoAction}
           bind:pendingFile={photoPendingFile}
           bind:pendingMediaType={photoPendingMediaType}
@@ -559,7 +708,7 @@
               bind:value={vm.name.given}
               oninput={markDirty}
               autocomplete="given-name"
-              disabled={saving}
+              disabled={isCreate && saving}
             />
           </label>
           <label class="field-block">
@@ -570,7 +719,7 @@
               bind:value={vm.name.surname}
               oninput={markDirty}
               autocomplete="family-name"
-              disabled={saving}
+              disabled={isCreate && saving}
             />
           </label>
         </div>
@@ -579,26 +728,26 @@
           <div class="field-row">
             <label class="field-block">
               <span class="field-label">{t('contacts.edit.name.prefix')}</span>
-              <input class="field-input" type="text" bind:value={vm.name.prefix} oninput={markDirty} disabled={saving} />
+              <input class="field-input" type="text" bind:value={vm.name.prefix} oninput={markDirty} disabled={isCreate && saving} />
             </label>
             <label class="field-block">
               <span class="field-label">{t('contacts.edit.name.middle')}</span>
-              <input class="field-input" type="text" bind:value={vm.name.middle} oninput={markDirty} disabled={saving} />
+              <input class="field-input" type="text" bind:value={vm.name.middle} oninput={markDirty} disabled={isCreate && saving} />
             </label>
           </div>
           <div class="field-row">
             <label class="field-block">
               <span class="field-label">{t('contacts.edit.name.credential')}</span>
-              <input class="field-input" type="text" bind:value={vm.name.credential} oninput={markDirty} disabled={saving} />
+              <input class="field-input" type="text" bind:value={vm.name.credential} oninput={markDirty} disabled={isCreate && saving} />
             </label>
             <label class="field-block">
               <span class="field-label">{t('contacts.edit.name.suffix')}</span>
-              <input class="field-input" type="text" bind:value={vm.name.suffix} oninput={markDirty} disabled={saving} />
+              <input class="field-input" type="text" bind:value={vm.name.suffix} oninput={markDirty} disabled={isCreate && saving} />
             </label>
           </div>
           <label class="field-block">
             <span class="field-label">{t('contacts.edit.name.full')}</span>
-            <input class="field-input" type="text" bind:value={vm.name.full} oninput={markDirty} disabled={saving} placeholder="Derived from components when blank" />
+            <input class="field-input" type="text" bind:value={vm.name.full} oninput={markDirty} disabled={isCreate && saving} placeholder="Derived from components when blank" />
           </label>
         {/if}
 
@@ -626,7 +775,7 @@
                   bind:value={email.address}
                   oninput={markDirty}
                   autocomplete="off"
-                  disabled={saving}
+                  disabled={isCreate && saving}
                 />
                 {#if hasError(`email.${i}`)}
                   <span class="input-error-msg">{errorFor(`email.${i}`)}</span>
@@ -634,24 +783,24 @@
               </label>
               <label class="field-block">
                 <span class="field-label">{t('contacts.edit.email.label')}</span>
-                <input class="field-input narrow" type="text" bind:value={email.label} oninput={markDirty} disabled={saving} />
+                <input class="field-input narrow" type="text" bind:value={email.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
             </div>
             <div class="chips-row">
-              <button type="button" class="chip" class:chip-on={email.contextHome} onclick={() => { email.contextHome = !email.contextHome; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={email.contextHome} onclick={() => { email.contextHome = !email.contextHome; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.email.context.home')}
               </button>
-              <button type="button" class="chip" class:chip-on={email.contextWork} onclick={() => { email.contextWork = !email.contextWork; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={email.contextWork} onclick={() => { email.contextWork = !email.contextWork; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.email.context.work')}
               </button>
-              <button type="button" class="chip" class:chip-on={email.contextOther} onclick={() => { email.contextOther = !email.contextOther; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={email.contextOther} onclick={() => { email.contextOther = !email.contextOther; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.email.context.other')}
               </button>
               <label class="pref-label">
-                <input type="checkbox" bind:checked={email.pref} onchange={() => { toggleEmailPref(email.key); }} disabled={saving} />
+                <input type="checkbox" bind:checked={email.pref} onchange={() => { toggleEmailPref(email.key); }} disabled={isCreate && saving} />
                 {t('contacts.edit.email.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removeEmail(email.key)} disabled={saving}>
+              <button type="button" class="remove-btn" onclick={() => removeEmail(email.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
@@ -660,7 +809,7 @@
             {/if}
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addEmail} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addEmail} disabled={isCreate && saving}>
           + {t('contacts.edit.addEmail')}
         </button>
       </fieldset>
@@ -679,41 +828,41 @@
                   bind:value={phone.number}
                   oninput={markDirty}
                   autocomplete="off"
-                  disabled={saving}
+                  disabled={isCreate && saving}
                 />
               </label>
               <label class="field-block">
                 <span class="field-label">{t('contacts.edit.phone.label')}</span>
-                <input class="field-input narrow" type="text" bind:value={phone.label} oninput={markDirty} disabled={saving} />
+                <input class="field-input narrow" type="text" bind:value={phone.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
             </div>
             <div class="chips-row">
-              <button type="button" class="chip" class:chip-on={phone.contextHome} onclick={() => { phone.contextHome = !phone.contextHome; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={phone.contextHome} onclick={() => { phone.contextHome = !phone.contextHome; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.phone.context.home')}
               </button>
-              <button type="button" class="chip" class:chip-on={phone.contextWork} onclick={() => { phone.contextWork = !phone.contextWork; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={phone.contextWork} onclick={() => { phone.contextWork = !phone.contextWork; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.phone.context.work')}
               </button>
-              <button type="button" class="chip" class:chip-on={phone.featureCell} onclick={() => { phone.featureCell = !phone.featureCell; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={phone.featureCell} onclick={() => { phone.featureCell = !phone.featureCell; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.phone.feature.cell')}
               </button>
-              <button type="button" class="chip" class:chip-on={phone.featureVoice} onclick={() => { phone.featureVoice = !phone.featureVoice; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={phone.featureVoice} onclick={() => { phone.featureVoice = !phone.featureVoice; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.phone.feature.voice')}
               </button>
-              <button type="button" class="chip" class:chip-on={phone.featureFax} onclick={() => { phone.featureFax = !phone.featureFax; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={phone.featureFax} onclick={() => { phone.featureFax = !phone.featureFax; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.phone.feature.fax')}
               </button>
               <label class="pref-label">
-                <input type="checkbox" bind:checked={phone.pref} onchange={() => { togglePhonePref(phone.key); }} disabled={saving} />
+                <input type="checkbox" bind:checked={phone.pref} onchange={() => { togglePhonePref(phone.key); }} disabled={isCreate && saving} />
                 {t('contacts.edit.phone.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removePhone(phone.key)} disabled={saving}>
+              <button type="button" class="remove-btn" onclick={() => removePhone(phone.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addPhone} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addPhone} disabled={isCreate && saving}>
           + {t('contacts.edit.addPhone')}
         </button>
       </fieldset>
@@ -725,46 +874,46 @@
           <div class="entry-block">
             <label class="field-block">
               <span class="field-label">{t('contacts.edit.address.street')}</span>
-              <input class="field-input" type="text" bind:value={addr.street} oninput={markDirty} autocomplete="off" disabled={saving} />
+              <input class="field-input" type="text" bind:value={addr.street} oninput={markDirty} autocomplete="off" disabled={isCreate && saving} />
             </label>
             <div class="field-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.address.locality')}</span>
-                <input class="field-input" type="text" bind:value={addr.locality} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={addr.locality} oninput={markDirty} disabled={isCreate && saving} />
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.address.postcode')}</span>
-                <input class="field-input" type="text" bind:value={addr.postcode} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={addr.postcode} oninput={markDirty} disabled={isCreate && saving} />
               </label>
             </div>
             <div class="field-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.address.region')}</span>
-                <input class="field-input" type="text" bind:value={addr.region} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={addr.region} oninput={markDirty} disabled={isCreate && saving} />
               </label>
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.address.country')}</span>
-                <input class="field-input" type="text" bind:value={addr.country} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={addr.country} oninput={markDirty} disabled={isCreate && saving} />
               </label>
             </div>
             <div class="chips-row">
-              <button type="button" class="chip" class:chip-on={addr.contextHome} onclick={() => { addr.contextHome = !addr.contextHome; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={addr.contextHome} onclick={() => { addr.contextHome = !addr.contextHome; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.address.context.home')}
               </button>
-              <button type="button" class="chip" class:chip-on={addr.contextWork} onclick={() => { addr.contextWork = !addr.contextWork; markDirty(); }} disabled={saving}>
+              <button type="button" class="chip" class:chip-on={addr.contextWork} onclick={() => { addr.contextWork = !addr.contextWork; markDirty(); }} disabled={isCreate && saving}>
                 {t('contacts.edit.address.context.work')}
               </button>
               <label class="pref-label">
-                <input type="checkbox" bind:checked={addr.pref} onchange={() => { if (addr.pref) { vm!.addresses.forEach((a) => { if (a.key !== addr.key) a.pref = false; }); } markDirty(); }} disabled={saving} />
+                <input type="checkbox" bind:checked={addr.pref} onchange={() => { if (addr.pref) { vm!.addresses.forEach((a) => { if (a.key !== addr.key) a.pref = false; }); } markDirty(); }} disabled={isCreate && saving} />
                 {t('contacts.edit.address.pref')}
               </label>
-              <button type="button" class="remove-btn" onclick={() => removeAddress(addr.key)} disabled={saving}>
+              <button type="button" class="remove-btn" onclick={() => removeAddress(addr.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addAddress} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addAddress} disabled={isCreate && saving}>
           + {t('contacts.edit.addAddress')}
         </button>
       </fieldset>
@@ -777,9 +926,9 @@
             <div class="entry-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.org.name')}</span>
-                <input class="field-input" type="text" bind:value={org.name} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={org.name} oninput={markDirty} disabled={isCreate && saving} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeOrg(org.key)} disabled={saving}>
+              <button type="button" class="remove-btn self-end" onclick={() => removeOrg(org.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
@@ -787,19 +936,19 @@
               <div class="entry-row">
                 <label class="field-block flex-grow">
                   <span class="field-label">{t('contacts.edit.org.unit')}</span>
-                  <input class="field-input" type="text" bind:value={org.units[i]} oninput={markDirty} disabled={saving} />
+                  <input class="field-input" type="text" bind:value={org.units[i]} oninput={markDirty} disabled={isCreate && saving} />
                 </label>
-                <button type="button" class="remove-btn self-end" onclick={() => removeOrgUnit(org.key, i)} disabled={saving}>
+                <button type="button" class="remove-btn self-end" onclick={() => removeOrgUnit(org.key, i)} disabled={isCreate && saving}>
                   {t('contacts.edit.removeEntry')}
                 </button>
               </div>
             {/each}
-            <button type="button" class="add-btn small" onclick={() => addOrgUnit(org.key)} disabled={saving}>
+            <button type="button" class="add-btn small" onclick={() => addOrgUnit(org.key)} disabled={isCreate && saving}>
               + {t('contacts.edit.org.addUnit')}
             </button>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addOrg} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addOrg} disabled={isCreate && saving}>
           + {t('contacts.edit.addOrg')}
         </button>
       </fieldset>
@@ -812,23 +961,23 @@
             <div class="entry-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.title.name')}</span>
-                <input class="field-input" type="text" bind:value={title.name} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={title.name} oninput={markDirty} disabled={isCreate && saving} />
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.section.title')}</span>
-                <select class="field-input" bind:value={title.kind} onchange={markDirty} disabled={saving}>
+                <select class="field-input" bind:value={title.kind} onchange={markDirty} disabled={isCreate && saving}>
                   <option value="title">{t('contacts.edit.title.kind.title')}</option>
                   <option value="role">{t('contacts.edit.title.kind.role')}</option>
                 </select>
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeTitle(title.key)} disabled={saving}>
+              <button type="button" class="remove-btn self-end" onclick={() => removeTitle(title.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
             {#if vm.orgs.length > 0}
               <label class="field-block">
                 <span class="field-label">{t('contacts.edit.title.org')}</span>
-                <select class="field-input" bind:value={title.orgId} onchange={markDirty} disabled={saving}>
+                <select class="field-input" bind:value={title.orgId} onchange={markDirty} disabled={isCreate && saving}>
                   <option value="">—</option>
                   {#each vm.orgs as org (org.key)}
                     <option value={org.key}>{org.name || '(unnamed org)'}</option>
@@ -838,7 +987,7 @@
             {/if}
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addTitle} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addTitle} disabled={isCreate && saving}>
           + {t('contacts.edit.addTitle')}
         </button>
       </fieldset>
@@ -850,14 +999,14 @@
           <div class="entry-row">
             <label class="field-block flex-grow">
               <span class="field-label">{t('contacts.edit.nickname.name')}</span>
-              <input class="field-input" type="text" bind:value={nn.name} oninput={markDirty} disabled={saving} />
+              <input class="field-input" type="text" bind:value={nn.name} oninput={markDirty} disabled={isCreate && saving} />
             </label>
-            <button type="button" class="remove-btn self-end" onclick={() => removeNickname(nn.key)} disabled={saving}>
+            <button type="button" class="remove-btn self-end" onclick={() => removeNickname(nn.key)} disabled={isCreate && saving}>
               {t('contacts.edit.removeEntry')}
             </button>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addNickname} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addNickname} disabled={isCreate && saving}>
           + {t('contacts.edit.addNickname')}
         </button>
       </fieldset>
@@ -870,19 +1019,19 @@
             <div class="entry-row">
               <label class="field-block flex-grow">
                 <span class="field-label">{t('contacts.edit.url.uri')}</span>
-                <input class="field-input" type="url" bind:value={link.uri} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="url" bind:value={link.uri} oninput={markDirty} disabled={isCreate && saving} />
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.url.label')}</span>
-                <input class="field-input" type="text" bind:value={link.label} oninput={markDirty} disabled={saving} />
+                <input class="field-input" type="text" bind:value={link.label} oninput={markDirty} disabled={isCreate && saving} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeLink(link.key)} disabled={saving}>
+              <button type="button" class="remove-btn self-end" onclick={() => removeLink(link.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addLink} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addLink} disabled={isCreate && saving}>
           + {t('contacts.edit.addUrl')}
         </button>
       </fieldset>
@@ -899,17 +1048,17 @@
                   class="field-input textarea"
                   bind:value={note.note}
                   oninput={markDirty}
-                  disabled={saving}
+                  disabled={isCreate && saving}
                   rows="3"
                 ></textarea>
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeNote(note.key)} disabled={saving}>
+              <button type="button" class="remove-btn self-end" onclick={() => removeNote(note.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addNote} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addNote} disabled={isCreate && saving}>
           + {t('contacts.edit.addNote')}
         </button>
       </fieldset>
@@ -922,7 +1071,7 @@
             <div class="entry-row">
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.anniversary.kind')}</span>
-                <select class="field-input" bind:value={ann.kind} onchange={markDirty} disabled={saving}>
+                <select class="field-input" bind:value={ann.kind} onchange={markDirty} disabled={isCreate && saving}>
                   <option value="birth">{t('contacts.edit.anniversary.kind.birth')}</option>
                   <option value="wedding">{t('contacts.edit.anniversary.kind.wedding')}</option>
                   <option value="other">{t('contacts.edit.anniversary.kind.other')}</option>
@@ -930,23 +1079,23 @@
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.anniversary.day')}</span>
-                <input class="field-input" type="number" min="1" max="31" bind:value={ann.day} oninput={markDirty} disabled={saving} placeholder="1-31" />
+                <input class="field-input" type="number" min="1" max="31" bind:value={ann.day} oninput={markDirty} disabled={isCreate && saving} placeholder="1-31" />
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.anniversary.month')}</span>
-                <input class="field-input" type="number" min="1" max="12" bind:value={ann.month} oninput={markDirty} disabled={saving} placeholder="1-12" />
+                <input class="field-input" type="number" min="1" max="12" bind:value={ann.month} oninput={markDirty} disabled={isCreate && saving} placeholder="1-12" />
               </label>
               <label class="field-block narrow">
                 <span class="field-label">{t('contacts.edit.anniversary.year')}</span>
-                <input class="field-input" type="number" min="1" max="9999" bind:value={ann.year} oninput={markDirty} disabled={saving} placeholder={t('contacts.edit.anniversary.year')} />
+                <input class="field-input" type="number" min="1" max="9999" bind:value={ann.year} oninput={markDirty} disabled={isCreate && saving} placeholder={t('contacts.edit.anniversary.year')} />
               </label>
-              <button type="button" class="remove-btn self-end" onclick={() => removeAnniversary(ann.key)} disabled={saving}>
+              <button type="button" class="remove-btn self-end" onclick={() => removeAnniversary(ann.key)} disabled={isCreate && saving}>
                 {t('contacts.edit.removeEntry')}
               </button>
             </div>
           </div>
         {/each}
-        <button type="button" class="add-btn" onclick={addAnniversary} disabled={saving}>
+        <button type="button" class="add-btn" onclick={addAnniversary} disabled={isCreate && saving}>
           + {t('contacts.edit.addAnniversary')}
         </button>
       </fieldset>
@@ -955,7 +1104,7 @@
       <details class="kind-details">
         <summary class="kind-summary">{t('contacts.edit.kind.label')}</summary>
         <label class="field-block">
-          <select class="field-input" bind:value={vm.kind} onchange={markDirty} disabled={saving}>
+          <select class="field-input" bind:value={vm.kind} onchange={markDirty} disabled={isCreate && saving}>
             <option value="individual">{t('contacts.edit.kind.individual')}</option>
             <option value="group">{t('contacts.edit.kind.group')}</option>
             <option value="org">{t('contacts.edit.kind.org')}</option>
@@ -964,15 +1113,18 @@
         </label>
       </details>
 
-      <!-- ── Form actions ──────────────────────────────────────────────── -->
-      <div class="form-actions">
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? t('contacts.edit.saving') : t('contacts.edit.save')}
-        </Button>
-        <Button variant="secondary" disabled={saving} onclick={handleCancel}>
-          {t('contacts.edit.cancel')}
-        </Button>
-      </div>
+      {#if isCreate}
+        <!-- ── Form actions (create mode only — no id exists yet to autosave
+             against, so the commit stays explicit) ────────────────────── -->
+        <div class="form-actions">
+          <Button type="submit" variant="primary" disabled={isCreate && saving}>
+            {saving ? t('contacts.edit.saving') : t('contacts.edit.save')}
+          </Button>
+          <Button variant="secondary" disabled={isCreate && saving} onclick={handleCancel}>
+            {t('contacts.edit.cancel')}
+          </Button>
+        </div>
+      {/if}
     </form>
   {/if}
 </div>
@@ -988,6 +1140,10 @@
   }
 
   .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-04);
     margin-bottom: var(--spacing-05);
   }
 

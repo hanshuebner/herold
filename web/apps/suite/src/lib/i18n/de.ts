@@ -1228,6 +1228,7 @@ export const de = {
   'contacts.edit.discardGuard.message': 'Sie haben nicht gespeicherte Änderungen.',
   'contacts.edit.discardGuard.confirm': 'Verwerfen',
   'contacts.edit.discardGuard.cancel': 'Weiter bearbeiten',
+  'contacts.edit.autosaveBlocked': 'Nicht gespeichert — bitte markiertes Feld korrigieren.',
   'contacts.edit.section.name': 'Name',
   'contacts.edit.section.email': 'E-Mail',
   'contacts.edit.section.phone': 'Telefon',

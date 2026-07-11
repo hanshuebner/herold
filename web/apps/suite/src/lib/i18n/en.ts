@@ -1214,6 +1214,7 @@ export const en = {
   'contacts.edit.discardGuard.message': 'You have unsaved changes.',
   'contacts.edit.discardGuard.confirm': 'Discard',
   'contacts.edit.discardGuard.cancel': 'Keep editing',
+  'contacts.edit.autosaveBlocked': 'Not saved — please fix the highlighted field.',
   'contacts.edit.section.name': 'Name',
   'contacts.edit.section.email': 'Email',
   'contacts.edit.section.phone': 'Phone',
