@@ -25,12 +25,13 @@ const pushSubscriptionSelectColumns = `
 	expires_at_us, types_csv, verification_code, verified,
 	vapid_key_at_registration, notification_rules_json,
 	quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
-	created_at_us, updated_at_us`
+	created_at_us, updated_at_us, transport, fcm_token`
 
 func scanPushSubscription(row rowLike) (store.PushSubscription, error) {
 	var (
 		id, pid                                        int64
 		device, url, typesCSV, verCode, vapidKey, qhTZ string
+		transport, fcmToken                            string
 		p256dh, authKey, rulesJSON                     []byte
 		verified                                       int64
 		expiresAtUs                                    sql.NullInt64
@@ -41,7 +42,7 @@ func scanPushSubscription(row rowLike) (store.PushSubscription, error) {
 		&expiresAtUs, &typesCSV, &verCode, &verified,
 		&vapidKey, &rulesJSON,
 		&quietStart, &quietEnd, &qhTZ,
-		&createdUs, &updatedUs)
+		&createdUs, &updatedUs, &transport, &fcmToken)
 	if err != nil {
 		return store.PushSubscription{}, mapErr(err)
 	}
@@ -49,6 +50,8 @@ func scanPushSubscription(row rowLike) (store.PushSubscription, error) {
 		ID:                     store.PushSubscriptionID(id),
 		PrincipalID:            store.PrincipalID(pid),
 		DeviceClientID:         device,
+		Transport:              store.PushTransport(transport),
+		FCMToken:               fcmToken,
 		URL:                    url,
 		P256DH:                 p256dh,
 		Auth:                   authKey,
@@ -143,13 +146,13 @@ func (m *metadata) InsertPushSubscription(ctx context.Context, ps store.PushSubs
 				expires_at_us, types_csv, verification_code, verified,
 				vapid_key_at_registration, notification_rules_json,
 				quiet_hours_start_local, quiet_hours_end_local, quiet_hours_tz,
-				created_at_us, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				created_at_us, updated_at_us, transport, fcm_token)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			int64(ps.PrincipalID), ps.DeviceClientID, ps.URL, bytesOrEmpty(ps.P256DH), bytesOrEmpty(ps.Auth),
 			expiresArg, joinTypesCSV(ps.Types), ps.VerificationCode, boolToInt(ps.Verified),
 			ps.VAPIDKeyAtRegistration, rulesArg,
 			qhStart, qhEnd, ps.QuietHoursTZ,
-			usMicros(now), usMicros(now))
+			usMicros(now), usMicros(now), string(ps.Transport.Normalized()), ps.FCMToken)
 		if err != nil {
 			return mapErr(err)
 		}

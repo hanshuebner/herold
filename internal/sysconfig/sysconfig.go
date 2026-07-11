@@ -1037,6 +1037,27 @@ type PushConfig struct {
 	// Validate so a misconfigured ceiling cannot defer pushes
 	// indefinitely.
 	CoalesceWindowSeconds int `toml:"coalesce_window_seconds,omitempty"`
+
+	// FCM (re #200): the Firebase Cloud Messaging service-account
+	// credential the dispatcher's FCM transport uses, mirroring the
+	// VAPID secret-ref fields above. FCMServiceAccountJSONEnv /
+	// FCMServiceAccountJSONFile are mutually exclusive; each must
+	// resolve (per STANDARDS §9) to the full service-account key JSON
+	// (the file Firebase console / `gcloud iam service-accounts keys
+	// create` produces), not a path to one. When neither is set the
+	// FCM transport is unconfigured: FCM-kind PushSubscription rows
+	// can still be created, but the dispatcher logs-and-skips their
+	// pushes rather than erroring.
+	FCMServiceAccountJSONEnv string `toml:"fcm_service_account_json_env,omitempty"`
+	// FCMServiceAccountJSONFile names the file holding the
+	// service-account JSON. Read once at startup; a rotated key
+	// requires a restart (mirrors VAPIDPrivateKeyFile).
+	FCMServiceAccountJSONFile string `toml:"fcm_service_account_json_file,omitempty"`
+	// FCMProjectID overrides the project id embedded in the
+	// service-account JSON's "project_id" field. Rarely needed —
+	// set only when the credential's project_id field is absent or
+	// wrong for the deployment's Firebase project.
+	FCMProjectID string `toml:"fcm_project_id,omitempty"`
 }
 
 // VAPIDPrivateKeyRef returns the operator-supplied secret reference
@@ -1051,6 +1072,22 @@ func (p PushConfig) VAPIDPrivateKeyRef() string {
 	}
 	if p.VAPIDPrivateKeyFile != "" {
 		return "file:" + p.VAPIDPrivateKeyFile
+	}
+	return ""
+}
+
+// FCMServiceAccountJSONRef returns the operator-supplied secret
+// reference for the FCM service-account JSON in the form
+// ResolveSecret accepts (re #200): "$VAR" when
+// FCMServiceAccountJSONEnv is set, "file:/path" when
+// FCMServiceAccountJSONFile is set, "" when neither — i.e. the FCM
+// transport is unconfigured. Mirrors VAPIDPrivateKeyRef.
+func (p PushConfig) FCMServiceAccountJSONRef() string {
+	if p.FCMServiceAccountJSONEnv != "" {
+		return p.FCMServiceAccountJSONEnv
+	}
+	if p.FCMServiceAccountJSONFile != "" {
+		return "file:" + p.FCMServiceAccountJSONFile
 	}
 	return ""
 }
@@ -3001,6 +3038,23 @@ func Validate(c *Config) error {
 			return fmt.Errorf("sysconfig: [server.push] vapid_private_key_file %q must be an absolute path",
 				push.VAPIDPrivateKeyFile)
 		}
+	}
+	// FCM service-account credential (re #200). Same shape as the
+	// VAPID secret-ref pair above: mutually exclusive, must be a
+	// "$VAR" / "file:/path" reference, neither set means FCM is
+	// unconfigured (a valid posture — Web-Push-only deployments).
+	fcmEnvSet := push.FCMServiceAccountJSONEnv != ""
+	fcmFileSet := push.FCMServiceAccountJSONFile != ""
+	if fcmEnvSet && fcmFileSet {
+		return errors.New("sysconfig: [server.push] fcm_service_account_json_env and fcm_service_account_json_file are mutually exclusive")
+	}
+	if fcmEnvSet && !strings.HasPrefix(push.FCMServiceAccountJSONEnv, "$") {
+		return fmt.Errorf("sysconfig: [server.push] fcm_service_account_json_env %q must start with \"$\" (STANDARDS §9)",
+			push.FCMServiceAccountJSONEnv)
+	}
+	if fcmFileSet && !strings.HasPrefix(push.FCMServiceAccountJSONFile, "/") {
+		return fmt.Errorf("sysconfig: [server.push] fcm_service_account_json_file %q must be an absolute path",
+			push.FCMServiceAccountJSONFile)
 	}
 	// Dispatcher knobs (Wave 3.8b). Negative or zero values mean
 	// "use default" at dispatcher construction; only out-of-range

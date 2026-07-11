@@ -515,7 +515,15 @@ const CurrentBackupVersion = 1
 //	handler decodes. Both reset to 0/'' whenever ReplaceMessageBody
 //	swaps the blob, since a new body invalidates any previously
 //	retained failed-fetch state.
-const CurrentSchemaVersion = 77
+//
+// 78 — 0078_push_subscription_fcm.sql (re #200). Adds
+//
+//	push_subscription.transport TEXT NOT NULL DEFAULT 'webpush' and
+//	push_subscription.fcm_token TEXT NOT NULL DEFAULT ''. Column-only
+//	migration on an existing table; no new adapter/backup row type
+//	needed (push_subscription's backup encoding already round-trips
+//	unknown-to-it columns via the existing row scan).
+const CurrentSchemaVersion = 78
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

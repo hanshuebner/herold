@@ -501,6 +501,176 @@ func TestPushSet_QuietHoursRejectsBadTZ(t *testing.T) {
 	}
 }
 
+// -- FCM transport (re #200) -------------------------------------------
+
+func TestPushSet_Create_FCM(t *testing.T) {
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				DeviceClientID: "android-1",
+				Kind:           "fcm",
+				FCMToken:       "fcm-registration-token-xyz",
+				Types:          []string{"Email"},
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	if len(resp.NotCreated) != 0 {
+		t.Fatalf("NotCreated non-empty: %+v", resp.NotCreated)
+	}
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not in created")
+	}
+	if created.Kind != "fcm" {
+		t.Fatalf("Kind = %q, want fcm", created.Kind)
+	}
+	if created.FCMToken != "fcm-registration-token-xyz" {
+		t.Fatalf("FCMToken = %q, want the registered token", created.FCMToken)
+	}
+	if created.URL != "" {
+		t.Fatalf("URL = %q, want empty for an FCM subscription", created.URL)
+	}
+
+	// Round-trips through /get with the same shape.
+	getResp, merr := f.invokeGet(f.ctx(), getRequest{IDs: ptrSlice([]jmapID{created.ID})})
+	if merr != nil {
+		t.Fatalf("Get: %v", merr)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("Get list len = %d, want 1", len(getResp.List))
+	}
+	if getResp.List[0].Kind != "fcm" || getResp.List[0].FCMToken != "fcm-registration-token-xyz" {
+		t.Fatalf("Get: got %+v, want kind=fcm with the registered token", getResp.List[0])
+	}
+}
+
+func TestPushSet_Create_FCM_RequiresToken(t *testing.T) {
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				DeviceClientID: "android-1",
+				Kind:           "fcm",
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	serr, ok := resp.NotCreated["c1"]
+	if !ok {
+		t.Fatalf("expected NotCreated, got Created: %+v", resp.Created)
+	}
+	if serr.Type != "invalidProperties" || len(serr.Properties) != 1 || serr.Properties[0] != "fcmToken" {
+		t.Fatalf("error = %+v, want invalidProperties on fcmToken", serr)
+	}
+}
+
+func TestPushSet_Create_FCM_RejectsURLAndKeys(t *testing.T) {
+	f := newFixture(t)
+	resp, _ := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"withURL": mustJSON(pushCreateInput{
+				Kind:     "fcm",
+				FCMToken: "tok",
+				URL:      "https://push.example.test/should-not-be-here",
+			}),
+			"withKeys": mustJSON(pushCreateInput{
+				Kind:     "fcm",
+				FCMToken: "tok",
+				Keys:     validKeysJSON(),
+			}),
+		},
+	})
+	if _, ok := resp.NotCreated["withURL"]; !ok {
+		t.Fatalf("expected withURL to be rejected: %+v", resp.Created)
+	}
+	if _, ok := resp.NotCreated["withKeys"]; !ok {
+		t.Fatalf("expected withKeys to be rejected: %+v", resp.Created)
+	}
+}
+
+func TestPushSet_Create_RejectsUnknownKind(t *testing.T) {
+	f := newFixture(t)
+	resp, _ := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				Kind:     "carrier-pigeon",
+				FCMToken: "tok",
+			}),
+		},
+	})
+	serr, ok := resp.NotCreated["c1"]
+	if !ok {
+		t.Fatalf("expected NotCreated, got Created: %+v", resp.Created)
+	}
+	if serr.Type != "invalidProperties" || len(serr.Properties) != 1 || serr.Properties[0] != "kind" {
+		t.Fatalf("error = %+v, want invalidProperties on kind", serr)
+	}
+}
+
+func TestPushSet_Create_WebPushDefaultKind(t *testing.T) {
+	// Omitting "kind" entirely must still behave exactly like the
+	// pre-#200 Web Push path (backward compatibility for existing
+	// suite clients that never send "kind").
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				URL:   "https://push.example.test/no-kind",
+				Keys:  validKeysJSON(),
+				Types: []string{"Email"},
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("expected Created, got NotCreated: %+v", resp.NotCreated)
+	}
+	if created.Kind != "webpush" {
+		t.Fatalf("Kind = %q, want webpush (the normalized default)", created.Kind)
+	}
+}
+
+func TestPushSet_RejectsImmutableFCMFields(t *testing.T) {
+	f := newFixture(t)
+	createResp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				Kind:     "fcm",
+				FCMToken: "tok-original",
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := createResp.Created["c1"]
+
+	updateResp, merr := f.invokeSet(f.ctx(), setRequest{
+		Update: map[jmapID]json.RawMessage{
+			created.ID: mustJSON(map[string]any{"fcmToken": "tok-rotated"}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("update: %v", merr)
+	}
+	serr, ok := updateResp.NotUpdated[created.ID]
+	if !ok {
+		t.Fatalf("expected fcmToken update to be rejected as immutable")
+	}
+	if serr.Type != "invalidProperties" || len(serr.Properties) != 1 || serr.Properties[0] != "fcmToken" {
+		t.Fatalf("error = %+v, want invalidProperties on fcmToken", serr)
+	}
+}
+
 // -- helpers ----------------------------------------------------------
 
 func mustJSON(v any) json.RawMessage {

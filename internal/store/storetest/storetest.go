@@ -463,6 +463,9 @@ func Run(t *testing.T, f Factory) {
 		{"EmailBulkJob_FinishFailed", testEmailBulkJob_FinishFailed},
 		// -- whole-mailbox permanent-delete bulk job (issue #179) --
 		{"EmailBulkJob_DestroyJobPatchJSONSentinel", testEmailBulkJob_DestroyJobPatchJSONSentinel},
+		// -- FCM push-subscription transport (migration 0078, re #200) --
+		{"PushSubscription_FCMTransport_CRUD", testPushSubscription_FCMTransport_CRUD},
+		{"PushSubscription_WebPushTransport_DefaultsAndUnaffected", testPushSubscription_WebPushTransport_DefaultsAndUnaffected},
 	}
 	for _, c := range cases {
 		tc := c
@@ -10184,4 +10187,106 @@ func testBlobPartIndexMinVersionFilter(t *testing.T, s store.Store) {
 	}
 	mustNotContain(pendingAfterV3, id1, "after v3 put")
 	mustNotContain(pendingAfterV3, id2, "after v3 put")
+}
+
+// testPushSubscription_FCMTransport_CRUD exercises the FCM transport
+// shape added by migration 0078 (re #200): a subscription with
+// Transport=PushTransportFCM and FCMToken set, URL/P256DH/Auth left
+// empty. Covers insert, get, list-by-principal, and delete on both
+// backends per STANDARDS §8.4.
+func testPushSubscription_FCMTransport_CRUD(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fcm-user@example.com")
+
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "android-device-1",
+		Transport:      store.PushTransportFCM,
+		FCMToken:       "fcm-registration-token-abc123",
+		Types:          []string{"Email"},
+		Verified:       true,
+	})
+	if err != nil {
+		t.Fatalf("InsertPushSubscription: %v", err)
+	}
+
+	got, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription: %v", err)
+	}
+	if got.Transport != store.PushTransportFCM {
+		t.Fatalf("Transport = %q, want %q", got.Transport, store.PushTransportFCM)
+	}
+	if got.FCMToken != "fcm-registration-token-abc123" {
+		t.Fatalf("FCMToken = %q, want the registered token", got.FCMToken)
+	}
+	if got.URL != "" {
+		t.Fatalf("URL = %q, want empty for an FCM subscription", got.URL)
+	}
+	if len(got.P256DH) != 0 || len(got.Auth) != 0 {
+		t.Fatalf("P256DH/Auth must be empty for an FCM subscription, got %d/%d bytes",
+			len(got.P256DH), len(got.Auth))
+	}
+
+	list, err := s.Meta().ListPushSubscriptionsByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListPushSubscriptionsByPrincipal: %v", err)
+	}
+	if len(list) != 1 || list[0].Transport != store.PushTransportFCM || list[0].FCMToken != got.FCMToken {
+		t.Fatalf("ListPushSubscriptionsByPrincipal: got %+v, want one FCM row matching %+v", list, got)
+	}
+
+	// Transport/FCMToken are immutable post-create (mirrors url/keys);
+	// UpdatePushSubscription only ever touches the mutable fields, so a
+	// round-trip through Update must leave them untouched.
+	got.Types = []string{"Email", "ChatMessage"}
+	if err := s.Meta().UpdatePushSubscription(ctx, got); err != nil {
+		t.Fatalf("UpdatePushSubscription: %v", err)
+	}
+	afterUpdate, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription after update: %v", err)
+	}
+	if afterUpdate.Transport != store.PushTransportFCM || afterUpdate.FCMToken != got.FCMToken {
+		t.Fatalf("Transport/FCMToken changed across an update: got %+v", afterUpdate)
+	}
+
+	if err := s.Meta().DeletePushSubscription(ctx, id); err != nil {
+		t.Fatalf("DeletePushSubscription: %v", err)
+	}
+	if _, err := s.Meta().GetPushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPushSubscription after delete: got err=%v, want ErrNotFound", err)
+	}
+}
+
+// testPushSubscription_WebPushTransport_DefaultsAndUnaffected is a
+// regression guard for migration 0078: a subscription created without
+// an explicit Transport (the pre-existing Web Push shape every suite
+// client uses) must persist as PushTransportWebPush with an empty
+// FCMToken, unaffected by the new columns' defaults.
+func testPushSubscription_WebPushTransport_DefaultsAndUnaffected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "webpush-user@example.com")
+
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "browser-device-1",
+		URL:            "https://push.example.test/sub",
+		P256DH:         make([]byte, 65),
+		Auth:           make([]byte, 16),
+		Verified:       true,
+	})
+	if err != nil {
+		t.Fatalf("InsertPushSubscription: %v", err)
+	}
+	got, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription: %v", err)
+	}
+	if got.Transport.Normalized() != store.PushTransportWebPush {
+		t.Fatalf("Transport = %q, want it to normalize to %q", got.Transport, store.PushTransportWebPush)
+	}
+	if got.FCMToken != "" {
+		t.Fatalf("FCMToken = %q, want empty for a Web Push subscription", got.FCMToken)
+	}
 }
