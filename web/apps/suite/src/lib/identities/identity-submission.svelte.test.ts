@@ -210,4 +210,60 @@ describe('IdentitySubmissionStore._entry — state_unsafe_mutation regression', 
     expect(getSubmission).toHaveBeenCalledTimes(1);
     expect(getSubmission).toHaveBeenCalledWith('id-loaded');
   });
+
+  it('(E) calling handle.load() from within a $derived does not throw state_unsafe_mutation (re #176)', async () => {
+    // This is the exact shape of ThreadInlineComposer's submissionResolver:
+    // called synchronously from two separate $derived computations
+    // (showPicker, fromGating), each triggering handle.load(). On the
+    // pre-fix code, load() -> #fetch() calls _patch synchronously (to set
+    // status: 'loading') before its first await -- a $state write reached
+    // from within the derived's synchronous evaluation. Svelte 5 raises
+    // state_unsafe_mutation, and since load() is an async function the
+    // exception surfaces as a rejected promise (matching the reported
+    // "Uncaught (in promise) Error: state_unsafe_mutation"), not a
+    // synchronous throw -- so this test captures the load() promises
+    // rather than relying on a try/catch around the derived evaluation.
+    const status = {
+      configured: true,
+      submit_host: 'smtp.example.com',
+      submit_port: 587,
+      submit_security: 'starttls' as const,
+      submit_auth_method: 'password' as const,
+      state: 'ok' as const,
+      available_oauth_providers: [] as string[],
+      domain_authoritative: true,
+    };
+    vi.mocked(getSubmission).mockResolvedValue(status);
+
+    const loadPromises: Promise<void>[] = [];
+    let derivedA: unknown;
+    let derivedB: unknown;
+
+    withReactiveRoot(() => {
+      const handle = submissionStore.forIdentity('id-e');
+      const a = $derived.by(() => {
+        loadPromises.push(handle.load());
+        return handle.status;
+      });
+      const b = $derived.by(() => {
+        loadPromises.push(handle.load());
+        return handle.status;
+      });
+      $effect(() => {
+        derivedA = a;
+        derivedB = b;
+      });
+      flushSync();
+    });
+
+    expect(derivedA).toBe('idle');
+    expect(derivedB).toBe('idle');
+
+    // None of the load() calls issued synchronously from the derived
+    // evaluations may reject with state_unsafe_mutation.
+    await expect(Promise.all(loadPromises)).resolves.toBeDefined();
+
+    expect(submissionStore._entry('id-e').status).toBe('ready');
+    expect(submissionStore._entry('id-e').data).toEqual(status);
+  });
 });

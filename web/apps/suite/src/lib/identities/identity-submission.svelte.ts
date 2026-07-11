@@ -35,6 +35,12 @@ class IdentitySubmissionStore {
   /** Whether the JMAP sync handler has been registered. */
   #syncRegistered = false;
 
+  /** Identities with a fetch already scheduled or in flight. Plain
+   *  (non-reactive) set, not #entries: it exists only to dedupe the
+   *  synchronous portion of load() (see IdentitySubmissionHandle#fetch)
+   *  and must never itself be read from a reactive context. */
+  #pending = new Set<string>();
+
   /** Default entry for an identity we have never queried. Shared so
    *  every caller observes the same reference; never mutated. Reading
    *  `handle.status` / `.data` / `.error` for an unseen identity must
@@ -90,6 +96,22 @@ class IdentitySubmissionStore {
     this.#entries = new Map(this.#entries).set(identityId, updated);
   }
 
+  /** Internal: true while a fetch for this identity is scheduled or
+   *  in flight (see IdentitySubmissionHandle#fetch). */
+  _isPending(identityId: string): boolean {
+    return this.#pending.has(identityId);
+  }
+
+  /** Internal: mark a fetch as scheduled/in-flight for this identity. */
+  _markPending(identityId: string): void {
+    this.#pending.add(identityId);
+  }
+
+  /** Internal: clear the pending marker once the fetch has settled. */
+  _clearPending(identityId: string): void {
+    this.#pending.delete(identityId);
+  }
+
   /** Invalidate all cached entries (e.g. on JMAP push). */
   invalidateAll(): void {
     const next = new Map<string, SubmissionEntry>();
@@ -139,21 +161,45 @@ export class IdentitySubmissionHandle {
    * patch and call load() again, looping forever against a 4xx
    * response. Caching the failure breaks that cycle; sync.on('Identity')
    * still invalidates entries on a JMAP push and clears the error.
+   *
+   * Callers include $derived computations that resolve a per-identity
+   * submission summary while rendering (e.g. ThreadInlineComposer's and
+   * ComposeWindow's submissionResolver, invoked from both a showPicker
+   * and a fromGating $derived in the same render pass) — see #fetch for
+   * why the guard here alone is not sufficient to prevent a duplicate
+   * fetch (re #176).
    */
   async load(): Promise<void> {
     const entry = this.#store._entry(this.identityId);
     if (entry.status === 'loading') return;
     if (entry.status === 'ready') return;
     if (entry.status === 'error') return;
+    if (this.#store._isPending(this.identityId)) return;
+    this.#store._markPending(this.identityId);
     await this.#fetch();
   }
 
   /** Force a re-fetch regardless of current status. */
   async refresh(): Promise<void> {
+    this.#store._markPending(this.identityId);
     await this.#fetch();
   }
 
+  /**
+   * Perform the actual fetch. The first `await` below is a bare
+   * microtask yield, not the network call itself — it exists so the
+   * subsequent `_patch` (a $state write) never lands inside the
+   * synchronous call stack of whatever invoked load()/refresh(). Both
+   * are called from $derived computations (ThreadInlineComposer /
+   * ComposeWindow submissionResolver), and Svelte 5 forbids a $state
+   * write while a $derived is being evaluated on the same stack
+   * (state_unsafe_mutation, re #176). Yielding first defers the write
+   * to a microtask that runs after the derived's synchronous evaluation
+   * has already completed. #pending (see load()/refresh()) dedupes the
+   * two-derived-in-one-render-pass case so only one fetch is issued.
+   */
   async #fetch(): Promise<void> {
+    await Promise.resolve();
     this.#store._patch(this.identityId, { status: 'loading', error: null });
     try {
       const data = await getSubmission(this.identityId);
@@ -161,6 +207,8 @@ export class IdentitySubmissionHandle {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.#store._patch(this.identityId, { status: 'error', error: msg });
+    } finally {
+      this.#store._clearPending(this.identityId);
     }
   }
 }
