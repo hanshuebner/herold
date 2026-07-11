@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:full\r\nKIND:individual\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;Augusta;Hon.;\r\nEMAIL;TYPE=work;PREF=1:ada@example.test\r\nTEL;TYPE=voice,cell:+44 20 7946 0958\r\nADR;TYPE=work;CC=GB:;;Street;London;;SW1A 2AA;UK\r\nORG:Org;Unit\r\nTITLE:Engineer\r\nROLE:Fellow\r\nNICKNAME:Ada\r\nNOTE:A note.\r\nURL:https://example.test\r\nBDAY:18151210\r\nANNIVERSARY:--1225\r\nX-CUSTOM:value\r\nEND:VCARD\r\n")
