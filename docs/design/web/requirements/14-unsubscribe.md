@@ -4,6 +4,8 @@ When a message comes from a mailing list or commercial sender that has declared 
 
 Why a dedicated doc: this is the most common single-action workflow that distinguishes "an email client a normal person can use" from "raw mail UI". Doing it well requires understanding the header forms, the one-click variant's security implications, and the failure modes.
 
+See also: server `../../server/requirements/28-mailing-lists.md` — herold generates `List-Unsubscribe` / RFC 8058 one-click headers for its own hosted lists (the producer end of this workflow).
+
 ## Detection
 
 | ID | Requirement |

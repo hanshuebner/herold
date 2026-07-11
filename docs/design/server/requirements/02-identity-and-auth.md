@@ -43,7 +43,7 @@ The model: local identity is primary. A user MAY associate 0–N external OIDC i
 - **REQ-AUTH-55** Unlink: user or admin removes the association. If the principal is external-only and has only one association, unlink requires simultaneously setting a local password.
 - **REQ-AUTH-56** Auto-provisioning from OIDC first login: **opt-in per provider** (off by default). When enabled + first login for a `sub` that doesn't exist: create a new local principal with a generated local email or a config-specified template; store the association. When off: first-time unknown `sub` is rejected.
 - **REQ-AUTH-57** Logout from herold does NOT log the user out of the external IdP (single-sign-out is out of scope v1).
-- **REQ-AUTH-58** We are a **relying party only**. We do not expose `/.well-known/openid-configuration`, `/authorize`, `/token`, `/userinfo`, `/jwks` endpoints for third parties to consume our identity. Non-goal NG11.
+- **REQ-AUTH-58** We are a **relying party only**. We do not expose `/.well-known/openid-configuration`, `/authorize`, `/token`, `/userinfo`, `/jwks` endpoints for third parties to consume our identity. Non-goal NG11. **[Extended by `07-access-control.md` (REQ-AC-60..65): RP-only / NG11 is preserved for token *issuance*, but a provider's group/role *claims* MAY now be mapped to herold grants for authorization.]**
 
 ### Protocols where external OIDC login applies
 
@@ -88,13 +88,13 @@ The model: local identity is primary. A user MAY associate 0–N external OIDC i
 
 Stalwart has a fine-grained permission matrix with ~80 permissions and role inheritance. We simplify.
 
-- **REQ-AUTH-60** A principal has one of: `user`, `admin`, or `superadmin`.
+- **REQ-AUTH-60** A principal has one of: `user`, `admin`, or `superadmin`. **[Superseded by `07-access-control.md` (REQ-AC-01): roles are emergent from resource grants; `superadmin` survives as `server:superadmin`, while `admin`/`user` cease to be stored attributes. The tiers below remain a useful capability summary of what those grants confer.]**
   - `user`: access to own mail, own Sieve script, own identities, own app passwords.
   - `admin`: everything `user` can do, plus account/domain management, queue inspection, spam training.
   - `superadmin`: everything `admin` can do, plus config reload, TLS cert management, server shutdown, directory backend config.
 - **REQ-AUTH-61** The first principal created during bootstrap is `superadmin`. There is always exactly one superadmin at minimum; deleting the last superadmin is rejected.
 - **REQ-AUTH-62** Admin actions logged to a dedicated audit log (see `09-operations.md`).
-- **REQ-AUTH-63** Mailbox ACLs (IMAP RFC 4314) are a *separate* dimension for shared mailboxes — deferred with shared mailboxes.
+- **REQ-AUTH-63** Mailbox ACLs (IMAP RFC 4314) are a *separate* dimension for shared mailboxes — deferred with shared mailboxes. **[Realised by `07-access-control.md` (REQ-AC-50): mailbox ACLs are `mailbox:read`/`write`/`admin` grants in the unified model, no longer a separate deferred dimension; phase-2 timing (REQ-PROTO-33) unchanged.]**
 
 ## Session model
 
@@ -127,7 +127,7 @@ Stalwart has a fine-grained permission matrix with ~80 permissions and role inhe
 
 ## Domain ownership and delegated admin
 
-- **REQ-AUTH-80** A domain belongs to exactly one principal (the domain "owner"). Owner can manage their own aliases, catch-alls, DKIM key rotation.
+- **REQ-AUTH-80** A domain belongs to exactly one principal (the domain "owner"). Owner can manage their own aliases, catch-alls, DKIM key rotation. **[Restated by `07-access-control.md` (REQ-AC-31) as exactly one `domain:owner` grant per domain; the day-to-day management powers here are `domain:operator` (REQ-AC-30).]**
 - **REQ-AUTH-81** Domain ownership proof: DNS TXT record matching a server-issued challenge (similar to ACME's DNS-01). Lightweight verification for the admin UI.
 - **REQ-AUTH-82** `admin` role can create domains without ownership proof (they're the operator).
 
@@ -313,7 +313,7 @@ External accounts are orthogonal to OIDC federation (REQ-AUTH-50+): OIDC federat
 
 ## Out of scope
 
-- Fine-grained permissions beyond the three roles.
+- Fine-grained permissions beyond the three roles. **[Amended by `07-access-control.md`: authorization is now grant-per-resource (server/domain/list/mailbox), still deliberately bounded — a small level set per resource kind, not a per-operation permission matrix.]**
 - Per-tenant identity isolation (non-goal NG3).
 - Kerberos / GSSAPI SASL.
 - NTLM anything.

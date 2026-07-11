@@ -2,6 +2,8 @@
 
 When a message carries the RFC 2369 `List-*` headers, the suite surfaces list metadata and per-list affordances. Distinct from the unsubscribe handling in `14-unsubscribe.md` (which deals only with `List-Unsubscribe` and is a member of this header family).
 
+See also: server `../../server/requirements/28-mailing-lists.md` — herold as a list *host*, the producer of the `List-*` headers this doc consumes.
+
 ## Detection
 
 | ID | Requirement |
