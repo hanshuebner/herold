@@ -641,10 +641,10 @@ jobs:
   # (which must contain only `herold` at the archive root, mode 0755),
   # swaps current -> releases/<ref>, and restarts the herold systemd unit.
   #
-  # NOTE: ci-<sha> release tags accumulate in this repo indefinitely.
-  # The host-side activate script already prunes release dirs (KEEP=5),
-  # but the Forgejo release objects and their asset binaries are not
-  # pruned.  A scheduled Forgejo-side retention sweep is a follow-up task.
+  # NOTE: ci-<sha> release objects, their tags, and asset binaries are pruned
+  # by the "prune old ci- releases" step below, which keeps only the newest 5
+  # after publishing each new release. The host-side activate script prunes the
+  # on-disk release dirs separately (KEEP=5).
   deploy:
     name: deploy (outpost.netzhansa.com)
     # The release-pull deploy runs on any standard orchestrator-provisioned
@@ -771,6 +771,43 @@ jobs:
             -F "attachment=@herold-${REF}.sha256" > /dev/null
 
           echo "Uploaded herold-${REF}.tar.gz and herold-${REF}.sha256 to release ${RELEASE_ID}"
+
+      # Retention: keep only the newest KEEP ci- releases (and their tags +
+      # asset binaries). Runs after the new release is published, so the
+      # just-created ci-<sha> is always among those kept.
+      - name: prune old ci- releases (keep newest 5)
+        if: steps.guard.outputs.enabled == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+          KEEP=5
+
+          # Collect all ci- releases across pages: created_at<TAB>id<TAB>tag.
+          page=1
+          : > ci_releases.txt
+          while :; do
+            batch=$(curl -fsS -H "${AUTH}" "${API}/repos/${REPO}/releases?limit=50&page=${page}")
+            n=$(printf '%s' "${batch}" | jq 'length')
+            [ "${n}" -eq 0 ] && break
+            printf '%s' "${batch}" \
+              | jq -rc '.[] | select(.tag_name|startswith("ci-")) | "\(.created_at)\t\(.id)\t\(.tag_name)"' \
+              >> ci_releases.txt
+            page=$((page+1))
+            [ "${page}" -gt 60 ] && break
+          done
+
+          # Newest-first by ISO created_at; delete everything past the newest KEEP.
+          sort -r ci_releases.txt | tail -n +$((KEEP+1)) | while IFS="$(printf '\t')" read -r created id tag; do
+            [ -z "${id}" ] && continue
+            curl -fsS -X DELETE -H "${AUTH}" "${API}/repos/${REPO}/releases/${id}" || true
+            curl -fsS -X DELETE -H "${AUTH}" "${API}/repos/${REPO}/tags/${tag}" >/dev/null 2>&1 || true
+            echo "pruned ${tag} (id ${id})"
+          done
+          echo "prune complete; kept newest ${KEEP} ci- releases"
 
       - name: write SSH key
         if: steps.guard.outputs.enabled == 'true'
