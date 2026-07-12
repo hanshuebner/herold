@@ -83,3 +83,7 @@ coverage.html
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local secrets (FCM service-account key, etc.) — never commit
+/secrets/
+*firebase-adminsdk*.json
