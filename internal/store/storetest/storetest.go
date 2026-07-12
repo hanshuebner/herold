@@ -75,6 +75,7 @@ func Run(t *testing.T, f Factory) {
 		{"BlobDedup", testBlobDedup},
 		{"BlobNotFound", testBlobNotFound},
 		{"FTSSmoke", testFTSSmoke},
+		{"FTSQuery_OrUnion", testFTSQueryOrUnion},
 		{"FTSCursor_GetSet_EmptyIsZero", testFTSCursorEmptyIsZero},
 		{"FTSCursor_Upsert_Roundtrip", testFTSCursorUpsertRoundtrip},
 		{"FTSCursor_Concurrent", testFTSCursorConcurrent},
@@ -3224,6 +3225,94 @@ func testFTSSmoke(t *testing.T, s store.Store) {
 	// Commit on empty batch must be a no-op.
 	if err := s.FTS().Commit(ctx); err != nil {
 		t.Logf("FTS Commit returned: %v", err)
+	}
+}
+
+// testFTSQueryOrUnion is a cross-backend (SQLite + Postgres) compliance
+// case for re #198: a store.Query with Or populated (the shape
+// mergeFTSQuery in internal/protojmap/mail/email produces from a JMAP
+// `{operator: "OR", conditions: [...]}` Email/query filter -- e.g. the
+// suite's "all mail with this person" search across a contact's several
+// e-mail addresses) must return the union of every branch's matches,
+// not just the first. Before the fix, an OR-shaped filter's text-bearing
+// predicates were silently dropped when folded into a single
+// store.Query, degrading the search to either an unscoped scan or
+// "only the first branch" depending on the query shape.
+func testFTSQueryOrUnion(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fts-or@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	addrs := []string{
+		"andreasrosenthal9@gmail.com",
+		"andreas.rosenthal@lamberti.at",
+		"rosenthal@deepick.eu",
+	}
+	for i, addr := range addrs {
+		ref := putBlob(t, s, fmt.Sprintf("or-union body %d", i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID:  p.ID,
+			Blob:         ref,
+			Size:         ref.Size,
+			InternalDate: time.Unix(6000+int64(i), 0).UTC(),
+			ReceivedAt:   time.Unix(6000+int64(i), 0).UTC(),
+			Envelope:     store.Envelope{From: addr, MessageID: fmt.Sprintf("or-union-%d@x", i)},
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+	// An unrelated sender sharing only the contact's first name
+	// ("Andreas") -- must not appear in the OR-query result.
+	unrelatedRef := putBlob(t, s, "unrelated body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Blob:         unrelatedRef,
+		Size:         unrelatedRef.Size,
+		InternalDate: time.Unix(6100, 0).UTC(),
+		ReceivedAt:   time.Unix(6100, 0).UTC(),
+		Envelope:     store.Envelope{From: "Andreas Unrelated <andreas.unrelated@example.test>", MessageID: "or-union-unrelated@x"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage[unrelated]: %v", err)
+	}
+
+	// Map addresses -> MessageID via the change feed (insertion order).
+	feed, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed: %v", err)
+	}
+	var created []store.MessageID
+	for _, c := range feed {
+		if c.Kind == store.EntityKindEmail && c.Op == store.ChangeOpCreated {
+			created = append(created, store.MessageID(c.EntityID))
+		}
+	}
+	if len(created) != len(addrs)+1 {
+		t.Fatalf("want %d created messages, got %d", len(addrs)+1, len(created))
+	}
+	wantIDs := map[store.MessageID]bool{}
+	for i := range addrs {
+		wantIDs[created[i]] = true
+	}
+
+	branches := make([]store.Query, len(addrs))
+	for i, addr := range addrs {
+		branches[i] = store.Query{Text: addr}
+	}
+	hits, err := s.FTS().Query(ctx, p.ID, store.Query{Or: branches})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	gotIDs := map[store.MessageID]bool{}
+	for _, h := range hits {
+		gotIDs[h.MessageID] = true
+	}
+	for id := range wantIDs {
+		if !gotIDs[id] {
+			t.Errorf("missing message %d (one of the contact's own addresses) in OR-query results: %+v", id, hits)
+		}
+	}
+	if len(hits) != len(wantIDs) {
+		t.Errorf("want exactly %d hits (the union of the OR branches, no more no less), got %d: %+v", len(wantIDs), len(hits), hits)
 	}
 }
 

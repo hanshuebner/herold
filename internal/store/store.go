@@ -2844,6 +2844,14 @@ type Query struct {
 	// 1000). Backends MUST cap at a hard ceiling regardless of caller
 	// input.
 	Limit int
+	// Or holds alternative branch queries; when non-empty, a document
+	// matches this Query if it satisfies this Query's own direct fields
+	// AND at least one of the Or branches (re #198). Used to translate a
+	// JMAP `{operator: "OR", conditions: [...]}` Email/query filter — e.g.
+	// the suite's "all mail with this person" search across a contact's
+	// several e-mail addresses — into an exact FTS-level disjunction
+	// instead of narrowing to only the first branch.
+	Or []Query
 }
 
 // FTS is the full-text search surface: write path (called from the

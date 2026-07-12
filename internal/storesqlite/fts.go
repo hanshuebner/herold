@@ -46,7 +46,66 @@ func (f *ftsStub) RemoveMessage(ctx context.Context, id store.MessageID) error {
 	return nil
 }
 
+// Query dispatches to queryFlat directly, or — when q.Or is populated
+// (re #198: a JMAP `{operator: "OR", conditions: [...]}` Email/query
+// filter, e.g. the suite's "all mail with this person" search across a
+// contact's several e-mail addresses) — unions the results of querying
+// each branch (with q's own direct-field terms ANDed in via
+// mergeQueryBranch) so a message matching ANY branch is returned rather
+// than only the first.
 func (f *ftsStub) Query(ctx context.Context, principalID store.PrincipalID, q store.Query) ([]store.MessageRef, error) {
+	if len(q.Or) == 0 {
+		return f.queryFlat(ctx, principalID, q)
+	}
+	seen := make(map[store.MessageID]store.MessageRef)
+	var order []store.MessageID
+	for _, branch := range q.Or {
+		merged := mergeQueryBranch(q, branch)
+		merged.Limit = q.Limit
+		hits, err := f.Query(ctx, principalID, merged)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hits {
+			if _, ok := seen[h.MessageID]; !ok {
+				seen[h.MessageID] = h
+				order = append(order, h.MessageID)
+			}
+		}
+	}
+	out := make([]store.MessageRef, 0, len(order))
+	for _, id := range order {
+		out = append(out, seen[id])
+	}
+	return out, nil
+}
+
+// mergeQueryBranch ANDs outer's own direct-field terms into branch (a
+// single Or alternative) before it is queried on its own. branch's own
+// nested Or (if any) is preserved so Query's recursive call still sees it.
+func mergeQueryBranch(outer, branch store.Query) store.Query {
+	merged := branch
+	if merged.MailboxID == 0 {
+		merged.MailboxID = outer.MailboxID
+	}
+	if outer.Text != "" {
+		if merged.Text == "" {
+			merged.Text = outer.Text
+		} else {
+			merged.Text = merged.Text + " " + outer.Text
+		}
+	}
+	merged.Subject = append(append([]string{}, outer.Subject...), merged.Subject...)
+	merged.From = append(append([]string{}, outer.From...), merged.From...)
+	merged.To = append(append([]string{}, outer.To...), merged.To...)
+	merged.Cc = append(append([]string{}, outer.Cc...), merged.Cc...)
+	merged.Body = append(append([]string{}, outer.Body...), merged.Body...)
+	merged.AttachmentName = append(append([]string{}, outer.AttachmentName...), merged.AttachmentName...)
+	return merged
+}
+
+// queryFlat is the original single-branch (no q.Or) implementation.
+func (f *ftsStub) queryFlat(ctx context.Context, principalID store.PrincipalID, q store.Query) ([]store.MessageRef, error) {
 	if q.Limit <= 0 || q.Limit > 1000 {
 		q.Limit = 1000
 	}

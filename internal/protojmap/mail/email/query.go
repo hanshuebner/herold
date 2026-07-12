@@ -769,46 +769,63 @@ func filterNeedsBodyBlobParse(f *emailFilter) bool {
 // store.Query envelope. Non-text predicates are applied later in
 // matchCondition; the FTS pass narrows the candidate set.
 //
-// Walks into FilterOperator AND-trees so that a query like
+// Walks into FilterOperator AND/OR trees so that a query like
 // `{ AND: [{text:"foo"}, {inMailboxOtherThan:[…]}] }` still routes the
-// text predicate through FTS. Without this walk, top-level AND filters
-// would degrade FTS to an empty-text query (returning an unrelated
-// candidate set) and the AND-tree's inMailbox / inMailboxOtherThan
-// predicates would be the only effective filter.
+// text predicate through FTS, and `{ OR: [{text:"a"}, {from:"b"}] }`
+// (re #198 — the contact "all mail with this person" link joins the
+// contact's addresses with " OR ") narrows to the union of the
+// branches via store.Query.Or, rather than silently keeping only the
+// first branch. Without the OR handling, gatherCandidatesRaw's FTS
+// narrowing degraded a multi-address OR search to "just the first
+// address" and matchCondition's ftsNarrowed fast path never
+// re-validated the dropped branches (there is no non-FTS fallback for
+// from:/to:/cc:/subject: predicates), silently under-matching mail
+// from the contact's 2nd+ address.
 func buildFTSQuery(f *emailFilter) store.Query {
-	q := store.Query{}
-	mergeFTSQuery(&q, f)
-	return q
+	return mergeFTSQuery(f)
 }
 
-func mergeFTSQuery(q *store.Query, f *emailFilter) {
+// mergeFTSQuery recursively translates f into a store.Query. AND nodes
+// (and flat FilterConditions, which are an implicit AND of their own
+// fields) fold into one store.Query's fields; OR nodes fold into that
+// store.Query's Or slice — one branch store.Query per condition,
+// combined by the backend as a disjunction. andQuery below combines
+// two branch results when a filter mixes flat predicates with a nested
+// OR (e.g. `{AND: [{from:"x"}, {OR: [...]}]}`).
+func mergeFTSQuery(f *emailFilter) store.Query {
+	var q store.Query
 	if f == nil {
-		return
+		return q
 	}
 	if f.Operator != "" {
-		// Only AND is safe to fold into a single FTS query — OR / NOT
-		// would change the candidate set's meaning. The non-AND
-		// branches still go through FTS by virtue of their inner text
-		// predicates being detected here, but the produced query then
-		// reflects only the union of text terms; matchCondition
-		// re-validates per-message.
-		if strings.EqualFold(f.Operator, "AND") {
+		switch {
+		case strings.EqualFold(f.Operator, "AND"):
 			for _, raw := range f.Conditions {
 				var sub emailFilter
 				if err := json.Unmarshal(raw, &sub); err == nil {
-					mergeFTSQuery(q, &sub)
+					q = andQuery(q, mergeFTSQuery(&sub))
 				}
 			}
+		case strings.EqualFold(f.Operator, "OR"):
+			for _, raw := range f.Conditions {
+				var sub emailFilter
+				if err := json.Unmarshal(raw, &sub); err == nil {
+					q.Or = append(q.Or, mergeFTSQuery(&sub))
+				}
+			}
+			// NOT is not folded into the FTS query (unchanged from prior
+			// behavior): a NOT branch contributes no text-bearing store.Query
+			// predicate here.
 		}
-		return
+		return q
 	}
 	if f.InMailbox != nil && q.MailboxID == 0 {
 		if id, ok := mailboxIDFromJMAP(*f.InMailbox); ok {
 			q.MailboxID = id
 		}
 	}
-	if f.Text != nil && q.Text == "" {
-		q.Text = *f.Text
+	if f.Text != nil {
+		q.Text = joinFTSTerms(q.Text, *f.Text)
 	}
 	if f.Subject != nil {
 		q.Subject = append(q.Subject, *f.Subject)
@@ -825,6 +842,78 @@ func mergeFTSQuery(q *store.Query, f *emailFilter) {
 	if f.Body != nil {
 		q.Body = append(q.Body, *f.Body)
 	}
+	return q
+}
+
+// joinFTSTerms combines successive text: predicates from an AND-tree
+// into one space-joined string (re #198). storefts.Index.Query matches
+// q.Text with Operator=AND (every analyzed term of the string must be
+// present), so "foo" + "bar" folded into "foo bar" preserves the
+// intended AND-of-bareword-terms semantics (REQ-SRC-40) instead of
+// silently dropping every text: condition after the first — the prior
+// `q.Text == ""` guard kept only the first bareword term of a
+// multi-word free-text search.
+func joinFTSTerms(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	if next == "" {
+		return existing
+	}
+	return existing + " " + next
+}
+
+// andQuery ANDs two store.Query values together. Each operand may
+// itself carry an Or slice (a nested OR branch); ANDing a query that
+// has no Or against one that does simply attaches the Or slice to the
+// combined result. ANDing two queries that both carry Or expands the
+// cross product of their branches (distributing AND over OR) so the
+// combined Or slice still represents an exact disjunction — this shape
+// does not arise from the contact-link use case but keeping the merge
+// correct avoids a silent semantic gap if a future filter nests OR
+// under OR.
+func andQuery(a, b store.Query) store.Query {
+	aBranches := queryBranches(a)
+	bBranches := queryBranches(b)
+	if len(aBranches) == 1 && len(bBranches) == 1 {
+		return andLeafQuery(aBranches[0], bBranches[0])
+	}
+	var out store.Query
+	for _, ab := range aBranches {
+		for _, bb := range bBranches {
+			out.Or = append(out.Or, andLeafQuery(ab, bb))
+		}
+	}
+	return out
+}
+
+// queryBranches returns q itself as a single-element slice when it
+// carries no Or, or its Or branches otherwise (each of which may
+// itself carry further Or nesting; andQuery flattens one level at a
+// time via recursion through andLeafQuery's callers).
+func queryBranches(q store.Query) []store.Query {
+	if len(q.Or) == 0 {
+		return []store.Query{q}
+	}
+	return q.Or
+}
+
+// andLeafQuery ANDs two store.Query values that do not themselves
+// carry an Or slice (queryBranches already peeled those off).
+func andLeafQuery(a, b store.Query) store.Query {
+	var q store.Query
+	q.MailboxID = a.MailboxID
+	if q.MailboxID == 0 {
+		q.MailboxID = b.MailboxID
+	}
+	q.Text = joinFTSTerms(a.Text, b.Text)
+	q.Subject = append(append([]string{}, a.Subject...), b.Subject...)
+	q.From = append(append([]string{}, a.From...), b.From...)
+	q.To = append(append([]string{}, a.To...), b.To...)
+	q.Cc = append(append([]string{}, a.Cc...), b.Cc...)
+	q.Body = append(append([]string{}, a.Body...), b.Body...)
+	q.AttachmentName = append(append([]string{}, a.AttachmentName...), b.AttachmentName...)
+	return q
 }
 
 func messageHasKeyword(m store.Message, kw string) bool {

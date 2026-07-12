@@ -516,29 +516,9 @@ func (i *Index) Query(
 	kindScope.SetField(fieldKind)
 
 	conjuncts := []query.Query{kindScope, principalScope}
-	if q.MailboxID != 0 {
-		mb := bleve.NewTermQuery(strconv.FormatUint(uint64(q.MailboxID), 10))
-		mb.SetField(fieldMailboxID)
-		conjuncts = append(conjuncts, mb)
+	if content := contentQuery(q); content != nil {
+		conjuncts = append(conjuncts, content)
 	}
-	if strings.TrimSpace(q.Text) != "" {
-		// A plain MatchQuery (not a query-string query) against the
-		// implicit "_all" field, requiring every analyzed term of q.Text
-		// to be present (re #198): the standard analyzer splits a value
-		// like an e-mail address on "@"/"." into several tokens, and the
-		// default OR combination let a single shared token (e.g.
-		// "torsten" out of "torsten@buelck.de") match an unrelated
-		// message whose From display name happens to contain that word.
-		textMatch := bleve.NewMatchQuery(q.Text)
-		textMatch.SetOperator(query.MatchQueryOperatorAnd)
-		conjuncts = append(conjuncts, textMatch)
-	}
-	conjuncts = appendFieldQueries(conjuncts, fieldSubject, q.Subject)
-	conjuncts = appendFieldQueries(conjuncts, fieldFrom, q.From)
-	conjuncts = appendFieldQueries(conjuncts, fieldTo, q.To)
-	conjuncts = appendFieldQueries(conjuncts, fieldCc, q.Cc)
-	conjuncts = appendFieldQueries(conjuncts, fieldBody, q.Body)
-	conjuncts = appendFieldQueries(conjuncts, fieldAttachmentName, q.AttachmentName)
 
 	bq := bleve.NewConjunctionQuery(conjuncts...)
 
@@ -578,6 +558,71 @@ func (i *Index) Query(
 		})
 	}
 	return out, nil
+}
+
+// contentQuery returns the Bleve query representing q's own text/field
+// predicates ANDed with the disjunction of any Or branches, or nil when q
+// carries no content-level constraint at all (the caller's principal/kind
+// scope conjuncts still apply in that case).
+//
+// q.Or (re #198) holds alternative branch queries produced by translating
+// a JMAP `{operator: "OR", conditions: [...]}` Email/query filter — e.g.
+// the suite's "all mail with this person" search across a contact's
+// several e-mail addresses. Each branch is folded recursively (a branch
+// may itself carry nested Or) and the branches are combined with
+// bleve.NewDisjunctionQuery so a message matching ANY one of the
+// contact's addresses is returned, not just the first.
+//
+// q.MailboxID is handled here (not by the top-level Query caller) so a
+// nested Or branch's own MailboxID is respected the same way the
+// top-level q's is.
+func contentQuery(q store.Query) query.Query {
+	var parts []query.Query
+	if q.MailboxID != 0 {
+		mb := bleve.NewTermQuery(strconv.FormatUint(uint64(q.MailboxID), 10))
+		mb.SetField(fieldMailboxID)
+		parts = append(parts, mb)
+	}
+	if strings.TrimSpace(q.Text) != "" {
+		// A plain MatchQuery (not a query-string query) against the
+		// implicit "_all" field, requiring every analyzed term of q.Text
+		// to be present (re #198): the standard analyzer splits a value
+		// like an e-mail address on "@"/"." into several tokens, and the
+		// default OR combination let a single shared token (e.g.
+		// "torsten" out of "torsten@buelck.de") match an unrelated
+		// message whose From display name happens to contain that word.
+		textMatch := bleve.NewMatchQuery(q.Text)
+		textMatch.SetOperator(query.MatchQueryOperatorAnd)
+		parts = append(parts, textMatch)
+	}
+	parts = appendFieldQueries(parts, fieldSubject, q.Subject)
+	parts = appendFieldQueries(parts, fieldFrom, q.From)
+	parts = appendFieldQueries(parts, fieldTo, q.To)
+	parts = appendFieldQueries(parts, fieldCc, q.Cc)
+	parts = appendFieldQueries(parts, fieldBody, q.Body)
+	parts = appendFieldQueries(parts, fieldAttachmentName, q.AttachmentName)
+	if len(q.Or) > 0 {
+		disjuncts := make([]query.Query, 0, len(q.Or))
+		for _, branch := range q.Or {
+			bc := contentQuery(branch)
+			if bc == nil {
+				// A branch with no predicate of its own matches every
+				// document within the outer principal/kind/mailbox scope
+				// — the correct reading of an empty OR branch, not a
+				// reason to drop the branch from the disjunction.
+				bc = bleve.NewMatchAllQuery()
+			}
+			disjuncts = append(disjuncts, bc)
+		}
+		parts = append(parts, bleve.NewDisjunctionQuery(disjuncts...))
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return bleve.NewConjunctionQuery(parts...)
 }
 
 // appendFieldQueries turns a per-field term list into match queries scoped

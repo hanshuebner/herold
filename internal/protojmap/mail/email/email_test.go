@@ -378,6 +378,73 @@ func TestEmail_Query_TextPredicate_BackedByFTS(t *testing.T) {
 	}
 }
 
+// TestEmail_Query_AllMailWithContact_UnionOfAddresses is the JMAP-layer
+// acceptance test for the herold #198 "all mail with this person" flow:
+// the suite's ContactsDetailView.svelte builds an OR filter across a
+// contact's several e-mail addresses (allMailUrl joins them with
+// " OR "; the client query parser turns that into a JMAP
+// {operator:"OR", conditions:[{text:addr1}, ...]} filter). The result
+// must be the union of mail from every one of the contact's addresses
+// -- not just the first, which is what the maintainer's round-2
+// verification found broken -- and must exclude an unrelated sender who
+// merely shares the contact's first name (the round-2 over-match this
+// ticket already fixed, pinned here so a future regression can't
+// reintroduce it alongside the union fix).
+func TestEmail_Query_AllMailWithContact_UnionOfAddresses(t *testing.T) {
+	f := setupFixture(t)
+
+	addrs := []string{
+		"andreasrosenthal9@gmail.com",
+		"andreas.rosenthal@lamberti.at",
+		"rosenthal@deepick.eu",
+	}
+
+	// One message from each of the contact's three addresses.
+	var wantIDs []string
+	for i, addr := range addrs {
+		m := f.insertMessage(t,
+			fmt.Sprintf("From: %s\r\nTo: alice@example.test\r\nSubject: msg %d\r\n\r\nbody %d", addr, i, i),
+			fmt.Sprintf("msg %d", i), addr, "alice@example.test", nil, "")
+		wantIDs = append(wantIDs, fmt.Sprintf("%d", m.ID))
+	}
+
+	// An unrelated sender sharing only the contact's first name
+	// ("Andreas") -- must not appear in the result.
+	f.insertMessage(t,
+		"From: Andreas Unrelated <andreas.unrelated@example.test>\r\nTo: alice@example.test\r\nSubject: hi\r\n\r\nhi there",
+		"hi", "Andreas Unrelated <andreas.unrelated@example.test>", "alice@example.test", nil, "")
+
+	conditions := make([]map[string]any, len(addrs))
+	for i, addr := range addrs {
+		conditions[i] = map[string]any{"text": addr}
+	}
+	_, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator":   "OR",
+			"conditions": conditions,
+		},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	gotSet := map[string]bool{}
+	for _, id := range resp.IDs {
+		gotSet[id] = true
+	}
+	for _, want := range wantIDs {
+		if !gotSet[want] {
+			t.Errorf("missing message %s (mail from one of the contact's own addresses) in results: %v (raw=%s)", want, resp.IDs, raw)
+		}
+	}
+	if len(resp.IDs) != len(wantIDs) {
+		t.Errorf("want exactly the %d messages from the contact's addresses (no more, no less), got %d: %v (raw=%s)", len(wantIDs), len(resp.IDs), resp.IDs, raw)
+	}
+}
+
 // TestEmail_Get_NilIDs_Refused asserts that Email/get with ids: null
 // returns a method-level error per REQ-PERF-INDEX-04. The wire type is
 // requestTooLarge (RFC 8621-canonical); the internal kind classifier

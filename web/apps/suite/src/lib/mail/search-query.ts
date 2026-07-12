@@ -4,11 +4,15 @@
  * Per docs/requirements/07-search.md REQ-SRC-40..45. v1 supports the
  * dominant operator set: from / to / cc / bcc / subject / body / has /
  * is / before / after / label / list. AND is implicit. Negation (`-`)
- * and OR are deferred.
+ * and general parenthesised/nested OR expressions are deferred.
  *
  * Bareword tokens map to `{ text: <value> }` for full-text search.
  * Multiple terms combine into a `{ operator: 'AND', conditions: [...] }`
- * tree.
+ * tree. A flat, unparenthesised sequence of terms joined by the literal
+ * uppercase token "OR" (re #198 — the contact "all mail with this
+ * person" link joins a multi-address contact's addresses this way)
+ * combines into a `{ operator: 'OR', conditions: [...] }` tree instead;
+ * see parseQuery's doc comment for the exact scope of this OR support.
  */
 
 import type { Mailbox } from './types';
@@ -67,7 +71,9 @@ export interface SearchChip {
 export function decodeChips(input: string): SearchChip[] {
   const trimmed = input.trim();
   if (!trimmed) return [];
-  const tokens = tokenize(trimmed);
+  // The literal "OR" token is the boolean-or joiner (see parseQuery below),
+  // not a search term of its own — no chip is rendered for it.
+  const tokens = tokenize(trimmed).filter((tok) => tok !== 'OR');
   return tokens.map((tok) => decodeOne(tok));
 }
 
@@ -109,11 +115,66 @@ function chipLabel(op: string, val: string): string {
   }
 }
 
-/** Parse a suite search-query string into a JMAP filter shape. */
+/**
+ * Parse a suite search-query string into a JMAP filter shape.
+ *
+ * REQ-SRC-45 defers general OR / parenthesised expressions, but the
+ * contact "all mail with this person" link (`ContactsDetailView.svelte`
+ * `allMailUrl`) has always joined a multi-address contact's e-mail
+ * addresses with the literal Gmail-style " OR " keyword, and nothing in
+ * this parser recognised it — every "OR" token was treated as an
+ * ordinary bareword and AND'd in with the rest, so a multi-address
+ * search silently required all of the addresses AND the literal word
+ * "OR" to appear in the same message (re #198). This adds narrow
+ * support for exactly that shape: a flat, unparenthesised sequence of
+ * terms joined by the literal uppercase token "OR" splits into groups,
+ * each parsed the same way a whole query was parsed before, and the
+ * groups combine into a top-level `{operator: 'OR', conditions: [...]}`
+ * filter. Nested/parenthesised OR and mixed AND-of-OR precedence remain
+ * out of scope.
+ */
 export function parseQuery(input: string, ctx: ParseContext): ParsedQuery {
   const trimmed = input.trim();
   if (!trimmed) return { filter: { text: '' }, includesTrashOrJunk: false };
-  const tokens = tokenize(trimmed);
+  const groups = splitOnOr(tokenize(trimmed));
+  if (groups.length <= 1) {
+    return parseTokenGroup(groups[0] ?? [], trimmed, ctx);
+  }
+  const parsed = groups.map((g) => parseTokenGroup(g, g.join(' '), ctx));
+  return {
+    filter: { operator: 'OR', conditions: parsed.map((p) => p.filter) },
+    includesTrashOrJunk: parsed.some((p) => p.includesTrashOrJunk),
+  };
+}
+
+/**
+ * Splits a token list on literal "OR" markers into groups. A token list
+ * with no "OR" present returns a single group containing every token
+ * (parseQuery's `groups.length <= 1` check then falls back to the
+ * pre-OR-support single-group behavior). A leading/trailing/doubled
+ * "OR" (e.g. "OR foo", "foo OR OR bar") produces empty groups, which are
+ * dropped rather than propagated as a spurious OR-of-nothing branch.
+ */
+function splitOnOr(tokens: string[]): string[][] {
+  const groups: string[][] = [[]];
+  for (const tok of tokens) {
+    if (tok === 'OR') {
+      groups.push([]);
+      continue;
+    }
+    groups[groups.length - 1]!.push(tok);
+  }
+  return groups.filter((g) => g.length > 0);
+}
+
+/**
+ * Parses one OR-branch's (or the whole query's, when there is no OR) own
+ * token list into a single AND-combined filter, exactly as parseQuery
+ * did before OR support existed. `fallbackText` is what an all-tokens-
+ * unrecognised group falls back to (a literal text filter), mirroring
+ * the previous whole-query fallback.
+ */
+function parseTokenGroup(tokens: string[], fallbackText: string, ctx: ParseContext): ParsedQuery {
   let includesTrashOrJunk = false;
   const conditions: FilterCondition[] = [];
   for (const tok of tokens) {
@@ -131,7 +192,7 @@ export function parseQuery(input: string, ctx: ParseContext): ParsedQuery {
     conditions.push(parsed);
   }
   if (conditions.length === 0) {
-    return { filter: { text: trimmed }, includesTrashOrJunk };
+    return { filter: { text: fallbackText }, includesTrashOrJunk };
   }
   if (conditions.length === 1) return { filter: conditions[0]!, includesTrashOrJunk };
   return { filter: { operator: 'AND', conditions }, includesTrashOrJunk };

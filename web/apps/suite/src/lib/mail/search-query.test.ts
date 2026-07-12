@@ -55,6 +55,14 @@ describe('decodeChips', () => {
     expect(chips[1]?.value).toBe('weekly meeting');
     expect(chips[2]?.value).toBe('hello');
   });
+
+  // re #198: the literal "OR" joiner (contact "all mail with this
+  // person" link) is syntax, not a search term — it must not render as
+  // its own chip.
+  it('does not render a chip for the literal OR joiner', () => {
+    const chips = decodeChips('a@x.test OR b@x.test OR c@x.test');
+    expect(chips.map((c) => c.value)).toEqual(['a@x.test', 'b@x.test', 'c@x.test']);
+  });
 });
 
 describe('parseQuery — operator surface', () => {
@@ -189,3 +197,86 @@ describe('parseQuery — in: operator and trash/junk opt-in (REQ-SRC-06/07)', ()
     expect(r.filter).toEqual({ inMailbox: 'mb-junk' });
   });
 });
+
+// re #198: the contact "all mail with this person" link
+// (ContactsDetailView.svelte allMailUrl) joins a multi-address
+// contact's e-mail addresses with the literal " OR " keyword. Before
+// this support existed, every "OR" token was AND'd in as an ordinary
+// bareword alongside the addresses, so a multi-address search silently
+// required the literal word "OR" (and every address) in one message —
+// i.e. it matched nothing real. This pins the parser's half of the fix;
+// internal/protojmap/mail/email/query_fts_test.go pins the backend half.
+describe('parseQuery — OR support for the contact "all mail" link (re #198)', () => {
+  it('two barewords joined by OR become an OR filter', () => {
+    const r = parseQuery('a@x.test OR b@x.test', ctx);
+    expect(r.filter).toEqual({
+      operator: 'OR',
+      conditions: [{ text: 'a@x.test' }, { text: 'b@x.test' }],
+    });
+    expect(r.includesTrashOrJunk).toBe(false);
+  });
+
+  it('three addresses joined by OR (the reported repro) become three OR branches', () => {
+    const r = parseQuery(
+      'andreasrosenthal9@gmail.com OR andreas.rosenthal@lamberti.at OR rosenthal@deepick.eu',
+      ctx,
+    );
+    expect(r.filter).toEqual({
+      operator: 'OR',
+      conditions: [
+        { text: 'andreasrosenthal9@gmail.com' },
+        { text: 'andreas.rosenthal@lamberti.at' },
+        { text: 'rosenthal@deepick.eu' },
+      ],
+    });
+  });
+
+  it('a lowercase "or" is treated as an ordinary bareword, not a joiner', () => {
+    const r = parseQuery('cat or dog', ctx);
+    expect(r.filter).toEqual({
+      operator: 'AND',
+      conditions: [{ text: 'cat' }, { text: 'or' }, { text: 'dog' }],
+    });
+  });
+
+  it('each OR branch may itself be a multi-token AND group', () => {
+    const r = parseQuery('from:alice has:attachment OR from:bob', ctx);
+    expect(r.filter).toEqual({
+      operator: 'OR',
+      conditions: [
+        { operator: 'AND', conditions: [{ from: 'alice' }, { hasAttachment: true }] },
+        { from: 'bob' },
+      ],
+    });
+  });
+
+  it('opts into trash/junk if any OR branch does', () => {
+    const r = parseQuery('a@x.test OR in:trash', ctxWithRolesForOrTest());
+    expect(r.includesTrashOrJunk).toBe(true);
+  });
+
+  it('a stray leading/trailing/doubled OR does not produce an empty branch', () => {
+    const r = parseQuery('a@x.test OR OR b@x.test', ctx);
+    expect(r.filter).toEqual({
+      operator: 'OR',
+      conditions: [{ text: 'a@x.test' }, { text: 'b@x.test' }],
+    });
+  });
+});
+
+function ctxWithRolesForOrTest(): { mailboxes: Map<string, Mailbox> } {
+  const mb: Mailbox = {
+    id: 'mb-trash',
+    name: 'Trash',
+    role: 'trash',
+    parentId: null,
+    sortOrder: 0,
+    totalEmails: 0,
+    unreadEmails: 0,
+    totalThreads: 0,
+    unreadThreads: 0,
+  };
+  const m = new Map<string, Mailbox>();
+  m.set('mb-trash', mb);
+  return { mailboxes: m };
+}
