@@ -958,13 +958,19 @@
       <!-- Search results share the folder list's toolbar, row template
            (checkbox, drag handle, draggable), and bulk-selection state
            (mail.listSelectedIds) so the two views behave identically
-           (re #159). "Empty trash" and the whole-mailbox banner are
-           folder-only concepts and are not shown here. -->
+           (re #159). "Empty trash" is a folder-only concept and is not
+           shown here; the whole-result-set selection banner below (issue
+           #207) is search's counterpart to the folder list's
+           whole-mailbox banner. -->
       <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
         <SelectChooser visibleEmails={mail.searchEmails} visibleIds={mail.searchEmailIds} />
         {#if mail.listSelectedIds.size > 0}
           <span class="bulk-count">
-            {t('bulk.selected', { count: mail.listSelectedIds.size })}
+            {t('bulk.selected', {
+              count: mail.listWholeMailboxSelected && mail.searchTotal !== null
+                ? mail.searchTotal
+                : mail.listSelectedIds.size,
+            })}
           </span>
           <button
             type="button"
@@ -1020,6 +1026,47 @@
         {/if}
         <span class="list-toolbar-spacer"></span>
       </div>
+
+      <!-- Whole-search-result-set selection banner (issue #207): the
+           search-view counterpart to the folder list's whole-mailbox
+           banner (issue #149). `Email/query`'s `calculateTotal: true`
+           gives `mail.searchTotal`, the true match count, independent of
+           the 50-row loaded window -- so "select all" can offer (and then
+           act on) every match, not just what is currently loaded. Offer
+           state: all loaded results are selected and more matches exist.
+           Active state: whole-result-set mode is engaged; bulk actions
+           route through Email/setByQuery scoped to the search's own
+           filter (`#wholeSelectionFilterOverride` in the store). -->
+      {#if mail.listSelectedIds.size > 0 && mail.searchTotal !== null && mail.searchEmails.length > 0}
+        {@const searchTotal = mail.searchTotal}
+        {#if !mail.listWholeMailboxSelected && searchTotal > mail.searchEmails.length && mail.listSelectedIds.size === mail.searchEmails.length}
+          <div class="whole-mailbox-banner" role="status" aria-live="polite">
+            <span class="banner-text">
+              {t('select.allPageSelected', { count: String(mail.searchEmails.length) })}
+            </span>
+            <button
+              type="button"
+              class="banner-btn"
+              onclick={() => mail.selectWholeSearchResults()}
+            >
+              {t('select.selectAllInSearch', { total: String(searchTotal) })}
+            </button>
+          </div>
+        {:else if mail.listWholeMailboxSelected}
+          <div class="whole-mailbox-banner whole-mailbox-banner--active" role="status" aria-live="polite">
+            <span class="banner-text">
+              {t('select.wholeSearchActive', { total: String(searchTotal) })}
+            </span>
+            <button
+              type="button"
+              class="banner-btn banner-btn--secondary"
+              onclick={() => mail.selectAllVisible(mail.searchEmailIds)}
+            >
+              {t('select.clearWholeMailbox')}
+            </button>
+          </div>
+        {/if}
+      {/if}
 
       <ul class="thread-list" role="listbox" aria-label={t('mail.search.resultsAria')}>
         {#each mail.searchEmails as email, i (email.id)}

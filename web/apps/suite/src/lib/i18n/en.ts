@@ -199,6 +199,9 @@ export const en = {
   'select.selectAllInFolder': 'Select all {total} messages in this folder',
   'select.wholeMailboxActive': 'All {total} messages in this folder are selected.',
   'select.clearWholeMailbox': 'Select this page only',
+  // Whole-search-result-set selection banner (issue #207)
+  'select.selectAllInSearch': 'Select all {total} matching messages',
+  'select.wholeSearchActive': 'All {total} matching messages are selected.',
   // Whole-mailbox bulk-job progress banner (issue #149)
   'bulkJob.preparing': 'Background action is being prepared...',
   'bulkJob.progress': 'Background action running: {processed} of {total} messages processed.',

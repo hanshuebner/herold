@@ -198,6 +198,9 @@ export const de = {
   'select.selectAllInFolder': 'Alle {total} Nachrichten in diesem Ordner auswählen',
   'select.wholeMailboxActive': 'Alle {total} Nachrichten in diesem Ordner sind ausgewählt.',
   'select.clearWholeMailbox': 'Nur diese Seite auswählen',
+  // Whole-search-result-set selection banner (issue #207)
+  'select.selectAllInSearch': 'Alle {total} passenden Nachrichten auswählen',
+  'select.wholeSearchActive': 'Alle {total} passenden Nachrichten sind ausgewählt.',
   // Whole-mailbox bulk-job progress banner (issue #149)
   'bulkJob.preparing': 'Hintergrundaktion wird vorbereitet...',
   'bulkJob.progress': 'Hintergrundaktion läuft: {processed} von {total} Nachrichten verarbeitet.',

@@ -180,6 +180,23 @@ class MailStore {
    */
   listWholeMailboxSelected = $state(false);
   /**
+   * Filter override consulted by `#startWholeMailboxBulk` while
+   * `listWholeMailboxSelected` is true. `undefined` means the selection was
+   * engaged from the folder list (`selectWholeMailbox`, issue #149) --
+   * `#buildCurrentFolderFilter()` supplies the current folder's filter in
+   * that case. `selectWholeSearchResults` (issue #207) sets this to the
+   * search's own scoped filter instead, so a bulk action taken from the
+   * search view targets every matching message rather than being silently
+   * rescoped to whatever folder happens to be loaded behind it. Reset to
+   * `undefined` everywhere `listWholeMailboxSelected` resets to false.
+   */
+  #wholeSelectionFilterOverride:
+    | Record<string, unknown>
+    | FilterCondition
+    | FilterOperator
+    | null
+    | undefined = undefined;
+  /**
    * The whole-mailbox bulk job most recently started from this session, or
    * null when none is in flight / to show (issue #149). Set by
    * `#startWholeMailboxBulk`, advanced by `#pollBulkJob` (driven by the
@@ -252,6 +269,23 @@ class MailStore {
   searchLoadStatus = $state<LoadStatus>('idle');
   searchError = $state<string | null>(null);
   searchFocusedIndex = $state<number>(-1);
+  /**
+   * True match count for the current search, from `Email/query`'s
+   * `calculateTotal: true` (issue #207). Null while unknown (idle/loading/
+   * error). Drives the "select all N matching" affordance in SelectChooser
+   * once every loaded result is selected and `searchTotal` exceeds the
+   * loaded window -- the same two-phase selection `listFolderTotal` drives
+   * for the folder list (issue #149).
+   */
+  searchTotal = $state<number | null>(null);
+  /**
+   * The scoped filter (trash/junk-exclusion applied) used by the most
+   * recent `runSearch()` call. Captured so `selectWholeSearchResults` can
+   * hand it to `#startWholeMailboxBulk` as the filter override -- bulk
+   * actions taken against the whole search result set must scope
+   * `Email/setByQuery` to this filter, not the currently open folder.
+   */
+  #searchScopedFilter: FilterCondition | FilterOperator | undefined = undefined;
 
   /**
    * Recent search queries, most-recent first, capped at SEARCH_HISTORY_MAX.
@@ -312,6 +346,7 @@ class MailStore {
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
     if (this.#bulkJobPollTimer) clearTimeout(this.#bulkJobPollTimer);
     this.#bulkJobPollTimer = null;
     this.bulkJob = null;
@@ -328,6 +363,8 @@ class MailStore {
     this.searchLoadStatus = 'idle';
     this.searchError = null;
     this.searchFocusedIndex = -1;
+    this.searchTotal = null;
+    this.#searchScopedFilter = undefined;
     this.searchHistory = [];
     this.emailState = null;
     this.mailboxState = null;
@@ -861,6 +898,7 @@ class MailStore {
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
 
     try {
       // Make sure mailboxes are warm so `label:` resolves.
@@ -875,6 +913,10 @@ class MailStore {
       const scopedFilter = includesTrashOrJunk
         ? filter
         : applyTrashJunkExclusion(filter, this.mailboxes);
+      // Captured for selectWholeSearchResults (issue #207): a bulk action
+      // taken against the whole search result set must scope
+      // Email/setByQuery to this same filter.
+      this.#searchScopedFilter = scopedFilter;
 
       const { responses } = await jmap.batch((b) => {
         const q = b.call(
@@ -885,7 +927,10 @@ class MailStore {
             sort: [{ property: 'receivedAt', isAscending: false }],
             collapseThreads: true,
             limit: 50,
-            calculateTotal: false,
+            // Issue #207: the loaded window caps at 50, but the "select
+            // all" affordance needs the true match count to offer (and
+            // label) a whole-result-set selection past that cap.
+            calculateTotal: true,
           },
           [Capability.Mail],
         );
@@ -923,7 +968,7 @@ class MailStore {
       });
       strict(responses);
 
-      const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
+      const queryResult = invocationArgs<{ ids: string[]; total?: number }>(responses[0]);
       const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
@@ -938,6 +983,7 @@ class MailStore {
       this.threads = nextThreads;
 
       this.searchEmailIds = queryResult.ids;
+      this.searchTotal = queryResult.total ?? null;
       this.searchLoadStatus = 'ready';
       this.#recordSearchHistory(query);
     } catch (err) {
@@ -979,9 +1025,12 @@ class MailStore {
     this.searchLoadStatus = 'idle';
     this.searchError = null;
     this.searchFocusedIndex = -1;
+    this.searchTotal = null;
+    this.#searchScopedFilter = undefined;
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
   }
 
   /** The id of the JMAP Mail account this principal uses. */
@@ -1648,6 +1697,7 @@ class MailStore {
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
     this.listHasMore = false;
     this.listLoadingMore = false;
     this.listLoadStatus = 'loading';
@@ -2580,9 +2630,10 @@ class MailStore {
     // matches via the same async bulk-job path bulkArchive uses, rather
     // than refusing.
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({
-        patch: { [`mailboxIds/${mailboxId}`]: on ? true : null },
-      });
+      await this.#startWholeMailboxBulk(
+        { patch: { [`mailboxIds/${mailboxId}`]: on ? true : null } },
+        this.#wholeSelectionFilterOverride,
+      );
       return;
     }
     if (ids.length === 0) return;
@@ -2766,6 +2817,7 @@ class MailStore {
   selectRowClick(id: string, shiftKey: boolean, visibleIds: string[] = this.listEmailIds): void {
     if (shiftKey && this.listSelectAnchorId !== null) {
       this.listWholeMailboxSelected = false;
+      this.#wholeSelectionFilterOverride = undefined;
       this.listSelectedIds = computeShiftClickRange(visibleIds, this.listSelectAnchorId, id);
       return;
     }
@@ -2779,6 +2831,7 @@ class MailStore {
    */
   selectAllVisible(visibleIds: string[] = this.listEmailIds): void {
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
     this.listSelectedIds = new Set(visibleIds);
   }
 
@@ -2789,6 +2842,7 @@ class MailStore {
    */
   toggleSelectAllVisible(visibleIds: string[]): void {
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
     if (allVisibleSelected(visibleIds, this.listSelectedIds)) {
       this.listSelectedIds = new Set();
     } else {
@@ -2802,6 +2856,7 @@ class MailStore {
     if (this.listSelectedIds.size === 0 && !this.listWholeMailboxSelected) return;
     this.listSelectedIds = new Set();
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
   }
 
   /**
@@ -2816,6 +2871,7 @@ class MailStore {
     visibleEmails: Email[] = this.listEmails,
   ): void {
     this.listWholeMailboxSelected = false;
+    this.#wholeSelectionFilterOverride = undefined;
     const next = new Set<string>();
     for (const e of visibleEmails) {
       if (predicate(e)) next.add(e.id);
@@ -2834,6 +2890,21 @@ class MailStore {
    */
   selectWholeMailbox(): void {
     this.listWholeMailboxSelected = true;
+    this.#wholeSelectionFilterOverride = undefined;
+  }
+
+  /**
+   * Activate whole-search-result-set selection mode (issue #207): the
+   * search-view counterpart to `selectWholeMailbox()`. `listSelectedIds`
+   * keeps showing the loaded window as checked; `listWholeMailboxSelected`
+   * signals bulk actions to target the full server-side match set instead
+   * of the loaded window, scoped to the search's own filter (captured by
+   * the most recent `runSearch()` call) rather than whatever folder
+   * happens to be loaded behind the search view.
+   */
+  selectWholeSearchResults(): void {
+    this.listWholeMailboxSelected = true;
+    this.#wholeSelectionFilterOverride = this.#searchScopedFilter ?? null;
   }
 
   /**
@@ -2893,7 +2964,7 @@ class MailStore {
    */
   async #startWholeMailboxBulk(
     mutation: { patch: Record<string, unknown> } | { destroy: true },
-    filterOverride?: Record<string, unknown> | null,
+    filterOverride?: Record<string, unknown> | FilterCondition | FilterOperator | null,
   ): Promise<void> {
     const accountId = this.mailAccountId;
     if (!accountId) return;
@@ -3093,12 +3164,15 @@ class MailStore {
     // the current folder filter matches via the async bulk-job path
     // instead of the ids array below.
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({
-        patch: {
-          [`mailboxIds/${inbox.id}`]: null,
-          [`mailboxIds/${archive.id}`]: true,
+      await this.#startWholeMailboxBulk(
+        {
+          patch: {
+            [`mailboxIds/${inbox.id}`]: null,
+            [`mailboxIds/${archive.id}`]: true,
+          },
         },
-      });
+        this.#wholeSelectionFilterOverride,
+      );
       return;
     }
     if (ids.length === 0) return;
@@ -3153,7 +3227,7 @@ class MailStore {
    */
   async bulkDestroy(ids: string[]): Promise<void> {
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({ destroy: true });
+      await this.#startWholeMailboxBulk({ destroy: true }, this.#wholeSelectionFilterOverride);
       return;
     }
     if (ids.length === 0) return;
@@ -3227,7 +3301,10 @@ class MailStore {
     // delete from inside Trash routes through `bulkDestroy`, which uses
     // the same job substrate with `destroy: true` (issue #179).
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({ patch: { mailboxIds: { [trash.id]: true } } });
+      await this.#startWholeMailboxBulk(
+        { patch: { mailboxIds: { [trash.id]: true } } },
+        this.#wholeSelectionFilterOverride,
+      );
       return;
     }
     if (ids.length === 0) return;
@@ -3339,7 +3416,10 @@ class MailStore {
     // Whole-mailbox mode (issue #149): patch every message the current
     // folder filter matches via the async bulk-job path.
     if (this.listWholeMailboxSelected) {
-      await this.#startWholeMailboxBulk({ patch: { 'keywords/$seen': seen ? true : null } });
+      await this.#startWholeMailboxBulk(
+        { patch: { 'keywords/$seen': seen ? true : null } },
+        this.#wholeSelectionFilterOverride,
+      );
       return;
     }
     if (ids.length === 0) return;
