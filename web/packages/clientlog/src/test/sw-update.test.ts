@@ -465,57 +465,77 @@ describe('startPeriodicUpdateCheck', () => {
 //
 // A backgrounded/slept tab misses the hourly startPeriodicUpdateCheck tick
 // entirely (setInterval does not fire while the OS is asleep, and the
-// browser can freeze/discard a backgrounded tab).  These handlers re-check
-// sw.js the moment the tab returns to the foreground.
+// browser can freeze/discard a backgrounded tab).  These listeners re-check
+// sw.js the moment the tab returns to the foreground. startFocusUpdateCheck
+// attaches real document/window listeners (happy-dom provides both in this
+// package's test environment) and returns a cleanup function, mirroring
+// startPeriodicUpdateCheck's convention.
 
 describe('startFocusUpdateCheck', () => {
   it('calls reg.update() on visibilitychange when the document is visible', () => {
     const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
-    const handlers = startFocusUpdateCheck(reg, () => true);
+    const stop = startFocusUpdateCheck(reg, () => true);
 
-    handlers.onVisibilityChange();
+    document.dispatchEvent(new Event('visibilitychange'));
 
     expect(reg.update).toHaveBeenCalledTimes(1);
+    stop();
   });
 
   it('does NOT call reg.update() on visibilitychange when the document is hidden', () => {
     const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
-    const handlers = startFocusUpdateCheck(reg, () => false);
+    const stop = startFocusUpdateCheck(reg, () => false);
 
-    handlers.onVisibilityChange();
+    document.dispatchEvent(new Event('visibilitychange'));
 
     expect(reg.update).not.toHaveBeenCalled();
+    stop();
   });
 
   it('calls reg.update() on focus regardless of the visibility predicate', () => {
     const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
-    const handlers = startFocusUpdateCheck(reg, () => false);
+    const stop = startFocusUpdateCheck(reg, () => false);
 
-    handlers.onFocus();
+    window.dispatchEvent(new Event('focus'));
 
     expect(reg.update).toHaveBeenCalledTimes(1);
+    stop();
   });
 
   it('calls reg.update() on online', () => {
     const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
-    const handlers = startFocusUpdateCheck(reg, () => false);
+    const stop = startFocusUpdateCheck(reg, () => false);
 
-    handlers.onOnline();
+    window.dispatchEvent(new Event('online'));
 
     expect(reg.update).toHaveBeenCalledTimes(1);
+    stop();
   });
 
-  it('swallows update() rejections from any of the three handlers', async () => {
+  it('swallows update() rejections from any of the three listeners', async () => {
     const reg = {
       update: vi.fn().mockRejectedValue(new Error('network error')),
     } as unknown as ServiceWorkerRegistration;
-    const handlers = startFocusUpdateCheck(reg, () => true);
+    const stop = startFocusUpdateCheck(reg, () => true);
 
-    handlers.onVisibilityChange();
-    handlers.onFocus();
-    handlers.onOnline();
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
     await Promise.resolve();
 
     expect(reg.update).toHaveBeenCalledTimes(3);
+    stop();
+  });
+
+  it('returns a cleanup function that removes all three listeners', () => {
+    const reg = { update: vi.fn().mockResolvedValue(undefined) } as unknown as ServiceWorkerRegistration;
+    const stop = startFocusUpdateCheck(reg, () => true);
+
+    stop();
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+
+    expect(reg.update).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,12 @@
   import { auth } from './lib/auth/auth.svelte';
   import { settings } from './lib/settings/settings.svelte';
   import { t } from './lib/i18n/i18n.svelte';
-  import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from '@herold/clientlog/sw-update';
+  import {
+    watchRegistration,
+    activateWaiting,
+    startPeriodicUpdateCheck,
+    startFocusUpdateCheck,
+  } from '@herold/clientlog/sw-update';
   import DashboardView from './views/DashboardView.svelte';
   import PrincipalsView from './views/PrincipalsView.svelte';
   import PrincipalDetailView from './views/PrincipalDetailView.svelte';
@@ -101,7 +106,9 @@
   // Reload posts SKIP_WAITING, the new worker activates, and exactly one
   // location.reload() follows.  The periodic check fires reg.update() every
   // hour so a long-lived admin session is notified within an hour of a new
-  // deploy, without depending on browser navigation events.
+  // deploy.  visibilitychange/focus/online re-check immediately when an
+  // admin tab that was backgrounded or asleep comes back to the foreground,
+  // rather than waiting out the rest of the hourly cycle (re #209).
 
   let showSwUpdateBanner = $state(false);
   // Holds the registration for use in reloadAfterSwUpdate().
@@ -109,6 +116,10 @@
 
   $effect(() => {
     if (!('serviceWorker' in navigator)) return;
+    // Holds the startFocusUpdateCheck() teardown once registration resolves,
+    // so the effect's cleanup (returned below) can remove the
+    // visibilitychange/focus/online listeners on unmount.
+    let stopFocusUpdateCheck: (() => void) | null = null;
     // The admin SW is registered at /admin/sw.js with scope /admin/ so it
     // does not interfere with the suite SW at / (scope /).
     void navigator.serviceWorker
@@ -135,11 +146,24 @@
         // Poll for an updated sw.js every hour so the banner appears while
         // the admin user is still on the old version (REQ-MOB-75).
         startPeriodicUpdateCheck(reg, 60 * 60 * 1000);
+
+        // Also re-check immediately when the tab comes back to the foreground
+        // (visibilitychange -> visible, window focus, network back online).
+        // The hourly interval above does not fire while the OS is asleep or
+        // the tab is frozen/discarded, so without this a deploy that lands
+        // during a closed-laptop night is missed until the next arbitrary-
+        // phase tick (re #209).
+        stopFocusUpdateCheck = startFocusUpdateCheck(reg, () => document.visibilityState === 'visible');
       })
       .catch(() => {
         // SW registration failed (e.g. insecure context in dev) — update
         // detection is unavailable, which is acceptable in that environment.
       });
+
+    return () => {
+      stopFocusUpdateCheck?.();
+      stopFocusUpdateCheck = null;
+    };
   });
 
   function reloadAfterSwUpdate(): void {

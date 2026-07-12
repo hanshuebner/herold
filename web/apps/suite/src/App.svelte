@@ -333,6 +333,10 @@
 
   $effect(() => {
     if (!('serviceWorker' in navigator)) return;
+    // Holds the startFocusUpdateCheck() teardown once registration resolves,
+    // so the effect's cleanup (returned below) can remove the
+    // visibilitychange/focus/online listeners on unmount.
+    let stopFocusUpdateCheck: (() => void) | null = null;
     // register() is idempotent: returns the existing registration if already
     // registered (push-subscription.svelte.ts also calls register).  Registering
     // here ensures update detection works for all users, not only those who have
@@ -373,15 +377,17 @@
         // the tab is frozen/discarded, so without this a deploy that lands
         // during a closed-laptop night is missed until the next arbitrary-
         // phase tick (re #209).
-        const focusCheck = startFocusUpdateCheck(reg, () => document.visibilityState === 'visible');
-        document.addEventListener('visibilitychange', focusCheck.onVisibilityChange);
-        window.addEventListener('focus', focusCheck.onFocus);
-        window.addEventListener('online', focusCheck.onOnline);
+        stopFocusUpdateCheck = startFocusUpdateCheck(reg, () => document.visibilityState === 'visible');
       })
       .catch(() => {
         // SW registration failed (e.g. insecure context in dev) — update
         // detection is unavailable, which is acceptable in that environment.
       });
+
+    return () => {
+      stopFocusUpdateCheck?.();
+      stopFocusUpdateCheck = null;
+    };
   });
 
   function reloadAfterSwUpdate(): void {
