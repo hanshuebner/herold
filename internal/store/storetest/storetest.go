@@ -147,6 +147,7 @@ func Run(t *testing.T, f Factory) {
 		// acl-migration provenance rows, never an idp:<provider> row --
 		{"MailboxACL_SetNarrowsManualButPreservesIdPGrant", testMailboxACL_SetNarrowsManualButPreservesIdPGrant},
 		{"MailboxACL_RemoveDeletesOnlyManualRow", testMailboxACL_RemoveDeletesOnlyManualRow},
+		{"MailboxACL_ManualOnlyAccessor_IncrementalDeltaNeverBakesInIdPRights", testMailboxACL_ManualOnlyAccessor_IncrementalDeltaNeverBakesInIdPRights},
 		{"JMAPStatesIncrementAtomic", testJMAPStatesIncrementAtomic},
 		{"TLSRPTAppendAndRange", testTLSRPTAppendAndRange},
 		// -- Wave 2.2.5 JMAP persistence ---------------------------
@@ -5374,6 +5375,155 @@ func testMailboxACL_RemoveDeletesOnlyManualRow(t *testing.T, s store.Store) {
 	}
 	if len(rows) != 1 || rows[0].Rights != (store.ACLRightLookup|store.ACLRightRead) {
 		t.Fatalf("acl rows after remove = %+v; want exactly 1 entry with the idp:-conferred lr rights", rows)
+	}
+}
+
+// testMailboxACL_ManualOnlyAccessor_IncrementalDeltaNeverBakesInIdPRights is
+// the regression test for the second provenance-ownership finding: SETACL's
+// incremental "+"/"-" form must compute its delta against
+// GetMailboxACLManual (the manual-only rights), never the coalesced
+// GetMailboxACL -- otherwise an idp:-granted right silently becomes a
+// permanent manual right the very first time anyone runs an incremental
+// SETACL against that grantee, and a later IdP revocation can never claw it
+// back.
+//
+// Exercises exactly the scenario the review specified:
+//  1. Seed ONLY an idp:acme grant ("lr") for a grantee, no manual row.
+//     GetMailboxACLManual must report zero rights (the idp: row is
+//     invisible to it); GetMailboxACL (effective) must report "lr".
+//  2. Simulate "SETACL +t": current = GetMailboxACLManual (0), target =
+//     current|delta("t"). Write target via SetMailboxACL. The persisted
+//     manual row must be exactly "t" (not "lrt") -- proving the idp:
+//     bits were never baked in. Effective (GetMailboxACL) must be "lrt".
+//  3. Simulate reconciliation revoking the idp:acme grant (DeleteGrant).
+//     The manual row must still be exactly "t" (no leaked l/r); effective
+//     access must now be exactly "t".
+//  4. A second grantee/mailbox pair covers "SETACL -r": seed idp:lr +
+//     manual:rt, current = GetMailboxACLManual ("rt"), delta("r"),
+//     target = current &^ delta = "t". After writing, the manual row is
+//     "t" but effective access still includes "r" via the surviving idp:
+//     row -- SETACL cannot revoke an idp:-conferred right.
+func testMailboxACL_ManualOnlyAccessor_IncrementalDeltaNeverBakesInIdPRights(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "acl-incr-owner@example.test")
+	grantee := mustInsertPrincipal(t, s, "acl-incr-grantee@example.test")
+	mb := mustInsertMailbox(t, s, owner.ID, "Shared/incr")
+	resourceID := strconv.FormatUint(uint64(mb.ID), 10)
+
+	// -- Step 1: idp: only, no manual row. --
+	idpGrant := store.Grant{
+		SubjectID:    uint64(grantee.ID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "lr",
+		Provenance:   "idp:acme",
+	}
+	if _, err := s.Meta().InsertGrant(ctx, idpGrant); err != nil {
+		t.Fatalf("seed idp: grant: %v", err)
+	}
+	manual, err := s.Meta().GetMailboxACLManual(ctx, mb.ID, &grantee.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACLManual (idp:-only): %v", err)
+	}
+	if manual != 0 {
+		t.Fatalf("GetMailboxACLManual with only an idp: grant = %v; want 0", manual)
+	}
+	effective, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL (idp:-only): %v", err)
+	}
+	if len(effective) != 1 || effective[0].Rights != (store.ACLRightLookup|store.ACLRightRead) {
+		t.Fatalf("effective rights (idp:-only) = %+v; want exactly lr", effective)
+	}
+
+	// -- Step 2: simulate "SETACL +t". --
+	delta := store.ACLRightDeleteMessage // "t"
+	target := manual | delta
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, &grantee.ID, target, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL(+t): %v", err)
+	}
+	manualAfterPlus, err := s.Meta().GetMailboxACLManual(ctx, mb.ID, &grantee.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACLManual after +t: %v", err)
+	}
+	if manualAfterPlus != store.ACLRightDeleteMessage {
+		t.Fatalf("manual rights after +t = %v; want exactly t (ACLRightDeleteMessage) -- the idp: lr bits must not be baked in", manualAfterPlus)
+	}
+	effectiveAfterPlus, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL after +t: %v", err)
+	}
+	wantEffective := store.ACLRightLookup | store.ACLRightRead | store.ACLRightDeleteMessage
+	if len(effectiveAfterPlus) != 1 || effectiveAfterPlus[0].Rights != wantEffective {
+		t.Fatalf("effective rights after +t = %+v; want lrt (%v)", effectiveAfterPlus, wantEffective)
+	}
+
+	// -- Step 3: simulate IdP reconciliation revoking the idp: grant. --
+	if err := s.Meta().DeleteGrant(ctx, store.Grant{
+		SubjectID:    idpGrant.SubjectID,
+		ResourceKind: idpGrant.ResourceKind,
+		ResourceID:   idpGrant.ResourceID,
+		Provenance:   idpGrant.Provenance,
+	}); err != nil {
+		t.Fatalf("simulate idp: revocation: %v", err)
+	}
+	manualAfterRevoke, err := s.Meta().GetMailboxACLManual(ctx, mb.ID, &grantee.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACLManual after idp: revocation: %v", err)
+	}
+	if manualAfterRevoke != store.ACLRightDeleteMessage {
+		t.Fatalf("manual rights after idp: revocation = %v; want still exactly t -- no leaked l/r", manualAfterRevoke)
+	}
+	effectiveAfterRevoke, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL after idp: revocation: %v", err)
+	}
+	if len(effectiveAfterRevoke) != 1 || effectiveAfterRevoke[0].Rights != store.ACLRightDeleteMessage {
+		t.Fatalf("effective rights after idp: revocation = %+v; want exactly t", effectiveAfterRevoke)
+	}
+
+	// -- Step 4: "SETACL -r" against a mixed idp:lr + manual:rt grantee. --
+	grantee2 := mustInsertPrincipal(t, s, "acl-incr-grantee2@example.test")
+	mb2 := mustInsertMailbox(t, s, owner.ID, "Shared/incr2")
+	resourceID2 := strconv.FormatUint(uint64(mb2.ID), 10)
+	if _, err := s.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(grantee2.ID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID2,
+		Level:        "lr",
+		Provenance:   "idp:acme",
+	}); err != nil {
+		t.Fatalf("seed idp: grant (step 4): %v", err)
+	}
+	if err := s.Meta().SetMailboxACL(ctx, mb2.ID, &grantee2.ID,
+		store.ACLRightRead|store.ACLRightDeleteMessage, owner.ID); err != nil {
+		t.Fatalf("seed manual rt grant (step 4): %v", err)
+	}
+	manual2, err := s.Meta().GetMailboxACLManual(ctx, mb2.ID, &grantee2.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACLManual (step 4, before -r): %v", err)
+	}
+	if manual2 != (store.ACLRightRead | store.ACLRightDeleteMessage) {
+		t.Fatalf("manual rights (step 4, before -r) = %v; want rt", manual2)
+	}
+	target2 := manual2 &^ store.ACLRightRead
+	if err := s.Meta().SetMailboxACL(ctx, mb2.ID, &grantee2.ID, target2, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL(-r): %v", err)
+	}
+	manualAfterMinus, err := s.Meta().GetMailboxACLManual(ctx, mb2.ID, &grantee2.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACLManual after -r: %v", err)
+	}
+	if manualAfterMinus != store.ACLRightDeleteMessage {
+		t.Fatalf("manual rights after -r = %v; want exactly t (r removed)", manualAfterMinus)
+	}
+	effectiveAfterMinus, err := s.Meta().GetMailboxACL(ctx, mb2.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL after -r: %v", err)
+	}
+	wantAfterMinus := store.ACLRightLookup | store.ACLRightRead | store.ACLRightDeleteMessage
+	if len(effectiveAfterMinus) != 1 || effectiveAfterMinus[0].Rights != wantAfterMinus {
+		t.Fatalf("effective rights after -r = %+v; want lrt (%v) -- 'r' still granted via idp:, SETACL cannot revoke it", effectiveAfterMinus, wantAfterMinus)
 	}
 }
 

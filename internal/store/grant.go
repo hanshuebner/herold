@@ -91,10 +91,16 @@ const GrantProvenanceLocal = "local"
 // GrantProvenanceACLMigration marks a mailbox grant row produced by the
 // one-time migration of the legacy mailbox_acl table into the grants
 // substrate (epic #210, migration 0084). Distinct from GrantProvenanceLocal
-// so a migrated row is identifiable in an audit or reconciliation pass; a
-// subsequent SETACL/admin-REST write on the same (mailbox, grantee) row
-// normalises its provenance to GrantProvenanceLocal (an explicit re-set
-// supersedes the historical migration tag -- see SetMailboxACL).
+// so a migrated row is identifiable in an audit or reconciliation pass.
+// GrantProvenanceLocal and GrantProvenanceACLMigration are jointly "the
+// manual rows" for mailbox ACL purposes (internal/store.Metadata's
+// SetMailboxACL/GetMailboxACLManual/RemoveMailboxACL doc comments): a
+// SETACL/admin-REST write on a (mailbox, grantee) that currently has a
+// GrantProvenanceACLMigration row deletes it and writes a fresh
+// GrantProvenanceLocal row in its place -- an explicit re-set collapses the
+// historical migration tag into an ordinary local grant. Neither this nor
+// any other mailbox ACL write ever touches an idp:<provider> row for the
+// same grantee; that row is owned exclusively by authz.ReconcileIdP.
 const GrantProvenanceACLMigration = "acl-migration"
 
 // Grant is one authorization grant row.
@@ -105,7 +111,11 @@ type Grant struct {
 	ResourceKind GrantResourceKind
 	ResourceID   string
 	Level        GrantLevel
-	// Provenance is GrantProvenanceLocal or "idp:<provider>".
+	// Provenance is GrantProvenanceLocal, GrantProvenanceACLMigration (a
+	// mailbox-kind row only, epic #210), or "idp:<provider>". A subject may
+	// hold more than one grant on the same resource at once -- one per
+	// provenance -- and, for the mailbox kind, effective access is the OR
+	// of all of them (internal/authz.ResolveMailboxRights).
 	Provenance string
 	// GrantedBy is the acting principal for a local grant, or nil for a
 	// migration-derived or IdP-derived grant.

@@ -657,6 +657,102 @@ func TestSETACL_RevokeToZero_PreservesIdPGrant(t *testing.T) {
 	}
 }
 
+// TestSETACL_IncrementalPlus_NeverBakesInIdPRights is the wire-level
+// regression test for the second provenance-ownership finding: SETACL's
+// incremental "+"/"-" form must compute its delta against the manual
+// portion only (internal/store.Metadata.GetMailboxACLManual), never the
+// coalesced effective rights -- otherwise an idp:-granted right silently
+// becomes a permanent manual right on the first incremental SETACL, and a
+// later IdP revocation can never claw it back.
+//
+// bob holds only an idp:acme "lr" grant, no manual row. Alice runs
+// `SETACL +t`: the persisted manual row must be exactly "t" (not "lrt"),
+// and effective GETACL/MYRIGHTS must show "lrt". Simulating reconciliation
+// revoking the idp: grant then leaves bob's manual row and effective
+// rights both at exactly "t" -- no leaked l/r.
+func TestSETACL_IncrementalPlus_NeverBakesInIdPRights(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	resourceID := strconv.FormatUint(uint64(af.aliceShared.ID), 10)
+	idpGrant := store.Grant{
+		SubjectID:    uint64(af.bobID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "lr",
+		Provenance:   "idp:acme",
+	}
+	if _, err := af.ha.Store.Meta().InsertGrant(ctx, idpGrant); err != nil {
+		t.Fatalf("seed idp: grant: %v", err)
+	}
+
+	cAlice := loginAsACL(t, af, "alice@example.test", af.alicePass)
+	defer cAlice.close()
+	resp := cAlice.send("s1", `SETACL "Shared/support" "bob@example.test" "+t"`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("SETACL +t: %v", resp)
+	}
+
+	// The persisted manual row must be exactly "t" -- the idp: "lr" bits
+	// must never have been read into the delta computation.
+	grants, err := af.ha.Store.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox, resourceID)
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource: %v", err)
+	}
+	var manualLevel string
+	var manualCount, idpCount int
+	for _, g := range grants {
+		if g.SubjectKind != store.GrantSubjectPrincipal || store.PrincipalID(g.SubjectID) != af.bobID {
+			continue
+		}
+		switch g.Provenance {
+		case store.GrantProvenanceLocal, store.GrantProvenanceACLMigration:
+			manualCount++
+			manualLevel = string(g.Level)
+		case "idp:acme":
+			idpCount++
+		}
+	}
+	if manualCount != 1 || manualLevel != "t" {
+		t.Fatalf("bob's manual grant after +t: count=%d level=%q; want exactly 1 row at level \"t\" (not \"lrt\")", manualCount, manualLevel)
+	}
+	if idpCount != 1 {
+		t.Fatalf("bob's idp: grant count after +t = %d; want 1 (untouched)", idpCount)
+	}
+
+	// Effective GETACL/MYRIGHTS must show the union "lrt".
+	getResp := cAlice.send("g1", `GETACL "Shared/support"`)
+	if !strings.Contains(strings.Join(getResp, "\n"), `"lrt"`) {
+		t.Fatalf("GETACL after +t must show the coalesced lrt: %v", getResp)
+	}
+	cBob := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer cBob.close()
+	myResp := cBob.send("m1", `MYRIGHTS "Shared/support"`)
+	if !strings.Contains(strings.Join(myResp, "\n"), `"lrt"`) {
+		t.Fatalf("MYRIGHTS after +t must show the coalesced lrt: %v", myResp)
+	}
+
+	// Simulate reconciliation revoking the idp: grant: the manual row must
+	// still be exactly "t", with no leaked l/r.
+	if err := af.ha.Store.Meta().DeleteGrant(ctx, store.Grant{
+		SubjectID:    idpGrant.SubjectID,
+		ResourceKind: idpGrant.ResourceKind,
+		ResourceID:   idpGrant.ResourceID,
+		Provenance:   idpGrant.Provenance,
+	}); err != nil {
+		t.Fatalf("simulate idp: revocation: %v", err)
+	}
+	afterRevoke := cAlice.send("g2", `GETACL "Shared/support"`)
+	joined := strings.Join(afterRevoke, "\n")
+	if !strings.Contains(joined, "bob@example.test") {
+		t.Fatalf("GETACL after idp: revocation must still show bob (his manual t grant survives): %v", afterRevoke)
+	}
+	// The trailing quote in the search string rules out a longer set (e.g.
+	// "lrt") matching as a prefix, so this alone proves no l/r leaked in.
+	if !strings.Contains(joined, `"t"`) {
+		t.Fatalf("GETACL after idp: revocation must show bob at exactly \"t\", no leaked l/r: %v", afterRevoke)
+	}
+}
+
 // TestSETACL_InsertWithoutDelete_ExpressibleAndEnforced is the wire-level
 // demonstration of full RFC 4314 fidelity (epic #210): a fine-grained grant
 // -- insert ("i") without any of the delete-family rights (delete-message

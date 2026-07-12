@@ -1368,6 +1368,39 @@ func (m *metadata) SetMailboxACL(ctx context.Context, mailboxID store.MailboxID,
 	})
 }
 
+// GetMailboxACLManual returns the OR of only the manual-provenance (local,
+// acl-migration) grant rights for principalID on mailboxID, excluding any
+// idp:<provider> row. SETACL's incremental +/- form uses this as "current"
+// so a delta never bakes an idp:-granted right into the durable manual row
+// (see the store.Metadata doc comment).
+func (m *metadata) GetMailboxACLManual(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID) (store.ACLRights, error) {
+	subjectKind, subjectID := mailboxACLSubject(principalID)
+	rows, err := m.s.db.QueryContext(ctx, `
+		SELECT level FROM grants
+		 WHERE resource_kind = 'mailbox' AND resource_id = ?
+		   AND subject_kind = ? AND subject_id = ?
+		   AND provenance IN (?, ?)`,
+		strconv.FormatUint(uint64(mailboxID), 10), subjectKind, subjectID,
+		store.GrantProvenanceLocal, store.GrantProvenanceACLMigration)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	defer rows.Close()
+	var have store.ACLRights
+	for rows.Next() {
+		var level string
+		if err := rows.Scan(&level); err != nil {
+			return 0, mapErr(err)
+		}
+		r, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok {
+			continue
+		}
+		have |= r
+	}
+	return have, rows.Err()
+}
+
 func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID) ([]store.MailboxACL, error) {
 	// Anyone rows first, then per-principal rows in ascending subject id
 	// (matching the pre-#210 mailbox_acl ordering), then ascending grant id

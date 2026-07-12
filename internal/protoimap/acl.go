@@ -192,21 +192,22 @@ func (ses *session) handleSETACL(ctx context.Context, c *Command) error {
 	if derr != nil {
 		return ses.resp.taggedBAD(c.Tag, "", derr.Error())
 	}
-	// For "+" / "-" we read the existing row and adjust; for "=" we
-	// replace wholesale. RFC 4314 §3.1.
+	// For "+" / "-" we read the existing MANUAL rights and adjust; for "="
+	// we replace wholesale. RFC 4314 §3.1. The delta applies to the manual
+	// (local/acl-migration) portion only -- GetMailboxACLManual, not
+	// GetMailboxACL -- so an idp:<provider>-granted right is never baked
+	// into the durable manual row: "+t" on a grantee with only an
+	// idp:lr grant writes local:t (not local:lrt), and a later idp:
+	// revocation leaves exactly that t behind, no leaked l/r. "-r" can
+	// only remove from the manual portion; if r is solely idp-granted, the
+	// grantee's effective rights still show r afterward (revoking an
+	// idp:-conferred right requires changing the IdP claim mapping, not
+	// SETACL).
 	target := delta
 	if op != '=' {
-		rows, err := ses.s.store.Meta().GetMailboxACL(ctx, mb.ID)
+		current, err := ses.s.store.Meta().GetMailboxACLManual(ctx, mb.ID, pid)
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "ACL read failed")
-		}
-		var current store.ACLRights
-		for _, row := range rows {
-			if (row.PrincipalID == nil) == (pid == nil) &&
-				(pid == nil || *row.PrincipalID == *pid) {
-				current = row.Rights
-				break
-			}
 		}
 		switch op {
 		case '+':
