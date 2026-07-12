@@ -2,7 +2,8 @@
  * SettingsView component tests (re #205).
  *
  * Locale used to be a header toggle; it is a Settings-view control now,
- * mirroring the Suite's Appearance-section language segmented control.
+ * presented as a labelled dropdown (not a segmented toggle) so it scales
+ * past two or three languages.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -14,29 +15,35 @@ describe('SettingsView', () => {
     settings.setLocale('en');
   });
 
-  it('renders a language radiogroup with English and German options', async () => {
+  it('renders a labelled language dropdown with English and German options', async () => {
     const { default: SettingsView } = await import('./SettingsView.svelte');
     render(SettingsView);
 
-    expect(screen.getByRole('radiogroup', { name: 'Language' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'English' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Deutsch' })).toBeInTheDocument();
+    const select = screen.getByRole('combobox', { name: 'Language' });
+    expect(select).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'English' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Deutsch' })).toBeInTheDocument();
   });
 
-  it('reflects the current locale as the checked radio', async () => {
+  it('reflects the current locale as the selected option', async () => {
     settings.setLocale('de');
     const { default: SettingsView } = await import('./SettingsView.svelte');
     render(SettingsView);
 
-    expect(screen.getByRole('radio', { name: 'Deutsch' })).toHaveAttribute('aria-checked', 'true');
+    // The label text itself follows the active locale ("Sprache" once
+    // set to German), so query by role alone -- there is only one
+    // combobox in this view.
+    expect(screen.getByRole('combobox')).toHaveValue('de');
   });
 
-  it('changes the locale when a different language button is clicked', async () => {
+  it('changes the locale when a different option is selected', async () => {
     settings.setLocale('en');
     const { default: SettingsView } = await import('./SettingsView.svelte');
     render(SettingsView);
 
-    await fireEvent.click(screen.getByRole('radio', { name: 'Deutsch' }));
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), {
+      target: { value: 'de' },
+    });
 
     expect(settings.locale).toBe('de');
   });

@@ -432,20 +432,16 @@
       </div>
 
       <div class="row vertical">
-        <span class="label">{t('settings.language')}</span>
-        <div class="segmented" role="radiogroup" aria-label={t('settings.language')}>
+        <label class="label" for="settings-language">{t('settings.language')}</label>
+        <select
+          id="settings-language"
+          value={settings.locale}
+          onchange={(e) => settings.setLocale((e.currentTarget as HTMLSelectElement).value as Locale)}
+        >
           {#each LOCALES as locale}
-            <button
-              type="button"
-              role="radio"
-              aria-checked={settings.locale === locale}
-              class:on={settings.locale === locale}
-              onclick={() => settings.setLocale(locale as Locale)}
-            >
-              {t(`settings.language.${locale}`)}
-            </button>
+            <option value={locale}>{t(`settings.language.${locale}`)}</option>
           {/each}
-        </div>
+        </select>
       </div>
 
     {:else if activeSection === 'mail'}
