@@ -16,11 +16,38 @@ import { installAdminSession } from './fixtures/auth';
 
 const NOW = '2024-06-01T12:00:00Z';
 
+// Mirrors the server's principalDTO (internal/protoadmin/types.go): a numeric
+// id, canonical_email, and flags as an array of flag names. The list endpoint
+// wraps rows in the paginated pageDTO envelope {items, next}.
+function principal(
+  id: number,
+  canonicalEmail: string,
+  displayName: string,
+  flags: string[] = [],
+) {
+  return {
+    id,
+    kind: 'user',
+    canonical_email: canonicalEmail,
+    display_name: displayName,
+    quota_bytes: 0,
+    flags,
+    totp_enabled: false,
+    seen_addresses_enabled: false,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
 const PRINCIPALS = [
-  { id: '1', email: 'admin@example.com', display_name: 'Admin User', flags: 1, created_at: NOW },
-  { id: '2', email: 'alice@example.com', display_name: 'Alice', flags: 0, created_at: NOW },
-  { id: '3', email: 'bob@example.com', display_name: 'Bob', flags: 4, created_at: NOW },
+  principal(1, 'admin@example.com', 'Admin User', ['admin']),
+  principal(2, 'alice@example.com', 'Alice'),
+  principal(3, 'bob@example.com', 'Bob', ['ignore_download_limits']),
 ];
+
+function listBody(items: ReturnType<typeof principal>[] = PRINCIPALS): string {
+  return JSON.stringify({ items, next: null });
+}
 
 test.describe('principals', () => {
   test.beforeEach(async ({ page }) => {
@@ -34,7 +61,7 @@ test.describe('principals', () => {
       const detailMatch = url.pathname.match(/\/api\/v1\/principals\/(\d+)$/);
       if (detailMatch) {
         const id = detailMatch[1];
-        const p = PRINCIPALS.find((x) => x.id === id);
+        const p = PRINCIPALS.find((x) => String(x.id) === id);
         if (p) {
           return route.fulfill({
             status: 200,
@@ -52,7 +79,7 @@ test.describe('principals', () => {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(PRINCIPALS),
+        body: listBody(),
       });
     });
   });
@@ -84,25 +111,22 @@ test.describe('principals', () => {
       if (route.request().method() === 'POST') {
         postCalled = true;
         // After create the list is reloaded; return updated list.
-        const updated = [
-          ...PRINCIPALS,
-          { id: '4', email: 'new@example.com', display_name: 'New User', flags: 0, created_at: NOW },
-        ];
+        const updated = [...PRINCIPALS, principal(4, 'new@example.com', 'New User')];
         await route.fulfill({
           status: 201,
           contentType: 'application/json',
-          body: JSON.stringify({ id: '4' }),
+          body: JSON.stringify(principal(4, 'new@example.com', 'New User')),
         });
         // Override the principals GET for the reload after create.
         await page.route('/api/v1/principals*', (r) =>
-          r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(updated) }),
+          r.fulfill({ status: 200, contentType: 'application/json', body: listBody(updated) }),
         );
         return;
       }
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(PRINCIPALS),
+        body: listBody(),
       });
     });
 
