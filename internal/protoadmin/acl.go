@@ -259,7 +259,7 @@ func (s *Server) handlePutMailboxACL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encoded := aclcodec.Encode(rights)
-	s.appendAudit(r.Context(), "mailbox_acl.set",
+	s.appendAudit(r.Context(), "mailbox.acl.set",
 		fmt.Sprintf("mailbox:%d", mb.ID),
 		store.OutcomeSuccess, "",
 		map[string]string{
@@ -308,7 +308,7 @@ func (s *Server) handleDeleteMailboxACL(w http.ResponseWriter, r *http.Request) 
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mailbox_acl.remove",
+	s.appendAudit(r.Context(), "mailbox.acl.remove",
 		fmt.Sprintf("mailbox:%d", mb.ID),
 		store.OutcomeSuccess, "",
 		map[string]string{

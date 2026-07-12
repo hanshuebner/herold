@@ -143,6 +143,10 @@ func Run(t *testing.T, f Factory) {
 		{"DMARCDeduplicates", testDMARCDeduplicates},
 		{"MailboxACLGrantListRevoke", testMailboxACLGrantListRevoke},
 		{"MailboxACLAnyoneRow", testMailboxACLAnyoneRow},
+		// -- epic #210 review fix: manual ACL writes must own only local/
+		// acl-migration provenance rows, never an idp:<provider> row --
+		{"MailboxACL_SetNarrowsManualButPreservesIdPGrant", testMailboxACL_SetNarrowsManualButPreservesIdPGrant},
+		{"MailboxACL_RemoveDeletesOnlyManualRow", testMailboxACL_RemoveDeletesOnlyManualRow},
 		{"JMAPStatesIncrementAtomic", testJMAPStatesIncrementAtomic},
 		{"TLSRPTAppendAndRange", testTLSRPTAppendAndRange},
 		// -- Wave 2.2.5 JMAP persistence ---------------------------
@@ -5196,6 +5200,180 @@ func testMailboxACLAnyoneRow(t *testing.T, s store.Store) {
 	// Remove anyone row.
 	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, nil); err != nil {
 		t.Fatalf("Remove anyone: %v", err)
+	}
+}
+
+// testMailboxACL_SetNarrowsManualButPreservesIdPGrant is the regression test
+// for the provenance-ownership bug the #210 security review found: SETACL /
+// admin-REST (SetMailboxACL) must own only the manual (local /
+// acl-migration) grant row for a grantee and never touch an idp:<provider>
+// row for the same (mailbox, grantee) -- reconciliation (epic #188) owns
+// that row and would re-add it on the next login regardless, so silently
+// overwriting or dropping it here would be non-durable.
+//
+// Seeds an idp:-provenance row (lookup+read) and a migrated-provenance row
+// (write+insert) for the same grantee -- two rows the buggy
+// provenance-blind upsert would arbitrarily collide on. Narrowing the
+// manual grant to zero via SetMailboxACL must: leave exactly the idp: row
+// behind (no manual row survives), and GetMailboxACL must still report the
+// grantee with the idp:-conferred rights -- proving the idp: grant is
+// preserved, not silently dropped, even though the manual portion was
+// revoked to nothing.
+func testMailboxACL_SetNarrowsManualButPreservesIdPGrant(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "acl-prov-owner@example.test")
+	grantee := mustInsertPrincipal(t, s, "acl-prov-grantee@example.test")
+	mb := mustInsertMailbox(t, s, owner.ID, "Shared/prov")
+	resourceID := strconv.FormatUint(uint64(mb.ID), 10)
+
+	idpLevel := "lr" // lookup + read, conferred by IdP reconciliation.
+	if _, err := s.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(grantee.ID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        store.GrantLevel(idpLevel),
+		Provenance:   "idp:acme",
+	}); err != nil {
+		t.Fatalf("seed idp: grant: %v", err)
+	}
+	migratedGrantedBy := owner.ID
+	if _, err := s.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(grantee.ID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "wi", // write + insert, standing in for a migrated row.
+		Provenance:   store.GrantProvenanceACLMigration,
+		GrantedBy:    &migratedGrantedBy,
+	}); err != nil {
+		t.Fatalf("seed acl-migration grant: %v", err)
+	}
+
+	// Before any manual write: GetMailboxACL coalesces both rows into one
+	// entry with the OR of their rights.
+	before, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL before: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("acl rows before manual write = %d; want exactly 1 coalesced entry, got %+v", len(before), before)
+	}
+	wantBefore := store.ACLRightLookup | store.ACLRightRead | store.ACLRightWrite | store.ACLRightInsert
+	if before[0].Rights != wantBefore {
+		t.Fatalf("coalesced rights before = %v; want %v (OR of idp: %q and acl-migration %q)", before[0].Rights, wantBefore, idpLevel, "wi")
+	}
+
+	// Narrow the manual grant to nothing (the SETACL "=" with empty rights /
+	// admin-REST equivalent of a full revoke).
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, &grantee.ID, 0, owner.ID); err != nil {
+		t.Fatalf("SetMailboxACL narrow to zero: %v", err)
+	}
+
+	// The idp: row must be completely untouched.
+	onResource, err := s.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox, resourceID)
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource: %v", err)
+	}
+	var idpRows, manualRows int
+	for _, g := range onResource {
+		if store.PrincipalID(g.SubjectID) != grantee.ID {
+			continue
+		}
+		switch g.Provenance {
+		case "idp:acme":
+			idpRows++
+			if g.Level != store.GrantLevel(idpLevel) {
+				t.Errorf("idp: grant level changed to %q; want untouched %q", g.Level, idpLevel)
+			}
+		case store.GrantProvenanceLocal, store.GrantProvenanceACLMigration:
+			manualRows++
+		}
+	}
+	if idpRows != 1 {
+		t.Fatalf("idp: rows for grantee after narrow-to-zero = %d; want exactly 1 (untouched)", idpRows)
+	}
+	if manualRows != 0 {
+		t.Fatalf("manual rows for grantee after narrow-to-zero = %d; want 0", manualRows)
+	}
+
+	// Effective/rendered rights must still show the idp: grant -- narrowing
+	// the manual portion to zero must not silently drop it.
+	after, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL after: %v", err)
+	}
+	if len(after) != 1 || after[0].Rights != store.ACLRights(0)|store.ACLRightLookup|store.ACLRightRead {
+		t.Fatalf("acl rows after narrow-to-zero = %+v; want exactly 1 entry with the idp:-conferred lr rights", after)
+	}
+}
+
+// testMailboxACL_RemoveDeletesOnlyManualRow is the RemoveMailboxACL /
+// DELETEACL counterpart of the provenance-ownership fix: removing a
+// grantee's manual ACL row must never delete an idp:<provider> row for the
+// same (mailbox, grantee), and must report ErrNotFound on a second removal
+// even though the idp: row is still present (there is nothing manual left
+// to remove).
+func testMailboxACL_RemoveDeletesOnlyManualRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "acl-prov-rm-owner@example.test")
+	grantee := mustInsertPrincipal(t, s, "acl-prov-rm-grantee@example.test")
+	mb := mustInsertMailbox(t, s, owner.ID, "Shared/prov-rm")
+	resourceID := strconv.FormatUint(uint64(mb.ID), 10)
+
+	if _, err := s.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(grantee.ID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "lr",
+		Provenance:   "idp:acme",
+	}); err != nil {
+		t.Fatalf("seed idp: grant: %v", err)
+	}
+	if err := s.Meta().SetMailboxACL(ctx, mb.ID, &grantee.ID,
+		store.ACLRightLookup|store.ACLRightRead|store.ACLRightWrite, owner.ID); err != nil {
+		t.Fatalf("seed manual (local) grant: %v", err)
+	}
+
+	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, &grantee.ID); err != nil {
+		t.Fatalf("RemoveMailboxACL: %v", err)
+	}
+
+	// The idp: row must survive.
+	onResource, err := s.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox, resourceID)
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource: %v", err)
+	}
+	var idpRows, manualRows int
+	for _, g := range onResource {
+		if store.PrincipalID(g.SubjectID) != grantee.ID {
+			continue
+		}
+		switch g.Provenance {
+		case "idp:acme":
+			idpRows++
+		case store.GrantProvenanceLocal, store.GrantProvenanceACLMigration:
+			manualRows++
+		}
+	}
+	if idpRows != 1 {
+		t.Fatalf("idp: rows for grantee after RemoveMailboxACL = %d; want exactly 1 (untouched)", idpRows)
+	}
+	if manualRows != 0 {
+		t.Fatalf("manual rows for grantee after RemoveMailboxACL = %d; want 0", manualRows)
+	}
+
+	// A second removal finds no manual row -- ErrNotFound, even though the
+	// idp: row is still there.
+	if err := s.Meta().RemoveMailboxACL(ctx, mb.ID, &grantee.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second RemoveMailboxACL = %v; want ErrNotFound", err)
+	}
+
+	// GetMailboxACL still renders the grantee via the surviving idp: row.
+	rows, err := s.Meta().GetMailboxACL(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Rights != (store.ACLRightLookup|store.ACLRightRead) {
+		t.Fatalf("acl rows after remove = %+v; want exactly 1 entry with the idp:-conferred lr rights", rows)
 	}
 }
 

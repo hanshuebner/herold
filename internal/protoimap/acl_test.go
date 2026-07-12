@@ -569,6 +569,94 @@ func TestSETACL_NormalisesProvenanceOnReSet(t *testing.T) {
 	}
 }
 
+// TestSETACL_RevokeToZero_PreservesIdPGrant is the wire-level regression
+// test for the provenance-ownership review finding: bob holds both an
+// idp:<provider>-provenance mailbox grant (owned by authz.ReconcileIdP,
+// epic #188) and a manual (acl-migration) row on the same mailbox. Alice
+// SETACLs bob down to empty rights -- a full revoke of the manual grant.
+// The idp: row MUST survive untouched, and bob's effective rights (MYRIGHTS,
+// GETACL) must still reflect it: SETACL/DELETEACL own only the manual
+// grant, never an IdP-reconciled one, so revoking the manual portion can
+// never silently drop access reconciliation would just re-assert on the
+// next login.
+func TestSETACL_RevokeToZero_PreservesIdPGrant(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	resourceID := strconv.FormatUint(uint64(af.aliceShared.ID), 10)
+	if _, err := af.ha.Store.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(af.bobID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "lr",
+		Provenance:   "idp:acme",
+	}); err != nil {
+		t.Fatalf("seed idp: grant: %v", err)
+	}
+	if _, err := af.ha.Store.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(af.bobID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   resourceID,
+		Level:        "lrswi",
+		Provenance:   store.GrantProvenanceACLMigration,
+		GrantedBy:    &af.aliceID,
+	}); err != nil {
+		t.Fatalf("seed acl-migration grant: %v", err)
+	}
+
+	cAlice := loginAsACL(t, af, "alice@example.test", af.alicePass)
+	defer cAlice.close()
+	resp := cAlice.send("s1", `SETACL "Shared/support" "bob@example.test" ""`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("SETACL revoke to empty: %v", resp)
+	}
+
+	// The idp: row must be untouched; no manual row survives.
+	grants, err := af.ha.Store.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox, resourceID)
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource: %v", err)
+	}
+	var idpRows, manualRows int
+	for _, g := range grants {
+		if g.SubjectKind != store.GrantSubjectPrincipal || store.PrincipalID(g.SubjectID) != af.bobID {
+			continue
+		}
+		switch g.Provenance {
+		case "idp:acme":
+			idpRows++
+			if g.Level != "lr" {
+				t.Errorf("idp: grant level changed to %q; want untouched \"lr\"", g.Level)
+			}
+		case store.GrantProvenanceLocal, store.GrantProvenanceACLMigration:
+			manualRows++
+		}
+	}
+	if idpRows != 1 {
+		t.Fatalf("idp: rows for bob after revoke-to-zero = %d; want 1 (untouched)", idpRows)
+	}
+	if manualRows != 0 {
+		t.Fatalf("manual rows for bob after revoke-to-zero = %d; want 0", manualRows)
+	}
+
+	// GETACL/MYRIGHTS must still show bob with the idp:-conferred rights,
+	// not zero.
+	getResp := cAlice.send("g1", `GETACL "Shared/support"`)
+	getJoined := strings.Join(getResp, "\n")
+	if strings.Count(getJoined, "bob@example.test") != 1 {
+		t.Fatalf("GETACL must render bob exactly once (coalesced): %v", getResp)
+	}
+	if !strings.Contains(getJoined, `"lr"`) {
+		t.Fatalf("GETACL must still show bob's idp:-conferred lr rights: %v", getResp)
+	}
+
+	cBob := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer cBob.close()
+	myResp := cBob.send("m1", `MYRIGHTS "Shared/support"`)
+	myJoined := strings.Join(myResp, "\n")
+	if !strings.Contains(myJoined, `"lr"`) {
+		t.Fatalf("MYRIGHTS must still reflect the idp: grant after the manual revoke: %v", myResp)
+	}
+}
+
 // TestSETACL_InsertWithoutDelete_ExpressibleAndEnforced is the wire-level
 // demonstration of full RFC 4314 fidelity (epic #210): a fine-grained grant
 // -- insert ("i") without any of the delete-family rights (delete-message
