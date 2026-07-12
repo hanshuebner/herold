@@ -83,3 +83,75 @@ func Decode(s string) (store.ACLRights, error) {
 	}
 	return out, nil
 }
+
+// ExpandTier expands a coarse mailbox grant tier (store.GrantLevelRead /
+// Write / Admin) to the RFC 4314 rights it implies (epic #210,
+// architecture/15-access-control.md "IMAP RFC 4314 mapping"):
+//
+//	read  (l r s)          -> mailbox:read
+//	write (i p k x t e w)  -> mailbox:write   (implies read)
+//	admin (a)              -> mailbox:admin   (implies write)
+//
+// The zero level (no access) expands to zero rights. This is the coarse
+// tier's projection into rights, used for a mailbox grant whose Level holds
+// a tier word rather than a letter-set -- the only representation a
+// non-ACL-wire grant (e.g. a future IdP claim-mapping rule) can assert.
+func ExpandTier(level store.GrantLevel) store.ACLRights {
+	switch level {
+	case store.GrantLevelRead:
+		return store.ACLRightLookup | store.ACLRightRead | store.ACLRightSeen
+	case store.GrantLevelWrite:
+		return ExpandTier(store.GrantLevelRead) |
+			store.ACLRightWrite | store.ACLRightInsert | store.ACLRightPost |
+			store.ACLRightCreateMailbox | store.ACLRightDeleteMailbox |
+			store.ACLRightDeleteMessage | store.ACLRightExpunge
+	case store.GrantLevelAdmin:
+		return ExpandTier(store.GrantLevelWrite) | store.ACLRightAdmin
+	default:
+		return 0
+	}
+}
+
+// CollapseTier collapses an RFC 4314 rights mask to the coarse grant tier it
+// implies, the inverse direction of ExpandTier: the highest tier for which
+// the mask contains at least one of that tier's letters. A mask with no
+// recognised bits collapses to the zero level (no grant). Used when a
+// caller wants to express letter-string input as a coarse tier (e.g. a UI
+// convenience badge), never for the grant row itself.
+func CollapseTier(r store.ACLRights) store.GrantLevel {
+	if r&store.ACLRightAdmin != 0 {
+		return store.GrantLevelAdmin
+	}
+	const writeBits = store.ACLRightWrite | store.ACLRightInsert | store.ACLRightPost |
+		store.ACLRightCreateMailbox | store.ACLRightDeleteMailbox |
+		store.ACLRightDeleteMessage | store.ACLRightExpunge
+	if r&writeBits != 0 {
+		return store.GrantLevelWrite
+	}
+	const readBits = store.ACLRightLookup | store.ACLRightRead | store.ACLRightSeen
+	if r&readBits != 0 {
+		return store.GrantLevelRead
+	}
+	return ""
+}
+
+// DecodeGrantLevel decodes a mailbox grant's Level column into the RFC 4314
+// rights it conveys (epic #210). Two representations are accepted: the
+// canonical per-letter encoding this package emits (Encode/Decode) for
+// every mailbox grant written through SETACL or the admin ACL REST surface,
+// and the three coarse tier words (store.GrantLevelRead/Write/Admin) a
+// non-ACL-wire grant may carry instead -- "the coarse tiers remain a
+// convenience projection" (docs/design/server/architecture/15-access-control.md).
+// An unrecognised level decodes to (0, false) so a caller enumerating grant
+// rows can skip a corrupt one without failing the whole resolution.
+func DecodeGrantLevel(level store.GrantLevel) (store.ACLRights, bool) {
+	switch level {
+	case store.GrantLevelRead, store.GrantLevelWrite, store.GrantLevelAdmin:
+		return ExpandTier(level), true
+	}
+	r, err := Decode(string(level))
+	if err != nil {
+		return 0, false
+	}
+	return r, true
+}

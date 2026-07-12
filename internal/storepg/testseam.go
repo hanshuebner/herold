@@ -96,9 +96,9 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		// must be enumerated explicitly or rows leak across subtests and break
 		// BlobPartIndex/ListNeedingPartIndex_MinVersionFilter in storetest.
 		"blob_part_index",
-		// Mail core: messages, mailbox ACL, mailboxes, blob refs.
+		// Mail core: messages, mailboxes, blob refs. Mailbox ACL rows now live
+		// in "grants" (epic #210), cascaded via its granted_by FK to principals.
 		"messages",
-		"mailbox_acl",
 		"mailboxes",
 		"blob_refs",
 		// Identity surfaces.

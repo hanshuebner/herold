@@ -57,3 +57,15 @@ var Migration0079SQL = func() string {
 	}
 	return string(body)
 }()
+
+// Migration0084SQL is the verbatim 0084_mailbox_acl_grants.sql body,
+// re-exported for the mailbox_acl migration-fidelity test in
+// storesqlite_test.go (epic #210) so the test exercises the production
+// migration text and never drifts from it.
+var Migration0084SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0084_mailbox_acl_grants.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()

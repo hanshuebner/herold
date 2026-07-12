@@ -1209,28 +1209,38 @@ type Metadata interface {
 	// directly from this surface.
 	DMARCAggregate(ctx context.Context, domain string, since, until time.Time) ([]DMARCAggregateRow, error)
 
-	// -- Phase 2 mailbox ACL ------------------------------------------
+	// -- Mailbox ACL (epic #210: grant-backed) -------------------------
+	//
+	// These four methods are a stable DTO surface over `mailbox`-kind rows
+	// in the grants table -- the RFC 4314 letter-set lives in a grant's
+	// Level column (internal/aclcodec.Encode/Decode), keyed by
+	// (resource_kind='mailbox', resource_id=mailboxID, subject). There is
+	// at most one row per (mailbox, grantee) regardless of provenance:
+	// SetMailboxACL upserts by that natural key, ignoring provenance, and
+	// always writes GrantProvenanceLocal -- an explicit SETACL/admin-REST
+	// write supersedes a migrated or IdP-derived row for the same grantee.
 
 	// SetMailboxACL upserts one ACL row for (mailboxID, principalID).
-	// principalID == nil encodes the RFC 4314 "anyone" pseudo-row.
-	// rights replaces any prior mask wholesale (RFC 4314 SETACL
-	// semantics, not an additive merge).
+	// principalID == nil encodes the RFC 4314 "anyone" pseudo-row
+	// (GrantSubjectAnyone). rights replaces any prior mask wholesale (RFC
+	// 4314 SETACL semantics, not an additive merge).
 	SetMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID, rights ACLRights, grantedBy PrincipalID) error
 
-	// GetMailboxACL returns every ACL row for mailboxID. Anyone rows
+	// GetMailboxACL returns every ACL row for mailboxID, decoded from the
+	// underlying grant rows (both letter-set and coarse-tier Level
+	// encodings, internal/aclcodec.DecodeGrantLevel). Anyone rows
 	// (PrincipalID nil) come first.
 	GetMailboxACL(ctx context.Context, mailboxID MailboxID) ([]MailboxACL, error)
 
-	// ListMailboxesAccessibleBy returns every mailbox whose ACL grants
-	// pid the lookup right (or has an "anyone" row with lookup). The
+	// ListMailboxesAccessibleBy returns every mailbox whose grant rows give
+	// pid the lookup right (directly or via the "anyone" subject). The
 	// owning principal's mailboxes are NOT auto-included; the caller
-	// composes them with ListMailboxes when "all" semantics are
-	// needed.
+	// composes them with ListMailboxes when "all" semantics are needed.
 	ListMailboxesAccessibleBy(ctx context.Context, pid PrincipalID) ([]Mailbox, error)
 
-	// RemoveMailboxACL deletes the ACL row for (mailboxID, principalID).
-	// principalID == nil targets the "anyone" row. Returns ErrNotFound
-	// when the row is missing.
+	// RemoveMailboxACL deletes the ACL row for (mailboxID, principalID),
+	// whatever its provenance. principalID == nil targets the "anyone" row.
+	// Returns ErrNotFound when the row is missing.
 	RemoveMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID) error
 
 	// -- Phase 2 JMAP states ------------------------------------------

@@ -28,11 +28,13 @@ import (
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
 
-// seedMailboxGrant inserts a `mailbox` grant row (epic #186, REQ-AC-50) on
-// the unified grants substrate — distinct storage from the legacy
-// mailbox_acl table SetMailboxACL writes to. Used to exercise the
-// authz.Resolve bridge in internal/protoimap/acl.go independently of the
-// per-letter ACL path.
+// seedMailboxGrant inserts a `mailbox` grant row directly via InsertGrant
+// (epic #210, REQ-AC-50), bypassing SETACL/SetMailboxACL. Level is a coarse
+// tier word (store.GrantLevelRead/Write/Admin) rather than an RFC 4314
+// letter-set, simulating a non-ACL-wire grant (e.g. a mailing-list archive
+// read grant or a future IdP claim-mapping rule) -- exercises
+// authz.ResolveMailboxRights's dual-format decode (internal/aclcodec.DecodeGrantLevel)
+// independently of the SETACL-driven letter-set path.
 func seedMailboxGrant(t *testing.T, af *aclFixture, mb store.Mailbox, grantee store.PrincipalID, level store.GrantLevel) {
 	t.Helper()
 	_, err := af.ha.Store.Meta().InsertGrant(context.Background(), store.Grant{
@@ -364,9 +366,10 @@ func TestSharedMailbox_TwoPrincipals_OneSupportInbox(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Unified grant substrate (epic #186, REQ-AC-50..53): a `mailbox` grant row
-// written directly to the grants table (not through SETACL) is honoured by
-// IMAP visibility and rights checks exactly like a legacy mailbox_acl row.
+// Unified grant substrate (epic #182/#186/#210, REQ-AC-50..53): a `mailbox`
+// grant row written directly to the grants table (not through SETACL) is
+// honoured by IMAP visibility and rights checks exactly like a SETACL-written
+// row -- there is one storage, one read path.
 // -----------------------------------------------------------------------------
 
 func TestGrantMailboxRead_AllowsSelectFetch_DeniesWrite(t *testing.T) {
@@ -513,25 +516,55 @@ func TestGETACL_ShowsGrantSubstrateRow(t *testing.T) {
 	}
 }
 
-func TestGrantMailboxRead_DoesNotShadowLegacyRowInGETACL(t *testing.T) {
+// TestSETACL_NormalisesProvenanceOnReSet verifies that re-SETACL-ing a
+// grantee whose row currently carries a non-local provenance (standing in
+// for a migrated mailbox_acl row, provenance "acl-migration") replaces that
+// row in place -- normalising its provenance to "local" -- rather than
+// creating a second, competing entry for the same grantee. SETACL's RFC
+// 4314 "replace wholesale" semantics (epic #210) hold regardless of the
+// row's prior provenance.
+func TestSETACL_NormalisesProvenanceOnReSet(t *testing.T) {
 	af := newACLFixture(t)
 	ctx := context.Background()
-	// bob has both a legacy ACL row (richer: individual letters) and a
-	// grant-substrate row; GETACL must render the legacy row, not a
-	// duplicate collapsed-tier entry.
-	if err := af.ha.Store.Meta().SetMailboxACL(ctx, af.aliceShared.ID, &af.bobID,
-		store.ACLRightLookup|store.ACLRightRead|store.ACLRightSeen|store.ACLRightWrite, af.aliceID); err != nil {
-		t.Fatalf("seed legacy acl: %v", err)
+	if _, err := af.ha.Store.Meta().InsertGrant(ctx, store.Grant{
+		SubjectID:    uint64(af.bobID),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   strconv.FormatUint(uint64(af.aliceShared.ID), 10),
+		Level:        "lrsw",
+		Provenance:   store.GrantProvenanceACLMigration,
+		GrantedBy:    &af.aliceID,
+	}); err != nil {
+		t.Fatalf("seed migrated grant: %v", err)
 	}
-	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelRead)
 	c := loginAsACL(t, af, "alice@example.test", af.alicePass)
 	defer c.close()
-	resp := c.send("g1", `GETACL "Shared/support"`)
-	joined := strings.Join(resp, "\n")
-	if strings.Count(joined, "bob@example.test") != 1 {
-		t.Fatalf("GETACL must render bob exactly once (legacy row wins): %v", resp)
+	resp := c.send("s1", `SETACL "Shared/support" "bob@example.test" "lrs"`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("SETACL: %v", resp)
 	}
-	if !strings.Contains(joined, `"lrsw"`) {
-		t.Fatalf("GETACL should render bob's legacy rights, not the grant collapse: %v", resp)
+	grants, err := af.ha.Store.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox,
+		strconv.FormatUint(uint64(af.aliceShared.ID), 10))
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource: %v", err)
+	}
+	var bobGrants int
+	for _, g := range grants {
+		if g.SubjectKind == store.GrantSubjectPrincipal && store.PrincipalID(g.SubjectID) == af.bobID {
+			bobGrants++
+			if g.Provenance != store.GrantProvenanceLocal {
+				t.Errorf("bob's grant provenance = %q; want %q (re-set normalises)", g.Provenance, store.GrantProvenanceLocal)
+			}
+		}
+	}
+	if bobGrants != 1 {
+		t.Fatalf("bob grant rows on the mailbox = %d; want exactly 1 (re-set replaces, not adds)", bobGrants)
+	}
+	rows, err := af.ha.Store.Meta().GetMailboxACL(ctx, af.aliceShared.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL: %v", err)
+	}
+	want := store.ACLRightLookup | store.ACLRightRead | store.ACLRightSeen
+	if len(rows) != 1 || rows[0].Rights != want {
+		t.Fatalf("bob's rights after re-SETACL = %+v; want a single row with %v (write-tier bit from the migrated grant gone)", rows, want)
 	}
 }

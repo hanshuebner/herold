@@ -260,13 +260,17 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?)`,
 		1, "👍", 1, int64(1000000))
 
-	// mailbox_acl
-	exec(`INSERT INTO mailbox_acl (id, mailbox_id, principal_id, rights_mask, granted_by, created_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?)`,
-		1, 1, 2, 7, 1, int64(1000000))
-	exec(`INSERT INTO mailbox_acl (id, mailbox_id, principal_id, rights_mask, granted_by, created_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?)`,
-		2, 1, nil, 4, 1, int64(2000000)) // nil principal_id (anonymous ACL)
+	// grants: one mailbox-kind grant carrying the RFC 4314 letter-set
+	// (epic #210) and one "anyone"-subject mailbox grant (nullable
+	// last_asserted_at_us left NULL, as for every local/acl-migration row).
+	exec(`INSERT INTO grants (id, subject_kind, subject_id, resource_kind, resource_id,
+	                          level, provenance, granted_by, granted_at_us, last_asserted_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, "principal", 2, "mailbox", "1", "lrsi", "acl-migration", 1, int64(1000000), nil)
+	exec(`INSERT INTO grants (id, subject_kind, subject_id, resource_kind, resource_id,
+	                          level, provenance, granted_by, granted_at_us, last_asserted_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, "anyone", 0, "mailbox", "1", "lr", "acl-migration", 1, int64(2000000), nil)
 
 	// state_changes
 	exec(`INSERT INTO state_changes (id, principal_id, seq, entity_kind, entity_id, parent_entity_id, op, cause, produced_at_us)

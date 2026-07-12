@@ -38,12 +38,14 @@ tables for authorization groups (REQ-AC-80..89):
 ```
   grant(
     id            u64 primary,
-    subject_kind  text,        -- 'principal' | 'group'
-    subject_id    fk,          -- principal id, or authz_group id
+    subject_kind  text,        -- 'principal' | 'group' | 'anyone' (mailbox only, epic #210)
+    subject_id    fk,          -- principal id, or authz_group id; unused (0) for 'anyone'
     resource_kind text,        -- server | domain | list | mailbox
     resource_id   text,        -- '' for server; domain name; list id; mailbox id
-    level         text,        -- per-kind enum (07-access-control.md)
-    provenance    text,        -- 'local' | 'idp:<provider>'
+    level         text,        -- per-kind tier enum, EXCEPT mailbox: the full RFC 4314
+                                -- letter-set the grant conveys (a tier word is also
+                                -- accepted on read, epic #210's "IMAP RFC 4314 mapping")
+    provenance    text,        -- 'local' | 'idp:<provider>' | 'acl-migration' (mailbox only)
     granted_by    fk,          -- actor principal, or null for idp-derived
     granted_at    ts,
     last_asserted_at ts null,  -- idp-derived only; drives the staleness sweep
@@ -108,20 +110,38 @@ re-resolve rather than serve a stale cache.
 ## IMAP RFC 4314 mapping
 
 `SETACL`/`GETACL`/`MYRIGHTS`/`LISTRIGHTS` (REQ-PROTO-33) are a wire front-end over
-mailbox grants (REQ-AC-50). The RFC 4314 rights string collapses onto the three
-tiers:
+mailbox grants (REQ-AC-50). A `mailbox`-kind grant's `level` column carries the
+full RFC 4314 rights letter-set the grant conveys, in the canonical order
+`internal/aclcodec` defines (e.g. `"lrs"`, `"lrswiktea"`) — not a collapsed
+tier — so `SETACL`/`GETACL` round-trip an arbitrary rights combination
+(`insert` without `delete`, etc.) exactly, and a `mailbox` grant is the sole
+storage for RFC 4314 ACL data (epic #210; the legacy `mailbox_acl` table this
+superseded is retired).
+
+The coarse `mailbox:read`/`write`/`admin` tiers remain a convenience
+projection for callers that only need "at least X" (a UI badge, or a
+non-ACL-wire grant such as a future IdP claim-mapping rule targeting a
+mailbox, REQ-AC-70's claim-to-grant vocabulary only expresses a tier). The
+tier and letter-set representations coexist in the same `level` column;
+`internal/aclcodec.DecodeGrantLevel` accepts either on read, expanding a tier
+word to the rights it implies:
 
 ```
-  read  (l r s)         -> mailbox:read
-  write (i k x t e w p)  -> mailbox:write   (implies read)
+  read  (l r s)          -> mailbox:read
+  write (i p k x t e w)  -> mailbox:write   (implies read)
   admin (a)              -> mailbox:admin   (implies write)
 ```
 
-`GETACL` renders grant rows back as rights strings; `SETACL` writes a grant row
-at the tier the requested rights imply. herold does not store the full
-per-letter bitmask — the three-tier collapse is the stored truth, and the wire
-representation is derived. (Fidelity note: clients that set an unusual letter
-subset get the enclosing tier; this is the documented simplification.)
+`internal/authz.ResolveMailboxRights` is the sole enforcement path: implicit
+ownership and the superadmin short-circuit grant every right; otherwise the
+rights are the OR of every applicable `mailbox` grant row (the caller's own
+row, plus any RFC 4314 "anyone" row — `subject_kind = 'anyone'`, a third
+subject kind alongside `principal`/`group` reserved for exactly this
+pseudo-identifier). At most one grant row exists per (mailbox, grantee)
+regardless of provenance: a `SETACL`/admin-REST write upserts by that natural
+key, normalising the row's provenance to `local` — an explicit re-set
+supersedes a migrated (`acl-migration`) or IdP-derived row for the same
+grantee.
 
 ## IdP claim reconciliation
 

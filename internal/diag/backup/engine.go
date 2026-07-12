@@ -123,7 +123,6 @@ var tableReg = map[string]tableDesc{
 	"message_mailboxes":          {&MessageMailboxRow{}, "message_id, mailbox_id"},
 	"email_pretrash_mailboxes":   {&EmailPretrashMailboxRow{}, "email_id, mailbox_id"},
 	"email_reactions":            {&EmailReactionRow{}, "email_id, emoji, principal_id"},
-	"mailbox_acl":                {&MailboxACLRow{}, "id"},
 	"state_changes":              {&StateChangeRow{}, "id"},
 	"audit_log":                  {&AuditLogRow{}, "id"},
 	"cursors":                    {&CursorRow{}, "key"},

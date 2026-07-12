@@ -3,6 +3,7 @@ package storesqlite_test
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -780,5 +781,250 @@ func TestMigration0079GrantBackfill(t *testing.T) {
 		if g.ResourceKind == store.GrantResourceServer {
 			t.Errorf("operator wrongly received a server grant: %+v", g)
 		}
+	}
+}
+
+// TestMigration0084MailboxACLGrantMigration is the migration-fidelity test
+// for epic #210: it seeds representative mailbox_acl rows (varied per-letter
+// combinations across multiple principals and mailboxes, including an
+// insert-without-delete grant, an admin-only grant, an "anyone" row, and a
+// full-rights row), re-runs the verbatim 0084 migration body, and asserts
+// that the rights resolved after migration -- both per-row (GetMailboxACL)
+// and per (principal, mailbox) effective access -- are identical to what
+// mailbox_acl resolved before.
+//
+// mailbox_acl was retired by an earlier run of this same migration when
+// Open ran every migration up to head, so the table is recreated by hand
+// (matching migration 0004's original schema) before seeding, reproducing
+// the upgrade path: mailbox_acl rows already exist when 0084 first applies.
+func TestMigration0084MailboxACLGrantMigration(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+
+	s, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ownerA, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "ownerA@x.test",
+	})
+	if err != nil {
+		t.Fatalf("insert ownerA: %v", err)
+	}
+	ownerB, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "ownerB@x.test",
+	})
+	if err != nil {
+		t.Fatalf("insert ownerB: %v", err)
+	}
+	p1, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "p1@x.test",
+	})
+	if err != nil {
+		t.Fatalf("insert p1: %v", err)
+	}
+	p2, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "p2@x.test",
+	})
+	if err != nil {
+		t.Fatalf("insert p2: %v", err)
+	}
+	mbA, err := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: ownerA.ID, Name: "Shared/A"})
+	if err != nil {
+		t.Fatalf("insert mbA: %v", err)
+	}
+	mbB, err := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: ownerB.ID, Name: "Shared/B"})
+	if err != nil {
+		t.Fatalf("insert mbB: %v", err)
+	}
+	mbC, err := s.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: ownerA.ID, Name: "Shared/C"})
+	if err != nil {
+		t.Fatalf("insert mbC: %v", err)
+	}
+	_ = s.Close()
+
+	// Recreate the legacy table (dropped by the fresh Open's own run of
+	// 0084) and seed representative rows, matching migration 0004's schema.
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE mailbox_acl (
+		  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		  mailbox_id    INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+		  principal_id  INTEGER REFERENCES principals(id) ON DELETE CASCADE,
+		  rights_mask   INTEGER NOT NULL,
+		  granted_by    INTEGER NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+		  created_at_us INTEGER NOT NULL
+		) STRICT`); err != nil {
+		t.Fatalf("recreate mailbox_acl: %v", err)
+	}
+	const (
+		l = 1 << iota // lookup
+		r
+		sn
+		w
+		i
+		p
+		k
+		x
+		tt
+		e
+		a
+	)
+	seed := []struct {
+		mailbox   store.MailboxID
+		principal *store.PrincipalID // nil == anyone
+		rights    int64
+	}{
+		// insert-without-delete: p1 on mbA can lookup/read/seen/insert but
+		// has none of delete-message/expunge/delete-mailbox.
+		{mbA.ID, &p1.ID, l | r | sn | i},
+		// anyone row on mbA: baseline lookup+read for every principal.
+		{mbA.ID, nil, l | r},
+		// admin-only edge case: p1 on mbC can administer ACL but was never
+		// separately granted lookup/read.
+		{mbC.ID, &p1.ID, a},
+		// full-rights edge case: p2 on mbB.
+		{mbB.ID, &p2.ID, l | r | sn | w | i | p | k | x | tt | e | a},
+		// write-without-seen: p1 on mbB.
+		{mbB.ID, &p1.ID, l | r | w},
+	}
+	for _, row := range seed {
+		var pidArg any
+		if row.principal != nil {
+			pidArg = int64(*row.principal)
+		}
+		if _, err := raw.ExecContext(ctx, `
+			INSERT INTO mailbox_acl (mailbox_id, principal_id, rights_mask, granted_by, created_at_us)
+			VALUES (?, ?, ?, ?, ?)`,
+			int64(row.mailbox), pidArg, row.rights, int64(ownerA.ID), int64(1767225600000000)); err != nil {
+			t.Fatalf("seed mailbox_acl row %+v: %v", row, err)
+		}
+	}
+	// Drop the empty grants table this Open's own 0084 run already created
+	// (with the widened CHECK) so the migration body's ALTER TABLE ... DROP
+	// CONSTRAINT step re-runs against a table shaped like migration 0079
+	// left it -- reproducing the exact upgrade path.
+	if _, err := raw.ExecContext(ctx, `DROP TABLE grants`); err != nil {
+		t.Fatalf("drop grants: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, storesqlite.Migration0079SQL); err != nil {
+		t.Fatalf("re-run 0079 body: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, storesqlite.Migration0084SQL); err != nil {
+		t.Fatalf("re-run 0084 body: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `SELECT 1 FROM mailbox_acl LIMIT 1`); err == nil {
+		t.Fatalf("mailbox_acl still queryable after 0084 re-run; want it dropped")
+	}
+	_ = raw.Close()
+
+	s2, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	defer s2.Close()
+
+	// Per-row fidelity: every migrated grant decodes back to exactly the
+	// rights_mask it was seeded with, tagged with the migration provenance.
+	rowsA, err := s2.Meta().GetMailboxACL(ctx, mbA.ID)
+	if err != nil {
+		t.Fatalf("GetMailboxACL mbA: %v", err)
+	}
+	if len(rowsA) != 2 {
+		t.Fatalf("mbA acl rows = %d; want 2 (anyone + p1)", len(rowsA))
+	}
+	for _, row := range rowsA {
+		if row.PrincipalID == nil {
+			if row.Rights != store.ACLRightLookup|store.ACLRightRead {
+				t.Errorf("mbA anyone row rights = %v; want lr", row.Rights)
+			}
+			continue
+		}
+		if *row.PrincipalID != p1.ID {
+			t.Fatalf("mbA unexpected principal row: %+v", row)
+		}
+		want := store.ACLRightLookup | store.ACLRightRead | store.ACLRightSeen | store.ACLRightInsert
+		if row.Rights != want {
+			t.Errorf("mbA p1 row rights = %v; want %v (insert-without-delete)", row.Rights, want)
+		}
+		if row.Rights&(store.ACLRightDeleteMessage|store.ACLRightExpunge|store.ACLRightDeleteMailbox) != 0 {
+			t.Errorf("mbA p1 row must not carry any delete-family bit: %v", row.Rights)
+		}
+	}
+	grantsOnA, err := s2.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox,
+		strconv.FormatUint(uint64(mbA.ID), 10))
+	if err != nil {
+		t.Fatalf("ListGrantsOnResource mbA: %v", err)
+	}
+	for _, g := range grantsOnA {
+		if g.Provenance != store.GrantProvenanceACLMigration {
+			t.Errorf("migrated mbA grant provenance = %q; want %q", g.Provenance, store.GrantProvenanceACLMigration)
+		}
+	}
+
+	// Effective-rights fidelity: the resolved access for every
+	// (principal, mailbox) pair matches what mailbox_acl resolved before
+	// migration (own row OR'd with any "anyone" row on that mailbox).
+	cases := []struct {
+		name      string
+		mailbox   store.MailboxID
+		principal store.PrincipalID
+		want      store.ACLRights
+	}{
+		{"p1 on mbA: own row union anyone row (anyone is a strict subset)",
+			mbA.ID, p1.ID, store.ACLRightLookup | store.ACLRightRead | store.ACLRightSeen | store.ACLRightInsert},
+		{"p2 on mbA: only the anyone row applies",
+			mbA.ID, p2.ID, store.ACLRightLookup | store.ACLRightRead},
+		{"p1 on mbC: admin-only, no lookup/read ever granted",
+			mbC.ID, p1.ID, store.ACLRightAdmin},
+		{"p2 on mbC: no row at all",
+			mbC.ID, p2.ID, 0},
+		{"p2 on mbB: full rights",
+			mbB.ID, p2.ID, store.ACLRightsAll},
+		{"p1 on mbB: write without seen",
+			mbB.ID, p1.ID, store.ACLRightLookup | store.ACLRightRead | store.ACLRightWrite},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rows, err := s2.Meta().GetMailboxACL(ctx, c.mailbox)
+			if err != nil {
+				t.Fatalf("GetMailboxACL: %v", err)
+			}
+			var have store.ACLRights
+			for _, row := range rows {
+				if row.PrincipalID == nil || *row.PrincipalID == c.principal {
+					have |= row.Rights
+				}
+			}
+			if have != c.want {
+				t.Errorf("resolved rights = %v; want %v", have, c.want)
+			}
+		})
+	}
+
+	// ListMailboxesAccessibleBy filters strictly on the lookup ("l") bit,
+	// same as the legacy mailbox_acl query did: p1 has lookup on mbA and
+	// mbB (own rows carry "l") but NOT mbC, whose admin-only row never
+	// separately carries lookup -- LIST visibility and ACL-administer
+	// rights are independent RFC 4314 rights, and this migration must not
+	// conflate them. p2 has lookup on mbA (via the anyone row) and mbB
+	// (own row).
+	p1Accessible, err := s2.Meta().ListMailboxesAccessibleBy(ctx, p1.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxesAccessibleBy p1: %v", err)
+	}
+	if len(p1Accessible) != 2 {
+		t.Errorf("p1 accessible = %+v; want 2 mailboxes (mbA, mbB; mbC's admin-only row lacks lookup)", p1Accessible)
+	}
+	p2Accessible, err := s2.Meta().ListMailboxesAccessibleBy(ctx, p2.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxesAccessibleBy p2: %v", err)
+	}
+	if len(p2Accessible) != 2 {
+		t.Errorf("p2 accessible = %+v; want 2 mailboxes (mbA via anyone, mbB own)", p2Accessible)
 	}
 }

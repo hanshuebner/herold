@@ -12,7 +12,7 @@ package backup
 //
 // Every nullable column is modelled with a pointer so the JSONL
 // distinguishes "absent" from "zero-valued" — important for
-// expires_at_us, idempotency_key, principal_id (mailbox_acl), and
+// expires_at_us, idempotency_key, granted_by (grants), and
 // order_id (acme_certs). Boolean columns are stored as bool;
 // callers translate to/from the backend's native representation.
 //
@@ -272,15 +272,6 @@ type MessageMailboxRow struct {
 type EmailPretrashMailboxRow struct {
 	EmailID   int64 `json:"email_id"`
 	MailboxID int64 `json:"mailbox_id"`
-}
-
-type MailboxACLRow struct {
-	ID          int64  `json:"id"`
-	MailboxID   int64  `json:"mailbox_id"`
-	PrincipalID *int64 `json:"principal_id,omitempty"`
-	RightsMask  int64  `json:"rights_mask"`
-	GrantedBy   int64  `json:"granted_by"`
-	CreatedAtUs int64  `json:"created_at_us"`
 }
 
 type StateChangeRow struct {

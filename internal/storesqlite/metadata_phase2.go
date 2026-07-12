@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/aclcodec"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -1290,52 +1292,79 @@ func (m *metadata) DMARCAggregate(ctx context.Context, domain string, since, unt
 	return out, rows.Err()
 }
 
-// -- mailbox ACL ------------------------------------------------------
+// -- mailbox ACL (epic #210: grant-backed, no mailbox_acl table) -------
+//
+// Every mailbox ACL row is a `mailbox`-kind grant; mailboxACLSubject /
+// mailboxACLPrincipal translate the RFC 4314 "anyone" pseudo-identifier
+// to/from GrantSubjectAnyone (subject_id 0, unused for that kind). At most
+// one grant row exists per (mailbox, grantee) regardless of provenance: the
+// natural key SetMailboxACL upserts on omits provenance on purpose, so a
+// fresh SETACL/admin-REST write replaces whatever row (migrated, IdP, or
+// prior local) already existed for that grantee, normalising it to
+// GrantProvenanceLocal -- an explicit re-set supersedes historical
+// provenance.
+
+// mailboxACLSubject maps the RFC 4314 grantee (nil == "anyone") to the
+// grants table's subject_kind/subject_id pair.
+func mailboxACLSubject(principalID *store.PrincipalID) (kind string, id int64) {
+	if principalID == nil {
+		return string(store.GrantSubjectAnyone), 0
+	}
+	return string(store.GrantSubjectPrincipal), int64(*principalID)
+}
+
+// mailboxACLPrincipal is the inverse of mailboxACLSubject: nil for an
+// "anyone" row, else the principal id.
+func mailboxACLPrincipal(kind string, id int64) *store.PrincipalID {
+	if kind == string(store.GrantSubjectAnyone) {
+		return nil
+	}
+	pid := store.PrincipalID(id)
+	return &pid
+}
 
 func (m *metadata) SetMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID, rights store.ACLRights, grantedBy store.PrincipalID) error {
 	now := m.s.clock.Now().UTC()
+	subjectKind, subjectID := mailboxACLSubject(principalID)
+	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
+	level := aclcodec.Encode(rights)
 	return m.runTx(ctx, func(tx *sql.Tx) error {
-		// SQLite's UNIQUE on (mailbox_id, principal_id) does not match
-		// rows with NULL principal_id (NULLs compare unequal); we
-		// emulate the upsert by hand.
-		var pidArg any
-		var existsQuery string
-		var existsArgs []any
-		if principalID == nil {
-			existsQuery = `SELECT id FROM mailbox_acl WHERE mailbox_id = ? AND principal_id IS NULL`
-			existsArgs = []any{int64(mailboxID)}
-		} else {
-			pidArg = int64(*principalID)
-			existsQuery = `SELECT id FROM mailbox_acl WHERE mailbox_id = ? AND principal_id = ?`
-			existsArgs = []any{int64(mailboxID), int64(*principalID)}
-		}
 		var existing int64
-		err := tx.QueryRowContext(ctx, existsQuery, existsArgs...).Scan(&existing)
+		err := tx.QueryRowContext(ctx, `
+			SELECT id FROM grants
+			 WHERE resource_kind = 'mailbox' AND resource_id = ?
+			   AND subject_kind = ? AND subject_id = ?`,
+			resourceID, subjectKind, subjectID).Scan(&existing)
 		if err == nil {
-			_, err = tx.ExecContext(ctx,
-				`UPDATE mailbox_acl SET rights_mask = ?, granted_by = ? WHERE id = ?`,
-				int64(rights), int64(grantedBy), existing)
+			_, err = tx.ExecContext(ctx, `
+				UPDATE grants
+				   SET level = ?, provenance = ?, granted_by = ?, granted_at_us = ?
+				 WHERE id = ?`,
+				level, store.GrantProvenanceLocal, int64(grantedBy), usMicros(now), existing)
 			return mapErr(err)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return mapErr(err)
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO mailbox_acl (mailbox_id, principal_id, rights_mask, granted_by, created_at_us)
-			VALUES (?, ?, ?, ?, ?)`,
-			int64(mailboxID), pidArg, int64(rights), int64(grantedBy), usMicros(now))
+			INSERT INTO grants (subject_kind, subject_id, resource_kind, resource_id,
+			                     level, provenance, granted_by, granted_at_us)
+			VALUES (?, ?, 'mailbox', ?, ?, ?, ?, ?)`,
+			subjectKind, subjectID, resourceID, level, store.GrantProvenanceLocal,
+			int64(grantedBy), usMicros(now))
 		return mapErr(err)
 	})
 }
 
 func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID) ([]store.MailboxACL, error) {
-	// Anyone rows first (NULL principal_id), then per-principal rows
-	// in ascending principal id.
+	// Anyone rows first, then per-principal rows in ascending subject id,
+	// matching the pre-#210 mailbox_acl ordering.
 	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT id, mailbox_id, principal_id, rights_mask, granted_by, created_at_us
-		  FROM mailbox_acl WHERE mailbox_id = ?
-		 ORDER BY (principal_id IS NULL) DESC, principal_id ASC`,
-		int64(mailboxID))
+		SELECT id, subject_kind, subject_id, level, granted_by, granted_at_us
+		  FROM grants
+		 WHERE resource_kind = 'mailbox' AND resource_id = ?
+		 ORDER BY (subject_kind = 'anyone') DESC, subject_id ASC`,
+		strconv.FormatUint(uint64(mailboxID), 10))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -1343,22 +1372,26 @@ func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID)
 	var out []store.MailboxACL
 	for rows.Next() {
 		var (
-			id, mb, rights, grantedBy, createdUs int64
-			pid                                  sql.NullInt64
+			id, subjectID, grantedAtUs int64
+			subjectKind, level         string
+			grantedBy                  sql.NullInt64
 		)
-		if err := rows.Scan(&id, &mb, &pid, &rights, &grantedBy, &createdUs); err != nil {
+		if err := rows.Scan(&id, &subjectKind, &subjectID, &level, &grantedBy, &grantedAtUs); err != nil {
 			return nil, mapErr(err)
 		}
-		acl := store.MailboxACL{
-			ID:        store.MailboxACLID(id),
-			MailboxID: store.MailboxID(mb),
-			Rights:    store.ACLRights(rights),
-			GrantedBy: store.PrincipalID(grantedBy),
-			CreatedAt: fromMicros(createdUs),
+		rights, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok {
+			continue
 		}
-		if pid.Valid {
-			pp := store.PrincipalID(pid.Int64)
-			acl.PrincipalID = &pp
+		acl := store.MailboxACL{
+			ID:          store.MailboxACLID(id),
+			MailboxID:   mailboxID,
+			PrincipalID: mailboxACLPrincipal(subjectKind, subjectID),
+			Rights:      rights,
+			CreatedAt:   fromMicros(grantedAtUs),
+		}
+		if grantedBy.Valid {
+			acl.GrantedBy = store.PrincipalID(grantedBy.Int64)
 		}
 		out = append(out, acl)
 	}
@@ -1367,47 +1400,74 @@ func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID)
 
 func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.PrincipalID) ([]store.Mailbox, error) {
 	rows, err := m.s.db.QueryContext(ctx, `
-		SELECT mb.id, mb.principal_id, mb.parent_id, mb.name, mb.attributes,
-		       mb.uidvalidity, mb.uidnext, mb.highest_modseq, mb.created_at_us,
-		       mb.updated_at_us, mb.color_hex, mb.sort_order
-		  FROM mailboxes mb
-		 WHERE mb.id IN (
-		   SELECT mailbox_id FROM mailbox_acl
-		    WHERE (principal_id = ? OR principal_id IS NULL)
-		      AND (rights_mask & ?) = ?
-		 )
-		 ORDER BY mb.name ASC`,
-		int64(pid), int64(store.ACLRightLookup), int64(store.ACLRightLookup))
+		SELECT resource_id, level FROM grants
+		 WHERE resource_kind = 'mailbox'
+		   AND ((subject_kind = 'principal' AND subject_id = ?) OR subject_kind = 'anyone')`,
+		int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	defer rows.Close()
-	var out []store.Mailbox
+	var ids []int64
 	for rows.Next() {
-		mb, err := scanMailbox(rows)
+		var resourceID, level string
+		if err := rows.Scan(&resourceID, &level); err != nil {
+			rows.Close()
+			return nil, mapErr(err)
+		}
+		rights, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok || rights&store.ACLRightLookup == 0 {
+			continue
+		}
+		id, perr := strconv.ParseInt(resourceID, 10, 64)
+		if perr != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapErr(err)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `SELECT id, principal_id, parent_id, name, attributes,
+	             uidvalidity, uidnext, highest_modseq, created_at_us,
+	             updated_at_us, color_hex, sort_order
+	        FROM mailboxes WHERE id IN (` + strings.Join(placeholders, ",") + `)
+	       ORDER BY name ASC`
+	mbRows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer mbRows.Close()
+	var out []store.Mailbox
+	for mbRows.Next() {
+		mb, err := scanMailbox(mbRows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, mb)
 	}
-	return out, rows.Err()
+	return out, mbRows.Err()
 }
 
 func (m *metadata) RemoveMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID) error {
+	subjectKind, subjectID := mailboxACLSubject(principalID)
+	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
 	return m.runTx(ctx, func(tx *sql.Tx) error {
-		var (
-			res sql.Result
-			err error
-		)
-		if principalID == nil {
-			res, err = tx.ExecContext(ctx,
-				`DELETE FROM mailbox_acl WHERE mailbox_id = ? AND principal_id IS NULL`,
-				int64(mailboxID))
-		} else {
-			res, err = tx.ExecContext(ctx,
-				`DELETE FROM mailbox_acl WHERE mailbox_id = ? AND principal_id = ?`,
-				int64(mailboxID), int64(*principalID))
-		}
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM grants
+			 WHERE resource_kind = 'mailbox' AND resource_id = ?
+			   AND subject_kind = ? AND subject_id = ?`,
+			resourceID, subjectKind, subjectID)
 		if err != nil {
 			return mapErr(err)
 		}

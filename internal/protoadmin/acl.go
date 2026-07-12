@@ -20,6 +20,12 @@ package protoadmin
 // from internal/aclcodec; unknown letters return 400 (the obsolete
 // RFC 2086 "c"/"d" composites are accepted only on the IMAP wire — the
 // REST surface is strict so admin scripts never accumulate aliases).
+//
+// Storage (epic #210): store.Meta()'s SetMailboxACL / GetMailboxACL /
+// RemoveMailboxACL are a DTO layer over `mailbox`-kind rows in the unified
+// grants table (internal/protoimap's SETACL/GETACL/MYRIGHTS use the same
+// methods), not a separate mailbox_acl table -- this file's calls into
+// store.Meta() are unchanged from before that migration.
 
 import (
 	"errors"
@@ -58,7 +64,7 @@ type aclRowDTO struct {
 	Rights  string `json:"rights"`
 	// IsOwner is true on the synthetic owner row, false on every
 	// stored ACL row. Lets admin UIs hide the owner row from "delete"
-	// actions (it has no underlying mailbox_acl row to delete).
+	// actions (it has no underlying grant row to delete).
 	IsOwner bool `json:"is_owner,omitempty"`
 }
 
