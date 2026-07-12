@@ -543,7 +543,16 @@ const CurrentBackupVersion = 1
 //	constraint + store.Metadata.InsertAlias validation). No new backup
 //	row type: AliasRow.TargetPrincipal becomes *int64 and gains
 //	TargetAddress *string, both nil for pre-migration rows.
-const CurrentSchemaVersion = 80
+//
+// 81 — 0081_srs_secrets.sql (issue #204, SRS return-path rewriting for
+//
+//	mail forwarded via #181 external-target aliases or #63 Sieve
+//	redirect). Adds the srs_secrets table: keyed-MAC secrets
+//	internal/srs signs and verifies SRS0/SRS1 return-path addresses
+//	with. Rotation is additive (insert a new row; the highest id
+//	signs, every row still verifies) so an in-flight SRS address
+//	survives a rotation. New SRSSecretRow backup row type.
+const CurrentSchemaVersion = 81
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -652,6 +661,10 @@ var TableNames = []string{
 	"inbound_attpol_recipient",
 	"queue",
 	"dkim_keys",
+	// SRS (Sender Rewriting Scheme) signing secrets (issue #204, migration
+	// 0081). No FK; self-contained rows, restored in any order relative to
+	// their neighbours.
+	"srs_secrets",
 	"acme_accounts",
 	"acme_orders",
 	"acme_certs",

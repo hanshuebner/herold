@@ -472,6 +472,8 @@ func Run(t *testing.T, f Factory) {
 		// -- FCM push-subscription transport (migration 0078, re #200) --
 		{"PushSubscription_FCMTransport_CRUD", testPushSubscription_FCMTransport_CRUD},
 		{"PushSubscription_WebPushTransport_DefaultsAndUnaffected", testPushSubscription_WebPushTransport_DefaultsAndUnaffected},
+		// -- SRS return-path rewriting secrets (issue #204, migration 0081) --
+		{"SRSSecrets_InsertAndList", testSRSSecrets_InsertAndList},
 	}
 	for _, c := range cases {
 		tc := c
