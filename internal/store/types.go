@@ -865,8 +865,55 @@ type OIDCProvider struct {
 	// AutoProvision permits creating a local principal on first
 	// successful federation.
 	AutoProvision bool
+	// AuthzTrusted gates claim-to-grant mapping (epic #188, REQ-AC-66).
+	// Claim-mapping rules are inert for this provider until a
+	// server:superadmin sets AuthzTrusted true; a provider usable for
+	// login is not thereby usable to confer grants. Default false.
+	AuthzTrusted bool
 	// CreatedAt is the insert instant.
 	CreatedAt time.Time
+}
+
+// ClaimMappingRuleID identifies a claim-to-grant mapping rule.
+type ClaimMappingRuleID uint64
+
+// ClaimMappingRule maps one claim value on an OIDC provider onto a grant
+// (epic #188, REQ-AC-60). A rule only takes effect when: its provider is
+// AuthzTrusted (REQ-AC-66); Claim is on that provider's authorization-claim
+// allowlist (REQ-AC-67); it does not target GrantResourceServer (REQ-AC-64);
+// and its author still holds delegable authority over the target resource,
+// re-checked at every evaluation (REQ-AC-68).
+type ClaimMappingRule struct {
+	ID ClaimMappingRuleID
+	// ProviderName is the OIDCProvider.Name this rule belongs to.
+	ProviderName string
+	// Claim is the claim name to inspect, e.g. "groups" or "roles". Must
+	// appear on the provider's allowlist to be consulted (REQ-AC-67).
+	Claim string
+	// MatchValue is the string the rule matches against Claim's value:
+	// membership for an array-valued claim (e.g. groups contains
+	// "list-x-admins"), equality for a scalar-valued claim.
+	MatchValue string
+	// ResourceKind / ResourceID / Level name the grant conferred when the
+	// rule matches.
+	ResourceKind GrantResourceKind
+	ResourceID   string
+	Level        GrantLevel
+	// CreatedBy is the operator who authored the rule. Zero after the
+	// author principal is deleted; an authorless rule is always inert
+	// (REQ-AC-68).
+	CreatedBy PrincipalID
+	// CreatedAt is the insert instant.
+	CreatedAt time.Time
+}
+
+// GrantDesired names a (resource, level) pair a reconciliation pass wants
+// a subject to hold at some provenance. Used by ReconcileIdPGrants to
+// describe the desired idp:<provider> grant set (REQ-AC-62).
+type GrantDesired struct {
+	ResourceKind GrantResourceKind
+	ResourceID   string
+	Level        GrantLevel
 }
 
 // OIDCLink associates a local Principal with an external OIDC identity,

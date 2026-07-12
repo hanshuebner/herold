@@ -81,7 +81,35 @@ type OIDCProviderRow struct {
 	ClientSecretRef string `json:"client_secret_ref"`
 	ScopesCSV       string `json:"scopes_csv"`
 	AutoProvision   bool   `json:"auto_provision"`
-	CreatedAtUs     int64  `json:"created_at_us"`
+	// AuthzTrusted is the migration-0083 claim-mapping trust gate
+	// (epic #188, REQ-AC-66). Default false for pre-migration rows.
+	AuthzTrusted bool  `json:"authz_trusted"`
+	CreatedAtUs  int64 `json:"created_at_us"`
+}
+
+// OIDCClaimAllowlistRow mirrors the oidc_claim_allowlist table introduced
+// in migration 0083 (epic #188, REQ-AC-67). FK to oidc_providers(name)
+// ON DELETE CASCADE; restored after oidc_providers.
+type OIDCClaimAllowlistRow struct {
+	ProviderName string `json:"provider_name"`
+	Claim        string `json:"claim"`
+}
+
+// OIDCClaimMappingRuleRow mirrors the oidc_claim_mapping_rules table
+// introduced in migration 0083 (epic #188, REQ-AC-60). FK to
+// oidc_providers(name) ON DELETE CASCADE; created_by FKs principals(id)
+// ON DELETE SET NULL and is nullable (an authorless rule is always inert,
+// REQ-AC-68).
+type OIDCClaimMappingRuleRow struct {
+	ID           int64  `json:"id"`
+	ProviderName string `json:"provider_name"`
+	Claim        string `json:"claim"`
+	MatchValue   string `json:"match_value"`
+	ResourceKind string `json:"resource_kind"`
+	ResourceID   string `json:"resource_id"`
+	Level        string `json:"level"`
+	CreatedBy    *int64 `json:"created_by,omitempty"`
+	CreatedAtUs  int64  `json:"created_at_us"`
 }
 
 type OIDCLinkRow struct {

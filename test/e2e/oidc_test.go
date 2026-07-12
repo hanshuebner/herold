@@ -138,6 +138,12 @@ type oidcStub struct {
 
 	subject string // sub claim emitted by the next /token response.
 	nonce   string // nonce captured from /authorize and echoed back.
+
+	// extraClaims are merged into the next signed ID token's payload
+	// (epic #188 claim-to-grant mapping tests need a "groups"/"roles"
+	// claim alongside iss/sub/aud/iat/exp/nonce). Nil for the Phase-1
+	// round-trip test, which does not need them.
+	extraClaims map[string]any
 }
 
 func newOIDCStub(t *testing.T, clientID string) *oidcStub {
@@ -238,6 +244,9 @@ func (s *oidcStub) signIDToken() (string, error) {
 		"iat":   now,
 		"exp":   now + 3600,
 		"nonce": s.nonce,
+	}
+	for k, v := range s.extraClaims {
+		payload[k] = v
 	}
 	hb, _ := json.Marshal(header)
 	pb, _ := json.Marshal(payload)

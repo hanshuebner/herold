@@ -638,6 +638,65 @@ type Metadata interface {
 	// ascending ID order. Returns an empty slice when none exist.
 	ListGrantsOnResource(ctx context.Context, resourceKind GrantResourceKind, resourceID string) ([]Grant, error)
 
+	// ReconcileIdPGrants atomically reconciles subjectID's
+	// "idp:<provider>"-provenance grants to exactly desired: it inserts
+	// rows for resources absent from the current idp: set, updates the
+	// Level and refreshes LastAssertedAt to asOf on rows whose resource
+	// survives (whether or not the Level changed), and deletes idp: rows
+	// for resources no longer in desired (epic #188, REQ-AC-62). Grants of
+	// any other provenance -- local, or a different provider -- are never
+	// read or written. Passing a nil/empty desired deletes every idp:
+	// grant for (subjectID, provider), which is how Unlink and rule
+	// deletion cascade access removal (REQ-AC-63). Returns the grants
+	// added and removed (fully populated, including ID) for the caller to
+	// audit; both are empty on a no-op reconciliation. The whole diff runs
+	// in one transaction.
+	ReconcileIdPGrants(ctx context.Context, subjectID PrincipalID, provider string, desired []GrantDesired, asOf time.Time) (added, removed []Grant, err error)
+
+	// SweepStaleIdPGrants deletes every "idp:*"-provenance grant across
+	// all principals whose LastAssertedAt is strictly older than
+	// olderThan (REQ-AC-63b, the periodic staleness sweep). Returns the
+	// removed rows for audit logging. A grant with a nil LastAssertedAt
+	// (which should not occur for idp: provenance, but is treated
+	// defensively) is never swept.
+	SweepStaleIdPGrants(ctx context.Context, olderThan time.Time) ([]Grant, error)
+
+	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
+
+	// SetOIDCProviderAuthzTrusted flips the per-provider authz_trusted
+	// flag (REQ-AC-66): claim-mapping is inert for a provider until a
+	// server:superadmin sets this true. Callers are responsible for that
+	// authorization check; the store performs no authorization of its
+	// own. Returns ErrNotFound for an unknown provider.
+	SetOIDCProviderAuthzTrusted(ctx context.Context, providerName string, trusted bool) error
+
+	// InsertClaimAllowlistEntry adds claim to providerName's
+	// authorization-claim allowlist (REQ-AC-67). Idempotent: inserting an
+	// already-present entry is not an error.
+	InsertClaimAllowlistEntry(ctx context.Context, providerName, claim string) error
+
+	// DeleteClaimAllowlistEntry removes claim from providerName's
+	// allowlist. Returns ErrNotFound if the entry is absent.
+	DeleteClaimAllowlistEntry(ctx context.Context, providerName, claim string) error
+
+	// ListClaimAllowlist returns providerName's allowlisted claim names,
+	// alphabetically sorted. Returns an empty slice when none are set (in
+	// which case no claim can satisfy any rule for that provider).
+	ListClaimAllowlist(ctx context.Context, providerName string) ([]string, error)
+
+	// InsertClaimMappingRule stores a new claim-to-grant mapping rule
+	// (REQ-AC-60). Returns the stored rule with its assigned ID and
+	// CreatedAt.
+	InsertClaimMappingRule(ctx context.Context, rule ClaimMappingRule) (ClaimMappingRule, error)
+
+	// DeleteClaimMappingRule removes a rule by ID. Returns ErrNotFound if
+	// absent.
+	DeleteClaimMappingRule(ctx context.Context, id ClaimMappingRuleID) error
+
+	// ListClaimMappingRules returns every mapping rule configured for
+	// providerName, in ascending ID order.
+	ListClaimMappingRules(ctx context.Context, providerName string) ([]ClaimMappingRule, error)
+
 	// InsertOIDCProvider records a new OIDC provider configuration.
 	// Returns ErrConflict on duplicate Name.
 	InsertOIDCProvider(ctx context.Context, p OIDCProvider) error

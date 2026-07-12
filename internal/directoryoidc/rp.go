@@ -14,6 +14,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/hanshuebner/herold/internal/authz"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
@@ -371,7 +372,7 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 		slog.String("flow", "sign-in"),
 		slog.String("provider", string(pending.providerID)),
 	)
-	sub, _, err := r.exchangeAndVerify(ctx, pending, code)
+	sub, claims, err := r.exchangeAndVerify(ctx, pending, code)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.callback.failed",
 			slog.String("activity", observe.ActivityAudit),
@@ -393,6 +394,33 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 		slog.String("provider", string(pending.providerID)),
 		slog.Uint64("principal_id", uint64(link.PrincipalID)),
 	)
+	// Claim-to-grant reconciliation (epic #188, REQ-AC-62). CompleteSignIn
+	// only ever resolves to a pre-existing linked principal (Phase 1 does
+	// not auto-provision from OIDC first-login, REQ-AUTH-56/92 -- see the
+	// package doc for that gap), so isNewPrincipal is always false here;
+	// REQ-AC-69's "no administrative grant on an auto-provisioning login"
+	// rail has no live caller yet and will need one when auto-provisioning
+	// is wired up. A reconciliation failure never fails the sign-in itself
+	// (REQ-AC-70: a rules-store outage neither escalates nor locks out) --
+	// it is logged and the principal's existing idp: grants are left
+	// exactly as ReconcileIdP found them.
+	if p, perr := r.meta.GetPrincipalByID(ctx, link.PrincipalID); perr == nil {
+		if _, _, rerr := authz.ReconcileIdP(ctx, r.meta, r.clk, p, string(pending.providerID), claims, false); rerr != nil {
+			r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.reconcile_idp.failed",
+				slog.String("activity", observe.ActivityAudit),
+				slog.String("provider", string(pending.providerID)),
+				slog.Uint64("principal_id", uint64(link.PrincipalID)),
+				slog.String("err", rerr.Error()),
+			)
+		}
+	} else {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.reconcile_idp.principal_lookup_failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+			slog.Uint64("principal_id", uint64(link.PrincipalID)),
+			slog.String("err", perr.Error()),
+		)
+	}
 	return link.PrincipalID, nil
 }
 
@@ -413,6 +441,31 @@ func (r *RP) Unlink(ctx context.Context, pid PrincipalID, providerID ProviderID)
 		slog.String("provider", string(providerID)),
 		slog.Uint64("principal_id", uint64(pid)),
 	)
+	// Unlinking removes every idp:<providerID> grant for pid immediately
+	// (REQ-AC-63): an empty desired set makes ReconcileIdPGrants delete the
+	// whole idp:<providerID> row set for this principal. Best-effort, like
+	// the CompleteSignIn reconciliation call: a failure here is logged, not
+	// surfaced as an Unlink failure, since the OIDC association itself is
+	// already gone and REQ-AC-70's fail-safe applies equally to this path.
+	if _, removed, rerr := r.meta.ReconcileIdPGrants(ctx, pid, string(providerID), nil, r.clk.Now()); rerr != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.unlink.grant_sweep_failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(providerID)),
+			slog.Uint64("principal_id", uint64(pid)),
+			slog.String("err", rerr.Error()),
+		)
+	} else {
+		for _, g := range removed {
+			r.logger.LogAttrs(ctx, slog.LevelInfo, "idp.grant.remove",
+				slog.String("activity", observe.ActivityAudit),
+				slog.String("provider", string(providerID)),
+				slog.Uint64("principal_id", uint64(pid)),
+				slog.String("resource_kind", string(g.ResourceKind)),
+				slog.String("resource_id", g.ResourceID),
+				slog.String("level", string(g.Level)),
+			)
+		}
+	}
 	return nil
 }
 
@@ -544,32 +597,39 @@ func (r *RP) gcExpiredLocked() {
 
 // exchangeAndVerify trades code for tokens against the configured
 // provider and verifies the ID token's signature, issuer, audience,
-// expiry, and nonce. Returns the subject and the raw ID token.
-func (r *RP) exchangeAndVerify(ctx context.Context, p pendingAuth, code string) (sub, rawIDToken string, err error) {
+// expiry, and nonce. Returns the subject and the ID token's claim set
+// (decoded as a generic map so callers -- namely authz.ReconcileIdP's
+// group/role claim-mapping evaluation, epic #188 -- can look up any claim
+// name without this package needing to know it in advance).
+func (r *RP) exchangeAndVerify(ctx context.Context, p pendingAuth, code string) (sub string, claims map[string]any, err error) {
 	prov, cfg, secret, ok := r.lookupProvider(p.providerID)
 	if !ok {
-		return "", "", fmt.Errorf("%w: provider %s", ErrNotFound, p.providerID)
+		return "", nil, fmt.Errorf("%w: provider %s", ErrNotFound, p.providerID)
 	}
 	exCtx, cancel := context.WithTimeout(oidc.ClientContext(ctx, r.http), defaultTimeout)
 	defer cancel()
 	oauthCfg := oauth2Config(prov, cfg, secret)
 	tok, err := oauthCfg.Exchange(exCtx, code)
 	if err != nil {
-		return "", "", fmt.Errorf("directoryoidc: exchange: %w", err)
+		return "", nil, fmt.Errorf("directoryoidc: exchange: %w", err)
 	}
 	raw, ok := tok.Extra("id_token").(string)
 	if !ok || raw == "" {
-		return "", "", fmt.Errorf("directoryoidc: missing id_token")
+		return "", nil, fmt.Errorf("directoryoidc: missing id_token")
 	}
 	verifier := prov.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 	idTok, err := verifier.Verify(exCtx, raw)
 	if err != nil {
-		return "", "", fmt.Errorf("directoryoidc: verify id_token: %w", err)
+		return "", nil, fmt.Errorf("directoryoidc: verify id_token: %w", err)
 	}
 	if idTok.Nonce != p.nonce {
-		return "", "", fmt.Errorf("%w: nonce mismatch", ErrInvalidState)
+		return "", nil, fmt.Errorf("%w: nonce mismatch", ErrInvalidState)
 	}
-	return idTok.Subject, raw, nil
+	var claimSet map[string]any
+	if err := idTok.Claims(&claimSet); err != nil {
+		return "", nil, fmt.Errorf("directoryoidc: decode claims: %w", err)
+	}
+	return idTok.Subject, claimSet, nil
 }
 
 // oauth2Config is a helper that assembles the oauth2.Config for a
