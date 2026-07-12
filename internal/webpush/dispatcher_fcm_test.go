@@ -40,10 +40,11 @@ type fakeFCMGateway struct {
 }
 
 type recordedFCMPost struct {
-	AuthHdr     string
-	ContentType string
-	Token       string
-	Data        map[string]string
+	AuthHdr         string
+	ContentType     string
+	Token           string
+	Data            map[string]string
+	AndroidPriority string
 }
 
 // fcmWireEnvelope mirrors the request body internal/fcm.Sender sends;
@@ -51,8 +52,11 @@ type recordedFCMPost struct {
 // the actual wire shape, not the sender's internal type.
 type fcmWireEnvelope struct {
 	Message struct {
-		Token string            `json:"token"`
-		Data  map[string]string `json:"data"`
+		Token   string            `json:"token"`
+		Data    map[string]string `json:"data"`
+		Android struct {
+			Priority string `json:"priority"`
+		} `json:"android"`
 	} `json:"message"`
 }
 
@@ -68,10 +72,11 @@ func (g *fakeFCMGateway) handle(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &env)
 	g.mu.Lock()
 	g.calls = append(g.calls, recordedFCMPost{
-		AuthHdr:     r.Header.Get("Authorization"),
-		ContentType: r.Header.Get("Content-Type"),
-		Token:       env.Message.Token,
-		Data:        env.Message.Data,
+		AuthHdr:         r.Header.Get("Authorization"),
+		ContentType:     r.Header.Get("Content-Type"),
+		Token:           env.Message.Token,
+		Data:            env.Message.Data,
+		AndroidPriority: env.Message.Android.Priority,
 	})
 	resp := g.respond
 	status := g.status
@@ -148,7 +153,7 @@ func newFCMDispatcherFixture(t *testing.T, status int, opts ...func(*Options)) *
 		Transport:      store.PushTransportFCM,
 		FCMToken:       "device-registration-token-1",
 		Verified:       true,
-		Types:          []string{"Email"},
+		Types:          []string{"Email", "ChatMessage"},
 	})
 	if err != nil {
 		t.Fatalf("InsertPushSubscription: %v", err)
@@ -210,6 +215,33 @@ func (f *fcmDispatcherFixture) triggerEmailChange(t *testing.T) {
 	}
 }
 
+// triggerChatMessageChange inserts a DM chat message owned by f.pid and
+// synchronously runs a tick, mirroring triggerEmailChange but for the
+// "high" urgency event class (re #200 priority-mapping follow-up:
+// urgencyForKind maps EntityKindChatMessage to "high").
+func (f *fcmDispatcherFixture) triggerChatMessageChange(t *testing.T) {
+	t.Helper()
+	convID, err := f.store.Meta().InsertChatConversation(context.Background(), store.ChatConversation{
+		Kind:                 store.ChatConversationKindDM,
+		CreatedByPrincipalID: f.pid,
+	})
+	if err != nil {
+		t.Fatalf("InsertChatConversation: %v", err)
+	}
+	pid := f.pid
+	if _, err := f.store.Meta().InsertChatMessage(context.Background(), store.ChatMessage{
+		ConversationID:    convID,
+		SenderPrincipalID: &pid,
+		BodyText:          "hi from android",
+		BodyFormat:        store.ChatBodyFormatText,
+	}); err != nil {
+		t.Fatalf("InsertChatMessage: %v", err)
+	}
+	if _, err := f.disp.tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+}
+
 // TestDispatcher_FCM_EndToEnd proves the full path required by
 // re #200: a store change-feed event reaches the dispatcher's shared
 // rule evaluation and payload build, and is delivered through the FCM
@@ -249,6 +281,40 @@ func TestDispatcher_FCM_EndToEnd(t *testing.T) {
 	// 04-push.md), including when backgrounded.
 	if _, ok := c.Data["notification"]; ok {
 		t.Fatalf("data payload must not carry a notification key")
+	}
+	// Mail is a "normal" urgency event class (urgencyForKind); it must
+	// NOT get the high-priority treatment (re #200 priority-mapping
+	// follow-up).
+	if c.AndroidPriority != "NORMAL" {
+		t.Fatalf("android.priority = %q, want NORMAL for a mail push", c.AndroidPriority)
+	}
+}
+
+// TestDispatcher_FCM_ChatMessageHighPriority proves the priority-
+// mapping follow-up to re #200: a chat message is a "high" urgency
+// event class (urgencyForKind), and the FCM transport must carry that
+// through as AndroidConfig.priority = "HIGH" so the OS delivers it
+// promptly through Doze/App Standby, matching Web Push's "high"
+// Urgency header for the same event class.
+func TestDispatcher_FCM_ChatMessageHighPriority(t *testing.T) {
+	t.Parallel()
+	f := newFCMDispatcherFixture(t, http.StatusOK)
+	f.triggerChatMessageChange(t)
+
+	calls := f.gateway.Calls()
+	if len(calls) == 0 {
+		t.Fatalf("expected at least one FCM send")
+	}
+	c := calls[len(calls)-1]
+	if c.AndroidPriority != "HIGH" {
+		t.Fatalf("android.priority = %q, want HIGH for a chat message push", c.AndroidPriority)
+	}
+	payload, ok := c.Data["payload"]
+	if !ok || payload == "" {
+		t.Fatalf("message.data.payload missing: %+v", c.Data)
+	}
+	if !strings.Contains(payload, `"type":"chat"`) {
+		t.Fatalf("payload does not look like a chat message envelope: %q", payload)
 	}
 }
 
