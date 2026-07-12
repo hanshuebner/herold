@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { principals, FLAG_ADMIN, FLAG_TOTP_ENABLED, FLAG_DISABLED, type CreatePrincipalPayload } from '../lib/principals/principals.svelte';
+  import { principals, type CreatePrincipalPayload } from '../lib/principals/principals.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import { formatDateOnly } from '../lib/format';
@@ -119,18 +119,18 @@
           {#each principals.filtered as p (p.id)}
             <tr class="table-row" onclick={() => router.navigate(`/principals/${p.id}`)}>
               <td class="col-email">
-                <span class="email-text">{p.email}</span>
+                <span class="email-text">{p.canonical_email}</span>
               </td>
               <td class="col-name">{p.display_name || ''}</td>
               <td class="col-flags">
                 <div class="chips">
-                  {#if p.flags & FLAG_ADMIN}
+                  {#if p.flags.includes('admin')}
                     <span class="chip chip-admin">{t('principals.flag.admin')}</span>
                   {/if}
-                  {#if p.flags & FLAG_TOTP_ENABLED}
+                  {#if p.flags.includes('totp_enabled')}
                     <span class="chip chip-totp">{t('principals.flag.totp')}</span>
                   {/if}
-                  {#if p.flags & FLAG_DISABLED}
+                  {#if p.flags.includes('disabled')}
                     <span class="chip chip-disabled">{t('principals.flag.disabled')}</span>
                   {/if}
                 </div>

@@ -7,16 +7,23 @@
  * loaders unwrap into items/cursor/hasMore. Client-side substring
  * filter on the loaded list (protoadmin has no search query parameter;
  * see Phase 2 audit section 3).
+ *
+ * PrincipalSummary mirrors internal/protoadmin/types.go's principalDTO
+ * field-for-field: `id` is a JSON number, the email field is named
+ * `canonical_email` on the wire, and `flags` is an array of flag-name
+ * strings (`"admin"`, `"totp_enabled"`, `"disabled"`, `"super_admin"`,
+ * `"ignore_download_limits"`, `"bypass_response_deadline"`), not a
+ * bitmask (re #218).
  */
 
 import { apiGet, apiPost } from '../api/client';
 import { t } from '../i18n/i18n.svelte';
 
 export interface PrincipalSummary {
-  id: string;
-  email: string;
+  id: number;
+  canonical_email: string;
   display_name: string;
-  flags: number;
+  flags: string[];
   created_at: string;
   quota_bytes?: number;
 }
@@ -56,7 +63,7 @@ class PrincipalsState {
           const needle = this.search.trim().toLowerCase();
           return this.items.filter(
             (p) =>
-              p.email.toLowerCase().includes(needle) ||
+              p.canonical_email.toLowerCase().includes(needle) ||
               (p.display_name && p.display_name.toLowerCase().includes(needle)),
           );
         })(),
@@ -84,7 +91,7 @@ class PrincipalsState {
     this.hasMore = items.length === PAGE_LIMIT;
     const lastItem = items[items.length - 1];
     if (lastItem !== undefined) {
-      this.cursor = lastItem.id;
+      this.cursor = String(lastItem.id);
     }
     this.status = 'ready';
   }
@@ -108,7 +115,7 @@ class PrincipalsState {
     this.hasMore = items.length === PAGE_LIMIT;
     const lastItem = items[items.length - 1];
     if (lastItem !== undefined) {
-      this.cursor = lastItem.id;
+      this.cursor = String(lastItem.id);
     }
     this.status = 'ready';
   }
@@ -117,8 +124,8 @@ class PrincipalsState {
     await this.load();
   }
 
-  async create(payload: CreatePrincipalPayload): Promise<{ ok: boolean; errorMessage: string | null; id?: string }> {
-    const result = await apiPost<{ id: string }>('/api/v1/principals', payload);
+  async create(payload: CreatePrincipalPayload): Promise<{ ok: boolean; errorMessage: string | null; id?: number }> {
+    const result = await apiPost<{ id: number }>('/api/v1/principals', payload);
     if (!result.ok) {
       return { ok: false, errorMessage: result.errorMessage ?? t('principals.error.createFailed') };
     }
