@@ -67,15 +67,20 @@ resource kind already present in the schema. The work is:
 - Resolve implicit `mailbox:admin` on a principal's own mailboxes (REQ-AC-51) —
   one structural branch added to `Resolve`, mirroring the domain-owner branch.
 - Add the RFC 4314 adapter in `internal/protoimap`: `SETACL`/`GETACL`/`MYRIGHTS`/
-  `LISTRIGHTS` read and write `mailbox` grant rows. The rights string collapses
-  onto the three tiers on write and is re-derived on read
-  (`read = l r s`, `write = i k x t e w p`, `admin = a`; architecture doc §IMAP
-  RFC 4314 mapping). No new storage: the grant table is the ACL store.
+  `LISTRIGHTS` read and write `mailbox` grant rows. No new storage: the grant
+  table is the ACL store.
 - Enforce `mailbox` grants at the IMAP SELECT/STATUS/FETCH/STORE points and the
   JMAP sharing surface by calling the same `Resolve` (REQ-AC-53).
 
 No schema migration, no new resolver: #186 is a resource-kind already modelled,
-one implicit-ownership branch, and a wire adapter.
+one implicit-ownership branch, and a wire adapter. #186 shipped as an additive
+bridge alongside a pre-existing, separately-landed `mailbox_acl` table (full
+per-letter fidelity, predating this epic); **#210** completes the "no new
+storage" intent by moving the full RFC 4314 letter-set into the grant's
+`level` column itself (`internal/aclcodec.DecodeGrantLevel`/`ResolveMailboxRights`),
+migrating every `mailbox_acl` row, and retiring that table — the grant is the
+only mailbox ACL storage, letter-exact, not the three-tier collapse this
+document originally described.
 
 **#188 — external IdP claim-to-grant mapping.** Grants already carry
 `provenance`. The work is:

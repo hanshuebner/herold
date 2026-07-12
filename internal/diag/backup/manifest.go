@@ -577,7 +577,18 @@ const CurrentBackupVersion = 1
 //	grant this (resource, level)" rule, REQ-AC-60). Both are
 //	authorization data -- backed up like grants, unlike the ephemeral
 //	oauth_* tables of migration 82.
-const CurrentSchemaVersion = 83
+//
+// 84 — 0084_mailbox_acl_grants.sql (epic #210, REQ-AC-50..53). Retires the
+//
+//	mailbox_acl table onto the #182 grants substrate: every row becomes a
+//	`mailbox`-kind grant whose Level carries the full RFC 4314 letter-set
+//	(not the coarse tier), provenance "acl-migration". grants.subject_kind
+//	gains a third value, "anyone" (subject_id unused), for the RFC 4314
+//	"anyone" pseudo-identifier mailbox_acl encoded as a NULL principal_id.
+//	No new backed-up table: mailbox ACL rows are grants rows, already
+//	covered by the "grants" entry above; mailbox_acl is dropped and
+//	removed from TableNames.
+const CurrentSchemaVersion = 84
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -681,7 +692,6 @@ var TableNames = []string{
 	// REQ-FLOW-100..108, migration 0019). FK to messages(id); restored
 	// after messages are in place.
 	"email_reactions",
-	"mailbox_acl",
 	"state_changes",
 	"audit_log",
 	"cursors",

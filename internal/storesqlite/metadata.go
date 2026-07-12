@@ -2950,8 +2950,13 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 			}
 		}
 		// principals cascades to aliases, oidc_links, api_keys, mailboxes,
-		// mailbox_acl, jmap_states; mailboxes cascades to messages and
-		// further mailbox_acl rows. Blob refs stay (GC sweeps later).
+		// jmap_states; mailboxes cascades to messages. Blob refs stay (GC
+		// sweeps later). grants rows referencing the deleted principal as
+		// subject (including mailbox ACL grants, epic #210) are NOT
+		// cascaded -- subject_id carries no FK by design (#182), so a
+		// grant naming a deleted grantee simply becomes inert (principal
+		// ids are monotonic and never reused); granted_by rows referencing
+		// this principal as the granting actor are SET NULL, not deleted.
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM principals WHERE id = ?`, int64(pid))
 		if err != nil {

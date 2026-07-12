@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/hanshuebner/herold/internal/aclcodec"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -1216,120 +1218,240 @@ func (m *metadata) DMARCAggregate(ctx context.Context, domain string, since, unt
 	return out, rows.Err()
 }
 
-// -- mailbox ACL ------------------------------------------------------
+// -- mailbox ACL (epic #210: grant-backed, no mailbox_acl table) -------
+//
+// See internal/storesqlite/metadata_phase2.go's mailbox ACL section for the
+// shared design note: SETACL/admin-REST own exactly the manual
+// (GrantProvenanceLocal / GrantProvenanceACLMigration) rows for a grantee;
+// an idp:<provider> row is owned by authz.ReconcileIdP (epic #188) and is
+// never read or written here. GetMailboxACL coalesces every provenance row
+// for a grantee into one rendered entry (OR of rights).
+
+// mailboxACLSubject maps the RFC 4314 grantee (nil == "anyone") to the
+// grants table's subject_kind/subject_id pair.
+func mailboxACLSubject(principalID *store.PrincipalID) (kind string, id int64) {
+	if principalID == nil {
+		return string(store.GrantSubjectAnyone), 0
+	}
+	return string(store.GrantSubjectPrincipal), int64(*principalID)
+}
+
+// mailboxACLPrincipal is the inverse of mailboxACLSubject: nil for an
+// "anyone" row, else the principal id.
+func mailboxACLPrincipal(kind string, id int64) *store.PrincipalID {
+	if kind == string(store.GrantSubjectAnyone) {
+		return nil
+	}
+	pid := store.PrincipalID(id)
+	return &pid
+}
 
 func (m *metadata) SetMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID, rights store.ACLRights, grantedBy store.PrincipalID) error {
 	now := m.s.clock.Now().UTC()
+	subjectKind, subjectID := mailboxACLSubject(principalID)
+	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
 	return m.runTx(ctx, func(tx pgx.Tx) error {
-		var existsQ string
-		var existsArgs []any
-		var pidArg *int64
-		if principalID == nil {
-			existsQ = `SELECT id FROM mailbox_acl WHERE mailbox_id = $1 AND principal_id IS NULL`
-			existsArgs = []any{int64(mailboxID)}
-		} else {
-			v := int64(*principalID)
-			pidArg = &v
-			existsQ = `SELECT id FROM mailbox_acl WHERE mailbox_id = $1 AND principal_id = $2`
-			existsArgs = []any{int64(mailboxID), int64(*principalID)}
-		}
-		var existing int64
-		err := tx.QueryRow(ctx, existsQ, existsArgs...).Scan(&existing)
-		if err == nil {
-			_, err = tx.Exec(ctx,
-				`UPDATE mailbox_acl SET rights_mask = $1, granted_by = $2 WHERE id = $3`,
-				int64(rights), int64(grantedBy), existing)
+		// Manual-provenance rows only (see the section doc comment): an
+		// idp:<provider> row for this (mailbox, grantee) is untouched.
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM grants
+			 WHERE resource_kind = 'mailbox' AND resource_id = $1
+			   AND subject_kind = $2 AND subject_id = $3
+			   AND provenance IN ($4, $5)`,
+			resourceID, subjectKind, subjectID,
+			store.GrantProvenanceLocal, store.GrantProvenanceACLMigration); err != nil {
 			return mapErr(err)
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return mapErr(err)
+		if rights == 0 {
+			// Empty rights: no manual row survives, matching RFC 4314
+			// §3.1.1 ("if the resulting set of rights is empty, the entry
+			// is removed"). Any idp: row for this grantee is unaffected
+			// and continues to confer its own rights independently.
+			return nil
 		}
-		_, err = tx.Exec(ctx, `
-			INSERT INTO mailbox_acl (mailbox_id, principal_id, rights_mask, granted_by, created_at_us)
-			VALUES ($1, $2, $3, $4, $5)`,
-			int64(mailboxID), pidArg, int64(rights), int64(grantedBy), usMicros(now))
+		_, err := tx.Exec(ctx, `
+			INSERT INTO grants (subject_kind, subject_id, resource_kind, resource_id,
+			                     level, provenance, granted_by, granted_at_us)
+			VALUES ($1, $2, 'mailbox', $3, $4, $5, $6, $7)`,
+			subjectKind, subjectID, resourceID, aclcodec.Encode(rights), store.GrantProvenanceLocal,
+			int64(grantedBy), usMicros(now))
 		return mapErr(err)
 	})
 }
 
-func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID) ([]store.MailboxACL, error) {
+// GetMailboxACLManual returns the OR of only the manual-provenance (local,
+// acl-migration) grant rights for principalID on mailboxID, excluding any
+// idp:<provider> row. SETACL's incremental +/- form uses this as "current"
+// so a delta never bakes an idp:-granted right into the durable manual row
+// (see the store.Metadata doc comment).
+func (m *metadata) GetMailboxACLManual(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID) (store.ACLRights, error) {
+	subjectKind, subjectID := mailboxACLSubject(principalID)
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT id, mailbox_id, principal_id, rights_mask, granted_by, created_at_us
-		  FROM mailbox_acl WHERE mailbox_id = $1
-		 ORDER BY (principal_id IS NULL) DESC, principal_id ASC`,
-		int64(mailboxID))
+		SELECT level FROM grants
+		 WHERE resource_kind = 'mailbox' AND resource_id = $1
+		   AND subject_kind = $2 AND subject_id = $3
+		   AND provenance IN ($4, $5)`,
+		strconv.FormatUint(uint64(mailboxID), 10), subjectKind, subjectID,
+		store.GrantProvenanceLocal, store.GrantProvenanceACLMigration)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	defer rows.Close()
+	var have store.ACLRights
+	for rows.Next() {
+		var level string
+		if err := rows.Scan(&level); err != nil {
+			return 0, mapErr(err)
+		}
+		r, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok {
+			continue
+		}
+		have |= r
+	}
+	return have, rows.Err()
+}
+
+func (m *metadata) GetMailboxACL(ctx context.Context, mailboxID store.MailboxID) ([]store.MailboxACL, error) {
+	// Anyone rows first, then per-principal rows in ascending subject id
+	// (matching the pre-#210 mailbox_acl ordering), then ascending grant id
+	// so multiple provenance rows for the same grantee are coalesced in a
+	// stable order below.
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, subject_kind, subject_id, level, granted_by, granted_at_us
+		  FROM grants
+		 WHERE resource_kind = 'mailbox' AND resource_id = $1
+		 ORDER BY (subject_kind = 'anyone') DESC, subject_id ASC, id ASC`,
+		strconv.FormatUint(uint64(mailboxID), 10))
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	defer rows.Close()
-	var out []store.MailboxACL
+	type subjectKey struct {
+		kind string
+		id   int64
+	}
+	order := make([]subjectKey, 0)
+	byKey := make(map[subjectKey]*store.MailboxACL)
 	for rows.Next() {
 		var (
-			id, mb, rights, grantedBy, createdUs int64
-			pid                                  *int64
+			id, subjectID, grantedAtUs int64
+			subjectKind, level         string
+			grantedBy                  *int64
 		)
-		if err := rows.Scan(&id, &mb, &pid, &rights, &grantedBy, &createdUs); err != nil {
+		if err := rows.Scan(&id, &subjectKind, &subjectID, &level, &grantedBy, &grantedAtUs); err != nil {
 			return nil, mapErr(err)
 		}
-		acl := store.MailboxACL{
-			ID:        store.MailboxACLID(id),
-			MailboxID: store.MailboxID(mb),
-			Rights:    store.ACLRights(rights),
-			GrantedBy: store.PrincipalID(grantedBy),
-			CreatedAt: fromMicros(createdUs),
+		rights, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok {
+			continue
 		}
-		if pid != nil {
-			pp := store.PrincipalID(*pid)
-			acl.PrincipalID = &pp
+		k := subjectKey{subjectKind, subjectID}
+		acl, seen := byKey[k]
+		if !seen {
+			// First row for this grantee (rows are ordered ascending by id)
+			// supplies the display metadata (id/granted_by/created_at);
+			// Rights accumulates the OR of every provenance row below --
+			// one coalesced entry per grantee, matching what
+			// authz.ResolveMailboxRights computes for enforcement.
+			na := store.MailboxACL{
+				ID:          store.MailboxACLID(id),
+				MailboxID:   mailboxID,
+				PrincipalID: mailboxACLPrincipal(subjectKind, subjectID),
+				CreatedAt:   fromMicros(grantedAtUs),
+			}
+			if grantedBy != nil {
+				na.GrantedBy = store.PrincipalID(*grantedBy)
+			}
+			byKey[k] = &na
+			order = append(order, k)
+			acl = &na
 		}
-		out = append(out, acl)
+		acl.Rights |= rights
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]store.MailboxACL, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byKey[k])
+	}
+	return out, nil
 }
 
 func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.PrincipalID) ([]store.Mailbox, error) {
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT mb.id, mb.principal_id, mb.parent_id, mb.name, mb.attributes,
-		       mb.uidvalidity, mb.uidnext, mb.highest_modseq, mb.created_at_us,
-		       mb.updated_at_us, mb.color_hex, mb.sort_order
-		  FROM mailboxes mb
-		 WHERE mb.id IN (
-		   SELECT mailbox_id FROM mailbox_acl
-		    WHERE (principal_id = $1 OR principal_id IS NULL)
-		      AND (rights_mask & $2) = $2
-		 )
-		 ORDER BY mb.name ASC`,
-		int64(pid), int64(store.ACLRightLookup))
+		SELECT resource_id, level FROM grants
+		 WHERE resource_kind = 'mailbox'
+		   AND ((subject_kind = 'principal' AND subject_id = $1) OR subject_kind = 'anyone')`,
+		int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	defer rows.Close()
-	var out []store.Mailbox
+	var ids []int64
 	for rows.Next() {
-		mb, err := scanMailbox(rows)
+		var resourceID, level string
+		if err := rows.Scan(&resourceID, &level); err != nil {
+			rows.Close()
+			return nil, mapErr(err)
+		}
+		rights, ok := aclcodec.DecodeGrantLevel(store.GrantLevel(level))
+		if !ok || rights&store.ACLRightLookup == 0 {
+			continue
+		}
+		id, perr := strconv.ParseInt(resourceID, 10, 64)
+		if perr != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapErr(err)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	idArgs := make([]int64, len(ids))
+	copy(idArgs, ids)
+	mbRows, err := m.s.pool.Query(ctx, `
+		SELECT id, principal_id, parent_id, name, attributes,
+		       uidvalidity, uidnext, highest_modseq, created_at_us,
+		       updated_at_us, color_hex, sort_order
+		  FROM mailboxes WHERE id = ANY($1)
+		 ORDER BY name ASC`,
+		idArgs)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer mbRows.Close()
+	var out []store.Mailbox
+	for mbRows.Next() {
+		mb, err := scanMailbox(mbRows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, mb)
 	}
-	return out, rows.Err()
+	return out, mbRows.Err()
 }
 
 func (m *metadata) RemoveMailboxACL(ctx context.Context, mailboxID store.MailboxID, principalID *store.PrincipalID) error {
+	subjectKind, subjectID := mailboxACLSubject(principalID)
+	resourceID := strconv.FormatUint(uint64(mailboxID), 10)
 	return m.runTx(ctx, func(tx pgx.Tx) error {
-		var (
-			cmdTag pgconn.CommandTag
-			err    error
-		)
-		if principalID == nil {
-			cmdTag, err = tx.Exec(ctx,
-				`DELETE FROM mailbox_acl WHERE mailbox_id = $1 AND principal_id IS NULL`,
-				int64(mailboxID))
-		} else {
-			cmdTag, err = tx.Exec(ctx,
-				`DELETE FROM mailbox_acl WHERE mailbox_id = $1 AND principal_id = $2`,
-				int64(mailboxID), int64(*principalID))
-		}
+		// Manual-provenance rows only (see the section doc comment): an
+		// idp:<provider> row for this grantee is left intact. ErrNotFound
+		// when no manual row existed, even if an idp: row is present --
+		// there was nothing for DELETEACL/admin-REST to remove.
+		cmdTag, err := tx.Exec(ctx, `
+			DELETE FROM grants
+			 WHERE resource_kind = 'mailbox' AND resource_id = $1
+			   AND subject_kind = $2 AND subject_id = $3
+			   AND provenance IN ($4, $5)`,
+			resourceID, subjectKind, subjectID,
+			store.GrantProvenanceLocal, store.GrantProvenanceACLMigration)
 		if err != nil {
 			return mapErr(err)
 		}

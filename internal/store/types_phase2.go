@@ -836,8 +836,16 @@ type DMARCAggregateRow struct {
 }
 
 // -- Mailbox ACL ------------------------------------------------------
+//
+// MailboxACL / MailboxACLID and the SetMailboxACL / GetMailboxACL /
+// RemoveMailboxACL / ListMailboxesAccessibleBy methods below are a stable
+// DTO layer over the unified grants substrate (epic #210): every mailbox
+// ACL row is a `mailbox`-kind grant, translated to/from this shape by the
+// store backend. There is no separate mailbox_acl table; MailboxACLID wraps
+// the underlying GrantID.
 
-// MailboxACLID identifies one row in the mailbox_acl table.
+// MailboxACLID identifies one row backing a mailbox ACL entry (the
+// underlying grants row's GrantID, epic #210).
 type MailboxACLID uint64
 
 // ACLRights is a bitmask encoding RFC 4314 IMAP rights. Each bit maps

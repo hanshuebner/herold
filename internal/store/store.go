@@ -1209,28 +1209,72 @@ type Metadata interface {
 	// directly from this surface.
 	DMARCAggregate(ctx context.Context, domain string, since, until time.Time) ([]DMARCAggregateRow, error)
 
-	// -- Phase 2 mailbox ACL ------------------------------------------
+	// -- Mailbox ACL (epic #210: grant-backed) -------------------------
+	//
+	// These methods are a DTO surface over `mailbox`-kind rows in the
+	// grants table -- the RFC 4314 letter-set lives in a grant's Level
+	// column (internal/aclcodec.Encode/Decode), keyed by
+	// (resource_kind='mailbox', resource_id=mailboxID, subject). A grantee
+	// may have MULTIPLE grant rows at once, one per provenance: an
+	// idp:<provider> row (owned exclusively by authz.ReconcileIdP, epic
+	// #188, re-asserted on every login regardless of what happens here)
+	// coexisting with at most one manual row (GrantProvenanceLocal or
+	// GrantProvenanceACLMigration).
+	//
+	// Provenance ownership: SetMailboxACL and RemoveMailboxACL -- the
+	// backing of SETACL/DELETEACL and the admin REST ACL surface -- act
+	// ONLY on the manual row for a grantee. Neither ever reads or writes an
+	// idp:<provider> row; a grantee's IdP-derived access cannot be granted,
+	// narrowed, or revoked by an ACL write, only by changing the IdP claim
+	// mapping (REQ-AC-60..70). GetMailboxACL and ListMailboxesAccessibleBy
+	// report EFFECTIVE access: the OR of every provenance row for a
+	// grantee, coalesced into one entry -- the same computation
+	// internal/authz.ResolveMailboxRights performs for enforcement.
+	// GetMailboxACLManual is the narrower, manual-only read SETACL's
+	// incremental +/- form needs so a delta against an idp:-granted right
+	// never gets baked into the durable manual row (see its own doc
+	// comment).
 
-	// SetMailboxACL upserts one ACL row for (mailboxID, principalID).
-	// principalID == nil encodes the RFC 4314 "anyone" pseudo-row.
-	// rights replaces any prior mask wholesale (RFC 4314 SETACL
-	// semantics, not an additive merge).
+	// SetMailboxACL replaces the manual (local/acl-migration) ACL row for
+	// (mailboxID, principalID) with a single GrantProvenanceLocal row
+	// carrying rights wholesale (RFC 4314 SETACL "=" semantics, not an
+	// additive merge) -- or removes it entirely when rights is zero
+	// (RFC 4314 SS3.1.1). principalID == nil encodes the RFC 4314 "anyone"
+	// pseudo-row (GrantSubjectAnyone). Never touches an idp:<provider> row
+	// for the same grantee.
 	SetMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID, rights ACLRights, grantedBy PrincipalID) error
 
-	// GetMailboxACL returns every ACL row for mailboxID. Anyone rows
+	// GetMailboxACL returns one entry per grantee with a `mailbox` grant on
+	// mailboxID: the OR of every provenance row's rights (local,
+	// acl-migration, and any idp:<provider>), decoded via
+	// internal/aclcodec.DecodeGrantLevel (both letter-set and coarse-tier
+	// Level encodings). This is the effective-rights view GETACL/MYRIGHTS
+	// render, matching internal/authz.ResolveMailboxRights. Anyone rows
 	// (PrincipalID nil) come first.
 	GetMailboxACL(ctx context.Context, mailboxID MailboxID) ([]MailboxACL, error)
 
-	// ListMailboxesAccessibleBy returns every mailbox whose ACL grants
-	// pid the lookup right (or has an "anyone" row with lookup). The
-	// owning principal's mailboxes are NOT auto-included; the caller
-	// composes them with ListMailboxes when "all" semantics are
+	// GetMailboxACLManual returns the OR of ONLY the manual-provenance
+	// (local, acl-migration) grant rights for principalID on mailboxID --
+	// excluding any idp:<provider> row. SETACL's incremental +/- form
+	// (internal/protoimap) uses this, not GetMailboxACL, as the "current"
+	// value the delta applies to: applying +/- to the coalesced
+	// (idp:-inclusive) rights would bake an IdP-granted right into the
+	// durable manual row, so a later IdP revocation could never claw it
+	// back. principalID == nil targets the "anyone" row.
+	GetMailboxACLManual(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID) (ACLRights, error)
+
+	// ListMailboxesAccessibleBy returns every mailbox whose grant rows give
+	// pid the lookup right (directly or via the "anyone" subject, any
+	// provenance). The owning principal's mailboxes are NOT auto-included;
+	// the caller composes them with ListMailboxes when "all" semantics are
 	// needed.
 	ListMailboxesAccessibleBy(ctx context.Context, pid PrincipalID) ([]Mailbox, error)
 
-	// RemoveMailboxACL deletes the ACL row for (mailboxID, principalID).
-	// principalID == nil targets the "anyone" row. Returns ErrNotFound
-	// when the row is missing.
+	// RemoveMailboxACL deletes ONLY the manual (local/acl-migration) ACL
+	// row for (mailboxID, principalID); an idp:<provider> row for the same
+	// grantee is left untouched. principalID == nil targets the "anyone"
+	// row. Returns ErrNotFound when no manual row exists, even if an
+	// idp:<provider> row is present -- there was nothing manual to remove.
 	RemoveMailboxACL(ctx context.Context, mailboxID MailboxID, principalID *PrincipalID) error
 
 	// -- Phase 2 JMAP states ------------------------------------------

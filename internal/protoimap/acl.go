@@ -15,7 +15,8 @@ package protoimap
 //     stored; SETACL on a mailbox the caller does not own requires the
 //     "a" (admin) right.
 //   - The "anyone" pseudo-identifier is encoded as a NULL PrincipalID at
-//     the store layer (store.MailboxACL.PrincipalID == nil). On the wire
+//     the store.MailboxACL DTO layer (PrincipalID == nil); the underlying
+//     grant row carries store.GrantSubjectAnyone (epic #210). On the wire
 //     we render it as the literal token "anyone".
 //
 // LISTRIGHTS policy (RFC 4314 §3.7 leaves this to server policy):
@@ -29,23 +30,24 @@ package protoimap
 // response in session.go once these handlers are wired (STANDARDS rule
 // 10 — advertise only when implemented).
 //
-// Unified grant substrate bridge (epic #186, REQ-AC-50..53): every rights
-// check and every shared-mailbox visibility scan in this file additionally
-// consults internal/authz.Resolve over the mailbox resource kind, so a
-// `mailbox` grant row written outside IMAP (the mailing-list archive read
-// grant, REQ-AC-52; a future admin grants surface) is honoured here too.
-// The legacy per-letter mailbox_acl rows (SETACL/GETACL storage, full RFC
-// 4314 fidelity down to the individual letter) and the grant-tier rows are
-// two independent sources whose union is the caller's effective rights;
-// SETACL/DELETEACL continue to write the legacy table so no fidelity is
-// lost, and GETACL renders both sources.
+// Unified grant substrate (epic #182/#186, extended to full RFC 4314
+// fidelity and sole-source status by epic #210, REQ-AC-50..53): every
+// rights check and every shared-mailbox visibility scan in this file goes
+// through the grant substrate -- store.Meta()'s SetMailboxACL / GetMailboxACL
+// / RemoveMailboxACL / ListMailboxesAccessibleBy are a DTO layer over
+// `mailbox`-kind grant rows (internal/store/types_phase2.go), and
+// internal/authz.ResolveMailboxRights is the enforcement seam that adds
+// implicit ownership and the superadmin short-circuit on top. There is no
+// second (legacy mailbox_acl table) source to union: a `mailbox` grant row
+// written outside IMAP (the mailing-list archive read grant, REQ-AC-52; a
+// future admin grants surface) is honoured by the exact same read path as a
+// SETACL-written row.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/aclcodec"
@@ -108,18 +110,19 @@ func (ses *session) resolveACLIdentifier(ctx context.Context, id string) (*store
 }
 
 // requireRights centralises the ACL gate. It reads the caller's
-// effective rights against mb (owner is implicit ACLRightsAll; any ACL
-// row contributes additively; the "anyone" row applies to everyone)
+// effective rights against mb (owner is implicit ACLRightsAll; any grant
+// row contributes additively; the "anyone" grant applies to everyone)
 // and returns nil when (mask & need) == need. Callers map a non-nil
 // return to NO [NOPERM].
 //
 // ses.pid being the owner of mb short-circuits to "all rights" so the
-// owner does not need an ACL row to operate on their own mailbox.
+// owner does not need a grant row to operate on their own mailbox, and so
+// this fast path never depends on a store read for the common case.
 func (ses *session) requireRights(ctx context.Context, mb store.Mailbox, need store.ACLRights) error {
 	if mb.PrincipalID == ses.pid {
 		return nil
 	}
-	have, err := ses.effectiveRights(ctx, mb.ID)
+	have, err := ses.effectiveRights(ctx, mb)
 	if err != nil {
 		return err
 	}
@@ -134,98 +137,28 @@ func (ses *session) requireRights(ctx context.Context, mb store.Mailbox, need st
 // "NO [NOPERM]" by the call sites; not exported.
 var errInsufficientRights = errors.New("protoimap: insufficient ACL rights")
 
-// effectiveRights returns the OR of every ACL row applicable to
-// ses.pid on mailboxID: the explicit per-principal row plus any
-// "anyone" row, unioned with whatever RFC 4314 rights the unified
-// mailbox-grant substrate implies (REQ-AC-50/53). Callers MUST NOT call
-// this when ses.pid is the mailbox owner — owners get the implicit
-// ACLRightsAll mask via requireRights (REQ-AC-51).
-func (ses *session) effectiveRights(ctx context.Context, mailboxID store.MailboxID) (store.ACLRights, error) {
-	rows, err := ses.s.store.Meta().GetMailboxACL(ctx, mailboxID)
-	if err != nil {
-		return 0, err
-	}
-	var have store.ACLRights
-	for _, row := range rows {
-		if row.PrincipalID == nil {
-			// "anyone" row applies to every authenticated principal.
-			have |= row.Rights
-			continue
-		}
-		if *row.PrincipalID == ses.pid {
-			have |= row.Rights
-		}
-	}
+// effectiveRights returns ses.pid's full RFC 4314 rights mask on mb via
+// internal/authz.ResolveMailboxRights (epic #210) — the sole enforcement
+// path, covering implicit ownership, the superadmin short-circuit, and
+// every applicable `mailbox` grant row (the caller's own row plus any
+// "anyone" row), fail-closed on a store error (REQ-AC-12).
+func (ses *session) effectiveRights(ctx context.Context, mb store.Mailbox) (store.ACLRights, error) {
 	principal, err := ses.s.store.Meta().GetPrincipalByID(ctx, ses.pid)
 	if err != nil {
 		return 0, err
 	}
-	level, err := authz.Resolve(ctx, ses.s.store.Meta(), principal, authz.MailboxResourceID(mailboxID))
-	if err != nil {
-		// Fail-closed (REQ-AC-12): a store error resolving the grant set
-		// must deny, not silently fall back to the legacy rights alone.
-		return 0, err
-	}
-	have |= authz.RightsForMailboxLevel(level)
-	return have, nil
-}
-
-// grantedMailboxes returns every mailbox visible to ses.pid solely through
-// an explicit `mailbox` grant row in the unified substrate (REQ-AC-50) —
-// mailboxes not necessarily covered by the legacy mailbox_acl scan
-// ListMailboxesAccessibleBy performs. A grant pointing at a since-deleted
-// mailbox is skipped silently.
-func (ses *session) grantedMailboxes(ctx context.Context) ([]store.Mailbox, error) {
-	grants, err := ses.s.store.Meta().ListGrantsForPrincipal(ctx, ses.pid)
-	if err != nil {
-		return nil, err
-	}
-	var out []store.Mailbox
-	for _, g := range grants {
-		if g.ResourceKind != store.GrantResourceMailbox || g.SubjectKind != store.GrantSubjectPrincipal {
-			continue
-		}
-		id, perr := strconv.ParseUint(g.ResourceID, 10, 64)
-		if perr != nil {
-			continue
-		}
-		mb, merr := ses.s.store.Meta().GetMailboxByID(ctx, store.MailboxID(id))
-		if merr != nil {
-			continue
-		}
-		out = append(out, mb)
-	}
-	return out, nil
+	return authz.ResolveMailboxRights(ctx, ses.s.store.Meta(), principal, mb)
 }
 
 // accessibleMailboxes is the single call site every SELECT / STATUS /
 // APPEND / LIST / ACL-lookup path uses to enumerate mailboxes ses.pid can
-// reach that it does not own: the union of the legacy mailbox_acl scan and
-// the unified mailbox-grant substrate (REQ-AC-53 — "one check ... across
-// IMAP"), de-duplicated by mailbox id. Superadmin's blanket visibility (if
-// any) is a separate, pre-existing concern this function does not touch —
-// it only expands the explicit-grant surface REQ-AC-50 adds.
+// reach that it does not own: every mailbox with a `mailbox` grant row
+// giving ses.pid the lookup right, directly or via the "anyone" subject
+// (REQ-AC-53 — "one check ... across IMAP"; store.Meta().ListMailboxesAccessibleBy
+// is the grant-backed DTO, epic #210). Superadmin's blanket visibility (if
+// any) is a separate, pre-existing concern this function does not touch.
 func (ses *session) accessibleMailboxes(ctx context.Context) ([]store.Mailbox, error) {
-	shared, err := ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
-	if err != nil {
-		return nil, err
-	}
-	granted, err := ses.grantedMailboxes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[store.MailboxID]struct{}, len(shared))
-	for _, mb := range shared {
-		seen[mb.ID] = struct{}{}
-	}
-	for _, mb := range granted {
-		if _, ok := seen[mb.ID]; ok {
-			continue
-		}
-		seen[mb.ID] = struct{}{}
-		shared = append(shared, mb)
-	}
-	return shared, nil
+	return ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
 }
 
 // -----------------------------------------------------------------------------
@@ -259,21 +192,22 @@ func (ses *session) handleSETACL(ctx context.Context, c *Command) error {
 	if derr != nil {
 		return ses.resp.taggedBAD(c.Tag, "", derr.Error())
 	}
-	// For "+" / "-" we read the existing row and adjust; for "=" we
-	// replace wholesale. RFC 4314 §3.1.
+	// For "+" / "-" we read the existing MANUAL rights and adjust; for "="
+	// we replace wholesale. RFC 4314 §3.1. The delta applies to the manual
+	// (local/acl-migration) portion only -- GetMailboxACLManual, not
+	// GetMailboxACL -- so an idp:<provider>-granted right is never baked
+	// into the durable manual row: "+t" on a grantee with only an
+	// idp:lr grant writes local:t (not local:lrt), and a later idp:
+	// revocation leaves exactly that t behind, no leaked l/r. "-r" can
+	// only remove from the manual portion; if r is solely idp-granted, the
+	// grantee's effective rights still show r afterward (revoking an
+	// idp:-conferred right requires changing the IdP claim mapping, not
+	// SETACL).
 	target := delta
 	if op != '=' {
-		rows, err := ses.s.store.Meta().GetMailboxACL(ctx, mb.ID)
+		current, err := ses.s.store.Meta().GetMailboxACLManual(ctx, mb.ID, pid)
 		if err != nil {
 			return ses.resp.taggedNO(c.Tag, "", "ACL read failed")
-		}
-		var current store.ACLRights
-		for _, row := range rows {
-			if (row.PrincipalID == nil) == (pid == nil) &&
-				(pid == nil || *row.PrincipalID == *pid) {
-				current = row.Rights
-				break
-			}
 		}
 		switch op {
 		case '+':
@@ -365,8 +299,12 @@ func (ses *session) handleGETACL(ctx context.Context, c *Command) error {
 		id     string
 		rights string
 	}
+	// GetMailboxACL already returns the unified view -- every `mailbox`
+	// grant row on mb, whatever wrote it (SETACL, the admin REST surface,
+	// a mailing-list archive read grant, REQ-AC-52) -- so there is a single
+	// source to render here, no legacy/grant-substrate distinction (epic
+	// #210).
 	entries := []entry{{id: owner.CanonicalEmail, rights: encodeRights(store.ACLRightsAll)}}
-	haveLegacyRow := make(map[store.PrincipalID]struct{}, len(rows))
 	for _, row := range rows {
 		var name string
 		if row.PrincipalID == nil {
@@ -374,39 +312,13 @@ func (ses *session) handleGETACL(ctx context.Context, c *Command) error {
 		} else {
 			p, perr := ses.s.store.Meta().GetPrincipalByID(ctx, *row.PrincipalID)
 			if perr != nil {
+				// Stale row pointing at a deleted principal: skip
+				// silently rather than leaking the deletion mid-list.
 				continue
 			}
 			name = p.CanonicalEmail
-			haveLegacyRow[*row.PrincipalID] = struct{}{}
 		}
 		entries = append(entries, entry{id: name, rights: encodeRights(row.Rights)})
-	}
-	// Also surface rows held in the unified grant substrate (REQ-AC-50):
-	// a principal granted access outside IMAP (e.g. the mailing-list
-	// archive read grant, REQ-AC-52) still appears in GETACL. A principal
-	// with both a legacy row and a grant row is rendered once, from the
-	// legacy row, to avoid a duplicate identifier with a possibly
-	// different rights string.
-	grantRows, gerr := ses.s.store.Meta().ListGrantsOnResource(ctx, store.GrantResourceMailbox,
-		strconv.FormatUint(uint64(mb.ID), 10))
-	if gerr == nil {
-		for _, g := range grantRows {
-			if g.SubjectKind != store.GrantSubjectPrincipal {
-				continue
-			}
-			pid := store.PrincipalID(g.SubjectID)
-			if _, dup := haveLegacyRow[pid]; dup {
-				continue
-			}
-			p, perr := ses.s.store.Meta().GetPrincipalByID(ctx, pid)
-			if perr != nil {
-				continue
-			}
-			entries = append(entries, entry{
-				id:     p.CanonicalEmail,
-				rights: encodeRights(authz.RightsForMailboxLevel(g.Level)),
-			})
-		}
 	}
 	// Stable order so tests can assert canonically.
 	sort.SliceStable(entries[1:], func(i, j int) bool {
@@ -439,21 +351,17 @@ func (ses *session) handleMYRIGHTS(ctx context.Context, c *Command) error {
 	if err != nil {
 		return nil
 	}
-	var have store.ACLRights
-	if mb.PrincipalID == ses.pid {
-		have = store.ACLRightsAll
-	} else {
-		have, err = ses.effectiveRights(ctx, mb.ID)
-		if err != nil {
-			return ses.resp.taggedNO(c.Tag, "", "ACL read failed")
-		}
-		// MYRIGHTS without lookup is meaningless — RFC 4314 §3.5
-		// requires the caller to have at least one right on the
-		// mailbox to receive a reply. We do not leak existence to
-		// principals with zero rights.
-		if have == 0 {
-			return ses.resp.taggedNO(c.Tag, "NOPERM", "no rights on mailbox")
-		}
+	have, err := ses.effectiveRights(ctx, mb)
+	if err != nil {
+		return ses.resp.taggedNO(c.Tag, "", "ACL read failed")
+	}
+	// MYRIGHTS without lookup is meaningless — RFC 4314 §3.5 requires the
+	// caller to have at least one right on the mailbox to receive a reply.
+	// We do not leak existence to principals with zero rights. The owner
+	// always resolves to ACLRightsAll (never zero), so this only denies a
+	// genuinely rights-less non-owner.
+	if have == 0 {
+		return ses.resp.taggedNO(c.Tag, "NOPERM", "no rights on mailbox")
 	}
 	if err := ses.resp.untagged(fmt.Sprintf("MYRIGHTS %s %s",
 		imapQuote(mb.Name), imapQuote(encodeRights(have)))); err != nil {
@@ -537,8 +445,8 @@ func (ses *session) lookupACLMailbox(ctx context.Context, tag, name string) (sto
 		_ = ses.resp.taggedNO(tag, "", "mailbox lookup failed")
 		return store.Mailbox{}, err
 	}
-	// Search shared mailboxes the principal can reach (legacy ACL rows
-	// union the unified mailbox-grant substrate, REQ-AC-53).
+	// Search shared mailboxes the principal can reach via the mailbox-grant
+	// substrate (REQ-AC-53).
 	shared, lerr := ses.accessibleMailboxes(ctx)
 	if lerr != nil {
 		_ = ses.resp.taggedNO(tag, "", "mailbox lookup failed")
