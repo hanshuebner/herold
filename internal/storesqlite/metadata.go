@@ -480,10 +480,10 @@ func (m *metadata) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider)
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO oidc_providers (name, issuer_url, client_id, client_secret_ref,
-			  scopes_csv, auto_provision, created_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			  scopes_csv, auto_provision, authz_trusted, created_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			p.Name, p.IssuerURL, p.ClientID, p.ClientSecretRef,
-			strings.Join(p.Scopes, ","), boolToInt(p.AutoProvision), usMicros(now))
+			strings.Join(p.Scopes, ","), boolToInt(p.AutoProvision), boolToInt(p.AuthzTrusted), usMicros(now))
 		if err != nil {
 			return fmt.Errorf("OIDC provider %q: %w", p.Name, mapErr(err))
 		}
@@ -494,14 +494,14 @@ func (m *metadata) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider)
 func (m *metadata) GetOIDCProvider(ctx context.Context, name string) (store.OIDCProvider, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT name, issuer_url, client_id, client_secret_ref, scopes_csv,
-		       auto_provision, created_at_us
+		       auto_provision, authz_trusted, created_at_us
 		  FROM oidc_providers WHERE name = ?`, name)
 	var p store.OIDCProvider
 	var scopes string
-	var auto int64
+	var auto, authzTrusted int64
 	var createdUs int64
 	err := row.Scan(&p.Name, &p.IssuerURL, &p.ClientID, &p.ClientSecretRef,
-		&scopes, &auto, &createdUs)
+		&scopes, &auto, &authzTrusted, &createdUs)
 	if err != nil {
 		return store.OIDCProvider{}, mapErr(err)
 	}
@@ -509,6 +509,7 @@ func (m *metadata) GetOIDCProvider(ctx context.Context, name string) (store.OIDC
 		p.Scopes = strings.Split(scopes, ",")
 	}
 	p.AutoProvision = auto != 0
+	p.AuthzTrusted = authzTrusted != 0
 	p.CreatedAt = fromMicros(createdUs)
 	return p, nil
 }
@@ -2972,7 +2973,7 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 func (m *metadata) ListOIDCProviders(ctx context.Context) ([]store.OIDCProvider, error) {
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT name, issuer_url, client_id, client_secret_ref, scopes_csv,
-		       auto_provision, created_at_us
+		       auto_provision, authz_trusted, created_at_us
 		  FROM oidc_providers ORDER BY name`)
 	if err != nil {
 		return nil, mapErr(err)
@@ -2982,20 +2983,37 @@ func (m *metadata) ListOIDCProviders(ctx context.Context) ([]store.OIDCProvider,
 	for rows.Next() {
 		var p store.OIDCProvider
 		var scopes string
-		var auto int64
+		var auto, authzTrusted int64
 		var createdUs int64
 		if err := rows.Scan(&p.Name, &p.IssuerURL, &p.ClientID, &p.ClientSecretRef,
-			&scopes, &auto, &createdUs); err != nil {
+			&scopes, &auto, &authzTrusted, &createdUs); err != nil {
 			return nil, mapErr(err)
 		}
 		if scopes != "" {
 			p.Scopes = strings.Split(scopes, ",")
 		}
 		p.AutoProvision = auto != 0
+		p.AuthzTrusted = authzTrusted != 0
 		p.CreatedAt = fromMicros(createdUs)
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (m *metadata) SetOIDCProviderAuthzTrusted(ctx context.Context, providerName string, trusted bool) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE oidc_providers SET authz_trusted = ? WHERE name = ?`,
+			boolToInt(trusted), providerName)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 }
 
 func (m *metadata) DeleteOIDCProvider(ctx context.Context, id store.OIDCProviderID) error {

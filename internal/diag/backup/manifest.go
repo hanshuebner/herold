@@ -565,7 +565,19 @@ const CurrentBackupVersion = 1
 //	FK to api_keys(id) ON DELETE SET NULL for the paired access token).
 //	Both new tables are excluded from backup (ephemeral, like
 //	sessions/session_elevations).
-const CurrentSchemaVersion = 82
+//
+// 83 — 0083_oidc_claim_mapping.sql (epic #188, REQ-AC-60..70). External
+//
+//	IdP claim-to-grant mapping, layered on the #182 grants substrate.
+//	Adds oidc_providers.authz_trusted (claim-mapping is inert for a
+//	provider until a server:superadmin sets this true, REQ-AC-66).
+//	Adds two new tables: oidc_claim_allowlist (per-provider allowlist
+//	of claim names a rule may consult, REQ-AC-67) and
+//	oidc_claim_mapping_rules (one row per "claim has this value ->
+//	grant this (resource, level)" rule, REQ-AC-60). Both are
+//	authorization data -- backed up like grants, unlike the ephemeral
+//	oauth_* tables of migration 82.
+const CurrentSchemaVersion = 83
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -625,6 +637,12 @@ var TableNames = []string{
 	// outbound push dispatcher is stateless w.r.t. herold's store.
 	"push_subscription",
 	"oidc_providers",
+	// External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70,
+	// migration 0083). Both FK oidc_providers(name) ON DELETE CASCADE, so
+	// restored after oidc_providers. created_by (mapping rules only) FKs
+	// principals(id) ON DELETE SET NULL, already in place.
+	"oidc_claim_allowlist",
+	"oidc_claim_mapping_rules",
 	"oidc_links",
 	"api_keys",
 	"aliases",

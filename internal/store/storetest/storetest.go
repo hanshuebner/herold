@@ -443,6 +443,12 @@ func Run(t *testing.T, f Factory) {
 		{"Grants_ProvenanceDistinct", testGrants_ProvenanceDistinct},
 		{"Grants_DeleteNotFound", testGrants_DeleteNotFound},
 		{"Grants_ListOrderedByID", testGrants_ListOrderedByID},
+		// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70, migration 0083) --
+		{"OIDCProviderAuthzTrusted", testOIDCProviderAuthzTrusted},
+		{"ClaimAllowlistCRUD", testClaimAllowlistCRUD},
+		{"ClaimMappingRuleCRUD", testClaimMappingRuleCRUD},
+		{"ReconcileIdPGrants_FullLifecycle", testReconcileIdPGrants_FullLifecycle},
+		{"SweepStaleIdPGrants", testSweepStaleIdPGrants},
 		// -- System events ring-buffer (REQ-ADM-304, migration 0073, re #142) --
 		{"SystemEvents_AppendList", testSystemEvents_AppendList},
 		{"SystemEvents_NewestFirst", testSystemEvents_NewestFirst},
