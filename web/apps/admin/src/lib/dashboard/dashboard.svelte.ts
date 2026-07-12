@@ -2,11 +2,16 @@
  * Dashboard state class.
  *
  * Aggregates data from five parallel fetches:
- *   GET /api/v1/queue/stats             -> queue counts by state
- *   GET /api/v1/audit                   -> recent audit log entries (limit=10)
- *   GET /api/v1/domains                 -> local domain list
+ *   GET /api/v1/queue/stats             -> {counts: {...}} queue counts by state
+ *   GET /api/v1/audit                   -> {items:[...], next} recent audit log entries (limit=10)
+ *   GET /api/v1/domains                 -> {items:[...], next} local domain list
  *   GET /api/v1/admin/clientlog/stats   -> client-log counters (REQ-ADM-233)
  *   GET /api/v1/server/status           -> push transport configured status (re #200)
+ *
+ * The queue-stats, audit and domains endpoints each wrap their payload in
+ * an envelope object (see handleQueueStats/handleAuditLog/handleListDomains
+ * in internal/protoadmin) rather than returning the bare shape the card
+ * renders; each loader below unwraps the matching field (re #215).
  *
  * Uses Promise.allSettled so partial failures show degraded cards rather
  * than nuking the entire page.
@@ -87,16 +92,18 @@ class DashboardState {
 
     const [queueResult, auditResult, domainsResult, clientlogResult, serverStatusResult] =
       await Promise.allSettled([
-        apiGet<QueueStats>('/api/v1/queue/stats'),
-        apiGet<{ entries: AuditEntry[] } | AuditEntry[]>('/api/v1/audit?limit=10'),
+        apiGet<{ counts: QueueStats } | QueueStats>('/api/v1/queue/stats'),
+        apiGet<{ items: AuditEntry[]; next: string | null } | AuditEntry[]>('/api/v1/audit?limit=10'),
         apiGet<{ items: Domain[]; next: string | null } | Domain[]>('/api/v1/domains'),
         apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
         apiGet<ServerStatusResponse>('/api/v1/server/status'),
       ]);
 
-    // Queue stats
+    // Queue stats -- API returns {counts:{...}} (handleQueueStats in
+    // internal/protoadmin/queue.go), not the bare per-state map.
     if (queueResult.status === 'fulfilled' && queueResult.value.ok && queueResult.value.data) {
-      this.queueStats = queueResult.value.data;
+      const raw = queueResult.value.data;
+      this.queueStats = (raw as { counts?: QueueStats }).counts ?? (raw as QueueStats);
       this.queueError = null;
     } else {
       this.queueStats = null;
@@ -106,10 +113,12 @@ class DashboardState {
           : t('dashboard.error.queueStatsNetwork');
     }
 
-    // Audit entries -- API may return array or {entries:[...]} envelope
+    // Audit entries -- API returns the paginated envelope {items:[...], next}
+    // (handleAuditLog in internal/protoadmin/server_endpoints.go), the same
+    // shape as domains, not a bare array.
     if (auditResult.status === 'fulfilled' && auditResult.value.ok && auditResult.value.data) {
       const raw = auditResult.value.data;
-      this.auditEntries = Array.isArray(raw) ? raw : (raw as { entries: AuditEntry[] }).entries ?? [];
+      this.auditEntries = Array.isArray(raw) ? raw : (raw as { items: AuditEntry[] }).items ?? [];
       this.auditError = null;
     } else {
       this.auditEntries = [];
