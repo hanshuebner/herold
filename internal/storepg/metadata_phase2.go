@@ -356,7 +356,11 @@ func (m *metadata) ListQueueItems(ctx context.Context, filter store.QueueFilter)
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += fmt.Sprintf(" ORDER BY id ASC LIMIT $%d", pos)
+	if filter.Newest {
+		q += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", pos)
+	} else {
+		q += fmt.Sprintf(" ORDER BY id ASC LIMIT $%d", pos)
+	}
 	args = append(args, limit)
 	rows, err := m.s.pool.Query(ctx, q, args...)
 	if err != nil {

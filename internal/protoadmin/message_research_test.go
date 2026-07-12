@@ -567,3 +567,82 @@ func TestMessageResearch_NoBody(t *testing.T) {
 		t.Errorf("response contains outbound body text; REQ-ADM-306 violated: %s", buf)
 	}
 }
+
+// TestMessageResearch_ForwardRelayNewestFirst reproduces the reported shape
+// (re #143): an alias forwarded to an external target produces an outbound
+// relay leg (SRS-rewritten mail_from, external rcpt_to) that must surface as
+// a send_outcome entry. Several older, unrelated queue rows are seeded first
+// so a small limit forces the queue fetch window below the total historical
+// row count -- exactly the condition under which the pre-fix ORDER BY id ASC
+// fetch silently dropped the newest row (the relay leg) from the timeline
+// entirely.
+func TestMessageResearch_ForwardRelayNewestFirst(t *testing.T) {
+	h := newHarness(t)
+	adminKey, _, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	base := time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		ref, err := s.Blobs().Put(ctx, strings.NewReader(fmt.Sprintf("old body %d", i)))
+		if err != nil {
+			t.Fatalf("Blobs.Put old %d: %v", i, err)
+		}
+		created := base.Add(time.Duration(i) * time.Minute)
+		if _, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+			MailFrom:      fmt.Sprintf("old%d@unrelated.test", i),
+			RcptTo:        "old-dest@unrelated.test",
+			EnvelopeID:    store.EnvelopeID(fmt.Sprintf("env-old-%d", i)),
+			BodyBlobHash:  ref.Hash,
+			State:         store.QueueStateDone,
+			CreatedAt:     created,
+			NextAttemptAt: created,
+		}); err != nil {
+			t.Fatalf("EnqueueMessage old %d: %v", i, err)
+		}
+	}
+
+	// The alias-forward relay leg: SRS-rewritten mail_from, external
+	// rcpt_to, queued after everything else above.
+	fwdRef, err := s.Blobs().Put(ctx, strings.NewReader("forwarded body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put forward: %v", err)
+	}
+	fwdCreated := time.Date(2026, 6, 1, 12, 5, 0, 0, time.UTC)
+	if _, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		MailFrom:      "srs0=abcd=aa=netzhansa.com=sender@alpha.test",
+		RcptTo:        "hans.huebner@gmail.example",
+		EnvelopeID:    "env-alias-forward",
+		BodyBlobHash:  fwdRef.Hash,
+		State:         store.QueueStateDone,
+		CreatedAt:     fwdCreated,
+		NextAttemptAt: fwdCreated,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage forward: %v", err)
+	}
+
+	// limit=1 forces the queue fetch window (fetchLimit = limit+1 = 2)
+	// well below the 6 total historical rows -- the condition the bug
+	// needs to manifest.
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?limit=1", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("got %d items; want 1 (limit=1)", len(out.Items))
+	}
+	item := out.Items[0]
+	if item["source"] != "send_outcome" {
+		t.Fatalf("newest timeline item source = %v; want send_outcome (the alias-forward relay leg was excluded)",
+			item["source"])
+	}
+	if item["mail_from"] != "srs0=abcd=aa=netzhansa.com=sender@alpha.test" {
+		t.Errorf("newest send_outcome mail_from = %v; want the alias-forward relay row", item["mail_from"])
+	}
+}

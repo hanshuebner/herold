@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -469,6 +470,80 @@ func testQueueFilter_SenderDomainsAndContains(t *testing.T, s store.Store) {
 	if len(items4) != 0 {
 		t.Errorf("SenderDomains fail-closed: got %d items; want 0", len(items4))
 	}
+}
+
+// testQueueFilter_Newest verifies that QueueFilter.Newest orders the result
+// set by id DESC instead of the default id ASC (re #143). Message research
+// queries the full queue history with no State restriction; without this
+// flag a small Limit against a queue table with more historical rows than
+// the fetch window returns only the OLDEST matching rows, silently dropping
+// every recent send/forward/relay outcome (the reported symptom: an
+// alias-forward's SRS relay leg never appeared in the timeline).
+func testQueueFilter_Newest(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	var ids []store.QueueItemID
+	for i := 0; i < 6; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("body %d", i))
+		created := base.Add(time.Duration(i) * time.Minute)
+		id, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+			MailFrom:      fmt.Sprintf("sender%d@newest.test", i),
+			RcptTo:        "dest@remote.example",
+			EnvelopeID:    store.EnvelopeID(fmt.Sprintf("env-newest-%d", i)),
+			BodyBlobHash:  ref.Hash,
+			State:         store.QueueStateQueued,
+			CreatedAt:     created,
+			NextAttemptAt: created,
+		})
+		if err != nil {
+			t.Fatalf("EnqueueMessage %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	newestID := ids[len(ids)-1]
+	oldestID := ids[0]
+
+	// Default (oldest-first): with a Limit smaller than the total row
+	// count, the fetch returns the OLDEST matching row and never reaches
+	// the newest one. RcptToContains narrows to just this fixture's rows
+	// so unrelated rows from other subtests sharing the store do not
+	// interfere.
+	oldFirstTight, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{
+		RcptToContains: "dest@remote.example",
+		Limit:          1,
+	})
+	if err != nil {
+		t.Fatalf("ListQueueItems default: %v", err)
+	}
+	if len(oldFirstTight) != 1 || oldFirstTight[0].ID != oldestID {
+		t.Fatalf("default order: got id=%v; want oldest id=%v",
+			idsOf(oldFirstTight), oldestID)
+	}
+
+	// Newest: true with the same tight Limit must return the NEWEST row.
+	newFirstTight, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{
+		RcptToContains: "dest@remote.example",
+		Limit:          1,
+		Newest:         true,
+	})
+	if err != nil {
+		t.Fatalf("ListQueueItems Newest: %v", err)
+	}
+	if len(newFirstTight) != 1 || newFirstTight[0].ID != newestID {
+		t.Fatalf("Newest order: got id=%v; want newest id=%v", idsOf(newFirstTight), newestID)
+	}
+}
+
+// idsOf returns the QueueItemID list from a queue-item slice for test
+// diagnostics.
+func idsOf(items []store.QueueItem) []store.QueueItemID {
+	ids := make([]store.QueueItemID, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
 }
 
 // hitsIDs returns the MessageID list from a hits slice for test diagnostics.

@@ -164,6 +164,11 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 		MailFromContains: sender,
 		RcptToContains:   recipient,
 		Limit:            fetchLimit,
+		// Newest-first: message research queries the full queue
+		// history with no State restriction, so the default oldest-
+		// first fetch would silently drop every recent send/forward
+		// outcome once the queue table exceeds one page (re #143).
+		Newest: true,
 	}
 	qItems, err := s.store.Meta().ListQueueItems(r.Context(), qFilter)
 	if err != nil {

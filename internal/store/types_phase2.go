@@ -240,6 +240,18 @@ type QueueFilter struct {
 	// RcptToContains, when non-empty, restricts to rows where rcpt_to
 	// contains this substring (case-insensitive). Used by message research.
 	RcptToContains string
+	// Newest, when true, orders the result set by id DESC instead of the
+	// default id ASC before applying Limit — i.e. the newest matching
+	// rows rather than the oldest. The scheduler poll and Cancel rely on
+	// oldest-first FIFO order and must never set this. Message research
+	// (REQ-ADM-306) sets it: unlike the live Queue view (which restricts
+	// State to Queued/Deferred, keeping the matched set small), message
+	// research queries the full queue history with no State restriction,
+	// so on a queue table older than one page, ASC ordering silently
+	// drops every recent row — including a just-completed forward/relay
+	// leg — before the caller's own newest-first merge ever sees them
+	// (re #143).
+	Newest bool
 }
 
 // -- DKIM keys --------------------------------------------------------
