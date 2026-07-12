@@ -9,15 +9,19 @@ you want unattended triage; it runs until the session ends.
 
 ## Start the watcher
 
+The watcher script lives in the bug-reporter (herold-triage) repo, which owns
+the drop format and lifecycle: `~/Development/privat/bug-reporter/scripts/watch-drops.sh`.
+
 If a drop watcher is not already running **in this session**, arm one:
 
-- Ensure the watcher script exists at `~/herold-bugs/.watch-drops.sh` (create it
-  from the template at the bottom if missing; `chmod` is not required, it is run
-  via `bash`).
-- Start a **persistent Monitor** running `bash "$HOME/herold-bugs/.watch-drops.sh"`.
-  The script `fswatch`es `~/Downloads/herold-bugs/` and emits one line,
+- Start a **persistent Monitor** running
+  `bash "$HOME/Development/privat/bug-reporter/scripts/watch-drops.sh"`. The
+  script `fswatch`es `~/Downloads/herold-bugs/` and emits one line,
   `New herold drop: <file>`, per newly-arrived `*.heroldbug.json` bundle; the
   move to `processed/` that `/bug-inbox` performs produces no event.
+- If the script is missing, the bug-reporter repo is not checked out at that
+  path -- clone/update it rather than recreating the script here (it is the
+  single source of truth).
 
 Do NOT arm a second watcher if one is already running this session -- duplicate
 watchers double-process. Confirm it is armed, then stop and wait for events.
@@ -44,34 +48,3 @@ this command.
 
 `TaskStop` the watcher Monitor, or end the session. Re-invoke `/watch-drops` to
 start it again.
-
-## Script template (write to ~/herold-bugs/.watch-drops.sh if missing)
-
-```bash
-#!/usr/bin/env bash
-# Watch the herold-triage drop inbox and emit one line per newly-arrived bundle.
-# fswatch supplies kernel-event immediacy; the directory diff makes the emit
-# exact (one line per genuinely-new *.heroldbug.json), and file removals -- the
-# move to processed/ that /bug-inbox performs -- are ignored.
-set -u
-dir="$HOME/Downloads/herold-bugs"
-mkdir -p "$dir"
-cd "$dir" || exit 1
-
-list() { ls -1 *.heroldbug.json 2>/dev/null | sort; }
-seen=$(list)
-
-report() {
-  local cur
-  cur=$(list)
-  comm -13 <(printf '%s\n' "$seen") <(printf '%s\n' "$cur") | sed '/^$/d' | while IFS= read -r f; do
-    echo "New herold drop: $f"
-  done
-  seen=$cur
-}
-
-# React to any change under the inbox; report() decides what is actually new.
-while IFS= read -r -d '' _; do
-  report
-done < <(fswatch -0 "$dir")
-```
