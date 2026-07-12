@@ -18,11 +18,16 @@ export interface DomainRecord {
   created_at: string;
 }
 
+// AliasRecord's target is exactly one of target_principal_id (an
+// internal principal) or target_address (an external forwarding
+// target, re #181); the other is absent from the wire response
+// (aliasDTO uses `omitempty` on both).
 export interface AliasRecord {
   id: string;
   local: string;
   domain: string;
-  target_principal_id: string;
+  target_principal_id?: number;
+  target_address?: string;
   expires_at?: string | null;
   created_at: string;
 }
@@ -30,7 +35,8 @@ export interface AliasRecord {
 export interface CreateAliasPayload {
   local: string;
   domain: string;
-  target_principal_id: number;
+  target_principal_id?: number;
+  target_address?: string;
   expires_at?: string;
 }
 

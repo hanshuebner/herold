@@ -187,6 +187,45 @@
         <p class="empty">{t('dashboard.clientlog.empty')}</p>
       {/if}
     </div>
+
+    <!-- Push notification status card (read-only, re #200) -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">{t('dashboard.push.title')}</h2>
+      </div>
+
+      {#if dashboard.pushStatusError}
+        <p class="inline-error">{dashboard.pushStatusError}</p>
+      {:else if dashboard.pushStatus}
+        <dl class="stat-list">
+          <div class="stat-row">
+            <dt class="stat-key">{t('dashboard.push.webpush')}</dt>
+            <dd
+              class="stat-val push-status"
+              class:push-status-ok={dashboard.pushStatus.webpush_configured}
+            >
+              {dashboard.pushStatus.webpush_configured
+                ? t('dashboard.push.configured')
+                : t('dashboard.push.notConfigured')}
+            </dd>
+          </div>
+          <div class="stat-row">
+            <dt class="stat-key">{t('dashboard.push.fcm')}</dt>
+            <dd
+              class="stat-val push-status"
+              class:push-status-ok={dashboard.pushStatus.fcm_configured}
+            >
+              {dashboard.pushStatus.fcm_configured
+                ? t('dashboard.push.configured')
+                : t('dashboard.push.notConfigured')}
+            </dd>
+          </div>
+        </dl>
+        <p class="push-hint">{t('dashboard.push.hint')}</p>
+      {:else if dashboard.status === 'ready'}
+        <p class="empty">{t('dashboard.push.notConfigured')}</p>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -379,6 +418,20 @@
     font-size: var(--type-body-compact-01-size);
     color: var(--text-helper);
     margin: 0;
+  }
+
+  /* Push notification status card */
+  .push-status {
+    color: var(--text-helper);
+    font-weight: 500;
+  }
+  .push-status-ok {
+    color: var(--support-success);
+  }
+  .push-hint {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-helper);
+    margin: var(--spacing-03) 0 0;
   }
 
   /* Client-log stats two-column layout */

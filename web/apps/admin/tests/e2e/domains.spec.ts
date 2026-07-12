@@ -23,8 +23,8 @@ const DOMAINS_RESP = {
 };
 
 const ALIASES = [
-  { id: 'alias-1', local: 'postmaster', domain: 'example.com', target_principal_id: '1', expires_at: null, created_at: NOW },
-  { id: 'alias-2', local: 'info', domain: 'example.com', target_principal_id: '2', expires_at: null, created_at: NOW },
+  { id: 'alias-1', local: 'postmaster', domain: 'example.com', target_principal_id: 1, expires_at: null, created_at: NOW },
+  { id: 'alias-2', local: 'info', domain: 'example.com', target_principal_id: 2, expires_at: null, created_at: NOW },
 ];
 
 const ALIASES_RESP = { items: ALIASES, next: null };
@@ -221,5 +221,84 @@ test.describe('domains', () => {
     // Confirm deletes the alias.
     await page.getByRole('button', { name: 'Confirm' }).click();
     expect(deleteAliasId).toBe('alias-1');
+  });
+
+  test('alias list shows external target address (re #181)', async ({ page }) => {
+    const aliasesWithExternal = {
+      items: [
+        ...ALIASES,
+        { id: 'alias-3', local: 'sales', domain: 'example.com', target_address: 'someone@gmail.com', expires_at: null, created_at: NOW },
+      ],
+      next: null,
+    };
+
+    await page.route('/api/v1/domains*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DOMAINS_RESP) }),
+    );
+    await page.route('/api/v1/aliases*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(aliasesWithExternal) }),
+    );
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Domains' }).click();
+    await page.locator('.domain-name').filter({ hasText: 'example.com' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Aliases' })).toBeVisible();
+    await expect(page.getByText('sales@example.com')).toBeVisible();
+    await expect(page.getByText('someone@gmail.com')).toBeVisible();
+    await expect(page.getByText('external')).toBeVisible();
+    // Internal-target rows keep showing the principal id.
+    await expect(page.locator('.col-target').getByText('#1', { exact: true })).toBeVisible();
+  });
+
+  test('alias create modal posts external target_address in external mode (re #181)', async ({ page }) => {
+    let createBody: Record<string, unknown> | null = null;
+
+    await page.route('/api/v1/domains*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DOMAINS_RESP) }),
+    );
+    await page.route('/api/v1/aliases*', async (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === 'POST' && url.pathname === '/api/v1/aliases') {
+        createBody = route.request().postDataJSON() as Record<string, unknown>;
+        return route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'alias-4',
+            local: 'sales',
+            domain: 'example.com',
+            target_address: 'someone@gmail.com',
+            expires_at: null,
+            created_at: NOW,
+          }),
+        });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ALIASES_RESP) });
+    });
+
+    await page.context().addCookies([
+      { name: 'herold_public_csrf', value: 'test-csrf-token', domain: 'localhost', path: '/' },
+    ]);
+
+    await page.goto('/admin/');
+    await page.getByRole('button', { name: 'Domains' }).click();
+    await page.locator('.domain-name').filter({ hasText: 'example.com' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Aliases' })).toBeVisible();
+    await page.getByRole('button', { name: 'New alias' }).click();
+
+    await expect(page.getByRole('dialog', { name: 'New alias' })).toBeVisible();
+    await page.locator('#ca-local').fill('sales');
+
+    // Switch to external-address mode and enter a free-form external address.
+    await page.getByRole('radio', { name: 'External address' }).click();
+    await page.locator('#ca-external').fill('someone@gmail.com');
+
+    await page.getByRole('button', { name: 'Create alias' }).click();
+
+    expect(createBody).not.toBeNull();
+    expect(createBody!.target_address).toBe('someone@gmail.com');
+    expect(createBody!.target_principal_id).toBeUndefined();
   });
 });

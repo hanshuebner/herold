@@ -202,7 +202,34 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 		"email":          callerEmail,
 		"roles":          callerRoles,
 		"scopes":         callerScopes,
+		"push":           s.pushStatus(),
 	})
+}
+
+// pushStatusDTO is the read-only push-transport configuration status
+// surfaced at GET /api/v1/server/status (re #200). It reports only
+// whether a credential reference is present for each transport, never
+// the credential itself -- the FCM service-account JSON and the VAPID
+// private key are system config (system.toml) and are not exposed or
+// made editable through this or any other admin REST endpoint.
+type pushStatusDTO struct {
+	WebPushConfigured bool `json:"webpush_configured"`
+	FCMConfigured     bool `json:"fcm_configured"`
+}
+
+// pushStatus reports whether the operator has configured a VAPID
+// private key reference and/or an FCM service-account JSON reference
+// in [server.push]. s.opts.Push is nil in tests / deployments that do
+// not thread the sysconfig block through, which reports both
+// transports as unconfigured.
+func (s *Server) pushStatus() pushStatusDTO {
+	if s.opts.Push == nil {
+		return pushStatusDTO{}
+	}
+	return pushStatusDTO{
+		WebPushConfigured: s.opts.Push.VAPIDPrivateKeyRef() != "",
+		FCMConfigured:     s.opts.Push.FCMServiceAccountJSONRef() != "",
+	}
 }
 
 func (s *Server) handleServerConfigCheck(w http.ResponseWriter, r *http.Request) {
