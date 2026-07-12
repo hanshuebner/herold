@@ -274,6 +274,48 @@ type EmailPretrashMailboxRow struct {
 	MailboxID int64 `json:"mailbox_id"`
 }
 
+// MailingListRow mirrors the mailing_list table introduced in migration
+// 0085 (epic #183, REQ-MLIST-01..05, Stage 1 storage foundation). FK to
+// principals(id) twice (principal_id: the backing Group principal, ON
+// DELETE CASCADE; owner_id: ON DELETE RESTRICT), so restored after
+// principals. ArchiveMailboxID (Stage 4, unused in S1) FKs mailboxes(id)
+// ON DELETE SET NULL and is nullable.
+type MailingListRow struct {
+	ID                  int64   `json:"id"`
+	PrincipalID         int64   `json:"principal_id"`
+	PostingAddress      string  `json:"posting_address"`
+	Domain              string  `json:"domain"`
+	DisplayName         string  `json:"display_name"`
+	OwnerID             int64   `json:"owner_id"`
+	SubjectTag          *string `json:"subject_tag,omitempty"`
+	ARCSeal             bool    `json:"arc_seal"`
+	PostingPolicy       string  `json:"posting_policy"`
+	SubscribePolicy     string  `json:"subscribe_policy"`
+	BouncePolicyJSON    string  `json:"bounce_policy_json"`
+	ArchiveMailboxID    *int64  `json:"archive_mailbox_id,omitempty"`
+	MaxMessageSizeBytes int64   `json:"max_message_size_bytes"`
+	CreatedAtUs         int64   `json:"created_at_us"`
+	UpdatedAtUs         int64   `json:"updated_at_us"`
+}
+
+// MailingListMemberRow mirrors the mailing_list_member table introduced
+// in migration 0085 (epic #183, REQ-MLIST-02..04). FK to mailing_list(id)
+// ON DELETE CASCADE, so restored after mailing_list. PrincipalID FKs
+// principals(id) ON DELETE CASCADE and AddedBy FKs principals(id) ON
+// DELETE SET NULL; exactly one of PrincipalID / ExternalAddress is set.
+type MailingListMemberRow struct {
+	ID              int64   `json:"id"`
+	ListID          int64   `json:"list_id"`
+	PrincipalID     *int64  `json:"principal_id,omitempty"`
+	ExternalAddress *string `json:"external_address,omitempty"`
+	State           string  `json:"state"`
+	DeliveryMode    string  `json:"delivery_mode"`
+	BounceScore     float64 `json:"bounce_score"`
+	LastBounceAtUs  *int64  `json:"last_bounce_at_us,omitempty"`
+	AddedAtUs       int64   `json:"added_at_us"`
+	AddedBy         *int64  `json:"added_by,omitempty"`
+}
+
 type StateChangeRow struct {
 	ID             int64  `json:"id"`
 	PrincipalID    int64  `json:"principal_id"`

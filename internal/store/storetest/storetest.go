@@ -497,6 +497,16 @@ func Run(t *testing.T, f Factory) {
 		{"PushSubscription_WebPushTransport_DefaultsAndUnaffected", testPushSubscription_WebPushTransport_DefaultsAndUnaffected},
 		// -- SRS return-path rewriting secrets (issue #204, migration 0081) --
 		{"SRSSecrets_InsertAndList", testSRSSecrets_InsertAndList},
+		// -- Hosted mailing lists, Stage 1 storage foundation (epic #183,
+		// REQ-MLIST-01..12, migration 0085) --
+		{"MailingList_CreateGetUpdateDelete", testMailingList_CreateGetUpdateDelete},
+		{"MailingList_GetByPostingAddress", testMailingList_GetByPostingAddress},
+		{"MailingList_ListByDomain", testMailingList_ListByDomain},
+		{"MailingListMember_XORConstraint", testMailingListMember_XORConstraint},
+		{"MailingListMember_UniquePerList", testMailingListMember_UniquePerList},
+		{"MailingListMember_NoMailRequiresPrincipal", testMailingListMember_NoMailRequiresPrincipal},
+		{"MailingListMember_StateTransitionsAndRemove", testMailingListMember_StateTransitionsAndRemove},
+		{"MailingListMember_RosterPaging", testMailingListMember_RosterPaging},
 	}
 	for _, c := range cases {
 		tc := c

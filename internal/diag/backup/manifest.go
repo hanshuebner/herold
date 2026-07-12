@@ -588,7 +588,19 @@ const CurrentBackupVersion = 1
 //	No new backed-up table: mailbox ACL rows are grants rows, already
 //	covered by the "grants" entry above; mailbox_acl is dropped and
 //	removed from TableNames.
-const CurrentSchemaVersion = 84
+//
+// 85 — 0085_mailing_lists.sql (epic #183, REQ-MLIST-01..12). Storage
+//
+//	foundation for hosted mailing lists, Stage 1: fan-out with List-*
+//	headers, admin-maintained roster. Adds mailing_list (a Group
+//	principal's list configuration: posting_address, denormalised
+//	domain, owner_id, subject_tag, arc_seal, posting/subscribe policy,
+//	bounce_policy_json, archive_mailbox_id reserved for Stage 4,
+//	max_message_size_bytes) and mailing_list_member (one roster row per
+//	principal or external-address member, with state/delivery_mode
+//	enums and Stage 2 bounce-scoring columns included now). Both new
+//	tables restored after principals and mailboxes.
+const CurrentSchemaVersion = 85
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -680,6 +692,13 @@ var TableNames = []string{
 	"coach_events",
 	"coach_dismiss",
 	"mailboxes",
+	// Hosted mailing lists, Stage 1 storage foundation (epic #183,
+	// REQ-MLIST-01..12, migration 0085). mailing_list FKs principals(id)
+	// twice (principal_id, owner_id) and mailboxes(id) (archive_mailbox_id,
+	// nullable, Stage 4); restored after both parents. mailing_list_member
+	// FKs mailing_list(id), restored immediately after it.
+	"mailing_list",
+	"mailing_list_member",
 	"messages",
 	// Phase 3 Wave 3.11 M:N message-mailbox membership (migration 0024).
 	// FK to messages(id) and mailboxes(id); restored after both parents.

@@ -661,6 +661,85 @@ type Metadata interface {
 	// defensively) is never swept.
 	SweepStaleIdPGrants(ctx context.Context, olderThan time.Time) ([]Grant, error)
 
+	// -- Hosted mailing lists, Stage 1 (epic #183, REQ-MLIST-01..12) ----
+
+	// InsertMailingList creates a new list row. l.PrincipalID must
+	// reference an existing principal (the caller creates the backing
+	// Group principal beforehand; the store does not validate its
+	// Kind). l.Domain is always recomputed from l.PostingAddress
+	// (lowercased address-spec domain part) regardless of what the
+	// caller supplies. Returns the stored MailingList with its assigned
+	// ID and timestamps. Returns ErrConflict on a duplicate PrincipalID
+	// or PostingAddress, ErrInvalidArgument if PostingAddress is not a
+	// single-@ address.
+	InsertMailingList(ctx context.Context, l MailingList) (MailingList, error)
+
+	// GetMailingList returns the list row by id, or ErrNotFound.
+	GetMailingList(ctx context.Context, id MailingListID) (MailingList, error)
+
+	// GetMailingListByPostingAddress returns the list whose
+	// PostingAddress matches address (case-insensitive), or
+	// ErrNotFound. This is the hot inbound-routing lookup
+	// (REQ-MLIST-10): backed by a unique index, called once per
+	// message.
+	GetMailingListByPostingAddress(ctx context.Context, address string) (MailingList, error)
+
+	// ListMailingLists returns lists matching filter in ascending ID
+	// order, paged via filter.AfterID/Limit (REQ-MLIST-05:
+	// domain-scoped operator listing).
+	ListMailingLists(ctx context.Context, filter MailingListFilter) ([]MailingList, error)
+
+	// UpdateMailingList overwrites the mutable list configuration
+	// fields of the row identified by l.ID (PrincipalID and CreatedAt
+	// are immutable and ignored). l.Domain is recomputed from
+	// l.PostingAddress as in InsertMailingList. Returns ErrNotFound if
+	// absent, ErrConflict if the new PostingAddress collides with a
+	// different list.
+	UpdateMailingList(ctx context.Context, l MailingList) error
+
+	// DeleteMailingList removes the list row and cascades its roster
+	// (mailing_list_member) in one transaction. Returns ErrNotFound if
+	// absent. Does not delete the backing Group principal; the caller
+	// owns that lifecycle decision separately.
+	DeleteMailingList(ctx context.Context, id MailingListID) error
+
+	// AddMailingListMember inserts one roster row (REQ-MLIST-02).
+	// Exactly one of m.PrincipalID / m.ExternalAddress must be set;
+	// m.ExternalAddress is stored canonicalised (lowercased, trimmed).
+	// m.DeliveryMode == MailingListDeliveryNoMail requires m.PrincipalID
+	// (REQ-MLIST-04). Violations of either rule return
+	// ErrInvalidArgument without reaching the database. Returns the
+	// stored row with its assigned ID and AddedAt. Returns ErrConflict
+	// if the address is already a member of the list (REQ-MLIST-02: at
+	// most once per list), ErrNotFound if m.ListID does not exist.
+	AddMailingListMember(ctx context.Context, m MailingListMember) (MailingListMember, error)
+
+	// GetMailingListMember returns the roster row by id, or ErrNotFound.
+	GetMailingListMember(ctx context.Context, id MailingListMemberID) (MailingListMember, error)
+
+	// RemoveMailingListMember deletes the roster row. Returns
+	// ErrNotFound if absent.
+	RemoveMailingListMember(ctx context.Context, id MailingListMemberID) error
+
+	// UpdateMailingListMemberState transitions the roster row's state
+	// (REQ-MLIST-03). Returns ErrNotFound if absent.
+	UpdateMailingListMemberState(ctx context.Context, id MailingListMemberID, state MailingListMemberState) error
+
+	// UpdateMailingListMemberDeliveryMode transitions the roster row's
+	// delivery mode (REQ-MLIST-04). Returns ErrInvalidArgument when
+	// setting MailingListDeliveryNoMail on a row whose PrincipalID is
+	// nil (an external-address member cannot go nomail). Returns
+	// ErrNotFound if absent.
+	UpdateMailingListMemberDeliveryMode(ctx context.Context, id MailingListMemberID, mode MailingListDeliveryMode) error
+
+	// ListMailingListMembers returns roster rows matching filter in
+	// ascending ID order, paged via filter.AfterID/Limit. This is the
+	// paged/streaming read REQ-MLIST-12 requires for fan-out: callers
+	// that need the whole active+each roster MUST page via AfterID (see
+	// StreamActiveEachMembers) rather than raising Limit to cover it in
+	// one call — the store caps Limit at 1000 regardless.
+	ListMailingListMembers(ctx context.Context, filter MailingListRosterFilter) ([]MailingListMember, error)
+
 	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
 
 	// SetOIDCProviderAuthzTrusted flips the per-provider authz_trusted

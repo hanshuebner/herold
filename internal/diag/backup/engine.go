@@ -119,6 +119,8 @@ var tableReg = map[string]tableDesc{
 	"coach_events":               {&CoachEventRow{}, "id"},
 	"coach_dismiss":              {&CoachDismissRow{}, "principal_id, action"},
 	"mailboxes":                  {&MailboxRow{}, "id"},
+	"mailing_list":               {&MailingListRow{}, "id"},
+	"mailing_list_member":        {&MailingListMemberRow{}, "id"},
 	"messages":                   {&MessageRow{}, "id"},
 	"message_mailboxes":          {&MessageMailboxRow{}, "message_id, mailbox_id"},
 	"email_pretrash_mailboxes":   {&EmailPretrashMailboxRow{}, "email_id, mailbox_id"},
