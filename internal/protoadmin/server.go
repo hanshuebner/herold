@@ -343,6 +343,17 @@ type Options struct {
 	// returning canned MX records so the heuristic is exercised without
 	// network access (re #92).
 	MXResolver MXResolver
+
+	// Push is the operator's [server.push] sysconfig block (re #200).
+	// GET /api/v1/server/status reads only whether a VAPID / FCM
+	// credential reference is present (via VAPIDPrivateKeyRef /
+	// FCMServiceAccountJSONRef) to report a read-only configured/
+	// not-configured status to the admin SPA; it never resolves or
+	// exposes the secret itself. Nil reports both transports as
+	// unconfigured. The credential is system config
+	// (/etc/herold/system.toml) and is never mutated at runtime, so
+	// there is no corresponding write endpoint.
+	Push *sysconfig.PushConfig
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.

@@ -117,6 +117,12 @@ export const de = {
   'dashboard.clientlog.ringBuffer': 'Ringpuffer',
   'dashboard.clientlog.none': 'keine',
   'dashboard.clientlog.empty': 'Keine Client-Log-Daten.',
+  'dashboard.push.title': 'Push-Benachrichtigungen',
+  'dashboard.push.webpush': 'Web Push (VAPID)',
+  'dashboard.push.fcm': 'FCM (Android)',
+  'dashboard.push.configured': 'konfiguriert',
+  'dashboard.push.notConfigured': 'nicht konfiguriert',
+  'dashboard.push.hint': 'Konfiguriert in system.toml [server.push]; hier nur lesend.',
   'dashboard.error.queueStats': 'Warteschlangen-Statistik konnte nicht geladen werden',
   'dashboard.error.queueStatsNetwork': 'Netzwerkfehler beim Laden der Warteschlangen-Statistik',
   'dashboard.error.auditLog': 'Audit-Protokoll konnte nicht geladen werden',
@@ -125,6 +131,8 @@ export const de = {
   'dashboard.error.domainsNetwork': 'Netzwerkfehler beim Laden der Domains',
   'dashboard.error.clientlogStats': 'Client-Log-Statistik konnte nicht geladen werden',
   'dashboard.error.clientlogStatsNetwork': 'Netzwerkfehler beim Laden der Client-Log-Statistik',
+  'dashboard.error.pushStatus': 'Push-Status konnte nicht geladen werden',
+  'dashboard.error.pushStatusNetwork': 'Netzwerkfehler beim Laden des Push-Status',
 
   // ── Principals ────────────────────────────────────────────────────────
   'principals.title': 'Principals',

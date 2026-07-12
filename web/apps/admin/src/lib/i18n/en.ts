@@ -118,6 +118,12 @@ export const en = {
   'dashboard.clientlog.ringBuffer': 'Ring buffer',
   'dashboard.clientlog.none': 'none',
   'dashboard.clientlog.empty': 'No client-log data.',
+  'dashboard.push.title': 'Push notifications',
+  'dashboard.push.webpush': 'Web Push (VAPID)',
+  'dashboard.push.fcm': 'FCM (Android)',
+  'dashboard.push.configured': 'configured',
+  'dashboard.push.notConfigured': 'not configured',
+  'dashboard.push.hint': 'Configured in system.toml [server.push]; read-only here.',
   'dashboard.error.queueStats': 'Failed to load queue stats',
   'dashboard.error.queueStatsNetwork': 'Network error loading queue stats',
   'dashboard.error.auditLog': 'Failed to load audit log',
@@ -126,6 +132,8 @@ export const en = {
   'dashboard.error.domainsNetwork': 'Network error loading domains',
   'dashboard.error.clientlogStats': 'Failed to load client-log stats',
   'dashboard.error.clientlogStatsNetwork': 'Network error loading client-log stats',
+  'dashboard.error.pushStatus': 'Failed to load push status',
+  'dashboard.error.pushStatusNetwork': 'Network error loading push status',
 
   // ── Principals ────────────────────────────────────────────────────────
   'principals.title': 'Principals',

@@ -846,6 +846,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// the Translate affordance. The HTTP client is left nil so the
 		// handler applies its bounded default timeout.
 		Translation: &cfg.Translation,
+		// Push (re #200): threads [server.push] through so GET
+		// /api/v1/server/status can report read-only VAPID/FCM
+		// configured-or-not status to the admin SPA. The credential
+		// itself is never read back out through this Options field.
+		Push: &cfg.Server.Push,
 	}
 	// External-submission retryer: redelivers submissions parked
 	// held-for-reauth once the identity's auth recovers (re #70,
