@@ -568,3 +568,70 @@ func TestSETACL_NormalisesProvenanceOnReSet(t *testing.T) {
 		t.Fatalf("bob's rights after re-SETACL = %+v; want a single row with %v (write-tier bit from the migrated grant gone)", rows, want)
 	}
 }
+
+// TestSETACL_InsertWithoutDelete_ExpressibleAndEnforced is the wire-level
+// demonstration of full RFC 4314 fidelity (epic #210): a fine-grained grant
+// -- insert ("i") without any of the delete-family rights (delete-message
+// "t", expunge "e", delete-mailbox "x") -- is expressible via SETACL,
+// round-trips through GETACL/MYRIGHTS letter-exact, and is enforced (APPEND
+// succeeds, EXPUNGE is refused). Pre-#210 the grant model only stored a
+// collapsed write tier that could not express this combination.
+func TestSETACL_InsertWithoutDelete_ExpressibleAndEnforced(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	msg := buildMessage("insert-without-delete", "body")
+	blob, _ := af.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, err := af.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		Size: int64(len(msg)), Blob: blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: af.aliceShared.ID, Flags: store.MessageFlagDeleted}})
+	if err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	cAlice := loginAsACL(t, af, "alice@example.test", af.alicePass)
+	defer cAlice.close()
+	resp := cAlice.send("s1", `SETACL "Shared/support" "bob@example.test" "lri"`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("SETACL: %v", resp)
+	}
+	getResp := cAlice.send("g1", `GETACL "Shared/support"`)
+	joined := strings.Join(getResp, "\n")
+	if !strings.Contains(joined, `"lri"`) {
+		t.Fatalf("GETACL must round-trip the exact letter-set, not a tier collapse: %v", getResp)
+	}
+
+	cBob := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer cBob.close()
+	myResp := cBob.send("m1", `MYRIGHTS "Shared/support"`)
+	myJoined := strings.Join(myResp, "\n")
+	// The quoted rights atom must be the exact letter-set "lri" -- the
+	// trailing quote in the search string rules out a longer set (e.g.
+	// "lris") matching as a prefix, so this alone proves no delete-family
+	// or admin bit leaked in.
+	if !strings.Contains(myJoined, `"lri"`) {
+		t.Fatalf("MYRIGHTS must reflect exactly lri, no delete-family bits: %v", myResp)
+	}
+
+	appendMsg := buildMessage("appended-insert-only", "body")
+	cBob.write(fmt.Sprintf("a1 APPEND \"Shared/support\" {%d}\r\n", len(appendMsg)))
+	var last string
+	for {
+		line := cBob.readLine()
+		if strings.HasPrefix(line, "+") {
+			cBob.write(appendMsg + "\r\n")
+			continue
+		}
+		if strings.HasPrefix(line, "a1 ") {
+			last = line
+			break
+		}
+	}
+	if !strings.Contains(last, "OK") {
+		t.Fatalf("insert-only grant should allow APPEND: %v", last)
+	}
+	cBob.send("s2", `SELECT "Shared/support"`)
+	expungeResp := cBob.send("e1", "EXPUNGE")
+	if !strings.Contains(expungeResp[len(expungeResp)-1], "NO") {
+		t.Fatalf("insert-only grant must NOT allow EXPUNGE (no 'e' right): %v", expungeResp)
+	}
+}
