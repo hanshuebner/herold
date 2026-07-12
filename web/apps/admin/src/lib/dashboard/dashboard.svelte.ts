@@ -89,7 +89,7 @@ class DashboardState {
       await Promise.allSettled([
         apiGet<QueueStats>('/api/v1/queue/stats'),
         apiGet<{ entries: AuditEntry[] } | AuditEntry[]>('/api/v1/audit?limit=10'),
-        apiGet<Domain[]>('/api/v1/domains'),
+        apiGet<{ items: Domain[]; next: string | null } | Domain[]>('/api/v1/domains'),
         apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
         apiGet<ServerStatusResponse>('/api/v1/server/status'),
       ]);
@@ -119,9 +119,11 @@ class DashboardState {
           : t('dashboard.error.auditLogNetwork');
     }
 
-    // Domains
+    // Domains -- API returns the paginated envelope {items:[...], next}
+    // (internal/protoadmin/domains.go handleListDomains), not a bare array.
     if (domainsResult.status === 'fulfilled' && domainsResult.value.ok && domainsResult.value.data) {
-      this.domains = domainsResult.value.data;
+      const raw = domainsResult.value.data;
+      this.domains = Array.isArray(raw) ? raw : (raw as { items: Domain[] }).items ?? [];
       this.domainsError = null;
     } else {
       this.domains = [];
