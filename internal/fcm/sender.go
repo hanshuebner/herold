@@ -152,13 +152,35 @@ func New(opts Options) (*Sender, error) {
 type Message struct {
 	Token string
 	Data  map[string]string
+	// AndroidPriority sets FCM HTTP v1's AndroidConfig.priority (the
+	// AndroidMessagePriority enum: PriorityHigh or PriorityNormal).
+	// Empty leaves the field unset on the wire, which FCM treats as
+	// NORMAL for a data-only message — callers that need prompt,
+	// Doze-piercing delivery (re #200 priority-mapping follow-up) set
+	// this to PriorityHigh explicitly rather than relying on that
+	// default.
+	AndroidPriority string
 }
 
-// wireMessage / wireEnvelope mirror the FCM HTTP v1 request body:
+// AndroidMessagePriority values for Message.AndroidPriority, matching
+// FCM HTTP v1's wire enum verbatim (re #200 priority-mapping
+// follow-up): https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages#AndroidMessagePriority
+const (
+	PriorityHigh   = "HIGH"
+	PriorityNormal = "NORMAL"
+)
+
+// wireMessage / wireEnvelope / wireAndroidConfig mirror the FCM HTTP
+// v1 request body:
 // https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages
+type wireAndroidConfig struct {
+	Priority string `json:"priority,omitempty"`
+}
+
 type wireMessage struct {
-	Token string            `json:"token"`
-	Data  map[string]string `json:"data,omitempty"`
+	Token   string             `json:"token"`
+	Data    map[string]string  `json:"data,omitempty"`
+	Android *wireAndroidConfig `json:"android,omitempty"`
 }
 
 type wireEnvelope struct {
@@ -178,7 +200,11 @@ func (s *Sender) Send(ctx context.Context, msg Message) (status int, body []byte
 	if err != nil {
 		return 0, nil, err
 	}
-	payload, err := json.Marshal(wireEnvelope{Message: wireMessage(msg)})
+	wire := wireMessage{Token: msg.Token, Data: msg.Data}
+	if msg.AndroidPriority != "" {
+		wire.Android = &wireAndroidConfig{Priority: msg.AndroidPriority}
+	}
+	payload, err := json.Marshal(wireEnvelope{Message: wire})
 	if err != nil {
 		return 0, nil, fmt.Errorf("fcm: marshal message: %w", err)
 	}
