@@ -283,6 +283,175 @@ func TestEmail_SetByQuery_WholeMailboxDestroy(t *testing.T) {
 	}
 }
 
+// TestEmail_SetByQuery_BodyOnlyTextFilter pins the re #207 server-side
+// regression the fix-verifier found: resolveAllMatchingIDs's slow path
+// (the only path a `text:` filter can take -- it is never SQL-pushable,
+// see mergeFlatFilterIntoOpts) used to re-validate text:/body: matches
+// against the Envelope only (subject/from/to/cc/bcc), silently dropping
+// every message whose match was body-only even though gatherCandidatesRaw
+// already FTS-narrowed the candidate set to genuine matches. Before the
+// fix this test's job resolves zero targets and patches nothing; after
+// the fix every body-only match is patched and no non-matching message
+// is touched.
+func TestEmail_SetByQuery_BodyOnlyTextFilter(t *testing.T) {
+	testEmailSetByQuery_BodyOnlyTextFilter(t, setupFixture(t))
+}
+
+// TestEmail_SetByQuery_BodyOnlyTextFilter_Postgres is the Postgres leg of
+// the same regression: resolveAllMatchingIDs lives in store-agnostic
+// query.go logic (no backend-specific branch), so the bug -- and the fix
+// -- reproduce identically against storepg. Skips when HEROLD_PG_DSN is
+// not set.
+func TestEmail_SetByQuery_BodyOnlyTextFilter_Postgres(t *testing.T) {
+	testEmailSetByQuery_BodyOnlyTextFilter(t, setupFixturePostgres(t))
+}
+
+// testEmailSetByQuery_BodyOnlyTextFilter is the backend-agnostic test body
+// shared by the SQLite and Postgres variants above.
+func testEmailSetByQuery_BodyOnlyTextFilter(t *testing.T, f *fixture) {
+	const batchSize = 10
+	worker := email.NewBulkJobWorker(email.BulkJobWorkerOptions{
+		Store:     f.srv.Store,
+		Clock:     f.srv.Clock,
+		BatchSize: batchSize,
+	})
+
+	const term = "zzzbodyonlytoken207"
+	const matchCount = 55 // more than one worker batch and more than a single Email/query page (50)
+	const decoyCount = 5  // messages that must NOT be touched: the term never appears in them
+	var matchIDs []store.MessageID
+	var decoyIDs []store.MessageID
+	for i := 0; i < matchCount; i++ {
+		body := fmt.Sprintf("From: sender@example.test\r\nTo: rcpt@example.test\r\nSubject: msg %d\r\n\r\nthis body mentions %s only, not the subject line", i, term)
+		m := f.insertMessage(t, body, fmt.Sprintf("msg %d", i), "sender@example.test", "rcpt@example.test", nil,
+			fmt.Sprintf("this body mentions %s only, not the subject line", term))
+		matchIDs = append(matchIDs, m.ID)
+	}
+	for i := 0; i < decoyCount; i++ {
+		body := fmt.Sprintf("From: sender@example.test\r\nTo: rcpt@example.test\r\nSubject: decoy %d\r\n\r\nunrelated body text", i)
+		m := f.insertMessage(t, body, fmt.Sprintf("decoy %d", i), "sender@example.test", "rcpt@example.test", nil, "unrelated body text")
+		decoyIDs = append(decoyIDs, m.ID)
+	}
+
+	// A direct Email/query with the identical filter must already return
+	// the true total (this is the invariant setByQuery's worker is
+	// supposed to reproduce; it pins that the FTS stub itself is not the
+	// source of the bug).
+	_, rawQueryBefore := f.invoke(t, "Email/query", map[string]any{
+		"accountId":      protojmap.AccountIDForPrincipal(f.pid),
+		"filter":         map[string]any{"text": term},
+		"calculateTotal": true,
+	})
+	var queryBeforeResp struct {
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(rawQueryBefore, &queryBeforeResp); err != nil {
+		t.Fatalf("unmarshal Email/query: %v: %s", err, rawQueryBefore)
+	}
+	if queryBeforeResp.Total != matchCount {
+		t.Fatalf("Email/query total = %d, want %d (test setup: FTS did not narrow to the body-only matches)", queryBeforeResp.Total, matchCount)
+	}
+
+	name, raw := f.invoke(t, "Email/setByQuery", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter":    map[string]any{"text": term},
+		"patch":     map[string]any{"keywords/$seen": true},
+	}, protojmap.CapabilityCore, protojmap.CapabilityMail, protojmap.CapabilityEmailBulkMutation)
+	if name != "Email/setByQuery" {
+		t.Fatalf("Email/setByQuery returned %s: %s", name, raw)
+	}
+	var setByQueryResp struct {
+		JobID           string `json:"jobId"`
+		MatchedEstimate int64  `json:"matchedEstimate"`
+	}
+	if err := json.Unmarshal(raw, &setByQueryResp); err != nil {
+		t.Fatalf("unmarshal Email/setByQuery response: %v: %s", err, raw)
+	}
+	if setByQueryResp.JobID == "" {
+		t.Fatal("Email/setByQuery: empty jobId")
+	}
+
+	ctx := context.Background()
+	ticks := 0
+	for {
+		worked, err := worker.Tick(ctx)
+		if err != nil {
+			t.Fatalf("worker.Tick: %v", err)
+		}
+		ticks++
+		if !worked {
+			break
+		}
+		if ticks > 1000 {
+			t.Fatal("worker.Tick: did not converge")
+		}
+	}
+
+	_, rawJob := f.invoke(t, "EmailBulkJob/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{setByQueryResp.JobID},
+	}, protojmap.CapabilityCore, protojmap.CapabilityEmailBulkMutation)
+	var jobResp struct {
+		List []struct {
+			Status    string   `json:"status"`
+			Processed int64    `json:"processed"`
+			Total     int64    `json:"total"`
+			FailedIDs []string `json:"failedIds"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rawJob, &jobResp); err != nil {
+		t.Fatalf("unmarshal EmailBulkJob/get: %v: %s", err, rawJob)
+	}
+	if len(jobResp.List) != 1 {
+		t.Fatalf("EmailBulkJob/get: got %d jobs, want 1: %s", len(jobResp.List), rawJob)
+	}
+	job := jobResp.List[0]
+	// The regression: before the fix, resolveAllMatchingIDs's slow path
+	// dropped every body-only match, so Total/Processed both land on 0
+	// instead of matchCount.
+	if job.Total != matchCount || job.Processed != matchCount {
+		t.Fatalf("Total/Processed = %d/%d, want %d/%d (body-only text-filter matches must resolve)", job.Total, job.Processed, matchCount, matchCount)
+	}
+	if job.Status != "done" {
+		t.Errorf("job.Status = %q, want done: %+v", job.Status, job)
+	}
+	if len(job.FailedIDs) != 0 {
+		t.Errorf("FailedIDs = %v, want none", job.FailedIDs)
+	}
+
+	// Every body-only match is now $seen ...
+	_, rawSeen := f.invoke(t, "Email/query", map[string]any{
+		"accountId":      protojmap.AccountIDForPrincipal(f.pid),
+		"filter":         map[string]any{"hasKeyword": "$seen"},
+		"calculateTotal": true,
+	})
+	var seenResp struct {
+		Total int      `json:"total"`
+		IDs   []string `json:"ids"`
+	}
+	if err := json.Unmarshal(rawSeen, &seenResp); err != nil {
+		t.Fatalf("unmarshal Email/query: %v: %s", err, rawSeen)
+	}
+	if seenResp.Total != matchCount {
+		t.Errorf("$seen messages = %d, want %d (patch not applied to all body-only matches)", seenResp.Total, matchCount)
+	}
+	seenSet := make(map[string]bool, len(seenResp.IDs))
+	for _, id := range seenResp.IDs {
+		seenSet[id] = true
+	}
+	for _, id := range matchIDs {
+		if !seenSet[fmt.Sprintf("%d", id)] {
+			t.Errorf("match message %d not marked $seen", id)
+		}
+	}
+	// ... and no decoy (term-absent) message was touched.
+	for _, id := range decoyIDs {
+		if seenSet[fmt.Sprintf("%d", id)] {
+			t.Errorf("decoy message %d was marked $seen, want untouched (no false positives, re #198)", id)
+		}
+	}
+}
+
 // TestEmail_SetByQuery_PatchAndDestroyMutuallyExclusive verifies that a
 // request carrying both `patch` and `destroy: true` is rejected as
 // invalidArguments rather than silently preferring one over the other.

@@ -215,11 +215,23 @@ func resolveAllMatchingIDs(
 	// falls back to for filters the SQL layer cannot represent (OR/NOT,
 	// text/body/hasAttachment, thread-keyword aggregation). No deadline
 	// pressure here since this only runs off the request path.
+	//
+	// gatherCandidatesRaw already narrows text/body predicates through
+	// storefts.Index.Query (see filterHasTextPredicate below), exactly
+	// as Email/query's own Execute does. Passing fd=nil here (as opposed
+	// to buildFilterData's ftsNarrowed-aware filterData) used to make
+	// matchCondition re-validate text:/body: against the Envelope only
+	// (subject/from/to/cc/bcc, no blob body fallback), silently dropping
+	// every message whose match was body-only even though the FTS index
+	// already confirmed it. Building filterData the same way Execute
+	// does keeps the resolved set exactly the FTS-confirmed matches.
 	candidates, err := gatherCandidatesRaw(ctx, st, pid, pid, filter)
 	if err != nil {
 		return nil, err
 	}
-	matched := filterMessages(candidates, filter)
+	ftsNarrowed := filter != nil && filterHasTextPredicate(filter)
+	fd := buildFilterData(ctx, st.Blobs(), candidates, filter, ftsNarrowed)
+	matched := filterMessagesWithCtxAndAttachments(candidates, filter, candidates, fd)
 	ids := make([]store.MessageID, len(matched))
 	for i, m := range matched {
 		ids[i] = m.ID

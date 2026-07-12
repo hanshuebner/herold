@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/thread"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
@@ -49,6 +51,43 @@ func setupFixture(t *testing.T) *fixture {
 		t.Fatalf("storesqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	return setupFixtureWithStore(t, st, clk, "alice@example.test")
+}
+
+// setupFixturePostgres is setupFixture's Postgres counterpart: same
+// fixture wiring, opened against HEROLD_PG_DSN instead of an on-disk
+// SQLite file. Skips the test when HEROLD_PG_DSN is unset or the
+// connection cannot be established, so tests that use it run as a
+// no-op locally without a running Postgres and as a real parity check
+// in CI's storepg leg. Unlike setupFixture, the principal's canonical
+// email is unique per call (nanosecond-suffixed): storepg.Open connects
+// to a persistent database rather than a fresh per-test file, so a fixed
+// address would collide with a still-registered principal left behind
+// by an earlier run against the same database.
+func setupFixturePostgres(t *testing.T) *fixture {
+	t.Helper()
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clk)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	canonicalEmail := fmt.Sprintf("alice-%d@example.test", time.Now().UnixNano())
+	return setupFixtureWithStore(t, st, clk, canonicalEmail)
+}
+
+// setupFixtureWithStore is setupFixture's backend-agnostic body: it wires
+// the JMAP registry + listener on top of a pre-opened store.Store, so the
+// same fixture logic runs unchanged against SQLite (setupFixture) or
+// Postgres (setupFixturePostgres), letting store-agnostic query.go logic
+// bugs (e.g. re #207) be pinned on both backends. The caller owns st's
+// lifecycle (open + t.Cleanup(Close)).
+func setupFixtureWithStore(t *testing.T, st store.Store, clk clock.Clock, canonicalEmail string) *fixture {
+	t.Helper()
 	srv, _ := testharness.Start(t, testharness.Options{
 		Store:     st,
 		Clock:     clk,
@@ -58,7 +97,7 @@ func setupFixture(t *testing.T) *fixture {
 	ctx := context.Background()
 	p, err := srv.Store.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
-		CanonicalEmail: "alice@example.test",
+		CanonicalEmail: canonicalEmail,
 	})
 	if err != nil {
 		t.Fatalf("InsertPrincipal: %v", err)
