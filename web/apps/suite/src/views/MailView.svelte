@@ -598,6 +598,25 @@
     return () => observer.disconnect();
   });
 
+  // Infinite scroll for search results (issue #219): same sentinel /
+  // IntersectionObserver shape as the folder list above, wired to
+  // mail.loadMoreSearch() / mail.searchHasMore instead of the folder
+  // list's loadMoreFolder()/listHasMore.
+  let loadMoreSearchSentinelEl = $state<HTMLLIElement | null>(null);
+  $effect(() => {
+    if (!isSearchRoute) return;
+    const el = loadMoreSearchSentinelEl;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void mail.loadMoreSearch();
+      },
+      { root: null, rootMargin: '200px', threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
   // Show a "sorry we're slow" hint after the list has been loading for
   // more than 1 s so the user knows something is being worked on (re #30).
   let loadingSlowly = $state(false);
@@ -1169,6 +1188,15 @@
             </button>
           </li>
         {/each}
+        {#if mail.searchHasMore}
+          <li class="load-more-sentinel" role="presentation" bind:this={loadMoreSearchSentinelEl}>
+            {#if mail.searchLoadingMore}
+              <span class="load-more-indicator" role="status" aria-live="polite">
+                {t('list.loadingMore')}
+              </span>
+            {/if}
+          </li>
+        {/if}
       </ul>
     {/if}
   {:else if label}

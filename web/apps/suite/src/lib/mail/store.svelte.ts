@@ -109,6 +109,13 @@ export interface BulkJobState {
  */
 const FOLDER_PAGE_SIZE = 50;
 
+/**
+ * Page size for a search's `Email/query` window (issue #219). Used for the
+ * initial `runSearch` page and every `loadMoreSearch` append, mirroring
+ * `FOLDER_PAGE_SIZE`'s role for the folder list (issue #161).
+ */
+const SEARCH_PAGE_SIZE = 50;
+
 function readSearchHistory(): string[] {
   try {
     const raw = localStorage.getItem(accountKey(SEARCH_HISTORY_NAME));
@@ -286,6 +293,20 @@ class MailStore {
    * `Email/setByQuery` to this filter, not the currently open folder.
    */
   #searchScopedFilter: FilterCondition | FilterOperator | undefined = undefined;
+  /**
+   * True while the current search's last loaded page came back full
+   * (`ids.length === SEARCH_PAGE_SIZE`), meaning a further page likely
+   * exists on the server (issue #219). Drives the bottom sentinel /
+   * IntersectionObserver in MailView for the search view, mirroring
+   * `listHasMore` for the folder list (issue #161); `loadMoreSearch()` is
+   * a no-op once this is false.
+   */
+  searchHasMore = $state<boolean>(false);
+  /**
+   * True while a `loadMoreSearch()` page fetch is in flight (issue #219).
+   * Drives the loading-indicator row rendered below the last loaded row.
+   */
+  searchLoadingMore = $state<boolean>(false);
 
   /**
    * Recent search queries, most-recent first, capped at SEARCH_HISTORY_MAX.
@@ -365,6 +386,8 @@ class MailStore {
     this.searchFocusedIndex = -1;
     this.searchTotal = null;
     this.#searchScopedFilter = undefined;
+    this.searchHasMore = false;
+    this.searchLoadingMore = false;
     this.searchHistory = [];
     this.emailState = null;
     this.mailboxState = null;
@@ -899,6 +922,8 @@ class MailStore {
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
+    this.searchHasMore = false;
+    this.searchLoadingMore = false;
 
     try {
       // Make sure mailboxes are warm so `label:` resolves.
@@ -926,10 +951,10 @@ class MailStore {
             filter: scopedFilter,
             sort: [{ property: 'receivedAt', isAscending: false }],
             collapseThreads: true,
-            limit: 50,
-            // Issue #207: the loaded window caps at 50, but the "select
-            // all" affordance needs the true match count to offer (and
-            // label) a whole-result-set selection past that cap.
+            limit: SEARCH_PAGE_SIZE,
+            // Issue #207: the loaded window caps at SEARCH_PAGE_SIZE, but
+            // the "select all" affordance needs the true match count to
+            // offer (and label) a whole-result-set selection past that cap.
             calculateTotal: true,
           },
           [Capability.Mail],
@@ -984,6 +1009,9 @@ class MailStore {
 
       this.searchEmailIds = queryResult.ids;
       this.searchTotal = queryResult.total ?? null;
+      // Issue #219: a full first page means further matches likely exist
+      // on the server, same signal loadFolder uses for listHasMore.
+      this.searchHasMore = queryResult.ids.length === SEARCH_PAGE_SIZE;
       this.searchLoadStatus = 'ready';
       this.#recordSearchHistory(query);
     } catch (err) {
@@ -1027,6 +1055,8 @@ class MailStore {
     this.searchFocusedIndex = -1;
     this.searchTotal = null;
     this.#searchScopedFilter = undefined;
+    this.searchHasMore = false;
+    this.searchLoadingMore = false;
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
     this.listWholeMailboxSelected = false;
@@ -2082,6 +2112,110 @@ class MailStore {
       });
     } finally {
       this.listLoadingMore = false;
+    }
+  }
+
+  /**
+   * Append the next page of the current search's results to
+   * `searchEmailIds` (issue #219). Mirrors `loadMoreFolder()`'s
+   * position-as-derived-length shape: no-op when the search is not
+   * 'ready', the previous page did not fill (`searchHasMore` false), or a
+   * page is already in flight. The filter is `#searchScopedFilter`, the
+   * same trash/junk-scoped filter captured by the most recent
+   * `runSearch()` call, so an appended page stays scoped to the same
+   * search rather than drifting to whatever folder happens to be loaded
+   * behind the search view.
+   *
+   * `searchTotal` (the whole-result-set count driving the #207 "select
+   * all N matching" banner) is left untouched here -- it was already
+   * fetched via `calculateTotal: true` on the initial `runSearch` call and
+   * does not change as more of the same result set loads locally.
+   */
+  async loadMoreSearch(): Promise<void> {
+    if (this.searchLoadStatus !== 'ready') return;
+    if (!this.searchHasMore || this.searchLoadingMore) return;
+    const accountId = this.mailAccountId;
+    if (!accountId) return;
+    const query = this.searchQuery;
+    const position = this.searchEmailIds.length;
+    const filter = this.#searchScopedFilter;
+
+    this.searchLoadingMore = true;
+    try {
+      const { responses } = await jmap.batch((b) => {
+        const q = b.call(
+          'Email/query',
+          {
+            accountId,
+            ...(filter ? { filter } : {}),
+            sort: [{ property: 'receivedAt', isAscending: false }],
+            collapseThreads: true,
+            position,
+            limit: SEARCH_PAGE_SIZE,
+            calculateTotal: false,
+          },
+          [Capability.Mail],
+        );
+        const eg = b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': q.ref('/ids'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+        const tg = b.call(
+          'Thread/get',
+          {
+            accountId,
+            '#ids': eg.ref('/list/*/threadId'),
+          },
+          [Capability.Mail],
+        );
+        b.call(
+          'Email/get',
+          {
+            accountId,
+            '#ids': tg.ref('/list/*/emailIds'),
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          [Capability.Mail],
+        );
+      });
+      strict(responses);
+
+      // Guard: bail if the user started a different search while this
+      // page was in flight.
+      if (this.searchQuery !== query) return;
+
+      const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
+      const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
+      const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
+      const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
+
+      const next = new Map(this.emails);
+      for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
+      this.emails = next;
+
+      const existing = new Set(this.searchEmailIds);
+      const appended = queryResult.ids.filter((id) => !existing.has(id));
+      this.searchEmailIds = [...this.searchEmailIds, ...appended];
+      this.searchHasMore = queryResult.ids.length === SEARCH_PAGE_SIZE;
+
+      const nextThreads = new Map(this.threads);
+      for (const t of threadResult.list) nextThreads.set(t.id, t);
+      this.threads = nextThreads;
+    } catch (err) {
+      console.error('loadMoreSearch failed', err);
+      toast.show({
+        message: errMessage(err, 'Weitere Nachrichten konnten nicht geladen werden'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+    } finally {
+      this.searchLoadingMore = false;
     }
   }
 
