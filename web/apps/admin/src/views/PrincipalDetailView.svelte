@@ -1,6 +1,5 @@
 <script lang="ts">
   import { principalDetail } from '../lib/principals/principal-detail.svelte';
-  import { FLAG_ADMIN, FLAG_DISABLED, FLAG_IGNORE_DOWNLOAD_LIMITS } from '../lib/principals/principals.svelte';
   import { auth } from '../lib/auth/auth.svelte';
   import { router } from '../lib/router/router.svelte';
   import Tabs from '../lib/ui/Tabs.svelte';
@@ -49,9 +48,9 @@
       const p = principalDetail.principal;
       profileDisplayName = p.display_name ?? '';
       profileQuota = p.quota_bytes != null ? String(p.quota_bytes) : '';
-      profileAdmin = (p.flags & FLAG_ADMIN) !== 0;
-      profileDisabled = (p.flags & FLAG_DISABLED) !== 0;
-      profileIgnoreLimits = (p.flags & FLAG_IGNORE_DOWNLOAD_LIMITS) !== 0;
+      profileAdmin = p.flags.includes('admin');
+      profileDisabled = p.flags.includes('disabled');
+      profileIgnoreLimits = p.flags.includes('ignore_download_limits');
     }
   });
 
@@ -62,11 +61,16 @@
     profileError = null;
     profileSuccess = null;
 
+    // Start from the principal's full current flag set (this preserves
+    // flags this form does not expose a checkbox for, e.g. totp_enabled
+    // and super_admin) and only toggle the three checkbox-controlled
+    // flags. Sending a bare number here (the pre-#218 behaviour) does
+    // not match the server's `Flags *[]string` PATCH field and either
+    // fails to decode or drops every flag the caller did not resend.
     let flags = principalDetail.principal.flags;
-    // Preserve TOTP bit; toggle the ones the form controls.
-    flags = setFlag(flags, FLAG_ADMIN, profileAdmin);
-    flags = setFlag(flags, FLAG_DISABLED, profileDisabled);
-    flags = setFlag(flags, FLAG_IGNORE_DOWNLOAD_LIMITS, profileIgnoreLimits);
+    flags = withFlag(flags, 'admin', profileAdmin);
+    flags = withFlag(flags, 'disabled', profileDisabled);
+    flags = withFlag(flags, 'ignore_download_limits', profileIgnoreLimits);
 
     const patch: Record<string, unknown> = { display_name: profileDisplayName, flags };
     const quota = Number(profileQuota);
@@ -83,8 +87,11 @@
     }
   }
 
-  function setFlag(flags: number, bit: number, on: boolean): number {
-    return on ? (flags | bit) : (flags & ~bit);
+  function withFlag(flags: string[], name: string, on: boolean): string[] {
+    const has = flags.includes(name);
+    if (on && !has) return [...flags, name];
+    if (!on && has) return flags.filter((f) => f !== name);
+    return flags;
   }
 
   // --- Password tab ---
@@ -323,7 +330,7 @@
   async function deletePrincipal(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!principalDetail.principal) return;
-    if (deleteConfirmEmail !== principalDetail.principal.email) {
+    if (deleteConfirmEmail !== principalDetail.principal.canonical_email) {
       deleteError = t('principalDetail.danger.emailMismatch');
       return;
     }
@@ -362,7 +369,7 @@
     </button>
     {#if principalDetail.principal}
       <div class="header-info">
-        <h1 class="page-title">{principalDetail.principal.email}</h1>
+        <h1 class="page-title">{principalDetail.principal.canonical_email}</h1>
         {#if principalDetail.principal.display_name}
           <p class="page-subtitle">{principalDetail.principal.display_name}</p>
         {/if}
@@ -736,14 +743,14 @@
           <form class="danger-form" onsubmit={deletePrincipal} novalidate>
             <label for="pd-delete-confirm" class="label">
               {t('principalDetail.danger.confirmLabel')}
-              <strong>{principalDetail.principal.email}</strong>
+              <strong>{principalDetail.principal.canonical_email}</strong>
             </label>
             <div class="input-row">
               <input
                 id="pd-delete-confirm"
                 type="email"
                 class="input"
-                placeholder={principalDetail.principal.email}
+                placeholder={principalDetail.principal.canonical_email}
                 bind:value={deleteConfirmEmail}
                 disabled={deleteSubmitting}
                 autocomplete="off"
@@ -751,7 +758,7 @@
               <button
                 type="submit"
                 class="btn-danger"
-                disabled={deleteSubmitting || deleteConfirmEmail !== principalDetail.principal.email}
+                disabled={deleteSubmitting || deleteConfirmEmail !== principalDetail.principal.canonical_email}
               >
                 {deleteSubmitting ? t('principalDetail.danger.deleting') : t('principalDetail.danger.delete')}
               </button>

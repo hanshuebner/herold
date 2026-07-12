@@ -110,3 +110,49 @@ func TestPatchPrincipal_PatchNonAdminFlags_NotGated(t *testing.T) {
 		t.Fatalf("PATCH non-admin flag: status=%d body=%s, want 200", res.StatusCode, buf)
 	}
 }
+
+// TestPatchPrincipal_PreservesSuperAdmin guards against a data-loss
+// regression found while fixing the admin SPA's principal-detail page
+// (re #218): principalFlagsFromStrings deliberately never sets
+// SuperAdmin from caller-supplied flag names (it is granted only
+// through the dedicated operator-scope endpoints, REQ-ADM-307), so
+// unless the handler explicitly re-applies the target's existing
+// SuperAdmin bit, an ordinary flags PATCH that only touches an
+// unrelated flag (e.g. ignore_download_limits) would silently demote
+// an existing super-admin the first time anyone saved their profile.
+func TestPatchPrincipal_PreservesSuperAdmin(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("admin@example.com")
+	targetID := h.createPrincipal(adminKey, "superadmin-target@example.com")
+
+	ctx := context.Background()
+	target, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(targetID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	// Grant SuperAdmin directly via the store, bypassing the REST layer
+	// (which -- correctly -- refuses to let PATCH set it).
+	target.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, target); err != nil {
+		t.Fatalf("UpdatePrincipal grant super-admin: %v", err)
+	}
+
+	// PATCH a routine, non-admin flag -- the shape the admin SPA's own
+	// profile form sends when toggling e.g. "Ignore download limits".
+	res, buf := h.doRequest("PATCH", fmt.Sprintf("/api/v1/principals/%d", targetID), adminKey,
+		map[string]any{"flags": []string{"ignore_download_limits"}})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH flags: status=%d body=%s, want 200", res.StatusCode, buf)
+	}
+
+	target, err = h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(targetID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID after PATCH: %v", err)
+	}
+	if !target.Flags.Has(store.PrincipalFlagSuperAdmin) {
+		t.Errorf("PATCH flags must not strip SuperAdmin; flags=%v", target.Flags)
+	}
+	if !target.Flags.Has(store.PrincipalFlagIgnoreDownloadLimits) {
+		t.Errorf("PATCH flags must set the newly toggled flag; flags=%v", target.Flags)
+	}
+}

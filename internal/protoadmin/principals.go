@@ -280,8 +280,16 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 			writeAdminGrantProblemTOTPEnrollmentRequired(w, r, p.ID)
 			return
 		}
-		// Preserve TOTPEnabled; clients cannot flip it through PATCH.
-		preserved := p.Flags & store.PrincipalFlagTOTPEnabled
+		// Preserve TOTPEnabled and SuperAdmin; clients cannot flip either
+		// through this endpoint (TOTP is toggled only by the enroll/
+		// confirm/disable flow; SuperAdmin is granted only through the
+		// dedicated operator-scope endpoints, REQ-ADM-307, and
+		// principalFlagsFromStrings deliberately never sets it from
+		// caller-supplied flag names). Without preserving it here, an
+		// ordinary flags PATCH that only toggles e.g.
+		// ignore_download_limits would silently strip SuperAdmin from an
+		// existing super-admin (re #218).
+		preserved := p.Flags & (store.PrincipalFlagTOTPEnabled | store.PrincipalFlagSuperAdmin)
 		p.Flags = flags | preserved
 	}
 	// seen_addresses_enabled (REQ-SET-15): any authenticated principal

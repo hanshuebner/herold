@@ -38,13 +38,6 @@ export interface CreatePrincipalPayload {
 
 export type PrincipalsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-// Flag bit constants mirrored from internal/store (store.PrincipalFlag*).
-export const FLAG_ADMIN = 1 << 0;
-export const FLAG_TOTP_ENABLED = 1 << 1;
-export const FLAG_DISABLED = 1 << 2;
-export const FLAG_OIDC = 1 << 3;
-export const FLAG_IGNORE_DOWNLOAD_LIMITS = 1 << 4;
-
 const PAGE_LIMIT = 50;
 
 class PrincipalsState {

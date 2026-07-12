@@ -3,21 +3,30 @@
  *
  * Fetches and manages state for a single principal's detail page, including
  * their profile, API keys, and OIDC links. TOTP status is inferred from the
- * principal flags (FLAG_TOTP_ENABLED bit).
+ * `"totp_enabled"` entry in the principal's `flags` array.
  *
  * Each mutating operation returns {ok, errorMessage} so the view can surface
  * inline errors without navigating away.
+ *
+ * PrincipalDetail mirrors internal/protoadmin/types.go's principalDTO
+ * field-for-field, exactly like PrincipalSummary in ./principals.svelte:
+ * `id` is a JSON number, the email field is `canonical_email`, and `flags`
+ * is an array of flag-name strings, not a bitmask (re #218). The PATCH
+ * body's `flags` field is likewise a string[] -- internal/protoadmin's
+ * patchPrincipalRequest declares `Flags *[]string`
+ * (internal/protoadmin/principals.go), so sending a number there either
+ * fails to decode or, worse, would be silently coerced and drop every
+ * flag the caller did not think to resend.
  */
 
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete } from '../api/client';
-import { FLAG_TOTP_ENABLED } from './principals.svelte';
 import { t } from '../i18n/i18n.svelte';
 
 export interface PrincipalDetail {
-  id: string;
-  email: string;
+  id: number;
+  canonical_email: string;
   display_name: string;
-  flags: number;
+  flags: string[];
   quota_bytes: number;
   created_at: string;
 }
@@ -68,7 +77,7 @@ class PrincipalDetailState {
 
   totpEnabled = $derived(
     this.principal !== null
-      ? (this.principal.flags & FLAG_TOTP_ENABLED) !== 0
+      ? this.principal.flags.includes('totp_enabled')
       : false,
   );
 
@@ -109,7 +118,7 @@ class PrincipalDetailState {
     this.status = 'ready';
   }
 
-  async updateProfile(id: string, patch: { display_name?: string; quota_bytes?: number; flags?: number }): Promise<OpResult> {
+  async updateProfile(id: string, patch: { display_name?: string; quota_bytes?: number; flags?: string[] }): Promise<OpResult> {
     const result = await apiPatch<PrincipalDetail>(`/api/v1/principals/${id}`, patch);
     if (!result.ok) {
       return { ok: false, errorMessage: result.errorMessage ?? t('principalDetail.error.updateFailed') };
