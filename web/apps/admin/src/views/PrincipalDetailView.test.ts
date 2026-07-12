@@ -14,7 +14,14 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/svelte';
+
+// Imported statically so the Svelte transform of this view (and its bits-ui
+// tab dependencies) is paid during module collection rather than inside a
+// test body, where it counts against the per-test timeout. api/client.ts
+// resolves `fetch` off the global at call time, so stubbing it inside a test
+// still takes effect for a statically imported component.
+import PrincipalDetailView from './PrincipalDetailView.svelte';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -41,6 +48,10 @@ function principalDTO(overrides: Record<string, unknown> = {}) {
 
 describe('PrincipalDetailView (re #218)', () => {
   afterEach(() => {
+    // Unmount explicitly: a test that fails or times out mid-render would
+    // otherwise leave its component mounted and the next test would match
+    // duplicate elements.
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -56,7 +67,6 @@ describe('PrincipalDetailView (re #218)', () => {
       }),
     );
 
-    const { default: PrincipalDetailView } = await import('./PrincipalDetailView.svelte');
     render(PrincipalDetailView, { props: { id: '1' } });
 
     expect(await screen.findByText('admin@example.local')).toBeInTheDocument();
@@ -85,7 +95,6 @@ describe('PrincipalDetailView (re #218)', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const { default: PrincipalDetailView } = await import('./PrincipalDetailView.svelte');
     render(PrincipalDetailView, { props: { id: '1' } });
 
     const saveButton = await screen.findByRole('button', { name: 'Save changes' });
