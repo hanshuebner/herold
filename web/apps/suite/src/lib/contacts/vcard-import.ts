@@ -7,19 +7,55 @@
  * REQ-CONT-80..83 (docs/design/web/requirements/27-contacts.md).
  */
 
+/**
+ * One field-level difference between an imported card and the existing
+ * contact it matched (ImportCardResult.result === 'conflict').
+ */
+export interface ImportFieldDiff {
+  /** JSContact top-level property name that differs (e.g. "name", "emails"). */
+  field: string;
+  /** Current value on the stored contact, rendered as compact JSON. */
+  existing?: string;
+  /** Value the imported card would set, rendered as compact JSON. */
+  incoming?: string;
+}
+
 /** Per-card outcome from Contact/import. */
 export interface ImportCardResult {
   /** Zero-based position of the card in the uploaded .vcf. */
   index: number;
   uid?: string;
-  result: 'created' | 'failed';
+  /**
+   * - 'created': no existing contact matched; a new contact was created.
+   * - 'skipped': the card exactly matches an existing contact (matched by
+   *   uid, else primary email); no new contact was created.
+   * - 'conflict': the card matches an existing contact but its data
+   *   differs; no new contact was created and the existing contact was
+   *   not overwritten.
+   * - 'failed': the card could not be parsed or created.
+   */
+  result: 'created' | 'skipped' | 'conflict' | 'failed';
   /** JMAP contact id, present when result === 'created'. */
   id?: string;
+  /**
+   * JMAP id of the pre-existing contact this card was matched against
+   * (result === 'skipped' or 'conflict').
+   */
+  matchedId?: string;
+  /**
+   * Matched contact's display name (result === 'skipped' or 'conflict'),
+   * so the UI can identify the row by name rather than card index.
+   */
+  matchedName?: string;
+  /** Field-level differences vs. the matched contact (result === 'conflict'). */
+  diff?: ImportFieldDiff[];
   /** Server-supplied reason, present when result === 'failed'. */
   reason?: string;
   /**
    * Advisory: existing contact ids that look like duplicates of this card
-   * (matched by uid or primary email). Present on either outcome.
+   * (matched by uid or primary email), reported only when the match was
+   * ambiguous (zero or more than one candidate) and the card was
+   * therefore created rather than skipped/conflicted.
    */
   duplicateCandidates?: string[];
 }
@@ -90,21 +126,27 @@ export function buildExportArgs(
 }
 
 /**
- * Categorise import results into created / failed / withDuplicates sub-lists.
- * withDuplicates may overlap with created (duplicate candidates are advisory on
- * either outcome).
+ * Categorise import results into created / skipped / conflicts / failed /
+ * withDuplicates sub-lists. withDuplicates may overlap with created
+ * (ambiguous duplicate candidates are advisory on an otherwise-created
+ * card); skipped and conflicts are each their own outcome and do not
+ * overlap with created or with each other (REQ-CONT-82, re #206).
  */
 export function parseImportSummary(results: ImportCardResult[]): {
   created: ImportCardResult[];
+  skipped: ImportCardResult[];
+  conflicts: ImportCardResult[];
   failed: ImportCardResult[];
   withDuplicates: ImportCardResult[];
 } {
   const created = results.filter((r) => r.result === 'created');
+  const skipped = results.filter((r) => r.result === 'skipped');
+  const conflicts = results.filter((r) => r.result === 'conflict');
   const failed = results.filter((r) => r.result === 'failed');
   const withDuplicates = results.filter(
     (r) => (r.duplicateCandidates?.length ?? 0) > 0,
   );
-  return { created, failed, withDuplicates };
+  return { created, skipped, conflicts, failed, withDuplicates };
 }
 
 /**

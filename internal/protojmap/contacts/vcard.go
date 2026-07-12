@@ -548,7 +548,7 @@ func buildCard(props []vcardProp, internerFn PhotoInternFn) (*Card, error) {
 	var fn string
 	var nameObj *Name
 
-	emailIdx, phoneIdx, addrIdx, orgIdx, titleIdx := 0, 0, 0, 0, 0
+	emailIdx, phoneIdx, addrIdx, orgIdx, titleIdx, roleIdx := 0, 0, 0, 0, 0, 0
 	nickIdx, noteIdx, urlIdx, photoIdx, annIdx := 0, 0, 0, 0, 0
 
 	for i := range props {
@@ -591,8 +591,14 @@ func buildCard(props []vcardProp, internerFn PhotoInternFn) (*Card, error) {
 			titleIdx++
 			titles[key] = Title{Name: unescapeValue(p.Value), Kind: "title"}
 		case "ROLE":
-			key := fmt.Sprintf("role/%d", titleIdx)
-			titleIdx++
+			// A separate counter from titleIdx (re #206): TITLE and ROLE
+			// used to share one counter, so an export that re-orders the
+			// Titles map (sortedKeys sorts "role/N" before "title/N"
+			// alphabetically) reassigned different indices on re-import,
+			// making a byte-for-byte-identical re-import misreport as a
+			// content conflict even though nothing changed.
+			key := fmt.Sprintf("role/%d", roleIdx)
+			roleIdx++
 			titles[key] = Title{Name: unescapeValue(p.Value), Kind: "role"}
 		case "NICKNAME":
 			for _, nick := range splitEscaped(p.Value, ',') {

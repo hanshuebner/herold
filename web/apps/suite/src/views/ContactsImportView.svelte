@@ -7,8 +7,15 @@
    *   1. User picks or drops a .vcf file.
    *   2. File is uploaded via jmap.uploadBlob() with Content-Type text/vcard.
    *   3. Contact/import { accountId, blobId, addressBookId? } is called.
-   *   4. Summary shows created / failed-with-reason per card.
-   *   5. Cards with duplicateCandidates offer Merge / Delete (skip) / Keep both.
+   *   4. Summary shows created / skipped / conflict / failed-with-reason
+   *      per card (skip/conflict: server matched an existing contact by
+   *      uid or primary email and either found identical data -- skipped,
+   *      no duplicate created -- or differing data -- conflict, listed
+   *      with the matched contact's name and the field-level diff;
+   *      REQ-CTS-21, re #206).
+   *   5. Cards with an *ambiguous* duplicateCandidates match (zero or more
+   *      than one candidate; the card was created) offer Merge /
+   *      Delete (skip) / Keep both.
    *
    * REQ-CONT-80 (summary), REQ-CONT-82 (duplicates, cancel), REQ-CONT-83 (error).
    */
@@ -225,6 +232,12 @@
       : t('contacts.import.summary.created_many', { n });
   }
 
+  function skippedLabel(n: number): string {
+    return n === 1
+      ? t('contacts.import.summary.skipped', { n })
+      : t('contacts.import.summary.skipped_many', { n });
+  }
+
   function failedLabel(n: number): string {
     return n === 1
       ? t('contacts.import.summary.failed', { n })
@@ -321,6 +334,13 @@
             {createdLabel(summary.created.length)}
           </p>
         {/if}
+        <!-- Skipped count: idempotent re-import, matched an existing
+             contact with identical data (REQ-CTS-21, re #206). -->
+        {#if summary.skipped.length > 0}
+          <p class="summary-stat skipped">
+            {skippedLabel(summary.skipped.length)}
+          </p>
+        {/if}
         <!-- Failed count + reasons (REQ-CONT-80: never silently drop) -->
         {#if summary.failed.length > 0}
           <p class="summary-stat failed">
@@ -338,6 +358,35 @@
               </li>
             {/each}
           </ul>
+        {/if}
+
+        <!-- Conflicts: card matched an existing contact by uid/email but
+             its data differs; nothing was created or overwritten
+             (REQ-CTS-21, re #206). -->
+        {#if summary.conflicts.length > 0}
+          <div class="conflict-section" role="region" aria-label={t('contacts.import.conflicts.heading')}>
+            <h3 class="conflict-heading">{t('contacts.import.conflicts.heading')}</h3>
+            {#each summary.conflicts as card (card.index)}
+              <div class="conflict-row" role="group" aria-label={card.matchedName || t('contacts.import.failedCard', { n: card.index + 1 })}>
+                <span class="conflict-name">
+                  {t('contacts.import.conflicts.matchedWith', { name: card.matchedName ?? '' })}
+                </span>
+                {#if card.diff && card.diff.length > 0}
+                  <ul class="conflict-diff">
+                    {#each card.diff as d (d.field)}
+                      <li class="conflict-diff-item">
+                        {t('contacts.import.conflicts.fieldChanged', {
+                          field: d.field,
+                          existing: d.existing ?? '–',
+                          incoming: d.incoming ?? '–',
+                        })}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
 
         <!-- Duplicate candidates (REQ-CONT-82) -->
@@ -583,6 +632,10 @@
     color: var(--support-error);
   }
 
+  .summary-stat.skipped {
+    color: var(--text-secondary);
+  }
+
   /* ── Failed list ───────────────────────────────────────────────────────── */
 
   .failed-list {
@@ -611,6 +664,56 @@
   }
 
   .failed-reason {
+    color: var(--text-secondary);
+  }
+
+  /* ── Conflict section ──────────────────────────────────────────────────── */
+
+  .conflict-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-03);
+    padding: var(--spacing-04);
+    background: var(--layer-01);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--support-warning, #f1c21b);
+  }
+
+  .conflict-heading {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-helper);
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .conflict-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    padding: var(--spacing-02) var(--spacing-03);
+    border-left: 3px solid var(--support-warning, #f1c21b);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  }
+
+  .conflict-name {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .conflict-diff {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .conflict-diff-item {
+    font-size: var(--type-body-compact-01-size);
     color: var(--text-secondary);
   }
 

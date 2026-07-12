@@ -11,6 +11,7 @@ import {
   buildExportArgs,
   parseImportSummary,
   type ImportCardResult,
+  type ImportFieldDiff,
 } from './vcard-import';
 
 // ── buildImportArgs ────────────────────────────────────────────────────────
@@ -97,6 +98,8 @@ describe('parseImportSummary', () => {
   it('returns empty lists for empty results', () => {
     const s = parseImportSummary([]);
     expect(s.created).toHaveLength(0);
+    expect(s.skipped).toHaveLength(0);
+    expect(s.conflicts).toHaveLength(0);
     expect(s.failed).toHaveLength(0);
     expect(s.withDuplicates).toHaveLength(0);
   });
@@ -158,6 +161,45 @@ describe('parseImportSummary', () => {
     expect(s.withDuplicates).toHaveLength(1);
     // Same object reference in both lists.
     expect(s.created[0]).toBe(s.withDuplicates[0]);
+  });
+
+  it('classifies skipped results by matchedId/matchedName (re #206)', () => {
+    const results: ImportCardResult[] = [
+      { index: 0, result: 'created', id: 'c1' },
+      {
+        index: 1,
+        result: 'skipped',
+        matchedId: 'c2',
+        matchedName: 'Alice Existing',
+      },
+    ];
+    const s = parseImportSummary(results);
+    expect(s.created).toHaveLength(1);
+    expect(s.skipped).toHaveLength(1);
+    expect(s.skipped[0]!.matchedId).toBe('c2');
+    expect(s.skipped[0]!.matchedName).toBe('Alice Existing');
+    expect(s.conflicts).toHaveLength(0);
+  });
+
+  it('classifies conflict results with matchedName and diff (re #206)', () => {
+    const diff: ImportFieldDiff[] = [
+      { field: 'name', existing: '"Original"', incoming: '"Changed"' },
+    ];
+    const results: ImportCardResult[] = [
+      {
+        index: 0,
+        result: 'conflict',
+        matchedId: 'c1',
+        matchedName: 'Original',
+        diff,
+      },
+    ];
+    const s = parseImportSummary(results);
+    expect(s.conflicts).toHaveLength(1);
+    expect(s.conflicts[0]!.matchedName).toBe('Original');
+    expect(s.conflicts[0]!.diff).toEqual(diff);
+    expect(s.created).toHaveLength(0);
+    expect(s.skipped).toHaveLength(0);
   });
 
   it('preserves index ordering within each sub-list', () => {

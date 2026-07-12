@@ -657,6 +657,51 @@ func TestVCard_RoundTrip_Individual(t *testing.T) {
 	assertRoundTripEquivalent(t, original, roundTripped)
 }
 
+// TestVCard_RoundTrip_TitleRoleKeysStable verifies that a card whose
+// TITLE property was parsed before its ROLE property keeps that exact
+// key assignment across an export/re-import cycle (re #206). TITLE and
+// ROLE used to share a single index counter in buildCard, so parsing
+// "TITLE" then "ROLE" assigned "title/0" then "role/1" -- but
+// GenerateVCard emits Titles map entries in sorted-key order, which
+// places "role/N" before "title/N" alphabetically. Re-parsing that
+// reordered output renumbered the shared counter to "role/0"+"title/1",
+// so a byte-for-byte-identical re-import of an exported vCard
+// misreported as a data conflict (Contact/import's field-level diff
+// compares by key) even though nothing had actually changed.
+func TestVCard_RoundTrip_TitleRoleKeysStable(t *testing.T) {
+	vcf := strings.Join([]string{
+		"BEGIN:VCARD",
+		"VERSION:4.0",
+		"UID:urn:uuid:rt-title-role",
+		"FN:Pat Example",
+		"TITLE:Chief Programmer",
+		"ROLE:Fellow",
+		"END:VCARD",
+	}, "\r\n") + "\r\n"
+
+	results := contacts.ParseVCards([]byte(vcf), nil)
+	if len(results) != 1 || results[0].Error != nil {
+		t.Fatalf("ParseVCards: %+v", results)
+	}
+	original := results[0].Card
+
+	roundTripped := roundTrip(t, original)
+
+	if len(original.Titles) != len(roundTripped.Titles) {
+		t.Fatalf("Titles count changed across round-trip: %d vs %d", len(original.Titles), len(roundTripped.Titles))
+	}
+	for k, v := range original.Titles {
+		v2, ok := roundTripped.Titles[k]
+		if !ok {
+			t.Errorf("key %q present before round-trip but missing after; round-tripped keys: %+v", k, roundTripped.Titles)
+			continue
+		}
+		if v2 != v {
+			t.Errorf("Titles[%q] changed across round-trip: %+v vs %+v", k, v, v2)
+		}
+	}
+}
+
 // TestVCard_RoundTrip_Group tests a group card.
 func TestVCard_RoundTrip_Group(t *testing.T) {
 	original := &contacts.Card{
