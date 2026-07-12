@@ -34,6 +34,13 @@ const backoffBase = 2 * time.Second
 // backoffCap is the maximum retry delay.
 const backoffCap = 5 * time.Minute
 
+// closedConnRetryDelay is the fixed, non-escalating delay before reconnecting
+// after a transient "use of closed network connection" error (re #208). It is
+// short and constant — unlike backoffDurationShift's exponential ramp — because
+// this error class does not indicate a degraded or rate-limited upstream, only
+// a lost connection that a fresh dial normally resolves immediately.
+const closedConnRetryDelay = 2 * time.Second
+
 // maxRateLimitBackoffShift caps the extra backoff exponent accumulated from
 // upstream rate-limit / too-many-connections responses (REQ-IMAP-IMP-73). It
 // is added on top of the consecutive-failure exponent in backoffDuration so a
@@ -232,6 +239,28 @@ func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (st
 		w.opts.account.ID,
 		kind,
 	).Inc()
+
+	// A "use of closed network connection" is transient — the standard Go
+	// net-package error surfaced when a read/write races a connection close
+	// elsewhere (e.g. a secondary/write-back connection torn down
+	// concurrently with an in-flight command on the primary). It is handled
+	// internally: log it, reconnect after a short fixed delay, and leave the
+	// consecutive-failure counter and last-error snapshot untouched so it
+	// never surfaces to the operator and never counts toward the
+	// maxConsecutiveFailures limit that flips the account to errored
+	// (re #208).
+	if kind == "closed_conn" {
+		w.opts.log.Info("imapimport: transient closed-connection error; reconnecting",
+			slog.String("account_id", w.opts.account.ID),
+			slog.String("error", redactError(err)),
+		)
+		select {
+		case <-ctx.Done():
+			return true
+		case <-w.opts.clk.After(closedConnRetryDelay):
+		}
+		return false
+	}
 
 	// An upstream rate-limit / too-many-connections response forces
 	// single-connection mode for subsequent sessions and raises the backoff
@@ -647,6 +676,15 @@ func classifyErrorKind(err error) string {
 		return "tls"
 	case contains(msg, "too many") || contains(msg, "rate") || contains(msg, "quota"):
 		return "rate_limit"
+	case contains(msg, "use of closed network connection"):
+		// The standard Go net-package error returned when a read/write
+		// happens on a connection that was already closed elsewhere (e.g. a
+		// secondary/write-back connection torn down concurrently with an
+		// in-flight command on the primary). It is transient, not an
+		// unreachable-host or auth failure, so it gets its own kind and is
+		// handled internally in handleAttemptFailure rather than counted
+		// under the generic "network" bucket (re #208).
+		return "closed_conn"
 	case contains(msg, "connection") || contains(msg, "dial") || contains(msg, "network") ||
 		contains(msg, "timeout") || contains(msg, "refused") || contains(msg, "reset"):
 		return "network"
