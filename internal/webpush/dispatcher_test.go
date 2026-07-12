@@ -21,6 +21,34 @@ import (
 	"github.com/hanshuebner/herold/internal/vapid"
 )
 
+// TestUrgencyForKind covers both branches of the urgencyForKind
+// classifier (re #200 priority-mapping follow-up): Email and
+// ChatMessage map to "high" (maintainer decision: new-mail rides HIGH
+// priority alongside chat), while a non-promoted kind such as
+// CalendarEvent still falls through to "normal". This pins the
+// classifier feeding both the Web Push Urgency header and FCM's
+// android.priority so a future regression that drops a kind to/from
+// high is caught here directly, without needing a full dispatcher
+// end-to-end fixture.
+func TestUrgencyForKind(t *testing.T) {
+	cases := []struct {
+		name string
+		kind store.EntityKind
+		want string
+	}{
+		{"email", store.EntityKindEmail, "high"},
+		{"chat message", store.EntityKindChatMessage, "high"},
+		{"calendar event", store.EntityKindCalendarEvent, "normal"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := urgencyForKind(c.kind); got != c.want {
+				t.Fatalf("urgencyForKind(%v) = %q, want %q", c.kind, got, c.want)
+			}
+		})
+	}
+}
+
 // fakeGateway captures POSTs and replies with a configurable status.
 type fakeGateway struct {
 	mu      sync.Mutex
