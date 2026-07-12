@@ -1103,6 +1103,83 @@ func TestListQueue_NoDomainOperatorSeesEmpty(t *testing.T) {
 	}
 }
 
+// TestListQueue_NewestFirst verifies that GET /api/v1/queue returns items in
+// descending ID order (most recently enqueued first), matching the audit log
+// and system-events conventions, and that pagination via the returned "next"
+// cursor walks toward progressively older items (re #217). Before the fix,
+// handleListQueue never set QueueFilter.Newest, so the endpoint returned
+// items oldest-first and a cursor comparison bug would have paged in the
+// wrong direction once Newest was set.
+func TestListQueue_NewestFirst(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, adminKey := h.bootstrap("sa-newest@example.com")
+	p, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-newest@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+
+	const n = 5
+	var ids []uint64
+	for i := 0; i < n; i++ {
+		id, err := h.h.Store.Meta().EnqueueMessage(ctx, store.QueueItem{
+			PrincipalID: p.ID,
+			MailFrom:    "sender@newest.example",
+			RcptTo:      fmt.Sprintf("dest%d@remote.test", i),
+			EnvelopeID:  "env-newest-test",
+		})
+		if err != nil {
+			t.Fatalf("EnqueueMessage %d: %v", i, err)
+		}
+		ids = append(ids, uint64(id))
+	}
+
+	type page struct {
+		Items []struct {
+			ID uint64 `json:"id"`
+		} `json:"items"`
+		Next *string `json:"next"`
+	}
+
+	// First page, small limit to force pagination across the 5 rows.
+	res, buf := h.doRequest("GET", "/api/v1/queue?limit=2", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/queue: %d: %s", res.StatusCode, buf)
+	}
+	var pg1 page
+	if err := json.Unmarshal(buf, &pg1); err != nil {
+		t.Fatalf("decode page 1: %v: %s", err, buf)
+	}
+	if len(pg1.Items) != 2 {
+		t.Fatalf("page 1: got %d items, want 2", len(pg1.Items))
+	}
+	if pg1.Items[0].ID != ids[n-1] || pg1.Items[1].ID != ids[n-2] {
+		t.Errorf("page 1: got ids [%d %d], want [%d %d] (newest first)",
+			pg1.Items[0].ID, pg1.Items[1].ID, ids[n-1], ids[n-2])
+	}
+	if pg1.Next == nil {
+		t.Fatal("page 1: want a next cursor")
+	}
+
+	// Second page must continue toward older items, not repeat or loop.
+	res, buf = h.doRequest("GET", "/api/v1/queue?limit=2&after_id="+*pg1.Next, adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/queue page 2: %d: %s", res.StatusCode, buf)
+	}
+	var pg2 page
+	if err := json.Unmarshal(buf, &pg2); err != nil {
+		t.Fatalf("decode page 2: %v: %s", err, buf)
+	}
+	if len(pg2.Items) != 2 {
+		t.Fatalf("page 2: got %d items, want 2", len(pg2.Items))
+	}
+	if pg2.Items[0].ID != ids[n-3] || pg2.Items[1].ID != ids[n-4] {
+		t.Errorf("page 2: got ids [%d %d], want [%d %d] (continuing older)",
+			pg2.Items[0].ID, pg2.Items[1].ID, ids[n-3], ids[n-4])
+	}
+}
+
 // TestAuditLog_OperatorScope verifies that a domain-scoped operator sees only
 // audit entries whose domain matches their managed-domain set (REQ-ADM-307, re #145).
 func TestAuditLog_OperatorScope(t *testing.T) {

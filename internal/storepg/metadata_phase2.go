@@ -321,7 +321,15 @@ func (m *metadata) ListQueueItems(ctx context.Context, filter store.QueueFilter)
 		pos++
 	}
 	if filter.AfterID != 0 {
-		add("id > ?", int64(filter.AfterID))
+		// The cursor walks in the direction ORDER BY does: Newest pages
+		// toward older rows (id < cursor) since the first page already
+		// returned the newest; the default FIFO order pages toward newer
+		// rows (id > cursor), as the scheduler poll and Cancel require.
+		if filter.Newest {
+			add("id < ?", int64(filter.AfterID))
+		} else {
+			add("id > ?", int64(filter.AfterID))
+		}
 	}
 	if filter.State != store.QueueStateUnknown {
 		add("state = ?", int32(filter.State))

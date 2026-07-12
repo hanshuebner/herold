@@ -227,7 +227,10 @@ type QueueFilter struct {
 	RecipientDomain string
 	// Limit caps the result set (default 1000, max 1000).
 	Limit int
-	// AfterID is the keyset cursor: rows with ID > AfterID.
+	// AfterID is the keyset cursor. It walks in the direction the result
+	// set is ordered: rows with ID > AfterID when Newest is false (the
+	// default FIFO order), rows with ID < AfterID when Newest is true
+	// (paging from the newest row toward older ones).
 	AfterID QueueItemID
 	// SenderDomains, when non-nil, restricts to rows whose mail_from
 	// address domain matches any entry in the slice (REQ-ADM-307 scope
@@ -243,13 +246,14 @@ type QueueFilter struct {
 	// Newest, when true, orders the result set by id DESC instead of the
 	// default id ASC before applying Limit — i.e. the newest matching
 	// rows rather than the oldest. The scheduler poll and Cancel rely on
-	// oldest-first FIFO order and must never set this. Message research
-	// (REQ-ADM-306) sets it: unlike the live Queue view (which restricts
-	// State to Queued/Deferred, keeping the matched set small), message
-	// research queries the full queue history with no State restriction,
-	// so on a queue table older than one page, ASC ordering silently
-	// drops every recent row — including a just-completed forward/relay
-	// leg — before the caller's own newest-first merge ever sees them
+	// oldest-first FIFO order and must never set this. The admin Queue
+	// view (handleListQueue, re #217) sets it so operators see the most
+	// recent activity first. Message research (REQ-ADM-306) also sets
+	// it: message research queries the full queue history with no State
+	// restriction, so on a queue table older than one page, ASC ordering
+	// silently drops every recent row — including a just-completed
+	// forward/relay leg — before the caller's own newest-first merge ever
+	// sees them
 	// (re #143).
 	Newest bool
 }

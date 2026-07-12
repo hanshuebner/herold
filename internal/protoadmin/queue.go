@@ -90,7 +90,10 @@ func (s *Server) handleListQueue(w http.ResponseWriter, r *http.Request) {
 	scope := ResolveOperatorScope(r.Context(), s.store.Meta(), caller)
 
 	q := r.URL.Query()
-	filter := store.QueueFilter{}
+	// Newest-first, matching the audit log and system-events conventions
+	// (re #217): an operator checking recent activity wants the latest
+	// queue items on top rather than having to page to the end.
+	filter := store.QueueFilter{Newest: true}
 
 	// Apply domain scope per REQ-ADM-307. SenderDomains carries the correct
 	// nil=unrestricted / non-nil-empty=fail-closed semantics.
