@@ -108,14 +108,17 @@ func seedResearchFixture(t *testing.T, h *harness) (adminKey string, aliceID, bo
 	// Create bob@beta.test (different domain for operator scope testing).
 	bobID = h.createPrincipal(adminKey, "bob@beta.test")
 
-	// System event: SMTP-time reject (never stored as message).
+	// System event: SMTP-time reject (never stored as message). Action
+	// matches the real production literal emitted by
+	// internal/directory/resolve_rcpt.go's RcptResolver.audit for a reject
+	// verdict; the verdict itself is carried in Message, not the Action.
 	if err := s.Meta().AppendSystemEvent(ctx, store.SystemEvent{
 		At:      time.Date(2026, 6, 1, 11, 59, 0, 0, time.UTC),
-		Action:  "smtp.rcpt.reject",
+		Action:  "smtp.rcpt.resolve",
 		ActorID: "smtp",
 		Subject: "rcpt:carol@alpha.test",
 		Outcome: store.OutcomeFailure,
-		Message: "user unknown",
+		Message: "plugin=directory action=reject code=user unknown",
 		Domain:  "alpha.test",
 	}); err != nil {
 		t.Fatalf("AppendSystemEvent: %v", err)
@@ -647,32 +650,108 @@ func TestMessageResearch_ForwardRelayNewestFirst(t *testing.T) {
 	}
 }
 
-// TestMessageResearch_ExcludesIMAPImportSystemEvents reproduces the reported
-// shape (re #214): imapimport's connection-lifecycle debug events (emitted by
-// emitDebugEvent in internal/imapimport/worker.go/idle.go, action-prefixed
-// "imapimport.") are not per-message events -- they have no envelope, sender,
-// or recipient -- and must not surface in the per-message research timeline.
-// The genuine SMTP-time reject seeded by seedResearchFixture must still
-// appear, so the fix excludes by action prefix rather than dropping the
-// smtp_event source entirely.
-func TestMessageResearch_ExcludesIMAPImportSystemEvents(t *testing.T) {
+// TestMessageResearch_NonMessageSystemEventsExcluded reproduces the reported
+// class of bug (re #214): system_events is a shared ring-buffer fed by
+// several subsystems, and only genuine per-message SMTP/delivery decisions
+// belong in the per-message research timeline. Non-message events -- carrying
+// no envelope, sender, or recipient to match a search on -- must not surface,
+// no matter which subsystem emitted them:
+//
+//   - imapimport's connection-lifecycle debug events (emitDebugEvent in
+//     internal/imapimport/worker.go/idle.go, action-prefixed "imapimport.").
+//   - protowebhook's dispatch-outcome events (internal/protowebhook/
+//     delivery.go's "hook.dispatch.dropped_no_text").
+//
+// Every genuine per-message action reachable via a production
+// AppendSystemEvent call site must still appear: the "smtp.rcpt.resolve"
+// reject seeded by seedResearchFixture, plus "smtp.accept",
+// "smtp.synthetic_accept", "smtp.attpol", "ses_inbound_received", and the
+// "<source>.accept" family ("ingest.accept" / "loopback.accept" /
+// "ses_inbound.accept") -- so the fix is an allowlist of known-good actions,
+// not a blocklist of the one known-bad prefix from the original report.
+func TestMessageResearch_NonMessageSystemEventsExcluded(t *testing.T) {
 	h := newHarness(t)
 	adminKey, _, _ := seedResearchFixture(t, h)
 	ctx := context.Background()
 	s := h.h.Store
 
-	if err := s.Meta().AppendSystemEvent(ctx, store.SystemEvent{
-		At:      time.Date(2026, 6, 1, 11, 58, 0, 0, time.UTC),
-		Action:  "imapimport.idle.entered",
-		ActorID: "acct-1",
-		Subject: "imapimport:acct-1",
-		Outcome: store.OutcomeSuccess,
-		Message: "IDLE armed",
-	}); err != nil {
-		t.Fatalf("AppendSystemEvent imapimport.idle.entered: %v", err)
+	nonMessageEvents := []store.SystemEvent{
+		{
+			At:      time.Date(2026, 6, 1, 11, 58, 0, 0, time.UTC),
+			Action:  "imapimport.idle.entered",
+			ActorID: "acct-1",
+			Subject: "imapimport:acct-1",
+			Outcome: store.OutcomeSuccess,
+			Message: "IDLE armed",
+		},
+		{
+			At:      time.Date(2026, 6, 1, 11, 57, 0, 0, time.UTC),
+			Action:  "hook.dispatch.dropped_no_text",
+			ActorID: "system",
+			Subject: "webhook:1",
+			Outcome: store.OutcomeSuccess,
+			Message: "extracted-mode webhook delivery dropped",
+		},
+	}
+	for _, ev := range nonMessageEvents {
+		if err := s.Meta().AppendSystemEvent(ctx, ev); err != nil {
+			t.Fatalf("AppendSystemEvent %s: %v", ev.Action, err)
+		}
 	}
 
-	res, buf := h.doRequest("GET", "/api/v1/admin/message-research", adminKey, nil)
+	messageEvents := []store.SystemEvent{
+		{
+			At:      time.Date(2026, 6, 1, 11, 56, 0, 0, time.UTC),
+			Action:  "smtp.accept",
+			ActorID: "smtp",
+			Subject: "message:accept-hash",
+			Outcome: store.OutcomeSuccess,
+			Message: "session=s1 recipients=1 size=100",
+			Domain:  "alpha.test",
+		},
+		{
+			At:      time.Date(2026, 6, 1, 11, 55, 0, 0, time.UTC),
+			Action:  "smtp.synthetic_accept",
+			ActorID: "smtp",
+			Subject: "recipient:dana@alpha.test",
+			Outcome: store.OutcomeSuccess,
+			Message: "session=s2",
+			Domain:  "alpha.test",
+		},
+		{
+			At:      time.Date(2026, 6, 1, 11, 54, 0, 0, time.UTC),
+			Action:  "smtp.attpol",
+			ActorID: "smtp",
+			Subject: "recipient:erin@alpha.test",
+			Outcome: store.OutcomeSuccess,
+			Message: "attpol passed",
+			Domain:  "alpha.test",
+		},
+		{
+			At:      time.Date(2026, 6, 1, 11, 53, 0, 0, time.UTC),
+			Action:  "ses_inbound_received",
+			ActorID: "ses_inbound",
+			Subject: "message:ses-msg-1",
+			Outcome: store.OutcomeSuccess,
+			Message: "sns_message_id=ses-msg-1",
+		},
+		{
+			At:      time.Date(2026, 6, 1, 11, 52, 0, 0, time.UTC),
+			Action:  "ingest.accept",
+			ActorID: "ingest",
+			Subject: "message:ingest-hash",
+			Outcome: store.OutcomeSuccess,
+			Message: "source=ingest recipients=1 size=50",
+			Domain:  "alpha.test",
+		},
+	}
+	for _, ev := range messageEvents {
+		if err := s.Meta().AppendSystemEvent(ctx, ev); err != nil {
+			t.Fatalf("AppendSystemEvent %s: %v", ev.Action, err)
+		}
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?limit=1000", adminKey, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET message-research: %d: %s", res.StatusCode, buf)
 	}
@@ -684,23 +763,28 @@ func TestMessageResearch_ExcludesIMAPImportSystemEvents(t *testing.T) {
 		t.Fatalf("decode: %v: %s", err, buf)
 	}
 
-	var sawIMAPImportEvent, sawSMTPReject bool
+	seenActions := map[string]bool{}
 	for _, item := range out.Items {
 		if item["source"] != "smtp_event" {
 			continue
 		}
 		action, _ := item["action"].(string)
-		if strings.HasPrefix(action, "imapimport.") {
-			sawIMAPImportEvent = true
-		}
-		if action == "smtp.rcpt.reject" {
-			sawSMTPReject = true
+		seenActions[action] = true
+	}
+
+	for _, ev := range nonMessageEvents {
+		if seenActions[ev.Action] {
+			t.Errorf("non-message system event %q leaked into message research timeline; items=%+v", ev.Action, out.Items)
 		}
 	}
-	if sawIMAPImportEvent {
-		t.Errorf("imapimport system event leaked into message research timeline; items=%+v", out.Items)
-	}
-	if !sawSMTPReject {
-		t.Errorf("genuine SMTP-time reject event missing from timeline; items=%+v", out.Items)
+
+	// The reject seeded by seedResearchFixture plus every legitimate
+	// per-message action above must still be present.
+	wantActions := []string{"smtp.rcpt.resolve", "smtp.accept", "smtp.synthetic_accept",
+		"smtp.attpol", "ses_inbound_received", "ingest.accept"}
+	for _, want := range wantActions {
+		if !seenActions[want] {
+			t.Errorf("legitimate per-message action %q missing from timeline (allowlist over-filtered); items=%+v", want, out.Items)
+		}
 	}
 }

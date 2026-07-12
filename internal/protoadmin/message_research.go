@@ -217,14 +217,13 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, ev := range evts {
-		// Exclude connection-lifecycle system events that are not tied to a
-		// specific message (e.g. imapimport's IDLE armed/woke, dial
-		// connected/closed, sync round, noop tick debug events, all
-		// action-prefixed "imapimport." by internal/imapimport's
-		// emitDebugEvent). These carry no envelope, sender, or recipient to
-		// match a per-message search on and belong in the imapimport
-		// diagnostics view, not this per-message tracer (re #214).
-		if isNonMessageSystemEvent(ev.Action) {
+		// Only surface genuine per-message SMTP/delivery decisions. system_events
+		// also carries connection-lifecycle and subsystem-operational events
+		// (imapimport's IDLE armed/woke, dial connected/closed, sync round, noop
+		// tick debug events; protowebhook's dispatch-outcome events) that have no
+		// envelope, sender, or recipient to match a per-message search on and do
+		// not belong in this per-message tracer (re #214).
+		if !isMessageTraceSystemEvent(ev.Action) {
 			continue
 		}
 		e := map[string]any{
@@ -319,14 +318,53 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isNonMessageSystemEvent reports whether a system_events Action identifies a
-// connection-lifecycle or background operational event rather than an
-// SMTP-time accept/reject/defer decision tied to a specific message. Message
-// research (REQ-ADM-306) is a per-message tracer; events with no envelope,
-// sender, or recipient to match a search on do not belong in its timeline
-// (re #214). Currently this is exactly internal/imapimport's debug events
-// (IDLE armed/woke, dial connected/closed, sync round, noop tick), which are
-// all emitted with the "imapimport." action prefix by emitDebugEvent.
-func isNonMessageSystemEvent(action string) bool {
-	return strings.HasPrefix(action, "imapimport.")
+// isMessageTraceSystemEvent reports whether a system_events Action identifies
+// a genuine per-message SMTP/delivery decision, as opposed to a connection-
+// lifecycle or subsystem-operational event with no envelope, sender, or
+// recipient to match a per-message search on (re #214). Message research
+// (REQ-ADM-306) is an allowlist rather than a blocklist: system_events is a
+// shared ring-buffer fed by several subsystems, and a blocklist keyed on one
+// known-bad prefix silently leaks every other non-message action a future
+// AppendSystemEvent caller introduces.
+//
+// The allowlist was derived by enumerating every production AppendSystemEvent
+// call site:
+//
+//   - internal/protosmtp/deliver.go: "smtp.accept" (Subject "message:<hash>"),
+//     "smtp.synthetic_accept" (Subject "recipient:<addr>", carries message_id
+//     in Metadata when parseable).
+//   - internal/protosmtp/ingest.go: "<source>.accept" (Subject
+//     "message:<hash>"; source is the IngestSource label -- "ingest",
+//     "loopback", "ses_inbound" -- so the literal actions are "ingest.accept",
+//     "loopback.accept", "ses_inbound.accept").
+//   - internal/protosmtp/deliver_attpol.go: "smtp.attpol", the per-recipient
+//     attachment-policy outcome (Subject "recipient:<addr>").
+//   - internal/directory/resolve_rcpt.go: "smtp.rcpt.resolve", the SMTP-time
+//     accept/reject/defer decision for one recipient (Subject
+//     "rcpt:<addr>") -- this is what covers messages rejected before
+//     storage; the verdict is carried in Message/Metadata, not the Action.
+//   - internal/sesinbound/sesinbound.go: "ses_inbound_received" (Subject
+//     "message:<id>").
+//
+// Excluded as not per-message:
+//
+//   - internal/imapimport/worker.go's emitDebugEvent: all actions are
+//     prefixed "imapimport." (idle.entered/woke, dial.connected/closed,
+//     sync.round.failed/completed, noop.tick); Subject is
+//     "imapimport:<account-id>", tied to a connection, not a message.
+//   - internal/protowebhook/delivery.go: "hook.dispatch.dropped_no_text";
+//     Subject is "webhook:<id>", a webhook-dispatch operational outcome, not
+//     an SMTP/delivery decision on the message itself.
+//
+// (internal/protosmtp/deliver.go's "smtp.phase1_rcpt_leak" and
+// "smtp.inbound_submission_queued" go to AppendAuditLog, not
+// AppendSystemEvent, so they can never reach ListSystemEvents and need no
+// entry here.)
+func isMessageTraceSystemEvent(action string) bool {
+	switch action {
+	case "smtp.accept", "smtp.synthetic_accept", "smtp.attpol",
+		"smtp.rcpt.resolve", "ses_inbound_received":
+		return true
+	}
+	return strings.HasSuffix(action, ".accept")
 }
