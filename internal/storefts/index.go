@@ -522,7 +522,16 @@ func (i *Index) Query(
 		conjuncts = append(conjuncts, mb)
 	}
 	if strings.TrimSpace(q.Text) != "" {
-		conjuncts = append(conjuncts, bleve.NewQueryStringQuery(q.Text))
+		// A plain MatchQuery (not a query-string query) against the
+		// implicit "_all" field, requiring every analyzed term of q.Text
+		// to be present (re #198): the standard analyzer splits a value
+		// like an e-mail address on "@"/"." into several tokens, and the
+		// default OR combination let a single shared token (e.g.
+		// "torsten" out of "torsten@buelck.de") match an unrelated
+		// message whose From display name happens to contain that word.
+		textMatch := bleve.NewMatchQuery(q.Text)
+		textMatch.SetOperator(query.MatchQueryOperatorAnd)
+		conjuncts = append(conjuncts, textMatch)
 	}
 	conjuncts = appendFieldQueries(conjuncts, fieldSubject, q.Subject)
 	conjuncts = appendFieldQueries(conjuncts, fieldFrom, q.From)
@@ -572,7 +581,11 @@ func (i *Index) Query(
 }
 
 // appendFieldQueries turns a per-field term list into match queries scoped
-// to the field. Empty strings are ignored.
+// to the field. Empty strings are ignored. The operator is AND (re #198):
+// bleve's default is OR across the terms produced by analyzing t, which
+// let a multi-token value like an e-mail address (analyzed into
+// "torsten"/"buelck"/"de") match on any single shared token rather than
+// requiring the whole value.
 func appendFieldQueries(dst []query.Query, field string, terms []string) []query.Query {
 	for _, t := range terms {
 		t = strings.TrimSpace(t)
@@ -581,6 +594,7 @@ func appendFieldQueries(dst []query.Query, field string, terms []string) []query
 		}
 		mq := bleve.NewMatchQuery(t)
 		mq.SetField(field)
+		mq.SetOperator(query.MatchQueryOperatorAnd)
 		dst = append(dst, mq)
 	}
 	return dst

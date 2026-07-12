@@ -278,6 +278,99 @@ func TestIndexQuery_FreeText(t *testing.T) {
 	}
 }
 
+// TestIndexQuery_FreeText_DoesNotMatchOnPartialWordOverlap pins the
+// regression reported in herold #198: searching for a contact's full
+// e-mail address must not surface mail from an unrelated sender whose
+// display name happens to share one word with the address's local
+// part (e.g. searching "torsten@buelck.de" must not match a message
+// from "Torsten Oetken <torsten.oetken@example.com>" merely because
+// both contain the token "torsten"). The standard analyzer splits the
+// address into ["torsten","buelck","de"]; a correct match requires all
+// three tokens present in the same message, not just one.
+func TestIndexQuery_FreeText_DoesNotMatchOnPartialWordOverlap(t *testing.T) {
+	idx := newIndex(t)
+	ctx := context.Background()
+	principalID := store.PrincipalID(11)
+	mailboxID := store.MailboxID(1)
+
+	unrelated := store.Message{
+		ID:           1,
+		MailboxID:    mailboxID,
+		UID:          1,
+		InternalDate: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+		Envelope: store.Envelope{
+			Subject: "quick question",
+			From:    "Torsten Oetken <torsten.oetken@example.com>",
+			To:      "bob@example.com",
+		},
+	}
+	if err := idx.IndexMessageFull(ctx, principalID, unrelated, "let's catch up soon"); err != nil {
+		t.Fatalf("index unrelated message: %v", err)
+	}
+	if err := idx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	hits, err := idx.Query(ctx, principalID, store.Query{Text: "torsten@buelck.de"})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("searching the contact's address must not match an unrelated sender sharing only the word %q: got %+v", "torsten", hits)
+	}
+}
+
+// TestIndexQuery_FromFilter_RequiresAllTermsInValue is the from:-operator
+// counterpart of TestIndexQuery_FreeText_DoesNotMatchOnPartialWordOverlap:
+// a `from:` filter carrying a full e-mail address must require every
+// analyzed token of that address, not match on any single shared word.
+func TestIndexQuery_FromFilter_RequiresAllTermsInValue(t *testing.T) {
+	idx := newIndex(t)
+	ctx := context.Background()
+	principalID := store.PrincipalID(12)
+	mailboxID := store.MailboxID(1)
+
+	unrelated := store.Message{
+		ID:           1,
+		MailboxID:    mailboxID,
+		UID:          1,
+		InternalDate: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+		Envelope: store.Envelope{
+			Subject: "quick question",
+			From:    "Torsten Oetken <torsten.oetken@example.com>",
+			To:      "bob@example.com",
+		},
+	}
+	matching := store.Message{
+		ID:           2,
+		MailboxID:    mailboxID,
+		UID:          2,
+		InternalDate: time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		Envelope: store.Envelope{
+			Subject: "re: contract",
+			From:    "Torsten Buelck <torsten@buelck.de>",
+			To:      "bob@example.com",
+		},
+	}
+	if err := idx.IndexMessageFull(ctx, principalID, unrelated, "let's catch up soon"); err != nil {
+		t.Fatalf("index unrelated message: %v", err)
+	}
+	if err := idx.IndexMessageFull(ctx, principalID, matching, "see attached contract"); err != nil {
+		t.Fatalf("index matching message: %v", err)
+	}
+	if err := idx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	hits, err := idx.Query(ctx, principalID, store.Query{From: []string{"torsten@buelck.de"}})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(hits) != 1 || hits[0].MessageID != 2 {
+		t.Fatalf("from: filter must match only the exact address, got %+v", hits)
+	}
+}
+
 func TestIndexQuery_Combined(t *testing.T) {
 	idx := newIndex(t)
 	principalID, _, _ := seedIndex(t, idx)
