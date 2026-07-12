@@ -41,6 +41,7 @@ export const de = {
   'shell.nav.imapImports': 'IMAP-Import',
   'shell.nav.clientlog': 'Client-Logs',
   'shell.nav.messageResearch': 'Nachrichtenrecherche',
+  'shell.nav.settings': 'Einstellungen',
   'shell.nav.help': 'Hilfe',
   'shell.nav.comingSoon': 'Demnächst verfügbar',
   'shell.nav.soonBadge': 'bald',
@@ -48,9 +49,6 @@ export const de = {
   'shell.swUpdateAvailable': 'Eine neue Version ist verfügbar.',
   'shell.swUpdateReload': 'Neu laden',
   'shell.swUpdateDismiss': 'Verwerfen',
-  'shell.language.en': 'EN',
-  'shell.language.de': 'DE',
-  'shell.language.label': 'Sprache',
 
   // ── Auth gate / connecting splash ────────────────────────────────────
   'auth.connecting': 'Verbindung wird hergestellt...',
@@ -92,6 +90,7 @@ export const de = {
   'shortcuts.goImapImports': 'Zum IMAP-Import',
   'shortcuts.goClientlog': 'Zu Client-Logs',
   'shortcuts.goMessageResearch': 'Zur Nachrichtenrecherche',
+  'shortcuts.goSettings': 'Zu den Einstellungen',
   'shortcuts.goHelp': 'Zur Hilfe',
 
   // ── SW update banner ─────────────────────────────────────────────────
@@ -459,6 +458,12 @@ export const de = {
     'Wenn aktiviert, sendet dieser Worker feingliedrige Ereignisse (Verbindungslebenszyklus, IDLE-Wachzustand, Ordner-Syncs) an den Ereignisse-View, gefiltert nach der Konto-ID als Akteur. Der Overhead wird auf inaktive Konten beschränkt.',
   'imapImports.error.loadFailed': 'IMAP-Import-Status konnte nicht geladen werden',
   'imapImports.error.setDebugLogFailed': 'Debug-Protokollierung konnte nicht geändert werden',
+
+  // ── Settings ──────────────────────────────────────────────────────────
+  'settings.title': 'Einstellungen',
+  'settings.language': 'Sprache',
+  'settings.language.en': 'Englisch',
+  'settings.language.de': 'Deutsch',
 
   // ── Not found ─────────────────────────────────────────────────────────
   'notFound.title': 'Nicht gefunden',

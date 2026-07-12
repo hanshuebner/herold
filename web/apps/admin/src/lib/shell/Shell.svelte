@@ -1,8 +1,7 @@
 <script lang="ts">
   import { auth } from '../auth/auth.svelte';
   import { router } from '../router/router.svelte';
-  import { settings } from '../settings/settings.svelte';
-  import { t, LOCALES, type Locale } from '../i18n/i18n.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
   interface NavItem {
     labelKey: string;
@@ -21,6 +20,7 @@
     { labelKey: 'shell.nav.imapImports', path: '/imap-imports', segment: 'imap-imports' },
     { labelKey: 'shell.nav.clientlog', path: '/clientlog', segment: 'clientlog' },
     { labelKey: 'shell.nav.messageResearch', path: '/message-research', segment: 'message-research' },
+    { labelKey: 'shell.nav.settings', path: '/settings', segment: 'settings' },
     { labelKey: 'shell.nav.help', path: '/help', segment: 'help' },
   ];
 
@@ -37,19 +37,6 @@
   <header class="topbar">
     <span class="wordmark">{t('shell.wordmark')}</span>
     <div class="topbar-right">
-      <div class="lang-switch" role="radiogroup" aria-label={t('shell.language.label')}>
-        {#each LOCALES as locale}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={settings.locale === locale}
-            class:on={settings.locale === locale}
-            onclick={() => settings.setLocale(locale as Locale)}
-          >
-            {t(`shell.language.${locale}`)}
-          </button>
-        {/each}
-      </div>
       {#if auth.principal}
         <span class="principal-email">{auth.principal.email}</span>
         <button
@@ -127,34 +114,6 @@
   .principal-email {
     font-size: var(--type-body-compact-01-size);
     color: var(--text-secondary);
-  }
-  .lang-switch {
-    display: inline-flex;
-    border: 1px solid var(--border-subtle-01);
-    border-radius: var(--radius-pill);
-    overflow: hidden;
-  }
-  .lang-switch button {
-    padding: var(--spacing-01) var(--spacing-03);
-    font-size: var(--type-helper-text-01-size);
-    color: var(--text-secondary);
-    background: none;
-    border: none;
-    cursor: pointer;
-    min-height: var(--touch-min);
-    transition: background var(--duration-fast-02) var(--easing-productive-enter),
-      color var(--duration-fast-02) var(--easing-productive-enter);
-  }
-  .lang-switch button:not(:last-child) {
-    border-right: 1px solid var(--border-subtle-01);
-  }
-  .lang-switch button:hover {
-    background: var(--layer-02);
-    color: var(--text-primary);
-  }
-  .lang-switch button.on {
-    background: var(--interactive);
-    color: var(--text-on-color);
   }
   .logout-btn {
     font-size: var(--type-body-compact-01-size);

@@ -20,6 +20,7 @@
   import ClientlogView from './views/ClientlogView.svelte';
   import MessageResearchView from './views/MessageResearchView.svelte';
   import IMAPImportsView from './views/IMAPImportsView.svelte';
+  import SettingsView from './views/SettingsView.svelte';
   import HelpView from './views/HelpView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
 
@@ -68,6 +69,11 @@
     key: 'g r',
     description: t('shortcuts.goMessageResearch'),
     action: () => router.navigate('/message-research'),
+  });
+  keyboard.registerGlobal({
+    key: 'g s',
+    description: t('shortcuts.goSettings'),
+    action: () => router.navigate('/settings'),
   });
   keyboard.registerGlobal({
     key: 'g h',
@@ -270,6 +276,8 @@
       <ClientlogView />
     {:else if router.matches('message-research')}
       <MessageResearchView />
+    {:else if router.matches('settings')}
+      <SettingsView />
     {:else if router.matches('help')}
       <HelpView />
     {:else}

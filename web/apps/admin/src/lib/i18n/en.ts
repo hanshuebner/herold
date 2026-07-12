@@ -43,6 +43,7 @@ export const en = {
   'shell.nav.imapImports': 'IMAP import',
   'shell.nav.clientlog': 'Client logs',
   'shell.nav.messageResearch': 'Message research',
+  'shell.nav.settings': 'Settings',
   'shell.nav.help': 'Help',
   'shell.nav.comingSoon': 'Coming soon',
   'shell.nav.soonBadge': 'soon',
@@ -50,9 +51,6 @@ export const en = {
   'shell.swUpdateAvailable': 'A new version is available.',
   'shell.swUpdateReload': 'Reload',
   'shell.swUpdateDismiss': 'Dismiss',
-  'shell.language.en': 'EN',
-  'shell.language.de': 'DE',
-  'shell.language.label': 'Language',
 
   // ── Auth gate / connecting splash ────────────────────────────────────
   'auth.connecting': 'Connecting...',
@@ -93,6 +91,7 @@ export const en = {
   'shortcuts.goImapImports': 'Go to IMAP imports',
   'shortcuts.goClientlog': 'Go to Client logs',
   'shortcuts.goMessageResearch': 'Go to Message research',
+  'shortcuts.goSettings': 'Go to Settings',
   'shortcuts.goHelp': 'Go to Help',
 
   // ── SW update banner ─────────────────────────────────────────────────
@@ -458,6 +457,12 @@ export const en = {
     'When enabled, this worker sends fine-grained events (connection lifecycle, IDLE wake, folder syncs) to the events view, filtered by the account ID as actor. Overhead is limited to inactive accounts.',
   'imapImports.error.loadFailed': 'Failed to load IMAP import status',
   'imapImports.error.setDebugLogFailed': 'Failed to change debug logging',
+
+  // ── Settings ──────────────────────────────────────────────────────────
+  'settings.title': 'Settings',
+  'settings.language': 'Language',
+  'settings.language.en': 'English',
+  'settings.language.de': 'Deutsch',
 
   // ── Not found ─────────────────────────────────────────────────────────
   'notFound.title': 'Not found',
