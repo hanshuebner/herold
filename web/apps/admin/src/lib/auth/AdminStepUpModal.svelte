@@ -126,6 +126,7 @@
       aria-labelledby="su-title"
       aria-describedby="su-desc"
     >
+      <p class="wordmark">{t('shell.wordmark')}</p>
       {#if adminStepUp.enrollRequired}
         <!-- Enrollment required variant (REQ-AS-25) -->
         <h2 id="su-title" class="title">{t('stepup.enroll.title')}</h2>
@@ -219,6 +220,16 @@
     flex-direction: column;
     gap: var(--spacing-04);
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  }
+
+  .wordmark {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
   }
 
   .title {

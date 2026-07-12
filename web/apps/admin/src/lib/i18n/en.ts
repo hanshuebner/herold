@@ -72,8 +72,9 @@ export const en = {
   'stepup.enroll.title': 'Two-factor authentication required',
   'stepup.enroll.body':
     'Admin access requires TOTP two-factor authentication. Enrol a TOTP authenticator app to continue.',
-  'stepup.code.title': 'Confirm your identity',
-  'stepup.code.body': 'Confirm your identity to continue — enter your authenticator code.',
+  'stepup.code.title': 'Two-factor authentication required',
+  'stepup.code.body':
+    'Admin access requires a second factor. Enter the 6-digit code from your authenticator app to continue.',
   'stepup.code.label': 'Authenticator code',
   'stepup.lockout': 'Too many attempts. Try again in {countdown}.',
   'stepup.error.invalidRequest': 'Invalid request.',

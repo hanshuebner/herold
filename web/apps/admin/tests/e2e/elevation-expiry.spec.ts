@@ -15,8 +15,9 @@
  *      dashboard renders, #scheduleElevationExpiry arms a setTimeout(5 000 ms).
  *   4. Assert "Dashboard" heading is visible (confirms 'ready' state).
  *   5. Fast-forward the browser clock by 6 000 ms — fires the elevation timer.
- *   6. Assert "Confirm your identity" modal is visible and dashboard is gone
- *      (confirms proactive 'step_up_pending' transition without user action).
+ *   6. Assert "Two-factor authentication required" modal is visible and
+ *      dashboard is gone (confirms proactive 'step_up_pending' transition
+ *      without user action).
  */
 
 import { test, expect } from '@playwright/test';
@@ -103,7 +104,9 @@ test.describe('elevation expiry', () => {
 
     // 6. Proactive transition: auth.status === 'step_up_pending'.
     //    AuthGate stops rendering children; AdminStepUpModal appears.
-    await expect(page.getByRole('heading', { name: 'Confirm your identity' })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Two-factor authentication required' }),
+    ).toBeVisible();
     await expect(page.locator('[data-testid="su-code"]')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Dashboard' })).not.toBeVisible();
 

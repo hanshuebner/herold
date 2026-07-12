@@ -70,9 +70,9 @@ export const de = {
   'stepup.enroll.title': 'Zwei-Faktor-Authentifizierung erforderlich',
   'stepup.enroll.body':
     'Der Admin-Zugriff erfordert eine TOTP-Zwei-Faktor-Authentifizierung. Richte eine TOTP-Authenticator-App ein, um fortzufahren.',
-  'stepup.code.title': 'Identität bestätigen',
+  'stepup.code.title': 'Zwei-Faktor-Authentifizierung erforderlich',
   'stepup.code.body':
-    'Bestätigen Sie Ihre Identität, um fortzufahren — geben Sie Ihren Authenticator-Code ein.',
+    'Der Admin-Zugriff erfordert einen zweiten Faktor. Geben Sie den 6-stelligen Code aus Ihrer Authenticator-App ein, um fortzufahren.',
   'stepup.code.label': 'Authenticator-Code',
   'stepup.lockout': 'Zu viele Versuche. Versuche es erneut in {countdown}.',
   'stepup.error.invalidRequest': 'Ungültige Anfrage.',
