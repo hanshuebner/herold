@@ -543,7 +543,29 @@ const CurrentBackupVersion = 1
 //	constraint + store.Metadata.InsertAlias validation). No new backup
 //	row type: AliasRow.TargetPrincipal becomes *int64 and gains
 //	TargetAddress *string, both nil for pre-migration rows.
-const CurrentSchemaVersion = 80
+//
+// 81 — 0081_srs_secrets.sql (issue #204, SRS return-path rewriting for
+//
+//	mail forwarded via #181 external-target aliases or #63 Sieve
+//	redirect). Adds the srs_secrets table: keyed-MAC secrets
+//	internal/srs signs and verifies SRS0/SRS1 return-path addresses
+//	with. Rotation is additive (insert a new row; the highest id
+//	signs, every row still verifies) so an in-flight SRS address
+//	survives a rotation. New SRSSecretRow backup row type.
+//
+// 82 — 0082_oauth2_native_grant.sql (issue #199, REQ-AND-AUTH-01/02).
+//
+//	OAuth2 authorization-code + PKCE grant for native clients. Adds
+//	api_keys.expires_at_us (nullable; NULL for every pre-migration row
+//	and for the existing operator-issued / device-token keys, which
+//	never expire on their own -- only the short-lived OAuth2 access
+//	token minted at POST /oauth2/token populates it). Adds two new
+//	tables: oauth_auth_codes (single-use authorization codes, 60s TTL)
+//	and oauth_refresh_tokens (rotation-chain rows with reuse detection,
+//	FK to api_keys(id) ON DELETE SET NULL for the paired access token).
+//	Both new tables are excluded from backup (ephemeral, like
+//	sessions/session_elevations).
+const CurrentSchemaVersion = 82
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -652,6 +674,10 @@ var TableNames = []string{
 	"inbound_attpol_recipient",
 	"queue",
 	"dkim_keys",
+	// SRS (Sender Rewriting Scheme) signing secrets (issue #204, migration
+	// 0081). No FK; self-contained rows, restored in any order relative to
+	// their neighbours.
+	"srs_secrets",
 	"acme_accounts",
 	"acme_orders",
 	"acme_certs",
@@ -742,4 +768,12 @@ var TableNames = []string{
 	// permanently (like sessions/session_elevations): ephemeral operational
 	// state that a restore cannot meaningfully resume mid-flight.
 	"email_bulk_jobs",
+	// OAuth2 native-client grant (issue #199, migration 0082). FK to
+	// principals(id) ON DELETE CASCADE and api_keys(id) ON DELETE SET
+	// NULL; restored after both parents. Excluded from backup (like
+	// sessions/session_elevations): authorization codes and refresh-token
+	// rotation state are ephemeral and a restored row would not resume a
+	// meaningful in-flight grant.
+	"oauth_auth_codes",
+	"oauth_refresh_tokens",
 }

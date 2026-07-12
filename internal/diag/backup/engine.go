@@ -127,6 +127,7 @@ var tableReg = map[string]tableDesc{
 	"cursors":                    {&CursorRow{}, "key"},
 	"queue":                      {&QueueRow{}, "id"},
 	"dkim_keys":                  {&DKIMKeyRow{}, "id"},
+	"srs_secrets":                {&SRSSecretRow{}, "id"},
 	"acme_accounts":              {&ACMEAccountRow{}, "id"},
 	"acme_orders":                {&ACMEOrderRow{}, "id"},
 	"acme_certs":                 {&ACMECertRow{}, "hostname"},
@@ -165,6 +166,8 @@ var tableReg = map[string]tableDesc{
 	"clientlog":                  {&ClientLogRow{}, "id"},
 	"system_events":              {&SystemEventRow{}, "id"},
 	"email_bulk_jobs":            {&EmailBulkJobRow{}, "id"},
+	"oauth_auth_codes":           {&OAuthAuthCodeRow{}, "id"},
+	"oauth_refresh_tokens":       {&OAuthRefreshTokenRow{}, "id"},
 }
 
 // colName extracts the SQL column name from a struct field's json tag.

@@ -61,6 +61,27 @@ func FuzzCommandLine(f *testing.F) {
 		"a1 AUTHENTICATE PLAIN\r\n",
 		"a1 AUTHENTICATE PLAIN dGVzdA==\r\n",
 		"a1 AUTHENTICATE PLAIN =\r\n",
+		// RFC 4314 ACL commands (REQ-PROTO-33 / epic #186).
+		"a1 SETACL \"Shared/support\" bob@example.com lrswipkxtea\r\n",
+		"a1 SETACL INBOX bob +lr\r\n",
+		"a1 SETACL INBOX bob -lr\r\n",
+		"a1 SETACL INBOX anyone lr\r\n",
+		"a1 SETACL INBOX bob \"\"\r\n",
+		"a1 SETACL INBOX bob cd\r\n",
+		"a1 DELETEACL INBOX bob\r\n",
+		"a1 DELETEACL \"Shared/support\" anyone\r\n",
+		"a1 GETACL INBOX\r\n",
+		"a1 GETACL \"Shared/support\"\r\n",
+		"a1 MYRIGHTS INBOX\r\n",
+		"a1 LISTRIGHTS INBOX bob\r\n",
+		// Malformed ACL shapes.
+		"a1 SETACL\r\n",
+		"a1 SETACL INBOX\r\n",
+		"a1 SETACL INBOX bob\r\n",
+		"a1 SETACL INBOX bob z\r\n",
+		"a1 GETACL\r\n",
+		"a1 MYRIGHTS\r\n",
+		"a1 LISTRIGHTS INBOX\r\n",
 		"a1 NOOP\r\n",
 		"\r\n",    // empty
 		"a1\r\n",  // tag only

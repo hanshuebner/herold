@@ -209,6 +209,15 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
+	// Short-lived OAuth2 access tokens (issue #199, REQ-AND-AUTH-02)
+	// populate ExpiresAt; every other Bearer key (operator-issued,
+	// device token) leaves it zero and never expires this way. A zero
+	// ExpiresAt therefore always passes; a non-zero one must be in the
+	// future.
+	if !key.ExpiresAt.IsZero() && !s.clk.Now().Before(key.ExpiresAt) {
+		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
+		return store.Principal{}, nil, false
+	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
 		s.loggerFrom(ctx).Warn("protoadmin.auth.principal_lookup_failed",

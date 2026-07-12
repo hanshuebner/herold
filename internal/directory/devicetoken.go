@@ -109,29 +109,9 @@ func (d *Directory) IssueDeviceToken(ctx context.Context, email, password, totpC
 	if err := ctx.Err(); err != nil {
 		return "", store.APIKey{}, err
 	}
-	pid, err := d.Authenticate(ctx, email, password)
+	pid, err := d.authenticateWithOptionalTOTP(ctx, email, password, totpCode)
 	if err != nil {
-		// ErrUnauthorized / ErrRateLimited already recorded + rate-limited
-		// by Authenticate; propagate as-is.
 		return "", store.APIKey{}, err
-	}
-	p, err := d.meta.GetPrincipalByID(ctx, pid)
-	if err != nil {
-		return "", store.APIKey{}, fmt.Errorf("directory: load principal: %w", err)
-	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
-		return "", store.APIKey{}, ErrUnauthorized
-	}
-	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
-		if totpCode == "" {
-			return "", store.APIKey{}, ErrTOTPRequired
-		}
-		if verr := d.VerifyTOTP(ctx, pid, totpCode); verr != nil {
-			if errors.Is(verr, ErrRateLimited) {
-				return "", store.APIKey{}, ErrRateLimited
-			}
-			return "", store.APIKey{}, ErrTOTPRequired
-		}
 	}
 
 	plaintextTok, hash, err := GenerateDeviceToken(d.rand)
@@ -206,4 +186,45 @@ func DeviceTokenLabel(name string) (label string, ok bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(name, deviceTokenNamePrefix), true
+}
+
+// authenticateWithOptionalTOTP verifies (email, password) and, when the
+// resolved principal has TOTP enrolled, a required totpCode. It is the
+// shared credential-check core behind both IssueDeviceToken and the
+// OAuth2 authorize-page login POST (oauth2.go, issue #199): both are
+// "prove who you are with password (+TOTP)" entry points that then
+// diverge on what they mint (a long-lived device token vs. a short-lived
+// authorization code).
+//
+// Returns the same error classes IssueDeviceToken documents:
+// ErrUnauthorized (bad credentials or disabled principal), ErrRateLimited
+// (the per-(email,source) budget from Authenticate / VerifyTOTP is
+// exhausted), or ErrTOTPRequired (password correct, TOTP enrolled, code
+// absent or wrong).
+func (d *Directory) authenticateWithOptionalTOTP(ctx context.Context, email, password, totpCode string) (PrincipalID, error) {
+	pid, err := d.Authenticate(ctx, email, password)
+	if err != nil {
+		// ErrUnauthorized / ErrRateLimited already recorded + rate-limited
+		// by Authenticate; propagate as-is.
+		return 0, err
+	}
+	p, err := d.meta.GetPrincipalByID(ctx, pid)
+	if err != nil {
+		return 0, fmt.Errorf("directory: load principal: %w", err)
+	}
+	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		return 0, ErrUnauthorized
+	}
+	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		if totpCode == "" {
+			return 0, ErrTOTPRequired
+		}
+		if verr := d.VerifyTOTP(ctx, pid, totpCode); verr != nil {
+			if errors.Is(verr, ErrRateLimited) {
+				return 0, ErrRateLimited
+			}
+			return 0, ErrTOTPRequired
+		}
+	}
+	return pid, nil
 }

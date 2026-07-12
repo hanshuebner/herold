@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,25 @@ import (
 	"github.com/hanshuebner/herold/internal/testharness"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
+
+// seedMailboxGrant inserts a `mailbox` grant row (epic #186, REQ-AC-50) on
+// the unified grants substrate — distinct storage from the legacy
+// mailbox_acl table SetMailboxACL writes to. Used to exercise the
+// authz.Resolve bridge in internal/protoimap/acl.go independently of the
+// per-letter ACL path.
+func seedMailboxGrant(t *testing.T, af *aclFixture, mb store.Mailbox, grantee store.PrincipalID, level store.GrantLevel) {
+	t.Helper()
+	_, err := af.ha.Store.Meta().InsertGrant(context.Background(), store.Grant{
+		SubjectID:    uint64(grantee),
+		ResourceKind: store.GrantResourceMailbox,
+		ResourceID:   strconv.FormatUint(uint64(mb.ID), 10),
+		Level:        level,
+		GrantedBy:    &af.aliceID,
+	})
+	if err != nil {
+		t.Fatalf("seed mailbox grant: %v", err)
+	}
+}
 
 // aclFixture is a two-principal fixture: alice owns Shared/support,
 // bob is a separate authenticated principal who may or may not have
@@ -340,5 +360,178 @@ func TestSharedMailbox_TwoPrincipals_OneSupportInbox(t *testing.T) {
 	fetchResp := cBob.send("f1", `FETCH 1 (UID FLAGS ENVELOPE)`)
 	if !strings.Contains(strings.Join(fetchResp, "\n"), "ticket-1") {
 		t.Fatalf("bob FETCH did not return seeded message: %v", fetchResp)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Unified grant substrate (epic #186, REQ-AC-50..53): a `mailbox` grant row
+// written directly to the grants table (not through SETACL) is honoured by
+// IMAP visibility and rights checks exactly like a legacy mailbox_acl row.
+// -----------------------------------------------------------------------------
+
+func TestGrantMailboxRead_AllowsSelectFetch_DeniesWrite(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelRead)
+	msg := buildMessage("granted-read", "body")
+	blob, _ := af.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, err := af.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		Size: int64(len(msg)), Blob: blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: af.aliceShared.ID}})
+	if err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	c := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer c.close()
+
+	listResp := c.send("l1", `LIST "" "*"`)
+	if !strings.Contains(strings.Join(listResp, "\n"), "Shared/support") {
+		t.Fatalf("mailbox:read grant should make Shared/support visible in LIST: %v", listResp)
+	}
+	selResp := c.send("s1", `SELECT "Shared/support"`)
+	if !strings.Contains(selResp[len(selResp)-1], "OK") {
+		t.Fatalf("mailbox:read grant should allow SELECT: %v", selResp)
+	}
+	fetchResp := c.send("f1", `FETCH 1 (UID FLAGS ENVELOPE)`)
+	if !strings.Contains(strings.Join(fetchResp, "\n"), "granted-read") {
+		t.Fatalf("mailbox:read grant should allow FETCH: %v", fetchResp)
+	}
+	msg2 := buildMessage("should-not-append", "body")
+	c.write(fmt.Sprintf("a1 APPEND \"Shared/support\" {%d}\r\n", len(msg2)))
+	var last string
+	for {
+		line := c.readLine()
+		if strings.HasPrefix(line, "+") {
+			c.write(msg2 + "\r\n")
+			continue
+		}
+		if strings.HasPrefix(line, "a1 ") {
+			last = line
+			break
+		}
+	}
+	if !strings.Contains(last, "NO") {
+		t.Fatalf("mailbox:read grant must not allow APPEND: %v", last)
+	}
+}
+
+func TestGrantMailboxWrite_AllowsAppendStoreExpunge(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	msg := buildMessage("granted-write", "body")
+	blob, _ := af.ha.Store.Blobs().Put(ctx, strings.NewReader(msg))
+	_, _, err := af.ha.Store.Meta().InsertMessage(ctx, store.Message{
+		Size: int64(len(msg)), Blob: blob,
+		Envelope: parseStoreEnvelope(msg),
+	}, []store.MessageMailbox{{MailboxID: af.aliceShared.ID, Flags: store.MessageFlagDeleted}})
+	if err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelWrite)
+	c := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer c.close()
+
+	appendMsg := buildMessage("appended-by-grant", "body")
+	c.write(fmt.Sprintf("a1 APPEND \"Shared/support\" {%d}\r\n", len(appendMsg)))
+	var last string
+	for {
+		line := c.readLine()
+		if strings.HasPrefix(line, "+") {
+			c.write(appendMsg + "\r\n")
+			continue
+		}
+		if strings.HasPrefix(line, "a1 ") {
+			last = line
+			break
+		}
+	}
+	if !strings.Contains(last, "OK") {
+		t.Fatalf("mailbox:write grant should allow APPEND: %v", last)
+	}
+	selResp := c.send("s1", `SELECT "Shared/support"`)
+	if !strings.Contains(selResp[len(selResp)-1], "OK") {
+		t.Fatalf("SELECT: %v", selResp)
+	}
+	expungeResp := c.send("e1", "EXPUNGE")
+	if !strings.Contains(expungeResp[len(expungeResp)-1], "OK") {
+		t.Fatalf("mailbox:write grant should allow EXPUNGE: %v", expungeResp)
+	}
+}
+
+func TestGrantMailboxWrite_DeniesSETACL(t *testing.T) {
+	af := newACLFixture(t)
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelWrite)
+	c := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer c.close()
+	resp := c.send("s1", `SETACL "Shared/support" "bob@example.test" "a"`)
+	if !strings.Contains(resp[len(resp)-1], "NO") {
+		t.Fatalf("mailbox:write grant must not allow SETACL: %v", resp)
+	}
+}
+
+func TestGrantMailboxAdmin_AllowsSETACL(t *testing.T) {
+	af := newACLFixture(t)
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelAdmin)
+	c := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer c.close()
+	resp := c.send("s1", `SETACL "Shared/support" "bob@example.test" "lr"`)
+	if !strings.Contains(resp[len(resp)-1], "OK") {
+		t.Fatalf("mailbox:admin grant should allow SETACL: %v", resp)
+	}
+}
+
+func TestMYRIGHTS_ReflectsGrantTier(t *testing.T) {
+	af := newACLFixture(t)
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelWrite)
+	c := loginAsACL(t, af, "bob@example.test", af.bobPass)
+	defer c.close()
+	resp := c.send("m1", `MYRIGHTS "Shared/support"`)
+	joined := strings.Join(resp, "\n")
+	for _, want := range []string{"l", "r", "s", "i", "p", "k", "x", "t", "e", "w"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("MYRIGHTS for mailbox:write grant missing %q: %v", want, resp)
+		}
+	}
+	if strings.Contains(joined, `"lrswipkxtea"`) {
+		t.Fatalf("MYRIGHTS for mailbox:write grant must not include admin 'a': %v", resp)
+	}
+}
+
+func TestGETACL_ShowsGrantSubstrateRow(t *testing.T) {
+	af := newACLFixture(t)
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelRead)
+	c := loginAsACL(t, af, "alice@example.test", af.alicePass)
+	defer c.close()
+	resp := c.send("g1", `GETACL "Shared/support"`)
+	joined := strings.Join(resp, "\n")
+	if !strings.Contains(joined, "bob@example.test") {
+		t.Fatalf("GETACL should surface the grant-substrate row for bob: %v", resp)
+	}
+	if !strings.Contains(joined, `"lrs"`) {
+		t.Fatalf("GETACL grant row should render the read tier as 'lrs': %v", resp)
+	}
+}
+
+func TestGrantMailboxRead_DoesNotShadowLegacyRowInGETACL(t *testing.T) {
+	af := newACLFixture(t)
+	ctx := context.Background()
+	// bob has both a legacy ACL row (richer: individual letters) and a
+	// grant-substrate row; GETACL must render the legacy row, not a
+	// duplicate collapsed-tier entry.
+	if err := af.ha.Store.Meta().SetMailboxACL(ctx, af.aliceShared.ID, &af.bobID,
+		store.ACLRightLookup|store.ACLRightRead|store.ACLRightSeen|store.ACLRightWrite, af.aliceID); err != nil {
+		t.Fatalf("seed legacy acl: %v", err)
+	}
+	seedMailboxGrant(t, af, af.aliceShared, af.bobID, store.GrantLevelRead)
+	c := loginAsACL(t, af, "alice@example.test", af.alicePass)
+	defer c.close()
+	resp := c.send("g1", `GETACL "Shared/support"`)
+	joined := strings.Join(resp, "\n")
+	if strings.Count(joined, "bob@example.test") != 1 {
+		t.Fatalf("GETACL must render bob exactly once (legacy row wins): %v", resp)
+	}
+	if !strings.Contains(joined, `"lrsw"`) {
+		t.Fatalf("GETACL should render bob's legacy rights, not the grant collapse: %v", resp)
 	}
 }

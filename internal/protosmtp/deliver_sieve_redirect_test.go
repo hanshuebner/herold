@@ -12,7 +12,8 @@ import (
 
 // TestSieveRedirect_QueuesOutbound verifies that a Sieve redirect action
 // submits the message to the outbound queue with the redirect target as
-// the sole recipient and the original MAIL FROM as the envelope sender
+// the sole recipient and an SRS-rewritten (issue #204) envelope sender
+// in the recipient's own domain, decoding back to the original MAIL FROM
 // (RFC 5228 §4.2, re #63). With redirect and no :copy, the message must
 // not be in the local INBOX.
 func TestSieveRedirect_QueuesOutbound(t *testing.T) {
@@ -51,8 +52,11 @@ func TestSieveRedirect_QueuesOutbound(t *testing.T) {
 		t.Fatalf("queue.Submit calls = %d, want 1", len(calls))
 	}
 	c := calls[0]
-	if c.MailFrom != "sender@sender.test" {
-		t.Errorf("MailFrom = %q, want sender@sender.test (RFC 5228: preserve envelope sender)", c.MailFrom)
+	if !strings.HasPrefix(c.MailFrom, "SRS0=") || !strings.HasSuffix(c.MailFrom, "@example.test") {
+		t.Errorf("MailFrom = %q, want an SRS0= address in example.test", c.MailFrom)
+	}
+	if decoded := decodeSRSFromStore(t, f.ha.Store, f.ha.Clock, c.MailFrom); decoded != "sender@sender.test" {
+		t.Errorf("decoded MailFrom = %q, want sender@sender.test", decoded)
 	}
 	if len(c.Recipients) != 1 || c.Recipients[0] != "external@example.com" {
 		t.Errorf("Recipients = %v, want [external@example.com]", c.Recipients)
@@ -126,8 +130,11 @@ if true {
 	if calls[0].Recipients[0] != "forward-target@example.org" {
 		t.Errorf("redirect target = %q, want forward-target@example.org", calls[0].Recipients[0])
 	}
-	if calls[0].MailFrom != "bob@sender.test" {
-		t.Errorf("MailFrom = %q, want bob@sender.test", calls[0].MailFrom)
+	if !strings.HasPrefix(calls[0].MailFrom, "SRS0=") || !strings.HasSuffix(calls[0].MailFrom, "@example.test") {
+		t.Errorf("MailFrom = %q, want an SRS0= address in example.test", calls[0].MailFrom)
+	}
+	if decoded := decodeSRSFromStore(t, f.ha.Store, f.ha.Clock, calls[0].MailFrom); decoded != "bob@sender.test" {
+		t.Errorf("decoded MailFrom = %q, want bob@sender.test", decoded)
 	}
 }
 

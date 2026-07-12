@@ -167,7 +167,7 @@ func (ses *session) handleSELECT(ctx context.Context, c *Command, readOnly bool)
 		// missing mailbox / missing rights to the same NO [NOPERM]
 		// or NO [NONEXISTENT] outcome a Cyrus/Dovecot peer would
 		// emit, depending on which side failed first.
-		shared, lerr := ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
+		shared, lerr := ses.accessibleMailboxes(ctx)
 		if lerr != nil {
 			return ses.resp.taggedNO(c.Tag, "", "select failed")
 		}
@@ -555,7 +555,7 @@ func (ses *session) handleLIST(ctx context.Context, c *Command, lsub bool) error
 	// already returns only mailboxes whose ACL grants the "l" lookup
 	// right, so we just append the result. The "Shared/" namespace
 	// hint is operator convention; visibility is governed by ACL.
-	shared, serr := ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
+	shared, serr := ses.accessibleMailboxes(ctx)
 	if serr == nil {
 		// De-dup by ID against owned set in case the store returns a
 		// mailbox the principal both owns and has an ACL row on.
@@ -707,7 +707,7 @@ func (ses *session) handleSTATUS(ctx context.Context, c *Command) error {
 			return ses.resp.taggedNO(c.Tag, "", "status failed")
 		}
 		// Try shared mailboxes.
-		shared, lerr := ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
+		shared, lerr := ses.accessibleMailboxes(ctx)
 		if lerr != nil {
 			return ses.resp.taggedNO(c.Tag, "", "status failed")
 		}
@@ -773,7 +773,7 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 			return ses.resp.taggedNO(c.Tag, "", "append failed")
 		}
 		// Try shared mailboxes a grantee can APPEND into.
-		shared, lerr := ses.s.store.Meta().ListMailboxesAccessibleBy(ctx, ses.pid)
+		shared, lerr := ses.accessibleMailboxes(ctx)
 		if lerr != nil {
 			return ses.resp.taggedNO(c.Tag, "TRYCREATE", "mailbox not found")
 		}

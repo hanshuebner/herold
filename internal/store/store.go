@@ -697,6 +697,51 @@ type Metadata interface {
 	// Returns the number of rows deleted; zero is not an error.
 	DeleteOneShotAPIKeysByPrincipal(ctx context.Context, pid PrincipalID) (int64, error)
 
+	// -- OAuth2 native-client grant (issue #199, REQ-AND-AUTH-01/02) --
+
+	// InsertOAuthAuthCode stores a freshly issued authorization code and
+	// returns it with the assigned ID and CreatedAt filled.
+	InsertOAuthAuthCode(ctx context.Context, c OAuthAuthCode) (OAuthAuthCode, error)
+
+	// GetOAuthAuthCodeByHash returns the code row whose Hash matches, or
+	// ErrNotFound.
+	GetOAuthAuthCodeByHash(ctx context.Context, hash string) (OAuthAuthCode, error)
+
+	// ConsumeOAuthAuthCode atomically marks the code UsedAt = usedAt,
+	// but only if it is not already used. Returns ErrConflict if the
+	// code was already consumed (a replay -- RFC 6749 §4.1.2), in which
+	// case the caller MUST revoke the code's FamilyID via
+	// RevokeOAuthRefreshTokenFamily. Returns ErrNotFound if id does not
+	// exist.
+	ConsumeOAuthAuthCode(ctx context.Context, id OAuthAuthCodeID, usedAt time.Time) error
+
+	// InsertOAuthRefreshToken stores a freshly minted refresh-token row
+	// and returns it with the assigned ID and CreatedAt filled.
+	InsertOAuthRefreshToken(ctx context.Context, rt OAuthRefreshToken) (OAuthRefreshToken, error)
+
+	// GetOAuthRefreshTokenByHash returns the row whose Hash matches, or
+	// ErrNotFound.
+	GetOAuthRefreshTokenByHash(ctx context.Context, hash string) (OAuthRefreshToken, error)
+
+	// MarkOAuthRefreshTokenRotated atomically sets RotatedAt = rotatedAt
+	// on id, but only if the row is not already rotated or revoked (a
+	// compare-and-swap that closes the race between two concurrent
+	// refresh attempts presenting the same token). Returns
+	// alreadyRotated=true, err=nil when the row was already rotated or
+	// revoked -- the caller MUST treat this as reuse detection and
+	// revoke the family. Returns ErrNotFound if id does not exist.
+	MarkOAuthRefreshTokenRotated(ctx context.Context, id OAuthRefreshTokenID, rotatedAt time.Time) (alreadyRotated bool, err error)
+
+	// RevokeOAuthRefreshTokenFamily revokes every row sharing familyID
+	// (sets RevokedAt = revokedAt on rows not already revoked) and
+	// deletes the api_keys rows referenced by their AccessKeyID column,
+	// immediately invalidating any still-live access token descended
+	// from the family rather than waiting for its short TTL to elapse.
+	// Called on reuse detection (a rotated or revoked refresh token
+	// presented again) and on explicit device sign-out. Returns the
+	// number of refresh-token rows newly revoked.
+	RevokeOAuthRefreshTokenFamily(ctx context.Context, familyID string, revokedAt time.Time) (int64, error)
+
 	// ListOIDCLinksByPrincipal returns every OIDC link owned by pid, in
 	// ascending ProviderName order. The returned slice is empty (nil)
 	// when the principal has no linked identities.
@@ -993,6 +1038,23 @@ type Metadata interface {
 	// upserts newKey as Active. Both rows land in one tx so the signer
 	// never observes a window with no active key.
 	RotateDKIMKey(ctx context.Context, domain, oldSelector string, newKey DKIMKey) error
+
+	// -- SRS (Sender Rewriting Scheme) secrets (issue #204) ------------
+
+	// InsertSRSSecret stores a new keyed-MAC secret used to sign and
+	// verify SRS return-path addresses. The store assigns ID and
+	// CreatedAt. Callers never delete a secret implicitly: rotation is
+	// "insert a new one", which becomes the signing secret (highest
+	// ID / most recent); every row is still tried when verifying an
+	// inbound SRS address so addresses signed before a rotation keep
+	// validating.
+	InsertSRSSecret(ctx context.Context, secret []byte) (SRSSecret, error)
+
+	// ListSRSSecrets returns every SRS secret in ascending ID order
+	// (oldest first). The last element is the current signing secret;
+	// callers verifying an inbound address try all of them. Returns an
+	// empty slice when none exist yet (the caller bootstraps one).
+	ListSRSSecrets(ctx context.Context) ([]SRSSecret, error)
 
 	// -- Phase 2 ACME -------------------------------------------------
 

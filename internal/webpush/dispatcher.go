@@ -607,10 +607,26 @@ func (d *Dispatcher) dispatchDeliver(
 ) {
 	switch sub.Transport.Normalized() {
 	case store.PushTransportFCM:
-		d.deliverFCM(ctx, sub, payload, coalesceTag)
+		d.deliverFCM(ctx, sub, payload, coalesceTag, urgency)
 	default:
 		d.deliver(ctx, sub, payload, coalesceTag, urgency)
 	}
+}
+
+// androidPriorityForUrgency maps the RFC 8030 §5.3 Urgency value the
+// dispatcher already computes once per event (urgencyForKind) onto
+// FCM HTTP v1's AndroidConfig.priority, so a single urgency signal
+// drives wire-level priority on both transports (re #200
+// priority-mapping follow-up). "high" urgency (currently: chat
+// messages) maps to FCM's HIGH priority so the message is delivered
+// promptly even through Doze/App Standby; everything else (mail,
+// calendar) stays at FCM's NORMAL priority, matching Web Push's
+// "normal" Urgency header for the same event classes.
+func androidPriorityForUrgency(urgency string) string {
+	if urgency == "high" {
+		return fcm.PriorityHigh
+	}
+	return fcm.PriorityNormal
 }
 
 // tryCoalesce inspects the per-(sub, tag) state and either defers the
@@ -872,6 +888,11 @@ func (d *Dispatcher) sendVerificationPingFCM(ctx context.Context, sub store.Push
 	status, _, err := d.fcm.Send(ctx, fcm.Message{
 		Token: sub.FCMToken,
 		Data:  map[string]string{"verification": string(body)},
+		// A verification ping is a one-shot handshake the client must
+		// see promptly to flip Verified; treat it as high priority the
+		// same way Web Push's SendVerificationPing hardcodes "high"
+		// Urgency (re #200 priority-mapping follow-up).
+		AndroidPriority: fcm.PriorityHigh,
 	})
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm verification ping failed",
@@ -989,11 +1010,17 @@ func (d *Dispatcher) deliver(
 // The payload carries the same JMAP StateChange envelope BuildPayload
 // produces for Web Push, as a single data field: FCM's "data" map is
 // string-valued, so there is nothing to flatten beyond that.
+//
+// urgency (the same value sendOne computed via urgencyForKind for Web
+// Push's Urgency header) is mapped to FCM's AndroidConfig.priority by
+// androidPriorityForUrgency (re #200 priority-mapping follow-up), so
+// time-sensitive event classes wake the device promptly on both
+// transports.
 func (d *Dispatcher) deliverFCM(
 	ctx context.Context,
 	sub store.PushSubscription,
 	payload []byte,
-	coalesceTag string,
+	coalesceTag, urgency string,
 ) {
 	if d.fcm == nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn,
@@ -1004,8 +1031,9 @@ func (d *Dispatcher) deliverFCM(
 	}
 	startedAt := d.clock.Now()
 	status, body, err := d.fcm.Send(ctx, fcm.Message{
-		Token: sub.FCMToken,
-		Data:  map[string]string{"payload": string(payload)},
+		Token:           sub.FCMToken,
+		Data:            map[string]string{"payload": string(payload)},
+		AndroidPriority: androidPriorityForUrgency(urgency),
 	})
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm send",

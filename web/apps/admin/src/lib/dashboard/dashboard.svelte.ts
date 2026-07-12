@@ -1,11 +1,12 @@
 /**
  * Dashboard state class.
  *
- * Aggregates data from four parallel fetches:
+ * Aggregates data from five parallel fetches:
  *   GET /api/v1/queue/stats             -> queue counts by state
  *   GET /api/v1/audit                   -> recent audit log entries (limit=10)
  *   GET /api/v1/domains                 -> local domain list
  *   GET /api/v1/admin/clientlog/stats   -> client-log counters (REQ-ADM-233)
+ *   GET /api/v1/server/status           -> push transport configured status (re #200)
  *
  * Uses Promise.allSettled so partial failures show degraded cards rather
  * than nuking the entire page.
@@ -16,6 +17,19 @@
 import { apiGet } from '../api/client';
 import type { ClientlogStats } from '../clientlog/clientlog.svelte';
 import { t } from '../i18n/i18n.svelte';
+
+// Read-only push-transport configuration status (re #200). The FCM
+// service-account credential and the VAPID private key are system
+// config (system.toml, never mutated at runtime); this block reports
+// only whether a reference to each is present, never the secret.
+export interface PushStatus {
+  webpush_configured: boolean;
+  fcm_configured: boolean;
+}
+
+interface ServerStatusResponse {
+  push?: PushStatus;
+}
 
 export interface QueueStats {
   queued?: number;
@@ -58,6 +72,9 @@ class DashboardState {
   clientlogStats = $state<ClientlogStats | null>(null);
   clientlogStatsError = $state<string | null>(null);
 
+  pushStatus = $state<PushStatus | null>(null);
+  pushStatusError = $state<string | null>(null);
+
   /** Total active queue items for the summary card. */
   queueTotal = $derived(
     (this.queueStats?.queued ?? 0) +
@@ -68,12 +85,13 @@ class DashboardState {
   async load(): Promise<void> {
     this.status = 'loading';
 
-    const [queueResult, auditResult, domainsResult, clientlogResult] =
+    const [queueResult, auditResult, domainsResult, clientlogResult, serverStatusResult] =
       await Promise.allSettled([
         apiGet<QueueStats>('/api/v1/queue/stats'),
         apiGet<{ entries: AuditEntry[] } | AuditEntry[]>('/api/v1/audit?limit=10'),
         apiGet<Domain[]>('/api/v1/domains'),
         apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
+        apiGet<ServerStatusResponse>('/api/v1/server/status'),
       ]);
 
     // Queue stats
@@ -127,6 +145,22 @@ class DashboardState {
         clientlogResult.status === 'fulfilled'
           ? (clientlogResult.value.errorMessage ?? t('dashboard.error.clientlogStats'))
           : t('dashboard.error.clientlogStatsNetwork');
+    }
+
+    // Push transport status (re #200)
+    if (
+      serverStatusResult.status === 'fulfilled' &&
+      serverStatusResult.value.ok &&
+      serverStatusResult.value.data
+    ) {
+      this.pushStatus = serverStatusResult.value.data.push ?? null;
+      this.pushStatusError = null;
+    } else {
+      this.pushStatus = null;
+      this.pushStatusError =
+        serverStatusResult.status === 'fulfilled'
+          ? (serverStatusResult.value.errorMessage ?? t('dashboard.error.pushStatus'))
+          : t('dashboard.error.pushStatusNetwork');
     }
 
     this.status = 'ready';

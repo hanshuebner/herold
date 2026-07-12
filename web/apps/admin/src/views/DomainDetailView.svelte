@@ -38,14 +38,32 @@
   }
 
   // --- New alias dialog ---
+  // The target is either an internal principal or an arbitrary
+  // external email address (re #181); aliasTargetMode selects which
+  // input the operator sees.
+  type AliasTargetMode = 'principal' | 'external';
   let aliasOpen = $state(false);
+  let aliasTargetMode = $state<AliasTargetMode>('principal');
   let aliasLocal = $state('');
   let aliasPrincipalSearch = $state('');
   let aliasPrincipalId = $state<number | null>(null);
   let aliasPrincipalEmail = $state('');
+  let aliasExternalAddress = $state('');
   let aliasExpiresAt = $state('');
   let aliasError = $state<string | null>(null);
   let aliasSubmitting = $state(false);
+
+  // Simple shape check so the submit button can gate on validity without
+  // duplicating the server's authoritative net/mail parsing.
+  const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function isValidExternalAddress(addr: string): boolean {
+    return EMAIL_PATTERN.test(addr.trim());
+  }
+
+  function setAliasTargetMode(mode: AliasTargetMode): void {
+    aliasTargetMode = mode;
+    aliasError = null;
+  }
 
   // Simple principal lookup for the autocomplete.
   interface PrincipalOption {
@@ -57,10 +75,12 @@
   let principalDropdownOpen = $state(false);
 
   function openAlias(): void {
+    aliasTargetMode = 'principal';
     aliasLocal = '';
     aliasPrincipalSearch = '';
     aliasPrincipalId = null;
     aliasPrincipalEmail = '';
+    aliasExternalAddress = '';
     aliasExpiresAt = '';
     aliasError = null;
     principalOptions = [];
@@ -122,21 +142,31 @@
   async function handleCreateAlias(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (aliasSubmitting) return;
-    if (!aliasPrincipalId) {
-      aliasError = t('domainDetail.alias.selectPrincipal');
-      return;
-    }
-    aliasError = null;
-    aliasSubmitting = true;
 
     const payload: CreateAliasPayload = {
       local: aliasLocal.trim().toLowerCase(),
       domain: name,
-      target_principal_id: aliasPrincipalId,
     };
+    if (aliasTargetMode === 'principal') {
+      if (!aliasPrincipalId) {
+        aliasError = t('domainDetail.alias.selectPrincipal');
+        return;
+      }
+      payload.target_principal_id = aliasPrincipalId;
+    } else {
+      const addr = aliasExternalAddress.trim().toLowerCase();
+      if (!isValidExternalAddress(addr)) {
+        aliasError = t('domainDetail.alias.enterExternalAddress');
+        return;
+      }
+      payload.target_address = addr;
+    }
     if (aliasExpiresAt.trim()) {
       payload.expires_at = new Date(aliasExpiresAt).toISOString();
     }
+
+    aliasError = null;
+    aliasSubmitting = true;
 
     const result = await domainDetail.createAlias(payload);
     aliasSubmitting = false;
@@ -229,7 +259,12 @@
                   <span class="mono">{alias.local}@{alias.domain}</span>
                 </td>
                 <td class="col-target">
-                  <span class="mono">{alias.target_principal_id}</span>
+                  {#if alias.target_address}
+                    <span class="mono">{alias.target_address}</span>
+                    <span class="target-badge">{t('domainDetail.aliases.targetExternalBadge')}</span>
+                  {:else}
+                    <span class="mono">#{alias.target_principal_id}</span>
+                  {/if}
                 </td>
                 <td class="col-expires">{formatDate(alias.expires_at)}</td>
                 <td class="col-actions">
@@ -328,43 +363,80 @@
     </div>
 
     <div class="field">
-      <label for="ca-principal" class="label">{t('domainDetail.alias.targetPrincipal')}</label>
-      <div class="autocomplete-wrapper">
+      <span class="label" id="ca-target-label">{t('domainDetail.alias.targetLabel')}</span>
+      <div class="target-mode-toggle" role="radiogroup" aria-labelledby="ca-target-label">
+        <button
+          type="button"
+          class="mode-btn"
+          class:active={aliasTargetMode === 'principal'}
+          role="radio"
+          aria-checked={aliasTargetMode === 'principal'}
+          onclick={() => setAliasTargetMode('principal')}
+          disabled={aliasSubmitting}
+        >
+          {t('domainDetail.alias.modePrincipal')}
+        </button>
+        <button
+          type="button"
+          class="mode-btn"
+          class:active={aliasTargetMode === 'external'}
+          role="radio"
+          aria-checked={aliasTargetMode === 'external'}
+          onclick={() => setAliasTargetMode('external')}
+          disabled={aliasSubmitting}
+        >
+          {t('domainDetail.alias.modeExternal')}
+        </button>
+      </div>
+
+      {#if aliasTargetMode === 'principal'}
+        <div class="autocomplete-wrapper">
+          <input
+            id="ca-principal"
+            type="text"
+            class="input"
+            placeholder={t('domainDetail.alias.searchPlaceholder')}
+            autocomplete="off"
+            bind:value={aliasPrincipalSearch}
+            oninput={onPrincipalInput}
+            disabled={aliasSubmitting}
+          />
+          {#if principalSearching}
+            <div class="ac-spinner" aria-label={t('domainDetail.alias.searching')}></div>
+          {/if}
+          {#if principalDropdownOpen && principalOptions.length > 0}
+            <ul class="ac-dropdown" role="listbox" aria-label={t('domainDetail.alias.optionsAriaLabel')}>
+              {#each principalOptions as opt (opt.id)}
+                <li
+                  class="ac-option"
+                  role="option"
+                  tabindex="0"
+                  aria-selected={aliasPrincipalId === opt.id}
+                  onclick={() => selectPrincipal(opt)}
+                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectPrincipal(opt); } }}
+                >
+                  <span class="ac-email">{opt.email}</span>
+                  <span class="ac-id">#{opt.id}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+        {#if aliasPrincipalId}
+          <p class="field-hint">
+            {t('domainDetail.alias.selected', { email: aliasPrincipalEmail, id: aliasPrincipalId })}
+          </p>
+        {/if}
+      {:else}
         <input
-          id="ca-principal"
-          type="text"
+          id="ca-external"
+          type="email"
           class="input"
-          placeholder={t('domainDetail.alias.searchPlaceholder')}
+          placeholder={t('domainDetail.alias.externalPlaceholder')}
           autocomplete="off"
-          bind:value={aliasPrincipalSearch}
-          oninput={onPrincipalInput}
+          bind:value={aliasExternalAddress}
           disabled={aliasSubmitting}
         />
-        {#if principalSearching}
-          <div class="ac-spinner" aria-label={t('domainDetail.alias.searching')}></div>
-        {/if}
-        {#if principalDropdownOpen && principalOptions.length > 0}
-          <ul class="ac-dropdown" role="listbox" aria-label={t('domainDetail.alias.optionsAriaLabel')}>
-            {#each principalOptions as opt (opt.id)}
-              <li
-                class="ac-option"
-                role="option"
-                tabindex="0"
-                aria-selected={aliasPrincipalId === opt.id}
-                onclick={() => selectPrincipal(opt)}
-                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectPrincipal(opt); } }}
-              >
-                <span class="ac-email">{opt.email}</span>
-                <span class="ac-id">#{opt.id}</span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-      {#if aliasPrincipalId}
-        <p class="field-hint">
-          {t('domainDetail.alias.selected', { email: aliasPrincipalEmail, id: aliasPrincipalId })}
-        </p>
       {/if}
     </div>
 
@@ -392,7 +464,13 @@
       >
         {t('common.cancel')}
       </button>
-      <button type="submit" class="btn-primary" disabled={aliasSubmitting || !aliasLocal.trim() || !aliasPrincipalId}>
+      <button
+        type="submit"
+        class="btn-primary"
+        disabled={aliasSubmitting ||
+          !aliasLocal.trim() ||
+          (aliasTargetMode === 'principal' ? !aliasPrincipalId : !isValidExternalAddress(aliasExternalAddress))}
+      >
         {aliasSubmitting ? t('domainDetail.alias.creating') : t('domainDetail.alias.create')}
       </button>
     </div>
@@ -544,6 +622,19 @@
     font-size: var(--type-code-01-size);
   }
 
+  .target-badge {
+    display: inline-block;
+    margin-left: var(--spacing-02);
+    padding: 1px var(--spacing-02);
+    font-size: var(--type-helper-text-01-size);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+    background: var(--layer-02);
+    border-radius: var(--radius-sm);
+  }
+
   .empty-row {
     padding: var(--spacing-07) var(--spacing-05) !important;
     text-align: center;
@@ -675,6 +766,39 @@
     color: var(--text-secondary);
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  /* Alias target mode toggle */
+  .target-mode-toggle {
+    display: flex;
+    gap: var(--spacing-02);
+    margin-bottom: var(--spacing-02);
+  }
+
+  .mode-btn {
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--layer-02);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .mode-btn:hover:not(:disabled) {
+    background: var(--layer-03);
+  }
+  .mode-btn.active {
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-color: var(--interactive);
+  }
+  .mode-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   /* Autocomplete */
