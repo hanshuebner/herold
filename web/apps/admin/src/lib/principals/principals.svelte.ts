@@ -1,9 +1,12 @@
 /**
  * Principals list state class.
  *
- * Paginates GET /api/v1/principals using an after_id cursor + limit.
- * Client-side substring filter on the loaded list (protoadmin has no
- * search query parameter; see Phase 2 audit section 3).
+ * Paginates GET /api/v1/principals using an after cursor + limit; the
+ * response is the {items, next} pageDTO envelope (see
+ * internal/protoadmin/principals.go handleListPrincipals), which the
+ * loaders unwrap into items/cursor/hasMore. Client-side substring
+ * filter on the loaded list (protoadmin has no search query parameter;
+ * see Phase 2 audit section 3).
  */
 
 import { apiGet, apiPost } from '../api/client';
@@ -66,8 +69,8 @@ class PrincipalsState {
     this.items = [];
     this.hasMore = false;
 
-    const result = await apiGet<PrincipalSummary[]>(
-      `/api/v1/principals?after_id=0&limit=${PAGE_LIMIT}`,
+    const result = await apiGet<{ items: PrincipalSummary[]; next: string | null }>(
+      `/api/v1/principals?after=0&limit=${PAGE_LIMIT}`,
     );
 
     if (!result.ok || result.data === null) {
@@ -76,9 +79,10 @@ class PrincipalsState {
       return;
     }
 
-    this.items = result.data;
-    this.hasMore = result.data.length === PAGE_LIMIT;
-    const lastItem = result.data[result.data.length - 1];
+    const items = result.data.items ?? [];
+    this.items = items;
+    this.hasMore = items.length === PAGE_LIMIT;
+    const lastItem = items[items.length - 1];
     if (lastItem !== undefined) {
       this.cursor = lastItem.id;
     }
@@ -89,8 +93,8 @@ class PrincipalsState {
     if (!this.hasMore || this.status === 'loading') return;
     this.status = 'loading';
 
-    const result = await apiGet<PrincipalSummary[]>(
-      `/api/v1/principals?after_id=${this.cursor}&limit=${PAGE_LIMIT}`,
+    const result = await apiGet<{ items: PrincipalSummary[]; next: string | null }>(
+      `/api/v1/principals?after=${this.cursor}&limit=${PAGE_LIMIT}`,
     );
 
     if (!result.ok || result.data === null) {
@@ -99,9 +103,10 @@ class PrincipalsState {
       return;
     }
 
-    this.items = [...this.items, ...result.data];
-    this.hasMore = result.data.length === PAGE_LIMIT;
-    const lastItem = result.data[result.data.length - 1];
+    const items = result.data.items ?? [];
+    this.items = [...this.items, ...items];
+    this.hasMore = items.length === PAGE_LIMIT;
+    const lastItem = items[items.length - 1];
     if (lastItem !== undefined) {
       this.cursor = lastItem.id;
     }
