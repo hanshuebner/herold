@@ -147,11 +147,55 @@ export function startPeriodicUpdateCheck(
   return () => clearInterval(id);
 }
 
+/**
+ * Event handlers that re-check for a new sw.js on the signals that fire when
+ * a backgrounded or slept tab comes back to the foreground.
+ *
+ * The hourly startPeriodicUpdateCheck() interval does not fire while the OS
+ * is asleep or the tab is frozen/discarded by the browser, so a deploy that
+ * lands during a closed-laptop night is missed until the next arbitrary-phase
+ * tick (re #209).  Wiring these handlers to `visibilitychange`, `focus`, and
+ * `online` closes that gap: returning to the tab always re-checks sw.js
+ * immediately instead of waiting out the rest of the hourly cycle.
+ */
+export interface FocusUpdateCheckHandlers {
+  onVisibilityChange: () => void;
+  onFocus: () => void;
+  onOnline: () => void;
+}
+
+/**
+ * Builds the handlers for startFocusUpdateCheck's three signals.
+ *
+ * `isDocumentVisible` is injected (rather than reading document.visibilityState
+ * directly) so the visibilitychange handler is unit-testable without a real
+ * document; the focus and online handlers always check unconditionally since
+ * both events only fire when the page is already the foreground target.
+ */
+export function startFocusUpdateCheck(
+  reg: ServiceWorkerRegistration,
+  isDocumentVisible: () => boolean,
+): FocusUpdateCheckHandlers {
+  const check = (): void => {
+    reg.update().catch(() => {
+      // Same as startPeriodicUpdateCheck: swallow offline / non-OK failures.
+    });
+  };
+  return {
+    onVisibilityChange: () => {
+      if (isDocumentVisible()) check();
+    },
+    onFocus: check,
+    onOnline: check,
+  };
+}
+
 export const _internals_forTest = {
   shouldShowBanner,
   watchRegistration,
   activateWaiting,
   startPeriodicUpdateCheck,
+  startFocusUpdateCheck,
   get reloading(): boolean {
     return _reloading;
   },

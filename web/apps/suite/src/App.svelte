@@ -24,7 +24,12 @@
   import { mail } from './lib/mail/store.svelte';
   import { threadDnd } from './lib/mail/dnd-thread.svelte';
   import { pushSubscription } from './lib/push/push-subscription.svelte';
-  import { watchRegistration, activateWaiting, startPeriodicUpdateCheck } from '@herold/clientlog/sw-update';
+  import {
+    watchRegistration,
+    activateWaiting,
+    startPeriodicUpdateCheck,
+    startFocusUpdateCheck,
+  } from '@herold/clientlog/sw-update';
   import { handleSwNavigateMessage } from './lib/push/sw-navigate';
   // Side-effect: registers a sync.on('InternalizeStatus') handler that
   // refreshes the session descriptor whenever the background internalize-
@@ -361,6 +366,17 @@
         // byte-compare sw.js until the next reload or its 24-hour check interval
         // (REQ-MOB-75 / REQ-PUSH-72).
         startPeriodicUpdateCheck(reg, 60 * 60 * 1000);
+
+        // Also re-check immediately when the tab comes back to the foreground
+        // (visibilitychange -> visible, window focus, network back online).
+        // The hourly interval above does not fire while the OS is asleep or
+        // the tab is frozen/discarded, so without this a deploy that lands
+        // during a closed-laptop night is missed until the next arbitrary-
+        // phase tick (re #209).
+        const focusCheck = startFocusUpdateCheck(reg, () => document.visibilityState === 'visible');
+        document.addEventListener('visibilitychange', focusCheck.onVisibilityChange);
+        window.addEventListener('focus', focusCheck.onFocus);
+        window.addEventListener('online', focusCheck.onOnline);
       })
       .catch(() => {
         // SW registration failed (e.g. insecure context in dev) — update
