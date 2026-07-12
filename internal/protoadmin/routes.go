@@ -53,6 +53,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// -- that mints a long-lived "hk_..." Bearer token instead of a
 	// cookie. Rate-limited per source IP the same way login is.
 	mux.HandleFunc("POST /api/v1/auth/device-token", s.handleIssueDeviceToken)
+	// OAuth2 authorization-code + PKCE grant for native clients (issue
+	// #199, REQ-AND-AUTH-01/02): the system-browser sign-in surface
+	// (GET renders the login form, POST submits it and redirects back
+	// with a code) and the RFC 6749 token endpoint. All three are
+	// unauthenticated -- they are the auth boundary, like /auth/login.
+	mux.HandleFunc("/oauth2/authorize", s.handleOAuthAuthorize)
+	mux.HandleFunc("POST /oauth2/token", s.handleOAuthToken)
 	// Step-up: TOTP verification that creates a server-side elevation record
 	// gating admin endpoints (REQ-AUTH-74, issue #79). Requires a cookie session
 	// and CSRF check (auth1 enforces the CSRF gate on POST).

@@ -116,6 +116,11 @@ type APIKeyRow struct {
 	// automatically deleted after the first successful TOTP confirm
 	// (re #21, REQ-AUTH-44). False (0) for all pre-migration rows.
 	OneShot bool `json:"one_shot"`
+	// ExpiresAtUs is the migration-0081 nullable expiry (issue #199).
+	// NULL for every pre-migration row and for operator-issued /
+	// device-token keys, which never expire on their own; populated
+	// only for short-lived OAuth2 access tokens.
+	ExpiresAtUs *int64 `json:"expires_at_us,omitempty"`
 }
 
 type AliasRow struct {
@@ -738,6 +743,52 @@ type SessionElevationRow struct {
 	PrincipalID int64  `json:"principal_id"`
 	ElevatedAt  int64  `json:"elevated_at_us"`
 	ExpiresAt   int64  `json:"expires_at_us"`
+}
+
+// OAuthAuthCodeRow mirrors one row of the oauth_auth_codes table
+// introduced in migration 0081 (issue #199, REQ-AND-AUTH-01/02).
+// Excluded from backup by default: authorization codes have a 60-second
+// TTL and are single-use, so a restored row is always already expired
+// or already consumed by the time any restore could complete. The row
+// is listed in TableNames so VerifyBundle has a typed receiver; the
+// backup writes an empty JSONL.
+type OAuthAuthCodeRow struct {
+	ID                  int64  `json:"id"`
+	Hash                string `json:"hash"`
+	ClientID            string `json:"client_id"`
+	PrincipalID         int64  `json:"principal_id"`
+	RedirectURI         string `json:"redirect_uri"`
+	CodeChallenge       string `json:"code_challenge"`
+	CodeChallengeMethod string `json:"code_challenge_method"`
+	ScopeJSON           string `json:"scope_json"`
+	FamilyID            string `json:"family_id"`
+	CreatedAtUs         int64  `json:"created_at_us"`
+	ExpiresAtUs         int64  `json:"expires_at_us"`
+	UsedAtUs            *int64 `json:"used_at_us,omitempty"`
+}
+
+// OAuthRefreshTokenRow mirrors one row of the oauth_refresh_tokens table
+// introduced in migration 0081 (issue #199, REQ-AND-AUTH-01/02).
+// Excluded from backup by default: like sessions/session_elevations, a
+// restored refresh token would resume a device's rotation chain into a
+// system where its paired access token (an api_keys row, also excluded
+// from restore expectations for ephemeral credentials) may no longer be
+// live, and rotation-with-reuse-detection depends on the chain state
+// being contemporaneous, not replayed from a snapshot. The row is
+// listed in TableNames so VerifyBundle has a typed receiver; the backup
+// writes an empty JSONL.
+type OAuthRefreshTokenRow struct {
+	ID          int64  `json:"id"`
+	Hash        string `json:"hash"`
+	FamilyID    string `json:"family_id"`
+	PrincipalID int64  `json:"principal_id"`
+	ClientID    string `json:"client_id"`
+	ScopeJSON   string `json:"scope_json"`
+	AccessKeyID *int64 `json:"access_key_id,omitempty"`
+	CreatedAtUs int64  `json:"created_at_us"`
+	ExpiresAtUs int64  `json:"expires_at_us"`
+	RotatedAtUs *int64 `json:"rotated_at_us,omitempty"`
+	RevokedAtUs *int64 `json:"revoked_at_us,omitempty"`
 }
 
 // ClientLogRow mirrors one row of the clientlog ring-buffer table

@@ -36,6 +36,14 @@ type AliasID uint64
 // APIKeyID uniquely identifies an API key.
 type APIKeyID uint64
 
+// OAuthAuthCodeID uniquely identifies an issued OAuth 2.0 authorization
+// code row (issue #199, REQ-AND-AUTH-01/02).
+type OAuthAuthCodeID uint64
+
+// OAuthRefreshTokenID uniquely identifies an OAuth 2.0 refresh-token row
+// (issue #199, REQ-AND-AUTH-01/02).
+type OAuthRefreshTokenID uint64
+
 // UID is an IMAP message UID, unique within a mailbox for the lifetime of
 // its UIDVALIDITY epoch. 32-bit per RFC 3501.
 type UID uint32
@@ -916,6 +924,105 @@ type APIKey struct {
 	// Bootstrap and recovery keys carry this flag so they cannot be
 	// reused after TOTP enrollment is complete (REQ-AUTH-44).
 	OneShot bool
+	// ExpiresAt is the instant this key stops authenticating (migration
+	// 0081, issue #199 OAuth2 native-client grant). Zero value means no
+	// expiry -- the existing operator-issued and device-token rows never
+	// set this field, matching their "revocation is the sole lifecycle
+	// control" model. Short-lived OAuth2 access tokens (REQ-AND-AUTH-02,
+	// 1-hour default) are the only rows that populate it; the Bearer
+	// verification path in protojmap/protoadmin rejects a key whose
+	// ExpiresAt is non-zero and in the past.
+	ExpiresAt time.Time
+}
+
+// OAuthAuthCode is a single-use authorization code issued by
+// GET/POST /oauth2/authorize (issue #199, REQ-AND-AUTH-01/02). It is
+// exchanged exactly once at POST /oauth2/token for an access + refresh
+// token pair; a second exchange attempt is a replay and, per RFC 6749
+// §4.1.2, revokes every token descended from it (its FamilyID).
+type OAuthAuthCode struct {
+	// ID is the stable primary key.
+	ID OAuthAuthCodeID
+	// Hash is the SHA-256 hex digest of the plaintext code. The
+	// plaintext is shown to the browser exactly once, in the redirect
+	// back to RedirectURI.
+	Hash string
+	// ClientID is the OAuth2 client that requested the code
+	// (directory.OAuthClient registry key).
+	ClientID string
+	// PrincipalID is the principal who authenticated at the login page.
+	PrincipalID PrincipalID
+	// RedirectURI is the exact redirect_uri supplied at the authorize
+	// step. The token endpoint requires the redirect_uri parameter of
+	// the exchange request to match this value byte-for-byte (RFC 6749
+	// §4.1.3), preventing an authorization code minted for one redirect
+	// target from being redeemed against another.
+	RedirectURI string
+	// CodeChallenge and CodeChallengeMethod are the PKCE parameters
+	// (RFC 7636) captured at the authorize step; the token endpoint
+	// requires the caller's code_verifier to satisfy CodeChallenge
+	// under CodeChallengeMethod (S256 only -- REQ-AND-AUTH-02 mandates
+	// PKCE and this deployment never accepts the "plain" method).
+	CodeChallenge       string
+	CodeChallengeMethod string
+	// ScopeJSON is the JSON-encoded auth.Scope list the resulting
+	// access/refresh token pair will carry.
+	ScopeJSON string
+	// FamilyID is the refresh-token rotation-chain identifier this
+	// code's first token exchange establishes (directory assigns it at
+	// issuance so a replayed code can revoke the whole chain even
+	// though the code itself, not a refresh token, is being replayed).
+	FamilyID string
+	// CreatedAt is the issuance instant.
+	CreatedAt time.Time
+	// ExpiresAt is the short authorization-code TTL (RFC 6749
+	// recommends 10 minutes maximum; this deployment uses 60 seconds).
+	ExpiresAt time.Time
+	// UsedAt is the instant the code was exchanged. Zero means unused.
+	// A second exchange attempt (UsedAt already non-zero) is a replay.
+	UsedAt time.Time
+}
+
+// OAuthRefreshToken is one node in a refresh-token rotation chain
+// (issue #199, REQ-AND-AUTH-02). Every successful refresh mints a new
+// row sharing FamilyID with its predecessor and marks the predecessor
+// RotatedAt; presenting an already-rotated token again is a reuse
+// signal (token theft or a lost race) that revokes every row sharing
+// FamilyID (RevokeOAuthRefreshTokenFamily).
+type OAuthRefreshToken struct {
+	// ID is the stable primary key.
+	ID OAuthRefreshTokenID
+	// Hash is the SHA-256 hex digest of the plaintext refresh token.
+	Hash string
+	// FamilyID identifies the rotation chain. Assigned once, at the
+	// authorization-code exchange that starts the chain, and carried
+	// forward unchanged by every rotation.
+	FamilyID string
+	// PrincipalID is the owning principal.
+	PrincipalID PrincipalID
+	// ClientID is the OAuth2 client this token was issued to.
+	ClientID string
+	// ScopeJSON is the JSON-encoded auth.Scope list.
+	ScopeJSON string
+	// AccessKeyID is the api_keys row minted alongside this refresh
+	// token (the short-lived access token handed back in the same
+	// response). Zero when the access token has since been deleted
+	// (family revocation, expiry cleanup). ON DELETE SET NULL: a
+	// principal deletion cascades independently.
+	AccessKeyID APIKeyID
+	// CreatedAt is the mint instant.
+	CreatedAt time.Time
+	// ExpiresAt is the refresh-token absolute lifetime (REQ-AND-AUTH-02
+	// default 30 days), independent of rotation.
+	ExpiresAt time.Time
+	// RotatedAt is set the instant this token is exchanged for its
+	// successor. Zero means this is the current, presentable token in
+	// the chain; non-zero means presenting it again is a replay.
+	RotatedAt time.Time
+	// RevokedAt is set when the whole family is revoked -- either by
+	// reuse detection (a rotated token replayed) or an explicit
+	// sign-out / session revocation. Zero means the family is live.
+	RevokedAt time.Time
 }
 
 // ActorKind classifies the source of an audited action. The vocabulary
