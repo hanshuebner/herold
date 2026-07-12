@@ -3,6 +3,7 @@ package protosmtp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -21,6 +22,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
+	"github.com/hanshuebner/herold/internal/srs"
 	"github.com/hanshuebner/herold/internal/taggedaddr"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -145,6 +147,15 @@ type rcptEntry struct {
 	// into the outbound queue toward this address instead of local
 	// mailbox delivery, reusing the #63 redirect-to-queue mechanics.
 	externalForward string
+	// srsBounceTo is set when this recipient address is a valid SRS
+	// (Sender Rewriting Scheme) return-path that decoded to an original
+	// sender OUTSIDE this deployment (issue #204). principalID stays 0;
+	// DATA-time dispatch relays the message (typically a DSN bounce) to
+	// this address via the same queueForward substrate as an external
+	// alias. When the decoded original sender is one of THIS server's
+	// own principals, resolveInboundSRS resolves principalID directly
+	// instead (normal local delivery; srsBounceTo stays empty).
+	srsBounceTo string
 }
 
 // runSession is invoked by Server.Serve for each accepted connection.
@@ -824,6 +835,19 @@ func (sess *session) runRcptResolutionChain(entry *rcptEntry) rcptResolveOutcome
 		return rcptOutcomeRefused
 	}
 
+	// Step 2-SRS: SRS (Sender Rewriting Scheme) return-path decode (issue
+	// #204). An SRS0=/SRS1=-shaped local-part that failed the internal
+	// lookup is vanishingly unlikely to be a real mailbox or alias; try
+	// decoding it before falling through to the external-alias / plugin
+	// steps. Decode success or failure is terminal here -- an SRS-shaped
+	// address that fails to decode (forged, stale, or signed with an
+	// unknown secret) is rejected outright rather than falling through
+	// to alias/plugin resolution, since treating it as some other kind
+	// of recipient would defeat the tamper check.
+	if errors.Is(err, directory.ErrNotFound) && srs.IsSRSAddress(entry.localPart) {
+		return sess.resolveSRSBounce(entry)
+	}
+
 	// Step 2a: external-target alias (re #181). local@domain may be an
 	// alias that forwards to an address outside this deployment. The
 	// recipient is still accepted here (we are authoritative for the
@@ -980,6 +1004,84 @@ func (sess *session) applyResolveRcpt(entry *rcptEntry) (rcptResolveOutcome, boo
 		// Should never happen; treat as fallthrough.
 		return rcptOutcomeRefused, true
 	}
+}
+
+// maxSRSUnwind bounds the number of SRS1 layers resolveSRSBounce will
+// peel off in one RCPT TO before giving up. A legitimate forward chain
+// through this deployment is at most a handful of hops; a longer chain
+// is either pathological or an attempt to burn CPU on a crafted address
+// (issue #204).
+const maxSRSUnwind = 5
+
+// resolveSRSBounce decodes an SRS0=/SRS1=-shaped recipient local-part
+// (issue #204) back to the address it was encoded from, validating the
+// keyed hash and (for SRS0) timestamp freshness. It is reached only
+// after the internal directory lookup on the raw address has already
+// failed (see runRcptResolutionChain), so a genuine mailbox or alias
+// whose local-part happens to start with "SRS0=" always wins.
+//
+// A successful decode that lands on one of THIS server's own local
+// domains resolves as a normal internal recipient (entry.principalID),
+// unwinding further SRS1 layers (bounded by maxSRSUnwind) until it
+// either reaches a live principal or a foreign domain. A decode that
+// lands on a foreign domain sets entry.srsBounceTo so DATA-time
+// dispatch relays the message (typically an RFC 3464 DSN bounce) there
+// via queueForward, the same substrate #181's external-target aliases
+// use. Any decode failure (forged hash, unknown secret, stale
+// timestamp, or an unwound address that resolves to neither a live
+// principal nor a foreign domain) is rejected with 550, matching the
+// no-such-mailbox reply an ordinary unresolvable recipient gets.
+func (sess *session) resolveSRSBounce(entry *rcptEntry) rcptResolveOutcome {
+	_, secrets, err := srs.Secrets(sess.ctx, sess.srv.store.Meta(), rand.Reader)
+	if err != nil {
+		sess.log.WarnContext(sess.ctx, "srs decode: secret load failed",
+			slog.String("activity", observe.ActivityInternal),
+			slog.String("recipient", entry.addr),
+			slog.String("err", err.Error()))
+		sess.writeReply("451 4.3.0 directory lookup failed")
+		return rcptOutcomeRefused
+	}
+	local := entry.localPart
+	var domain string
+	now := sess.srv.clk.Now()
+	for i := 0; i < maxSRSUnwind; i++ {
+		decLocal, decDomain, derr := srs.Decode(secrets, now, srs.MaxAgeDefault, local)
+		if derr != nil {
+			sess.log.WarnContext(sess.ctx, "srs decode: rejected",
+				slog.String("activity", observe.ActivityAudit),
+				slog.String("recipient", entry.addr),
+				slog.String("err", derr.Error()))
+			sess.writeReply("550 5.1.1 mailbox does not exist")
+			entry.decisionSource = "srs_decode_rejected"
+			return rcptOutcomeRefused
+		}
+		local, domain = decLocal, decDomain
+
+		dom, derr2 := sess.srv.store.Meta().GetDomain(sess.ctx, domain)
+		if derr2 != nil || !dom.IsLocal {
+			// The recovered address is outside this deployment: relay the
+			// bounce there via queueForward at DATA time.
+			entry.srsBounceTo = local + "@" + domain
+			entry.decisionSource = "srs_decode_external"
+			return rcptOutcomeAccept
+		}
+		if pid, perr := sess.srv.dir.ResolveAddress(sess.ctx, local, domain); perr == nil {
+			entry.principalID = pid
+			entry.decisionSource = "srs_decode_internal"
+			return rcptOutcomeAccept
+		}
+		if !srs.IsSRSAddress(local) {
+			// A local domain, but not a live principal and not a further
+			// SRS layer to unwind: nothing to deliver to.
+			break
+		}
+		// Otherwise the recovered address is itself another SRS layer on
+		// one of our own domains (a forward-of-a-forward within this
+		// deployment); loop to unwind it.
+	}
+	sess.writeReply("550 5.1.1 mailbox does not exist")
+	entry.decisionSource = "srs_decode_rejected"
+	return rcptOutcomeRefused
 }
 
 // --- DATA -------------------------------------------------------------
