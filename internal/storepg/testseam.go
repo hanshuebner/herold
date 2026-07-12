@@ -68,6 +68,8 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"acme_accounts",
 		// DKIM keys (per-domain, FK to domains).
 		"dkim_keys",
+		// SRS (Sender Rewriting Scheme) signing secrets (issue #204, no FK).
+		"srs_secrets",
 		// Outbound queue.
 		"queue",
 		// Audit log + cursors.

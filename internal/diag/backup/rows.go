@@ -321,6 +321,15 @@ type DKIMKeyRow struct {
 	RotatedAtUs   int64  `json:"rotated_at_us"`
 }
 
+// SRSSecretRow mirrors the srs_secrets table introduced in migration 0081
+// (issue #204): keyed-MAC secrets internal/srs uses to sign and verify SRS
+// return-path addresses on forwarded mail. No FK; rows are self-contained.
+type SRSSecretRow struct {
+	ID          int64  `json:"id"`
+	Secret      []byte `json:"secret"`
+	CreatedAtUs int64  `json:"created_at_us"`
+}
+
 type ACMEAccountRow struct {
 	ID            int64  `json:"id"`
 	DirectoryURL  string `json:"directory_url"`

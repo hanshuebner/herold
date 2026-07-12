@@ -6,16 +6,50 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protosmtp"
+	"github.com/hanshuebner/herold/internal/srs"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// decodeSRSFromStore reads every SRS secret currently in s and decodes
+// addr (a MAIL FROM the queue received) back to its original sender,
+// failing the test on any decode error. clk must be the same clock the
+// session used at encode time (the harness's fake clock), since SRS0's
+// freshness check is relative to "now". Used by tests that assert the
+// #204 SRS-rewritten return-path decodes to the pre-forward sender.
+func decodeSRSFromStore(t *testing.T, s store.Store, clk clock.Clock, addr string) string {
+	t.Helper()
+	local, _, ok := strings.Cut(addr, "@")
+	if !ok {
+		t.Fatalf("decodeSRSFromStore: %q is not a valid address", addr)
+	}
+	rows, err := s.Meta().ListSRSSecrets(context.Background())
+	if err != nil {
+		t.Fatalf("ListSRSSecrets: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("ListSRSSecrets: no secrets found; SRS encode should have bootstrapped one")
+	}
+	secrets := make([][]byte, len(rows))
+	for i, r := range rows {
+		secrets[i] = r.Secret
+	}
+	origLocal, origDomain, err := srs.Decode(secrets, clk.Now(), srs.MaxAgeDefault, local)
+	if err != nil {
+		t.Fatalf("srs.Decode(%q): %v", addr, err)
+	}
+	return origLocal + "@" + origDomain
+}
 
 // TestAliasExternalTarget_QueuesOutbound verifies the full re #181 flow:
 // inbound mail to a local address whose alias targets an address outside
 // this deployment is re-injected into the outbound queue (riding the #63
 // redirect-to-queue substrate) rather than delivered to any local
-// mailbox. The envelope sender is preserved (see the #181 issue comment
-// for the return-path analysis) and the message is not re-signed.
+// mailbox. The envelope return-path is SRS-rewritten into the alias's own
+// domain (issue #204) so the destination's SPF check runs against a
+// domain this server is authorized to send for; decoding it recovers the
+// original sender exactly, and the message is not re-signed.
 func TestAliasExternalTarget_QueuesOutbound(t *testing.T) {
 	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
 	q := &fakeSubmissionQueue{envID: "env-alias-external-1"}
@@ -54,8 +88,11 @@ func TestAliasExternalTarget_QueuesOutbound(t *testing.T) {
 		t.Fatalf("queue.Submit calls = %d, want 1", len(calls))
 	}
 	c := calls[0]
-	if c.MailFrom != "customer@sender.test" {
-		t.Errorf("MailFrom = %q, want customer@sender.test (envelope sender preserved)", c.MailFrom)
+	if !strings.HasPrefix(c.MailFrom, "SRS0=") || !strings.HasSuffix(c.MailFrom, "@example.test") {
+		t.Errorf("MailFrom = %q, want an SRS0= address in the alias's own domain (example.test)", c.MailFrom)
+	}
+	if decoded := decodeSRSFromStore(t, f.ha.Store, f.ha.Clock, c.MailFrom); decoded != "customer@sender.test" {
+		t.Errorf("decoded MailFrom = %q, want customer@sender.test", decoded)
 	}
 	if len(c.Recipients) != 1 || c.Recipients[0] != "sales@external.example" {
 		t.Errorf("Recipients = %v, want [sales@external.example]", c.Recipients)

@@ -127,6 +127,7 @@ var tableReg = map[string]tableDesc{
 	"cursors":                    {&CursorRow{}, "key"},
 	"queue":                      {&QueueRow{}, "id"},
 	"dkim_keys":                  {&DKIMKeyRow{}, "id"},
+	"srs_secrets":                {&SRSSecretRow{}, "id"},
 	"acme_accounts":              {&ACMEAccountRow{}, "id"},
 	"acme_orders":                {&ACMEOrderRow{}, "id"},
 	"acme_certs":                 {&ACMECertRow{}, "hostname"},

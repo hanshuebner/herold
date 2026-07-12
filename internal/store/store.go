@@ -994,6 +994,23 @@ type Metadata interface {
 	// never observes a window with no active key.
 	RotateDKIMKey(ctx context.Context, domain, oldSelector string, newKey DKIMKey) error
 
+	// -- SRS (Sender Rewriting Scheme) secrets (issue #204) ------------
+
+	// InsertSRSSecret stores a new keyed-MAC secret used to sign and
+	// verify SRS return-path addresses. The store assigns ID and
+	// CreatedAt. Callers never delete a secret implicitly: rotation is
+	// "insert a new one", which becomes the signing secret (highest
+	// ID / most recent); every row is still tried when verifying an
+	// inbound SRS address so addresses signed before a rotation keep
+	// validating.
+	InsertSRSSecret(ctx context.Context, secret []byte) (SRSSecret, error)
+
+	// ListSRSSecrets returns every SRS secret in ascending ID order
+	// (oldest first). The last element is the current signing secret;
+	// callers verifying an inbound address try all of them. Returns an
+	// empty slice when none exist yet (the caller bootstraps one).
+	ListSRSSecrets(ctx context.Context) ([]SRSSecret, error)
+
 	// -- Phase 2 ACME -------------------------------------------------
 
 	// UpsertACMEAccount inserts or updates an ACME account row keyed
