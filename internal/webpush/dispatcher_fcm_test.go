@@ -282,11 +282,12 @@ func TestDispatcher_FCM_EndToEnd(t *testing.T) {
 	if _, ok := c.Data["notification"]; ok {
 		t.Fatalf("data payload must not carry a notification key")
 	}
-	// Mail is a "normal" urgency event class (urgencyForKind); it must
-	// NOT get the high-priority treatment (re #200 priority-mapping
-	// follow-up).
-	if c.AndroidPriority != "NORMAL" {
-		t.Fatalf("android.priority = %q, want NORMAL for a mail push", c.AndroidPriority)
+	// Mail is a "high" urgency event class (urgencyForKind): the
+	// maintainer decided new-mail pushes should ride HIGH priority so
+	// the OS delivers them promptly through Doze/App Standby (re #200
+	// priority-mapping follow-up).
+	if c.AndroidPriority != "HIGH" {
+		t.Fatalf("android.priority = %q, want HIGH for a mail push", c.AndroidPriority)
 	}
 }
 

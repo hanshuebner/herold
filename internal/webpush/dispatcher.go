@@ -782,10 +782,11 @@ func (d *Dispatcher) stopAllCoalesce() {
 }
 
 // urgencyForKind picks the RFC 8030 §5.3 Urgency header value per
-// event class. Chat is the "interactive" tier, mail is "normal",
-// calendar is also "normal".
+// event class. Chat and new-mail are both "interactive" tier (re #200:
+// maintainer decision to promote new-mail to HIGH); calendar remains
+// "normal".
 func urgencyForKind(k store.EntityKind) string {
-	if k == store.EntityKindChatMessage {
+	if k == store.EntityKindChatMessage || k == store.EntityKindEmail {
 		return "high"
 	}
 	return "normal"
