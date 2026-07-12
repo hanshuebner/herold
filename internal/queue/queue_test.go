@@ -1363,6 +1363,20 @@ func TestDeliver_ExternalSubmissionItem(t *testing.T) {
 		State:         store.QueueStateQueued,
 		NextAttemptAt: now,
 		CreatedAt:     now,
+		// DSNNotify: store.DSNNotifyNever suppresses the failure DSN that
+		// handlePermanent would otherwise enqueue (shouldEmitFailureDSN
+		// returns true for the default DSNNotifyNone). That DSN row carries
+		// a fresh envelope id with no EmailSubmissionRow, so
+		// isExternalSubmissionItem correctly passes it through to the fake
+		// deliverer -- incrementing callCount() and racing this test's
+		// "deliverer must not be called" assertion (CI run #700, job 7459:
+		// stats showed Done:1 Failed:1, deliv calls: 1 -- the Done:1 was the
+		// delivered DSN, not the original row). Suppressing the DSN removes
+		// the second row entirely instead of narrowing the race window; the
+		// sibling tests TestSignTrueWithNilSignerIsPermanent and
+		// TestSignerFailureIsPermanentNotUnsignedDelivery already carry this
+		// fix (re bef47047).
+		DSNNotify: store.DSNNotifyNever,
 	}); err != nil {
 		t.Fatalf("EnqueueMessage: %v", err)
 	}
