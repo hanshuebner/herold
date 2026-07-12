@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -216,6 +217,16 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, ev := range evts {
+		// Exclude connection-lifecycle system events that are not tied to a
+		// specific message (e.g. imapimport's IDLE armed/woke, dial
+		// connected/closed, sync round, noop tick debug events, all
+		// action-prefixed "imapimport." by internal/imapimport's
+		// emitDebugEvent). These carry no envelope, sender, or recipient to
+		// match a per-message search on and belong in the imapimport
+		// diagnostics view, not this per-message tracer (re #214).
+		if isNonMessageSystemEvent(ev.Action) {
+			continue
+		}
 		e := map[string]any{
 			"source":      "smtp_event",
 			"at":          ev.At.UTC().Format(time.RFC3339Nano),
@@ -306,4 +317,16 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"next":  next,
 	})
+}
+
+// isNonMessageSystemEvent reports whether a system_events Action identifies a
+// connection-lifecycle or background operational event rather than an
+// SMTP-time accept/reject/defer decision tied to a specific message. Message
+// research (REQ-ADM-306) is a per-message tracer; events with no envelope,
+// sender, or recipient to match a search on do not belong in its timeline
+// (re #214). Currently this is exactly internal/imapimport's debug events
+// (IDLE armed/woke, dial connected/closed, sync round, noop tick), which are
+// all emitted with the "imapimport." action prefix by emitDebugEvent.
+func isNonMessageSystemEvent(action string) bool {
+	return strings.HasPrefix(action, "imapimport.")
 }

@@ -646,3 +646,61 @@ func TestMessageResearch_ForwardRelayNewestFirst(t *testing.T) {
 		t.Errorf("newest send_outcome mail_from = %v; want the alias-forward relay row", item["mail_from"])
 	}
 }
+
+// TestMessageResearch_ExcludesIMAPImportSystemEvents reproduces the reported
+// shape (re #214): imapimport's connection-lifecycle debug events (emitted by
+// emitDebugEvent in internal/imapimport/worker.go/idle.go, action-prefixed
+// "imapimport.") are not per-message events -- they have no envelope, sender,
+// or recipient -- and must not surface in the per-message research timeline.
+// The genuine SMTP-time reject seeded by seedResearchFixture must still
+// appear, so the fix excludes by action prefix rather than dropping the
+// smtp_event source entirely.
+func TestMessageResearch_ExcludesIMAPImportSystemEvents(t *testing.T) {
+	h := newHarness(t)
+	adminKey, _, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	if err := s.Meta().AppendSystemEvent(ctx, store.SystemEvent{
+		At:      time.Date(2026, 6, 1, 11, 58, 0, 0, time.UTC),
+		Action:  "imapimport.idle.entered",
+		ActorID: "acct-1",
+		Subject: "imapimport:acct-1",
+		Outcome: store.OutcomeSuccess,
+		Message: "IDLE armed",
+	}); err != nil {
+		t.Fatalf("AppendSystemEvent imapimport.idle.entered: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET message-research: %d: %s", res.StatusCode, buf)
+	}
+
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+
+	var sawIMAPImportEvent, sawSMTPReject bool
+	for _, item := range out.Items {
+		if item["source"] != "smtp_event" {
+			continue
+		}
+		action, _ := item["action"].(string)
+		if strings.HasPrefix(action, "imapimport.") {
+			sawIMAPImportEvent = true
+		}
+		if action == "smtp.rcpt.reject" {
+			sawSMTPReject = true
+		}
+	}
+	if sawIMAPImportEvent {
+		t.Errorf("imapimport system event leaked into message research timeline; items=%+v", out.Items)
+	}
+	if !sawSMTPReject {
+		t.Errorf("genuine SMTP-time reject event missing from timeline; items=%+v", out.Items)
+	}
+}
