@@ -8,10 +8,12 @@ writes each drop to disk with no server: a self-contained bundle lands in
 `~/Downloads/herold-bugs/<id>.heroldbug.json`. A drop is one of two kinds:
 
 - a **report** (`meta.kind` is `bug` or `feature`) -- file it as a new ticket;
-- a **review hand-back** (`meta.kind` is `review`) -- comment on an existing
-  `waiting-for-feedback` ticket with the captured screenshots and strip the
-  label, dropping it back into the fix loop. (A verified close is applied in the
-  panel directly against Forgejo and never reaches a drop.)
+- a **review hand-back** (`meta.kind` is `review`) -- comment on the named
+  ticket with the captured screenshots, dropping it back into the fix loop. The
+  panel already strips `waiting-for-feedback` against Forgejo at hand-back time,
+  so the drop exists to carry the comment and screenshots the panel cannot
+  attach. (A verified close is likewise applied in the panel directly against
+  Forgejo and never reaches a drop.)
 
 This command expands each bundle into a drop directory under `~/herold-bugs/<id>/`,
 then processes it by kind. (If the optional `herold bug-sink` server is used
@@ -88,16 +90,22 @@ For each report drop (`meta.kind` in `bug` / `feature`), in order:
    existing issue). This prevents re-filing on the next run. Never delete the
    drop -- the `private/` bundle stays on disk for repro.
 
-## 2b. Review hand-backs: comment, then strip the label
+## 2b. Review hand-backs: comment (the label is already stripped)
 
 For each review drop (`meta.kind` is `review`), in order. The target is
 `meta.review.issue`. These are hand-backs -- tickets the reviewer sent back as
 still-broken. No dedup step -- a review names its ticket.
 
-1. **Sanity-check the target.** Read the issue (`mcp__forgejo__issue_get`). If it
-   is already closed, or no longer carries `waiting-for-feedback`, do not act
-   blindly: note the mismatch, leave `STATUS` as `new`, and report it. Otherwise
-   continue.
+The panel strips `waiting-for-feedback` directly against Forgejo the moment the
+reviewer hands a ticket back, so a review drop normally arrives with the label
+already gone. That is the expected state, not an anomaly: this command's job is
+to post the reviewer's comment and screenshots (which the panel cannot attach).
+
+1. **Sanity-check the target.** Read the issue (`mcp__forgejo__issue_get`). A
+   missing `waiting-for-feedback` label is expected (the panel already stripped
+   it) -- do NOT halt on that. Only halt if the issue is already **closed** or
+   the target number does not exist / does not match the reviewer's note: note
+   the mismatch, leave `STATUS` as `new`, and report it. Otherwise continue.
 
 2. **Compose the comment.** Body = the reviewer's `meta.review.comment`, followed
    by the embedded screenshots. Upload each `screenshot-*.png` to the Forgejo
@@ -107,9 +115,11 @@ still-broken. No dedup step -- a review names its ticket.
    `mcp__forgejo__issue_comment_create`. Do NOT read or reference anything under
    `private/`.
 
-3. **Strip the label.** Remove `waiting-for-feedback`
-   (`mcp__forgejo__issue_labels_remove`); the ticket re-enters the normal bugfix
-   queue.
+3. **Ensure the label is off.** The panel normally strips `waiting-for-feedback`
+   at hand-back time, so this is usually a no-op. If the issue still carries it
+   (an older panel, or a drop that predates that behaviour), remove it
+   (`mcp__forgejo__issue_labels_remove`) so the ticket re-enters the bugfix
+   queue. If it is already gone, do nothing.
 
 4. **Record the outcome.** Write the drop's `STATUS` as `reviewed:#<N>`. Never
    delete the drop.
