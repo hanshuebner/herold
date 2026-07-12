@@ -103,6 +103,10 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"blob_refs",
 		// Identity surfaces.
 		"aliases",
+		// OAuth2 native-client grant (issue #199, migration 0082). FK to
+		// principals and api_keys; enumerated before both parents.
+		"oauth_refresh_tokens",
+		"oauth_auth_codes",
 		"api_keys",
 		"oidc_links",
 		"oidc_providers",

@@ -110,7 +110,17 @@ func Run(t *testing.T, f Factory) {
 		{"ListAPIKeysByPrincipal", testListAPIKeysByPrincipal},
 		{"DeleteAPIKey_NotFoundWhenAbsent", testDeleteAPIKeyNotFound},
 		{"DeleteOneShotAPIKeysByPrincipal", testDeleteOneShotAPIKeysByPrincipal},
+		{"APIKey_ExpiresAt_Roundtrip", testAPIKeyExpiresAtRoundtrip},
 		{"ListOIDCLinksByPrincipal", testListOIDCLinksByPrincipal},
+		// -- OAuth2 native-client grant (issue #199, REQ-AND-AUTH-01/02) --
+		{"OAuthAuthCode_InsertGet_Roundtrip", testOAuthAuthCodeInsertGetRoundtrip},
+		{"OAuthAuthCode_Consume_SingleUse", testOAuthAuthCodeConsumeSingleUse},
+		{"OAuthAuthCode_Consume_NotFound", testOAuthAuthCodeConsumeNotFound},
+		{"OAuthAuthCode_CascadeOnDeletePrincipal", testOAuthAuthCodeCascadeOnDeletePrincipal},
+		{"OAuthRefreshToken_InsertGet_Roundtrip", testOAuthRefreshTokenInsertGetRoundtrip},
+		{"OAuthRefreshToken_Rotate_SingleUse", testOAuthRefreshTokenRotateSingleUse},
+		{"OAuthRefreshToken_RevokeFamily_DeletesAccessKeys", testOAuthRefreshTokenRevokeFamilyDeletesAccessKeys},
+		{"OAuthRefreshToken_CascadeOnDeletePrincipal", testOAuthRefreshTokenCascadeOnDeletePrincipal},
 		// -- Phase 2 Wave 2.0 --------------------------------------
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
 		{"QueueIdempotency", testQueueIdempotency},
@@ -880,6 +890,369 @@ func testAPIKeys(t *testing.T, s store.Store) {
 	}
 	if !got.LastUsedAt.Equal(now) {
 		t.Fatalf("LastUsedAt = %v, want %v", got.LastUsedAt, now)
+	}
+}
+
+// testAPIKeyExpiresAtRoundtrip covers migration 0081's api_keys.expires_at_us
+// column (issue #199): a key inserted with no ExpiresAt round-trips as the
+// zero time (the existing operator-issued / device-token model, "revocation
+// is the sole lifecycle control"), and a key inserted with a non-zero
+// ExpiresAt round-trips that instant exactly through both InsertAPIKey and
+// GetAPIKeyByHash / ListAPIKeysByPrincipal.
+func testAPIKeyExpiresAtRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "apikexp@example.com")
+
+	noExpiry, err := s.Meta().InsertAPIKey(ctx, store.APIKey{PrincipalID: p.ID, Hash: "noexp", Name: "n"})
+	if err != nil {
+		t.Fatalf("InsertAPIKey (no expiry): %v", err)
+	}
+	if !noExpiry.ExpiresAt.IsZero() {
+		t.Fatalf("ExpiresAt = %v, want zero", noExpiry.ExpiresAt)
+	}
+	got, err := s.Meta().GetAPIKeyByHash(ctx, "noexp")
+	if err != nil {
+		t.Fatalf("GetAPIKeyByHash: %v", err)
+	}
+	if !got.ExpiresAt.IsZero() {
+		t.Fatalf("GetAPIKeyByHash ExpiresAt = %v, want zero", got.ExpiresAt)
+	}
+
+	expiry := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	withExpiry, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "withexp", Name: "n", ExpiresAt: expiry,
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey (with expiry): %v", err)
+	}
+	if !withExpiry.ExpiresAt.Equal(expiry) {
+		t.Fatalf("Insert result ExpiresAt = %v, want %v", withExpiry.ExpiresAt, expiry)
+	}
+	got, err = s.Meta().GetAPIKeyByHash(ctx, "withexp")
+	if err != nil {
+		t.Fatalf("GetAPIKeyByHash: %v", err)
+	}
+	if !got.ExpiresAt.Equal(expiry) {
+		t.Fatalf("GetAPIKeyByHash ExpiresAt = %v, want %v", got.ExpiresAt, expiry)
+	}
+	list, err := s.Meta().ListAPIKeysByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListAPIKeysByPrincipal: %v", err)
+	}
+	found := false
+	for _, k := range list {
+		if k.ID == withExpiry.ID {
+			found = true
+			if !k.ExpiresAt.Equal(expiry) {
+				t.Fatalf("ListAPIKeysByPrincipal ExpiresAt = %v, want %v", k.ExpiresAt, expiry)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("ListAPIKeysByPrincipal did not return key %d", withExpiry.ID)
+	}
+}
+
+// -- OAuth2 native-client grant (issue #199, REQ-AND-AUTH-01/02) -----------
+
+func testOAuthAuthCodeInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "oac-rt@example.com")
+	expiresAt := time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC)
+	c, err := s.Meta().InsertOAuthAuthCode(ctx, store.OAuthAuthCode{
+		Hash:                "achash-rt",
+		ClientID:            "herold-android",
+		PrincipalID:         p.ID,
+		RedirectURI:         "net.netzhansa.herold:/oauth2redirect",
+		CodeChallenge:       "challenge-abc",
+		CodeChallengeMethod: "S256",
+		ScopeJSON:           `["mail.send","mail.receive"]`,
+		FamilyID:            "fam-rt-1",
+		ExpiresAt:           expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthAuthCode: %v", err)
+	}
+	if c.ID == 0 || c.CreatedAt.IsZero() {
+		t.Fatalf("OAuthAuthCode = %+v", c)
+	}
+	if !c.UsedAt.IsZero() {
+		t.Fatalf("fresh code UsedAt = %v, want zero", c.UsedAt)
+	}
+	got, err := s.Meta().GetOAuthAuthCodeByHash(ctx, "achash-rt")
+	if err != nil {
+		t.Fatalf("GetOAuthAuthCodeByHash: %v", err)
+	}
+	if got.ID != c.ID || got.ClientID != "herold-android" || got.PrincipalID != p.ID ||
+		got.RedirectURI != c.RedirectURI || got.CodeChallenge != "challenge-abc" ||
+		got.CodeChallengeMethod != "S256" || got.FamilyID != "fam-rt-1" {
+		t.Fatalf("GetOAuthAuthCodeByHash = %+v, want match of %+v", got, c)
+	}
+	if !got.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("ExpiresAt = %v, want %v", got.ExpiresAt, expiresAt)
+	}
+	if _, err := s.Meta().GetOAuthAuthCodeByHash(ctx, "absent"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthAuthCodeByHash(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthAuthCodeConsumeSingleUse asserts RFC 6749 §4.1.2 single-use
+// semantics: the first ConsumeOAuthAuthCode succeeds and sets UsedAt; a
+// second attempt on the same code returns ErrConflict (a replay), which the
+// directory layer treats as a signal to revoke the code's FamilyID.
+func testOAuthAuthCodeConsumeSingleUse(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "oac-su@example.com")
+	c, err := s.Meta().InsertOAuthAuthCode(ctx, store.OAuthAuthCode{
+		Hash: "achash-su", ClientID: "herold-android", PrincipalID: p.ID,
+		RedirectURI: "net.netzhansa.herold:/oauth2redirect", CodeChallenge: "cc",
+		CodeChallengeMethod: "S256", ScopeJSON: `["mail.send"]`, FamilyID: "fam-su",
+		ExpiresAt: time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthAuthCode: %v", err)
+	}
+	usedAt := time.Date(2026, 6, 1, 12, 0, 5, 0, time.UTC)
+	if err := s.Meta().ConsumeOAuthAuthCode(ctx, c.ID, usedAt); err != nil {
+		t.Fatalf("ConsumeOAuthAuthCode (first): %v", err)
+	}
+	got, err := s.Meta().GetOAuthAuthCodeByHash(ctx, "achash-su")
+	if err != nil {
+		t.Fatalf("GetOAuthAuthCodeByHash: %v", err)
+	}
+	if !got.UsedAt.Equal(usedAt) {
+		t.Fatalf("UsedAt = %v, want %v", got.UsedAt, usedAt)
+	}
+	if err := s.Meta().ConsumeOAuthAuthCode(ctx, c.ID, usedAt.Add(time.Second)); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("ConsumeOAuthAuthCode (replay) = %v, want ErrConflict", err)
+	}
+}
+
+func testOAuthAuthCodeConsumeNotFound(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	if err := s.Meta().ConsumeOAuthAuthCode(ctx, 99999999, time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ConsumeOAuthAuthCode(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+func testOAuthAuthCodeCascadeOnDeletePrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "oac-casc@example.com")
+	if _, err := s.Meta().InsertOAuthAuthCode(ctx, store.OAuthAuthCode{
+		Hash: "achash-casc", ClientID: "herold-android", PrincipalID: p.ID,
+		RedirectURI: "net.netzhansa.herold:/oauth2redirect", CodeChallenge: "cc",
+		CodeChallengeMethod: "S256", ScopeJSON: `["mail.send"]`, FamilyID: "fam-casc",
+		ExpiresAt: time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthAuthCode: %v", err)
+	}
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	if _, err := s.Meta().GetOAuthAuthCodeByHash(ctx, "achash-casc"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthAuthCodeByHash after principal delete = %v, want ErrNotFound", err)
+	}
+}
+
+func testOAuthRefreshTokenInsertGetRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rt-rt@example.com")
+	key, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "rt-rt-ak", Name: "device: test",
+		ExpiresAt: time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey: %v", err)
+	}
+	expiresAt := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	rt, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-rt", FamilyID: "fam-rt-2", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		AccessKeyID: key.ID, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthRefreshToken: %v", err)
+	}
+	if rt.ID == 0 || rt.CreatedAt.IsZero() {
+		t.Fatalf("OAuthRefreshToken = %+v", rt)
+	}
+	if !rt.RotatedAt.IsZero() || !rt.RevokedAt.IsZero() {
+		t.Fatalf("fresh refresh token RotatedAt/RevokedAt = %v/%v, want zero/zero", rt.RotatedAt, rt.RevokedAt)
+	}
+	got, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-rt")
+	if err != nil {
+		t.Fatalf("GetOAuthRefreshTokenByHash: %v", err)
+	}
+	if got.ID != rt.ID || got.FamilyID != "fam-rt-2" || got.PrincipalID != p.ID ||
+		got.ClientID != "herold-android" || got.AccessKeyID != key.ID {
+		t.Fatalf("GetOAuthRefreshTokenByHash = %+v, want match of %+v", got, rt)
+	}
+	if !got.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("ExpiresAt = %v, want %v", got.ExpiresAt, expiresAt)
+	}
+	if _, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "absent"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthRefreshTokenByHash(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthRefreshTokenRotateSingleUse exercises the reuse-detection
+// primitive: the first MarkOAuthRefreshTokenRotated on a token succeeds
+// (alreadyRotated=false); a second call on the same id reports
+// alreadyRotated=true without erroring, which is the signal the directory
+// layer uses to revoke the whole rotation family (a replayed refresh token).
+func testOAuthRefreshTokenRotateSingleUse(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rt-su@example.com")
+	rt, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-su", FamilyID: "fam-su", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthRefreshToken: %v", err)
+	}
+	rotatedAt := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	alreadyRotated, err := s.Meta().MarkOAuthRefreshTokenRotated(ctx, rt.ID, rotatedAt)
+	if err != nil {
+		t.Fatalf("MarkOAuthRefreshTokenRotated (first): %v", err)
+	}
+	if alreadyRotated {
+		t.Fatalf("first rotation reported alreadyRotated=true")
+	}
+	got, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-su")
+	if err != nil {
+		t.Fatalf("GetOAuthRefreshTokenByHash: %v", err)
+	}
+	if !got.RotatedAt.Equal(rotatedAt) {
+		t.Fatalf("RotatedAt = %v, want %v", got.RotatedAt, rotatedAt)
+	}
+
+	// Replay: presenting (or racing on) the same token again.
+	alreadyRotated, err = s.Meta().MarkOAuthRefreshTokenRotated(ctx, rt.ID, rotatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("MarkOAuthRefreshTokenRotated (replay): %v", err)
+	}
+	if !alreadyRotated {
+		t.Fatalf("replayed rotation reported alreadyRotated=false")
+	}
+	// The second call must not have disturbed the original RotatedAt.
+	got, err = s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-su")
+	if err != nil {
+		t.Fatalf("GetOAuthRefreshTokenByHash: %v", err)
+	}
+	if !got.RotatedAt.Equal(rotatedAt) {
+		t.Fatalf("RotatedAt after replay = %v, want unchanged %v", got.RotatedAt, rotatedAt)
+	}
+
+	if _, err := s.Meta().MarkOAuthRefreshTokenRotated(ctx, 99999999, rotatedAt); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkOAuthRefreshTokenRotated(absent) = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthRefreshTokenRevokeFamilyDeletesAccessKeys asserts that revoking a
+// rotation family both tombstones every refresh-token row sharing FamilyID
+// and immediately deletes the api_keys row backing each row's still-live
+// access token, so a stolen refresh token's paired access token stops
+// authenticating right away rather than waiting out its short TTL.
+func testOAuthRefreshTokenRevokeFamilyDeletesAccessKeys(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rt-rev@example.com")
+	familyID := "fam-rev"
+
+	key1, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "rt-rev-ak1", Name: "device: test",
+		ExpiresAt: time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey 1: %v", err)
+	}
+	rt1, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-rev1", FamilyID: familyID, PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		AccessKeyID: key1.ID, ExpiresAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthRefreshToken 1: %v", err)
+	}
+	// Rotate once so the family has two generations, mirroring a live chain.
+	if _, err := s.Meta().MarkOAuthRefreshTokenRotated(ctx, rt1.ID, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MarkOAuthRefreshTokenRotated: %v", err)
+	}
+	key2, err := s.Meta().InsertAPIKey(ctx, store.APIKey{
+		PrincipalID: p.ID, Hash: "rt-rev-ak2", Name: "device: test",
+		ExpiresAt: time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertAPIKey 2: %v", err)
+	}
+	rt2, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-rev2", FamilyID: familyID, PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		AccessKeyID: key2.ID, ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthRefreshToken 2: %v", err)
+	}
+
+	revokedAt := time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC)
+	n, err := s.Meta().RevokeOAuthRefreshTokenFamily(ctx, familyID, revokedAt)
+	if err != nil {
+		t.Fatalf("RevokeOAuthRefreshTokenFamily: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RevokeOAuthRefreshTokenFamily revoked %d rows, want 2", n)
+	}
+
+	got1, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-rev1")
+	if err != nil {
+		t.Fatalf("GetOAuthRefreshTokenByHash 1: %v", err)
+	}
+	if !got1.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("rt1 RevokedAt = %v, want %v", got1.RevokedAt, revokedAt)
+	}
+	got2, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-rev2")
+	if err != nil {
+		t.Fatalf("GetOAuthRefreshTokenByHash 2: %v", err)
+	}
+	if !got2.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("rt2 RevokedAt = %v, want %v", got2.RevokedAt, revokedAt)
+	}
+	_ = rt2
+
+	// Both access-token api_keys rows must be gone -- the still-live
+	// access token is invalidated immediately, not left to expire.
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "rt-rev-ak1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetAPIKeyByHash(key1) after family revoke = %v, want ErrNotFound", err)
+	}
+	if _, err := s.Meta().GetAPIKeyByHash(ctx, "rt-rev-ak2"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetAPIKeyByHash(key2) after family revoke = %v, want ErrNotFound", err)
+	}
+
+	// Idempotent: revoking again affects zero rows and does not error.
+	n, err = s.Meta().RevokeOAuthRefreshTokenFamily(ctx, familyID, revokedAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("RevokeOAuthRefreshTokenFamily (second): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("second RevokeOAuthRefreshTokenFamily revoked %d rows, want 0", n)
+	}
+}
+
+func testOAuthRefreshTokenCascadeOnDeletePrincipal(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rt-casc@example.com")
+	if _, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-casc", FamilyID: "fam-casc", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthRefreshToken: %v", err)
+	}
+	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePrincipal: %v", err)
+	}
+	if _, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-casc"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthRefreshTokenByHash after principal delete = %v, want ErrNotFound", err)
 	}
 }
 

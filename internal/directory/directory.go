@@ -86,6 +86,16 @@ type Directory struct {
 
 	// rate limiter for auth failures
 	rl *rateLimiter
+
+	// oauthReqKey signs the stateless OAuth2 /oauth2/authorize
+	// pre-login request token (issue #199, oauth2_authreq.go).
+	// Process-local and randomly generated at construction, mirroring
+	// internal/authsession's session-signing key: a restart drops any
+	// outstanding authorize request, which is an acceptable failure
+	// mode given the request's ~10-minute TTL (the user just restarts
+	// the sign-in flow), and keeps this package free of any
+	// cross-process key-coordination requirement.
+	oauthReqKey []byte
 }
 
 // New constructs a Directory bound to the given metadata repository. The
@@ -106,12 +116,21 @@ func New(meta store.Metadata, logger *slog.Logger, clk clock.Clock, rnd io.Reade
 	// Register the auth collector set on Directory construction.
 	// Idempotent across multiple Directory instances in tests.
 	observe.RegisterAuthMetrics()
+	oauthReqKey := make([]byte, 32)
+	if _, err := io.ReadFull(rnd, oauthReqKey); err != nil {
+		// rnd is crypto/rand.Reader in production (never fails) or a
+		// deterministic test reader; a read failure here indicates a
+		// broken entropy source, which is also fatal for every other
+		// use of rnd in this package (salts, TOTP secrets, tokens).
+		panic(fmt.Sprintf("directory: read oauth request signing key: %v", err))
+	}
 	return &Directory{
-		meta:   meta,
-		logger: logger,
-		clk:    clk,
-		rand:   rnd,
-		rl:     newRateLimiter(clk),
+		meta:        meta,
+		logger:      logger,
+		clk:         clk,
+		rand:        rnd,
+		rl:          newRateLimiter(clk),
+		oauthReqKey: oauthReqKey,
 	}
 }
 

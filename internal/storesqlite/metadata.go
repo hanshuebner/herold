@@ -562,13 +562,17 @@ func (m *metadata) InsertAPIKey(ctx context.Context, k store.APIKey) (store.APIK
 	addrJSON := encodeStringSliceJSON(k.AllowedFromAddresses)
 	domJSON := encodeStringSliceJSON(k.AllowedFromDomains)
 	oneShot := boolToInt(k.OneShot)
+	var expiresUs any
+	if !k.ExpiresAt.IsZero() {
+		expiresUs = usMicros(k.ExpiresAt)
+	}
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO api_keys (principal_id, hash, name, created_at_us, last_used_at_us,
 			                      scope_json, allowed_from_addresses_json, allowed_from_domains_json,
-			                      one_shot)
-			VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON, oneShot)
+			                      one_shot, expires_at_us)
+			VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+			int64(k.PrincipalID), k.Hash, k.Name, usMicros(now), scope, addrJSON, domJSON, oneShot, expiresUs)
 		if err != nil {
 			return fmt.Errorf("API key %q: %w", k.Name, mapErr(err))
 		}
@@ -592,15 +596,16 @@ func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIK
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
 		       scope_json, allowed_from_addresses_json, allowed_from_domains_json,
-		       one_shot
+		       one_shot, expires_at_us
 		  FROM api_keys WHERE hash = ?`, hash)
 	var k store.APIKey
 	var id, pid int64
 	var createdUs, lastUs int64
 	var addrJSON, domJSON string
 	var oneShotInt int64
+	var expiresUs sql.NullInt64
 	err := row.Scan(&id, &pid, &k.Hash, &k.Name, &createdUs, &lastUs,
-		&k.ScopeJSON, &addrJSON, &domJSON, &oneShotInt)
+		&k.ScopeJSON, &addrJSON, &domJSON, &oneShotInt, &expiresUs)
 	if err != nil {
 		return store.APIKey{}, mapErr(err)
 	}
@@ -611,6 +616,9 @@ func (m *metadata) GetAPIKeyByHash(ctx context.Context, hash string) (store.APIK
 	k.AllowedFromAddresses = decodeStringSliceJSON(addrJSON)
 	k.AllowedFromDomains = decodeStringSliceJSON(domJSON)
 	k.OneShot = oneShotInt != 0
+	if expiresUs.Valid {
+		k.ExpiresAt = fromMicros(expiresUs.Int64)
+	}
 	return k, nil
 }
 
@@ -637,7 +645,7 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT id, principal_id, hash, name, created_at_us, last_used_at_us,
 		       scope_json, allowed_from_addresses_json, allowed_from_domains_json,
-		       one_shot
+		       one_shot, expires_at_us
 		  FROM api_keys WHERE principal_id = ? ORDER BY id`, int64(pid))
 	if err != nil {
 		return nil, mapErr(err)
@@ -650,8 +658,9 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		var createdUs, lastUs int64
 		var addrJSON, domJSON string
 		var oneShotInt int64
+		var expiresUs sql.NullInt64
 		if err := rows.Scan(&id, &ownerID, &k.Hash, &k.Name, &createdUs, &lastUs,
-			&k.ScopeJSON, &addrJSON, &domJSON, &oneShotInt); err != nil {
+			&k.ScopeJSON, &addrJSON, &domJSON, &oneShotInt, &expiresUs); err != nil {
 			return nil, mapErr(err)
 		}
 		k.ID = store.APIKeyID(id)
@@ -661,6 +670,9 @@ func (m *metadata) ListAPIKeysByPrincipal(ctx context.Context, pid store.Princip
 		k.AllowedFromAddresses = decodeStringSliceJSON(addrJSON)
 		k.AllowedFromDomains = decodeStringSliceJSON(domJSON)
 		k.OneShot = oneShotInt != 0
+		if expiresUs.Valid {
+			k.ExpiresAt = fromMicros(expiresUs.Int64)
+		}
 		out = append(out, k)
 	}
 	return out, rows.Err()
