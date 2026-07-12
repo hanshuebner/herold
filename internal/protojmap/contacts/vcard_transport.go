@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
@@ -64,26 +65,63 @@ type contactImportRequest struct {
 }
 
 // ImportCardResult is the outcome for one BEGIN:VCARD...END:VCARD block
-// inside the uploaded .vcf. Exactly one of Result=="created" or
-// Result=="failed" is set.
+// inside the uploaded .vcf. Result is one of "created", "skipped",
+// "conflict", or "failed".
 type ImportCardResult struct {
 	// Index is the 0-based position of this card in the .vcf file.
 	Index int `json:"index"`
 	// UID is the vCard UID; may be empty for cards without one.
 	UID string `json:"uid,omitempty"`
-	// Result is "created" or "failed".
+	// Result is one of:
+	//   - "created": no existing contact matched; a new contact was
+	//     created.
+	//   - "skipped": the card exactly matches an existing contact
+	//     (matched by UID, else primary email); no new contact was
+	//     created (idempotent re-import).
+	//   - "conflict": the card matches an existing contact (by UID,
+	//     else primary email) but its data differs; no new contact was
+	//     created and the existing contact was not silently overwritten.
+	//   - "failed": the card could not be parsed or created.
 	Result string `json:"result"`
 	// ID is the JMAP contact id assigned on creation (only when
 	// Result=="created").
 	ID jmapID `json:"id,omitempty"`
+	// MatchedID is the JMAP id of the pre-existing contact this card
+	// was matched against (Result=="skipped" or "conflict").
+	MatchedID jmapID `json:"matchedId,omitempty"`
+	// MatchedName is the matched contact's display name (Result==
+	// "skipped" or "conflict"), so a client can identify the conflict
+	// without a second round-trip (REQ-CTS-21 follow-up).
+	MatchedName string `json:"matchedName,omitempty"`
+	// Diff lists the field-level differences between the incoming card
+	// and the matched contact (Result=="conflict" only).
+	Diff []FieldDiff `json:"diff,omitempty"`
 	// DuplicateCandidates lists JMAP contact IDs that may duplicate this
-	// card (matched by UID or primary email). Present when candidates
+	// card (matched by UID or primary email) when the match is
+	// ambiguous (more than one candidate) and the card was therefore
+	// created rather than skipped/conflicted. Present when candidates
 	// exist; nil otherwise (REQ-CTS-21). Advisory: the server does not
 	// auto-merge; the client drives skip/create/merge.
 	DuplicateCandidates []jmapID `json:"duplicateCandidates,omitempty"`
 	// Reason is the human-readable error detail (only when
 	// Result=="failed").
 	Reason string `json:"reason,omitempty"`
+}
+
+// FieldDiff is one field-level difference between an imported card and
+// the existing contact it matched (ImportCardResult.Result=="conflict").
+type FieldDiff struct {
+	// Field is the JSContact top-level property name that differs
+	// (e.g. "name", "emails", "phones", "organizations").
+	Field string `json:"field"`
+	// Existing is the current value on the stored contact, rendered as
+	// compact JSON. Empty when the property is absent on the existing
+	// contact.
+	Existing string `json:"existing,omitempty"`
+	// Incoming is the value the imported card would set, rendered as
+	// compact JSON. Empty when the property is absent on the incoming
+	// card.
+	Incoming string `json:"incoming,omitempty"`
 }
 
 // contactImportResponse is the wire-form Contact/import response.
@@ -195,8 +233,37 @@ func (h *contactImportHandler) Execute(ctx context.Context, args json.RawMessage
 		card := pr.Card
 		res.UID = card.UID
 
-		// Check for duplicates BEFORE creating so candidates are reported
-		// for both successful and conflicting cards (REQ-CTS-21).
+		// Look for a single, unambiguous existing contact this card
+		// matches (by UID, else primary email). When exactly one match
+		// exists, decide skip-vs-conflict instead of creating a
+		// duplicate (REQ-CTS-21, idempotent re-import): identical data
+		// is silently skipped; differing data is reported as a
+		// conflict without creating a duplicate or touching the
+		// existing contact.
+		if matched, ok := h.h.findExactImportMatch(ctx, pid, card); ok {
+			if diff, cerr := diffCardAgainstContact(matched, card); cerr == nil {
+				res.MatchedID = jmapIDFromContact(matched.ID)
+				res.MatchedName = matched.DisplayName
+				if len(diff) == 0 {
+					res.Result = "skipped"
+					if res.UID == "" {
+						res.UID = matched.UID
+					}
+					resp.Results = append(resp.Results, res)
+					continue
+				}
+				res.Result = "conflict"
+				res.Diff = diff
+				resp.Results = append(resp.Results, res)
+				continue
+			}
+			// Comparison failed (malformed stored JSON): fall through to
+			// the advisory create path below rather than blocking the
+			// import on an internal error.
+		}
+
+		// No single unambiguous match: report any candidates advisorily
+		// (REQ-CTS-21) and proceed to create.
 		res.DuplicateCandidates = h.h.findImportDuplicates(ctx, pid, card)
 
 		// Inject the target addressBookId into the card body so createContact
@@ -310,6 +377,118 @@ func (h *handlerSet) findImportDuplicates(ctx context.Context, pid store.Princip
 		return nil
 	}
 	return candidates
+}
+
+// findExactImportMatch looks up the single existing contact an imported
+// card unambiguously matches, by UID first, then by primary email
+// (REQ-CTS-21). Returns ok==false when there is no candidate or more
+// than one distinct candidate: an ambiguous match falls back to the
+// advisory DuplicateCandidates list rather than a skip/conflict
+// verdict, since the server cannot tell which of several candidates the
+// card is "the same as".
+func (h *handlerSet) findExactImportMatch(ctx context.Context, pid store.PrincipalID, card *Card) (store.Contact, bool) {
+	byID := map[store.ContactID]store.Contact{}
+
+	if card.UID != "" {
+		uid := card.UID
+		rows, qerr := h.store.Meta().ListContacts(ctx, store.ContactFilter{
+			PrincipalID: &pid,
+			UID:         &uid,
+		})
+		if qerr == nil {
+			for _, c := range rows {
+				byID[c.ID] = c
+			}
+		}
+	}
+	if len(byID) == 0 {
+		if pe := card.PrimaryEmail(); pe != "" {
+			email := strings.ToLower(pe)
+			rows, qerr := h.store.Meta().ListContacts(ctx, store.ContactFilter{
+				PrincipalID: &pid,
+				HasEmail:    &email,
+			})
+			if qerr == nil {
+				for _, c := range rows {
+					byID[c.ID] = c
+				}
+			}
+		}
+	}
+	if len(byID) != 1 {
+		return store.Contact{}, false
+	}
+	for _, c := range byID {
+		return c, true
+	}
+	return store.Contact{}, false
+}
+
+// diffCardAgainstContact compares an incoming card against an existing
+// contact's stored JSContact body and returns the list of top-level
+// properties that differ. An empty, non-nil-error result means the two
+// are equivalent (ignoring "uid", which is expected to vary when the
+// match was made by primary email rather than UID).
+func diffCardAgainstContact(existing store.Contact, incoming *Card) ([]FieldDiff, error) {
+	var existingCard Card
+	if err := existingCard.UnmarshalJSON(existing.JSContactJSON); err != nil {
+		return nil, fmt.Errorf("contacts: parse stored card for diff: %w", err)
+	}
+	existingFields, err := normalizedCardFields(&existingCard)
+	if err != nil {
+		return nil, err
+	}
+	incomingFields, err := normalizedCardFields(incoming)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := map[string]bool{}
+	for k := range existingFields {
+		keys[k] = true
+	}
+	for k := range incomingFields {
+		keys[k] = true
+	}
+
+	var diffs []FieldDiff
+	for k := range keys {
+		ev, eok := existingFields[k]
+		iv, iok := incomingFields[k]
+		if eok && iok && bytes.Equal(ev, iv) {
+			continue
+		}
+		d := FieldDiff{Field: k}
+		if eok {
+			d.Existing = string(ev)
+		}
+		if iok {
+			d.Incoming = string(iv)
+		}
+		diffs = append(diffs, d)
+	}
+	sort.Slice(diffs, func(i, j int) bool { return diffs[i].Field < diffs[j].Field })
+	return diffs, nil
+}
+
+// normalizedCardFields renders a Card as its top-level JSON properties,
+// keyed by property name, with "uid" removed so UID differences (which
+// are expected when two cards were matched by primary email rather than
+// by UID, or when the server minted the stored contact's UID) never
+// show up as a spurious diff. Values are the deterministic, sorted-key
+// JSON encoding Card.MarshalJSON already produces, so byte-equal values
+// mean equal content.
+func normalizedCardFields(card *Card) (map[string]json.RawMessage, error) {
+	b, err := json.Marshal(card)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "uid")
+	return m, nil
 }
 
 // makePhotoInternFn builds a PhotoInternFn that stores inline photo data

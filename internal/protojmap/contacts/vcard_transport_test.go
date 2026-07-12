@@ -380,28 +380,32 @@ func runVCardTransportRoundTrip(t *testing.T, st store.Store) {
 	}
 
 	// 5c. Re-import the exported .vcf. The same UID is present, so the
-	// second import must fail as a conflict and report the original as a
-	// duplicate candidate (REQ-CTS-21).
+	// second import must match the original rather than creating a
+	// duplicate (REQ-CTS-21, re #206): either "skipped" (data identical)
+	// or "conflict" (data differs -- e.g. the PHOTO line round-trips as
+	// a bare blobId reference here, a distinct pre-existing export/
+	// import fidelity gap, not this fix's concern). Either way no
+	// second contact is created.
 	reImportBlobID := uploadBlob(t, f, vcfOut, "text/vcard")
 	impResp2 := invokeImport(t, f, reImportBlobID, bookID)
 	if len(impResp2.Results) != 1 {
 		t.Fatalf("re-import: expected 1 result, got %d", len(impResp2.Results))
 	}
 	reimportRes := impResp2.Results[0]
-	if reimportRes.Result != "failed" {
-		t.Errorf("re-import: expected failed (UID conflict), got %q (%s)",
-			reimportRes.Result, reimportRes.Reason)
+	if reimportRes.Result != "skipped" && reimportRes.Result != "conflict" {
+		t.Errorf("re-import: result = %q, want skipped or conflict", reimportRes.Result)
 	}
-	foundOriginal := false
-	for _, cid := range reimportRes.DuplicateCandidates {
-		if string(cid) == contactID {
-			foundOriginal = true
-			break
-		}
+	if string(reimportRes.MatchedID) != contactID {
+		t.Errorf("re-import: matchedId = %q, want %q", reimportRes.MatchedID, contactID)
 	}
-	if !foundOriginal {
-		t.Errorf("re-import: duplicate candidates %v do not include original %s",
-			reimportRes.DuplicateCandidates, contactID)
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("contact count after re-import = %d, want 1 (no duplicate)", len(rows))
 	}
 }
 
@@ -454,9 +458,10 @@ func runVCardTransportPartialSuccess(t *testing.T, st store.Store) {
 	}
 }
 
-// TestVCardTransport_DuplicateCandidates_ByUID verifies that a card whose
-// UID already exists in the address book reports the existing contact as a
-// duplicate candidate and blocks creation (REQ-CTS-21).
+// TestVCardTransport_DuplicateCandidates_ByUID verifies that re-importing
+// a card whose UID already exists in the address book is idempotent: an
+// identical re-import is silently skipped rather than creating a
+// duplicate or failing (REQ-CTS-21, re #206).
 func TestVCardTransport_DuplicateCandidates_ByUID(t *testing.T) {
 	runVCardTransportDuplicateByUID(t, nil)
 }
@@ -475,35 +480,107 @@ func runVCardTransportDuplicateByUID(t *testing.T, st store.Store) {
 	}
 	originalID := string(resp1.Results[0].ID)
 
-	// Import the same UID again -- should fail and list the original as a
-	// duplicate candidate.
+	// Re-import the exact same card -- should be skipped (no duplicate
+	// created), matched against the original by UID and identified by
+	// its name.
 	blobID2 := uploadBlob(t, f, vcf1, "text/vcard")
 	resp2 := invokeImport(t, f, blobID2, bookID)
 	if len(resp2.Results) != 1 {
 		t.Fatalf("second import: expected 1 result, got %d", len(resp2.Results))
 	}
 	res := resp2.Results[0]
-	if res.Result != "failed" {
-		t.Errorf("second import: result = %q, want failed", res.Result)
+	if res.Result != "skipped" {
+		t.Errorf("second import: result = %q, want skipped", res.Result)
 	}
-	foundOriginal := false
-	for _, cid := range res.DuplicateCandidates {
-		if string(cid) == originalID {
-			foundOriginal = true
-			break
-		}
+	if string(res.MatchedID) != originalID {
+		t.Errorf("second import: matchedId = %q, want %q", res.MatchedID, originalID)
 	}
-	if !foundOriginal {
-		t.Errorf("duplicateCandidates %v does not include original contact %s",
-			res.DuplicateCandidates, originalID)
+	if res.MatchedName != "Original" {
+		t.Errorf("second import: matchedName = %q, want %q", res.MatchedName, "Original")
+	}
+
+	// No duplicate contact was created: the address book still holds
+	// exactly one contact.
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("contact count after re-import = %d, want 1 (no duplicate)", len(rows))
 	}
 }
 
-// TestVCardTransport_DuplicateCandidates_ByEmail verifies duplicate
-// detection by shared primary email (REQ-CTS-21). A card with a different
-// UID but the same primary email as an existing contact must be created
-// (no UID conflict), but the existing contact appears in
-// duplicateCandidates.
+// TestVCardTransport_ConflictByUID verifies that re-importing a card
+// whose UID matches an existing contact, but whose data differs, is
+// reported as a conflict rather than silently overwriting the existing
+// contact or being skipped (REQ-CTS-21, re #206).
+func TestVCardTransport_ConflictByUID(t *testing.T) {
+	runVCardTransportConflictByUID(t, nil)
+}
+
+func runVCardTransportConflictByUID(t *testing.T, st store.Store) {
+	t.Helper()
+	f := setupFixtureForTest(t, st, contacts.DefaultLimits())
+	bookID := makeBook(t, f, "ConflictUID")
+
+	vcf1 := []byte("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:conflict-uid-1\r\nFN:Original Name\r\nEND:VCARD\r\n")
+	blobID1 := uploadBlob(t, f, vcf1, "text/vcard")
+	resp1 := invokeImport(t, f, blobID1, bookID)
+	if len(resp1.Results) != 1 || resp1.Results[0].Result != "created" {
+		t.Fatalf("first import: %+v", resp1.Results)
+	}
+	originalID := string(resp1.Results[0].ID)
+
+	// Re-import the same UID with a changed FN.
+	vcf2 := []byte("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:conflict-uid-1\r\nFN:Changed Name\r\nEND:VCARD\r\n")
+	blobID2 := uploadBlob(t, f, vcf2, "text/vcard")
+	resp2 := invokeImport(t, f, blobID2, bookID)
+	if len(resp2.Results) != 1 {
+		t.Fatalf("second import: expected 1 result, got %d", len(resp2.Results))
+	}
+	res := resp2.Results[0]
+	if res.Result != "conflict" {
+		t.Errorf("second import: result = %q, want conflict", res.Result)
+	}
+	if string(res.MatchedID) != originalID {
+		t.Errorf("second import: matchedId = %q, want %q", res.MatchedID, originalID)
+	}
+	if res.MatchedName != "Original Name" {
+		t.Errorf("second import: matchedName = %q, want %q", res.MatchedName, "Original Name")
+	}
+	foundNameDiff := false
+	for _, d := range res.Diff {
+		if d.Field == "name" {
+			foundNameDiff = true
+		}
+	}
+	if !foundNameDiff {
+		t.Errorf("diff %+v does not include a \"name\" entry", res.Diff)
+	}
+
+	// No duplicate contact was created and the original is untouched.
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("contact count after conflicting re-import = %d, want 1 (no duplicate)", len(rows))
+	}
+	if rows[0].DisplayName != "Original Name" {
+		t.Errorf("existing contact was overwritten: DisplayName = %q, want %q",
+			rows[0].DisplayName, "Original Name")
+	}
+}
+
+// TestVCardTransport_DuplicateCandidates_ByEmail verifies conflict
+// detection by shared primary email (REQ-CTS-21): a card with a
+// different UID but the same primary email as an existing contact, and
+// differing data, is reported as a conflict rather than created as a
+// second contact.
 func TestVCardTransport_DuplicateCandidates_ByEmail(t *testing.T) {
 	runVCardTransportDuplicateByEmail(t, nil)
 }
@@ -541,7 +618,8 @@ func runVCardTransportDuplicateByEmail(t *testing.T, st store.Store) {
 	}
 	existingID, _ := setResp.Created["c1"]["id"].(string)
 
-	// Import a card with the same email but a different UID.
+	// Import a card with the same email but a different UID and a
+	// different name.
 	vcf := []byte("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:newcard-alice\r\nFN:New Alice\r\nEMAIL;PREF=1:alice@dup.test\r\nEND:VCARD\r\n")
 	blobID := uploadBlob(t, f, vcf, "text/vcard")
 	impResp := invokeImport(t, f, blobID, bookID)
@@ -549,21 +627,81 @@ func runVCardTransportDuplicateByEmail(t *testing.T, st store.Store) {
 		t.Fatalf("import: expected 1 result, got %d", len(impResp.Results))
 	}
 	res := impResp.Results[0]
-	// Different UID -> card is created (no UID conflict); the existing
-	// contact with the same email surfaces as a duplicate candidate.
-	if res.Result != "created" {
-		t.Errorf("import: result = %q (%s), want created", res.Result, res.Reason)
+	// Same email, different data -> conflict, not a second contact.
+	if res.Result != "conflict" {
+		t.Errorf("import: result = %q (%s), want conflict", res.Result, res.Reason)
 	}
-	foundExisting := false
-	for _, cid := range res.DuplicateCandidates {
-		if string(cid) == existingID {
-			foundExisting = true
-			break
-		}
+	if string(res.MatchedID) != existingID {
+		t.Errorf("import: matchedId = %q, want %q", res.MatchedID, existingID)
 	}
-	if !foundExisting {
-		t.Errorf("duplicateCandidates %v does not include existing contact %s (same email)",
-			res.DuplicateCandidates, existingID)
+	if res.MatchedName != "Existing Alice" {
+		t.Errorf("import: matchedName = %q, want %q", res.MatchedName, "Existing Alice")
+	}
+	if len(res.Diff) == 0 {
+		t.Errorf("import: expected a non-empty diff for conflicting names")
+	}
+
+	// No duplicate contact was created.
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("contact count after conflicting import = %d, want 1 (no duplicate)", len(rows))
+	}
+}
+
+// TestVCardTransport_Reimport_SkipsIdenticalCard reproduces the reported
+// bug (re #206) directly: importing the identical .vcf file twice, where
+// the card carries no UID property (as many real-world exports do), must
+// not create a second contact. The second import matches the first by
+// primary email and, finding the data identical, skips it.
+func TestVCardTransport_Reimport_SkipsIdenticalCard(t *testing.T) {
+	runVCardTransportReimportSkipsIdenticalCard(t, nil)
+}
+
+func runVCardTransportReimportSkipsIdenticalCard(t *testing.T, st store.Store) {
+	t.Helper()
+	f := setupFixtureForTest(t, st, contacts.DefaultLimits())
+	bookID := makeBook(t, f, "ReimportSkip")
+
+	// No UID property at all -- matches only by primary email.
+	vcf := []byte("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Bob NoUID\r\nEMAIL;PREF=1:bob.nouid@example.test\r\nEND:VCARD\r\n")
+
+	blobID1 := uploadBlob(t, f, vcf, "text/vcard")
+	resp1 := invokeImport(t, f, blobID1, bookID)
+	if len(resp1.Results) != 1 || resp1.Results[0].Result != "created" {
+		t.Fatalf("first import: %+v", resp1.Results)
+	}
+	originalID := string(resp1.Results[0].ID)
+
+	// Re-import the exact same file.
+	blobID2 := uploadBlob(t, f, vcf, "text/vcard")
+	resp2 := invokeImport(t, f, blobID2, bookID)
+	if len(resp2.Results) != 1 {
+		t.Fatalf("second import: expected 1 result, got %d", len(resp2.Results))
+	}
+	res := resp2.Results[0]
+	if res.Result != "skipped" {
+		t.Errorf("second import: result = %q (%s), want skipped", res.Result, res.Reason)
+	}
+	if string(res.MatchedID) != originalID {
+		t.Errorf("second import: matchedId = %q, want %q", res.MatchedID, originalID)
+	}
+	if res.MatchedName != "Bob NoUID" {
+		t.Errorf("second import: matchedName = %q, want %q", res.MatchedName, "Bob NoUID")
+	}
+
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("contact count after re-import = %d, want 1 (no duplicate); this is the reported bug (re #206)", len(rows))
 	}
 }
 
@@ -736,6 +874,20 @@ func TestVCardTransport_DuplicateCandidates_ByUID_Postgres(t *testing.T) {
 func TestVCardTransport_DuplicateCandidates_ByEmail_Postgres(t *testing.T) {
 	st := openPostgresStoreForTransport(t)
 	runVCardTransportDuplicateByEmail(t, st)
+}
+
+// TestVCardTransport_ConflictByUID_Postgres runs the UID-based conflict
+// test on Postgres.
+func TestVCardTransport_ConflictByUID_Postgres(t *testing.T) {
+	st := openPostgresStoreForTransport(t)
+	runVCardTransportConflictByUID(t, st)
+}
+
+// TestVCardTransport_Reimport_SkipsIdenticalCard_Postgres runs the
+// idempotent-reimport test on Postgres.
+func TestVCardTransport_Reimport_SkipsIdenticalCard_Postgres(t *testing.T) {
+	st := openPostgresStoreForTransport(t)
+	runVCardTransportReimportSkipsIdenticalCard(t, st)
 }
 
 // TestVCardTransport_ExportAddressBook_Postgres runs the address-book
