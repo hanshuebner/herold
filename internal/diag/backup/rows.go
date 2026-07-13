@@ -243,6 +243,12 @@ type MessageRow struct {
 	EnvInReplyTo   string `json:"env_in_reply_to"`
 	EnvReferences  string `json:"env_references"`
 	EnvDateUs      int64  `json:"env_date_us"`
+	// DeliveryDisposition is the SMTP ingest path's recorded-at-insert
+	// disposition (migration 0090, issue #143): "delivered_inbox" /
+	// "delivered_junk", or "" for rows that predate the migration or
+	// were written by a non-SMTP-ingest path. Never recomputed from
+	// current mailbox membership -- see store.MessageDeliveryDisposition.
+	DeliveryDisposition string `json:"delivery_disposition"`
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table

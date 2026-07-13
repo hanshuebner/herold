@@ -805,6 +805,96 @@ if spamtest :value "ge" :comparator "i;ascii-numeric" "5" {
 	assertMessageInMailbox(t, f, f.principal, "Junk", "buy viagra", "Cheap deals.")
 }
 
+// TestDelivery_RecordsDispositionAtIngest verifies that deliverOne records
+// the delivery disposition on the messages row at INSERT time (re #143):
+// a Sieve fileinto to the Junk mailbox records DeliveryDispositionJunk, and
+// an ordinary Inbox delivery records DeliveryDispositionInbox. This is the
+// ingest-side half of the fix; internal/store/storetest covers the
+// query-side guarantee that the recorded value survives a later move.
+func TestDelivery_RecordsDispositionAtIngest(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
+	// Verdict depends on Subject so the two deliveries below (one spam,
+	// one ham) route to different mailboxes through the same script.
+	f.spamPlug.Handle("spam.classify", func(ctx context.Context, req json.RawMessage) (json.RawMessage, error) {
+		var r struct {
+			Subject string `json:"subject"`
+		}
+		_ = json.Unmarshal(req, &r)
+		if strings.Contains(r.Subject, "viagra") {
+			return json.RawMessage(`{"verdict":"spam","score":0.95}`), nil
+		}
+		return json.RawMessage(`{"verdict":"ham","score":0.05}`), nil
+	})
+	script := `require ["fileinto", "spamtest", "relational"];
+if spamtest :value "ge" :comparator "i;ascii-numeric" "5" {
+  fileinto "Junk";
+  stop;
+}
+`
+	if err := f.ha.Store.Meta().SetSieveScript(context.Background(), f.principal, script); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
+
+	// Deliver a spam message -- routed to Junk by the script above.
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "MAIL FROM:<spammer@phish.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "DATA")
+	mustOK(t, cli, 354)
+	junkBody := "From: spammer@phish.test\r\nTo: alice@example.test\r\nMessage-ID: <junk-1@phish.test>\r\nSubject: buy viagra\r\n\r\nCheap deals.\r\n.\r\n"
+	cli.sendRaw(t, []byte(junkBody))
+	mustOK(t, cli, 250)
+
+	// Deliver a ham message on a separate connection -- lands in INBOX.
+	cli2, closeFn2 := f.dial(t)
+	defer closeFn2()
+	mustOK(t, cli2, 220)
+	cli2.send(t, "EHLO client.example.test")
+	mustOK(t, cli2, 250)
+	cli2.send(t, "MAIL FROM:<friend@example.test>")
+	mustOK(t, cli2, 250)
+	cli2.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli2, 250)
+	cli2.send(t, "DATA")
+	mustOK(t, cli2, 354)
+	hamBody := "From: friend@example.test\r\nTo: alice@example.test\r\nMessage-ID: <ham-1@example.test>\r\nSubject: hello\r\n\r\nHi there.\r\n.\r\n"
+	cli2.sendRaw(t, []byte(hamBody))
+	mustOK(t, cli2, 250)
+
+	ctx := context.Background()
+	hits, err := f.ha.Store.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	var gotJunk, gotHam bool
+	for _, h := range hits {
+		switch h.Envelope.MessageID {
+		case "junk-1@phish.test":
+			gotJunk = true
+			if h.Disposition != store.DeliveryDispositionJunk {
+				t.Errorf("junk message: Disposition = %q; want %q", h.Disposition, store.DeliveryDispositionJunk)
+			}
+		case "ham-1@example.test":
+			gotHam = true
+			if h.Disposition != store.DeliveryDispositionInbox {
+				t.Errorf("ham message: Disposition = %q; want %q", h.Disposition, store.DeliveryDispositionInbox)
+			}
+		}
+	}
+	if !gotJunk {
+		t.Errorf("junk-1@phish.test not found in SearchAdminMessages results")
+	}
+	if !gotHam {
+		t.Errorf("ham-1@example.test not found in SearchAdminMessages results")
+	}
+}
+
 func TestDelivery_AuthenticationResults_Header_Prepended(t *testing.T) {
 	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
 	f.ha.AddDNSRecord("_dmarc.sender.test", "TXT", "v=DMARC1; p=none;")

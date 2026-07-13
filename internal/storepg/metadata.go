@@ -981,8 +981,8 @@ func (m *metadata) insertMessageTx(
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 			  env_message_id, env_in_reply_to, env_references, env_date_us,
 			  internalize_pending, preview, has_attachment, body_meta_computed,
-			  failed_image_count, failed_image_state)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+			  failed_image_count, failed_image_state, delivery_disposition)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 			RETURNING id`,
 			pid,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size,
@@ -992,7 +992,7 @@ func (m *metadata) insertMessageTx(
 			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date),
 			boolToInt16(msg.InternalizePending), msg.Preview,
 			msg.HasAttachment, msg.BodyMetaComputed,
-			msg.FailedImageCount, msg.FailedImageState,
+			msg.FailedImageCount, msg.FailedImageState, string(msg.DeliveryDisposition),
 		).Scan(&mid); err != nil {
 			return mapErr(err)
 		}

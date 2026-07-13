@@ -113,7 +113,8 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		           AND (mb.attributes & ` + fmt.Sprintf("%d", mailboxAttrJunkBit) + `) != 0
 		    ) AS is_junk,
 		    lc.spam_verdict,
-		    lc.spam_confidence
+		    lc.spam_confidence,
+		    m.delivery_disposition
 		FROM messages m
 		JOIN principals p ON p.id = m.principal_id
 		LEFT JOIN llm_classifications lc ON lc.message_id = m.id` +
@@ -151,6 +152,7 @@ func scanAdminMessageHit(row interface {
 	var spamVerdict sql.NullString
 	var spamConfidence sql.NullFloat64
 	var envCc, envBcc, envReplyTo, envInReplyTo, envReferences string
+	var disposition string
 	err := row.Scan(
 		&id, &pid, &rcvUs,
 		&hit.Envelope.Subject,
@@ -164,6 +166,7 @@ func scanAdminMessageHit(row interface {
 		&isJunk,
 		&spamVerdict,
 		&spamConfidence,
+		&disposition,
 	)
 	if err != nil {
 		return store.AdminMessageHit{}, mapErr(err)
@@ -178,6 +181,7 @@ func scanAdminMessageHit(row interface {
 	hit.Envelope.References = envReferences
 	hit.Envelope.Date = fromMicros(envDateUs)
 	hit.IsJunk = isJunk != 0
+	hit.Disposition = store.MessageDeliveryDisposition(disposition)
 	if spamVerdict.Valid {
 		s := spamVerdict.String
 		hit.SpamVerdict = &s

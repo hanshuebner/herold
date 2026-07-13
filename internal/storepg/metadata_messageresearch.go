@@ -116,7 +116,8 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		           AND (mb.attributes & ` + fmt.Sprintf("%d", mailboxAttrJunkBitPG) + `) != 0
 		    ) AS is_junk,
 		    lc.spam_verdict,
-		    lc.spam_confidence
+		    lc.spam_confidence,
+		    m.delivery_disposition
 		FROM messages m
 		JOIN principals p ON p.id = m.principal_id
 		LEFT JOIN llm_classifications lc ON lc.message_id = m.id` +
@@ -154,6 +155,7 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 	var spamVerdict *string
 	var spamConfidence *float64
 	var envCc, envBcc, envReplyTo, envInReplyTo, envReferences string
+	var disposition string
 	err := row.Scan(
 		&id, &pid, &rcvUs,
 		&hit.Envelope.Subject,
@@ -167,6 +169,7 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 		&isJunk,
 		&spamVerdict,
 		&spamConfidence,
+		&disposition,
 	)
 	if err != nil {
 		return store.AdminMessageHit{}, mapErr(err)
@@ -181,6 +184,7 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 	hit.Envelope.References = envReferences
 	hit.Envelope.Date = fromMicros(envDateUs)
 	hit.IsJunk = isJunk
+	hit.Disposition = store.MessageDeliveryDisposition(disposition)
 	hit.SpamVerdict = spamVerdict
 	hit.SpamConfidence = spamConfidence
 	return hit, nil

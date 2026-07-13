@@ -1352,8 +1352,8 @@ func (m *metadata) insertMessageTx(
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 			  env_message_id, env_in_reply_to, env_references, env_date_us,
 			  internalize_pending, preview, has_attachment, body_meta_computed,
-			  failed_image_count, failed_image_state)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  failed_image_count, failed_image_state, delivery_disposition)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			pid, msg.Blob.Hash, msg.Blob.Size,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
@@ -1361,7 +1361,7 @@ func (m *metadata) insertMessageTx(
 			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date),
 			boolToInt64(msg.InternalizePending), msg.Preview,
 			boolToInt64(msg.HasAttachment), boolToInt64(msg.BodyMetaComputed),
-			msg.FailedImageCount, msg.FailedImageState)
+			msg.FailedImageCount, msg.FailedImageState, string(msg.DeliveryDisposition))
 		if err != nil {
 			return mapErr(err)
 		}

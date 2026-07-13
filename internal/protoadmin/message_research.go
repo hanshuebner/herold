@@ -15,8 +15,12 @@ import (
 // The endpoint is a retrospective per-message tracer (REQ-ADM-306). It joins
 // three sources and returns a flat timeline sorted newest-first:
 //
-//   - "received": messages accepted and stored, with envelope + disposition
-//     (mailbox, Junk flag, spam verdict). No body content is ever returned.
+//   - "received": messages accepted and stored, with envelope, the
+//     recorded-at-ingest delivery disposition (store.MessageDeliveryDisposition,
+//     re #143 -- immutable, never recomputed from current mailbox state),
+//     the message's current mailbox/Junk membership (live state, for
+//     "where is it now"), and spam verdict. No body content is ever
+//     returned.
 //   - "smtp_event": SMTP-time accept/reject/defer entries from system_events.
 //     These cover messages that were rejected before storage.
 //   - "send_outcome": outbound queue entries from the queue table.
@@ -190,6 +194,17 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 			"source":       "received",
 			"at":           m.ReceivedAt.UTC().Format(time.RFC3339Nano),
 			"principal_id": uint64(m.PrincipalID),
+			// disposition is the recorded-at-ingest fact (re #143): what
+			// the SMTP ingest path decided when the message was
+			// accepted, immutable regardless of later moves. "" means
+			// not recorded (row predates migration 0090, or was written
+			// by a non-SMTP-ingest path); rendered as-is, never inferred.
+			"disposition": string(m.Disposition),
+			// mailbox_name / is_junk are LIVE state -- the message's
+			// CURRENT mailbox membership, which can differ from
+			// disposition after a later move/refile. Kept for "where is
+			// it now"; disposition is the "what happened at delivery"
+			// field.
 			"mailbox_name": m.MailboxName,
 			"is_junk":      m.IsJunk,
 			"envelope": map[string]any{

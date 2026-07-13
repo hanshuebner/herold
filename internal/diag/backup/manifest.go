@@ -633,7 +633,17 @@ const CurrentBackupVersion = 1
 //	MailingListRow gains the two fields. archive_mailbox_id itself was
 //	already part of the schema from migration 0085 (reserved for this
 //	stage) and is now populated by the admin REST archive-enable path.
-const CurrentSchemaVersion = 89
+//
+// 90 — 0090_message_delivery_disposition.sql (issue #143). Adds
+//
+//	messages.delivery_disposition ('', the NOT NULL DEFAULT, meaning
+//	not recorded; 'delivered_inbox' / 'delivered_junk' otherwise),
+//	written once by internal/protosmtp/deliver.go's deliverOne at
+//	INSERT time and never recomputed from current mailbox membership.
+//	Fixes message research's retrospective trace silently rewriting
+//	itself when a message is later moved out of Junk. No new table;
+//	MessageRow gains the one field.
+const CurrentSchemaVersion = 90
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

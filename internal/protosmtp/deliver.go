@@ -604,6 +604,14 @@ func (sess *session) deliverOne(
 		if err != nil {
 			return false, fmt.Errorf("ensure mailbox %q: %w", mbName, err)
 		}
+		// re #143: record the delivery disposition once, at ingest, on
+		// the resolved target mailbox -- never recomputed later from
+		// live mailbox membership (a subsequent move/refile must not
+		// rewrite what message research reports for this delivery).
+		disposition := store.DeliveryDispositionInbox
+		if mb.Attributes&store.MailboxAttrJunk != 0 {
+			disposition = store.DeliveryDispositionJunk
+		}
 		storeMsg := store.Message{
 			PrincipalID:  rc.principalID,
 			Size:         blobRef.Size,
@@ -615,8 +623,9 @@ func (sess *session) deliverOne(
 			// same blob content, so the same retained failed-image
 			// state (computed once in finishMessage) applies to each
 			// recipient's message row.
-			FailedImageCount: sess.envelope.failedImageCount,
-			FailedImageState: sess.envelope.failedImageState,
+			FailedImageCount:    sess.envelope.failedImageCount,
+			FailedImageState:    sess.envelope.failedImageState,
+			DeliveryDisposition: disposition,
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)

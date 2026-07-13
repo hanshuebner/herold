@@ -199,6 +199,157 @@ func testSearchAdminMessages_ReceivedMessage(t *testing.T, s store.Store) {
 	}
 }
 
+// testSearchAdminMessages_DispositionSurvivesMove is the regression test for
+// re #143: message research must report the delivery disposition RECORDED
+// AT INGEST, not the message's current mailbox membership. It fails on
+// pre-fix code (Disposition derived from live message_mailboxes state) and
+// passes once Disposition is a persisted, immutable fact set once by the
+// ingest caller (internal/protosmtp/deliver.go).
+//
+// Sequence: insert a message with DeliveryDisposition = junk into a Junk
+// mailbox (simulating SMTP ingest filing to Junk), then MOVE it to a
+// plain Inbox mailbox (simulating an operator/Sieve refile), then assert
+// SearchAdminMessages STILL reports DeliveryDispositionJunk -- even
+// though MailboxName/IsJunk (live state) now reflect the Inbox.
+func testSearchAdminMessages_DispositionSurvivesMove(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	principal := mustInsertPrincipal(t, s, "dana@disposition.test")
+	junkMB := mustInsertMailboxWithAttrs(t, s, principal.ID, "Junk", store.MailboxAttrJunk)
+	inboxMB := mustInsertMailboxWithAttrs(t, s, principal.ID, "INBOX", store.MailboxAttrInbox)
+
+	blob := putBlob(t, s, "disposition regression body")
+	rcv := time.Date(2026, 5, 2, 8, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  principal.ID,
+		Blob:         blob,
+		Size:         blob.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Free money",
+			From:      "spam@disposition-sender.test",
+			To:        "dana@disposition.test",
+			MessageID: "msg-dana-1@disposition-sender.test",
+		},
+		// Simulates internal/protosmtp/deliver.go's deliverOne: the
+		// ingest path resolved the Junk mailbox as the fileinto target,
+		// so it records the Junk disposition at insert time.
+		DeliveryDisposition: store.DeliveryDispositionJunk,
+	}, []store.MessageMailbox{{MailboxID: junkMB.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := s.Meta().ListMessages(ctx, junkMB.ID, store.MessageFilter{Limit: 1})
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("ListMessages: %v (len=%d)", err, len(msgs))
+	}
+	msgID := msgs[0].ID
+
+	// Before the move: disposition and live state agree (both Junk).
+	before, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-dana-1@disposition-sender.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages before move: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("before move: got %d hits; want 1", len(before))
+	}
+	if before[0].Disposition != store.DeliveryDispositionJunk {
+		t.Fatalf("before move: Disposition = %q; want %q", before[0].Disposition, store.DeliveryDispositionJunk)
+	}
+	if !before[0].IsJunk {
+		t.Errorf("before move: IsJunk should be true (live state matches)")
+	}
+
+	// Move the message out of Junk into Inbox -- an operator refile, or a
+	// Sieve/IMAP MOVE. The messages row id (and therefore this forensic
+	// record) is unchanged; only mailbox membership changes.
+	if err := s.Meta().MoveMessage(ctx, msgID, junkMB.ID, inboxMB.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+
+	after, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-dana-1@disposition-sender.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages after move: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("after move: got %d hits; want 1", len(after))
+	}
+	// THE REGRESSION CHECK: disposition must still read Junk -- it is the
+	// recorded-at-ingest fact, immune to the later move.
+	if after[0].Disposition != store.DeliveryDispositionJunk {
+		t.Errorf("after move: Disposition = %q; want %q (must not change on move -- re #143)",
+			after[0].Disposition, store.DeliveryDispositionJunk)
+	}
+	// Live state, by contrast, DOES reflect the move -- MailboxName/IsJunk
+	// are documented as "current state", not disposition.
+	if after[0].IsJunk {
+		t.Errorf("after move: IsJunk should now be false (live state follows the move)")
+	}
+	if after[0].MailboxName != "INBOX" {
+		t.Errorf("after move: MailboxName = %q; want INBOX", after[0].MailboxName)
+	}
+}
+
+// testSearchAdminMessages_DispositionUnknownForUnsetRows verifies that a
+// message inserted without an explicit DeliveryDisposition (e.g. JMAP
+// import, IMAP APPEND, or any pre-migration-0090 row) reports
+// DeliveryDispositionUnknown ("") rather than a value back-filled from
+// current mailbox state (re #143: silent back-fill would reintroduce the
+// same lie under a different name).
+func testSearchAdminMessages_DispositionUnknownForUnsetRows(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	principal := mustInsertPrincipal(t, s, "erin@disposition.test")
+	junkMB := mustInsertMailboxWithAttrs(t, s, principal.ID, "Junk", store.MailboxAttrJunk)
+
+	blob := putBlob(t, s, "no disposition recorded")
+	rcv := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  principal.ID,
+		Blob:         blob,
+		Size:         blob.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Imported message",
+			From:      "someone@elsewhere.test",
+			To:        "erin@disposition.test",
+			MessageID: "msg-erin-1@elsewhere.test",
+		},
+		// DeliveryDisposition intentionally left unset -- simulates a
+		// non-SMTP-ingest write path (JMAP import, IMAP APPEND).
+	}, []store.MessageMailbox{{MailboxID: junkMB.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-erin-1@elsewhere.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits; want 1", len(hits))
+	}
+	if hits[0].Disposition != store.DeliveryDispositionUnknown {
+		t.Errorf("Disposition = %q; want unknown (%q) -- must not be inferred from live IsJunk=%v",
+			hits[0].Disposition, store.DeliveryDispositionUnknown, hits[0].IsJunk)
+	}
+	// Live state still correctly shows Junk -- only Disposition is unknown.
+	if !hits[0].IsJunk {
+		t.Errorf("IsJunk should be true (live state)")
+	}
+}
+
 // testSearchAdminMessages_SenderFilter verifies the Sender substring filter.
 func testSearchAdminMessages_SenderFilter(t *testing.T, s store.Store) {
 	t.Helper()

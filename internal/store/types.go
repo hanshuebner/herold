@@ -651,6 +651,19 @@ type Message struct {
 	// directly to JMAP Email/get callers without touching the blob.
 	BodyMetaComputed bool
 
+	// DeliveryDisposition is the disposition the ingest path (SMTP
+	// delivery) recorded for this message at the moment it was first
+	// inserted -- e.g. filed to the recipient's Inbox vs. filed to
+	// Junk. It is set once, by the caller, before InsertMessage /
+	// InsertMessages is called, and is never recomputed from current
+	// mailbox membership (see store.MessageDeliveryDisposition,
+	// types_messageresearch.go, re #143). Zero value
+	// (DeliveryDispositionUnknown) means the row predates disposition
+	// recording, or was written by a path (JMAP import, IMAP APPEND,
+	// bulk import, Sieve redirect fan-out) that does not represent an
+	// SMTP-ingest disposition decision.
+	DeliveryDisposition MessageDeliveryDisposition
+
 	// -- Multi-mailbox membership (REQ-STORE-36) -----------------------
 
 	// Mailboxes is the full set of per-(message, mailbox) rows for this

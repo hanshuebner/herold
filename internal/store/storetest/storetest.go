@@ -475,6 +475,8 @@ func Run(t *testing.T, f Factory) {
 		{"SearchAdminMessages_DomainScope_Operator", testSearchAdminMessages_DomainScope_Operator},
 		{"SearchAdminMessages_DomainScope_FailClosed", testSearchAdminMessages_DomainScope_FailClosed},
 		{"SearchAdminMessages_CursorPagination", testSearchAdminMessages_CursorPagination},
+		{"SearchAdminMessages_DispositionSurvivesMove", testSearchAdminMessages_DispositionSurvivesMove},
+		{"SearchAdminMessages_DispositionUnknownForUnsetRows", testSearchAdminMessages_DispositionUnknownForUnsetRows},
 		{"QueueFilter_SenderDomainsAndContains", testQueueFilter_SenderDomainsAndContains},
 		{"QueueFilter_Newest", testQueueFilter_Newest},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --

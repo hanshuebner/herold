@@ -1,0 +1,26 @@
+-- 0090_message_delivery_disposition.sql -- records the SMTP ingest
+-- path's delivery disposition at insert time (issue #143).
+--
+-- Message research previously inferred "was this delivered to Junk" from
+-- whichever mailboxes the message currently belongs to (message_mailboxes
+-- join at query time), so a later move out of Junk silently rewrote the
+-- retrospective trace. delivery_disposition is written once, by the
+-- delivery caller, at INSERT time, and never recomputed.
+--
+-- '' (empty string, the NOT NULL DEFAULT) means "not recorded": every row
+-- that predates this migration, and every row inserted by a path that is
+-- not an SMTP-ingest decision (JMAP import, IMAP APPEND, bulk mailbox
+-- import, Sieve redirect fan-out). It is rendered as an explicit
+-- "unknown" by message research, never back-filled from current mailbox
+-- state (store.DeliveryDispositionUnknown).
+--
+-- The two non-empty values, 'delivered_inbox' and 'delivered_junk'
+-- (store.DeliveryDispositionInbox / DeliveryDispositionJunk), mirror the
+-- only two dispositions the ingest path actually decides between: the
+-- resolved Sieve fileinto target either carries the Junk special-use
+-- attribute or it does not. SMTP-time reject/defer never creates a
+-- messages row at all, so no third "quarantined" value is needed here.
+--
+-- Forward-only. Mirrors storepg 0090.
+
+ALTER TABLE messages ADD COLUMN delivery_disposition TEXT NOT NULL DEFAULT '';
