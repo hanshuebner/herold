@@ -613,6 +613,36 @@ func TestSessionAuth_Login_TOTPReplay_Gap(t *testing.T) {
 	}
 }
 
+// TestSessionAuth_Login_TOTPBruteForce_RateLimited asserts the brute-force
+// bound on TOTP guesses at login: directory.VerifyTOTP rate-limits by
+// (principal, source) -- the same bucket used by step-up and the
+// device-token/OAuth2 paths -- so repeated wrong codes against a login whose
+// password is already known lock out after rlMaxFailures (5) within
+// rlWindow (1 minute), returning 429 rather than continuing to accept
+// guesses (issue #228 acceptance: "brute-force bound on code attempts").
+func TestSessionAuth_Login_TOTPBruteForce_RateLimited(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("totp-login-bruteforce@example.com")
+
+	// 5 wrong codes within the rate limiter's window.
+	for i := 0; i < 5; i++ {
+		code, body := sh.doLogin(email, password, map[string]any{"totp_code": "000000"})
+		if code != http.StatusUnauthorized {
+			t.Fatalf("wrong-code attempt %d: status=%d body=%v, want 401", i, code, body)
+		}
+	}
+
+	// The 6th attempt, even with a correct password, is locked out.
+	code, body := sh.doLogin(email, password, map[string]any{"totp_code": "000000"})
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("6th attempt: status=%d body=%v, want 429", code, body)
+	}
+	if sh.sessionCookiePresent() {
+		t.Fatal("session cookie set despite TOTP rate-limit lockout")
+	}
+}
+
 // TestSessionAuth_Login_Succeeds asserts that login with correct email+password
 // succeeds regardless of TOTP enrollment state (REQ-AUTH-JSON-LOGIN, issue #79).
 func TestSessionAuth_Login_Succeeds(t *testing.T) {
