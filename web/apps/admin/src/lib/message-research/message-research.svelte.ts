@@ -18,6 +18,16 @@ export interface ReceivedHit {
   source: 'received';
   at: string;
   principal_id: number;
+  /** Resolved CanonicalEmail of principal_id, or "" if not resolvable. */
+  principal_email: string;
+  /**
+   * Recorded-at-ingest delivery disposition (re #143): what the SMTP
+   * ingest path decided when the message was accepted, immutable
+   * regardless of later moves. "" means not recorded (row predates the
+   * disposition column, or was written by a non-SMTP-ingest path) --
+   * render as "unknown", never inferred from mailbox_name/is_junk.
+   */
+  disposition: '' | 'delivered_inbox' | 'delivered_junk';
   mailbox_name: string;
   is_junk: boolean;
   spam_verdict?: string;

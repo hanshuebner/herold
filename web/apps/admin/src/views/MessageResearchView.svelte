@@ -114,6 +114,23 @@
   function formatFrom(from: string): string {
     return from || t('messageResearch.unknown');
   }
+
+  /** Human label for the recorded-at-ingest delivery disposition. */
+  function dispositionLabel(disposition: string): string {
+    switch (disposition) {
+      case 'delivered_inbox': return t('messageResearch.disposition.inbox');
+      case 'delivered_junk': return t('messageResearch.disposition.junk');
+      default: return t('messageResearch.disposition.unknown');
+    }
+  }
+
+  function dispositionChipClass(disposition: string): string {
+    switch (disposition) {
+      case 'delivered_inbox': return 'chip-green';
+      case 'delivered_junk': return 'chip-amber';
+      default: return 'chip-grey';
+    }
+  }
 </script>
 
 <div class="research-page">
@@ -254,6 +271,14 @@
                     <span class="entry-val">{hit.envelope.subject}</span>
                   </div>
                 {/if}
+                <div class="entry-row">
+                  <span class="entry-key">{t('messageResearch.field.deliveredTo')}</span>
+                  <span class="entry-val mono-sm">{hit.principal_email || t('messageResearch.unknown')}</span>
+                </div>
+                <div class="entry-row">
+                  <span class="entry-key">{t('messageResearch.field.disposition')}</span>
+                  <span class="chip {dispositionChipClass(hit.disposition)}">{dispositionLabel(hit.disposition)}</span>
+                </div>
                 <div class="entry-row">
                   <span class="entry-key">{t('messageResearch.field.mailbox')}</span>
                   <span class="entry-val mono-sm">{hit.mailbox_name || t('messageResearch.unknown')}</span>

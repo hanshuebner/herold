@@ -15,8 +15,9 @@ import (
 // The endpoint is a retrospective per-message tracer (REQ-ADM-306). It joins
 // three sources and returns a flat timeline sorted newest-first:
 //
-//   - "received": messages accepted and stored, with envelope, the
-//     recorded-at-ingest delivery disposition (store.MessageDeliveryDisposition,
+//   - "received": messages accepted and stored, with envelope, the owning
+//     principal (principal_id and its resolved principal_email, re #226),
+//     the recorded-at-ingest delivery disposition (store.MessageDeliveryDisposition,
 //     re #143 -- immutable, never recomputed from current mailbox state),
 //     the message's current mailbox/Junk membership (live state, for
 //     "where is it now"), and spam verdict. No body content is ever
@@ -189,11 +190,28 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 
 	var timeline []entry
 
+	// Resolve PrincipalID -> CanonicalEmail once per distinct principal
+	// rather than once per received row: a single operator search
+	// commonly returns many messages for the same handful of mailboxes.
+	principalEmails := make(map[store.PrincipalID]string)
+	resolvePrincipalEmail := func(pid store.PrincipalID) string {
+		if email, ok := principalEmails[pid]; ok {
+			return email
+		}
+		email := ""
+		if p, err := s.store.Meta().GetPrincipalByID(r.Context(), pid); err == nil {
+			email = p.CanonicalEmail
+		}
+		principalEmails[pid] = email
+		return email
+	}
+
 	for _, m := range msgs {
 		e := map[string]any{
-			"source":       "received",
-			"at":           m.ReceivedAt.UTC().Format(time.RFC3339Nano),
-			"principal_id": uint64(m.PrincipalID),
+			"source":          "received",
+			"at":              m.ReceivedAt.UTC().Format(time.RFC3339Nano),
+			"principal_id":    uint64(m.PrincipalID),
+			"principal_email": resolvePrincipalEmail(m.PrincipalID),
 			// disposition is the recorded-at-ingest fact (re #143): what
 			// the SMTP ingest path decided when the message was
 			// accepted, immutable regardless of later moves. "" means

@@ -221,6 +221,47 @@ func TestMessageResearch_ReceivedFields(t *testing.T) {
 		if item["is_junk"] != false {
 			t.Errorf("is_junk: got %v", item["is_junk"])
 		}
+		if item["principal_email"] != "alice@alpha.test" {
+			t.Errorf("principal_email: got %v", item["principal_email"])
+		}
+	}
+	if !found {
+		t.Errorf("no 'received' entry found; items=%+v", out.Items)
+	}
+}
+
+// TestMessageResearch_PrincipalEmailResolved verifies that received entries
+// carry both the raw principal_id and its resolved principal_email (re #226),
+// so the admin SPA can render "delivered to" without an N+1 lookup of its own.
+func TestMessageResearch_PrincipalEmailResolved(t *testing.T) {
+	h := newHarness(t)
+	adminKey, aliceID, _ := seedResearchFixture(t, h)
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?sender=sender%40outside.test", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+
+	var found bool
+	for _, item := range out.Items {
+		if item["source"] != "received" {
+			continue
+		}
+		found = true
+		gotID, ok := item["principal_id"].(float64)
+		if !ok || uint64(gotID) != aliceID {
+			t.Errorf("principal_id: got %v, want %d", item["principal_id"], aliceID)
+		}
+		if item["principal_email"] != "alice@alpha.test" {
+			t.Errorf("principal_email: got %v, want alice@alpha.test", item["principal_email"])
+		}
 	}
 	if !found {
 		t.Errorf("no 'received' entry found; items=%+v", out.Items)
