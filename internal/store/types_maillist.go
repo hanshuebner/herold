@@ -152,6 +152,17 @@ type MailingList struct {
 	// ArchiveMailboxID is the list's archive mailbox (Stage 4,
 	// REQ-MLIST-70), or nil when the list has none. Not used in S1.
 	ArchiveMailboxID *MailboxID
+	// ArchiveRetentionDays bounds the archive by age (Stage 4,
+	// REQ-MLIST-74): archiveretention hard-deletes archived posts older
+	// than this many days. 0 means unbounded (no age-based retention),
+	// mirroring MaxMessageSizeBytes's own "0 means unset" convention.
+	// Ignored when ArchiveMailboxID is nil.
+	ArchiveRetentionDays int64
+	// ArchiveRetentionMaxMessages bounds the archive by count (Stage 4,
+	// REQ-MLIST-74): archiveretention hard-deletes the oldest archived
+	// posts once the mailbox holds more than this many messages. 0 means
+	// unbounded. Ignored when ArchiveMailboxID is nil.
+	ArchiveRetentionMaxMessages int64
 	// MaxMessageSizeBytes is the configurable per-list post-size ceiling
 	// (REQ-MLIST-32). Zero means "use the deployment's default
 	// MaxMessageSize" — the caller resolves that default, not this

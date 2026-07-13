@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hanshuebner/herold/internal/acme"
+	"github.com/hanshuebner/herold/internal/archiveretention"
 	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/autodns"
@@ -653,6 +654,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	mlistKeyMgr := keymgmt.NewManager(st.Meta(), logger.With("subsystem", "maillist-arc"), clk, nil)
 	mlistSealer := mailarc.NewSealer(mlistKeyMgr, nil, logger.With("subsystem", "maillist-arc"))
 	mlistExpander := maillist.NewExpander(st.Meta(), outboundQ, mlistSealer, clk, logger.With("subsystem", "maillist"))
+	// REQ-MLIST-70: the archive-filing path needs the blob store directly
+	// (it files a post via Blobs.Put + Meta.InsertMessage, not through the
+	// outbound queue -- there is no "recipient" for an archive copy).
+	mlistExpander.Blobs = st.Blobs()
 
 	// VERP bounce tokens (Stage 2, REQ-MLIST-50/51/52, issue #184).
 	// Loaded independently of the external-submission/IMAP-import data-
@@ -1287,6 +1292,24 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := trashRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "trashretention worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// Mailing-list archive retention sweeper (epic #187, REQ-MLIST-74).
+	// Hard-deletes archived posts once a list's configured age and/or
+	// count bound is exceeded; a list with no archive or no bound
+	// configured does no work per sweep. Bounded by the lifecycle
+	// errgroup so shutdown drains it.
+	archiveRetentionWorker := archiveretention.NewWorker(archiveretention.Options{
+		Store:  st,
+		Logger: logger.With("subsystem", "archiveretention"),
+		Clock:  clk,
+	})
+	g.Go(func() error {
+		if err := archiveRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "archiveretention worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil

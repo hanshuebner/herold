@@ -30,8 +30,40 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// ensureArchiveMailbox returns the id of groupPID's archive mailbox for
+// postingAddress (REQ-MLIST-70), creating it if it does not already
+// exist. Idempotent across a disable/re-enable cycle (PATCH
+// archive_enabled=false only detaches ml.ArchiveMailboxID; it never
+// deletes the mailbox or its content, see patchMailingListRequest's
+// ArchiveEnabled doc comment) -- re-enabling reuses the SAME mailbox by
+// its deterministic name (maillist.ArchiveMailboxNameForAddress) rather
+// than colliding on the (principal, name) uniqueness constraint by
+// trying to insert a second mailbox of the same name, and the list's
+// prior archived history becomes visible again instead of being
+// orphaned under a name the list config no longer references.
+func (s *Server) ensureArchiveMailbox(ctx context.Context, groupPID store.PrincipalID, postingAddress string) (store.MailboxID, error) {
+	name := maillist.ArchiveMailboxNameForAddress(postingAddress)
+	existing, err := s.store.Meta().GetMailboxByName(ctx, groupPID, name)
+	if err == nil {
+		return existing.ID, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return 0, err
+	}
+	mb, err := s.store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: groupPID,
+		Name:        name,
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return mb.ID, nil
+}
 
 // parseMailingListID reads the {id} path parameter.
 func parseMailingListID(w http.ResponseWriter, r *http.Request) (store.MailingListID, bool) {
@@ -280,6 +312,16 @@ type createMailingListRequest struct {
 	// scoring policy for this list. Any field left unset keeps the
 	// deployment default for that field.
 	BouncePolicy *bouncePolicyPatchDTO `json:"bounce_policy,omitempty"`
+	// ArchiveEnabled creates the list's archive mailbox (Stage 4,
+	// REQ-MLIST-70) at creation time when true. Omitted/false: no
+	// archive (the S1..S3 default); use PATCH archive_enabled to add one
+	// later.
+	ArchiveEnabled bool `json:"archive_enabled,omitempty"`
+	// ArchiveRetentionDays / ArchiveRetentionMaxMessages set the
+	// REQ-MLIST-74 archive retention bound at creation time. Ignored
+	// when ArchiveEnabled is false. 0 (the default) means unbounded.
+	ArchiveRetentionDays        int64 `json:"archive_retention_days,omitempty"`
+	ArchiveRetentionMaxMessages int64 `json:"archive_retention_max_messages,omitempty"`
 }
 
 // handleCreateMailingList handles POST /api/v1/lists (REQ-MLIST-01,
@@ -342,6 +384,12 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if req.ArchiveRetentionDays < 0 || req.ArchiveRetentionMaxMessages < 0 {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"archive_retention_days and archive_retention_max_messages must be non-negative", "")
+		return
+	}
+
 	group, err := s.store.Meta().InsertPrincipal(r.Context(), store.Principal{
 		Kind:           store.PrincipalKindGroup,
 		CanonicalEmail: address,
@@ -350,6 +398,16 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.writeMlistError(w, r, err)
 		return
+	}
+
+	var archiveMailboxID *store.MailboxID
+	if req.ArchiveEnabled {
+		id, err := s.ensureArchiveMailbox(r.Context(), group.ID, address)
+		if err != nil {
+			s.writeMlistError(w, r, err)
+			return
+		}
+		archiveMailboxID = &id
 	}
 
 	var subjectTag *string
@@ -367,16 +425,19 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	l, err := s.store.Meta().InsertMailingList(r.Context(), store.MailingList{
-		PrincipalID:         group.ID,
-		PostingAddress:      address,
-		DisplayName:         req.DisplayName,
-		OwnerID:             ownerID,
-		SubjectTag:          subjectTag,
-		ARCSeal:             arcSeal,
-		MaxMessageSizeBytes: req.MaxMessageSize,
-		UnsubscribeEnabled:  unsubscribeEnabled,
-		SubscribePolicy:     subscribePolicy,
-		BouncePolicyJSON:    bouncePolicyJSON,
+		PrincipalID:                 group.ID,
+		PostingAddress:              address,
+		DisplayName:                 req.DisplayName,
+		OwnerID:                     ownerID,
+		SubjectTag:                  subjectTag,
+		ARCSeal:                     arcSeal,
+		MaxMessageSizeBytes:         req.MaxMessageSize,
+		UnsubscribeEnabled:          unsubscribeEnabled,
+		SubscribePolicy:             subscribePolicy,
+		BouncePolicyJSON:            bouncePolicyJSON,
+		ArchiveMailboxID:            archiveMailboxID,
+		ArchiveRetentionDays:        req.ArchiveRetentionDays,
+		ArchiveRetentionMaxMessages: req.ArchiveRetentionMaxMessages,
 	})
 	if err != nil {
 		s.writeMlistError(w, r, err)
@@ -431,6 +492,15 @@ type patchMailingListRequest struct {
 	// bounce-scoring policy; any of its own fields left unset keeps that
 	// field's current (or default) value.
 	BouncePolicy *bouncePolicyPatchDTO `json:"bounce_policy,omitempty"`
+	// ArchiveEnabled, when present, creates the archive mailbox (true,
+	// idempotent if already enabled) or detaches and revokes every
+	// member's read grant on it (false, idempotent if already disabled;
+	// the mailbox and its content are left in place -- REQ-MLIST-70/72).
+	ArchiveEnabled *bool `json:"archive_enabled,omitempty"`
+	// ArchiveRetentionDays / ArchiveRetentionMaxMessages patch the
+	// REQ-MLIST-74 archive retention bound. 0 means unbounded.
+	ArchiveRetentionDays        *int64 `json:"archive_retention_days,omitempty"`
+	ArchiveRetentionMaxMessages *int64 `json:"archive_retention_max_messages,omitempty"`
 }
 
 // handlePatchMailingList handles PATCH /api/v1/lists/{id}: rename (change
@@ -546,6 +616,44 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 		}
 		l.BouncePolicyJSON = newRaw
 	}
+	if req.ArchiveRetentionDays != nil {
+		if *req.ArchiveRetentionDays < 0 {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"archive_retention_days must be non-negative", "")
+			return
+		}
+		l.ArchiveRetentionDays = *req.ArchiveRetentionDays
+	}
+	if req.ArchiveRetentionMaxMessages != nil {
+		if *req.ArchiveRetentionMaxMessages < 0 {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"archive_retention_max_messages must be non-negative", "")
+			return
+		}
+		l.ArchiveRetentionMaxMessages = *req.ArchiveRetentionMaxMessages
+	}
+	// REQ-MLIST-70/72: archive_enabled create/detach. Grant maintenance
+	// (GrantExistingActiveMembersArchiveAccess / RevokeAllArchiveGrants)
+	// runs AFTER UpdateMailingList commits below, once l.ArchiveMailboxID
+	// itself is durable.
+	var archiveJustEnabled bool
+	var archiveJustDisabledID *store.MailboxID
+	if req.ArchiveEnabled != nil {
+		switch {
+		case *req.ArchiveEnabled && l.ArchiveMailboxID == nil:
+			id, err := s.ensureArchiveMailbox(r.Context(), l.PrincipalID, l.PostingAddress)
+			if err != nil {
+				s.writeMlistError(w, r, err)
+				return
+			}
+			l.ArchiveMailboxID = &id
+			archiveJustEnabled = true
+		case !*req.ArchiveEnabled && l.ArchiveMailboxID != nil:
+			id := *l.ArchiveMailboxID
+			archiveJustDisabledID = &id
+			l.ArchiveMailboxID = nil
+		}
+	}
 
 	// REQ-MLIST-21 config-time gate (issue #183): only checked when this
 	// PATCH is the thing turning arc_seal on, or relocating an
@@ -562,6 +670,23 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 	if err := s.store.Meta().UpdateMailingList(r.Context(), l); err != nil {
 		s.writeMlistError(w, r, err)
 		return
+	}
+	if archiveJustEnabled {
+		// Existing active members get read access retroactively -- they
+		// do not have to be re-added to gain it (REQ-MLIST-72).
+		if err := maillist.GrantExistingActiveMembersArchiveAccess(r.Context(), s.store.Meta(), l); err != nil {
+			s.writeMlistError(w, r, err)
+			return
+		}
+	}
+	if archiveJustDisabledID != nil {
+		// The mailbox and its already-archived content are left in
+		// place; only read access is revoked (see patchMailingListRequest's
+		// ArchiveEnabled doc comment).
+		if err := maillist.RevokeAllArchiveGrants(r.Context(), s.store.Meta(), *archiveJustDisabledID); err != nil {
+			s.writeMlistError(w, r, err)
+			return
+		}
 	}
 	if newOwner != oldOwner {
 		if err := s.revokeListOwner(r.Context(), l, oldOwner); err != nil {

@@ -904,6 +904,41 @@ func RegisterTrashretentionMetrics() {
 	})
 }
 
+// archiveretention metrics (epic #187, REQ-MLIST-74). Same shape as
+// trashretention.
+var (
+	archiveretentionMetricsOnce sync.Once
+
+	ArchiveretentionSweepsTotal          prometheus.Counter
+	ArchiveretentionMessagesDeletedTotal prometheus.Counter
+	ArchiveretentionSweepDurationSeconds prometheus.Histogram
+)
+
+// RegisterArchiveretentionMetrics registers the archiveretention
+// collector set; idempotent.
+func RegisterArchiveretentionMetrics() {
+	archiveretentionMetricsOnce.Do(func() {
+		ArchiveretentionSweepsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_archiveretention_sweeps_total",
+			Help: "Total mailing-list archive retention worker sweep ticks executed.",
+		})
+		ArchiveretentionMessagesDeletedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_archiveretention_messages_deleted_total",
+			Help: "Total mailing-list archive posts hard-deleted by the archive retention worker.",
+		})
+		ArchiveretentionSweepDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_archiveretention_sweep_duration_seconds",
+			Help:    "Mailing-list archive retention worker sweep duration.",
+			Buckets: prometheus.DefBuckets,
+		})
+		MustRegister(
+			ArchiveretentionSweepsTotal,
+			ArchiveretentionMessagesDeletedTotal,
+			ArchiveretentionSweepDurationSeconds,
+		)
+	})
+}
+
 // protojmap chat / calendars / contacts metrics. Label vocabulary is
 // closed by the registered method set in each datatype's Register*
 // constructor; methods not registered cannot be invoked, so cardinality

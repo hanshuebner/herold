@@ -64,8 +64,15 @@ type Expander struct {
 	// above -- a list configured for unsubscribe support must not
 	// silently stop advertising it.
 	PublicBaseURL string
-	Clock         clock.Clock
-	Logger        *slog.Logger
+	// Blobs is the content-addressed blob store used to file a fanned-
+	// out post into the list's archive mailbox (Stage 4, REQ-MLIST-70).
+	// May be nil when no list ever has ArchiveMailboxID set (e.g. a
+	// deployment or test that does not exercise archiving); fileArchive
+	// degrades by logging loudly rather than dropping the post when a
+	// list DOES have an archive configured but Blobs is nil.
+	Blobs  store.Blobs
+	Clock  clock.Clock
+	Logger *slog.Logger
 }
 
 // unsealedOutcome is the fan-out-metric outcome label recorded when
@@ -149,6 +156,11 @@ type ExpandResult struct {
 	// Unsealed lets a caller observe the degradation beyond the ERROR log
 	// line and the distinct metric/audit outcome Expand also records.
 	Unsealed bool
+	// Archived is true when the post was filed into the list's archive
+	// mailbox (REQ-MLIST-70). Always false when List.ArchiveMailboxID is
+	// nil; also false (with a loud ERROR log) if archiving was configured
+	// but filing failed -- filing failure never drops or blocks fan-out.
+	Archived bool
 }
 
 // Expand runs the REQ-MLIST-30..32 loop/abuse guards and, if the post
@@ -206,6 +218,12 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 			}
 		}
 	}
+
+	// REQ-MLIST-70: file the post into the archive exactly once, using
+	// the same shaped (optionally ARC-sealed) bytes every "each" member's
+	// copy is built from -- independent of the member loop below, so a
+	// list with only nomail members (or none at all) still archives.
+	archived := e.fileArchive(ctx, ml, shaped, in.Parsed)
 
 	if e.TokenSigner == nil {
 		e.Logger.ErrorContext(ctx, "maillist: no TokenSigner wired; fanning out with the S1 list-wide bounce address instead of a per-member VERP token",
@@ -298,8 +316,9 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 		slog.String("activity", observe.ActivityUser),
 		slog.String("list", listLabel),
 		slog.Int("member_count", memberCount),
-		slog.String("outcome", outcome))
-	return ExpandResult{MemberCount: memberCount, Unsealed: unsealed}, nil
+		slog.String("outcome", outcome),
+		slog.Bool("archived", archived))
+	return ExpandResult{MemberCount: memberCount, Unsealed: unsealed, Archived: archived}, nil
 }
 
 // memberAddress resolves the address one roster row fans out to: the

@@ -296,8 +296,13 @@ type MailingListRow struct {
 	ArchiveMailboxID    *int64  `json:"archive_mailbox_id,omitempty"`
 	MaxMessageSizeBytes int64   `json:"max_message_size_bytes"`
 	UnsubscribeEnabled  bool    `json:"unsubscribe_enabled"`
-	CreatedAtUs         int64   `json:"created_at_us"`
-	UpdatedAtUs         int64   `json:"updated_at_us"`
+	// ArchiveRetentionDays / ArchiveRetentionMaxMessages are the S4
+	// archive age/count retention bounds (migration 0089,
+	// REQ-MLIST-74). 0 means unbounded, mirroring MaxMessageSizeBytes.
+	ArchiveRetentionDays        int64 `json:"archive_retention_days"`
+	ArchiveRetentionMaxMessages int64 `json:"archive_retention_max_messages"`
+	CreatedAtUs                 int64 `json:"created_at_us"`
+	UpdatedAtUs                 int64 `json:"updated_at_us"`
 }
 
 // MailingListMemberRow mirrors the mailing_list_member table introduced

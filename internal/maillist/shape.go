@@ -299,7 +299,8 @@ func ParseVERPBounceLocalPart(localPart string) (base, token string, ok bool) {
 }
 
 // buildPrependedHeaders renders the REQ-MLIST-20/24 headers a fan-out
-// copy always carries: List-ID, List-Post, and Auto-Submitted. Callers
+// copy always carries: List-ID, List-Post, Auto-Submitted, and (when the
+// list has an archive configured, REQ-MLIST-70) List-Archive. Callers
 // prepend the result to the header block after any existing
 // Auto-Submitted header has been stripped (ShapeMessage does this).
 func buildPrependedHeaders(ml store.MailingList) []byte {
@@ -310,6 +311,11 @@ func buildPrependedHeaders(ml store.MailingList) []byte {
 	b.WriteString("List-Post: <mailto:")
 	b.WriteString(sanitizeForHeader(ml.PostingAddress))
 	b.WriteString(">\r\n")
+	if ml.ArchiveMailboxID != nil {
+		b.WriteString("List-Archive: ")
+		b.WriteString(ListArchiveHeaderValue(ml))
+		b.WriteString("\r\n")
+	}
 	b.WriteString("Auto-Submitted: auto-forwarded\r\n")
 	return b.Bytes()
 }

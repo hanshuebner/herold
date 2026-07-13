@@ -45,29 +45,49 @@ type mailingListDTO struct {
 	// sparse partial. This is what the operator bounce/suspension view
 	// (issue #184) reads.
 	BouncePolicy bouncePolicyDTO `json:"bounce_policy"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// ArchiveEnabled is true when the list owns an archive mailbox
+	// (Stage 4, REQ-MLIST-70). Read-only here; toggled via PATCH
+	// archive_enabled.
+	ArchiveEnabled bool `json:"archive_enabled"`
+	// ArchiveMailboxName is the archive's canonical mailbox Name
+	// (maillist.ArchiveMailboxName), the string a member SELECTs over
+	// IMAP or looks up by id over JMAP. Empty when ArchiveEnabled is
+	// false.
+	ArchiveMailboxName string `json:"archive_mailbox_name,omitempty"`
+	// ArchiveRetentionDays / ArchiveRetentionMaxMessages are the S4
+	// archive age/count retention bounds (REQ-MLIST-74). 0 means
+	// unbounded.
+	ArchiveRetentionDays        int64     `json:"archive_retention_days,omitempty"`
+	ArchiveRetentionMaxMessages int64     `json:"archive_retention_max_messages,omitempty"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
 }
 
 func toMailingListDTO(l store.MailingList) mailingListDTO {
 	dto := mailingListDTO{
-		ID:                  uint64(l.ID),
-		PrincipalID:         uint64(l.PrincipalID),
-		PostingAddress:      l.PostingAddress,
-		Domain:              l.Domain,
-		DisplayName:         l.DisplayName,
-		OwnerPrincipalID:    uint64(l.OwnerID),
-		ARCSeal:             l.ARCSeal,
-		PostingPolicy:       string(l.PostingPolicy),
-		SubscribePolicy:     string(l.SubscribePolicy),
-		MaxMessageSizeBytes: l.MaxMessageSizeBytes,
-		UnsubscribeEnabled:  l.UnsubscribeEnabled,
-		BouncePolicy:        toBouncePolicyDTO(l.BouncePolicyJSON),
-		CreatedAt:           l.CreatedAt,
-		UpdatedAt:           l.UpdatedAt,
+		ID:                          uint64(l.ID),
+		PrincipalID:                 uint64(l.PrincipalID),
+		PostingAddress:              l.PostingAddress,
+		Domain:                      l.Domain,
+		DisplayName:                 l.DisplayName,
+		OwnerPrincipalID:            uint64(l.OwnerID),
+		ARCSeal:                     l.ARCSeal,
+		PostingPolicy:               string(l.PostingPolicy),
+		SubscribePolicy:             string(l.SubscribePolicy),
+		MaxMessageSizeBytes:         l.MaxMessageSizeBytes,
+		UnsubscribeEnabled:          l.UnsubscribeEnabled,
+		BouncePolicy:                toBouncePolicyDTO(l.BouncePolicyJSON),
+		ArchiveRetentionDays:        l.ArchiveRetentionDays,
+		ArchiveRetentionMaxMessages: l.ArchiveRetentionMaxMessages,
+		CreatedAt:                   l.CreatedAt,
+		UpdatedAt:                   l.UpdatedAt,
 	}
 	if l.SubjectTag != nil {
 		dto.SubjectTag = *l.SubjectTag
+	}
+	if l.ArchiveMailboxID != nil {
+		dto.ArchiveEnabled = true
+		dto.ArchiveMailboxName = maillist.ArchiveMailboxName(l)
 	}
 	return dto
 }

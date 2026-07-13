@@ -517,6 +517,9 @@ func Run(t *testing.T, f Factory) {
 		// -- Hosted mailing lists, Stage 3 self-subscription (issue #185,
 		// REQ-MLIST-60..63, migration 0088) --
 		{"MailingListMember_GetByAddress", testMailingListMember_GetByAddress},
+		// -- Hosted mailing lists, Stage 4 archive mailbox (epic #187,
+		// REQ-MLIST-70..74, migration 0089) --
+		{"MailingList_ArchiveConfigRoundtrip", testMailingList_ArchiveConfigRoundtrip},
 	}
 	for _, c := range cases {
 		tc := c

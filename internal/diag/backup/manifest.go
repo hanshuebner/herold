@@ -623,7 +623,17 @@ const CurrentBackupVersion = 1
 //	request-approval list's confirmed-but-not-yet-owner-approved
 //	subscriber. No new table or column; MailingListMemberRow.State
 //	simply accepts one more string value.
-const CurrentSchemaVersion = 88
+//
+// 89 — 0089_mailing_list_archive_retention.sql (epic #187,
+//
+//	REQ-MLIST-70..74, Stage 4 archive mailbox). Adds
+//	mailing_list.archive_retention_days / archive_retention_max_messages
+//	(both default 0, meaning unbounded), the per-list age/count retention
+//	bound internal/archiveretention sweeps against. No new table;
+//	MailingListRow gains the two fields. archive_mailbox_id itself was
+//	already part of the schema from migration 0085 (reserved for this
+//	stage) and is now populated by the admin REST archive-enable path.
+const CurrentSchemaVersion = 89
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -216,6 +217,13 @@ func (s *Server) handleAddMailingListMember(w http.ResponseWriter, r *http.Reque
 		s.writeMlistError(w, r, err)
 		return
 	}
+	// REQ-MLIST-72: a newly-added internal-principal member in the
+	// default `active` state gets read access to the archive (if
+	// configured) immediately, not on the next unrelated roster edit.
+	if err := maillist.SyncMemberArchiveGrant(r.Context(), s.store.Meta(), l, added); err != nil {
+		s.writeMlistError(w, r, err)
+		return
+	}
 	s.appendAudit(r.Context(), "mlist.member.add",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
@@ -319,6 +327,15 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 		s.writeMlistError(w, r, err)
 		return
 	}
+	// REQ-MLIST-72: a state change (active <-> suspended/unsubscribed/
+	// awaiting-approval) adds or removes archive read access to match.
+	// DeliveryMode changes never affect the grant -- both `each` and
+	// `nomail` internal members may read the archive (REQ-AC-52's
+	// "nomail/reading member principal").
+	if err := maillist.SyncMemberArchiveGrant(r.Context(), s.store.Meta(), l, updated); err != nil {
+		s.writeMlistError(w, r, err)
+		return
+	}
 	action := "mlist.member.update"
 	switch {
 	case reactivated && wasAwaitingApproval:
@@ -363,6 +380,15 @@ func (s *Server) handleRemoveMailingListMember(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := s.store.Meta().RemoveMailingListMember(r.Context(), m.ID); err != nil {
+		s.writeMlistError(w, r, err)
+		return
+	}
+	// REQ-MLIST-72: a removed member loses archive read access
+	// immediately -- the roster row is already gone, so this uses
+	// RevokeMemberArchiveGrant (unconditional) rather than
+	// SyncMemberArchiveGrant (which would need to read m's now-stale
+	// State).
+	if err := maillist.RevokeMemberArchiveGrant(r.Context(), s.store.Meta(), l, m); err != nil {
 		s.writeMlistError(w, r, err)
 		return
 	}
@@ -445,6 +471,14 @@ func (s *Server) handleImportMailingListMembers(w http.ResponseWriter, r *http.R
 		}
 		resp.Added++
 		resp.Results = append(resp.Results, importResultItem{Index: i, Status: "added", ID: uint64(added.ID)})
+		// REQ-MLIST-72: best-effort per REQ-MLIST-40a bulk import's own
+		// convention (one bad row must not abort the batch) -- a grant
+		// failure is logged, not surfaced as a per-row error, since the
+		// roster row itself was already added successfully.
+		if err := maillist.SyncMemberArchiveGrant(r.Context(), s.store.Meta(), l, added); err != nil {
+			s.logger.WarnContext(r.Context(), "protoadmin.mlist.member.import: archive grant sync failed",
+				"list_id", l.ID, "member_id", added.ID, "err", err.Error())
+		}
 	}
 	s.appendAudit(r.Context(), "mlist.member.import",
 		fmt.Sprintf("mlist:%d", l.ID),

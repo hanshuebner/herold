@@ -213,6 +213,108 @@ func testMailingList_ListByDomain(t *testing.T, s store.Store) {
 	}
 }
 
+// testMailingList_ArchiveConfigRoundtrip exercises the Stage 4 archive
+// columns (epic #187, REQ-MLIST-70/74): ArchiveMailboxID,
+// ArchiveRetentionDays, ArchiveRetentionMaxMessages round-trip through
+// InsertMailingList and UpdateMailingList on both backends, including
+// clearing ArchiveMailboxID back to nil (disabling the archive).
+func testMailingList_ArchiveConfigRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-archive-owner@example.com")
+	group := mustInsertGroupPrincipal(t, s, "archive-list@example.com")
+	archiveMB, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: group.ID,
+		Name:        "Lists/archive-list@example.com",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(archive): %v", err)
+	}
+
+	l, err := s.Meta().InsertMailingList(ctx, store.MailingList{
+		PrincipalID:                 group.ID,
+		PostingAddress:              "archive-list@example.com",
+		DisplayName:                 "Archive List",
+		OwnerID:                     owner.ID,
+		ArchiveMailboxID:            &archiveMB.ID,
+		ArchiveRetentionDays:        90,
+		ArchiveRetentionMaxMessages: 10000,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailingList: %v", err)
+	}
+	if l.ArchiveMailboxID == nil || *l.ArchiveMailboxID != archiveMB.ID {
+		t.Fatalf("ArchiveMailboxID = %v; want %d", l.ArchiveMailboxID, archiveMB.ID)
+	}
+	if l.ArchiveRetentionDays != 90 {
+		t.Errorf("ArchiveRetentionDays = %d; want 90", l.ArchiveRetentionDays)
+	}
+	if l.ArchiveRetentionMaxMessages != 10000 {
+		t.Errorf("ArchiveRetentionMaxMessages = %d; want 10000", l.ArchiveRetentionMaxMessages)
+	}
+
+	got, err := s.Meta().GetMailingList(ctx, l.ID)
+	if err != nil {
+		t.Fatalf("GetMailingList: %v", err)
+	}
+	// Compare field-by-field rather than whole-struct equality: unlike
+	// testMailingList_CreateGetUpdateDelete's list (whose only pointer
+	// field, SubjectTag, is nil in that test), ArchiveMailboxID here is a
+	// non-nil *MailboxID that GetMailingList allocates freshly on every
+	// read -- a `!=` struct comparison would fail on pointer identity
+	// even though the pointed-to value matches.
+	if got.ID != l.ID || got.PostingAddress != l.PostingAddress ||
+		got.ArchiveRetentionDays != l.ArchiveRetentionDays ||
+		got.ArchiveRetentionMaxMessages != l.ArchiveRetentionMaxMessages {
+		t.Errorf("GetMailingList = %+v; want %+v", got, l)
+	}
+	if got.ArchiveMailboxID == nil || *got.ArchiveMailboxID != archiveMB.ID {
+		t.Errorf("GetMailingList ArchiveMailboxID = %v; want %d", got.ArchiveMailboxID, archiveMB.ID)
+	}
+
+	// Update: change the retention bounds.
+	l.ArchiveRetentionDays = 30
+	l.ArchiveRetentionMaxMessages = 500
+	if err := s.Meta().UpdateMailingList(ctx, l); err != nil {
+		t.Fatalf("UpdateMailingList: %v", err)
+	}
+	updated, err := s.Meta().GetMailingList(ctx, l.ID)
+	if err != nil {
+		t.Fatalf("GetMailingList after update: %v", err)
+	}
+	if updated.ArchiveRetentionDays != 30 || updated.ArchiveRetentionMaxMessages != 500 {
+		t.Errorf("retention after update = (%d, %d); want (30, 500)",
+			updated.ArchiveRetentionDays, updated.ArchiveRetentionMaxMessages)
+	}
+	if updated.ArchiveMailboxID == nil || *updated.ArchiveMailboxID != archiveMB.ID {
+		t.Errorf("ArchiveMailboxID after unrelated update = %v; want unchanged %d", updated.ArchiveMailboxID, archiveMB.ID)
+	}
+
+	// Update: disable the archive (clear ArchiveMailboxID).
+	updated.ArchiveMailboxID = nil
+	if err := s.Meta().UpdateMailingList(ctx, updated); err != nil {
+		t.Fatalf("UpdateMailingList (disable archive): %v", err)
+	}
+	disabled, err := s.Meta().GetMailingList(ctx, l.ID)
+	if err != nil {
+		t.Fatalf("GetMailingList after disable: %v", err)
+	}
+	if disabled.ArchiveMailboxID != nil {
+		t.Errorf("ArchiveMailboxID after disable = %v; want nil", disabled.ArchiveMailboxID)
+	}
+
+	// A list with no archive defaults ArchiveMailboxID to nil and
+	// retention bounds to 0 (unbounded).
+	plain := mustInsertMailingList(t, s, "no-archive@example.com", owner.ID)
+	if plain.ArchiveMailboxID != nil {
+		t.Errorf("plain list ArchiveMailboxID = %v; want nil", plain.ArchiveMailboxID)
+	}
+	if plain.ArchiveRetentionDays != 0 || plain.ArchiveRetentionMaxMessages != 0 {
+		t.Errorf("plain list retention = (%d, %d); want (0, 0)",
+			plain.ArchiveRetentionDays, plain.ArchiveRetentionMaxMessages)
+	}
+}
+
 // testMailingListMember_XORConstraint exercises REQ-MLIST-02: a member row
 // is exactly one of PrincipalID / ExternalAddress, enforced both by Go
 // validation (ErrInvalidArgument, checked here) and the schema CHECK
