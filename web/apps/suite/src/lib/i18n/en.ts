@@ -245,6 +245,21 @@ export const en = {
   // one of the user's own identities (Change A / Change B in thread UX).
   'mail.thread.fromYou': 'You',
 
+  // ── Mailing-list chip (docs/design/web/requirements/16-mailing-lists.md) ──
+  'mailingList.action.viewArchive': 'View archive',
+  'mailingList.action.getHelp': 'Get help',
+  'mailingList.action.replyToList': 'Reply to list',
+  'mailingList.noActions': 'No actions available',
+  'mailingList.cleartextWarning':
+    "This link is unencrypted; use the link in the message body if you trust it.",
+
+  // ── Unsubscribe (docs/design/web/requirements/14-unsubscribe.md) ──────
+  'unsubscribe.button': 'Unsubscribe',
+  'unsubscribe.cleartextWarning':
+    "The sender's unsubscribe link is unencrypted; use the link in the message body if you trust it.",
+  'unsubscribe.toast.success': 'Unsubscribed from {sender}',
+  'unsubscribe.toast.failed': 'Unsubscribe failed — try the link in the message body',
+
   // ── On-demand translation (issue #84) ───────────────────────────────
   // Affordance shown when the message body language differs from the
   // active UI locale. Translation is server-proxied; the browser only

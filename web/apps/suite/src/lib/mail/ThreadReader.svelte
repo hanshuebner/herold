@@ -6,6 +6,7 @@
   import ThreadReplyBar from './ThreadReplyBar.svelte';
   import ThreadInlineComposer from './ThreadInlineComposer.svelte';
   import TaggedAddressBanner from './TaggedAddressBanner.svelte';
+  import UnsubscribeButton from './UnsubscribeButton.svelte';
   import ThreadNewReplyBanner from './ThreadNewReplyBanner.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { t } from '../i18n/i18n.svelte';
@@ -273,7 +274,11 @@
     />
     <div class="scroll" bind:this={scrollContainerEl}>
       <header>
-        <h1>{subject}</h1>
+        <div class="subject-row">
+          <h1>{subject}</h1>
+          <!-- REQ-UNS-10..12: thread-scoped, in the reading pane only. -->
+          <UnsubscribeButton {emails} />
+        </div>
         {#if threadLabels.length > 0}
           <div class="thread-labels" aria-label="Labels">
             {#each threadLabels as lbl (lbl.name)}
@@ -335,6 +340,12 @@
     padding: var(--spacing-05);
     border-bottom: 1px solid var(--border-subtle-01);
     background: var(--layer-01);
+  }
+  .subject-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-04);
   }
   h1 {
     font-size: var(--type-heading-02-size);

@@ -27,6 +27,13 @@ export interface ToastSpec {
   timeoutMs?: number;
   /** Visual variant. Default 'info'. */
   kind?: ToastKind;
+  /**
+   * Optional supplementary text rendered as a native tooltip (the
+   * `title` attribute) on the message span. Used by the one-click
+   * unsubscribe failure toast to reveal the original `List-Unsubscribe`
+   * URLs without cluttering the toast body (REQ-UNS-41).
+   */
+  detail?: string;
 }
 
 class ToastStore {

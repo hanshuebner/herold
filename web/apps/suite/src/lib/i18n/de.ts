@@ -242,6 +242,21 @@ export const de = {
   // ── Thread reader: selbst verfasste Karte ────────────────────────────
   'mail.thread.fromYou': 'Du',
 
+  // ── Mailingliste-Chip (docs/design/web/requirements/16-mailing-lists.md) ──
+  'mailingList.action.viewArchive': 'Archiv ansehen',
+  'mailingList.action.getHelp': 'Hilfe erhalten',
+  'mailingList.action.replyToList': 'An Liste antworten',
+  'mailingList.noActions': 'Keine Aktionen verfügbar',
+  'mailingList.cleartextWarning':
+    'Dieser Link ist unverschlüsselt; verwenden Sie den Link in der Nachricht, wenn Sie ihm vertrauen.',
+
+  // ── Abbestellen (docs/design/web/requirements/14-unsubscribe.md) ──────
+  'unsubscribe.button': 'Abbestellen',
+  'unsubscribe.cleartextWarning':
+    'Der Abbestell-Link des Absenders ist unverschlüsselt; verwenden Sie den Link in der Nachricht, wenn Sie ihm vertrauen.',
+  'unsubscribe.toast.success': 'Von {sender} abbestellt',
+  'unsubscribe.toast.failed': 'Abbestellen fehlgeschlagen — bitte den Link in der Nachricht verwenden',
+
   // ── Auf-Abruf-Übersetzung (issue #84) ───────────────────────────────
   // Schaltfläche erscheint, wenn die erkannte Sprache des Nachrichtentexts
   // von der aktiven Benutzeroberflächen-Sprache abweicht.

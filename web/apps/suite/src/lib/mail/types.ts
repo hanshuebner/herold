@@ -203,6 +203,24 @@ export interface Email {
    */
   'header:List-ID:asText'?: string | null;
   /**
+   * RFC 2369 mailing-list headers (REQ-LIST-01) beyond List-ID: the
+   * chip's popover actions (REQ-LIST-20..22). All optional/nullable --
+   * absent when the sender did not set the header, which the chip
+   * treats as "hide this action" rather than an error.
+   */
+  'header:List-Help:asText'?: string | null;
+  'header:List-Subscribe:asText'?: string | null;
+  'header:List-Post:asText'?: string | null;
+  'header:List-Owner:asText'?: string | null;
+  'header:List-Archive:asText'?: string | null;
+  /**
+   * RFC 2369 List-Unsubscribe and RFC 8058 List-Unsubscribe-Post
+   * (REQ-UNS-01/02). Drives the thread-level Unsubscribe affordance in
+   * docs/design/web/requirements/14-unsubscribe.md.
+   */
+  'header:List-Unsubscribe:asText'?: string | null;
+  'header:List-Unsubscribe-Post:asText'?: string | null;
+  /**
    * Face: header (base64-encoded PNG/JPEG avatar per the Face convention).
    * Fetched via `header:Face:asText` extension for the avatar resolver
    * tier-2 path.
@@ -296,6 +314,13 @@ export const EMAIL_BODY_PROPERTIES = [
   'blobId',
   'size',
   'header:List-ID:asText',
+  'header:List-Help:asText',
+  'header:List-Subscribe:asText',
+  'header:List-Post:asText',
+  'header:List-Owner:asText',
+  'header:List-Archive:asText',
+  'header:List-Unsubscribe:asText',
+  'header:List-Unsubscribe-Post:asText',
   'header:Face:asText',
   'header:X-Face:asText',
   'header:X-Herold-Recipient:asText',

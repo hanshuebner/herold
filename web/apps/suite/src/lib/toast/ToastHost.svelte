@@ -9,7 +9,7 @@
     role="status"
     aria-live="polite"
   >
-    <span class="message">{toast.current.message}</span>
+    <span class="message" title={toast.current.detail}>{toast.current.message}</span>
     {#if toast.current.undo}
       <button
         type="button"

@@ -445,6 +445,19 @@ class ComposeStore {
   }
 
   /**
+   * Open compose as a reply to the list, not the sender (REQ-LIST-22):
+   * same quoting / threading as `openReply`, but `to` is overridden to
+   * the list's `List-Post` address. Used by the list chip's "Reply to
+   * list" popover action.
+   */
+  async openReplyToList(parent: Email, listPostAddress: string): Promise<void> {
+    await this.openReply(parent);
+    this.to = listPostAddress;
+    this.toRecipients = tryCommit(listPostAddress).chips;
+    if (this.#snapshot) this.#snapshot.to = this.to;
+  }
+
+  /**
    * Open compose as a reply-all: To = parent.from, Cc = (parent.to ∪
    * parent.cc) minus every Identity.email this user owns minus the
    * primary recipient. Falls back to a regular reply when no Cc would

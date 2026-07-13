@@ -41,6 +41,7 @@
   import { type Address } from './types';
   import { buildSelfEmailSet, isFromSelf } from './identity-match';
   import TranslateBar from './TranslateBar.svelte';
+  import ListChip from './ListChip.svelte';
   import { htmlToText } from '../translate/html-to-text';
 
   interface Props {
@@ -611,6 +612,7 @@
           <span class="from-name">{isSelf ? t('mail.thread.fromYou') : senderName}</span>
           {#if senderEmail}<span class="from-email">&lt;{senderEmail}&gt;</span>{/if}
         {/if}
+        <ListChip {email} />
       </span>
       {#if expanded}
         {#if toRecipients.length > 0}
