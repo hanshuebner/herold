@@ -458,10 +458,19 @@ forward-only discipline as a DB migration.
   evaluation corpus has human labels: the deciding metric needs roughly 600
   *confirmed* ham and the corpus does not yet have them. No filter code is written
   before that is done.
-- Backtest corpus: how many messages, retained how long? Too few and the preview
-  diff is a lie; too many and the plugin state store is a second copy of the
-  mailbox with its own retention obligations. Whatever the number, the panel has to
-  say what is being kept.
+- ~~Backtest corpus: how many messages, retained how long?~~ **Resolved
+  2026-07-13** (maintainer, via ADR-0004): **there is no backtest corpus.** The
+  scorer runs in core, so the backtest runs in core too, against the live mailbox
+  in the store -- nothing is copied, nothing is retained, and the retention
+  obligation this question was worried about never arises. The backtest is **full,
+  bounded by a configurable limit** (default 200 000 messages, most recent first);
+  when the limit binds, the preview states its coverage. Sampling was the answer
+  from the era when scoring meant an LLM call per message; a compiled ruleset
+  scores in microseconds, so the cost that justified sampling is gone, and with it
+  the recency and class-imbalance biases that would have made the preview diff a
+  confident lie. See REQ-FILT-226..229, which also blind the evaluator to its own
+  prior output (`$category-*`, `$Junk`, `X-Spam-*`) during a backtest -- the same
+  leakage this ADR found in the imap-cleaner corpus, arriving from inside the house.
 - Cold start: a new principal has no feedback and no retained mail. Ship default
   weights trained on an aggregate corpus, or run rules-only until enough feedback
   accumulates?

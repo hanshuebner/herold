@@ -419,9 +419,28 @@ free-vocabulary response -- is removed. The migration **reports what it deleted*
 (names and message counts); a migration that discards user-visible state does not
 get to do it silently.
 
+**Backtest: full, with a limit.** The candidate ruleset is evaluated against every
+message in the mailbox, bounded by a configurable cap (default 200 000, most
+recent first). Sampling was the inherited answer from the era when scoring meant
+an LLM call per message; a compiled ruleset scores in microseconds, so the cost
+that justified sampling is gone, and with it the recency and class-imbalance
+biases that would have made the preview diff a confident lie. When the cap binds,
+the preview says so (REQ-FILT-226..227).
+
+Two things fall out of this that the requirements now nail down, because both are
+easy to get wrong in the obvious way:
+
+- **The diff shows what moves, never whether the move is better** (REQ-FILT-228).
+  Outside the user's own corrections there is no ground truth for a category --
+  the machine asserted it -- so a backtest compares a new ruleset against an old
+  one, not against truth. Precision and recall are not computable and must not be
+  displayed. Spam is the exception: Junk moves are real labels, which is what
+  ADR-0002's threshold recalibration rests on.
+- **The evaluator is blinded to its own prior output during a backtest**
+  (REQ-FILT-229) -- no `$category-*`, no `$Junk`, no `X-Spam-*`. This is the same
+  leakage ADR-0002 found in the imap-cleaner corpus, arriving from inside the
+  house instead of from SpamAssassin.
+
 ## Still open
 
-- **Backtest sample** (inherited from ADR-0002): how much of the user's mail, and
-  chosen how? A biased sample makes the preview diff a lie. This bites
-  categorisation harder than spam, because a category's precision is judged
-  against mail the user has already sorted by eye.
+Nothing. The questions this ADR raised are answered above.
