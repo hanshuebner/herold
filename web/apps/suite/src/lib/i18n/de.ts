@@ -34,6 +34,20 @@ export const de = {
   'sidebar.deleteFolder.message':
     'Enthaltene Nachrichten bleiben in anderen Labels erhalten (andernfalls werden sie in den Papierkorb verschoben).',
   'sidebar.deleteFolder.confirm': 'Löschen',
+  'sidebar.lists': 'Listen',
+
+  // ── Mailinglisten-Archiv (schreibgeschützte Mitgliederansicht, REQ-MLIST-73) ──
+  'archive.backToMail': 'Zurück zu Mail',
+  'archive.backToList': 'Zurück',
+  'archive.readOnlyNotice':
+    'Schreibgeschütztes Listenarchiv. Nachrichten können hier nicht gelöscht, verschoben oder geändert werden.',
+  'archive.searchPlaceholder': 'Archiv durchsuchen',
+  'archive.search': 'Suchen',
+  'archive.empty': 'Keine Nachrichten in diesem Archiv.',
+  'archive.notFound': 'Archiv nicht gefunden.',
+  'archive.selectMessage': 'Nachricht zum Lesen auswählen.',
+  'archive.attachments': 'Anhänge',
+  'archive.error.loadMessageFailed': 'Nachricht konnte nicht geladen werden.',
 
   // ── Mail list ───────────────────────────────────────────────────────
   'list.refresh': 'Aktualisieren',

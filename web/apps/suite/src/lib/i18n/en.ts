@@ -35,6 +35,19 @@ export const en = {
   'sidebar.deleteFolder.message':
     "Messages it contains will remain in any other labels they're in (otherwise they go to Trash on the server).",
   'sidebar.deleteFolder.confirm': 'Delete',
+  'sidebar.lists': 'Lists',
+
+  // ── Mailing-list archive (read-only member view, REQ-MLIST-73) ────────
+  'archive.backToMail': 'Back to Mail',
+  'archive.backToList': 'Back',
+  'archive.readOnlyNotice': 'Read-only list archive. You cannot delete, move, or change messages here.',
+  'archive.searchPlaceholder': 'Search archive',
+  'archive.search': 'Search',
+  'archive.empty': 'No messages in this archive.',
+  'archive.notFound': 'Archive not found.',
+  'archive.selectMessage': 'Select a message to read it.',
+  'archive.attachments': 'Attachments',
+  'archive.error.loadMessageFailed': 'Failed to load message.',
 
   // ── Mail list ───────────────────────────────────────────────────────
   'list.refresh': 'Refresh',

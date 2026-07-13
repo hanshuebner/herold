@@ -44,7 +44,9 @@
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
   import ThreadWindowView from './views/ThreadWindowView.svelte';
+  import ArchiveMailboxView from './views/ArchiveMailboxView.svelte';
   import SidebarChats from './lib/chat/SidebarChats.svelte';
+  import { archive } from './lib/archive/archive-store.svelte';
 
   // True when the user's session has the chat capability.
   let hasChatCap = $derived(
@@ -118,6 +120,14 @@
         if (contacts.status === 'idle') {
           contacts.load().catch((err) => {
             console.error('initial contacts load failed', err);
+          });
+        }
+        // Prime the shared-account list (mailing-list archive grants,
+        // REQ-MLIST-73) so the sidebar's "Lists" section populates on
+        // first boot without needing to visit /archive.
+        if (archive.status === 'idle') {
+          archive.loadSharedAccounts().catch((err) => {
+            console.error('initial shared-account load failed', err);
           });
         }
         if (hasCap) {
@@ -651,6 +661,27 @@
         </ul>
       {/if}
 
+      {#if archive.sharedAccounts.length > 0}
+        <div class="sidebar-section-label">{t('sidebar.lists')}</div>
+        <ul class="mailbox-list">
+          {#each archive.sharedAccounts as sharedAccount (sharedAccount.accountId)}
+            {#each sharedAccount.mailboxes as mb (mb.id)}
+              <li class:active={router.matches('archive', sharedAccount.accountId, mb.id)}>
+                <button
+                  type="button"
+                  onclick={() => router.navigate(`/archive/${encodeURIComponent(sharedAccount.accountId)}/${encodeURIComponent(mb.id)}`)}
+                >
+                  <span>{sharedAccount.name}</span>
+                  {#if mb.unreadEmails > 0}
+                    <span class="count">{mb.unreadEmails}</span>
+                  {/if}
+                </button>
+              </li>
+            {/each}
+          {/each}
+        </ul>
+      {/if}
+
       {#if hasChatCap}
         <SidebarChats />
       {/if}
@@ -691,6 +722,8 @@
     <SettingsView />
   {:else if router.matches('help')}
     <HelpView />
+  {:else if router.matches('archive')}
+    <ArchiveMailboxView accountId={router.parts[1] ?? ''} mailboxId={router.parts[2]} />
   {:else}
     <NotFoundView />
   {/if}
@@ -794,6 +827,13 @@
     margin-left: auto;
     color: var(--text-helper);
     font-variant-numeric: tabular-nums;
+  }
+  .sidebar-section-label {
+    padding: var(--spacing-04) var(--spacing-04) var(--spacing-02);
+    color: var(--text-helper);
+    font-weight: 500;
+    font-size: var(--type-body-compact-01-size);
+    flex-shrink: 0;
   }
   .mailbox-list.custom li {
     position: relative;

@@ -33,6 +33,16 @@ export interface MailingListSummary {
   posting_policy: string;
   subscribe_policy: string;
   max_message_size_bytes?: number;
+  /**
+   * Stage 4 archive mailbox (epic #187, REQ-MLIST-70..74). archive_enabled
+   * is always present; the retention bounds and mailbox name are only
+   * meaningful (and only sent by the server) when archive_enabled is true.
+   * 0 for a retention bound means unbounded, mirroring max_message_size_bytes.
+   */
+  archive_enabled: boolean;
+  archive_mailbox_name?: string;
+  archive_retention_days?: number;
+  archive_retention_max_messages?: number;
   created_at: string;
   updated_at: string;
 }

@@ -367,6 +367,17 @@ export const de = {
   'mlistDetail.config.error.displayNameRequired': 'Der Anzeigename darf nicht leer sein.',
   'mlistDetail.config.error.invalidOwnerId': 'Die Eigentümer-Principal-ID muss eine positive Zahl sein.',
   'mlistDetail.config.error.invalidMaxSize': 'Die maximale Nachrichtengröße muss eine nichtnegative Zahl sein.',
+  'mlistDetail.config.archiveEnabled': 'Diese Liste archivieren',
+  'mlistDetail.config.archiveEnabledHint':
+    'Legt jeden Beitrag in einem gemeinsamen Archivpostfach ab. Mitglieder lesen es schreibgeschützt über IMAP, JMAP oder die Suite; Mitglieder ohne E-Mail-Zustellung lesen nur das Archiv und erhalten keine Einzelkopie.',
+  'mlistDetail.config.archiveMailboxName': 'Archivpostfach: {name}',
+  'mlistDetail.config.archiveRetentionDays': 'Aufbewahrung (Tage)',
+  'mlistDetail.config.archiveRetentionMaxMessages': 'Aufbewahrung (max. Nachrichten)',
+  'mlistDetail.config.archiveRetentionPlaceholder': '0 für unbegrenzt',
+  'mlistDetail.config.error.invalidArchiveRetentionDays':
+    'Die Aufbewahrungsdauer in Tagen muss eine nichtnegative ganze Zahl sein.',
+  'mlistDetail.config.error.invalidArchiveRetentionMaxMessages':
+    'Die maximale Nachrichtenanzahl muss eine nichtnegative ganze Zahl sein.',
   'mlistDetail.warning.dkimKeyMissing':
     'ARC-Versiegelung ist aktiviert, aber {domain} hat keinen aktiven DKIM-Schlüssel. Weitergeleitete Kopien werden OHNE ARC-Versiegelung zugestellt. Richten Sie für diese Domain einen DKIM-Schlüssel ein, um den Schutz wiederherzustellen.',
   'mlistDetail.roster.title': 'Mitgliederliste',
@@ -386,6 +397,7 @@ export const de = {
   'mlistDetail.roster.modeFilterAriaLabel': 'Nach Zustellart filtern',
   'mlistDetail.roster.memberStateAriaLabel': 'Mitgliedszustand',
   'mlistDetail.roster.memberModeAriaLabel': 'Zustellart des Mitglieds',
+  'mlistDetail.roster.nomailInternalOnly': 'Zustellart „Keine E-Mail“ erfordert einen internen Principal.',
   'mlistDetail.roster.table.address': 'Mitglied',
   'mlistDetail.roster.table.state': 'Zustand',
   'mlistDetail.roster.table.mode': 'Zustellart',

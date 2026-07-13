@@ -367,6 +367,16 @@ export const en = {
   'mlistDetail.config.error.displayNameRequired': 'Display name must not be empty.',
   'mlistDetail.config.error.invalidOwnerId': 'Owner principal ID must be a positive number.',
   'mlistDetail.config.error.invalidMaxSize': 'Max message size must be a non-negative number.',
+  'mlistDetail.config.archiveEnabled': 'Archive this list',
+  'mlistDetail.config.archiveEnabledHint':
+    'Files every post into one shared archive mailbox. Members read it read-only over IMAP, JMAP, or the Suite; nomail members read only the archive and receive no per-message copy.',
+  'mlistDetail.config.archiveMailboxName': 'Archive mailbox: {name}',
+  'mlistDetail.config.archiveRetentionDays': 'Retention (days)',
+  'mlistDetail.config.archiveRetentionMaxMessages': 'Retention (max messages)',
+  'mlistDetail.config.archiveRetentionPlaceholder': '0 for unbounded',
+  'mlistDetail.config.error.invalidArchiveRetentionDays': 'Retention days must be a non-negative whole number.',
+  'mlistDetail.config.error.invalidArchiveRetentionMaxMessages':
+    'Retention max messages must be a non-negative whole number.',
   'mlistDetail.warning.dkimKeyMissing':
     'ARC-seal is enabled, but {domain} has no active DKIM key. Fanned-out copies are being delivered WITHOUT an ARC seal. Provision a DKIM key for this domain to restore protection.',
   'mlistDetail.roster.title': 'Roster',
@@ -386,6 +396,7 @@ export const en = {
   'mlistDetail.roster.modeFilterAriaLabel': 'Filter by delivery mode',
   'mlistDetail.roster.memberStateAriaLabel': 'Member state',
   'mlistDetail.roster.memberModeAriaLabel': 'Member delivery mode',
+  'mlistDetail.roster.nomailInternalOnly': 'No-mail delivery requires an internal principal.',
   'mlistDetail.roster.table.address': 'Member',
   'mlistDetail.roster.table.state': 'State',
   'mlistDetail.roster.table.mode': 'Delivery mode',

@@ -26,6 +26,9 @@
   let editMaxMessageSize = $state('');
   let editOwnerPrincipalId = $state('');
   let editSubscribePolicy = $state('closed');
+  let editArchiveEnabled = $state(false);
+  let editArchiveRetentionDays = $state('');
+  let editArchiveRetentionMaxMessages = $state('');
   let configError = $state<string | null>(null);
   let configSaving = $state(false);
   let configSaved = $state(false);
@@ -45,6 +48,11 @@
       editMaxMessageSize = list.max_message_size_bytes ? String(list.max_message_size_bytes) : '';
       editOwnerPrincipalId = String(list.owner_principal_id);
       editSubscribePolicy = list.subscribe_policy ?? 'closed';
+      editArchiveEnabled = list.archive_enabled;
+      editArchiveRetentionDays = list.archive_retention_days ? String(list.archive_retention_days) : '';
+      editArchiveRetentionMaxMessages = list.archive_retention_max_messages
+        ? String(list.archive_retention_max_messages)
+        : '';
     }
   });
 
@@ -71,6 +79,22 @@
         return;
       }
     }
+    let retentionDays = 0;
+    if (editArchiveRetentionDays.trim()) {
+      retentionDays = Number(editArchiveRetentionDays.trim());
+      if (!Number.isInteger(retentionDays) || retentionDays < 0) {
+        configError = t('mlistDetail.config.error.invalidArchiveRetentionDays');
+        return;
+      }
+    }
+    let retentionMaxMessages = 0;
+    if (editArchiveRetentionMaxMessages.trim()) {
+      retentionMaxMessages = Number(editArchiveRetentionMaxMessages.trim());
+      if (!Number.isInteger(retentionMaxMessages) || retentionMaxMessages < 0) {
+        configError = t('mlistDetail.config.error.invalidArchiveRetentionMaxMessages');
+        return;
+      }
+    }
 
     configSaving = true;
     const result = await mlistDetail.updateList(id, {
@@ -80,6 +104,9 @@
       max_message_size_bytes: maxSize,
       owner_principal_id: ownerId,
       subscribe_policy: editSubscribePolicy,
+      archive_enabled: editArchiveEnabled,
+      archive_retention_days: retentionDays,
+      archive_retention_max_messages: retentionMaxMessages,
     });
     configSaving = false;
 
@@ -182,6 +209,19 @@
     if (m.external_address) return m.external_address;
     if (m.principal_id !== undefined) return `#${m.principal_id}`;
     return '';
+  }
+
+  // REQ-MLIST-71: nomail delivery requires an internal principal member;
+  // the server rejects it for an external address (issue #187). Only
+  // offer the 'nomail' option in the per-row delivery-mode select for
+  // members that have a principal_id.
+  function memberModeOptions(m: {
+    principal_id?: number;
+    external_address?: string;
+  }): { value: MailingListMemberModeFilter; labelKey: string }[] {
+    const options = modeFilterOptions.filter((o) => o.value !== '');
+    if (m.external_address) return options.filter((o) => o.value !== 'nomail');
+    return options;
   }
 
   // ── Add member dialog ────────────────────────────────────────────────
@@ -502,6 +542,56 @@
           {t('mlistDetail.config.policyHint', { posting: mlistDetail.list.posting_policy })}
         </p>
 
+        <div class="field">
+          <label class="checkbox-row" for="ml-archive-enabled">
+            <input
+              id="ml-archive-enabled"
+              type="checkbox"
+              bind:checked={editArchiveEnabled}
+              disabled={configSaving}
+            />
+            {t('mlistDetail.config.archiveEnabled')}
+          </label>
+          <p class="field-hint">{t('mlistDetail.config.archiveEnabledHint')}</p>
+          {#if mlistDetail.list.archive_enabled && mlistDetail.list.archive_mailbox_name}
+            <p class="field-hint mono">
+              {t('mlistDetail.config.archiveMailboxName', { name: mlistDetail.list.archive_mailbox_name })}
+            </p>
+          {/if}
+        </div>
+        {#if editArchiveEnabled}
+          <div class="field-row">
+            <div class="field">
+              <label for="ml-archive-retention-days" class="label">
+                {t('mlistDetail.config.archiveRetentionDays')}
+              </label>
+              <input
+                id="ml-archive-retention-days"
+                type="text"
+                class="input input-mono"
+                inputmode="numeric"
+                placeholder={t('mlistDetail.config.archiveRetentionPlaceholder')}
+                bind:value={editArchiveRetentionDays}
+                disabled={configSaving}
+              />
+            </div>
+            <div class="field">
+              <label for="ml-archive-retention-max" class="label">
+                {t('mlistDetail.config.archiveRetentionMaxMessages')}
+              </label>
+              <input
+                id="ml-archive-retention-max"
+                type="text"
+                class="input input-mono"
+                inputmode="numeric"
+                placeholder={t('mlistDetail.config.archiveRetentionPlaceholder')}
+                bind:value={editArchiveRetentionMaxMessages}
+                disabled={configSaving}
+              />
+            </div>
+          </div>
+        {/if}
+
         {#if configError}
           <p class="form-error" role="alert">{configError}</p>
         {/if}
@@ -601,10 +691,13 @@
                     onchange={(e) => void onMemberModeChange(member.id, e)}
                     aria-label={t('mlistDetail.roster.memberModeAriaLabel')}
                   >
-                    {#each modeFilterOptions.filter((o) => o.value !== '') as opt (opt.value)}
+                    {#each memberModeOptions(member) as opt (opt.value)}
                       <option value={opt.value}>{t(opt.labelKey)}</option>
                     {/each}
                   </select>
+                  {#if member.external_address}
+                    <p class="mode-hint">{t('mlistDetail.roster.nomailInternalOnly')}</p>
+                  {/if}
                 </td>
                 <td class="col-added">{formatAbsolute(member.added_at, undefined)}</td>
                 <td class="col-actions">
@@ -1069,6 +1162,11 @@
     min-height: unset;
     padding: 2px var(--spacing-02);
     font-size: var(--type-helper-text-01-size);
+  }
+  .mode-hint {
+    margin: var(--spacing-01) 0 0;
+    font-size: var(--type-helper-text-01-size);
+    color: var(--text-helper);
   }
   .select:focus {
     outline: 2px solid var(--focus);

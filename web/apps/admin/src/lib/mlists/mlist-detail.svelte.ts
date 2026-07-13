@@ -44,6 +44,16 @@ export interface PatchMailingListPayload {
   max_message_size_bytes?: number;
   /** Stage 3 self-subscription policy (epic #185, REQ-MLIST-60). */
   subscribe_policy?: string;
+  /**
+   * Stage 4 archive mailbox controls (epic #187, REQ-MLIST-70..74).
+   * archive_enabled toggles the archive mailbox on/off (re-enabling
+   * reuses the same mailbox by its deterministic name, per
+   * internal/protoadmin/mlist.go); the retention fields set the
+   * age/count bound (0 = unbounded).
+   */
+  archive_enabled?: boolean;
+  archive_retention_days?: number;
+  archive_retention_max_messages?: number;
 }
 
 /** Wire shape for POST /api/v1/lists/{id}/members (createMemberRequest). */
