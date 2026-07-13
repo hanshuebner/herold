@@ -6,10 +6,14 @@ package contacts
 // two methods:
 //
 //   - Contact/import: reads an uploaded .vcf blob, parses each card via
-//     ParseVCards (REQ-CTS-11), creates contacts in the target address
-//     book (REQ-CTS-20), and reports per-card created / failed results
-//     with duplicate-candidate detection (REQ-CTS-21). Photo inlining is
-//     interned into the blob store via makePhotoInternFn (REQ-CTS-14).
+//     ParseVCards (REQ-CTS-11), and for each card looks for a single
+//     unambiguous existing match -- by UID, else primary email, else
+//     name+phone conjunctively (findExactImportMatch) -- to decide
+//     skip (unchanged), conflict (existing data differs, reported not
+//     overwritten), or create (REQ-CTS-20, REQ-CTS-21). Ambiguous
+//     matches are reported advisorily via DuplicateCandidates instead.
+//     Photo inlining is interned into the blob store via
+//     makePhotoInternFn (REQ-CTS-14).
 //
 //   - Contact/export: reads the requested contacts (by IDs or whole
 //     address book), converts each to vCard 4.0 via GenerateVCard
@@ -76,11 +80,13 @@ type ImportCardResult struct {
 	//   - "created": no existing contact matched; a new contact was
 	//     created.
 	//   - "skipped": the card exactly matches an existing contact
-	//     (matched by UID, else primary email); no new contact was
-	//     created (idempotent re-import).
+	//     (matched by UID, else primary email, else name+phone
+	//     conjunctively); no new contact was created (idempotent
+	//     re-import).
 	//   - "conflict": the card matches an existing contact (by UID,
-	//     else primary email) but its data differs; no new contact was
-	//     created and the existing contact was not silently overwritten.
+	//     else primary email, else name+phone conjunctively) but its
+	//     data differs; no new contact was created and the existing
+	//     contact was not silently overwritten.
 	//   - "failed": the card could not be parsed or created.
 	Result string `json:"result"`
 	// ID is the JMAP contact id assigned on creation (only when
@@ -97,11 +103,12 @@ type ImportCardResult struct {
 	// and the matched contact (Result=="conflict" only).
 	Diff []FieldDiff `json:"diff,omitempty"`
 	// DuplicateCandidates lists JMAP contact IDs that may duplicate this
-	// card (matched by UID or primary email) when the match is
-	// ambiguous (more than one candidate) and the card was therefore
-	// created rather than skipped/conflicted. Present when candidates
-	// exist; nil otherwise (REQ-CTS-21). Advisory: the server does not
-	// auto-merge; the client drives skip/create/merge.
+	// card (matched by UID, primary email, or name+phone conjunctively)
+	// when the match is ambiguous (more than one candidate) and the
+	// card was therefore created rather than skipped/conflicted.
+	// Present when candidates exist; nil otherwise (REQ-CTS-21).
+	// Advisory: the server does not auto-merge; the client drives
+	// skip/create/merge.
 	DuplicateCandidates []jmapID `json:"duplicateCandidates,omitempty"`
 	// Reason is the human-readable error detail (only when
 	// Result=="failed").
@@ -234,8 +241,9 @@ func (h *contactImportHandler) Execute(ctx context.Context, args json.RawMessage
 		res.UID = card.UID
 
 		// Look for a single, unambiguous existing contact this card
-		// matches (by UID, else primary email). When exactly one match
-		// exists, decide skip-vs-conflict instead of creating a
+		// matches (by UID, else primary email, else name+phone
+		// conjunctively -- see findExactImportMatch). When exactly one
+		// match exists, decide skip-vs-conflict instead of creating a
 		// duplicate (REQ-CTS-21, idempotent re-import): identical data
 		// is silently skipped; differing data is reported as a
 		// conflict without creating a duplicate or touching the
@@ -330,6 +338,9 @@ func (h *contactImportHandler) Execute(ctx context.Context, args json.RawMessage
 // duplicates of the card being imported (REQ-CTS-21):
 //  1. Contacts in the same principal's address books sharing the same UID.
 //  2. Contacts sharing the same primary email address.
+//  3. Contacts matching conjunctively by name AND phone (re #206 follow-
+//     up; see findPhoneNameImportMatches -- never phone alone, to avoid
+//     the false-positive clustering tracked separately in #223).
 //
 // The result is de-duplicated. Returns nil when no candidates are found.
 // Query errors are silently ignored so a store hiccup does not block the
@@ -373,6 +384,14 @@ func (h *handlerSet) findImportDuplicates(ctx context.Context, pid store.Princip
 		}
 	}
 
+	// Name+phone conjunctive check (never phone alone).
+	for _, c := range h.findPhoneNameImportMatches(ctx, pid, card) {
+		if !seen[c.ID] {
+			seen[c.ID] = true
+			candidates = append(candidates, jmapIDFromContact(c.ID))
+		}
+	}
+
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -380,12 +399,35 @@ func (h *handlerSet) findImportDuplicates(ctx context.Context, pid store.Princip
 }
 
 // findExactImportMatch looks up the single existing contact an imported
-// card unambiguously matches, by UID first, then by primary email
-// (REQ-CTS-21). Returns ok==false when there is no candidate or more
-// than one distinct candidate: an ambiguous match falls back to the
-// advisory DuplicateCandidates list rather than a skip/conflict
-// verdict, since the server cannot tell which of several candidates the
-// card is "the same as".
+// card unambiguously matches, tried in this precedence order
+// (REQ-CTS-21):
+//
+//  1. UID (exact, case-sensitive).
+//  2. Primary email (case-insensitive).
+//  3. Name AND phone, conjunctively (re #206 follow-up): a card with
+//     neither a UID nor an email -- a phone-only contact, common in
+//     real-world exports -- has nothing to match on via steps 1-2, so a
+//     re-import of the identical file would otherwise create a
+//     duplicate every time (ParseVCards mints a fresh random UID for a
+//     UID-less card on every parse, so UID alone never reconnects them
+//     across re-imports). This step requires BOTH an exact
+//     (case/whitespace-normalised) display-name match AND a shared
+//     phone number (compared by digits only); phone alone is
+//     deliberately never sufficient. A shared low-entropy number (a
+//     company switchboard, a directory-assistance short code) is common
+//     across unrelated contacts and must never merge them by itself --
+//     that is exactly the false-positive clustering tracked separately
+//     (client-side) in #223. Requiring an exact name match alongside the
+//     phone match means two differently-named contacts that happen to
+//     share a generic number are never matched by this step.
+//
+// Each step only runs when the previous step found no candidate at all,
+// mirroring the existing UID-then-email precedence. Returns ok==false
+// when the step that found any candidate found more than one distinct
+// one: an ambiguous match falls back to the advisory
+// DuplicateCandidates list rather than a skip/conflict verdict, since
+// the server cannot tell which of several candidates the card is "the
+// same as".
 func (h *handlerSet) findExactImportMatch(ctx context.Context, pid store.PrincipalID, card *Card) (store.Contact, bool) {
 	byID := map[store.ContactID]store.Contact{}
 
@@ -415,6 +457,11 @@ func (h *handlerSet) findExactImportMatch(ctx context.Context, pid store.Princip
 			}
 		}
 	}
+	if len(byID) == 0 {
+		for _, c := range h.findPhoneNameImportMatches(ctx, pid, card) {
+			byID[c.ID] = c
+		}
+	}
 	if len(byID) != 1 {
 		return store.Contact{}, false
 	}
@@ -422,6 +469,118 @@ func (h *handlerSet) findExactImportMatch(ctx context.Context, pid store.Princip
 		return c, true
 	}
 	return store.Contact{}, false
+}
+
+// findPhoneNameImportMatches returns existing contacts that
+// conjunctively match an imported card by name AND phone (re #206
+// follow-up): every returned contact has an exact
+// (case/whitespace-normalised) display-name match with card AND shares
+// at least one phone number with it (compared by digits only). Phone
+// alone is never a match key here -- see findExactImportMatch's
+// docstring for why (this is the guard against re-creating #223's
+// false-positive clustering in the importer).
+//
+// Cards with no usable name or no phone number carrying at least 4
+// significant digits never produce a match (an empty name or a
+// near-empty digit string is not a meaningful key). Candidates are
+// narrowed via the existing search_blob substring index on each raw
+// phone number, then the conjunctive rule is verified exactly
+// (digit-only equality, not substring) against each candidate's parsed
+// card. De-duplicated by contact id. Query and parse errors are
+// silently skipped so a store hiccup or a malformed stored card does
+// not block the import of unrelated cards.
+func (h *handlerSet) findPhoneNameImportMatches(ctx context.Context, pid store.PrincipalID, card *Card) []store.Contact {
+	name := normalizeDisplayNameForMatch(card.DisplayName())
+	digits := normalizedPhoneDigits(card)
+	if name == "" || len(digits) == 0 {
+		return nil
+	}
+	digitSet := map[string]bool{}
+	for _, d := range digits {
+		digitSet[d] = true
+	}
+
+	seen := map[store.ContactID]bool{}
+	var out []store.Contact
+	for _, k := range sortedKeys(card.Phones) {
+		raw := card.Phones[k].Number
+		if raw == "" {
+			continue
+		}
+		rows, qerr := h.store.Meta().ListContacts(ctx, store.ContactFilter{
+			PrincipalID: &pid,
+			Text:        raw,
+		})
+		if qerr != nil {
+			continue
+		}
+		for _, c := range rows {
+			if seen[c.ID] {
+				continue
+			}
+			var existing Card
+			if uerr := existing.UnmarshalJSON(c.JSContactJSON); uerr != nil {
+				continue
+			}
+			if normalizeDisplayNameForMatch(existing.DisplayName()) != name {
+				continue
+			}
+			matched := false
+			for _, ed := range normalizedPhoneDigits(&existing) {
+				if digitSet[ed] {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				seen[c.ID] = true
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// normalizeDisplayNameForMatch normalizes a display name for the
+// conjunctive name+phone import-match step: lowercased, internal
+// whitespace collapsed to a single space, trimmed. This mirrors
+// normalizeDisplayName in web/apps/suite/src/lib/contacts/dedup.ts, but
+// the import path intentionally uses exact string equality rather than
+// that module's fuzzy edit-distance closeness: an exact-name
+// requirement, combined with the phone match, keeps two different
+// people who share a generic/reused phone number (a company
+// switchboard, a directory-assistance short code) from ever being
+// matched by this step -- the false-positive pattern tracked separately
+// in #223.
+func normalizeDisplayNameForMatch(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// normalizedPhoneDigits returns a card's phone numbers reduced to their
+// digit-only form (mirrors normalizePhone in dedup.ts), skipping any
+// number whose normalised form has fewer than 4 digits: a very short
+// digit string (an internal extension, a malformed entry) is not a
+// meaningful match key on its own.
+func normalizedPhoneDigits(card *Card) []string {
+	var out []string
+	for _, k := range sortedKeys(card.Phones) {
+		digits := digitsOnly(card.Phones[k].Number)
+		if len(digits) >= 4 {
+			out = append(out, digits)
+		}
+	}
+	return out
+}
+
+// digitsOnly strips every non-digit rune from s.
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // diffCardAgainstContact compares an incoming card against an existing

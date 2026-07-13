@@ -705,6 +705,135 @@ func runVCardTransportReimportSkipsIdenticalCard(t *testing.T, st store.Store) {
 	}
 }
 
+// TestVCardTransport_Reimport_SkipsPhoneOnlyCard reproduces the follow-up
+// report on re #206 (issue comment 2718): a card with neither a UID nor an
+// email -- a phone-only contact, common in real-world exports -- has
+// nothing to match on via the UID/email precedence alone, so re-importing
+// the identical .vcf a second time creates a duplicate. The fix extends
+// matching with a conjunctive name+phone step so this phone-only card is
+// also recognised as identical and skipped.
+func TestVCardTransport_Reimport_SkipsPhoneOnlyCard(t *testing.T) {
+	runVCardTransportReimportSkipsPhoneOnlyCard(t, nil)
+}
+
+func runVCardTransportReimportSkipsPhoneOnlyCard(t *testing.T, st store.Store) {
+	t.Helper()
+	f := setupFixtureForTest(t, st, contacts.DefaultLimits())
+	bookID := makeBook(t, f, "ReimportSkipPhone")
+
+	// No UID, no EMAIL -- only a name and a phone number, as reported.
+	vcf := []byte("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Torsten Stanzel\r\nTEL:+49 173 7627805\r\nEND:VCARD\r\n")
+
+	blobID1 := uploadBlob(t, f, vcf, "text/vcard")
+	resp1 := invokeImport(t, f, blobID1, bookID)
+	if len(resp1.Results) != 1 || resp1.Results[0].Result != "created" {
+		t.Fatalf("first import: %+v", resp1.Results)
+	}
+	originalID := string(resp1.Results[0].ID)
+
+	// Re-import the exact same file.
+	blobID2 := uploadBlob(t, f, vcf, "text/vcard")
+	resp2 := invokeImport(t, f, blobID2, bookID)
+	if len(resp2.Results) != 1 {
+		t.Fatalf("second import: expected 1 result, got %d", len(resp2.Results))
+	}
+	res := resp2.Results[0]
+	if res.Result != "skipped" {
+		t.Errorf("second import: result = %q (%s), want skipped", res.Result, res.Reason)
+	}
+	if string(res.MatchedID) != originalID {
+		t.Errorf("second import: matchedId = %q, want %q", res.MatchedID, originalID)
+	}
+	if res.MatchedName != "Torsten Stanzel" {
+		t.Errorf("second import: matchedName = %q, want %q", res.MatchedName, "Torsten Stanzel")
+	}
+
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("contact count after re-import = %d, want 1 (no duplicate); this is the phone-only follow-up on re #206", len(rows))
+	}
+}
+
+// TestVCardTransport_PhoneMatch_DoesNotChainDifferentNames guards against
+// re-creating issue #223 in the importer: matching purely on a shared
+// phone number would incorrectly collapse unrelated contacts that happen
+// to share a generic/reused number (a company switchboard, a directory-
+// assistance short code, ...). The phone-based match step is conjunctive
+// (name AND phone), so two different people sharing one phone number must
+// remain two distinct contacts across a re-import.
+func TestVCardTransport_PhoneMatch_DoesNotChainDifferentNames(t *testing.T) {
+	runVCardTransportPhoneMatchDoesNotChainDifferentNames(t, nil)
+}
+
+func runVCardTransportPhoneMatchDoesNotChainDifferentNames(t *testing.T, st store.Store) {
+	t.Helper()
+	f := setupFixtureForTest(t, st, contacts.DefaultLimits())
+	bookID := makeBook(t, f, "PhoneNoChain")
+
+	// Two different people, no UID, no email, sharing one generic phone
+	// number (e.g. a shared company switchboard or short code).
+	vcf := []byte(
+		"BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Auskunft\r\nTEL:11833\r\nEND:VCARD\r\n" +
+			"BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Vermittlung\r\nTEL:11833\r\nEND:VCARD\r\n",
+	)
+
+	blobID1 := uploadBlob(t, f, vcf, "text/vcard")
+	resp1 := invokeImport(t, f, blobID1, bookID)
+	if len(resp1.Results) != 2 {
+		t.Fatalf("first import: expected 2 results, got %d: %+v", len(resp1.Results), resp1.Results)
+	}
+	for _, res := range resp1.Results {
+		if res.Result != "created" {
+			t.Fatalf("first import: result = %q (%s), want created", res.Result, res.Reason)
+		}
+	}
+
+	// Re-import the identical two-card file. Neither card matches the
+	// OTHER person's contact by name+phone (different names), so both
+	// must be recognised as identical to their own prior card and
+	// skipped -- not conflated with each other, and not duplicated.
+	blobID2 := uploadBlob(t, f, vcf, "text/vcard")
+	resp2 := invokeImport(t, f, blobID2, bookID)
+	if len(resp2.Results) != 2 {
+		t.Fatalf("second import: expected 2 results, got %d: %+v", len(resp2.Results), resp2.Results)
+	}
+	byName := map[string]contacts.ImportCardResult{}
+	for _, res := range resp2.Results {
+		byName[res.MatchedName] = res
+	}
+	for _, name := range []string{"Auskunft", "Vermittlung"} {
+		res, ok := byName[name]
+		if !ok {
+			t.Fatalf("second import: no result matched to %q; results: %+v", name, resp2.Results)
+		}
+		if res.Result != "skipped" {
+			t.Errorf("second import: %s result = %q (%s), want skipped", name, res.Result, res.Reason)
+		}
+	}
+
+	rows, err := f.srv.Store.Meta().ListContacts(context.Background(), store.ContactFilter{
+		PrincipalID: &f.pid,
+	})
+	if err != nil {
+		t.Fatalf("ListContacts: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("contact count after re-import = %d, want 2 (Auskunft and Vermittlung stay distinct; a shared generic phone number must not chain them, see #223)", len(rows))
+	}
+	names := map[string]bool{}
+	for _, r := range rows {
+		names[r.DisplayName] = true
+	}
+	if !names["Auskunft"] || !names["Vermittlung"] {
+		t.Errorf("contact names after re-import = %+v, want both Auskunft and Vermittlung present and distinct", names)
+	}
+}
+
 // TestVCardTransport_OversizedBlob verifies that Contact/import rejects
 // a .vcf blob that exceeds MaxVCardImportSize with a requestTooLarge error
 // and creates no contacts (REQ-CTS-41).
@@ -888,6 +1017,20 @@ func TestVCardTransport_ConflictByUID_Postgres(t *testing.T) {
 func TestVCardTransport_Reimport_SkipsIdenticalCard_Postgres(t *testing.T) {
 	st := openPostgresStoreForTransport(t)
 	runVCardTransportReimportSkipsIdenticalCard(t, st)
+}
+
+// TestVCardTransport_Reimport_SkipsPhoneOnlyCard_Postgres runs the
+// phone-only idempotent-reimport test on Postgres.
+func TestVCardTransport_Reimport_SkipsPhoneOnlyCard_Postgres(t *testing.T) {
+	st := openPostgresStoreForTransport(t)
+	runVCardTransportReimportSkipsPhoneOnlyCard(t, st)
+}
+
+// TestVCardTransport_PhoneMatch_DoesNotChainDifferentNames_Postgres runs
+// the anti-chaining phone-match test on Postgres.
+func TestVCardTransport_PhoneMatch_DoesNotChainDifferentNames_Postgres(t *testing.T) {
+	st := openPostgresStoreForTransport(t)
+	runVCardTransportPhoneMatchDoesNotChainDifferentNames(t, st)
 }
 
 // TestVCardTransport_ExportAddressBook_Postgres runs the address-book
