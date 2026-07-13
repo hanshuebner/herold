@@ -444,8 +444,83 @@ function splitStyleDeclarations(style: string): string[] {
     .filter((d) => d.length > 0);
 }
 
+// CSS named color keywords recognized when scanning a `background`
+// shorthand value for an embedded color component. This is not the full
+// CSS Color Level 4 keyword table (148 names) -- it is the CSS1 basic 16
+// plus a modest set of commonly authored extended names, chosen to cover
+// real-world sender HTML without carrying a huge lookup table.
+//
+// This is a documented false-negative surface, never a false-positive
+// one: a background shorthand using an obscure keyword outside this list
+// (and no hex/function color syntax) will not be recognized as carrying
+// a color, so the lone-half rule will not fire for it -- the same gap
+// that existed for every keyword before this fix. It can never cause a
+// legitimate colorless background-image declaration to be stripped,
+// because the keyword check only ever adds "has color", never removes
+// hex/function detection.
+const BACKGROUND_COLOR_KEYWORDS = new Set([
+  'transparent', 'currentcolor',
+  'black', 'silver', 'gray', 'grey', 'white', 'maroon', 'red', 'purple',
+  'fuchsia', 'green', 'lime', 'olive', 'yellow', 'navy', 'blue', 'teal',
+  'aqua', 'orange', 'brown', 'pink', 'gold', 'indigo', 'violet', 'coral',
+  'salmon', 'khaki', 'beige', 'ivory', 'lavender', 'turquoise', 'crimson',
+  'chocolate', 'orchid', 'plum', 'tan', 'wheat', 'azure', 'magenta', 'cyan',
+]);
+
+const BACKGROUND_COLOR_FUNCTION_RE = /\b(?:rgb|rgba|hsl|hsla|hwb|lab|lch|color)\s*\(/i;
+const HEX_COLOR_RE = /#[0-9a-f]{3,8}\b/i;
+
 /**
- * Honour a sender's inline `color` / `background-color` declaration only
+ * True when a `background` SHORTHAND value (the part after the colon,
+ * `!important` already stripped) contains a color component -- hex, a
+ * color function, or a recognized keyword.
+ *
+ * The `background` shorthand can carry image/position/repeat/size/
+ * attachment layers alongside an optional color
+ * (https://developer.mozilla.org/en-US/docs/Web/CSS/background). A
+ * shorthand with no color component at all (e.g. `url(x) no-repeat`)
+ * must NOT be treated as declaring a background color -- otherwise a
+ * legitimate background-image-only declaration would be needlessly
+ * stripped whenever the element also lacks `color` (over-broad; would
+ * break real sender styling that was never at risk of an invisible-text
+ * collision in the first place).
+ */
+function backgroundShorthandHasColor(value: string): boolean {
+  if (HEX_COLOR_RE.test(value)) return true;
+  if (BACKGROUND_COLOR_FUNCTION_RE.test(value)) return true;
+  const tokens = value.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  return tokens.some((tok) => BACKGROUND_COLOR_KEYWORDS.has(tok));
+}
+
+/** The declaration's value: the text after the first ":", `!important` stripped. */
+function declarationValue(d: string): string {
+  const idx = d.indexOf(':');
+  if (idx === -1) return '';
+  return d.slice(idx + 1).replace(/!important\s*$/i, '').trim();
+}
+
+function isColorDeclaration(d: string): boolean {
+  return /^color\s*:/i.test(d);
+}
+
+/**
+ * True for a `background-color:` longhand, or a `background:` shorthand
+ * whose value carries a color component per `backgroundShorthandHasColor`.
+ * `background-image:`, `background-position:`, etc. never match: the
+ * anchored `^background\s*:` requires the colon (or whitespace then
+ * colon) immediately after "background", so any `background-*` longhand
+ * with a hyphen in that position falls through.
+ */
+function isBackgroundColorDeclaration(d: string): boolean {
+  if (/^background-color\s*:/i.test(d)) return true;
+  if (/^background\s*:/i.test(d)) {
+    return backgroundShorthandHasColor(declarationValue(d));
+  }
+  return false;
+}
+
+/**
+ * Honour a sender's inline foreground/background color declaration only
  * when BOTH halves of the pair are present on the same element. When only
  * one half is declared, the sender did not fully specify a foreground/
  * background pair — leaving the other half to inherit from the reading
@@ -455,28 +530,57 @@ function splitStyleDeclarations(style: string): string[] {
  * makes the element fall back to Herold's own paired foreground and
  * background, which are always mutually legible in both themes.
  *
+ * "Background" is recognized from either the `background-color` longhand
+ * or a `background` shorthand that carries a color component (see
+ * `backgroundShorthandHasColor`) -- a sender using `background:` instead
+ * of `background-color:` gets the same protection. When the lone
+ * background half comes from a shorthand that also carries image/
+ * position/repeat, the entire shorthand declaration is dropped rather
+ * than surgically extracting just the color token: this trades rare loss
+ * of an accompanying background-image in that specific mixed, no-`color`
+ * case for a simple, unambiguous transformation with no way to leave a
+ * residual color behind. A shorthand with NO color component at all
+ * (image/repeat/position only) is never touched by this function --
+ * `isBackgroundColorDeclaration` returns false for it, so it does not
+ * count as "background declared" and cannot trigger stripping of an
+ * unrelated lone `color`.
+ *
  * An element that declares both halves is left untouched: that is a
  * complete, self-consistent pair the sender chose deliberately, and
  * removing either half would break intentional styling (e.g. a callout
- * box with light text on a dark brand color).
+ * box with light text on a dark brand color, or a `background: url(x)
+ * #fff` shorthand paired with an explicit `color`).
  *
  * Because CSS `color`/`background-color` are inherited/painted per
  * element, not merged across ancestors, checking each styled element in
  * isolation is sufficient to close the reported collision: the failure
  * mode is one element's declared half meeting the iframe body's inherited
  * half, not two different elements' halves meeting each other.
+ *
+ * Known trade-off (safe, not a bug): a NESTED cross-element pair -- a
+ * parent declaring only `background-color` and a child declaring only
+ * `color` -- has both halves stripped independently, because each
+ * element is evaluated on its own declarations. That can never produce
+ * illegible text (each element falls back to Herold's own paired
+ * theme colors), but it does lose the sender's intended nested styling
+ * (e.g. a colored panel with white text authored as two separate
+ * elements rather than one). Detecting and preserving that case would
+ * require resolving each element's *computed* style against its
+ * ancestors rather than its own inline declarations, which this
+ * sanitizer pass -- run on a detached DOMPurify fragment with no layout
+ * -- cannot do.
  */
 function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
   for (const el of fragment.querySelectorAll<HTMLElement>('[style]')) {
     const style = el.getAttribute('style');
     if (!style) continue;
     const declarations = splitStyleDeclarations(style);
-    const hasColor = declarations.some((d) => /^color\s*:/i.test(d));
-    const hasBackground = declarations.some((d) => /^background-color\s*:/i.test(d));
+    const hasColor = declarations.some(isColorDeclaration);
+    const hasBackground = declarations.some(isBackgroundColorDeclaration);
     if (hasColor === hasBackground) continue; // both present or neither — leave as-is.
     const kept = declarations.filter((d) => {
-      if (hasColor && /^color\s*:/i.test(d)) return false;
-      if (hasBackground && /^background-color\s*:/i.test(d)) return false;
+      if (hasColor && isColorDeclaration(d)) return false;
+      if (hasBackground && isBackgroundColorDeclaration(d)) return false;
       return true;
     });
     if (kept.length > 0) {
