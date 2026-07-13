@@ -930,6 +930,36 @@ type Metadata interface {
 	// number of refresh-token rows newly revoked.
 	RevokeOAuthRefreshTokenFamily(ctx context.Context, familyID string, revokedAt time.Time) (int64, error)
 
+	// -- OAuth2 native-client registry (issue #199, DB-backed client
+	// registry replacing the compiled-in map) --
+
+	// InsertOAuthClient registers a new OAuth2 client and returns it
+	// with CreatedAt filled. Returns ErrConflict if ClientID is
+	// already registered.
+	InsertOAuthClient(ctx context.Context, c OAuthClient) (OAuthClient, error)
+
+	// GetOAuthClient returns the registered client, or ErrNotFound.
+	GetOAuthClient(ctx context.Context, clientID string) (OAuthClient, error)
+
+	// ListOAuthClients returns every registered client, in ascending
+	// ClientID order.
+	ListOAuthClients(ctx context.Context) ([]OAuthClient, error)
+
+	// UpdateOAuthClient replaces the mutable fields (Name,
+	// RedirectURIs, Scopes) of an existing client. Public and
+	// ClientSecretHash are immutable after creation; rotate a secret
+	// by deleting and re-creating the client. Returns ErrNotFound if
+	// ClientID is not registered.
+	UpdateOAuthClient(ctx context.Context, c OAuthClient) (OAuthClient, error)
+
+	// DeleteOAuthClient removes a registered client. Already-issued
+	// tokens for that client are unaffected -- api_keys and
+	// oauth_refresh_tokens carry client_id as a free-text column, not
+	// a foreign key -- so deletion only refuses new authorize/token
+	// requests for this client_id going forward. Returns ErrNotFound
+	// if ClientID is not registered.
+	DeleteOAuthClient(ctx context.Context, clientID string) error
+
 	// ListOIDCLinksByPrincipal returns every OIDC link owned by pid, in
 	// ascending ProviderName order. The returned slice is empty (nil)
 	// when the principal has no linked identities.

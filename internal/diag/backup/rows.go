@@ -1148,3 +1148,21 @@ type EmailBulkJobRow struct {
 	CreatedAtUs     int64  `json:"created_at_us"`
 	UpdatedAtUs     int64  `json:"updated_at_us"`
 }
+
+// OAuthClientRow mirrors one row of the oauth_clients table introduced in
+// migration 0092 (issue #199, REQ-AND-AUTH-01/02): the DB-backed OAuth2
+// client registry for the native-client authorization-code + PKCE grant.
+// Unlike oauth_auth_codes / oauth_refresh_tokens (excluded from backup as
+// ephemeral credentials), this table is durable configuration and is
+// backed up like oidc_providers. ClientSecretHash is a hash, never
+// plaintext, so backing it up carries the same exposure as any other
+// secret-hash column already in the bundle (e.g. principals.password_hash).
+type OAuthClientRow struct {
+	ClientID         string  `json:"client_id"`
+	Name             string  `json:"name"`
+	RedirectURIsJSON string  `json:"redirect_uris_json"`
+	ScopesJSON       string  `json:"scopes_json"`
+	Public           bool    `json:"public"`
+	ClientSecretHash *string `json:"client_secret_hash,omitempty"`
+	CreatedAtUs      int64   `json:"created_at_us"`
+}

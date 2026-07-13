@@ -8,6 +8,7 @@ package protoadmin_test
 // (whoami) -> refresh -> rotated -> replay-old-refresh-is-rejected.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,7 +18,31 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/hanshuebner/herold/internal/directory"
 )
+
+// mustRegisterHTTPAndroidClient registers the "herold-android" public
+// client this file's tests exercise over HTTP. The DB-backed registry
+// (issue #199) starts every harness empty -- there is no compiled-in
+// client list -- so every test that drives the grant past client_id
+// validation registers the client it uses first, going straight
+// through the directory (not the admin REST CRUD surface under test
+// elsewhere) to keep setup out of the assertions.
+func mustRegisterHTTPAndroidClient(t *testing.T, h *harness) {
+	t.Helper()
+	if _, _, err := h.dir.RegisterOAuthClient(context.Background(), directory.OAuthClientRegistration{
+		ClientID: "herold-android",
+		Name:     "herold Android client",
+		RedirectURIs: []string{
+			"net.netzhansa.herold:/oauth2redirect",
+			"http://127.0.0.1/oauth2redirect",
+			"http://[::1]/oauth2redirect",
+		},
+	}); err != nil {
+		t.Fatalf("RegisterOAuthClient: %v", err)
+	}
+}
 
 // oauthNoRedirectClient returns an http.Client sharing h's transport but
 // never following redirects -- the flow's redirect targets include a
@@ -44,15 +69,25 @@ func oauthPKCE(t *testing.T) (verifier, challenge string) {
 	return verifier, challenge
 }
 
-// oauthAuthorizeGet issues GET /oauth2/authorize with the given
-// redirect_uri/state/PKCE challenge and returns the response, its CSRF
-// cookie value, and the "req" hidden-field value scraped from the
-// rendered HTML form.
+// oauthAuthorizeGet issues GET /oauth2/authorize for the herold-android
+// client with the given redirect_uri/state/PKCE challenge and returns
+// the response, its CSRF cookie value, and the "req" hidden-field value
+// scraped from the rendered HTML form. Use oauthAuthorizeGetForClient
+// to drive the flow for a different registered client_id.
 func oauthAuthorizeGet(t *testing.T, client *http.Client, baseURL, redirectURI, state, challenge string) (res *http.Response, csrfCookie, reqField string) {
+	t.Helper()
+	return oauthAuthorizeGetForClient(t, client, baseURL, "herold-android", redirectURI, state, challenge)
+}
+
+// oauthAuthorizeGetForClient is oauthAuthorizeGet parameterised over
+// client_id, for tests exercising a client other than herold-android
+// (e.g. one registered through the admin CRUD surface under test in
+// oauth2_clients_test.go).
+func oauthAuthorizeGetForClient(t *testing.T, client *http.Client, baseURL, clientID, redirectURI, state, challenge string) (res *http.Response, csrfCookie, reqField string) {
 	t.Helper()
 	q := url.Values{
 		"response_type":         {"code"},
-		"client_id":             {"herold-android"},
+		"client_id":             {clientID},
 		"redirect_uri":          {redirectURI},
 		"state":                 {state},
 		"code_challenge":        {challenge},
@@ -86,6 +121,7 @@ func oauthAuthorizeGet(t *testing.T, client *http.Client, baseURL, redirectURI, 
 
 func TestOAuth2Authorize_GET_RendersLoginForm(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	client := oauthNoRedirectClient(h)
 	_, challenge := oauthPKCE(t)
 	res, csrfCookie, reqField := oauthAuthorizeGet(t, client, h.baseURL, "net.netzhansa.herold:/oauth2redirect", "st-1", challenge)
@@ -120,6 +156,7 @@ func TestOAuth2Authorize_GET_UnknownClient(t *testing.T) {
 
 func TestOAuth2Authorize_GET_InvalidRedirectURI(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	client := oauthNoRedirectClient(h)
 	q := url.Values{
 		"response_type": {"code"}, "client_id": {"herold-android"},
@@ -134,6 +171,7 @@ func TestOAuth2Authorize_GET_InvalidRedirectURI(t *testing.T) {
 
 func TestOAuth2Authorize_GET_MissingPKCE_RedirectsWithError(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	client := oauthNoRedirectClient(h)
 	q := url.Values{
 		"response_type": {"code"}, "client_id": {"herold-android"},
@@ -168,6 +206,7 @@ func TestOAuth2Authorize_GET_MissingPKCE_RedirectsWithError(t *testing.T) {
 // (refresh_token) rotates -> replaying the old refresh token is rejected.
 func TestOAuth2_FullFlow_ViaHTTP(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	_, adminKey := h.bootstrap("oauth2http-admin@example.com")
 	const email = "oauth2http-user@example.com"
 	const password = "correct-horse-battery-staple"
@@ -332,6 +371,7 @@ func TestOAuth2Token_UnsupportedGrantType(t *testing.T) {
 
 func TestOAuth2Token_PKCEMismatchRejected(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	_, adminKey := h.bootstrap("oauth2pkce-admin@example.com")
 	const email = "oauth2pkce-user@example.com"
 	h.createPrincipal(adminKey, email)
@@ -377,6 +417,7 @@ func TestOAuth2Token_PKCEMismatchRejected(t *testing.T) {
 // is checked.
 func TestOAuth2Authorize_POST_CSRFMismatch(t *testing.T) {
 	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
 	client := oauthNoRedirectClient(h)
 	_, challenge := oauthPKCE(t)
 	redirectURI := "net.netzhansa.herold:/oauth2redirect"

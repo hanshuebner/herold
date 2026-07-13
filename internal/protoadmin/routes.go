@@ -183,6 +183,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/oidc/providers/{id}", authAdmin(s.handleGetOIDCProvider))
 	mux.HandleFunc("PATCH /api/v1/oidc/providers/{id}", authAdmin(s.handlePatchOIDCProvider))
 
+	// OAuth2 native-client registry (issue #199, DB-backed client
+	// registry replacing the compiled-in map): an operator registers a
+	// native client without a herold rebuild.
+	mux.HandleFunc("GET /api/v1/oauth2/clients", authAdmin(s.handleListOAuthClients))
+	mux.HandleFunc("POST /api/v1/oauth2/clients", authAdmin(s.handleCreateOAuthClient))
+	mux.HandleFunc("GET /api/v1/oauth2/clients/{id}", authAdmin(s.handleGetOAuthClient))
+	mux.HandleFunc("PATCH /api/v1/oauth2/clients/{id}", authAdmin(s.handleUpdateOAuthClient))
+	mux.HandleFunc("DELETE /api/v1/oauth2/clients/{id}", authAdmin(s.handleDeleteOAuthClient))
+
 	// Diag (DNS check). Backup/restore/migrate live in a sibling file
 	// owned by the parallel agent.
 	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", authAdmin(s.handleDiagDNSCheck))

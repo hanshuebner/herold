@@ -31,6 +31,21 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 )
 
+// mustRegisterJMAPAndroidClient registers the "herold-android" public
+// client used throughout this file's tests. The DB-backed registry
+// (issue #199) starts every test instance empty, so each test that
+// drives the grant registers the client it exercises first.
+func mustRegisterJMAPAndroidClient(t *testing.T, dir *directory.Directory) {
+	t.Helper()
+	if _, _, err := dir.RegisterOAuthClient(context.Background(), directory.OAuthClientRegistration{
+		ClientID:     "herold-android",
+		Name:         "herold Android client",
+		RedirectURIs: []string{"net.netzhansa.herold:/oauth2redirect"},
+	}); err != nil {
+		t.Fatalf("RegisterOAuthClient: %v", err)
+	}
+}
+
 func oauth2JMAPPKCE(t *testing.T) (verifier, challenge string) {
 	t.Helper()
 	var b [32]byte
@@ -46,6 +61,7 @@ func oauth2JMAPPKCE(t *testing.T) (verifier, challenge string) {
 func TestSession_OAuth2NativeGrant_FullFlow(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	mustRegisterJMAPAndroidClient(t, f.dir)
 
 	verifier, challenge := oauth2JMAPPKCE(t)
 	redirectURI := "net.netzhansa.herold:/oauth2redirect"
@@ -63,7 +79,7 @@ func TestSession_OAuth2NativeGrant_FullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
-	result, err := f.dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier)
+	result, err := f.dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode: %v", err)
 	}
@@ -83,7 +99,7 @@ func TestSession_OAuth2NativeGrant_FullFlow(t *testing.T) {
 	}
 
 	// Refresh: rotates.
-	refreshed, err := f.dir.RefreshOAuthToken(ctx, "herold-android", result.RefreshToken)
+	refreshed, err := f.dir.RefreshOAuthToken(ctx, "herold-android", "", result.RefreshToken)
 	if err != nil {
 		t.Fatalf("RefreshOAuthToken: %v", err)
 	}
@@ -105,7 +121,7 @@ func TestSession_OAuth2NativeGrant_FullFlow(t *testing.T) {
 	// Replaying the old (already-rotated) refresh token is rejected and
 	// revokes the whole chain, including the just-verified new access
 	// token.
-	if _, err := f.dir.RefreshOAuthToken(ctx, "herold-android", result.RefreshToken); err == nil {
+	if _, err := f.dir.RefreshOAuthToken(ctx, "herold-android", "", result.RefreshToken); err == nil {
 		t.Fatalf("replayed refresh token should be rejected")
 	}
 	revokedRes, _ := f.doRequest("GET", "/.well-known/jmap", refreshed.AccessToken, nil)
@@ -120,6 +136,7 @@ func TestSession_OAuth2NativeGrant_FullFlow(t *testing.T) {
 func TestSession_OAuth2AccessToken_ExpiresAfterTTL(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	mustRegisterJMAPAndroidClient(t, f.dir)
 
 	verifier, challenge := oauth2JMAPPKCE(t)
 	redirectURI := "net.netzhansa.herold:/oauth2redirect"
@@ -132,7 +149,7 @@ func TestSession_OAuth2AccessToken_ExpiresAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
-	result, err := f.dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier)
+	result, err := f.dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode: %v", err)
 	}

@@ -108,6 +108,11 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		"oauth_refresh_tokens",
 		"oauth_auth_codes",
 		"api_keys",
+		// OAuth2 native-client registry (issue #199, migration 0092). No FK
+		// (client_id is referenced as free text by the tables above), so it
+		// is NOT reached by CASCADE from any of them; must be enumerated
+		// explicitly or rows leak across subtests.
+		"oauth_clients",
 		"oidc_links",
 		"oidc_providers",
 		"principals",

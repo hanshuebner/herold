@@ -656,7 +656,20 @@ const CurrentBackupVersion = 1
 //	regardless of operator activity. No new table; SessionElevationRow
 //	gains one field and renames another. Excluded from backup for the
 //	same reason as before (elevation rows expire naturally).
-const CurrentSchemaVersion = 91
+//
+// 92 — 0092_oauth_clients.sql (issue #199, REQ-AND-AUTH-01/02). DB-backed
+//
+//	OAuth2 client registry for the native-client authorization-code +
+//	PKCE grant, replacing the compiled-in map in
+//	internal/directory/oauth2client.go. Adds oauth_clients (client_id
+//	primary key, name, redirect_uris_json, scopes_json, public,
+//	client_secret_hash, created_at_us). No FK to oauth_auth_codes /
+//	oauth_refresh_tokens -- those already carry client_id as a
+//	free-text column from migration 0082, so deleting a client refuses
+//	new authorize/token requests without retroactively invalidating
+//	tokens already issued. Backed up like oidc_providers (durable
+//	configuration, not an ephemeral credential).
+const CurrentSchemaVersion = 92
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -723,6 +736,11 @@ var TableNames = []string{
 	"oidc_claim_allowlist",
 	"oidc_claim_mapping_rules",
 	"oidc_links",
+	// OAuth2 native-client registry (issue #199, migration 0092). No FK
+	// to oauth_auth_codes / oauth_refresh_tokens (those carry client_id
+	// as free text, from migration 0082); order here is by convention,
+	// not a restore-ordering requirement.
+	"oauth_clients",
 	"api_keys",
 	"aliases",
 	"sieve_scripts",

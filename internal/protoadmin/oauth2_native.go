@@ -76,8 +76,8 @@ func (s *Server) handleOAuthAuthorizeGet(w http.ResponseWriter, r *http.Request)
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
 
-	client, ok := directory.LookupOAuthClient(clientID)
-	if !ok {
+	client, err := s.dir.LookupOAuthClient(r.Context(), clientID)
+	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_client", "unknown client_id", "")
 		return
 	}
@@ -299,6 +299,11 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "client_id is required")
 		return
 	}
+	// client_secret is only meaningful for a registered confidential
+	// client; a public client ignores it (verifyClientSecret always
+	// succeeds for one, matching this grant's PKCE-secured public-client
+	// default -- REQ-AND-AUTH-02).
+	clientSecret := r.FormValue("client_secret")
 
 	ctx := directory.WithAuthSource(r.Context(), remoteHost(r.RemoteAddr))
 
@@ -314,14 +319,14 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 				"code, redirect_uri, and code_verifier are required")
 			return
 		}
-		result, err = s.dir.ExchangeAuthorizationCode(ctx, clientID, code, redirectURI, codeVerifier)
+		result, err = s.dir.ExchangeAuthorizationCode(ctx, clientID, clientSecret, code, redirectURI, codeVerifier)
 	case "refresh_token":
 		refreshToken := r.FormValue("refresh_token")
 		if refreshToken == "" {
 			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 			return
 		}
-		result, err = s.dir.RefreshOAuthToken(ctx, clientID, refreshToken)
+		result, err = s.dir.RefreshOAuthToken(ctx, clientID, clientSecret, refreshToken)
 	case "":
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "grant_type is required")
 		return
@@ -335,6 +340,9 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, directory.ErrUnknownOAuthClient):
 			s.appendAudit(ctx, "auth.oauth2.token", "client:"+clientID, store.OutcomeFailure, "unknown client", nil)
 			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_client", "unknown client_id")
+		case errors.Is(err, directory.ErrClientAuthenticationFailed):
+			s.appendAudit(ctx, "auth.oauth2.token", "client:"+clientID, store.OutcomeFailure, "client authentication failed", nil)
+			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		case errors.Is(err, directory.ErrPKCEMismatch):
 			s.appendAudit(ctx, "auth.oauth2.token", "client:"+clientID, store.OutcomeFailure, "pkce mismatch", nil)
 			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")

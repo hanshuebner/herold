@@ -45,6 +45,31 @@ func baseAuthorizeRequest(dir *directory.Directory, now time.Time, redirectURI, 
 	}
 }
 
+// mustRegisterAndroidClient registers the "herold-android" public
+// client used throughout this file's tests. The DB-backed registry
+// (issue #199) starts every test instance empty -- there is no
+// compiled-in client list -- so every test that exercises the grant
+// against a known client_id registers one first.
+func mustRegisterAndroidClient(t *testing.T, dir *directory.Directory) directory.OAuthClient {
+	t.Helper()
+	client, secret, err := dir.RegisterOAuthClient(context.Background(), directory.OAuthClientRegistration{
+		ClientID: "herold-android",
+		Name:     "herold Android client",
+		RedirectURIs: []string{
+			"net.netzhansa.herold:/oauth2redirect",
+			"http://127.0.0.1/oauth2redirect",
+			"http://[::1]/oauth2redirect",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterOAuthClient: %v", err)
+	}
+	if secret != "" {
+		t.Fatalf("public client registration returned a secret")
+	}
+	return client
+}
+
 // TestOAuth2_FullFlow drives authorize -> code -> token -> use access
 // token (verified via the store, the same lookup protojmap/protoadmin's
 // Bearer path performs) -> refresh -> rotated -> replay-old-refresh
@@ -52,6 +77,7 @@ func baseAuthorizeRequest(dir *directory.Directory, now time.Time, redirectURI, 
 func TestOAuth2_FullFlow(t *testing.T) {
 	ctx := context.Background()
 	dir, fs, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	pid, err := dir.CreatePrincipal(ctx, "oauth-flow@example.test", "correct-horse-staple")
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -69,7 +95,7 @@ func TestOAuth2_FullFlow(t *testing.T) {
 		t.Fatalf("empty code")
 	}
 
-	result, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier)
+	result, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode: %v", err)
 	}
@@ -95,7 +121,7 @@ func TestOAuth2_FullFlow(t *testing.T) {
 	}
 
 	// Refresh: rotates to a new pair.
-	refreshResult, err := dir.RefreshOAuthToken(ctx, "herold-android", result.RefreshToken)
+	refreshResult, err := dir.RefreshOAuthToken(ctx, "herold-android", "", result.RefreshToken)
 	if err != nil {
 		t.Fatalf("RefreshOAuthToken: %v", err)
 	}
@@ -119,7 +145,7 @@ func TestOAuth2_FullFlow(t *testing.T) {
 
 	// Replay of the OLD (already-rotated) refresh token is rejected and
 	// revokes the whole family.
-	if _, err := dir.RefreshOAuthToken(ctx, "herold-android", result.RefreshToken); !errors.Is(err, directory.ErrRefreshReuse) {
+	if _, err := dir.RefreshOAuthToken(ctx, "herold-android", "", result.RefreshToken); !errors.Is(err, directory.ErrRefreshReuse) {
 		t.Fatalf("replayed refresh token = %v, want ErrRefreshReuse", err)
 	}
 
@@ -131,7 +157,7 @@ func TestOAuth2_FullFlow(t *testing.T) {
 
 	// And the (also legitimate) newest refresh token from that refresh
 	// is now dead too -- the whole chain is revoked.
-	if _, err := dir.RefreshOAuthToken(ctx, "herold-android", refreshResult.RefreshToken); !errors.Is(err, directory.ErrInvalidGrant) {
+	if _, err := dir.RefreshOAuthToken(ctx, "herold-android", "", refreshResult.RefreshToken); !errors.Is(err, directory.ErrInvalidGrant) {
 		t.Fatalf("using the newest refresh token after family revocation = %v, want ErrInvalidGrant", err)
 	}
 }
@@ -139,6 +165,7 @@ func TestOAuth2_FullFlow(t *testing.T) {
 func TestOAuth2_Exchange_PKCEMismatch(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	if _, err := dir.CreatePrincipal(ctx, "pkce@example.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -150,7 +177,7 @@ func TestOAuth2_Exchange_PKCEMismatch(t *testing.T) {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
 	wrongVerifier, _ := newPKCE(t)
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, wrongVerifier); !errors.Is(err, directory.ErrPKCEMismatch) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, wrongVerifier); !errors.Is(err, directory.ErrPKCEMismatch) {
 		t.Fatalf("exchange with wrong verifier = %v, want ErrPKCEMismatch", err)
 	}
 }
@@ -158,6 +185,7 @@ func TestOAuth2_Exchange_PKCEMismatch(t *testing.T) {
 func TestOAuth2_Exchange_MissingVerifierRejected(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	if _, err := dir.CreatePrincipal(ctx, "noverifier@example.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -170,7 +198,7 @@ func TestOAuth2_Exchange_MissingVerifierRejected(t *testing.T) {
 	}
 	// PKCE is mandatory: an empty code_verifier must never succeed,
 	// regardless of the stored challenge.
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, ""); !errors.Is(err, directory.ErrPKCEMismatch) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, ""); !errors.Is(err, directory.ErrPKCEMismatch) {
 		t.Fatalf("exchange with empty verifier = %v, want ErrPKCEMismatch", err)
 	}
 }
@@ -178,6 +206,7 @@ func TestOAuth2_Exchange_MissingVerifierRejected(t *testing.T) {
 func TestOAuth2_Exchange_RedirectURIMismatch(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	if _, err := dir.CreatePrincipal(ctx, "redir@example.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -187,7 +216,7 @@ func TestOAuth2_Exchange_RedirectURIMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, "http://127.0.0.1/oauth2redirect", verifier); !errors.Is(err, directory.ErrInvalidGrant) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, "http://127.0.0.1/oauth2redirect", verifier); !errors.Is(err, directory.ErrInvalidGrant) {
 		t.Fatalf("exchange with mismatched redirect_uri = %v, want ErrInvalidGrant", err)
 	}
 }
@@ -195,7 +224,7 @@ func TestOAuth2_Exchange_RedirectURIMismatch(t *testing.T) {
 func TestOAuth2_Exchange_UnknownClient(t *testing.T) {
 	ctx := context.Background()
 	dir, _, _ := newDir(t)
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "not-a-real-client", "whatever", "https://example.test/cb", "verifier"); !errors.Is(err, directory.ErrUnknownOAuthClient) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "not-a-real-client", "", "whatever", "https://example.test/cb", "verifier"); !errors.Is(err, directory.ErrUnknownOAuthClient) {
 		t.Fatalf("exchange with unknown client = %v, want ErrUnknownOAuthClient", err)
 	}
 }
@@ -203,6 +232,7 @@ func TestOAuth2_Exchange_UnknownClient(t *testing.T) {
 func TestOAuth2_Exchange_CodeSingleUse(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	if _, err := dir.CreatePrincipal(ctx, "singleuse@example.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -213,11 +243,11 @@ func TestOAuth2_Exchange_CodeSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier); err != nil {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier); err != nil {
 		t.Fatalf("first exchange: %v", err)
 	}
 	// Replay of the same code, even with a correct verifier, must fail.
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier); !errors.Is(err, directory.ErrInvalidGrant) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier); !errors.Is(err, directory.ErrInvalidGrant) {
 		t.Fatalf("replayed code = %v, want ErrInvalidGrant", err)
 	}
 }
@@ -225,6 +255,7 @@ func TestOAuth2_Exchange_CodeSingleUse(t *testing.T) {
 func TestOAuth2_Exchange_ExpiredCode(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	if _, err := dir.CreatePrincipal(ctx, "expired@example.test", "correct-horse-staple"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -236,7 +267,7 @@ func TestOAuth2_Exchange_ExpiredCode(t *testing.T) {
 		t.Fatalf("IssueAuthorizationCode: %v", err)
 	}
 	clk.Advance(directory.AuthorizationCodeTTL + time.Second)
-	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", code, redirectURI, verifier); !errors.Is(err, directory.ErrInvalidGrant) {
+	if _, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier); !errors.Is(err, directory.ErrInvalidGrant) {
 		t.Fatalf("expired code = %v, want ErrInvalidGrant", err)
 	}
 }
@@ -244,6 +275,7 @@ func TestOAuth2_Exchange_ExpiredCode(t *testing.T) {
 func TestOAuth2_IssueAuthorizationCode_TOTPRequired(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
 	pid, err := dir.CreatePrincipal(ctx, "totp-oauth@example.test", "correct-horse-staple")
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -302,10 +334,8 @@ func TestOAuth2_AuthorizeRequest_EncodeDecodeRoundtrip(t *testing.T) {
 }
 
 func TestOAuth2_RedirectURI_LoopbackPortIgnored(t *testing.T) {
-	client, ok := directory.LookupOAuthClient("herold-android")
-	if !ok {
-		t.Fatalf("herold-android client not registered")
-	}
+	dir, _, _ := newDir(t)
+	client := mustRegisterAndroidClient(t, dir)
 	if !directory.ValidateRedirectURI(client, "http://127.0.0.1:54321/oauth2redirect") {
 		t.Fatalf("loopback redirect with arbitrary port should validate")
 	}

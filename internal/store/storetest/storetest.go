@@ -122,6 +122,8 @@ func Run(t *testing.T, f Factory) {
 		{"OAuthRefreshToken_Rotate_SingleUse", testOAuthRefreshTokenRotateSingleUse},
 		{"OAuthRefreshToken_RevokeFamily_DeletesAccessKeys", testOAuthRefreshTokenRevokeFamilyDeletesAccessKeys},
 		{"OAuthRefreshToken_CascadeOnDeletePrincipal", testOAuthRefreshTokenCascadeOnDeletePrincipal},
+		// -- OAuth2 client registry (issue #199, DB-backed client registry) --
+		{"OAuthClient_CRUD", testOAuthClientCRUD},
 		// -- Phase 2 Wave 2.0 --------------------------------------
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
 		{"QueueHeaderOverlay_Roundtrip", testQueueHeaderOverlayRoundtrip},
@@ -1295,6 +1297,100 @@ func testOAuthRefreshTokenCascadeOnDeletePrincipal(t *testing.T, s store.Store) 
 	}
 	if _, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-casc"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetOAuthRefreshTokenByHash after principal delete = %v, want ErrNotFound", err)
+	}
+}
+
+// -- OAuth2 client registry (issue #199, DB-backed client registry) ---
+
+func testOAuthClientCRUD(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	c, err := s.Meta().InsertOAuthClient(ctx, store.OAuthClient{
+		ClientID:     "crud-client",
+		Name:         "CRUD test client",
+		RedirectURIs: []string{"https://example.test/cb", "https://example.test/cb2"},
+		Scopes:       []string{"mail.send"},
+		Public:       true,
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthClient: %v", err)
+	}
+	if c.CreatedAt.IsZero() {
+		t.Fatalf("InsertOAuthClient did not fill CreatedAt")
+	}
+
+	got, err := s.Meta().GetOAuthClient(ctx, "crud-client")
+	if err != nil {
+		t.Fatalf("GetOAuthClient: %v", err)
+	}
+	if got.Name != "CRUD test client" || len(got.RedirectURIs) != 2 || len(got.Scopes) != 1 || !got.Public {
+		t.Fatalf("GetOAuthClient = %+v", got)
+	}
+	if got.ClientSecretHash != "" {
+		t.Fatalf("public client must not carry a secret hash")
+	}
+
+	if _, err := s.Meta().GetOAuthClient(ctx, "absent-client"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthClient(absent) = %v, want ErrNotFound", err)
+	}
+
+	// Conflict on duplicate insert.
+	if _, err := s.Meta().InsertOAuthClient(ctx, store.OAuthClient{
+		ClientID: "crud-client", Name: "dup", RedirectURIs: []string{"https://example.test/cb"},
+	}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate InsertOAuthClient = %v, want ErrConflict", err)
+	}
+
+	// A second, confidential client with a secret hash.
+	if _, err := s.Meta().InsertOAuthClient(ctx, store.OAuthClient{
+		ClientID: "crud-conf-client", Name: "confidential", RedirectURIs: []string{"https://example.test/cb"},
+		Public: false, ClientSecretHash: "deadbeef",
+	}); err != nil {
+		t.Fatalf("InsertOAuthClient (confidential): %v", err)
+	}
+
+	list, err := s.Meta().ListOAuthClients(ctx)
+	if err != nil {
+		t.Fatalf("ListOAuthClients: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListOAuthClients returned %d clients, want 2: %+v", len(list), list)
+	}
+	// Ascending client_id order.
+	if list[0].ClientID != "crud-client" || list[1].ClientID != "crud-conf-client" {
+		t.Fatalf("ListOAuthClients order = %+v", list)
+	}
+	confidential := list[1]
+	if confidential.Public || confidential.ClientSecretHash != "deadbeef" {
+		t.Fatalf("confidential client row = %+v", confidential)
+	}
+
+	// Update replaces the mutable fields.
+	got.Name = "Renamed"
+	got.RedirectURIs = []string{"https://example.test/cb3"}
+	got.Scopes = nil
+	updated, err := s.Meta().UpdateOAuthClient(ctx, got)
+	if err != nil {
+		t.Fatalf("UpdateOAuthClient: %v", err)
+	}
+	if updated.Name != "Renamed" || len(updated.RedirectURIs) != 1 || updated.RedirectURIs[0] != "https://example.test/cb3" {
+		t.Fatalf("UpdateOAuthClient result = %+v", updated)
+	}
+	if !updated.Public {
+		t.Fatalf("UpdateOAuthClient must not change Public: %+v", updated)
+	}
+
+	if _, err := s.Meta().UpdateOAuthClient(ctx, store.OAuthClient{ClientID: "absent-client", Name: "x", RedirectURIs: []string{"https://x"}}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateOAuthClient(absent) = %v, want ErrNotFound", err)
+	}
+
+	if err := s.Meta().DeleteOAuthClient(ctx, "crud-client"); err != nil {
+		t.Fatalf("DeleteOAuthClient: %v", err)
+	}
+	if _, err := s.Meta().GetOAuthClient(ctx, "crud-client"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetOAuthClient after delete = %v, want ErrNotFound", err)
+	}
+	if err := s.Meta().DeleteOAuthClient(ctx, "crud-client"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteOAuthClient (already deleted) = %v, want ErrNotFound", err)
 	}
 }
 

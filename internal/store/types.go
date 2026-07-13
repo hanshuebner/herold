@@ -995,6 +995,42 @@ type APIKey struct {
 	ExpiresAt time.Time
 }
 
+// OAuthClient is a DB-backed registry entry for the OAuth2
+// authorization-code + PKCE grant's client_id (issue #199,
+// REQ-AND-AUTH-01/02). Registering a row here is what
+// GET/POST /oauth2/authorize and POST /oauth2/token accept as a known
+// client_id; there is no compiled-in client list.
+type OAuthClient struct {
+	// ClientID is the operator-chosen client_id value the client
+	// presents (e.g. "herold-android"). Primary key.
+	ClientID string
+	// Name is an operator-facing label; not used in any protocol
+	// check.
+	Name string
+	// RedirectURIs is the exact set of URIs this client may register
+	// at /oauth2/authorize (exact-match, plus the RFC 8252 §7.3
+	// loopback-port exception applied by directory.ValidateRedirectURI).
+	RedirectURIs []string
+	// Scopes constrains the scope set granted to tokens issued to
+	// this client. Empty means "the default end-user scope set"
+	// (auth.AllEndUserScopes). This grant never issues an
+	// admin-scoped token regardless of what a client's registered
+	// scopes contain.
+	Scopes []string
+	// Public is true for a client incapable of holding a secret (RFC
+	// 8252 "public client" -- the kind PKCE alone is designed to
+	// secure). False marks a confidential client that must also
+	// present its secret at the token endpoint.
+	Public bool
+	// ClientSecretHash is the SHA-256 hex digest of the client
+	// secret plaintext, set only when Public is false. The plaintext
+	// is returned exactly once, at creation time, and is never
+	// stored or logged.
+	ClientSecretHash string
+	// CreatedAt is the insert instant.
+	CreatedAt time.Time
+}
+
 // OAuthAuthCode is a single-use authorization code issued by
 // GET/POST /oauth2/authorize (issue #199, REQ-AND-AUTH-01/02). It is
 // exchanged exactly once at POST /oauth2/token for an access + refresh

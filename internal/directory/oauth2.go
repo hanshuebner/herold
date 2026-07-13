@@ -172,12 +172,21 @@ func (d *Directory) IssueAuthorizationCode(ctx context.Context, email, password,
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	// Re-resolve the client from the live registry rather than trusting
+	// req.ClientID blindly: req is a signed token that can outlive an
+	// operator deleting the client mid-flow (issue #199's DB-backed
+	// registry made this possible; the compiled-in map could not
+	// change under a live request).
+	client, err := d.LookupOAuthClient(ctx, req.ClientID)
+	if err != nil {
+		return "", err
+	}
 	pid, err := d.authenticateWithOptionalTOTP(ctx, email, password, totpCode)
 	if err != nil {
 		return "", err
 	}
 
-	scopeJSON, err := json.Marshal(auth.AllEndUserScopes)
+	scopeJSON, err := json.Marshal(client.grantedScopes())
 	if err != nil {
 		return "", fmt.Errorf("directory: encode oauth2 code scope: %w", err)
 	}
@@ -215,9 +224,15 @@ func (d *Directory) IssueAuthorizationCode(ctx context.Context, email, password,
 }
 
 // ExchangeAuthorizationCode redeems code for a fresh access + refresh
-// token pair. Returns ErrUnknownOAuthClient, ErrInvalidGrant (unknown /
-// expired / wrong-client / wrong-redirect-uri / already-used code), or
-// ErrPKCEMismatch.
+// token pair. Returns ErrUnknownOAuthClient, ErrClientAuthenticationFailed
+// (a registered confidential client's clientSecret did not match),
+// ErrInvalidGrant (unknown / expired / wrong-client / wrong-redirect-uri /
+// already-used code), or ErrPKCEMismatch.
+//
+// clientSecret is ignored for a public client (the common case: PKCE
+// alone secures it) and required to match the registered hash for a
+// confidential one -- verified via crypto/subtle before any code state
+// is touched.
 //
 // A replayed code (already used) additionally revokes the code's
 // FamilyID before ErrInvalidGrant is returned, per RFC 6749 §4.1.2's
@@ -226,13 +241,16 @@ func (d *Directory) IssueAuthorizationCode(ctx context.Context, email, password,
 // tokens exist yet for a not-yet-exchanged code, this also covers the
 // race where two concurrent exchange attempts both reach the PKCE check
 // before either consumes the code.
-func (d *Directory) ExchangeAuthorizationCode(ctx context.Context, clientID, code, redirectURI, codeVerifier string) (OAuthTokenResult, error) {
+func (d *Directory) ExchangeAuthorizationCode(ctx context.Context, clientID, clientSecret, code, redirectURI, codeVerifier string) (OAuthTokenResult, error) {
 	if err := ctx.Err(); err != nil {
 		return OAuthTokenResult{}, err
 	}
-	client, ok := LookupOAuthClient(clientID)
-	if !ok {
-		return OAuthTokenResult{}, ErrUnknownOAuthClient
+	client, err := d.LookupOAuthClient(ctx, clientID)
+	if err != nil {
+		return OAuthTokenResult{}, err
+	}
+	if !verifyClientSecret(client, clientSecret) {
+		return OAuthTokenResult{}, ErrClientAuthenticationFailed
 	}
 
 	hash := HashDeviceToken(code)
@@ -278,15 +296,21 @@ func (d *Directory) ExchangeAuthorizationCode(ctx context.Context, clientID, cod
 
 // RefreshOAuthToken exchanges a refresh token for a fresh access +
 // refresh token pair, rotating the presented token. Returns
-// ErrUnknownOAuthClient, ErrInvalidGrant (unknown / expired / revoked /
-// wrong-client token), or ErrRefreshReuse (the presented token was
-// already rotated -- its whole family has now been revoked).
-func (d *Directory) RefreshOAuthToken(ctx context.Context, clientID, refreshToken string) (OAuthTokenResult, error) {
+// ErrUnknownOAuthClient, ErrClientAuthenticationFailed (a registered
+// confidential client's clientSecret did not match), ErrInvalidGrant
+// (unknown / expired / revoked / wrong-client token), or
+// ErrRefreshReuse (the presented token was already rotated -- its
+// whole family has now been revoked).
+func (d *Directory) RefreshOAuthToken(ctx context.Context, clientID, clientSecret, refreshToken string) (OAuthTokenResult, error) {
 	if err := ctx.Err(); err != nil {
 		return OAuthTokenResult{}, err
 	}
-	if _, ok := LookupOAuthClient(clientID); !ok {
-		return OAuthTokenResult{}, ErrUnknownOAuthClient
+	client, err := d.LookupOAuthClient(ctx, clientID)
+	if err != nil {
+		return OAuthTokenResult{}, err
+	}
+	if !verifyClientSecret(client, clientSecret) {
+		return OAuthTokenResult{}, ErrClientAuthenticationFailed
 	}
 	if !strings.HasPrefix(refreshToken, RefreshTokenPrefix) {
 		return OAuthTokenResult{}, ErrInvalidGrant

@@ -106,6 +106,7 @@ var tableReg = map[string]tableDesc{
 	"grants":                     {&GrantRow{}, "id"},
 	"push_subscription":          {&PushSubscriptionRow{}, "id"},
 	"oidc_providers":             {&OIDCProviderRow{}, "name"},
+	"oauth_clients":              {&OAuthClientRow{}, "client_id"},
 	"oidc_claim_allowlist":       {&OIDCClaimAllowlistRow{}, "provider_name, claim"},
 	"oidc_claim_mapping_rules":   {&OIDCClaimMappingRuleRow{}, "id"},
 	"oidc_links":                 {&OIDCLinkRow{}, "provider_name, subject"},
