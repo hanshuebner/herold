@@ -44,7 +44,7 @@ The suite (herold + the suite) is sized for "small family / association / group"
 | `urn:ietf:params:jmap:contacts` (RFC 9553 + binding draft) | Required by the suite's compose autocomplete (`../requirements/02-mail-basics.md` REQ-MAIL-11) and by the contacts app. |
 | `urn:ietf:params:jmap:calendars` (RFC 8984 + binding draft) | Required by iMIP RSVP (`../requirements/15-calendar-invites.md`) and by the calendar app. |
 | `https://netzhansa.com/jmap/snooze` | Snooze contract — see Behaviours. |
-| `https://netzhansa.com/jmap/categorise` | LLM-driven categorisation — see Behaviours. |
+| `https://netzhansa.com/jmap/categorise` | Categorisation: the category collection, compile-and-preview, provenance, trace — see Behaviours. |
 | `https://netzhansa.com/jmap/chat` | Chat datatypes (`Conversation`, `Message`, `Membership`) plus the ephemeral WebSocket and call-signaling endpoints — see Behaviours. |
 | `https://netzhansa.com/jmap/email-reactions` | `Email.reactions` extension property + cross-server reaction email propagation — see Behaviours. |
 | `https://netzhansa.com/jmap/shortcut-coach` | `ShortcutCoachStat` per-principal datatype backing the shortcut coach — see Behaviours. |
@@ -77,16 +77,20 @@ Herold advertises this capability when it implements all of:
   3. Re-adds the principal's inbox mailbox to `Email.mailboxIds`.
   4. Emits a state-change event on the affected types (`Email`, `Mailbox`).
 
-### LLM categorisation (`https://netzhansa.com/jmap/categorise`)
+### Categorisation (`https://netzhansa.com/jmap/categorise`)
 
-Per `../requirements/05-categorisation.md`. Herold's responsibilities:
+*(Rewritten 2026-07-13 by ADR-0004. A category is a label; the ruleset is compiled once, not called per message.)*
 
-- Run an LLM classifier on each delivered Email; apply at most one `$category-<name>` keyword.
-- Persist the per-account category set (default: Primary, Social, Promotions, Updates, Forums) and the classifier prompt.
-- Expose methods for the user (via the suite) to update the category set, the prompt, and to trigger bulk re-categorisation of recent inbox.
-- Treat user `Email/set` updates that change `$category-*` keywords as feedback signal for the classifier (mechanism internal).
+Per `../requirements/05-categorisation.md` and `../requirements/03-labels.md`. Herold's responsibilities:
 
-This is distinct from herold's spam classification (which produces `$junk` and the spam mailbox). Categorisation runs after spam — only mail that lands in inbox gets categorised.
+- Evaluate each principal's compiled rulesets over every delivered Email (spam excepted) and apply the matching `$category-<id>` keywords. A message may carry several. Evaluation is in-process and deterministic; there is no per-message LLM call.
+- Persist the per-account **category collection** — name, colour, parent, definition, compiled ruleset, named lists, disposition, priority — as user-owned DB state, and expose CRUD over it. The five defaults (Primary, Social, Promotions, Updates, Forums) are seeded and are editable like any other.
+- Expose the **compile-and-preview** flow: compiling a definition into a ruleset, validating it, backtesting it against the principal's own mail, and returning the preview diff. Nothing activates until the user accepts.
+- Record **provenance** (`machine` / `rule` / `user`) on every assignment, expose it, and guarantee that a machine assignment never overwrites a user one — including during bulk re-categorisation.
+- Expose the per-message **rule trace** (which rules fired, what each contributed, where the total landed) for G14 transparency.
+- Expose each category as a **virtual mailbox** so IMAP clients can browse it as a folder. Membership stays a keyword; the store holds no second copy and re-categorisation does not churn UIDs.
+
+Distinct from spam classification (which produces `$junk` and the spam mailbox), but sharing its evaluator, feature registry and rule language (ADR-0002). Categorisation runs on all delivered mail, because `filed` is a disposition; an explicit Sieve `fileinto` beats an inferred category.
 
 ### Mailbox colour
 

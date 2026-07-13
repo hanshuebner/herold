@@ -141,6 +141,15 @@ strategy mitigates.
 
 ## Wave 3.13 — Categorisation Inbox tabs + prompt/category-set config
 
+> **Superseded 2026-07-13 by ADR-0004.** This wave shipped, and the record below
+> is what was built. The design it implements has since been replaced: a category
+> is now a label, the vocabulary is user-owned state rather than an LLM-derived
+> list, the prompt textarea gives way to per-category definitions compiled into
+> rules, and the fixed tab strip gives way to a stream with bundles plus at most
+> three pinned tabs. The REQ IDs cited in this section (REQ-CAT-30, REQ-CAT-42)
+> refer to their pre-ADR-0004 meanings. Current spec:
+> `docs/design/web/requirements/05-categorisation.md`.
+
 **Driver:** `docs/design/web/requirements/05-categorisation.md`
 (REQ-CAT-01..51). The server already applies `$category-<name>`
 keywords on delivery (`internal/protosmtp/deliver.go:310`,

@@ -13,7 +13,7 @@ The mail app's screen, from outermost to innermost:
 │ Herold           │ [ search bar | help | settings ]                │
 │                  ├─────────────────────────────────────────────────┤
 │ [ Compose ]      │ [ bulk-select | refresh | 3-dot |  pagination ] │
-│ Inbox        14  │ [ category tabs ]                               │
+│ Inbox        14  │ [ pinned category tabs, max 3 ]                 │
 │ Snoozed          ├─────────────────────────────────────────────────┤
 │ Important        │                                                 │
 │ Sent             │  thread list (virtualised)                      │
@@ -108,7 +108,8 @@ A single sidebar column. Top to bottom: brand mark, Compose button, system mailb
 | REQ-UI-09b | Refresh: triggers `Email/changes` for the active view; if state hasn't advanced, the call is a no-op (idempotent). The button briefly shows a spinner while in flight. |
 | REQ-UI-09c | Three-dot menu offers view-scope actions (apply to the entire view, not just selection): "Mark all as read", "Mark all as not important", and a "View settings" entry (page size, conversation grouping toggle). |
 | REQ-UI-09d | Page navigation uses `Email/query` cursors. Prev/next move by the configured page size (default 50, configurable in settings). The counter format is locale-aware (see `22-internationalization.md`). |
-| REQ-UI-09e | Below the list header (in mailboxes that have categorisation): the category-tab strip per `05-categorisation.md` REQ-CAT-10..14. Tabs are visible only in views where categorisation applies (Inbox); other views hide the strip. |
+| REQ-UI-09e | Below the list header, in the Inbox only: the strip of **pinned** category tabs (at most 3), per `05-categorisation.md` REQ-CAT-11. Other views hide the strip. |
+| REQ-UI-09f | The Inbox thread list is a **complete stream** in date order. A `bundled` category occupies one collapsed row within it, positioned by its newest member, expandable inline (`05-categorisation.md` REQ-CAT-10). Categories compress the list; they never remove messages from it. Empty bundles are not rendered. |
 
 ### Row layout
 

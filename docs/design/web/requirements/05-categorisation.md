@@ -1,82 +1,100 @@
-# 05 — Automatic categorisation
+# 05 — Categorisation
 
-Inbound messages are classified into categories by an LLM running on herold. The suite renders the categories as inbox tabs (Gmail-style) and lets the user re-classify, override, and configure both the category set and the classifier prompt.
+*(Rewritten 2026-07-13 by ADR-0004. A category and a label are one primitive; a
+category's disposition decides how loudly its mail enters the inbox. Superseded:
+REQ-CAT-01, -10, -13, -40. The v1 framing — "tabs are a visual filter, not a
+separate location" — is reversed: a tab *is* a label, viewed loudly.)*
 
-This replaces the original v1 framing of "user-defined groupings of labels". Resolved Q11.
+A **category is a label** (`03-labels.md`). It carries a name, colour and parent
+like any label. A category that also carries a natural-language **definition**
+fills itself; one without a definition is a plain label the user applies by hand.
+Every category carries a **disposition**, and that single setting decides
+everything about how its mail reaches the user.
 
-## Defaults: Gmail-style categories
+Server contract: `../server/requirements/06-filtering.md` Part C.
 
-Out of the box the category set matches Gmail's:
+## The disposition, and why there is only one knob
 
-- **Primary** — direct correspondence, transactional, anything that doesn't fit another category.
-- **Social** — notifications from social networks, messaging apps.
-- **Promotions** — marketing, offers, retail.
-- **Updates** — receipts, statements, automated notifications, package tracking.
-- **Forums** — mailing-list discussion, online groups.
+| Disposition | Inbox | Presentation | Badge | Push |
+|---|---|---|---|---|
+| `pinned` | yes | own tab (max 3) | yes | yes |
+| `bundled` | yes | one collapsed row in the stream | inline count only | no |
+| `daily` | yes | bundled, surfaced once a day | inline count only | no |
+| `weekly` | yes | bundled, surfaced once a week | inline count only | no |
+| `filed` | no | reachable via the category only | no | no |
+| `none` | yes | no lane; a search facet | no | no |
 
-A message that doesn't classify into the user's set falls under Primary.
-
-## Mechanism
-
-Herold runs a per-message LLM classification on each delivered Email. The result is applied as a `$category-<name>` keyword (e.g. `$category-promotions`) on the Email. The suite reads the keyword to render the category tab.
+`filed` is "label and archive". `pinned` is "category tab". They are the same
+mechanism at two settings — which is the whole point.
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-01 | Each Email has at most one `$category-<name>` keyword set by herold's classifier on delivery. |
-| REQ-CAT-02 | The classifier is server-side. The suite never runs classification locally. |
-| REQ-CAT-03 | When `$category-<name>` is absent (legacy mail, classifier failure), the Email is treated as Primary. The suite does not retroactively classify; the user can use "Re-categorise inbox" (REQ-CAT-30). |
+| REQ-CAT-01 | A message may carry several categories. The inbox shows it **once**, in the lane of its highest-priority category (REQ-CAT-05). Search sees all of them. |
+| REQ-CAT-02 | Categorisation is server-side. The suite never classifies locally. |
+| REQ-CAT-03 | A message with no category is shown under the category holding the `primary` role. |
+| REQ-CAT-04 | Disposition is a single per-category setting and drives inbox membership, stream presentation, unread badging, and push notification together. The suite exposes no independent mute, badge, or notify toggle for a category. |
+| REQ-CAT-05 | Categories occupy one user-ordered priority list. It is the only place a message matching two categories (a hobby vendor's sale is both Hobby and Promotions) is resolved. The user reorders by drag. |
 
 ## Inbox view
 
+The default Inbox is a **complete stream**: every message, in date order, with
+categories compressed rather than removed. Nothing is ever reachable only through
+a lane the user has stopped checking.
+
+```
+  [Allgemein] [Hobby]              <- pinned tabs, max 3, opt-in
+  ------------------------------------------------------------
+    Torsten Bulck      Re: CC 2027            10. Juli
+  > Werbung (12)                              10. Juli
+    Anna Meier         Rechnung Juni           9. Juli
+  > Soziale Netze (5)                          8. Juli
+    Sparkasse          Kontoauszug             8. Juli
+```
+
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-10 | The Inbox renders with category tabs at the top: Primary | Social | Promotions | Updates | Forums (in the user's configured order, defaulting to that ordering). |
-| REQ-CAT-11 | The active tab filters the Inbox to messages with the corresponding `$category-<name>` keyword (or no category keyword, for the Primary tab). |
-| REQ-CAT-12 | Each tab shows an unread count badge. |
-| REQ-CAT-13 | Tabs are not nested labels. They do not appear under "Labels" in the sidebar. They are a visual filter on the Inbox view, not a separate location. |
+| REQ-CAT-10 | The Inbox renders as one stream in date order. A `bundled` category collapses to a single row, positioned by its newest member, showing the category name, its unread count, and a preview of its senders. Expanding a bundle reveals its messages inline. |
+| REQ-CAT-11 | A `pinned` category renders as a tab above the stream. **At most 3** may be pinned. Pinning is an explicit user act; attempting a fourth prompts the user to unpin one. Selecting a tab filters the Inbox to that category. |
+| REQ-CAT-12 | An empty bundle does not appear in the stream (hide-when-empty). A category in the sidebar may be set to appear only when it has unread mail (show-if-unread), per REQ-LBL-07a. These are two different predicates on two different surfaces, and both apply to one category. |
+| REQ-CAT-13 | A category **is** a label. It appears in the sidebar under Labels, is a drag-and-drop target, and opens a thread list like any label (REQ-LBL-20). Its inbox behaviour is a consequence of its disposition, not of it being a different kind of object. |
 | REQ-CAT-14 | Searching from a category-filtered Inbox preserves the filter unless the user explicitly changes it. |
+| REQ-CAT-15 | A bundle offers a one-gesture sweep: mark the whole bundle read, or archive it, without expanding it. |
+| REQ-CAT-16 | A `daily` or `weekly` bundle displays when it will next surface. Its mail is reachable at any time through the category itself; deferral governs the inbox stream, never access. |
 
-## Re-classification
-
-| ID | Requirement |
-|----|-------------|
-| REQ-CAT-20 | Right-click on a thread (or `m` shortcut, or "Move to category" in the toolbar) opens a category picker. Selecting a category fires `Email/set` to update the `$category-<name>` keyword. |
-| REQ-CAT-21 | Re-classification is treated as user-correction by herold's classifier (a feedback signal for prompt tuning). The mechanism is herold's responsibility; the suite's contract is "we set the keyword, herold does what it does with that". |
-| REQ-CAT-22 | Re-classification is applied at thread granularity by default — every Email in the thread gets the same `$category-<name>`. (A per-message override is possible via opening the message and using its own action menu.) |
-
-## Bulk re-categorisation
+## Assigning and correcting
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-30 | The settings panel exposes "Re-categorise inbox": triggers herold to re-run the classifier on the user's recent inbox (e.g. last 1000 messages). Slow operation; runs in background with a progress indicator in the chrome. |
-| REQ-CAT-31 | Re-categorisation is triggered automatically when the user changes the prompt (REQ-CAT-41). |
+| REQ-CAT-20 | The user recategorises a thread from the thread-list toolbar, the open-thread toolbar, the context menu, or the `m` shortcut. This fires `Email/set` on the `$category-*` keywords. |
+| REQ-CAT-21 | A user assignment is recorded with `user` provenance and is **never** overwritten by the classifier or by a re-categorisation run (REQ-FILT-206, REQ-FILT-220). |
+| REQ-CAT-22 | On recategorising, the suite offers to **make it stick**: add this sender, domain, or list-id to the target category's named list. Accepting writes a deterministic rule — no LLM call — so the next message from that sender lands correctly. Declining files this one message only. |
+| REQ-CAT-23 | Recategorisation applies at thread granularity by default; a per-message override is available from the message's own action menu. |
 
-## User configuration
-
-*(Revised 2026-04-28: the prompt is the only user-editable lever. The
-category set is no longer separately editable; it is derived
-server-side from the prompt as `derivedCategories` per
-`../server/requirements/06-filtering.md` REQ-FILT-217. REQ-CAT-40 is
-withdrawn; REQ-CAT-41 expanded; REQ-CAT-42 narrowed to the prompt.)*
+## Configuring a category
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-40 | **Withdrawn.** The categoriser has no manually-editable category list. Categories are defined by the prompt and reported by the LLM in every classifier response (REQ-FILT-215); the suite renders the server-derived list (`derivedCategories`) read-only beneath the prompt editor for transparency. The user changes categories by changing the prompt. |
-| REQ-CAT-41 | The classifier prompt is the single user-editable categoriser lever. The settings panel exposes a multi-line text editor with the current prompt pre-filled. The default prompt enumerates the five Gmail-style categories and instructs the LLM to return JSON `{categories: [...], assigned: ...}` per REQ-FILT-215. The suite provides the editor; herold validates and applies. |
-| REQ-CAT-42 | A reset-to-default control reverts the prompt to the shipped default. |
-| REQ-CAT-43 | When the user saves prompt changes, herold runs the re-categorisation flow (REQ-CAT-30) automatically; the suite's UI shows the progress. The first successful classifier call after a prompt change refills `derivedCategories`; the suite's tab strip updates from that. |
-| REQ-CAT-44 | Per-message transparency (G14): the message-inspect view (linked from the conversation overflow menu) shows, for any categorised message, the assigned category, the model identifier, and the **user-visible prompt as it was applied to that message** — i.e. the editable prompt text from REQ-CAT-41 plus the per-message context fields (From/To/Subject/List-Id/excerpt) that herold used. Operator guardrails are excluded by REQ-FILT-67. The view reads from the per-message LLM-inspect endpoint defined in `../server/requirements/06-filtering.md` REQ-FILT-66 / REQ-FILT-216. |
-| REQ-CAT-45 | The settings panel that exposes the prompt editor (REQ-CAT-41) shows the user the current effective prompt (text the user has edited or default) AND a clear note: "this is the prompt used to categorise your mail. Your messages are sent to herold's configured classifier endpoint along with this prompt." Operator-side guardrails, if any, are not shown — the wording above is accurate without them. |
+| REQ-CAT-40 | **Reinstated** (withdrawn in v1, restored by ADR-0004). The category set is user-owned, stored data. The user creates, renames, recolours, reorders, deletes, and sets the disposition of any category, including the five shipped defaults. |
+| REQ-CAT-41 | A category may carry a free-text **definition** describing what mail belongs to it ("mail about my model railway hobby: club newsletters, these vendors, forum digests"). A category with no definition is a plain hand-applied label. |
+| REQ-CAT-42 | The suite shows the **compiled rules** for a category, each carrying the definition line that produced it, and lets the user disable an individual rule without editing the definition. The user can see the filter, not just the prose that generated it. |
+| REQ-CAT-43 | Saving a definition does not silently change the user's mail. The suite runs the compile flow (REQ-FILT-217) and renders a **preview diff**: "12 messages would change category", listed. Nothing is applied until the user accepts. The previous ruleset is retained; rollback is one click. |
+| REQ-CAT-44 | **Per-message transparency (G14).** The message-inspect view shows, for any categorised message, the rule trace: which rules fired, what each contributed, and where the total landed. This is a decision, not a narrative. Operator guardrails are excluded (REQ-FILT-67). |
+| REQ-CAT-45 | The settings panel states plainly what leaves the machine. With a compiled ruleset, **no message content is sent anywhere** — the definition text and the rule schema are what reach the compiler. Where the escalation band sends a message to an LLM, the panel says so. |
+| REQ-CAT-46 | Named lists (the senders, domains, and list-ids a category matches) are editable as chips. This is where routine tuning happens and it needs no LLM call. |
+| REQ-CAT-47 | A deployment with **no LLM endpoint** presents a fully working category set from the shipped defaults. Definition editing is disabled with an explanation; everything else — dispositions, priority, lists, pinning, corrections — works. |
+| REQ-CAT-48 | "Re-categorise" re-runs the evaluator over recent mail with a progress indicator. It never touches `user`-provenance assignments. |
 
 ## Storage and contract
 
 | ID | Requirement |
 |----|-------------|
-| REQ-CAT-50 | The classifier prompt and the server-derived `derivedCategories` are stored server-side, per account. The prompt is the only user-editable field; `derivedCategories` is read-only and refreshed by every successful classifier response. They sync across devices automatically (a fresh suite tab reads them on bootstrap). |
-| REQ-CAT-51 | The server contract for categorisation is `https://netzhansa.com/jmap/categorise` (proposed URN — see `../notes/server-contract.md`). It declares: per-account category set, per-account prompt, per-Email `$category-*` keyword application by the classifier on delivery, and the re-classification API. |
+| REQ-CAT-50 | Categories, their definitions, compiled rulesets, dispositions, priority order, and named lists are per-account server state and sync across devices. A fresh suite tab reads them on bootstrap. |
+| REQ-CAT-51 | The server contract is `https://netzhansa.com/jmap/categorise` (see `../notes/server-contract.md`): the category collection with CRUD, the compile-and-preview flow, per-message provenance and trace, and re-categorisation. |
+| REQ-CAT-52 | Each category is exposed as a **virtual mailbox** so IMAP clients (Thunderbird, Apple Mail) can browse it as a folder. Membership remains a keyword — the store holds no second copy of the message and re-categorisation does not churn UIDs (ADR-0004 §3). |
 
 ## Cross-references
 
-- The classifier itself (LLM model, hosting, prompt engineering) is herold's responsibility. The suite renders results; herold does the work. See `../notes/herold-coverage.md` for status.
-- Spam filtering is a separate concern (herold's existing LLM-based spam plugin produces `$junk` and the spam mailbox); categorisation runs independently of spam classification.
-- Filters (`04-filters.md`) can read and act on `$category-*` keywords, just like any other keyword. A user could write a filter "if `$category-promotions` archive after 7 days" — the mechanism is generic.
+- Labels — `03-labels.md`. A category is a label; that document defines the shared object.
+- Filters — `04-filters.md`. Rules can test and act on `$category-*` like any other keyword.
+- The rule language, evaluator, backtest, and trace — ADR-0002. Categorisation introduces no second rule format.
+- Plugin state and settings UI, which the compiled ruleset depends on — ADR-0003.

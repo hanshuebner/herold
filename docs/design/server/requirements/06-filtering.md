@@ -1,19 +1,25 @@
-# 06 — Filtering: LLM spam classification and Sieve
+# 06 — Filtering: spam classification, categorisation, and Sieve
 
-*(Revised 2026-04-24: traditional filtering removed. LLM is the spam default.)*
+*(Revised 2026-04-24: traditional filtering removed. Revised 2026-07-13 by
+ADR-0002 and ADR-0004: the LLM authors the filter instead of running it. Scoring
+is a compiled ruleset evaluated in-process; an LLM endpoint is an enhancement,
+not a dependency.)*
 
-Two stages, kept separate:
+Three stages, kept separate:
 
-- **Classification** — decide whether a message is spam. Delegated to an LLM via an OpenAI-compatible chat-completions endpoint. Default endpoint: local Ollama. No rule engine, no Bayesian, no RBL/URIBL.
-- **Delivery routing** — decide where an accepted message lands. Sieve scripts (global + per-recipient).
+- **Scoring** — evaluate a compiled ruleset over the message. One evaluator, one feature registry, two outputs: a spam verdict (Part A) and a set of category assignments (Part C). Pure Go, no network call, no mail content leaving the process. The rules are generated from the user's natural-language policy by a plugin, once, at compile time; messages near the spam threshold may be escalated to an LLM classifier.
+- **Delivery routing** — decide where an accepted message lands. Sieve scripts (global + per-recipient). Sieve routes; scoring classifies; an explicit route beats an inferred one.
+- **Presentation** — how loudly a message enters the inbox, from its category's disposition (REQ-FILT-204).
 
-Email **authentication** (DKIM/SPF/DMARC/ARC) is upstream and unchanged — that's in `requirements/04-email-security.md`. Authentication results feed into the classifier prompt, they're not the classifier.
+Email **authentication** (DKIM/SPF/DMARC/ARC) is upstream and unchanged — that's in `requirements/04-email-security.md`. Authentication results are features the ruleset reads; they are not the classifier.
 
 ## Pipeline
 
 ```
-accept → authenticate (SPF/DKIM/DMARC/ARC) → classify (LLM) → global Sieve → per-recipient Sieve → deliver
-                                               └── verdict + confidence + reason
+accept → authenticate (SPF/DKIM/DMARC/ARC) → score (compiled ruleset, in-process)
+           → global Sieve → per-recipient Sieve → categorise → deliver
+                │                                     │
+                └── verdict + confidence + trace      └── categories + disposition
 ```
 
 ## Part A: LLM classification
@@ -121,47 +127,72 @@ Unchanged from prior version:
 - `llm` / `exec` / `extprograms`: no. If you want an LLM call, it's already in the classifier; Sieve doesn't get to call LLMs independently.
 - `foreverypart` + `mime` + `extlists` + `subaddress` + `duplicate` + `enotify (mailto)` + `editheader` + `vacation-seconds` + `spamtestplus`: yes (core set).
 
-## Part C: Automatic categorisation (LLM)
+## Part C: Categorisation
 
-Distinct from spam classification. Spam decides "deliver / spam / quarantine"; categorisation decides "Primary / Social / Promotions / Updates / Forums" (or whatever the user has configured). Both run on inbound mail; categorisation runs *after* spam (only mail that lands in inbox gets categorised — no point categorising spam).
+*(Rewritten 2026-07-13 by ADR-0004. A category and a label are one primitive.
+Categorisation is a compiled ruleset, not a per-message LLM call. Superseded:
+REQ-FILT-200, -201, -210, -211, -213, -214, -215, -217, -221.)*
 
-Used by the suite's category tabs (`docs/design/web/requirements/05-categorisation.md`). Phase 2 — runs alongside the JMAP-suite work.
+Spam decides "deliver / junk". Categorisation decides *what kind* of mail this is
+and, through the category's disposition, how loudly it enters the inbox. Both are
+scored by the same evaluator over the same feature registry (ADR-0002); they
+differ in what they produce.
+
+A **category is a label** (`docs/design/web/requirements/03-labels.md`). It carries
+a name, colour and parent like any label, plus — when the user wants it to fill
+itself — a natural-language `definition`, the `rules` compiled from it, a
+`disposition`, and a `priority`. Suite surface:
+`docs/design/web/requirements/05-categorisation.md`.
+
+### The category object
+
+- **REQ-FILT-200** Categorisation runs on **all** delivered mail, not only inbox-bound mail, because `filed` is a disposition (REQ-FILT-204) and a categoriser that sees only inbox-bound mail cannot implement it. Mail classified as spam (`\Junk`) is exempt.
+- **REQ-FILT-201** A message may carry **several** category assignments, stored as `$category-<id>` keywords. The inbox presents the message once, in the lane of its highest-priority category (REQ-FILT-205).
+- **REQ-FILT-202** A message matching no category carries no `$category-*` keyword. The suite presents it under the category holding the `primary` role.
+- **REQ-FILT-203** Categorisation runs once at delivery. Subsequent edits to the message do not re-trigger it; re-categorisation is explicit (REQ-FILT-220).
+- **REQ-FILT-204** **Disposition.** Each category carries exactly one disposition, and it governs inbox membership, stream presentation, unread badging, and push notification together:
+
+  | Disposition | Inbox | Presentation | Badge | Push |
+  |---|---|---|---|---|
+  | `pinned` | yes | own tab (max 3 per account) | yes | yes |
+  | `bundled` | yes | one collapsed row in the stream | inline count only | no |
+  | `daily` | yes | bundled, surfaced once a day | inline count only | no |
+  | `weekly` | yes | bundled, surfaced once a week | inline count only | no |
+  | `filed` | no | reachable via the category only | no | no |
+  | `none` | yes | no lane; a search facet | no | no |
+
+  `filed` is what "label and archive" means. `pinned` is what a category tab means. They are one mechanism at two settings.
+- **REQ-FILT-205** **Priority.** Categories occupy a single per-account ordered list. When a message matches several, the highest-priority match determines its inbox lane and its disposition. Ordering is user-editable and is the only place a Hobby-versus-Promotions conflict is decided.
+- **REQ-FILT-206** **Provenance.** Every category assignment records who made it: `machine` (the evaluator), `rule` (an explicit user rule or Sieve action), or `user` (a manual assignment). A `machine` assignment MUST NOT overwrite a `user` assignment, and re-categorisation (REQ-FILT-220) MUST NOT touch `user` assignments.
 
 ### Pipeline placement
 
-- **REQ-FILT-200** Categorisation runs after Sieve `fileinto` decisions and after spam classification. Only messages whose final destination is the user's inbox (no Sieve fileinto, not classified spam, not auto-archived by user filter) are categorised. Mail that ends up in `\Junk`, `\Trash`, or a non-inbox label is NOT categorised.
-- **REQ-FILT-201** The classifier output is at most one `$category-<name>` keyword applied to the `Email`. Names are lowercase ASCII, dash-separated. Default set: `$category-primary`, `$category-social`, `$category-promotions`, `$category-updates`, `$category-forums`.
-- **REQ-FILT-202** Messages that don't match any category fall through with no `$category-*` keyword set. The suite's UI treats absence as "Primary".
-- **REQ-FILT-203** Categorisation runs once at delivery; subsequent edits to the message do not re-trigger it. Re-classification is explicit (REQ-FILT-220).
+- **REQ-FILT-207** **Sieve routes; categories classify; an explicit route beats an inferred one.** If the user's Sieve script issued a `fileinto` for the message, that destination stands. Otherwise the highest-priority matching category's disposition (REQ-FILT-204) decides whether the message enters the inbox.
+- **REQ-FILT-208** Category assignment is visible to Sieve as a keyword, so `04-filters.md` rules and Sieve scripts can test and act on `$category-*` like any other keyword.
 
 ### Configuration
 
-*(Revised 2026-04-28: the prompt is the single source of truth. The
-manually-editable category list is gone; categories are derived from
-the LLM's response. Old REQ-FILT-210/212 references to a separate
-category-set editor are obsolete.)*
+- **REQ-FILT-210** **Per-account category set: stored, user-owned, and editable.** The category set is DB state (invariant 9), not an artefact of a classifier response. A user creates, renames, recolours, reorders, and deletes categories. The five defaults (`primary`, `social`, `promotions`, `updates`, `forums`) ship seeded with compiled-in rules and dispositions, and are editable and deletable like any other.
+- **REQ-FILT-211** **Per-category definition: free text, optional.** A category with a `definition` fills itself; a category without one is a plain hand-applied label. The definition is the user-visible, user-mutable policy of REQ-FILT-22 / REQ-FILT-67, scoped to one category.
+- **REQ-FILT-212** A "reset to default" control restores the shipped default categories, their definitions, and their dispositions.
 
-- **REQ-FILT-210** **Removed.** The per-account category set is no longer separately configured. The prompt (REQ-FILT-211) defines the categories; the LLM enumerates them in every response (REQ-FILT-215); the server persists the latest enumeration as `derivedCategories` (REQ-FILT-217). There is no manually-editable category list.
-- **REQ-FILT-211** Per-account classifier prompt: free text. This is the single source of truth for categorisation. The default prompt enumerates Gmail-style categories (Primary, Social, Promotions, Updates, Forums) and instructs the LLM to return JSON of the shape REQ-FILT-215 specifies. Mutable.
-- **REQ-FILT-212** A "reset to default" control reverts the prompt only.
+### Compilation and evaluation
 
-### Classifier endpoint
+- **REQ-FILT-213** **The LLM compiles; it does not classify.** A category's `definition` is compiled **once** into an ADR-0002 ruleset via the `categorise.compile` plugin method, and the ruleset is then evaluated in-process, per message, in pure Go. The compile payload carries the definition text, the rule schema, and the feature registry. **No message content is in it.** There is no per-message LLM call on the categorisation path.
+- **REQ-FILT-214** **An LLM endpoint is not required.** The default categories ship with rules compiled into the binary, over structural signals herold already has: `List-Id`, `List-Unsubscribe`, `Precedence`, `Auto-Submitted`, `Authentication-Results`, and sender-in-contacts. A deployment with no LLM endpoint configured has a working category set; `definition` editing is the feature that needs one.
+- **REQ-FILT-215** Categorisation shares ADR-0002's rule language, evaluator, feature registry, safety limits, and fuzz target. It does not introduce a second rule format. The evaluator returns the set of matching categories with their scores; the highest-priority match (REQ-FILT-205) takes the lane.
+- **REQ-FILT-216** **Transparency (G14).** Per-account: the user reads each category's `definition` and the ruleset it compiled to, each rule carrying the definition line that produced it. Per-message: the user reads the trace — which rules fired, what each contributed, and where the total landed. Operator guardrails are excluded (REQ-FILT-67).
+- **REQ-FILT-217** **Compile flow.** Editing a `definition` does not silently change the user's mail. The server compiles, validates the ruleset (schema, arity, types, feature names, limits), backtests it against a sample of the principal's own mail, and returns a **preview diff** — "these N messages would change category", with them listed. Nothing is activated until the user accepts. The previous ruleset is retained so rollback is a click. This is ADR-0002's flow, unchanged.
 
-- **REQ-FILT-213** Categorisation calls the same kind of OpenAI-compatible HTTP endpoint as the spam classifier (REQ-FILT-15..23) but is its own per-account configuration. Operators can point them at the same endpoint or different ones; the spam classifier may run on a tighter, faster model than categorisation.
-- **REQ-FILT-214** The categorisation call carries: the prompt, the message envelope summary (From, To, Subject), the first ~2 KB of the plain-text body. Same privacy posture as the spam classifier (REQ-FILT-30..33). Headers like `List-ID`, `Authentication-Results`, and `List-Unsubscribe` are included as features.
-- **REQ-FILT-215** The classifier returns JSON of the shape `{ "categories": [<name>, ...], "assigned": <name> | null }`. `categories` enumerates every category the prompt defines (the LLM's interpretation of the prompt); `assigned` is the chosen category for this message, or `null` if no category fits. The server applies `$category-<assigned>` as a keyword (REQ-FILT-201) when `assigned` is non-null; `null` falls through with no keyword (REQ-FILT-202). Names in either field are lowercase ASCII, dash-separated; the server lowercases and slug-normalises any name the LLM returns. Unparseable JSON or a missing `assigned` field after one retry → no keyword applied, log a warning. Failures (timeout, 5xx) → no keyword applied, log a warning, mail is delivered uncategorised.
-- **REQ-FILT-216** Transparency (G14): the categoriser honours the same contract as REQ-FILT-65..67. Per-account read returns the user-visible prompt (the editable text from REQ-FILT-211) plus the latest `derivedCategories` (REQ-FILT-217). Per-message read returns the assigned category and the user-visible prompt as applied to that message; operator guardrails are excluded.
-- **REQ-FILT-217** **Derived category set.** The server persists a per-account `derivedCategories` list, sourced from the most recent successful classifier response's `categories` field. On prompt change (REQ-FILT-211 mutation), `derivedCategories` is invalidated and refilled from the next successful classifier call. The list is exposed via JMAP `CategorySettings/get` and is **read-only** to the user (the prompt is the lever; the list is a consequence of it). The suite's inbox tab strip reads `derivedCategories` to know what tabs to render. If the list is empty (no classifier call has succeeded since the most recent prompt change), the suite shows no category tabs and treats every message as Primary.
+### Re-classification and correction
 
-### Re-classification
-
-- **REQ-FILT-220** Operator + the suite expose "re-categorise inbox" as an admin action: re-run the classifier on the user's recent inbox (last N messages, configurable; default 1000) under the current prompt and category set. Slow operation; runs as a background job with progress reporting.
-- **REQ-FILT-221** When the user manually changes the `$category-*` keyword on an `Email/set` (e.g. moves a message from Promotions to Primary), the change is persisted and the action is recorded for prompt-tuning feedback. Mechanism for using that feedback to refine the prompt is operator-side (out of scope here; a future "feedback-driven prompt update" workflow lives in the suite's settings or admin tooling).
+- **REQ-FILT-220** "Re-categorise" re-runs the evaluator over the principal's recent mail (last N messages, configurable; default 1000) under the current rulesets. It runs as a background job with progress reporting, and it MUST NOT touch assignments whose provenance is `user` (REQ-FILT-206). Because evaluation is local and deterministic, this is a cheap operation.
+- **REQ-FILT-221** **Correction writes a rule.** When the user recategorises a message, the server persists the assignment with `user` provenance and offers to make it stick — by adding the sender, domain, or list-id to the target category's named list (ADR-0002's `lists`). Accepting writes a deterministic rule that needs no LLM call and cannot be undone by a later re-categorisation. This replaces the previous "recorded for prompt-tuning feedback" with a mechanism that actually changes the next verdict.
 
 ### Failure isolation
 
-- **REQ-FILT-230** Categorisation failures NEVER block delivery. A failed classifier call leaves the message uncategorised; the message lands in inbox normally.
-- **REQ-FILT-231** Categorisation MUST NOT modify any message header or body. The only persistent effect is the `$category-*` keyword.
+- **REQ-FILT-230** Categorisation failures NEVER block delivery. An unevaluable or missing ruleset leaves the message uncategorised and it lands in the inbox normally. With evaluation in-process there is no timeout and no network failure mode to degrade against; the remaining failure is a ruleset that fails validation, which is rejected at compile time and never activated.
+- **REQ-FILT-231** Categorisation MUST NOT modify any message header or body. Its persistent effects are the `$category-*` keywords, their provenance records, and — for a `filed` disposition — the message's inbox membership.
 
 ## Stripped features (explicit cut list)
 

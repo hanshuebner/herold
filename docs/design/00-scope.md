@@ -12,8 +12,8 @@ single `imported-from-gmail` Sieve script (inactive by default for user
 review), and pass-through of `X-Gmail-Labels` / `X-GM-THRID` into
 herold's mailbox and thread model. The five default Gmail categories
 (Primary / Social / Promotions / Updates / Forums) map 1:1 onto the
-`$category-*` keywords already defined for the LLM categoriser
-(REQ-FILT-201). **Localization is load-bearing:** Takeout is fully
+five categories herold ships by default
+(REQ-FILT-210). **Localization is load-bearing:** Takeout is fully
 localized in the Google UI language, so the importer ships a
 locale-string table covering at least 24 locales (`en`, `de`, `fr`,
 `es`, `it`, `nl`, `pt`, `pl`, `cs`, `sv`, `da`, `no`, `fi`, `ja`, `ko`,
@@ -102,11 +102,11 @@ bit-compat" non-goal still holds -- herold *uses* SES, herold doesn't
 
 ## Vision
 
-A self-hostable, single-node communications server. The substrate beneath the herold suite (mail, calendar, contacts, chat) plus full SMTP MTA / IMAP for traditional mail clients. SMTP MTA + IMAP / JMAP mailbox + JMAP for Calendars + JMAP for Contacts + chat (DMs, Spaces, 1:1 video calls) + HTTP send API + receive webhooks + Sieve + LLM-based spam classification + LLM-based message categorisation, with a clean operator experience and a first-class plugin system. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
+A self-hostable, single-node communications server. The substrate beneath the herold suite (mail, calendar, contacts, chat) plus full SMTP MTA / IMAP for traditional mail clients. SMTP MTA + IMAP / JMAP mailbox + JMAP for Calendars + JMAP for Contacts + chat (DMs, Spaces, 1:1 video calls) + HTTP send API + receive webhooks + Sieve + compiled spam filtering and message categorisation (LLM-authored, LLM-optional), with a clean operator experience and a first-class plugin system. Sized for small-to-medium self-hosters, including power users with 1 TB+ mailboxes — **not** hosting providers, **not** enterprise.
 
 Stalwart is the closest functional reference for the mail half. The chat / video-call half has no direct reference in the same product family — those are net-new herold scope, sized for the same single-node target.
 
-Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, no bundled rule-based spam) and widens it in others (HTTP send/receive APIs, large-mailbox support, plugin-first extensibility, JMAP-native calendar/contacts, integrated chat).
+Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, no external reputation feeds or imported rule packs) and widens it in others (HTTP send/receive APIs, large-mailbox support, plugin-first extensibility, JMAP-native calendar/contacts, integrated chat).
 
 ## Goals
 
@@ -114,7 +114,7 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 - **G2. Protocol correctness.** SMTP, IMAP, JMAP, Sieve, DKIM/SPF/DMARC/ARC. Interop with Gmail, iCloud, Outlook, Thunderbird, Apple Mail, Fastmail JMAP clients is a release blocker.
 - **G3. Storage choice.** SQLite (default, zero-dep) and PostgreSQL (for heavier deployments) both first-class. Filesystem blobs, embedded FTS. No S3, no Redis.
 - **G4. Large mailbox support.** Individual mailboxes up to ≥1 TB. Design doesn't bottleneck at this size.
-- **G5. LLM-first spam.** No rule engine, no Bayesian, no RBL/URIBL scoring. One classifier call per message via the spam plugin. Operator picks the endpoint.
+- **G5. Compiled filters, authored by an LLM.** The user writes a natural-language policy; a plugin compiles it once into a closed-vocabulary ruleset, which herold then evaluates in pure Go on the delivery path -- microseconds, no network call, no mail content leaving the process. Spam verdicts and message categories both come from this one path (ADR-0002, ADR-0004). Weights are fitted from the user's own feedback. Default rules ship compiled into the binary, so a deployment with no LLM endpoint has a working filter and a working category set; an LLM endpoint is an enhancement, not a dependency. Messages whose score lands near the threshold may be escalated to an LLM classifier, which is where the operator's chosen endpoint earns its keep.
 - **G6. Plugin system on day one.** Out-of-process, JSON-RPC. Primary use cases: DNS providers (ACME DNS-01 + auto-publish DKIM/MTA-STS/TLSRPT/DMARC/DANE), spam classifier, directory adapter, delivery hooks.
 - **G7. HTTP mail APIs.** A clean HTTP sending API (not SES-verbatim, SES-portable) and an incoming-mail webhook subsystem. Apps coded to AWS SES or similar should port with modest work.
 - **G8. Identity you can federate.** Local identity with password + TOTP 2FA. Per-user association to external OIDC providers (Google, Microsoft, GitHub, corporate Okta, etc.). External identities may use different email addresses than local.
@@ -123,7 +123,11 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 - **G11. Full-text search that's actually useful.** Body + common attachment formats (PDF, Office, plain text). Large mailboxes searchable.
 - **G12. Observable.** JSON logs + Prometheus metrics on every build. OTLP traces optional.
 - **G13. No phone-home. No license gates. Ever.**
-- **G14. LLM use is transparent to users.** Anywhere herold uses an LLM to act on a user's content — spam classification, automatic categorisation, any future LLM-driven feature — the user can read the prompt that was used to produce the result, minus the operator's system guardrails. The exposed prompt is the user-relevant part: the per-account configurable prompt (REQ-FILT-22, REQ-FILT-211), the per-message context fields, and the message excerpt that was sent. Operator-side guardrails (e.g. "respond only in JSON", abuse-prevention prefixes) are excluded so the operator can iterate on those without leaking implementation detail. Surfaced both per-account (in settings: "the prompt currently used to categorise your mail is …") and per-message (the suite's message-inspect view: "the LLM was asked …" + the verdict).
+- **G14. Machine decisions are transparent and auditable to users.** Anywhere herold acts on a user's content by machine — spam classification, automatic categorisation, any future such feature — the user can see what produced the result, per-account (in settings) and per-message (the suite's message-inspect view). Two cases, because there are two mechanisms:
+  - **Generated filters (G5; ADR-0002, ADR-0004).** The user can read the natural-language policy they wrote, the ruleset it compiled to — each rule carrying the policy line that produced it — and, for any message, the trace of which rules fired, what each contributed, and where the total landed relative to the threshold. This is the decision itself, not an account of it.
+  - **Direct LLM calls on message content** (the escalation band, and any feature that sends a message to a model). The user can read the prompt that was used: the per-account configurable prompt (REQ-FILT-22), the per-message context fields, and the excerpt that was sent.
+
+  Operator-side guardrails (e.g. "respond only in JSON", abuse-prevention prefixes) are excluded from both, so the operator can iterate on those without leaking implementation detail. **Strengthened 2026-07-13** by ADR-0002: a rule trace is checkable against what the filter actually did, where an LLM's `reason` string is a post-hoc rationalisation that is not.
 - **G15. Inline images and attachments are distinct, user-controlled, and visible.** When a user drops an image into a compose window the suite distinguishes "inline this in the body" from "attach this alongside the body" via two separate drop targets, not by guessing from MIME type or sender intent. Either choice is reversible (drag inline image out to attachment list and vice-versa). Pasting an image while the cursor is in the body inlines it; the file picker attaches it; the explicit drop targets cover the ambiguous case.
 - **G16. Inline images in received messages are first-class downloads.** The suite renders inline images (CID-referenced and data: URLs that survive the renderer) in the body where the sender placed them, and surfaces the same single-action download affordance for each (right-click "Save image", chip-level download button) that attachments get. "Download all attachments" includes inline images by default; users who want body-only zips opt out per-action.
 
@@ -132,7 +136,7 @@ Herold narrows the target in some dimensions (no multi-tenancy, no multi-node, n
 - **NG1.** Hosting-provider / multi-tenancy features. No tenants, no per-tenant quotas, no per-tenant branding.
 - **NG2.** Multi-node deployment. Single node only. Operators needing HA use hypervisor-level tricks (ZFS snapshot + failover, shared block storage). v1 does not grow into multi-node.
 - **NG3.** CalDAV / CardDAV / WebDAV — out, ever. The DAV protocol family is not the substrate; operators wanting DAV run a separate service. **Updated 2026-04-25:** JMAP for Calendars (RFC 8984 + JMAP-Calendars binding) and JMAP for Contacts (RFC 9553 + JMAP-Contacts binding) are **in scope as phase-2 additions** of the herold + the suite, replacing the prior "out, but addable" framing. Both fit additively on the existing JMAP capability registry (`server/architecture/03-protocol-architecture.md` §Capability and account registration) and the entity-kind-agnostic state-change feed (`server/architecture/05-sync-and-state.md` §Forward-compatibility constraint) — no schema migrations of existing tables, no dispatch-core edits.
-- **NG4.** Traditional spam filtering. No bundled rule engine. No Bayesian. No RBLs by default. (Operators who want these can write a plugin or run an external filter; we don't ship them.)
+- **NG4.** External reputation feeds and third-party rule packs. No RBL / URIBL / DNSBL scoring by default, and no importing of community rulesets (SpamAssassin-style). Herold's rule engine (G5) evaluates rules generated from the user's *own* policy and weights fitted from the user's *own* feedback; it does not consume external feeds or rule packs. (Operators who want these can write a plugin or run an external filter; we don't ship them.) **Amended 2026-07-13** by ADR-0002 and ADR-0004, which reverse the previous blanket exclusion of a rule engine and a learned model.
 - **NG5.** Webmail. (The suite is a *separate* project — a JMAP web client that herold serves; herold itself hosts only the static bundle plus its API.)
 - **NG6.** POP3 at launch.
 - **NG7.** Exchange-compatible protocols (MAPI/EWS/ActiveSync).
