@@ -712,8 +712,11 @@ describe('sanitizeHtml — lone half of color/background-color pair (issue #231)
     const html = '<span style="font-size:12.8px;background-color:rgb(26,17,17)">text</span>';
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
     expect(body).not.toContain('background-color');
-    // The unrelated declaration is preserved.
-    expect(body).toContain('font-size:12.8px');
+    // The unrelated declaration is preserved. The style attribute is
+    // reserialized through the CSS parser when a declaration is
+    // stripped (see sanitizeInlineColorPairs), so assert on the value
+    // rather than on exact original spacing.
+    expect(body).toMatch(/font-size:\s*12\.8px/);
   });
 
   it('strips a lone color so it does not collide with the iframe theme background', () => {

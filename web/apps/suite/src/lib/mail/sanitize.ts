@@ -431,92 +431,16 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
 }
 
 /**
- * Split an inline style attribute value into individual declarations.
- * A plain split on ";" is sufficient here: sender inline styles are text
- * data (never executed), and the color/background-color values this
- * function inspects (keywords, #hex, rgb()/rgba()/hsl()) do not contain
- * semicolons, so no CSS-value-aware parser is needed.
+ * True when a resolved CSS color value (as read off a
+ * CSSStyleDeclaration) represents an actually declared color, as
+ * opposed to "nothing was declared here". `''` is the DOM's answer for
+ * "property never set"; `background` shorthands that carry no color
+ * layer at all (e.g. `url(x) no-repeat`) resolve their `background-color`
+ * sub-property to the literal keyword `initial`.
  */
-function splitStyleDeclarations(style: string): string[] {
-  return style
-    .split(';')
-    .map((d) => d.trim())
-    .filter((d) => d.length > 0);
-}
-
-// CSS named color keywords recognized when scanning a `background`
-// shorthand value for an embedded color component. This is not the full
-// CSS Color Level 4 keyword table (148 names) -- it is the CSS1 basic 16
-// plus a modest set of commonly authored extended names, chosen to cover
-// real-world sender HTML without carrying a huge lookup table.
-//
-// This is a documented false-negative surface, never a false-positive
-// one: a background shorthand using an obscure keyword outside this list
-// (and no hex/function color syntax) will not be recognized as carrying
-// a color, so the lone-half rule will not fire for it -- the same gap
-// that existed for every keyword before this fix. It can never cause a
-// legitimate colorless background-image declaration to be stripped,
-// because the keyword check only ever adds "has color", never removes
-// hex/function detection.
-const BACKGROUND_COLOR_KEYWORDS = new Set([
-  'transparent', 'currentcolor',
-  'black', 'silver', 'gray', 'grey', 'white', 'maroon', 'red', 'purple',
-  'fuchsia', 'green', 'lime', 'olive', 'yellow', 'navy', 'blue', 'teal',
-  'aqua', 'orange', 'brown', 'pink', 'gold', 'indigo', 'violet', 'coral',
-  'salmon', 'khaki', 'beige', 'ivory', 'lavender', 'turquoise', 'crimson',
-  'chocolate', 'orchid', 'plum', 'tan', 'wheat', 'azure', 'magenta', 'cyan',
-]);
-
-const BACKGROUND_COLOR_FUNCTION_RE = /\b(?:rgb|rgba|hsl|hsla|hwb|lab|lch|color)\s*\(/i;
-const HEX_COLOR_RE = /#[0-9a-f]{3,8}\b/i;
-
-/**
- * True when a `background` SHORTHAND value (the part after the colon,
- * `!important` already stripped) contains a color component -- hex, a
- * color function, or a recognized keyword.
- *
- * The `background` shorthand can carry image/position/repeat/size/
- * attachment layers alongside an optional color
- * (https://developer.mozilla.org/en-US/docs/Web/CSS/background). A
- * shorthand with no color component at all (e.g. `url(x) no-repeat`)
- * must NOT be treated as declaring a background color -- otherwise a
- * legitimate background-image-only declaration would be needlessly
- * stripped whenever the element also lacks `color` (over-broad; would
- * break real sender styling that was never at risk of an invisible-text
- * collision in the first place).
- */
-function backgroundShorthandHasColor(value: string): boolean {
-  if (HEX_COLOR_RE.test(value)) return true;
-  if (BACKGROUND_COLOR_FUNCTION_RE.test(value)) return true;
-  const tokens = value.toLowerCase().split(/[\s,]+/).filter(Boolean);
-  return tokens.some((tok) => BACKGROUND_COLOR_KEYWORDS.has(tok));
-}
-
-/** The declaration's value: the text after the first ":", `!important` stripped. */
-function declarationValue(d: string): string {
-  const idx = d.indexOf(':');
-  if (idx === -1) return '';
-  return d.slice(idx + 1).replace(/!important\s*$/i, '').trim();
-}
-
-function isColorDeclaration(d: string): boolean {
-  return /^color\s*:/i.test(d);
-}
-
-/**
- * True for a `background-color:` longhand, or a `background:` shorthand
- * whose value carries a color component per `backgroundShorthandHasColor`.
- * `background-image:`, `background-position:`, etc. never match: the
- * anchored `^background\s*:` requires the colon (or whitespace then
- * colon) immediately after "background", so any `background-*` longhand
- * with a hyphen in that position falls through.
- */
-function isBackgroundColorDeclaration(d: string): boolean {
-  if (/^background-color\s*:/i.test(d)) return true;
-  if (/^background\s*:/i.test(d)) {
-    return backgroundShorthandHasColor(declarationValue(d));
-  }
-  return false;
+function isDeclaredColor(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  return v !== '' && v !== 'initial';
 }
 
 /**
@@ -530,22 +454,44 @@ function isBackgroundColorDeclaration(d: string): boolean {
  * makes the element fall back to Herold's own paired foreground and
  * background, which are always mutually legible in both themes.
  *
+ * Detection goes through the browser's own CSS parser rather than
+ * scanning the style string: the declaration is assigned to a detached
+ * probe element and the resolved `color` / `background-color` are read
+ * back off its `CSSStyleDeclaration`. That is what correctly handles:
+ *   - the `background` shorthand (image/position/repeat plus an
+ *     optional color layer) -- the parser splits it into its
+ *     sub-properties for us;
+ *   - all CSS named colors, not a curated subset -- there is no keyword
+ *     list to fall short of the full Color Level 4 table;
+ *   - `url(data:image/gif;base64,...)` values, which contain a bare
+ *     semicolon that broke a naive "split the style string on ;"
+ *     approach. That data URI is not a hypothetical: `internal/extimg`'s
+ *     server-side internalize/placeholder pass (see
+ *     `internal/protojmap/mail/email/get.go`, `render.go`) rewrites
+ *     `url(...)` inside inline `style=""` to exactly that shape for
+ *     every message still pending background internalize -- the default
+ *     state of every freshly received HTML message;
+ *   - `!important` and any future CSS color syntax (`color-mix()`,
+ *     `oklch()`, ...) -- it IS the parser the page will otherwise use to
+ *     render the same declaration.
+ *
  * "Background" is recognized from either the `background-color` longhand
- * or a `background` shorthand that carries a color component (see
- * `backgroundShorthandHasColor`) -- a sender using `background:` instead
- * of `background-color:` gets the same protection. When the lone
- * background half comes from a shorthand that also carries image/
- * position/repeat, the entire shorthand declaration is dropped rather
- * than surgically extracting just the color token: this trades rare loss
- * of an accompanying background-image in that specific mixed, no-`color`
- * case for a simple, unambiguous transformation with no way to leave a
- * residual color behind. A shorthand with NO color component at all
- * (image/repeat/position only) is never touched by this function --
- * `isBackgroundColorDeclaration` returns false for it, so it does not
- * count as "background declared" and cannot trigger stripping of an
+ * or a `background` shorthand that carries a color component -- a sender
+ * using `background:` instead of `background-color:` gets the same
+ * protection. When the lone background half comes from a shorthand that
+ * also carries image/position/repeat, the entire shorthand declaration is
+ * dropped rather than surgically extracting just the color token: this
+ * trades rare loss of an accompanying background-image in that specific
+ * mixed, no-`color` case for a simple, unambiguous transformation with no
+ * way to leave a residual color behind. A shorthand with NO color
+ * component at all (image/repeat/position only) is never touched --
+ * `probe.style.backgroundColor` resolves to `initial` for it, so it does
+ * not count as "background declared" and cannot trigger stripping of an
  * unrelated lone `color`.
  *
- * An element that declares both halves is left untouched: that is a
+ * An element that declares both halves is left untouched -- its original
+ * style attribute text is kept byte-for-byte rather than reserialized
+ * through the probe, so formatting/spacing is undisturbed. That is a
  * complete, self-consistent pair the sender chose deliberately, and
  * removing either half would break intentional styling (e.g. a callout
  * box with light text on a dark brand color, or a `background: url(x)
@@ -569,22 +515,31 @@ function isBackgroundColorDeclaration(d: string): boolean {
  * ancestors rather than its own inline declarations, which this
  * sanitizer pass -- run on a detached DOMPurify fragment with no layout
  * -- cannot do.
+ *
+ * Requires `document` (see the file header: `sanitizeHtml` already
+ * depends on it via DOMPurify's `RETURN_DOM_FRAGMENT` mode and
+ * `document.createTreeWalker`), so this carries no new environment
+ * requirement. Verified equivalent between happy-dom (the vitest
+ * environment) and a live Chrome instance for every fixture this file's
+ * acceptance tests cover.
  */
 function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
   for (const el of fragment.querySelectorAll<HTMLElement>('[style]')) {
     const style = el.getAttribute('style');
     if (!style) continue;
-    const declarations = splitStyleDeclarations(style);
-    const hasColor = declarations.some(isColorDeclaration);
-    const hasBackground = declarations.some(isBackgroundColorDeclaration);
+    const probe = document.createElement('div');
+    probe.setAttribute('style', style);
+    const hasColor = isDeclaredColor(probe.style.color);
+    const hasBackground = isDeclaredColor(probe.style.backgroundColor);
     if (hasColor === hasBackground) continue; // both present or neither — leave as-is.
-    const kept = declarations.filter((d) => {
-      if (hasColor && isColorDeclaration(d)) return false;
-      if (hasBackground && isBackgroundColorDeclaration(d)) return false;
-      return true;
-    });
-    if (kept.length > 0) {
-      el.setAttribute('style', kept.join('; '));
+    if (hasColor) probe.style.removeProperty('color');
+    if (hasBackground) {
+      probe.style.removeProperty('background-color');
+      probe.style.removeProperty('background');
+    }
+    const kept = probe.getAttribute('style');
+    if (kept) {
+      el.setAttribute('style', kept);
     } else {
       el.removeAttribute('style');
     }
