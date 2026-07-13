@@ -22,8 +22,9 @@ import (
 // numeric-only convention.
 func newListCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "list",
-		Short: "mailing list management (create, delete, list, show, rename, set, member-add, member-set, member-remove, member-summary, members)",
+		Use: "list",
+		Short: "mailing list management (create, delete, list, show, rename, set, member-add, member-set, " +
+			"member-approve, member-reject, member-remove, member-summary, members)",
 	}
 
 	createCmd := &cobra.Command{
@@ -61,6 +62,25 @@ func newListCmd() *cobra.Command {
 				}
 				body["max_message_size_bytes"] = n
 			}
+			if cmd.Flags().Changed("unsubscribe-enabled") {
+				v, _ := cmd.Flags().GetBool("unsubscribe-enabled")
+				body["unsubscribe_enabled"] = v
+			}
+			if sp, _ := cmd.Flags().GetString("subscribe-policy"); sp != "" {
+				body["subscribe_policy"] = sp
+			}
+			if cmd.Flags().Changed("archive-enabled") {
+				v, _ := cmd.Flags().GetBool("archive-enabled")
+				body["archive_enabled"] = v
+			}
+			if cmd.Flags().Changed("archive-retention-days") {
+				v, _ := cmd.Flags().GetInt64("archive-retention-days")
+				body["archive_retention_days"] = v
+			}
+			if cmd.Flags().Changed("archive-retention-max-messages") {
+				v, _ := cmd.Flags().GetInt64("archive-retention-max-messages")
+				body["archive_retention_max_messages"] = v
+			}
 			if bp := bouncePolicyBodyFromFlags(cmd); bp != nil {
 				body["bounce_policy"] = bp
 			}
@@ -75,6 +95,11 @@ func newListCmd() *cobra.Command {
 	createCmd.Flags().String("subject-tag", "", "subject tag to prepend on fan-out (default: unset)")
 	createCmd.Flags().Bool("arc-seal", true, "ARC-seal fanned-out copies")
 	createCmd.Flags().String("max-size", "", "per-post size ceiling (accepts K/M/G/T suffixes; default: deployment default)")
+	createCmd.Flags().Bool("unsubscribe-enabled", true, "emit List-Unsubscribe / RFC 8058 one-click headers and the self-service management page (REQ-MLIST-56..58)")
+	createCmd.Flags().String("subscribe-policy", "", "self-subscription policy: closed, request-approval, open (default: closed, REQ-MLIST-60)")
+	createCmd.Flags().Bool("archive-enabled", false, "create the list's archive mailbox (REQ-MLIST-70)")
+	createCmd.Flags().Int64("archive-retention-days", 0, "archive retention age bound in days; 0 means unbounded (REQ-MLIST-74)")
+	createCmd.Flags().Int64("archive-retention-max-messages", 0, "archive retention count bound; 0 means unbounded (REQ-MLIST-74)")
 	addBouncePolicyFlags(createCmd)
 	c.AddCommand(createCmd)
 
@@ -171,7 +196,7 @@ func newListCmd() *cobra.Command {
 
 	setCmd := &cobra.Command{
 		Use:   "set <list-id>",
-		Short: "update a mailing list's config (display-name, subject-tag, arc-seal, max-size, owner)",
+		Short: "update a mailing list's config (display-name, subject-tag, arc-seal, max-size, owner, unsubscribe-enabled, subscribe-policy, archive-*)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
@@ -208,11 +233,33 @@ func newListCmd() *cobra.Command {
 				}
 				body["owner_principal_id"] = mustParseUint(pid)
 			}
+			if cmd.Flags().Changed("unsubscribe-enabled") {
+				v, _ := cmd.Flags().GetBool("unsubscribe-enabled")
+				body["unsubscribe_enabled"] = v
+			}
+			if cmd.Flags().Changed("subscribe-policy") {
+				v, _ := cmd.Flags().GetString("subscribe-policy")
+				body["subscribe_policy"] = v
+			}
+			if cmd.Flags().Changed("archive-enabled") {
+				v, _ := cmd.Flags().GetBool("archive-enabled")
+				body["archive_enabled"] = v
+			}
+			if cmd.Flags().Changed("archive-retention-days") {
+				v, _ := cmd.Flags().GetInt64("archive-retention-days")
+				body["archive_retention_days"] = v
+			}
+			if cmd.Flags().Changed("archive-retention-max-messages") {
+				v, _ := cmd.Flags().GetInt64("archive-retention-max-messages")
+				body["archive_retention_max_messages"] = v
+			}
 			if bp := bouncePolicyBodyFromFlags(cmd); bp != nil {
 				body["bounce_policy"] = bp
 			}
 			if len(body) == 0 {
-				return errors.New("list set: at least one of --display-name, --subject-tag, --arc-seal, --max-size, --owner, --bounce-* is required")
+				return errors.New("list set: at least one of --display-name, --subject-tag, --arc-seal, --max-size, --owner, " +
+					"--unsubscribe-enabled, --subscribe-policy, --archive-enabled, --archive-retention-days, " +
+					"--archive-retention-max-messages, --bounce-* is required")
 			}
 			var out map[string]any
 			if err := client.do(cmd.Context(), "PATCH", "/api/v1/lists/"+args[0], body, &out); err != nil {
@@ -226,6 +273,11 @@ func newListCmd() *cobra.Command {
 	setCmd.Flags().Bool("arc-seal", true, "ARC-seal fanned-out copies")
 	setCmd.Flags().String("max-size", "", "per-post size ceiling (K/M/G/T suffixes)")
 	setCmd.Flags().String("owner", "", "reassign ownership to this principal (email or id)")
+	setCmd.Flags().Bool("unsubscribe-enabled", true, "emit List-Unsubscribe / RFC 8058 one-click headers and the self-service management page (REQ-MLIST-56..58)")
+	setCmd.Flags().String("subscribe-policy", "", "self-subscription policy: closed, request-approval, open (REQ-MLIST-60)")
+	setCmd.Flags().Bool("archive-enabled", false, "enable (true) or disable (false) the list's archive mailbox (REQ-MLIST-70); disabling detaches read access but keeps the mailbox and its content")
+	setCmd.Flags().Int64("archive-retention-days", 0, "archive retention age bound in days; 0 means unbounded (REQ-MLIST-74)")
+	setCmd.Flags().Int64("archive-retention-max-messages", 0, "archive retention count bound; 0 means unbounded (REQ-MLIST-74)")
 	addBouncePolicyFlags(setCmd)
 	c.AddCommand(setCmd)
 
@@ -263,14 +315,17 @@ func newListCmd() *cobra.Command {
 			return writeResult(cmd.OutOrStdout(), g, out)
 		},
 	}
-	memberAddCmd.Flags().String("state", "", "initial state (default: active)")
-	memberAddCmd.Flags().String("delivery-mode", "", "delivery mode (default: each)")
+	memberAddCmd.Flags().String("state", "",
+		"initial state: active, suspended, unsubscribed, pending, awaiting-approval (default: active)")
+	memberAddCmd.Flags().String("delivery-mode", "",
+		"delivery mode: each, nomail (default: each; nomail requires an internal principal, REQ-MLIST-04)")
 	c.AddCommand(memberAddCmd)
 
 	memberSetCmd := &cobra.Command{
-		Use:   "member-set <list-id> <member-id>",
-		Short: "update a roster member's state or delivery mode (--state active reactivates a suspended member, resetting its bounce score)",
-		Args:  cobra.ExactArgs(2),
+		Use: "member-set <list-id> <member-id>",
+		Short: "update a roster member's state or delivery mode (--state active reactivates a suspended member or " +
+			"approves an awaiting-approval member, resetting its bounce score; see also member-approve/member-reject)",
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
 			client, err := clientFromGlobals(g)
@@ -297,13 +352,55 @@ func newListCmd() *cobra.Command {
 			return writeResult(cmd.OutOrStdout(), g, out)
 		},
 	}
-	memberSetCmd.Flags().String("state", "", "new state (active, suspended, unsubscribed, pending); active reactivates and resets bounce_score (REQ-MLIST-55)")
-	memberSetCmd.Flags().String("delivery-mode", "", "new delivery mode (each, nomail)")
+	memberSetCmd.Flags().String("state", "",
+		"new state (active, suspended, unsubscribed, pending, awaiting-approval); active reactivates and resets bounce_score (REQ-MLIST-55)")
+	memberSetCmd.Flags().String("delivery-mode", "",
+		"new delivery mode (each, nomail); nomail requires an internal principal (REQ-MLIST-04)")
 	c.AddCommand(memberSetCmd)
 
 	c.AddCommand(&cobra.Command{
+		Use: "member-approve <list-id> <member-id>",
+		Short: "approve an awaiting-approval member on a request-approval list, moving it to active " +
+			"(REQ-MLIST-62; shorthand for member-set --state active)",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/members/%s", args[0], args[1])
+			if err := client.do(cmd.Context(), "PATCH", path, map[string]any{"state": "active"}, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use: "member-reject <list-id> <member-id>",
+		Short: "reject an awaiting-approval member on a request-approval list, moving it to unsubscribed " +
+			"(REQ-MLIST-62; shorthand for member-set --state unsubscribed)",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/members/%s", args[0], args[1])
+			if err := client.do(cmd.Context(), "PATCH", path, map[string]any{"state": "unsubscribed"}, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
 		Use:   "member-summary <list-id>",
-		Short: "show the roster member count by state (active, suspended, unsubscribed, pending)",
+		Short: "show the roster member count by state (active, suspended, unsubscribed, pending, awaiting-approval)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
@@ -387,7 +484,7 @@ func newListCmd() *cobra.Command {
 			return writeResult(cmd.OutOrStdout(), g, out)
 		},
 	}
-	membersCmd.Flags().String("state", "", "filter by state (active, suspended, unsubscribed, pending)")
+	membersCmd.Flags().String("state", "", "filter by state (active, suspended, unsubscribed, pending, awaiting-approval)")
 	membersCmd.Flags().String("delivery-mode", "", "filter by delivery mode (each, nomail)")
 	membersCmd.Flags().String("after", "", "pagination cursor")
 	membersCmd.Flags().Int("limit", 0, "page size")

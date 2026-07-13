@@ -227,6 +227,224 @@ func TestCLIList_CRUD_And_Members(t *testing.T) {
 	}
 }
 
+// TestCLIList_S2S3S4Fields exercises the CLI surface for the fields added
+// to the REST API since Stage 1 (REQ-MLIST-41, issues #183/#187):
+// unsubscribe_enabled, subscribe_policy, and the archive_enabled/
+// archive_retention_* fields on `list create`/`list set`, and roster
+// filtering/inspection of the delivery_mode, bounce_score, and
+// last_bounce_at member fields.
+func TestCLIList_S2S3S4Fields(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	if err := env.store.Meta().InsertDomain(context.Background(), store.Domain{
+		Name:    "s234.test",
+		IsLocal: true,
+	}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	if err := env.store.Meta().UpsertDKIMKey(context.Background(), store.DKIMKey{
+		Domain:        "s234.test",
+		Selector:      "s1",
+		Algorithm:     store.DKIMAlgorithmEd25519SHA256,
+		PrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", // gitleaks:allow (synthetic test fixture, not a real key)
+		PublicKeyB64:  "dGVzdA==",
+		Status:        store.DKIMKeyStatusActive,
+	}); err != nil {
+		t.Fatalf("UpsertDKIMKey: %v", err)
+	}
+	seedPrincipal(t, env, "member@s234.test")
+
+	out, _, err := env.run("list", "create", "digest@s234.test", "Digest",
+		"--unsubscribe-enabled=false",
+		"--subscribe-policy", "request-approval",
+		"--archive-enabled",
+		"--archive-retention-days", "30",
+		"--archive-retention-max-messages", "1000",
+		"--json")
+	if err != nil {
+		t.Fatalf("list create with S2/S3/S4 flags: %v", err)
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("unmarshal create output: %v", err)
+	}
+	if created["unsubscribe_enabled"] != false {
+		t.Fatalf("unsubscribe_enabled after create = %v; want false", created["unsubscribe_enabled"])
+	}
+	if created["subscribe_policy"] != "request-approval" {
+		t.Fatalf("subscribe_policy after create = %v; want request-approval", created["subscribe_policy"])
+	}
+	if created["archive_enabled"] != true {
+		t.Fatalf("archive_enabled after create = %v; want true", created["archive_enabled"])
+	}
+	if created["archive_retention_days"] != float64(30) {
+		t.Fatalf("archive_retention_days after create = %v; want 30", created["archive_retention_days"])
+	}
+	if created["archive_retention_max_messages"] != float64(1000) {
+		t.Fatalf("archive_retention_max_messages after create = %v; want 1000", created["archive_retention_max_messages"])
+	}
+	listID := itoa(uint64(created["id"].(float64)))
+
+	// list set: flip unsubscribe_enabled back on, widen subscribe_policy to
+	// open, and disable the archive again -- confirm every field round-trips.
+	out, _, err = env.run("list", "set", listID,
+		"--unsubscribe-enabled=true",
+		"--subscribe-policy", "open",
+		"--archive-enabled=false",
+		"--json")
+	if err != nil {
+		t.Fatalf("list set S2/S3/S4 flags: %v", err)
+	}
+	var updated map[string]any
+	if err := json.Unmarshal([]byte(out), &updated); err != nil {
+		t.Fatalf("unmarshal set output: %v", err)
+	}
+	if updated["unsubscribe_enabled"] != true {
+		t.Fatalf("unsubscribe_enabled after set = %v; want true", updated["unsubscribe_enabled"])
+	}
+	if updated["subscribe_policy"] != "open" {
+		t.Fatalf("subscribe_policy after set = %v; want open", updated["subscribe_policy"])
+	}
+	if updated["archive_enabled"] != false {
+		t.Fatalf("archive_enabled after set = %v; want false", updated["archive_enabled"])
+	}
+
+	// member-add: an internal principal can be added as nomail; an external
+	// address cannot (REQ-MLIST-04, REQ-MLIST-71).
+	out, _, err = env.run("list", "member-add", listID, "member@s234.test", "--delivery-mode", "nomail", "--json")
+	if err != nil {
+		t.Fatalf("member-add nomail internal: %v", err)
+	}
+	var nomailMember map[string]any
+	if err := json.Unmarshal([]byte(out), &nomailMember); err != nil {
+		t.Fatalf("unmarshal member-add nomail output: %v", err)
+	}
+	if nomailMember["delivery_mode"] != "nomail" {
+		t.Fatalf("delivery_mode after member-add nomail = %v; want nomail", nomailMember["delivery_mode"])
+	}
+
+	_, _, err = env.run("list", "member-add", listID, "ext-nomail@example.net", "--delivery-mode", "nomail", "--json")
+	if err == nil {
+		t.Fatalf("expected error adding an external address as a nomail member")
+	}
+
+	// member-add with state=awaiting-approval (Stage 3), then member-approve
+	// and member-reject (REQ-MLIST-62).
+	out, _, err = env.run("list", "member-add", listID, "pending1@example.net", "--state", "awaiting-approval", "--json")
+	if err != nil {
+		t.Fatalf("member-add awaiting-approval: %v", err)
+	}
+	var pending1 map[string]any
+	if err := json.Unmarshal([]byte(out), &pending1); err != nil {
+		t.Fatalf("unmarshal member-add awaiting-approval output: %v", err)
+	}
+	pending1ID := itoa(uint64(pending1["id"].(float64)))
+
+	out, _, err = env.run("list", "member-add", listID, "pending2@example.net", "--state", "awaiting-approval", "--json")
+	if err != nil {
+		t.Fatalf("member-add awaiting-approval (2): %v", err)
+	}
+	var pending2 map[string]any
+	if err := json.Unmarshal([]byte(out), &pending2); err != nil {
+		t.Fatalf("unmarshal member-add awaiting-approval (2) output: %v", err)
+	}
+	pending2ID := itoa(uint64(pending2["id"].(float64)))
+
+	out, _, err = env.run("list", "member-approve", listID, pending1ID, "--json")
+	if err != nil {
+		t.Fatalf("member-approve: %v", err)
+	}
+	var approved map[string]any
+	if err := json.Unmarshal([]byte(out), &approved); err != nil {
+		t.Fatalf("unmarshal member-approve output: %v", err)
+	}
+	if approved["state"] != "active" {
+		t.Fatalf("state after member-approve = %v; want active", approved["state"])
+	}
+
+	out, _, err = env.run("list", "member-reject", listID, pending2ID, "--json")
+	if err != nil {
+		t.Fatalf("member-reject: %v", err)
+	}
+	var rejected map[string]any
+	if err := json.Unmarshal([]byte(out), &rejected); err != nil {
+		t.Fatalf("unmarshal member-reject output: %v", err)
+	}
+	if rejected["state"] != "unsubscribed" {
+		t.Fatalf("state after member-reject = %v; want unsubscribed", rejected["state"])
+	}
+
+	// members --state filters on the roster (awaiting-approval, active).
+	out, _, err = env.run("list", "members", listID, "--state", "awaiting-approval", "--json")
+	if err != nil {
+		t.Fatalf("members --state awaiting-approval: %v", err)
+	}
+	var awaitingPage struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &awaitingPage); err != nil {
+		t.Fatalf("unmarshal members --state awaiting-approval: %v", err)
+	}
+	if len(awaitingPage.Items) != 0 {
+		t.Fatalf("members --state awaiting-approval after approve/reject = %d; want 0 (out=%s)", len(awaitingPage.Items), out)
+	}
+
+	out, _, err = env.run("list", "members", listID, "--delivery-mode", "nomail", "--json")
+	if err != nil {
+		t.Fatalf("members --delivery-mode nomail: %v", err)
+	}
+	var nomailPage struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &nomailPage); err != nil {
+		t.Fatalf("unmarshal members --delivery-mode nomail: %v", err)
+	}
+	if len(nomailPage.Items) != 1 {
+		t.Fatalf("members --delivery-mode nomail = %d; want 1 (out=%s)", len(nomailPage.Items), out)
+	}
+	if _, present := nomailPage.Items[0]["bounce_score"]; present && nomailPage.Items[0]["bounce_score"] != float64(0) {
+		t.Fatalf("bounce_score on a fresh member = %v; want 0/omitted", nomailPage.Items[0]["bounce_score"])
+	}
+	if _, present := nomailPage.Items[0]["last_bounce_at"]; present {
+		t.Fatalf("last_bounce_at on a fresh member = %v; want absent", nomailPage.Items[0]["last_bounce_at"])
+	}
+}
+
+// TestCLIList_MemberAdd_BounceScoreOptionFlags confirms the bounce-policy
+// flags shared by `list create`/`list set` (REQ-MLIST-53) still round-trip
+// through bounce_policy on GET, guarding against a regression while the
+// unrelated S2/S3/S4 flags were added alongside them.
+func TestCLIList_MemberAdd_BounceScoreOptionFlags(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	if err := env.store.Meta().InsertDomain(context.Background(), store.Domain{
+		Name:    "bp.test",
+		IsLocal: true,
+	}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	out, _, err := env.run("list", "create", "bp@bp.test", "BP",
+		"--arc-seal=false",
+		"--bounce-hard-weight", "2",
+		"--bounce-soft-weight", "0.5",
+		"--bounce-decay-window", "48h",
+		"--bounce-suspend-threshold", "3",
+		"--json")
+	if err != nil {
+		t.Fatalf("list create with bounce-policy flags: %v", err)
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("unmarshal create output: %v", err)
+	}
+	bp, ok := created["bounce_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected bounce_policy object in create output: %s", out)
+	}
+	if bp["hard_weight"] != float64(2) || bp["soft_weight"] != float64(0.5) ||
+		bp["decay_window_seconds"] != float64(48*3600) || bp["suspend_threshold"] != float64(3) {
+		t.Fatalf("bounce_policy after create = %v; want hard=2 soft=0.5 decay=172800 threshold=3", bp)
+	}
+}
+
 // TestCLIList_Create_RequiresLocalDomain: the posting address's domain
 // must already be a locally hosted domain (mirrors the alias CLI's
 // unknown-target guard).
