@@ -600,7 +600,14 @@ const CurrentBackupVersion = 1
 //	principal or external-address member, with state/delivery_mode
 //	enums and Stage 2 bounce-scoring columns included now). Both new
 //	tables restored after principals and mailboxes.
-const CurrentSchemaVersion = 85
+//
+// 86 — 0086_mailing_list_unsubscribe.sql (epic #184, REQ-MLIST-56..59).
+//
+//	Adds mailing_list.unsubscribe_enabled (default true), gating the
+//	List-Unsubscribe / RFC 8058 one-click header pair and the
+//	token-authorised subscriber self-service management page. No new
+//	table; MailingListRow gains the one field.
+const CurrentSchemaVersion = 86
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

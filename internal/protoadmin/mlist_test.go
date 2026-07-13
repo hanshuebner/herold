@@ -206,6 +206,9 @@ func testMailingLists_CRUD_SuperAdmin(t *testing.T, be submissionBackend) {
 	if created["subscribe_policy"] != "closed" {
 		t.Errorf("subscribe_policy = %v; want closed", created["subscribe_policy"])
 	}
+	if created["unsubscribe_enabled"] != true {
+		t.Errorf("unsubscribe_enabled = %v; want true (default, epic #184)", created["unsubscribe_enabled"])
+	}
 	id := idOf(t, created)
 
 	// GET by id.
@@ -250,7 +253,7 @@ func testMailingLists_CRUD_SuperAdmin(t *testing.T, be submissionBackend) {
 
 	// PATCH: config fields + subject_tag set then cleared.
 	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,
-		map[string]any{"display_name": "Announcements", "subject_tag": "ANN", "arc_seal": false, "max_message_size_bytes": 1024})
+		map[string]any{"display_name": "Announcements", "subject_tag": "ANN", "arc_seal": false, "max_message_size_bytes": 1024, "unsubscribe_enabled": false})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("set config: %d: %s", res.StatusCode, buf)
 	}
@@ -267,6 +270,9 @@ func testMailingLists_CRUD_SuperAdmin(t *testing.T, be submissionBackend) {
 	}
 	if configured["max_message_size_bytes"].(float64) != 1024 {
 		t.Errorf("max_message_size_bytes = %v; want 1024", configured["max_message_size_bytes"])
+	}
+	if configured["unsubscribe_enabled"] != false {
+		t.Errorf("unsubscribe_enabled = %v; want false (epic #184)", configured["unsubscribe_enabled"])
 	}
 
 	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,

@@ -812,3 +812,161 @@ func TestExpand_NoTokenSigner_FallsBackToS1BounceAddress(t *testing.T) {
 		t.Errorf("no loud ERROR log for the missing TokenSigner; got:\n%s", logbuf.String())
 	}
 }
+
+// TestExpand_UnsubscribeDisabled_NoHeader is the REQ-MLIST-56 negative
+// case: a list with UnsubscribeEnabled left at its default (false) never
+// carries List-Unsubscribe, and every copy keeps sharing one blob
+// exactly as TestExpand_BlobSharedAcrossCopies already proves --
+// confirming this change does not alter that baseline when unsubscribe
+// support is off.
+func TestExpand_UnsubscribeDisabled_NoHeader(t *testing.T) {
+	st := openSQLiteStore(t)
+	ml := mustInsertList(t, st, "list@example.test", false)
+	mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+
+	ts := maillist.NewTokenSigner(testDataKey())
+	sub := &fakeSubmitter{}
+	exp := maillist.NewExpander(st.Meta(), sub, nil, clock.NewFake(time.Now()), discardLogger())
+	exp.TokenSigner = ts
+	exp.PublicBaseURL = "https://mail.example.test"
+	if _, err := exp.Expand(context.Background(), maillist.ExpandInput{
+		List:   ml,
+		Parsed: mustParse(t, testMessage),
+		Raw:    []byte(testMessage),
+	}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	calls := sub.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Submit calls = %d, want 1", len(calls))
+	}
+	if strings.Contains(bodyOf(t, calls[0]), "List-Unsubscribe") {
+		t.Fatalf("copy carries List-Unsubscribe despite UnsubscribeEnabled=false:\n%s", bodyOf(t, calls[0]))
+	}
+}
+
+// TestExpand_UnsubscribeHeaders_PerMemberDistinctTokens is the
+// REQ-MLIST-56/57 e2e: with UnsubscribeEnabled and a TokenSigner +
+// PublicBaseURL wired, every fanned-out copy carries List-Unsubscribe
+// and List-Unsubscribe-Post, and each copy's token verifies back to
+// exactly the member it was sent to -- never to the sibling member, the
+// same cross-member isolation TestExpand_VERPMailFrom already proves for
+// the VERP envelope.
+func TestExpand_UnsubscribeHeaders_PerMemberDistinctTokens(t *testing.T) {
+	runOnBothBackends(t, func(t *testing.T, st store.Store) {
+		ml := mustInsertList(t, st, "list@example.test", false)
+		ml.UnsubscribeEnabled = true
+		if err := st.Meta().UpdateMailingList(context.Background(), ml); err != nil {
+			t.Fatalf("UpdateMailingList: %v", err)
+		}
+		m1 := mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+		m2 := mustAddExternalMember(t, st, ml.ID, "b@example.net", store.MailingListMemberActive)
+
+		ts := maillist.NewTokenSigner(testDataKey())
+		clk := clock.NewFake(time.Now())
+		sub := &fakeSubmitter{}
+		exp := maillist.NewExpander(st.Meta(), sub, nil, clk, discardLogger())
+		exp.TokenSigner = ts
+		exp.PublicBaseURL = "https://mail.example.test"
+		res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+			List:   ml,
+			Parsed: mustParse(t, testMessage),
+			Raw:    []byte(testMessage),
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if res.MemberCount != 2 {
+			t.Fatalf("MemberCount = %d, want 2", res.MemberCount)
+		}
+
+		byRecipient := map[string]store.MailingListMemberID{
+			"a@example.net": m1.ID,
+			"b@example.net": m2.ID,
+		}
+		calls := sub.Calls()
+		if len(calls) != 2 {
+			t.Fatalf("Submit calls = %d, want 2", len(calls))
+		}
+		tokensByMember := map[store.MailingListMemberID]string{}
+		for _, c := range calls {
+			body := bodyOf(t, c)
+			if !strings.Contains(body, "List-Unsubscribe: <https://mail.example.test/lists/") {
+				t.Fatalf("copy to %v missing List-Unsubscribe header:\n%s", c.Recipients, body)
+			}
+			if !strings.Contains(body, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n") {
+				t.Fatalf("copy to %v missing List-Unsubscribe-Post header:\n%s", c.Recipients, body)
+			}
+			wantMember, ok := byRecipient[c.Recipients[0]]
+			if !ok {
+				t.Fatalf("unexpected recipient %q", c.Recipients[0])
+			}
+			token := extractUnsubscribeToken(t, body)
+			gotMember, verr := ts.Verify(maillist.TokenPurposeUnsubscribe, ml.ID, token, clk.Now())
+			if verr != nil {
+				t.Fatalf("Verify unsubscribe token for %s: %v", c.Recipients[0], verr)
+			}
+			if gotMember != wantMember {
+				t.Fatalf("token for %s verified to member %d, want %d", c.Recipients[0], gotMember, wantMember)
+			}
+			tokensByMember[gotMember] = token
+		}
+		if len(tokensByMember) != 2 || tokensByMember[m1.ID] == tokensByMember[m2.ID] {
+			t.Fatalf("expected two distinct per-member tokens, got %v", tokensByMember)
+		}
+	})
+}
+
+// extractUnsubscribeToken pulls the ?token= query value out of a
+// rendered copy's List-Unsubscribe header line.
+func extractUnsubscribeToken(t *testing.T, body string) string {
+	t.Helper()
+	const marker = "?token="
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("no ?token= in body:\n%s", body)
+	}
+	rest := body[i+len(marker):]
+	end := strings.IndexAny(rest, ">\r\n")
+	if end < 0 {
+		t.Fatalf("could not find end of token in body:\n%s", body)
+	}
+	return rest[:end]
+}
+
+// TestExpand_UnsubscribeEnabled_NoCapability_Degrades verifies that a
+// list with UnsubscribeEnabled but no TokenSigner/PublicBaseURL wired
+// still fans out (never drops the post) without the header pair, and
+// logs the gap loudly -- mirroring the TokenSigner-nil VERP degradation
+// posture (TestExpand_NoTokenSigner_FallsBackToS1BounceAddress).
+func TestExpand_UnsubscribeEnabled_NoCapability_Degrades(t *testing.T) {
+	st := openSQLiteStore(t)
+	ml := mustInsertList(t, st, "list@example.test", false)
+	ml.UnsubscribeEnabled = true
+	if err := st.Meta().UpdateMailingList(context.Background(), ml); err != nil {
+		t.Fatalf("UpdateMailingList: %v", err)
+	}
+	mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+
+	logger, logbuf := captureLogger()
+	sub := &fakeSubmitter{}
+	// No TokenSigner, no PublicBaseURL: the "no capability" case.
+	exp := maillist.NewExpander(st.Meta(), sub, nil, clock.NewFake(time.Now()), logger)
+	res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+		List:   ml,
+		Parsed: mustParse(t, testMessage),
+		Raw:    []byte(testMessage),
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if res.Dropped || res.MemberCount != 1 {
+		t.Fatalf("result = %+v, want one delivered copy despite the missing capability", res)
+	}
+	if strings.Contains(bodyOf(t, sub.Calls()[0]), "List-Unsubscribe") {
+		t.Fatalf("copy carries List-Unsubscribe despite no TokenSigner/PublicBaseURL:\n%s", bodyOf(t, sub.Calls()[0]))
+	}
+	if !strings.Contains(logbuf.String(), "level=ERROR") || !strings.Contains(logbuf.String(), "unsubscribe_enabled but no TokenSigner/PublicBaseURL wired") {
+		t.Errorf("no loud ERROR log for the missing unsubscribe capability; got:\n%s", logbuf.String())
+	}
+}

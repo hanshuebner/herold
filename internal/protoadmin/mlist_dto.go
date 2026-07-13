@@ -35,6 +35,10 @@ type mailingListDTO struct {
 	PostingPolicy       string `json:"posting_policy"`
 	SubscribePolicy     string `json:"subscribe_policy"`
 	MaxMessageSizeBytes int64  `json:"max_message_size_bytes,omitempty"`
+	// UnsubscribeEnabled gates the REQ-MLIST-56/57/58 List-Unsubscribe /
+	// RFC 8058 one-click header pair and the self-service management
+	// page (epic #184).
+	UnsubscribeEnabled bool `json:"unsubscribe_enabled"`
 	// BouncePolicy is the REQ-MLIST-53 per-list bounce-scoring policy,
 	// RESOLVED: every field always reflects the value actually in effect
 	// (the operator's override, or the deployment default), never a
@@ -57,6 +61,7 @@ func toMailingListDTO(l store.MailingList) mailingListDTO {
 		PostingPolicy:       string(l.PostingPolicy),
 		SubscribePolicy:     string(l.SubscribePolicy),
 		MaxMessageSizeBytes: l.MaxMessageSizeBytes,
+		UnsubscribeEnabled:  l.UnsubscribeEnabled,
 		BouncePolicy:        toBouncePolicyDTO(l.BouncePolicyJSON),
 		CreatedAt:           l.CreatedAt,
 		UpdatedAt:           l.UpdatedAt,

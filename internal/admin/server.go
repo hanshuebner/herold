@@ -719,6 +719,13 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	if publicBaseURL == "" {
 		publicBaseURL = "https://" + cfg.Server.Hostname
 	}
+
+	// REQ-MLIST-56: the same publicBaseURL backs the List-Unsubscribe
+	// token URL, which must match the PublicServer mount composeAdminAndUI
+	// adds to publicMux below (mlistTokenSigner is threaded through as a
+	// parameter since publicMux itself is local to composeAdminAndUI).
+	mlistExpander.PublicBaseURL = publicBaseURL
+
 	webhookDispatcher := protowebhook.New(protowebhook.Options{
 		Store:           st,
 		Logger:          logger.With("subsystem", "protowebhook"),
@@ -948,7 +955,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// ReloadConfig updates propagate to in-flight JMAP calls.
 	sharedCfg := new(atomic.Pointer[sysconfig.Config])
 	sharedCfg.Store(cfg)
-	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate, imapImportDataKey)
+	bundle, err := composeAdminAndUI(ctx, cfg, sharedCfg, st, dir, oidc, clk, logger, ftsIndex, tlsStore, outboundQ, adminServer, smtpServer, hookSigningKey, shareSigningKey, sharesCfg, health, sieveInterp, prebuiltExtSubmitter, clientEmitter, telemetryGate, imapImportDataKey, mlistTokenSigner)
 	if err != nil {
 		return err
 	}
@@ -2374,6 +2381,7 @@ func composeAdminAndUI(
 	clientEmitter protoadmin.ClientlogEmitter,
 	telemetryGate protoadmin.TelemetryGate,
 	imapImportDataKey []byte,
+	mlistTokenSigner *maillist.TokenSigner,
 ) (composedHandlers, error) {
 	// ftsIndex is the chat-side full-text search backend (Wave 2.9.6
 	// Track D, REQ-CHAT-80..82). It is the same Bleve index the mail
@@ -2947,6 +2955,25 @@ func composeAdminAndUI(
 	publicMux.Handle(protowebhook.FetchPath,
 		withPanicRecover(logger.With("subsystem", "protowebhook-fetch"),
 			"webhook.fetch", fetchSrv.FetchHandler()))
+
+	// Hosted mailing lists: the public, token-authorised subscriber
+	// surface (REQ-MLIST-57/58/59, issue #184) -- the one-click
+	// List-Unsubscribe / RFC 8058 endpoint and the GET self-service
+	// management page, both unauthenticated (the token IS the auth).
+	// mlistTokenSigner is threaded in as a parameter (nil when no
+	// deployment data key is configured; PublicServer then refuses every
+	// token as invalid rather than failing to construct, matching the
+	// Expander's own TokenSigner-nil degrade posture). publicBaseURL()
+	// is the same helper the identity-verification email link uses
+	// (re #19) -- must match the Expander.PublicBaseURL that generated
+	// the token URL in the first place. mlistPublicServer's own inner
+	// mux registers the full "/lists/{id}/unsubscribe" pattern, so this
+	// subtree mount passes the request through unmodified (no prefix
+	// stripping needed).
+	mlistPublicServer := maillist.NewPublicServer(st.Meta(), mlistTokenSigner, st.Blobs(), publicBaseURL(cfg.Server), clk, logger.With("subsystem", "maillist-public"))
+	publicMux.Handle("/lists/",
+		withPanicRecover(logger.With("subsystem", "maillist-public"),
+			"maillist.public", mlistPublicServer.Handler()))
 
 	// Attachment-share public download routes (REQ-SHARE-30..32).
 	// Mounted only when attachment_shares is fully active. shareSigningKey

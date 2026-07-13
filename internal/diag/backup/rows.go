@@ -275,7 +275,8 @@ type EmailPretrashMailboxRow struct {
 }
 
 // MailingListRow mirrors the mailing_list table introduced in migration
-// 0085 (epic #183, REQ-MLIST-01..05, Stage 1 storage foundation). FK to
+// 0085 (epic #183, REQ-MLIST-01..05, Stage 1 storage foundation) and
+// extended by migration 0086 (epic #184, REQ-MLIST-56..59). FK to
 // principals(id) twice (principal_id: the backing Group principal, ON
 // DELETE CASCADE; owner_id: ON DELETE RESTRICT), so restored after
 // principals. ArchiveMailboxID (Stage 4, unused in S1) FKs mailboxes(id)
@@ -294,6 +295,7 @@ type MailingListRow struct {
 	BouncePolicyJSON    string  `json:"bounce_policy_json"`
 	ArchiveMailboxID    *int64  `json:"archive_mailbox_id,omitempty"`
 	MaxMessageSizeBytes int64   `json:"max_message_size_bytes"`
+	UnsubscribeEnabled  bool    `json:"unsubscribe_enabled"`
 	CreatedAtUs         int64   `json:"created_at_us"`
 	UpdatedAtUs         int64   `json:"updated_at_us"`
 }

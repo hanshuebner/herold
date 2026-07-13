@@ -145,6 +145,16 @@ type MailingList struct {
 	// MaxMessageSize" — the caller resolves that default, not this
 	// package.
 	MaxMessageSizeBytes int64
+	// UnsubscribeEnabled gates the REQ-MLIST-56/57/58 List-Unsubscribe /
+	// RFC 8058 one-click header pair and the token-authorised
+	// self-service management page: when true, every fanned-out copy
+	// carries a per-member token URL. Mirrors ARCSeal's own convention
+	// (see that field's doc comment): the schema column defaults to
+	// true (migration 0086), but InsertMailingList always writes this
+	// field's actual Go value, so a caller that wants the default-on
+	// behaviour must set it to true itself before calling
+	// InsertMailingList.
+	UnsubscribeEnabled bool
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time

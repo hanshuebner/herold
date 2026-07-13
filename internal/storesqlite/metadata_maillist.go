@@ -18,7 +18,7 @@ const mailingListColumns = `
 	id, principal_id, posting_address, domain, display_name, owner_id,
 	subject_tag, arc_seal, posting_policy, subscribe_policy,
 	bounce_policy_json, archive_mailbox_id, max_message_size_bytes,
-	created_at_us, updated_at_us`
+	unsubscribe_enabled, created_at_us, updated_at_us`
 
 func scanMailingList(row rowScanner) (store.MailingList, error) {
 	var (
@@ -32,12 +32,13 @@ func scanMailingList(row rowScanner) (store.MailingList, error) {
 		bouncePolicyJSON         string
 		archiveMailboxID         sql.NullInt64
 		maxMessageSize           int64
+		unsubscribeEnabled       int64
 		createdUs, updatedUs     int64
 	)
 	if err := row.Scan(&id, &principalID, &postingAddress, &domain, &displayName, &ownerID,
 		&subjectTag, &arcSeal, &postingPolicy, &subscribePolicy,
 		&bouncePolicyJSON, &archiveMailboxID, &maxMessageSize,
-		&createdUs, &updatedUs); err != nil {
+		&unsubscribeEnabled, &createdUs, &updatedUs); err != nil {
 		return store.MailingList{}, mapErr(err)
 	}
 	l := store.MailingList{
@@ -52,6 +53,7 @@ func scanMailingList(row rowScanner) (store.MailingList, error) {
 		SubscribePolicy:     store.MailingListSubscribePolicy(subscribePolicy),
 		BouncePolicyJSON:    bouncePolicyJSON,
 		MaxMessageSizeBytes: maxMessageSize,
+		UnsubscribeEnabled:  unsubscribeEnabled != 0,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -98,13 +100,13 @@ func (m *metadata) InsertMailingList(ctx context.Context, l store.MailingList) (
 			INSERT INTO mailing_list (principal_id, posting_address, domain, display_name,
 				owner_id, subject_tag, arc_seal, posting_policy, subscribe_policy,
 				bounce_policy_json, archive_mailbox_id, max_message_size_bytes,
-				created_at_us, updated_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				unsubscribe_enabled, created_at_us, updated_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			int64(l.PrincipalID), address, domain, l.DisplayName,
 			int64(l.OwnerID), subjectTag, boolToInt(l.ARCSeal),
 			string(postingPolicy), string(subscribePolicy),
 			bouncePolicyJSON, archiveMailboxID, l.MaxMessageSizeBytes,
-			usMicros(now), usMicros(now))
+			boolToInt(l.UnsubscribeEnabled), usMicros(now), usMicros(now))
 		if err != nil {
 			return fmt.Errorf("mailing list %q: %w", address, mapErr(err))
 		}
@@ -197,12 +199,12 @@ func (m *metadata) UpdateMailingList(ctx context.Context, l store.MailingList) e
 			   SET posting_address = ?, domain = ?, display_name = ?, owner_id = ?,
 			       subject_tag = ?, arc_seal = ?, posting_policy = ?, subscribe_policy = ?,
 			       bounce_policy_json = ?, archive_mailbox_id = ?, max_message_size_bytes = ?,
-			       updated_at_us = ?
+			       unsubscribe_enabled = ?, updated_at_us = ?
 			 WHERE id = ?`,
 			address, domain, l.DisplayName, int64(l.OwnerID),
 			subjectTag, boolToInt(l.ARCSeal), string(l.PostingPolicy), string(l.SubscribePolicy),
 			bouncePolicyJSON, archiveMailboxID, l.MaxMessageSizeBytes,
-			usMicros(now), int64(l.ID))
+			boolToInt(l.UnsubscribeEnabled), usMicros(now), int64(l.ID))
 		if err != nil {
 			return fmt.Errorf("mailing list %d: %w", l.ID, mapErr(err))
 		}

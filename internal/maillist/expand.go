@@ -44,15 +44,28 @@ type Expander struct {
 	// issue #183).
 	Sealer Sealer
 	// TokenSigner mints the REQ-MLIST-50 per-member VERP envelope MAIL
-	// FROM. May be nil (e.g. no deployment data key configured yet, or a
+	// FROM, and (when set) the REQ-MLIST-56 per-member List-Unsubscribe
+	// token. May be nil (e.g. no deployment data key configured yet, or a
 	// test that does not exercise VERP): Expand then falls back to the
 	// S1 list-wide BounceAddress and logs a loud ERROR once per Expand
 	// call, matching the Sealer-nil degrade-not-drop posture above --
 	// dropping the post would be the worse failure, but a deployment
 	// running without VERP attribution must be impossible to miss.
 	TokenSigner *TokenSigner
-	Clock       clock.Clock
-	Logger      *slog.Logger
+	// PublicBaseURL is the externally-reachable base URL of the public
+	// HTTP listener PublicServer is mounted on (e.g.
+	// "https://mail.example.com"), used to render the REQ-MLIST-56
+	// List-Unsubscribe token URL. Required only when a list has
+	// UnsubscribeEnabled set; a list with UnsubscribeEnabled=false never
+	// reads it. When UnsubscribeEnabled is true but PublicBaseURL is
+	// empty (or TokenSigner is nil), Expand degrades by omitting the
+	// header pair from that post's fan-out and logs a loud ERROR once
+	// per Expand call, mirroring the TokenSigner-nil VERP degradation
+	// above -- a list configured for unsubscribe support must not
+	// silently stop advertising it.
+	PublicBaseURL string
+	Clock         clock.Clock
+	Logger        *slog.Logger
 }
 
 // unsealedOutcome is the fan-out-metric outcome label recorded when
@@ -199,6 +212,19 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 			slog.String("activity", observe.ActivitySystem),
 			slog.String("list", listLabel))
 	}
+
+	// REQ-MLIST-56: per-member List-Unsubscribe / List-Unsubscribe-Post.
+	// canUnsubscribe gates whether Submit calls below get a per-member
+	// header pair spliced onto shaped; computed once per Expand call
+	// (not per member) so the "missing capability" ERROR log fires once,
+	// not once per roster row.
+	canUnsubscribe := ml.UnsubscribeEnabled && e.TokenSigner != nil && e.PublicBaseURL != ""
+	if ml.UnsubscribeEnabled && !canUnsubscribe {
+		e.Logger.ErrorContext(ctx, "maillist: unsubscribe_enabled but no TokenSigner/PublicBaseURL wired; fanning out without List-Unsubscribe",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("list", listLabel))
+	}
+
 	memberCount := 0
 	err := store.StreamActiveEachMembers(ctx, e.Meta, ml.ID, func(m store.MailingListMember) error {
 		addr, aerr := e.memberAddress(ctx, m)
@@ -219,10 +245,23 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 				slog.String("err", mfErr.Error()))
 			return nil
 		}
+		memberBody := shaped
+		if canUnsubscribe {
+			unsubURL, uErr := UnsubscribeURL(e.PublicBaseURL, e.TokenSigner, ml, m.ID, e.Clock.Now())
+			if uErr != nil {
+				e.Logger.WarnContext(ctx, "maillist: skip List-Unsubscribe header; unsubscribe token sign failed",
+					slog.String("activity", observe.ActivitySystem),
+					slog.String("list", listLabel),
+					slog.Uint64("member_id", uint64(m.ID)),
+					slog.String("err", uErr.Error()))
+			} else {
+				memberBody = prependUnsubscribeHeaders(shaped, unsubURL)
+			}
+		}
 		if _, serr := e.Submitter.Submit(ctx, queue.Submission{
 			MailFrom:      mailFrom,
 			Recipients:    []string{addr},
-			Body:          bytes.NewReader(shaped),
+			Body:          bytes.NewReader(memberBody),
 			Sign:          true,
 			SigningDomain: ml.Domain,
 			DSNNotify:     store.DSNNotifyFailure,
@@ -260,11 +299,19 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 // external address verbatim, or the CanonicalEmail of the referenced
 // principal (REQ-MLIST-02: member_ref is exactly one of the two).
 func (e *Expander) memberAddress(ctx context.Context, m store.MailingListMember) (string, error) {
+	return resolveMemberAddress(ctx, e.Meta, m)
+}
+
+// resolveMemberAddress is the package-level form of Expander.memberAddress,
+// shared with PublicServer's resubscribe-confirmation email (publicserver.go),
+// which needs the same member_ref -> deliverable-address resolution outside
+// a fan-out Expand call.
+func resolveMemberAddress(ctx context.Context, meta store.Metadata, m store.MailingListMember) (string, error) {
 	if m.ExternalAddress != nil && *m.ExternalAddress != "" {
 		return *m.ExternalAddress, nil
 	}
 	if m.PrincipalID != nil {
-		p, err := e.Meta.GetPrincipalByID(ctx, *m.PrincipalID)
+		p, err := meta.GetPrincipalByID(ctx, *m.PrincipalID)
 		if err != nil {
 			return "", fmt.Errorf("resolve principal %d: %w", *m.PrincipalID, err)
 		}
