@@ -7,7 +7,7 @@
   } from '../lib/mlists/mlist-detail.svelte';
   import { router } from '../lib/router/router.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
-  import { formatDateOnly, formatAbsolute } from '../lib/format';
+  import { formatDateOnly, formatAbsolute, DATE_TIME_SHORT } from '../lib/format';
   import { t } from '../lib/i18n/i18n.svelte';
 
   interface Props {
@@ -166,6 +166,14 @@
     void mlistDetail.loadMembers(id);
   }
 
+  // REQ-MLIST-54: a summary card click is a shortcut for "set the roster
+  // state filter to this state" -- the same filter the dropdown drives,
+  // so a click on Suspended is exactly "show me the suspended members".
+  function selectStateFilter(state: MailingListMemberStateFilter): void {
+    mlistDetail.stateFilter = state;
+    void mlistDetail.loadMembers(id);
+  }
+
   // ── Per-row member edits ─────────────────────────────────────────────
   let memberRowError = $state<string | null>(null);
 
@@ -195,6 +203,27 @@
     memberRowError = null;
     const result = await mlistDetail.updateMember(id, memberId, { state: 'unsubscribed' });
     if (!result.ok) memberRowError = result.errorMessage;
+  }
+
+  // REQ-MLIST-54/55: the one-click reactivate action for a suspended
+  // member -- a state transition to `active`, which the server treats as
+  // a reactivation (resets bounce_score/last_bounce_at) rather than a
+  // bare state overwrite. Same PATCH the generic state select issues;
+  // this button exists so the operator does not have to open the select
+  // to find "Active" in the suspended/bounce view.
+  async function reactivateMember(memberId: number): Promise<void> {
+    memberRowError = null;
+    const result = await mlistDetail.updateMember(id, memberId, { state: 'active' });
+    if (!result.ok) memberRowError = result.errorMessage;
+  }
+
+  // REQ-MLIST-54: bounce_score is a raw weighted-sum float (hard/soft
+  // bounce weights, REQ-MLIST-53) -- not itself operator-readable, so
+  // render it to two decimal places. Absent/omitted (omitempty on the
+  // wire for a zero score) reads as 0.00, matching what a fresh or
+  // reactivated member's score actually is.
+  function formatBounceScore(score: number | undefined): string {
+    return (score ?? 0).toFixed(2);
   }
 
   let removeConfirmId = $state<number | null>(null);
@@ -463,6 +492,41 @@
       </div>
     {/if}
 
+    <!-- Membership summary: REQ-MLIST-54 operator-visible bounce/
+         suspension view. Each card is a shortcut into the roster filter
+         below. -->
+    <div class="section">
+      <div class="section-header">
+        <h2 class="section-title">{t('mlistDetail.summary.title')}</h2>
+      </div>
+      {#if mlistDetail.summaryErrorMessage && mlistDetail.summaryStatus === 'error'}
+        <div class="page-error" role="alert">{mlistDetail.summaryErrorMessage}</div>
+      {:else if mlistDetail.summary}
+        <div class="summary-grid">
+          <button type="button" class="summary-card" onclick={() => selectStateFilter('active')}>
+            <span class="summary-count">{mlistDetail.summary.active}</span>
+            <span class="summary-label">{t('mlistDetail.roster.state.active')}</span>
+          </button>
+          <button type="button" class="summary-card summary-card-suspended" onclick={() => selectStateFilter('suspended')}>
+            <span class="summary-count">{mlistDetail.summary.suspended}</span>
+            <span class="summary-label">{t('mlistDetail.roster.state.suspended')}</span>
+          </button>
+          <button type="button" class="summary-card" onclick={() => selectStateFilter('unsubscribed')}>
+            <span class="summary-count">{mlistDetail.summary.unsubscribed}</span>
+            <span class="summary-label">{t('mlistDetail.roster.state.unsubscribed')}</span>
+          </button>
+          <button type="button" class="summary-card" onclick={() => selectStateFilter('pending')}>
+            <span class="summary-count">{mlistDetail.summary.pending}</span>
+            <span class="summary-label">{t('mlistDetail.roster.state.pending')}</span>
+          </button>
+          <button type="button" class="summary-card" onclick={() => selectStateFilter('awaiting-approval')}>
+            <span class="summary-count">{mlistDetail.summary.awaiting_approval}</span>
+            <span class="summary-label">{t('mlistDetail.roster.state.awaitingApproval')}</span>
+          </button>
+        </div>
+      {/if}
+    </div>
+
     <!-- Config section -->
     <div class="section">
       <div class="section-header">
@@ -664,6 +728,8 @@
               <th class="col-address">{t('mlistDetail.roster.table.address')}</th>
               <th class="col-state">{t('mlistDetail.roster.table.state')}</th>
               <th class="col-mode">{t('mlistDetail.roster.table.mode')}</th>
+              <th class="col-bounce-score">{t('mlistDetail.roster.table.bounceScore')}</th>
+              <th class="col-last-bounce">{t('mlistDetail.roster.table.lastBounce')}</th>
               <th class="col-added">{t('mlistDetail.roster.table.added')}</th>
               <th class="col-actions"></th>
             </tr>
@@ -699,6 +765,14 @@
                     <p class="mode-hint">{t('mlistDetail.roster.nomailInternalOnly')}</p>
                   {/if}
                 </td>
+                <td class="col-bounce-score mono">{formatBounceScore(member.bounce_score)}</td>
+                <td class="col-last-bounce">
+                  {#if member.last_bounce_at}
+                    {formatAbsolute(member.last_bounce_at, DATE_TIME_SHORT)}
+                  {:else}
+                    <span class="text-helper">{t('mlistDetail.roster.table.neverBounced')}</span>
+                  {/if}
+                </td>
                 <td class="col-added">{formatAbsolute(member.added_at, undefined)}</td>
                 <td class="col-actions">
                   {#if removeConfirmId === member.id}
@@ -721,6 +795,11 @@
                           {t('mlistDetail.roster.reject')}
                         </button>
                       {/if}
+                      {#if member.state === 'suspended'}
+                        <button type="button" class="btn-reactivate-sm" onclick={() => void reactivateMember(member.id)}>
+                          {t('mlistDetail.roster.reactivate')}
+                        </button>
+                      {/if}
                       <button type="button" class="btn-ghost-sm" onclick={() => { removeConfirmId = member.id; memberRowError = null; }}>
                         {t('mlistDetail.roster.remove')}
                       </button>
@@ -730,7 +809,7 @@
               </tr>
             {:else}
               <tr>
-                <td colspan="5" class="empty-row">{t('mlistDetail.roster.empty')}</td>
+                <td colspan="7" class="empty-row">{t('mlistDetail.roster.empty')}</td>
               </tr>
             {/each}
           </tbody>
@@ -1040,6 +1119,55 @@
     margin: 0;
   }
 
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--spacing-04);
+    max-width: 900px;
+  }
+
+  .summary-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--spacing-02);
+    padding: var(--spacing-04) var(--spacing-05);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-sans);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter),
+      border-color var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .summary-card:hover {
+    background: var(--layer-02);
+  }
+  .summary-card:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .summary-card-suspended {
+    border-color: var(--support-error);
+  }
+
+  .summary-count {
+    font-size: var(--type-heading-03-size);
+    line-height: var(--type-heading-03-line);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .summary-card-suspended .summary-count {
+    color: var(--support-error);
+  }
+
+  .summary-label {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
+  }
+
   .config-form {
     display: flex;
     flex-direction: column;
@@ -1216,11 +1344,17 @@
     vertical-align: middle;
   }
 
-  .col-address { width: 35%; }
-  .col-state { width: 20%; }
-  .col-mode { width: 20%; }
-  .col-added { width: 15%; white-space: nowrap; }
-  .col-actions { width: 10%; text-align: right; }
+  .col-address { width: 24%; }
+  .col-state { width: 12%; }
+  .col-mode { width: 12%; }
+  .col-bounce-score { width: 10%; white-space: nowrap; }
+  .col-last-bounce { width: 15%; white-space: nowrap; }
+  .col-added { width: 13%; white-space: nowrap; }
+  .col-actions { width: 14%; text-align: right; }
+
+  .text-helper {
+    color: var(--text-helper);
+  }
 
   .mono {
     font-family: var(--font-mono);
@@ -1528,5 +1662,22 @@
   }
   .btn-approve-sm:hover {
     filter: brightness(0.9);
+  }
+
+  .btn-reactivate-sm {
+    padding: var(--spacing-01) var(--spacing-03);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    white-space: nowrap;
+    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .btn-reactivate-sm:hover {
+    filter: brightness(1.1);
   }
 </style>

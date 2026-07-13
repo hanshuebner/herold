@@ -56,9 +56,13 @@ interface DetailModule {
     membersHasMore: boolean;
     stateFilter: string;
     deliveryModeFilter: string;
+    summary: Record<string, number> | null;
+    summaryStatus: string;
+    summaryErrorMessage: string | null;
     load(id: string): Promise<void>;
     loadMembers(id: string): Promise<void>;
     loadMoreMembers(id: string): Promise<void>;
+    loadSummary(id: string): Promise<void>;
     updateList(id: string, payload: unknown): Promise<{ ok: boolean; errorMessage: string | null }>;
     deleteList(id: string): Promise<{ ok: boolean; errorMessage: string | null }>;
     addMember(id: string, payload: unknown): Promise<{ ok: boolean; errorMessage: string | null }>;
@@ -69,6 +73,17 @@ interface DetailModule {
       members: unknown[],
     ): Promise<{ ok: boolean; errorMessage: string | null; result?: { added: number; skipped: number; results: unknown[] } }>;
     exportMembers(id: string): Promise<{ ok: boolean; errorMessage: string | null; items?: unknown[]; truncated?: boolean }>;
+  };
+}
+
+function summaryDTO(overrides: Record<string, unknown> = {}) {
+  return {
+    active: 3,
+    suspended: 1,
+    unsubscribed: 0,
+    pending: 0,
+    awaiting_approval: 0,
+    ...overrides,
   };
 }
 
@@ -155,6 +170,23 @@ describe('mlistDetail config + roster load', () => {
     expect(internal?.bounce_score).toBe(2.5);
   });
 
+  it('loads the REQ-MLIST-54 member-state summary alongside the roster', async () => {
+    const { mlistDetail } = await loadDetail();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/members/summary')) return Promise.resolve(jsonResponse(summaryDTO()));
+        if (url.includes('/members')) return Promise.resolve(jsonResponse({ items: [], next: null }));
+        return Promise.resolve(jsonResponse(mailingListDTO()));
+      }),
+    );
+
+    await mlistDetail.load('1');
+
+    expect(mlistDetail.summaryStatus).toBe('ready');
+    expect(mlistDetail.summary).toEqual(summaryDTO());
+  });
+
   it('sends state/delivery_mode filters as query parameters', async () => {
     const { mlistDetail } = await loadDetail();
     const fetchMock = vi.fn().mockImplementation((url: string) => {
@@ -213,6 +245,57 @@ describe('mlistDetail member mutations', () => {
 
     expect(result.ok).toBe(true);
     expect(mlistDetail.members.find((m) => m.id === 30)?.state).toBe('suspended');
+  });
+
+  it('updateMember with a state transition (REQ-MLIST-55 reactivate) refreshes the summary counts', async () => {
+    const { mlistDetail } = await loadDetail();
+    let summaryCalls = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse(memberDTO({ id: 30, state: 'active', bounce_score: 0 })));
+      }
+      if (url.includes('/members/summary')) {
+        summaryCalls += 1;
+        return Promise.resolve(jsonResponse(summaryDTO({ active: 4, suspended: 0 })));
+      }
+      if (url.includes('/members')) return Promise.resolve(jsonResponse({ items: [memberDTO({ id: 30, state: 'suspended' })], next: null }));
+      return Promise.resolve(jsonResponse(mailingListDTO()));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await mlistDetail.load('1');
+    expect(summaryCalls).toBe(1);
+
+    const result = await mlistDetail.updateMember('1', 30, { state: 'active' });
+
+    expect(result.ok).toBe(true);
+    expect(mlistDetail.members.find((m) => m.id === 30)?.state).toBe('active');
+    expect(summaryCalls).toBe(2);
+    expect(mlistDetail.summary).toEqual(summaryDTO({ active: 4, suspended: 0 }));
+  });
+
+  it('updateMember with only a delivery_mode change does not refetch the summary', async () => {
+    const { mlistDetail } = await loadDetail();
+    let summaryCalls = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse(memberDTO({ id: 30, delivery_mode: 'nomail', principal_id: 5, external_address: undefined })));
+      }
+      if (url.includes('/members/summary')) {
+        summaryCalls += 1;
+        return Promise.resolve(jsonResponse(summaryDTO()));
+      }
+      if (url.includes('/members')) return Promise.resolve(jsonResponse({ items: [memberDTO({ id: 30 })], next: null }));
+      return Promise.resolve(jsonResponse(mailingListDTO()));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await mlistDetail.load('1');
+    expect(summaryCalls).toBe(1);
+
+    await mlistDetail.updateMember('1', 30, { delivery_mode: 'nomail' });
+
+    expect(summaryCalls).toBe(1);
   });
 
   it('removeMember deletes and drops the row from local state', async () => {

@@ -70,6 +70,20 @@ export interface PatchMemberPayload {
   delivery_mode?: string;
 }
 
+/**
+ * Wire shape for GET /api/v1/lists/{id}/members/summary
+ * (mailingListMemberSummaryDTO, REQ-MLIST-54): the roster's population by
+ * state, read once per detail-view render rather than by paginating the
+ * whole roster to count it client-side.
+ */
+export interface MailingListMemberSummary {
+  active: number;
+  suspended: number;
+  unsubscribed: number;
+  pending: number;
+  awaiting_approval: number;
+}
+
 export interface ImportResultItem {
   index: number;
   status: string;
@@ -116,6 +130,13 @@ class MailingListDetailState {
   stateFilter = $state<MailingListMemberStateFilter>('');
   deliveryModeFilter = $state<MailingListMemberModeFilter>('');
 
+  // REQ-MLIST-54: the per-list bounce/suspension summary counts, read
+  // alongside the roster so the operator sees the state distribution
+  // without paginating the whole roster to count it.
+  summary = $state<MailingListMemberSummary | null>(null);
+  summaryStatus = $state<MlistMembersStatus>('idle');
+  summaryErrorMessage = $state<string | null>(null);
+
   async load(id: string): Promise<void> {
     this.status = 'loading';
     this.errorMessage = null;
@@ -129,7 +150,21 @@ class MailingListDetailState {
     }
     this.list = result.data;
     this.status = 'ready';
-    await this.loadMembers(id);
+    await Promise.all([this.loadMembers(id), this.loadSummary(id)]);
+  }
+
+  async loadSummary(id: string): Promise<void> {
+    this.summaryStatus = 'loading';
+    this.summaryErrorMessage = null;
+
+    const result = await apiGet<MailingListMemberSummary>(`/api/v1/lists/${id}/members/summary`);
+    if (!result.ok || result.data === null) {
+      this.summaryErrorMessage = result.errorMessage ?? t('mlistDetail.error.loadSummaryFailed');
+      this.summaryStatus = 'error';
+      return;
+    }
+    this.summary = result.data;
+    this.summaryStatus = 'ready';
   }
 
   private membersQuery(id: string, after?: string | null): string {
@@ -200,10 +235,16 @@ class MailingListDetailState {
     if (!result.ok) {
       return { ok: false, errorMessage: result.errorMessage ?? t('mlistDetail.error.addMemberFailed') };
     }
-    await this.loadMembers(id);
+    await Promise.all([this.loadMembers(id), this.loadSummary(id)]);
     return { ok: true, errorMessage: null };
   }
 
+  /**
+   * PATCH .../members/{mid}. A state transition (including the REQ-MLIST-55
+   * reactivate-a-suspended-member action) also refreshes the summary
+   * counts, since those move with member state; a delivery_mode-only
+   * patch does not touch them.
+   */
   async updateMember(id: string, memberId: number, payload: PatchMemberPayload): Promise<OpResult> {
     const result = await apiPatch<MailingListMember>(`/api/v1/lists/${id}/members/${memberId}`, payload);
     if (!result.ok) {
@@ -212,6 +253,9 @@ class MailingListDetailState {
     if (result.data) {
       const updated = result.data;
       this.members = this.members.map((m) => (m.id === memberId ? updated : m));
+    }
+    if (payload.state !== undefined) {
+      await this.loadSummary(id);
     }
     return { ok: true, errorMessage: null };
   }
@@ -222,6 +266,7 @@ class MailingListDetailState {
       return { ok: false, errorMessage: result.errorMessage ?? t('mlistDetail.error.removeMemberFailed') };
     }
     this.members = this.members.filter((m) => m.id !== memberId);
+    await this.loadSummary(id);
     return { ok: true, errorMessage: null };
   }
 
@@ -233,7 +278,7 @@ class MailingListDetailState {
     if (!result.ok || result.data === null) {
       return { ok: false, errorMessage: result.errorMessage ?? t('mlistDetail.error.importFailed') };
     }
-    await this.loadMembers(id);
+    await Promise.all([this.loadMembers(id), this.loadSummary(id)]);
     return { ok: true, errorMessage: null, result: result.data };
   }
 
