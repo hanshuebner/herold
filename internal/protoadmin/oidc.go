@@ -16,6 +16,15 @@ type createOIDCProviderRequest struct {
 	ClientSecret string   `json:"client_secret"`
 	RedirectURL  string   `json:"redirect_url,omitempty"`
 	Scopes       []string `json:"scopes,omitempty"`
+	// AutoProvision / AutoProvisionDomain opt this provider into
+	// REQ-AUTH-56 first-login auto-provisioning (issue #230). Setting
+	// AutoProvision true requires a server:superadmin caller: it lets
+	// anyone with an account at the configured IdP mint a local
+	// principal, so enabling it is a whole-deployment security decision,
+	// not an ordinary provider edit (mirrors the authz_trusted claim-
+	// mapping gate's superadmin-only posture).
+	AutoProvision       bool   `json:"auto_provision,omitempty"`
+	AutoProvisionDomain string `json:"auto_provision_domain,omitempty"`
 }
 
 func (s *Server) handleListOIDCProviders(w http.ResponseWriter, r *http.Request) {
@@ -49,13 +58,25 @@ func (s *Server) handleCreateOIDCProvider(w http.ResponseWriter, r *http.Request
 			"name, issuer, and client_id are required", "")
 		return
 	}
+	if req.AutoProvision {
+		if !requireSuperAdmin(w, r, caller) {
+			return
+		}
+		if req.AutoProvisionDomain == "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"auto_provision_domain is required when auto_provision is true", "")
+			return
+		}
+	}
 	id, err := s.rp.AddProvider(r.Context(), directoryoidc.ProviderConfig{
-		Name:         req.Name,
-		IssuerURL:    req.Issuer,
-		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
-		RedirectURL:  req.RedirectURL,
-		Scopes:       req.Scopes,
+		Name:                req.Name,
+		IssuerURL:           req.Issuer,
+		ClientID:            req.ClientID,
+		ClientSecret:        req.ClientSecret,
+		RedirectURL:         req.RedirectURL,
+		Scopes:              req.Scopes,
+		AutoProvision:       req.AutoProvision,
+		AutoProvisionDomain: req.AutoProvisionDomain,
 	})
 	if err != nil {
 		s.writeOIDCError(w, r, err)
@@ -115,12 +136,33 @@ func (s *Server) handleGetOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toOIDCProviderDTO(got))
 }
 
+// patchOIDCProviderRequest is the only mutable slice of an OIDC
+// provider's config exposed today: the REQ-AUTH-56 auto-provisioning
+// opt-in and its target domain. Pointer fields distinguish "absent"
+// (leave unchanged) from an explicit false/"" value.
+type patchOIDCProviderRequest struct {
+	AutoProvision       *bool   `json:"auto_provision,omitempty"`
+	AutoProvisionDomain *string `json:"auto_provision_domain,omitempty"`
+	// ClientSecretEnv is accepted (so the `herold oidc provider update
+	// --client-secret-env` CLI path decodes instead of 400ing on an
+	// unknown field) but not actionable -- secret rotation still
+	// requires Metadata.UpdateOIDCProvider (Phase 3 schema extension).
+	// A body naming only this field falls through to the 501 branch
+	// below exactly as it did before auto_provision/auto_provision_domain
+	// became patchable.
+	ClientSecretEnv *string `json:"client_secret_env,omitempty"`
+}
+
 // handlePatchOIDCProvider accepts a partial-update body. The Phase 2
-// store does not expose UpdateOIDCProvider; the only mutating field
-// we can rotate without dropping links is the in-memory secret handle
-// on the RP, which is not yet exposed. The endpoint records the intent
-// in the audit log and returns 501 so operators see a deterministic
-// "not implemented" rather than a silent success.
+// store does not expose a general UpdateOIDCProvider -- issuer/client_id/
+// secret rotation without dropping links still isn't possible here, and
+// a body naming any field other than auto_provision /
+// auto_provision_domain is rejected as an unknown field (400) by the
+// strict decoder rather than silently accepted. The only field this
+// endpoint can mutate is the REQ-AUTH-56 auto-provisioning opt-in
+// (issue #230), via RP.SetAutoProvision; enabling it requires a
+// server:superadmin caller for the same reason handleCreateOIDCProvider
+// does.
 func (s *Server) handlePatchOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
@@ -132,15 +174,55 @@ func (s *Server) handlePatchOIDCProvider(w http.ResponseWriter, r *http.Request)
 			"id is required", "")
 		return
 	}
-	// Confirm the provider exists so the operator gets a 404 in the
-	// natural case before the 501.
-	if _, err := s.store.Meta().GetOIDCProvider(r.Context(), id); err != nil {
+	existing, err := s.store.Meta().GetOIDCProvider(r.Context(), id)
+	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	writeProblem(w, r, http.StatusNotImplemented, "oidc/update_not_implemented",
-		"provider rotation requires Metadata.UpdateOIDCProvider (Phase 3 schema extension); use 'remove' + 're-add' as a workaround if cascade-loss of links is acceptable",
-		"")
+	var req patchOIDCProviderRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if req.AutoProvision == nil && req.AutoProvisionDomain == nil {
+		writeProblem(w, r, http.StatusNotImplemented, "oidc/update_not_implemented",
+			"only auto_provision / auto_provision_domain can be patched today; provider rotation requires Metadata.UpdateOIDCProvider (Phase 3 schema extension) -- use 'remove' + 're-add' as a workaround if cascade-loss of links is acceptable",
+			"")
+		return
+	}
+	enabled := existing.AutoProvision
+	if req.AutoProvision != nil {
+		enabled = *req.AutoProvision
+	}
+	domain := existing.AutoProvisionDomain
+	if req.AutoProvisionDomain != nil {
+		domain = *req.AutoProvisionDomain
+	}
+	if enabled {
+		if !requireSuperAdmin(w, r, caller) {
+			return
+		}
+		if domain == "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"auto_provision_domain is required when auto_provision is true", "")
+			return
+		}
+	}
+	if err := s.rp.SetAutoProvision(r.Context(), directoryoidc.ProviderID(id), enabled, domain); err != nil {
+		s.writeOIDCError(w, r, err)
+		return
+	}
+	got, err := s.store.Meta().GetOIDCProvider(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	s.appendAudit(r.Context(), "oidc.provider.set_auto_provision",
+		fmt.Sprintf("oidc_provider:%s", id),
+		store.OutcomeSuccess, "", map[string]string{
+			"auto_provision":        fmt.Sprintf("%v", enabled),
+			"auto_provision_domain": domain,
+		})
+	writeJSON(w, http.StatusOK, toOIDCProviderDTO(got))
 }
 
 func (s *Server) handleListOIDCLinks(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +358,8 @@ func (s *Server) writeOIDCError(w http.ResponseWriter, r *http.Request, err erro
 	switch {
 	case errors.Is(err, directoryoidc.ErrNotFound):
 		writeProblem(w, r, http.StatusNotFound, "not_found", err.Error(), "")
+	case errors.Is(err, directoryoidc.ErrAutoProvisionRefused):
+		writeProblem(w, r, http.StatusForbidden, "auto_provision_refused", err.Error(), "")
 	case errors.Is(err, directoryoidc.ErrConflict):
 		writeProblem(w, r, http.StatusConflict, "conflict", err.Error(), "")
 	case errors.Is(err, directoryoidc.ErrInvalidState):

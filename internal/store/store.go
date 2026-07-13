@@ -799,6 +799,13 @@ type Metadata interface {
 	// own. Returns ErrNotFound for an unknown provider.
 	SetOIDCProviderAuthzTrusted(ctx context.Context, providerName string, trusted bool) error
 
+	// SetOIDCProviderAutoProvision flips the per-provider auto_provision
+	// opt-in and sets auto_provision_domain in one statement (REQ-AUTH-56).
+	// Callers are responsible for any authorization check; the store
+	// performs none of its own. Returns ErrNotFound for an unknown
+	// provider.
+	SetOIDCProviderAutoProvision(ctx context.Context, providerName string, enabled bool, domain string) error
+
 	// InsertClaimAllowlistEntry adds claim to providerName's
 	// authorization-claim allowlist (REQ-AC-67). Idempotent: inserting an
 	// already-present entry is not an error.

@@ -339,6 +339,91 @@ start_fake_servers() {
     log "fake SMTP running: smtp=$FAKESMTP_SMTP_ADDR status=http://$FAKESMTP_HTTP_ADDR"
 }
 
+# ── OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230) ──
+#
+# Gated by HEROLD_DEV_OIDC_AUTOPROVISION so the default dev-instance
+# startup stays fast for flows that do not touch OIDC federation.
+# heroldfakeoidc is a full OIDC provider (discovery + JWKS + signed ID
+# token, internal/testfakes/fakeoidc) -- distinct from heroldfakeidp
+# above, which is a plain OAuth2 token endpoint for the external-
+# submission-credential surface and cannot issue a verifiable ID token.
+# start_fake_oidc builds and starts the process; register_fake_oidc_provider
+# (called once the herold backend answers) registers it as an
+# oidc_providers row with auto_provision enabled for $SEED_DOMAIN via the
+# admin REST API -- oidc_providers is DB state reached only through the
+# running server, unlike system.toml's [server.oauth_providers.*] blocks,
+# so this cannot happen before bootstrap the way heroldfakeidp's block does.
+#
+# There is currently no browser-reachable "begin OIDC sign-in" entry
+# point in the admin web UI or REST surface (BeginSignIn is called only
+# from Go: internal/protoadmin exposes begin-*link*, for an already-
+# authenticated principal attaching a provider, and the callback
+# endpoint, but nothing that starts an unauthenticated sign-in redirect).
+# Registering the provider here still gives an operator a real,
+# auto-provisioning-enabled provider row to inspect via
+# GET /api/v1/oidc/providers, and is what the CI end-to-end test
+# (test/e2e/oidc_autoprovision_test.go) exercises the RP layer against;
+# a click-through browser verification needs that entry point built
+# first.
+FAKEOIDC_PID=""
+FAKEOIDC_ISSUER_URL=""
+FAKEOIDC_CLIENT_ID=""
+FAKEOIDC_CLIENT_SECRET=""
+
+start_fake_oidc() {
+    local dir="$1"
+    local fakeoidc_bin="$dir/bin/heroldfakeoidc"
+    mkdir -p "$dir/bin"
+
+    log "building heroldfakeoidc"
+    ( cd "$REPO_ROOT" && go build -o "$fakeoidc_bin" ./cmd/heroldfakeoidc ) \
+        >"$dir/logs/build-fakeoidc.log" 2>&1 \
+        || { cat "$dir/logs/build-fakeoidc.log" >&2; die "go build ./cmd/heroldfakeoidc failed"; }
+
+    local fakeoidc_report="$dir/fakeoidc.report"
+    log "starting heroldfakeoidc"
+    "$fakeoidc_bin" --report-file "$fakeoidc_report" \
+        >>"$dir/logs/fakeoidc.log" 2>&1 &
+    FAKEOIDC_PID=$!
+
+    if ! wait_for_file "$fakeoidc_report" 10; then
+        kill "$FAKEOIDC_PID" 2>/dev/null || true
+        die "fake OIDC provider did not write report within 10s; see $dir/logs/fakeoidc.log"
+    fi
+    FAKEOIDC_ISSUER_URL=$(read_report_key "$fakeoidc_report" issuer_url)
+    FAKEOIDC_CLIENT_ID=$(read_report_key "$fakeoidc_report" client_id)
+    FAKEOIDC_CLIENT_SECRET=$(read_report_key "$fakeoidc_report" client_secret)
+    log "fake OIDC provider running: issuer=$FAKEOIDC_ISSUER_URL client_id=$FAKEOIDC_CLIENT_ID"
+}
+
+# register_fake_oidc_provider DIR ADMIN_URL API_KEY — registers the
+# running heroldfakeoidc as an oidc_providers row named "fakeoidc" with
+# auto_provision enabled for $SEED_DOMAIN.
+register_fake_oidc_provider() {
+    local dir="$1" admin_url="$2" api_key="$3"
+    log "registering fakeoidc as an OIDC provider (auto_provision domain=$SEED_DOMAIN)"
+    local body
+    body=$(jq -n \
+        --arg issuer "$FAKEOIDC_ISSUER_URL" \
+        --arg cid "$FAKEOIDC_CLIENT_ID" \
+        --arg secret "$FAKEOIDC_CLIENT_SECRET" \
+        --arg redirect "$admin_url/api/v1/oidc/callback" \
+        --arg domain "$SEED_DOMAIN" \
+        '{name: "fakeoidc", issuer: $issuer, client_id: $cid, client_secret: $secret,
+          redirect_url: $redirect, scopes: ["email", "profile"],
+          auto_provision: true, auto_provision_domain: $domain}')
+    local status
+    status=$(curl -sS -o "$dir/logs/oidc-provider-register.json" -w '%{http_code}' \
+        -X POST "$admin_url/api/v1/oidc/providers" \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        -d "$body") \
+        || die "register fakeoidc provider: curl failed"
+    [ "$status" = "201" ] \
+        || { cat "$dir/logs/oidc-provider-register.json" >&2; die "register fakeoidc provider: HTTP $status"; }
+    log "fakeoidc provider registered with auto_provision=true (see $dir/logs/oidc-provider-register.json)"
+}
+
 # Seed the domain + non-admin principals via the admin REST surface.
 # Caller bootstrapped the admin principal beforehand and passes the
 # resulting API key.
@@ -426,6 +511,14 @@ cmd_start() {
         || die "make-self-signed-cert.sh failed; see $dir/logs/cert.log"
 
     write_system_toml "$dir"
+
+    # OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230):
+    # build and start heroldfakeoidc now (no system.toml dependency, unlike
+    # the external-submission fakes below); it is registered as an
+    # oidc_providers row further down, once the backend is answering.
+    if [ -n "${HEROLD_DEV_OIDC_AUTOPROVISION:-}" ]; then
+        start_fake_oidc "$dir"
+    fi
 
     # When external-submission is enabled: build and start the fake OAuth IdP
     # and SMTP sink, then append the [server.oauth_providers.fakeidp] block to
@@ -542,6 +635,13 @@ EOF
     # working-external identity's submission row points at the live fake sink.
     seed_instance "$dir" "$backend_url" "$api_key" "${FAKESMTP_SMTP_ADDR:-}"
 
+    # Register the OIDC first-login auto-provisioning fake IdP now that
+    # the admin REST API is reachable (oidc_providers is DB state, only
+    # writable through the running server).
+    if [ -n "${HEROLD_DEV_OIDC_AUTOPROVISION:-}" ]; then
+        register_fake_oidc_provider "$dir" "$admin_url" "$api_key"
+    fi
+
     # Make sure the workspace has node_modules installed (a no-op
     # for the user's main checkout; mandatory for fresh agent
     # worktrees).
@@ -586,6 +686,7 @@ VITE_PID=$vite_pid
 FAKEIDP_PID=${FAKEIDP_PID:-}
 FAKESMTP_PID=${FAKESMTP_PID:-}
 FAKESMTP_HTTP_ADDR=${FAKESMTP_HTTP_ADDR:-}
+FAKEOIDC_PID=${FAKEOIDC_PID:-}
 STATE_DIR=$dir
 BACKEND_URL=$backend_url
 ADMIN_URL=$admin_url
@@ -617,6 +718,7 @@ EOF
         local disown_pids="$herold_pid $vite_pid"
         [ -n "${FAKEIDP_PID:-}" ] && disown_pids="$disown_pids $FAKEIDP_PID"
         [ -n "${FAKESMTP_PID:-}" ] && disown_pids="$disown_pids $FAKESMTP_PID"
+        [ -n "${FAKEOIDC_PID:-}" ] && disown_pids="$disown_pids $FAKEOIDC_PID"
         # shellcheck disable=SC2086
         disown $disown_pids 2>/dev/null || true
         exit 0
@@ -624,18 +726,20 @@ EOF
 
     # Foreground mode: register cleanup, then block.
     # Capture fake PIDs into local vars so the cleanup closure sees them.
-    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}"
+    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
     cleanup() {
         log "tearing down instance $id"
         kill_tree "$vite_pid" TERM
         kill_tree "$herold_pid" TERM
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" TERM
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" TERM
+        [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" TERM
         sleep 1
         kill_tree "$vite_pid" KILL
         kill_tree "$herold_pid" KILL
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" KILL
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" KILL
+        [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" KILL
         rm -rf "$dir"
     }
     trap cleanup EXIT INT TERM
@@ -646,6 +750,7 @@ EOF
     local wait_pids="$herold_pid $vite_pid"
     [ -n "$_fakeidp_pid" ] && wait_pids="$wait_pids $_fakeidp_pid"
     [ -n "$_fakesmtp_pid" ] && wait_pids="$wait_pids $_fakesmtp_pid"
+    [ -n "$_fakeoidc_pid" ] && wait_pids="$wait_pids $_fakeoidc_pid"
     # shellcheck disable=SC2086
     wait $wait_pids
 }
@@ -680,6 +785,7 @@ cmd_stop() {
     kill_tree "$HEROLD_PID" TERM
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" TERM
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" TERM
+    [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         local all_dead=1
@@ -687,6 +793,7 @@ cmd_stop() {
         kill -0 "$HEROLD_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEIDP_PID:-}" ] && kill -0 "$FAKEIDP_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKESMTP_PID:-}" ] && kill -0 "$FAKESMTP_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKEOIDC_PID:-}" ] && kill -0 "$FAKEOIDC_PID" 2>/dev/null && all_dead=0
         [ "$all_dead" = "1" ] && break
         sleep 0.2
     done
@@ -694,6 +801,7 @@ cmd_stop() {
     kill_tree "$HEROLD_PID" KILL
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" KILL
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" KILL
+    [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" KILL
     rm -rf "$dir"
 }
 

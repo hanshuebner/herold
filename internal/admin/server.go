@@ -310,6 +310,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// on every network call". Matches directoryoidc/rp_test.go fixtures.
 	oidcHTTP := &http.Client{Timeout: 10 * time.Second}
 	oidc := directoryoidc.New(st.Meta(), logger.With("subsystem", "oidc"), oidcHTTP, clk)
+	// Wires REQ-AUTH-56 first-login auto-provisioning: without this,
+	// every provider's AutoProvision flag is inert (CompleteSignIn fails
+	// closed when no PrincipalProvisioner is set, issue #230).
+	oidc.SetProvisioner(dir)
 	resolver := mailauth.NewSystemResolver()
 	dkim := maildkim.New(resolver, logger.With("subsystem", "dkim"), clk)
 	spf := mailspf.New(resolver, clk)

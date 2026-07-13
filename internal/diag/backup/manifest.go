@@ -669,7 +669,17 @@ const CurrentBackupVersion = 1
 //	new authorize/token requests without retroactively invalidating
 //	tokens already issued. Backed up like oidc_providers (durable
 //	configuration, not an ephemeral credential).
-const CurrentSchemaVersion = 92
+//
+// 93 — 0093_oidc_autoprovision_domain.sql (issue #230, REQ-AUTH-56).
+//
+//	Adds oidc_providers.auto_provision_domain: the local domain a
+//	principal auto-provisioned on first OIDC sign-in is created under.
+//	auto_provision (the per-provider opt-in) already existed from an
+//	earlier migration; this column is what internal/directoryoidc's
+//	CompleteSignIn consults to derive the new principal's canonical
+//	email (local-part from the verified `email` claim, domain from this
+//	column). No new table; OIDCProviderRow gains the one field.
+const CurrentSchemaVersion = 93
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

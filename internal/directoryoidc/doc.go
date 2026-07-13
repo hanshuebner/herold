@@ -9,7 +9,11 @@
 //     external identity to their principal.
 //   - BeginSignIn / CompleteSignIn: an unauthenticated user signs in
 //     via an already-linked identity; the server resolves the provider
-//     sub to a local PrincipalID.
+//     sub to a local PrincipalID. When no link exists yet, CompleteSignIn
+//     auto-provisions a new principal instead of failing, if and only if
+//     the provider has opted into it (REQ-AUTH-56, off by default) and
+//     SetProvisioner has wired in a PrincipalProvisioner (production
+//     wiring: *internal/directory.Directory).
 //
 // The RP never mints tokens; REQ-AUTH-58 excludes us from acting as an
 // OIDC issuer. All ID-token signature verification delegates to

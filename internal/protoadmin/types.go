@@ -148,22 +148,28 @@ func toDomainDTO(d store.Domain) domainDTO {
 // oidcProviderDTO is the wire representation of an OIDC provider row
 // minus secret material.
 type oidcProviderDTO struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	IssuerURL string    `json:"issuer"`
-	ClientID  string    `json:"client_id"`
-	Scopes    []string  `json:"scopes"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	IssuerURL string   `json:"issuer"`
+	ClientID  string   `json:"client_id"`
+	Scopes    []string `json:"scopes"`
+	// AutoProvision / AutoProvisionDomain expose the REQ-AUTH-56
+	// first-login auto-provisioning opt-in (issue #230).
+	AutoProvision       bool      `json:"auto_provision"`
+	AutoProvisionDomain string    `json:"auto_provision_domain,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 func toOIDCProviderDTO(p store.OIDCProvider) oidcProviderDTO {
 	return oidcProviderDTO{
-		ID:        p.Name,
-		Name:      p.Name,
-		IssuerURL: p.IssuerURL,
-		ClientID:  p.ClientID,
-		Scopes:    append([]string(nil), p.Scopes...),
-		CreatedAt: p.CreatedAt,
+		ID:                  p.Name,
+		Name:                p.Name,
+		IssuerURL:           p.IssuerURL,
+		ClientID:            p.ClientID,
+		Scopes:              append([]string(nil), p.Scopes...),
+		AutoProvision:       p.AutoProvision,
+		AutoProvisionDomain: p.AutoProvisionDomain,
+		CreatedAt:           p.CreatedAt,
 	}
 }
 

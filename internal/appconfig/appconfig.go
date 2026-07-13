@@ -53,12 +53,13 @@ type AliasEntry struct {
 
 // OIDCProvRow is the exported shape of store.OIDCProvider.
 type OIDCProvRow struct {
-	Name            string   `toml:"name"`
-	IssuerURL       string   `toml:"issuer_url"`
-	ClientID        string   `toml:"client_id"`
-	ClientSecretRef string   `toml:"client_secret_ref,omitempty"`
-	Scopes          []string `toml:"scopes,omitempty"`
-	AutoProvision   bool     `toml:"auto_provision,omitempty"`
+	Name                string   `toml:"name"`
+	IssuerURL           string   `toml:"issuer_url"`
+	ClientID            string   `toml:"client_id"`
+	ClientSecretRef     string   `toml:"client_secret_ref,omitempty"`
+	Scopes              []string `toml:"scopes,omitempty"`
+	AutoProvision       bool     `toml:"auto_provision,omitempty"`
+	AutoProvisionDomain string   `toml:"auto_provision_domain,omitempty"`
 }
 
 // APIKeyMeta carries the non-secret fields of an API key. The Hash field
@@ -154,12 +155,13 @@ func Export(ctx context.Context, s store.Store, w io.Writer) error {
 	}
 	for _, p := range providers {
 		snap.OIDCProviders = append(snap.OIDCProviders, OIDCProvRow{
-			Name:            p.Name,
-			IssuerURL:       p.IssuerURL,
-			ClientID:        p.ClientID,
-			ClientSecretRef: p.ClientSecretRef,
-			Scopes:          p.Scopes,
-			AutoProvision:   p.AutoProvision,
+			Name:                p.Name,
+			IssuerURL:           p.IssuerURL,
+			ClientID:            p.ClientID,
+			ClientSecretRef:     p.ClientSecretRef,
+			Scopes:              p.Scopes,
+			AutoProvision:       p.AutoProvision,
+			AutoProvisionDomain: p.AutoProvisionDomain,
 		})
 	}
 	// Aliases and API keys: Phase 1 store surface doesn't currently
@@ -284,12 +286,13 @@ func Import(ctx context.Context, s store.Store, r io.Reader, opts ImportOptions)
 	// OIDC providers.
 	for _, prov := range snap.OIDCProviders {
 		err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
-			Name:            prov.Name,
-			IssuerURL:       prov.IssuerURL,
-			ClientID:        prov.ClientID,
-			ClientSecretRef: prov.ClientSecretRef,
-			Scopes:          prov.Scopes,
-			AutoProvision:   prov.AutoProvision,
+			Name:                prov.Name,
+			IssuerURL:           prov.IssuerURL,
+			ClientID:            prov.ClientID,
+			ClientSecretRef:     prov.ClientSecretRef,
+			Scopes:              prov.Scopes,
+			AutoProvision:       prov.AutoProvision,
+			AutoProvisionDomain: prov.AutoProvisionDomain,
 		})
 		if err != nil {
 			if errors.Is(err, store.ErrConflict) {

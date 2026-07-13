@@ -150,6 +150,40 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 	if len(password) < MinPasswordLength {
 		return 0, ErrWeakPassword
 	}
+	hash, err := hashPassword(d.rand, password)
+	if err != nil {
+		return 0, fmt.Errorf("directory: hash password: %w", err)
+	}
+	return d.createPrincipal(ctx, canon, hash, "", "principal.create")
+}
+
+// CreateExternalPrincipal creates a principal with no local password,
+// authenticating only via a linked external OIDC identity (REQ-AUTH-54).
+// It is the entry point OIDC first-login auto-provisioning uses
+// (REQ-AUTH-56, internal/directoryoidc.RP.CompleteSignIn): the caller has
+// already verified the email claim (email_verified) and derived a
+// canonical, collision-checked email from it, so this method's only job
+// is the same domain check, insert, audit, and default-mailbox/address-
+// book provisioning CreatePrincipal performs -- an auto-provisioned
+// account is usable for mail immediately, exactly like an
+// operator-created one. displayName is optional (empty is fine) and
+// typically comes from the IdP's "name" claim.
+func (d *Directory) CreateExternalPrincipal(ctx context.Context, email, displayName string) (PrincipalID, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	canon, err := canonicalizeEmail(email)
+	if err != nil {
+		return 0, err
+	}
+	return d.createPrincipal(ctx, canon, "", displayName, "principal.create.oidc_autoprovision")
+}
+
+// createPrincipal is the shared core of CreatePrincipal and
+// CreateExternalPrincipal: domain check, insert, audit, and default
+// mailbox/address-book provisioning. canon is already canonicalized;
+// passwordHash is empty for an external-only principal.
+func (d *Directory) createPrincipal(ctx context.Context, canon, passwordHash, displayName, auditAction string) (PrincipalID, error) {
 	if at := strings.LastIndex(canon, "@"); at >= 0 {
 		domainName := canon[at+1:]
 		if _, derr := d.meta.GetDomain(ctx, domainName); derr != nil {
@@ -159,14 +193,11 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 			return 0, fmt.Errorf("directory: lookup domain: %w", derr)
 		}
 	}
-	hash, err := hashPassword(d.rand, password)
-	if err != nil {
-		return 0, fmt.Errorf("directory: hash password: %w", err)
-	}
 	p, err := d.meta.InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
 		CanonicalEmail: canon,
-		PasswordHash:   hash,
+		DisplayName:    displayName,
+		PasswordHash:   passwordHash,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -174,15 +205,15 @@ func (d *Directory) CreatePrincipal(ctx context.Context, email, password string)
 		}
 		return 0, fmt.Errorf("directory: insert principal: %w", err)
 	}
-	d.audit(ctx, p.ID, "principal.create", slog.String("email", canon))
+	d.audit(ctx, p.ID, auditAction, slog.String("email", canon))
 	// Provision the standard mailbox set so JMAP / IMAP clients find an
 	// INBOX immediately. Provisioning lives here (not in protoadmin)
 	// because herold has multiple principal-creation entry points -- the
-	// admin REST API, the bootstrap CLI, the upcoming OIDC autoprovision
-	// flow -- and they all funnel through this method. A failure to
-	// provision is logged but not surfaced as an error: the principal row
-	// is committed, and the first SMTP delivery will recreate any missing
-	// mailbox via the existing lazy ensureMailbox path in protosmtp.
+	// admin REST API, the bootstrap CLI, OIDC autoprovision -- and they
+	// all funnel through this method. A failure to provision is logged
+	// but not surfaced as an error: the principal row is committed, and
+	// the first SMTP delivery will recreate any missing mailbox via the
+	// existing lazy ensureMailbox path in protosmtp.
 	d.provisionDefaultMailboxes(ctx, p.ID)
 	// Provision the default address book so JMAP Contacts clients find a
 	// usable container immediately (REQ-PROTO-55). Same error posture as

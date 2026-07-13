@@ -11,12 +11,14 @@ import (
 	"github.com/hanshuebner/herold/internal/authz"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/testfakes/fakeoidc"
 	"github.com/hanshuebner/herold/test/e2e/fixtures"
 )
 
 // TestPhase188_OIDCClaimToGrantMapping drives the full epic #188 flow
-// against an in-process fake external IdP (the same oidcStub used by
-// TestPhase1_OIDCLink_RoundTrip, extended with a "groups" claim):
+// against an in-process fake external IdP (internal/testfakes/fakeoidc,
+// the same fake TestPhase1_OIDCLink_RoundTrip uses, here carrying a
+// "groups" claim):
 //
 //  1. An operator (a server:superadmin, so it can author a rule targeting
 //     any resource) configures a claim-mapping rule on a provider flagged
@@ -67,7 +69,7 @@ func TestPhase188_OIDCClaimToGrantMapping(t *testing.T) {
 			t.Fatalf("insert manual grant: %v", err)
 		}
 
-		stub := newOIDCStub(t, "herold-client")
+		stub := fakeoidc.New(t, fakeoidc.Options{ClientID: "herold-client", ClientSecret: "secret"})
 		rp := directoryoidc.New(
 			st.Meta(),
 			slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -76,7 +78,7 @@ func TestPhase188_OIDCClaimToGrantMapping(t *testing.T) {
 		)
 		providerID, err := rp.AddProvider(ctx, directoryoidc.ProviderConfig{
 			Name:         "acme",
-			IssuerURL:    stub.issuer,
+			IssuerURL:    stub.IssuerURL(),
 			ClientID:     "herold-client",
 			ClientSecret: "secret",
 			RedirectURL:  "http://localhost/cb",
@@ -86,7 +88,7 @@ func TestPhase188_OIDCClaimToGrantMapping(t *testing.T) {
 		}
 
 		// Link alice's external identity so sign-in can resolve her.
-		stub.subject = "alice-external-claimmap"
+		stub.SetIdentity(fakeoidc.Identity{Subject: "alice-external-claimmap"})
 		authURL, state, err := rp.BeginLink(ctx, alice.ID, providerID)
 		if err != nil {
 			t.Fatalf("begin link: %v", err)
@@ -120,7 +122,10 @@ func TestPhase188_OIDCClaimToGrantMapping(t *testing.T) {
 
 		signIn := func(groups []string) {
 			t.Helper()
-			stub.extraClaims = map[string]any{"groups": groups}
+			stub.SetIdentity(fakeoidc.Identity{
+				Subject: "alice-external-claimmap",
+				Extra:   map[string]any{"groups": groups},
+			})
 			authURL, state, err := rp.BeginSignIn(ctx, providerID)
 			if err != nil {
 				t.Fatalf("begin signin: %v", err)

@@ -876,8 +876,21 @@ type OIDCProvider struct {
 	// Scopes is the set of OAuth2 scopes requested at sign-in.
 	Scopes []string
 	// AutoProvision permits creating a local principal on first
-	// successful federation.
+	// successful federation (REQ-AUTH-56). Off by default; an operator
+	// must opt in per provider. When false, a sign-in for a `sub` with
+	// no existing link is refused.
 	AutoProvision bool
+	// AutoProvisionDomain is the local domain a principal auto-provisioned
+	// by this provider is created under (REQ-AUTH-56). The principal's
+	// local-part is taken from the verified `email` claim; the domain
+	// always comes from this operator-configured field, never from the
+	// claim, so an untrusted IdP cannot choose which local domain it
+	// lands a new principal in. Required (and must name a registered
+	// local domain) for AutoProvision to actually provision anything;
+	// empty with AutoProvision true means "opted in but not yet
+	// configured", which fails closed (auto-provisioning is refused,
+	// not silently defaulted to some domain).
+	AutoProvisionDomain string
 	// AuthzTrusted gates claim-to-grant mapping (epic #188, REQ-AC-66).
 	// Claim-mapping rules are inert for this provider until a
 	// server:superadmin sets AuthzTrusted true; a provider usable for

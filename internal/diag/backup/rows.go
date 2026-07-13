@@ -81,6 +81,11 @@ type OIDCProviderRow struct {
 	ClientSecretRef string `json:"client_secret_ref"`
 	ScopesCSV       string `json:"scopes_csv"`
 	AutoProvision   bool   `json:"auto_provision"`
+	// AutoProvisionDomain is the migration-0091 local domain a principal
+	// auto-provisioned by this provider is created under (issue #230,
+	// REQ-AUTH-56). Empty for pre-migration rows and for providers that
+	// have not opted into auto-provisioning.
+	AutoProvisionDomain string `json:"auto_provision_domain"`
 	// AuthzTrusted is the migration-0083 claim-mapping trust gate
 	// (epic #188, REQ-AC-66). Default false for pre-migration rows.
 	AuthzTrusted bool  `json:"authz_trusted"`

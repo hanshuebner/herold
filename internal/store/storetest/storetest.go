@@ -853,12 +853,13 @@ func testAliases(t *testing.T, s store.Store) {
 func testOIDC(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	if err := s.Meta().InsertOIDCProvider(ctx, store.OIDCProvider{
-		Name:            "google",
-		IssuerURL:       "https://accounts.google.com",
-		ClientID:        "cid",
-		ClientSecretRef: "file:/secret",
-		Scopes:          []string{"openid", "email"},
-		AutoProvision:   true,
+		Name:                "google",
+		IssuerURL:           "https://accounts.google.com",
+		ClientID:            "cid",
+		ClientSecretRef:     "file:/secret",
+		Scopes:              []string{"openid", "email"},
+		AutoProvision:       true,
+		AutoProvisionDomain: "example.com",
 	}); err != nil {
 		t.Fatalf("InsertOIDCProvider: %v", err)
 	}
@@ -874,6 +875,41 @@ func testOIDC(t *testing.T, s store.Store) {
 	}
 	if len(prov.Scopes) != 2 || prov.Scopes[0] != "openid" {
 		t.Fatalf("Scopes = %v", prov.Scopes)
+	}
+	if !prov.AutoProvision || prov.AutoProvisionDomain != "example.com" {
+		t.Fatalf("AutoProvision/AutoProvisionDomain = %v/%q, want true/example.com", prov.AutoProvision, prov.AutoProvisionDomain)
+	}
+	if err := s.Meta().SetOIDCProviderAutoProvision(ctx, "google", false, "other.example"); err != nil {
+		t.Fatalf("SetOIDCProviderAutoProvision: %v", err)
+	}
+	prov, err = s.Meta().GetOIDCProvider(ctx, "google")
+	if err != nil {
+		t.Fatalf("GetOIDCProvider after SetOIDCProviderAutoProvision: %v", err)
+	}
+	if prov.AutoProvision || prov.AutoProvisionDomain != "other.example" {
+		t.Fatalf("AutoProvision/AutoProvisionDomain after Set = %v/%q, want false/other.example", prov.AutoProvision, prov.AutoProvisionDomain)
+	}
+	if err := s.Meta().SetOIDCProviderAutoProvision(ctx, "absent-provider", true, "x.example"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetOIDCProviderAutoProvision(absent) = %v, want ErrNotFound", err)
+	}
+	// List reflects the update too (ListOIDCProviders shares the same
+	// column set as GetOIDCProvider; both must decode auto_provision /
+	// auto_provision_domain identically).
+	all, err := s.Meta().ListOIDCProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListOIDCProviders: %v", err)
+	}
+	var foundGoogle bool
+	for _, row := range all {
+		if row.Name == "google" {
+			foundGoogle = true
+			if row.AutoProvision || row.AutoProvisionDomain != "other.example" {
+				t.Fatalf("ListOIDCProviders google row = %+v", row)
+			}
+		}
+	}
+	if !foundGoogle {
+		t.Fatalf("ListOIDCProviders: google not found")
 	}
 	p := mustInsertPrincipal(t, s, "oidc@example.com")
 	link := store.OIDCLink{

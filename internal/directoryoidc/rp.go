@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/mail"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,12 +34,14 @@ type ProviderID string
 // ClientSecret is deliberately not included here; secrets live in the
 // store's ClientSecretRef and are resolved at Exchange time.
 type Provider struct {
-	ID          ProviderID
-	Name        string
-	IssuerURL   string
-	ClientID    string
-	RedirectURL string
-	Scopes      []string
+	ID                  ProviderID
+	Name                string
+	IssuerURL           string
+	ClientID            string
+	RedirectURL         string
+	Scopes              []string
+	AutoProvision       bool
+	AutoProvisionDomain string
 }
 
 // ProviderConfig is the registration payload accepted by AddProvider.
@@ -54,6 +58,25 @@ type ProviderConfig struct {
 	RedirectURL string
 	// Scopes is the OAuth2 scope list; "openid" is always included.
 	Scopes []string
+	// AutoProvision opts this provider into first-login auto-provisioning
+	// (REQ-AUTH-56). Off by default; an operator must set this explicitly.
+	AutoProvision bool
+	// AutoProvisionDomain is the local domain a principal auto-provisioned
+	// by this provider is created under. Required for AutoProvision to
+	// provision anything (see store.OIDCProvider.AutoProvisionDomain).
+	AutoProvisionDomain string
+}
+
+// PrincipalProvisioner creates a fully usable local principal (default
+// mailboxes, address book) for OIDC first-login auto-provisioning
+// (REQ-AUTH-56). Implemented by *internal/directory.Directory
+// (CreateExternalPrincipal); injected via SetProvisioner rather than a
+// New parameter so the many existing New callers are unaffected. A nil
+// provisioner (the default) makes auto-provisioning fail closed even if
+// a provider's AutoProvision flag is set -- wiring the capability in is
+// an explicit, separate step from enabling it per provider.
+type PrincipalProvisioner interface {
+	CreateExternalPrincipal(ctx context.Context, email, displayName string) (PrincipalID, error)
 }
 
 // Sentinel errors.
@@ -62,6 +85,21 @@ var (
 	ErrConflict                = errors.New("directoryoidc: conflict")
 	ErrInvalidState            = errors.New("directoryoidc: invalid state")
 	ErrProviderDiscoveryFailed = errors.New("directoryoidc: provider discovery failed")
+
+	// ErrAutoProvisionRefused is returned by CompleteSignIn when a first
+	// login for an unlinked sub is eligible for auto-provisioning
+	// (REQ-AUTH-56, the provider has AutoProvision set) but cannot be
+	// completed: the IdP's email claim is missing or not
+	// `email_verified`, the provider has no AutoProvisionDomain
+	// configured, or the derived address collides with an existing
+	// principal or alias. Deliberately distinct from ErrNotFound (which
+	// covers "no link and auto-provisioning is off for this provider" --
+	// REQ-AUTH-56's plain rejection) so a genuine collision never reads
+	// as a generic 404 to a caller deciding how to react -- but the
+	// message itself stays generic (no email/collision detail) so an
+	// unauthenticated caller cannot use it to probe which addresses
+	// exist.
+	ErrAutoProvisionRefused = errors.New("directoryoidc: auto-provisioning refused")
 )
 
 // defaultTimeout caps every HTTP call we issue (discovery, token
@@ -79,11 +117,12 @@ type RP struct {
 	http   *http.Client
 	clk    clock.Clock
 
-	mu       sync.Mutex
-	pending  map[string]pendingAuth
-	secrets  map[ProviderID]string // client_secret cache, keyed by provider ID
-	discover map[ProviderID]*oidc.Provider
-	configs  map[ProviderID]ProviderConfig
+	mu          sync.Mutex
+	pending     map[string]pendingAuth
+	secrets     map[ProviderID]string // client_secret cache, keyed by provider ID
+	discover    map[ProviderID]*oidc.Provider
+	configs     map[ProviderID]ProviderConfig
+	provisioner PrincipalProvisioner
 }
 
 // pendingAuth tracks in-flight OAuth flows. Entries expire after
@@ -134,6 +173,52 @@ func New(meta store.Metadata, logger *slog.Logger, httpClient *http.Client, clk 
 	}
 }
 
+// SetProvisioner wires the capability CompleteSignIn needs to actually
+// create a principal on an auto-provisioning login (REQ-AUTH-56).
+// Production wiring calls this once at startup with the running
+// *directory.Directory; tests that do not exercise auto-provisioning
+// never need it (the zero-value RP correctly refuses auto-provisioning
+// regardless of any provider's AutoProvision flag). Not safe to call
+// concurrently with CompleteSignIn calls that are actively
+// auto-provisioning; callers set it once during startup before serving
+// traffic.
+func (r *RP) SetProvisioner(p PrincipalProvisioner) {
+	r.mu.Lock()
+	r.provisioner = p
+	r.mu.Unlock()
+}
+
+// SetAutoProvision flips a provider's auto-provisioning opt-in and its
+// target local domain in one call (REQ-AUTH-56). Returns ErrNotFound for
+// an unregistered provider. Callers are responsible for whatever
+// operator-authorization check gates this (protoadmin requires an admin
+// caller); the store performs none of its own, matching
+// SetOIDCProviderAuthzTrusted's posture.
+func (r *RP) SetAutoProvision(ctx context.Context, providerID ProviderID, enabled bool, domain string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := r.meta.SetOIDCProviderAutoProvision(ctx, string(providerID), enabled, domain); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
+		}
+		return fmt.Errorf("directoryoidc: set auto-provision: %w", err)
+	}
+	r.mu.Lock()
+	if cfg, ok := r.configs[providerID]; ok {
+		cfg.AutoProvision = enabled
+		cfg.AutoProvisionDomain = domain
+		r.configs[providerID] = cfg
+	}
+	r.mu.Unlock()
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.provider.set_auto_provision",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("provider", string(providerID)),
+		slog.Bool("enabled", enabled),
+		slog.String("domain", domain))
+	return nil
+}
+
 // AddProvider registers an OIDC provider. Discovery validates the
 // issuer and caches the Provider handle for future exchanges. The
 // cleartext ClientSecret stays in process memory only; operators who
@@ -153,11 +238,13 @@ func (r *RP) AddProvider(ctx context.Context, p ProviderConfig) (ProviderID, err
 		return "", fmt.Errorf("%w: %v", ErrProviderDiscoveryFailed, err)
 	}
 	if err := r.meta.InsertOIDCProvider(ctx, store.OIDCProvider{
-		Name:            p.Name,
-		IssuerURL:       p.IssuerURL,
-		ClientID:        p.ClientID,
-		ClientSecretRef: "inline:" + p.Name,
-		Scopes:          scopesWithOpenID(p.Scopes),
+		Name:                p.Name,
+		IssuerURL:           p.IssuerURL,
+		ClientID:            p.ClientID,
+		ClientSecretRef:     "inline:" + p.Name,
+		Scopes:              scopesWithOpenID(p.Scopes),
+		AutoProvision:       p.AutoProvision,
+		AutoProvisionDomain: p.AutoProvisionDomain,
 	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", fmt.Errorf("%w: provider %s", ErrConflict, p.Name)
@@ -196,12 +283,14 @@ func (r *RP) ListProviders(ctx context.Context) ([]Provider, error) {
 		id := ProviderID(row.Name)
 		cfg := r.configs[id]
 		out = append(out, Provider{
-			ID:          id,
-			Name:        row.Name,
-			IssuerURL:   row.IssuerURL,
-			ClientID:    row.ClientID,
-			RedirectURL: cfg.RedirectURL,
-			Scopes:      scopesWithOpenID(row.Scopes),
+			ID:                  id,
+			Name:                row.Name,
+			IssuerURL:           row.IssuerURL,
+			ClientID:            row.ClientID,
+			RedirectURL:         cfg.RedirectURL,
+			Scopes:              scopesWithOpenID(row.Scopes),
+			AutoProvision:       row.AutoProvision,
+			AutoProvisionDomain: row.AutoProvisionDomain,
 		})
 	}
 	return out, nil
@@ -348,9 +437,22 @@ func (r *RP) CompleteLink(ctx context.Context, state, code string) (PrincipalID,
 	return pending.principalID, nil
 }
 
-// CompleteSignIn exchanges code, verifies the ID token, looks up the
-// (provider, sub) link, and returns the local principal ID. Returns
-// ErrNotFound if the subject has never been linked.
+// CompleteSignIn exchanges code, verifies the ID token, and resolves the
+// (provider, sub) link to a local principal. When no link exists yet and
+// the provider has opted into first-login auto-provisioning
+// (REQ-AUTH-56, store.OIDCProvider.AutoProvision), it provisions a new
+// principal and links it instead of failing; a subsequent sign-in for
+// the same sub then resolves that principal like any other linked
+// identity (LookupOIDCLink finds it and this method never re-enters
+// auto-provisioning for it). Returns ErrNotFound when the subject has
+// never been linked and auto-provisioning is off (or unreachable --
+// SetProvisioner was never called) for this provider -- the same error
+// REQ-AUTH-56 already specified for the "off" case, deliberately
+// indistinguishable from "there is no such user" either way. Returns
+// ErrAutoProvisionRefused when auto-provisioning is on but this specific
+// login cannot complete it (unverified email claim, no
+// AutoProvisionDomain configured, or the derived address collides with
+// an existing principal or alias -- REQ #230's account-takeover guard).
 func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalID, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -385,7 +487,7 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 	link, err := r.meta.LookupOIDCLink(ctx, string(pending.providerID), sub)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
+			return r.autoProvisionAndSignIn(ctx, pending, sub, claims)
 		}
 		return 0, fmt.Errorf("directoryoidc: lookup link: %w", err)
 	}
@@ -394,34 +496,220 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 		slog.String("provider", string(pending.providerID)),
 		slog.Uint64("principal_id", uint64(link.PrincipalID)),
 	)
-	// Claim-to-grant reconciliation (epic #188, REQ-AC-62). CompleteSignIn
-	// only ever resolves to a pre-existing linked principal (Phase 1 does
-	// not auto-provision from OIDC first-login, REQ-AUTH-56/92 -- see the
-	// package doc for that gap), so isNewPrincipal is always false here;
-	// REQ-AC-69's "no administrative grant on an auto-provisioning login"
-	// rail has no live caller yet and will need one when auto-provisioning
-	// is wired up. A reconciliation failure never fails the sign-in itself
-	// (REQ-AC-70: a rules-store outage neither escalates nor locks out) --
-	// it is logged and the principal's existing idp: grants are left
-	// exactly as ReconcileIdP found them.
-	if p, perr := r.meta.GetPrincipalByID(ctx, link.PrincipalID); perr == nil {
-		if _, _, rerr := authz.ReconcileIdP(ctx, r.meta, r.clk, p, string(pending.providerID), claims, false); rerr != nil {
-			r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.reconcile_idp.failed",
-				slog.String("activity", observe.ActivityAudit),
-				slog.String("provider", string(pending.providerID)),
-				slog.Uint64("principal_id", uint64(link.PrincipalID)),
-				slog.String("err", rerr.Error()),
-			)
-		}
-	} else {
+	r.reconcileAfterSignIn(ctx, pending.providerID, link.PrincipalID, claims, false)
+	return link.PrincipalID, nil
+}
+
+// reconcileAfterSignIn runs the claim-to-grant reconciliation pass
+// (epic #188, REQ-AC-62) shared by the existing-link and
+// auto-provisioning sign-in paths. isNewPrincipal is REQ-AC-69's bar:
+// true on an auto-provisioning login withholds any administrative-level
+// mapped grant on this pass (applied on the principal's next, non-
+// provisioning, login instead). A reconciliation failure never fails the
+// sign-in itself (REQ-AC-70: a rules-store outage neither escalates nor
+// locks out) -- it is logged and the principal's existing idp: grants
+// are left exactly as ReconcileIdP found them.
+func (r *RP) reconcileAfterSignIn(ctx context.Context, providerID ProviderID, pid PrincipalID, claims map[string]any, isNewPrincipal bool) {
+	p, perr := r.meta.GetPrincipalByID(ctx, pid)
+	if perr != nil {
 		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.reconcile_idp.principal_lookup_failed",
 			slog.String("activity", observe.ActivityAudit),
-			slog.String("provider", string(pending.providerID)),
-			slog.Uint64("principal_id", uint64(link.PrincipalID)),
+			slog.String("provider", string(providerID)),
+			slog.Uint64("principal_id", uint64(pid)),
 			slog.String("err", perr.Error()),
 		)
+		return
 	}
-	return link.PrincipalID, nil
+	if _, _, rerr := authz.ReconcileIdP(ctx, r.meta, r.clk, p, string(providerID), claims, isNewPrincipal); rerr != nil {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.reconcile_idp.failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(providerID)),
+			slog.Uint64("principal_id", uint64(pid)),
+			slog.String("err", rerr.Error()),
+		)
+	}
+}
+
+// currentProvisioner returns the RP's configured PrincipalProvisioner
+// (nil if SetProvisioner was never called).
+func (r *RP) currentProvisioner() PrincipalProvisioner {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.provisioner
+}
+
+// autoProvisionAndSignIn implements the REQ-AUTH-56 first-login path:
+// sub has no existing link. It provisions and links a new principal when
+// the provider has opted in and every safety check passes, or refuses
+// with ErrNotFound (opted out / not wired up -- indistinguishable from
+// "no such user") or ErrAutoProvisionRefused (opted in but this login
+// cannot complete it).
+//
+// Policy, in order:
+//
+//  1. The provider must have AutoProvision set (REQ-AUTH-56 opt-in,
+//     off by default) and the RP must have a PrincipalProvisioner wired
+//     in (SetProvisioner) -- an operator can enable the flag without the
+//     capability being live, which must fail closed, not panic or
+//     silently no-op into "signed in with no principal".
+//  2. The ID token's `email` claim must be present and asserted
+//     `email_verified` (accepting either JSON bool true or the string
+//     "true", since some IdPs encode it as a string). An unverified or
+//     absent email claim never provisions or matches anything -- REQ
+//     #230: trusting an unverified claim would let any subject at the
+//     IdP claim any email address.
+//  3. The provider must have AutoProvisionDomain configured. The new
+//     principal's domain always comes from this operator-set field,
+//     never from the claim, so an untrusted IdP cannot choose which
+//     local domain it lands a principal in; the local-part comes from
+//     the verified email claim (REQ-AUTH-56's "generated local email").
+//  4. The derived address must not already resolve to a principal or
+//     alias. Linking an OIDC identity onto an existing local account
+//     without proof of ownership is an account-takeover vector, so a
+//     collision refuses rather than silently attaching -- an operator
+//     performs an explicit link instead (REQ-AUTH-51).
+func (r *RP) autoProvisionAndSignIn(ctx context.Context, pending pendingAuth, sub string, claims map[string]any) (PrincipalID, error) {
+	provider, err := r.meta.GetOIDCProvider(ctx, string(pending.providerID))
+	if err != nil {
+		return 0, fmt.Errorf("directoryoidc: load provider for autoprovision: %w", err)
+	}
+	if !provider.AutoProvision {
+		r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.autoprovision.disabled",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+		)
+		return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
+	}
+	provisioner := r.currentProvisioner()
+	if provisioner == nil {
+		r.logger.LogAttrs(ctx, slog.LevelError, "directoryoidc.autoprovision.not_wired",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+		)
+		return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
+	}
+
+	email, emailOK := claims["email"].(string)
+	email = strings.TrimSpace(email)
+	if !emailOK || email == "" || !claimEmailVerified(claims) {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "unverified_email")
+		return 0, ErrAutoProvisionRefused
+	}
+	addr, perr := mail.ParseAddress(email)
+	if perr != nil {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "invalid_email_claim")
+		return 0, ErrAutoProvisionRefused
+	}
+	lowered := strings.ToLower(addr.Address)
+	at := strings.LastIndexByte(lowered, '@')
+	if at <= 0 || at == len(lowered)-1 {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "invalid_email_claim")
+		return 0, ErrAutoProvisionRefused
+	}
+	localPart := lowered[:at]
+
+	domain := strings.ToLower(strings.TrimSpace(provider.AutoProvisionDomain))
+	if domain == "" {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "no_domain_configured")
+		return 0, ErrAutoProvisionRefused
+	}
+	canonical := localPart + "@" + domain
+
+	// Collision check: the derived address must not already belong to a
+	// principal or resolve via an alias. A race between this check and
+	// the eventual insert is closed by CreateExternalPrincipal's own
+	// uniqueness constraint (store.ErrConflict on the canonical email),
+	// which surfaces as a generic provisioning failure below.
+	if _, cerr := r.meta.GetPrincipalByEmail(ctx, canonical); cerr == nil {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "address_collision")
+		return 0, ErrAutoProvisionRefused
+	} else if !errors.Is(cerr, store.ErrNotFound) {
+		return 0, fmt.Errorf("directoryoidc: lookup principal for autoprovision: %w", cerr)
+	}
+	if _, aerr := r.meta.ResolveAlias(ctx, localPart, domain); aerr == nil {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "address_collision")
+		return 0, ErrAutoProvisionRefused
+	} else if !errors.Is(aerr, store.ErrNotFound) {
+		return 0, fmt.Errorf("directoryoidc: resolve alias for autoprovision: %w", aerr)
+	}
+	if _, aerr := r.meta.ResolveAliasExternalTarget(ctx, localPart, domain); aerr == nil {
+		r.auditAutoProvisionRefused(ctx, pending.providerID, "address_collision")
+		return 0, ErrAutoProvisionRefused
+	} else if !errors.Is(aerr, store.ErrNotFound) {
+		return 0, fmt.Errorf("directoryoidc: resolve external-target alias for autoprovision: %w", aerr)
+	}
+
+	displayName, _ := claims["name"].(string)
+	pid, cerr := provisioner.CreateExternalPrincipal(ctx, canonical, displayName)
+	if cerr != nil {
+		r.logger.LogAttrs(ctx, slog.LevelError, "directoryoidc.autoprovision.create_failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+			slog.String("err", cerr.Error()),
+		)
+		if errors.Is(cerr, store.ErrConflict) {
+			return 0, ErrAutoProvisionRefused
+		}
+		return 0, fmt.Errorf("directoryoidc: auto-provision principal: %w", cerr)
+	}
+
+	if lerr := r.meta.LinkOIDC(ctx, store.OIDCLink{
+		PrincipalID:     pid,
+		ProviderName:    string(pending.providerID),
+		Subject:         sub,
+		EmailAtProvider: email,
+	}); lerr != nil {
+		// The principal now exists but is unlinked. A retry of this same
+		// sign-in re-enters this method (LookupOIDCLink still misses),
+		// but the collision check above now finds the just-created
+		// principal and refuses -- fails closed rather than minting a
+		// second principal for the same claimed address.
+		r.logger.LogAttrs(ctx, slog.LevelError, "directoryoidc.autoprovision.link_failed",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+			slog.Uint64("principal_id", uint64(pid)),
+			slog.String("err", lerr.Error()),
+		)
+		return 0, fmt.Errorf("directoryoidc: link auto-provisioned principal: %w", lerr)
+	}
+
+	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.autoprovision",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("provider", string(pending.providerID)),
+		slog.Uint64("principal_id", uint64(pid)),
+	)
+	// REQ-AC-69: isNewPrincipal=true withholds any administrative-level
+	// mapped grant on this login; a later, non-provisioning login for the
+	// same sub applies it normally.
+	r.reconcileAfterSignIn(ctx, pending.providerID, pid, claims, true)
+	return pid, nil
+}
+
+// claimEmailVerified reports whether claims carries a truthy
+// email_verified value, accepting both the JSON-boolean shape (the OIDC
+// core spec) and a string "true" (some IdPs encode it that way).
+func claimEmailVerified(claims map[string]any) bool {
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	default:
+		return false
+	}
+}
+
+// auditAutoProvisionRefused logs a refused auto-provisioning attempt.
+// The reason is logged (operator-visible, for diagnosing a
+// misconfiguration) but never returned to the caller -- ErrAutoProvisionRefused's
+// message stays generic so an unauthenticated caller cannot use it to
+// probe which addresses exist.
+func (r *RP) auditAutoProvisionRefused(ctx context.Context, providerID ProviderID, reason string) {
+	r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.autoprovision.refused",
+		slog.String("activity", observe.ActivityAudit),
+		slog.String("provider", string(providerID)),
+		slog.String("reason", reason),
+	)
 }
 
 // Unlink removes a principal's OIDC association. Returns ErrNotFound

@@ -745,6 +745,138 @@ func TestOIDCProviders_CRUD(t *testing.T) {
 	}
 }
 
+// oidcProviderWireDTO mirrors protoadmin's unexported oidcProviderDTO
+// wire shape for tests in the external protoadmin_test package.
+type oidcProviderWireDTO struct {
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	AutoProvision       bool   `json:"auto_provision"`
+	AutoProvisionDomain string `json:"auto_provision_domain"`
+}
+
+// TestOIDCProviders_AutoProvisionGate exercises the REQ-AUTH-56 REST
+// surface (issue #230): setting auto_provision=true, whether at create
+// or via PATCH, requires a server:superadmin caller (mirrors the
+// authz_trusted claim-mapping gate's posture -- letting anyone with an
+// account at the configured IdP mint a local principal is a
+// whole-deployment security decision). An admin-but-not-superadmin
+// caller is refused; disabling it (a strictly safer direction) is not
+// gated the same way.
+func TestOIDCProviders_AutoProvisionGate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	_, superKey := h.bootstrap("superadmin-oidc@example.test")
+	p, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "superadmin-oidc@example.test")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	p.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, p); err != nil {
+		t.Fatalf("UpdatePrincipal: %v", err)
+	}
+	if err := h.h.Store.Meta().InsertDomain(ctx, store.Domain{Name: "auto.example", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+
+	// A domain-scoped admin (admin, not super-admin).
+	opID := h.createPrincipal(superKey, "op-oidc@example.test")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal op: %v", err)
+	}
+	_, opKey := h.createAPIKey(superKey, opID)
+
+	stub := newOIDCStubMini(t)
+
+	// A domain-admin (not superadmin) cannot create a provider with
+	// auto_provision=true.
+	res, buf := h.doRequest("POST", "/api/v1/oidc/providers", opKey, map[string]any{
+		"name":                  "autoprov-forbidden",
+		"issuer":                stub.URL,
+		"client_id":             "cid",
+		"client_secret":         "csecret",
+		"auto_provision":        true,
+		"auto_provision_domain": "auto.example",
+	})
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("domain-admin create with auto_provision = %d, want 403: %s", res.StatusCode, buf)
+	}
+
+	// A superadmin can. auto_provision_domain is required.
+	res, buf = h.doRequest("POST", "/api/v1/oidc/providers", superKey, map[string]any{
+		"name":           "autoprov",
+		"issuer":         stub.URL,
+		"client_id":      "cid",
+		"client_secret":  "csecret",
+		"auto_provision": true,
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("superadmin create with auto_provision, no domain = %d, want 400: %s", res.StatusCode, buf)
+	}
+	res, buf = h.doRequest("POST", "/api/v1/oidc/providers", superKey, map[string]any{
+		"name":                  "autoprov",
+		"issuer":                stub.URL,
+		"client_id":             "cid",
+		"client_secret":         "csecret",
+		"auto_provision":        true,
+		"auto_provision_domain": "auto.example",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("superadmin create with auto_provision = %d: %s", res.StatusCode, buf)
+	}
+	var created oidcProviderWireDTO
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !created.AutoProvision || created.AutoProvisionDomain != "auto.example" {
+		t.Fatalf("created DTO = %+v", created)
+	}
+
+	// A domain-admin (not superadmin) cannot flip an existing provider's
+	// auto_provision to true via PATCH.
+	res, buf = h.doRequest("PATCH", "/api/v1/oidc/providers/autoprov", opKey, map[string]any{
+		"auto_provision": true,
+	})
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("domain-admin PATCH auto_provision=true = %d, want 403: %s", res.StatusCode, buf)
+	}
+
+	// But a domain-admin CAN disable it (reducing access is always
+	// safe) -- no superadmin gate on the false direction.
+	res, buf = h.doRequest("PATCH", "/api/v1/oidc/providers/autoprov", opKey, map[string]any{
+		"auto_provision": false,
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("domain-admin PATCH auto_provision=false = %d: %s", res.StatusCode, buf)
+	}
+	var patched oidcProviderWireDTO
+	if err := json.Unmarshal(buf, &patched); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if patched.AutoProvision {
+		t.Fatalf("patched DTO still auto_provision=true: %+v", patched)
+	}
+
+	// A superadmin can re-enable it.
+	res, buf = h.doRequest("PATCH", "/api/v1/oidc/providers/autoprov", superKey, map[string]any{
+		"auto_provision": true,
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("superadmin PATCH auto_provision=true = %d: %s", res.StatusCode, buf)
+	}
+
+	// A PATCH naming no recognised field is a deterministic 501, not a
+	// silent success.
+	res, buf = h.doRequest("PATCH", "/api/v1/oidc/providers/autoprov", superKey, map[string]any{})
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("empty PATCH = %d, want 501: %s", res.StatusCode, buf)
+	}
+}
+
 // newOIDCStubMini returns an httptest.Server speaking just enough of
 // the OIDC discovery endpoint for RP.AddProvider to succeed. Full
 // token-exchange flow is tested in directoryoidc; here we only need
