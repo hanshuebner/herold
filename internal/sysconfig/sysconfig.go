@@ -1058,6 +1058,42 @@ type PushConfig struct {
 	// set only when the credential's project_id field is absent or
 	// wrong for the deployment's Firebase project.
 	FCMProjectID string `toml:"fcm_project_id,omitempty"`
+
+	// Network configures the SSRF guard applied to every push endpoint
+	// URL a client registers (a Web Push / UnifiedPush subscription's
+	// endpoint is a caller-supplied URL the server itself POSTs to).
+	// Zero value: loopback / link-local / RFC1918 / CGNAT / IPv6 ULA
+	// targets are refused, https is required, and only ports 443/80
+	// (when insecure endpoints are permitted) are dialed.
+	Network PushEndpointNetwork `toml:"network,omitempty"`
+}
+
+// PushEndpointNetwork is the operator-facing SSRF-guard configuration
+// for push subscription endpoints (re #211). Applied by
+// internal/netguard.Guard at both PushSubscription/set { create } and
+// at every outbound dial the dispatcher performs, so a policy change
+// takes effect on the next delivery attempt without a migration.
+type PushEndpointNetwork struct {
+	// AllowedHosts exempts specific hostnames or IP-literal strings
+	// (matched case-insensitively, exact match against the endpoint
+	// URL's host) from the default loopback / link-local / RFC1918 /
+	// CGNAT / IPv6 ULA block — the escape hatch for a self-hosted
+	// UnifiedPush distributor (or ntfy/NextPush instance) running on
+	// the operator's own network. Matching is against the declared
+	// hostname, never the resolved address, so an attacker-supplied
+	// endpoint cannot borrow the exemption by resolving to the same IP.
+	AllowedHosts []string `toml:"allowed_hosts,omitempty"`
+
+	// AllowInsecure permits http:// endpoints. Default false (https
+	// required): RFC 8030 push gateways are normally reached over TLS;
+	// set true only for a distributor on a trusted internal network
+	// that does not terminate TLS.
+	AllowInsecure bool `toml:"allow_insecure,omitempty"`
+
+	// AllowedPorts extends the default port set ({443}, plus {80} when
+	// AllowInsecure is set) with additional operator-declared ports,
+	// e.g. a distributor listening on a nonstandard port.
+	AllowedPorts []int `toml:"allowed_ports,omitempty"`
 }
 
 // VAPIDPrivateKeyRef returns the operator-supplied secret reference
@@ -3130,6 +3166,17 @@ func Validate(c *Config) error {
 	if push.CoalesceWindowSeconds < 0 || push.CoalesceWindowSeconds > 300 {
 		return fmt.Errorf("sysconfig: [server.push] coalesce_window_seconds %d out of range (0..300)",
 			push.CoalesceWindowSeconds)
+	}
+	// Endpoint SSRF-guard knobs (re #211).
+	for _, h := range push.Network.AllowedHosts {
+		if strings.TrimSpace(h) == "" {
+			return errors.New("sysconfig: [server.push.network] allowed_hosts entries must not be empty")
+		}
+	}
+	for _, p := range push.Network.AllowedPorts {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("sysconfig: [server.push.network] allowed_ports entry %d out of range (1..65535)", p)
+		}
 	}
 	// Suite SPA (REQ-DEPLOY-COLOC-01..05). The asset_dir override is
 	// validated at parse time so a missing path fails the load rather

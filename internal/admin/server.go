@@ -2845,21 +2845,28 @@ func composeAdminAndUI(
 	// Outbound Web Push dispatcher (Wave 3.8b, REQ-PROTO-123 + 125 +
 	// 126). Constructed unconditionally so the JMAP handler can call
 	// SendVerificationPing — the dispatcher's Run loop short-circuits
-	// when VAPID is unconfigured. The HTTP client uses
-	// netguard.ControlContext so a misconfigured push endpoint that
-	// resolves to a private IP is refused before connect.
+	// when VAPID is unconfigured. The endpoint is a caller-supplied URL
+	// (re #211): pushEndpointGuard both validates it at
+	// PushSubscription/set { create } (below, wired into jmappush) and
+	// is the outbound Transport's DialContext, so every dispatcher POST
+	// -- delivery and verification ping alike -- resolves the host once
+	// and dials the validated literal, defeating DNS-rebinding races.
+	// [server.push.network] carries the operator's allowlist for a
+	// self-hosted UnifiedPush distributor on their own network.
 	pushTimeoutSecs := cfg.Server.Push.HTTPTimeoutSeconds
 	if pushTimeoutSecs <= 0 {
 		pushTimeoutSecs = int(webpush.DefaultHTTPTimeout / time.Second)
 	}
-	pushDialer := &net.Dialer{
-		Timeout:        time.Duration(pushTimeoutSecs) * time.Second,
-		ControlContext: netguard.ControlContext(),
-	}
+	pushEndpointGuard := netguard.NewGuard(netguard.GuardOptions{
+		AllowedHosts: cfg.Server.Push.Network.AllowedHosts,
+		AllowedPorts: cfg.Server.Push.Network.AllowedPorts,
+		RequireHTTPS: !cfg.Server.Push.Network.AllowInsecure,
+		DialTimeout:  time.Duration(pushTimeoutSecs) * time.Second,
+	})
 	pushHTTPClient := &http.Client{
 		Timeout: time.Duration(pushTimeoutSecs) * time.Second,
 		Transport: &http.Transport{
-			DialContext: pushDialer.DialContext,
+			DialContext: pushEndpointGuard.DialContext,
 		},
 	}
 	// FCM transport (re #200): a second, independent delivery backend
@@ -2907,7 +2914,7 @@ func composeAdminAndUI(
 		return composedHandlers{}, fmt.Errorf("admin: webpush dispatcher: %w", err)
 	}
 	bundle.srvs.webpushDispatch = pushDispatcher
-	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, pushDispatcher, logger.With("subsystem", "jmap-push"), clk)
+	jmappush.Register(jmapSrv.Registry(), st, vapidMgr, pushDispatcher, logger.With("subsystem", "jmap-push"), clk, pushEndpointGuard)
 	// CategorySettings/get + CategorySettings/set + CategorySettings/recategorise
 	// (Wave 3.13, REQ-FILT-200..231). Both cat and jobs are nil when no LLM
 	// endpoint is configured; the handlers advertise the capability and serve

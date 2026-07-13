@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/vapid"
@@ -31,6 +32,14 @@ type handlerSet struct {
 	clk      clock.Clock
 	vapid    *vapid.Manager
 	verifier VerificationPinger
+	// endpointGuard enforces the SSRF egress policy (re #211) against
+	// every subscription endpoint URL at create time -- a fail-fast
+	// rejection so an obviously disallowed target never reaches the
+	// store. nil disables the check (accepted only because production
+	// wiring in admin/server.go always supplies a guard; the dispatcher
+	// applies the same policy again at dial time regardless, so this
+	// is defence in depth, not the sole boundary).
+	endpointGuard *netguard.Guard
 }
 
 // Register installs the JMAP PushSubscription handlers under
@@ -49,14 +58,14 @@ type handlerSet struct {
 // Idempotent on the per-method axis: re-registering a method panics
 // because that is a programmer bug per protojmap.CapabilityRegistry's
 // contract.
-func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manager, verifier VerificationPinger, logger *slog.Logger, clk clock.Clock) {
+func Register(reg *protojmap.CapabilityRegistry, st store.Store, vm *vapid.Manager, verifier VerificationPinger, logger *slog.Logger, clk clock.Clock, endpointGuard *netguard.Guard) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if clk == nil {
 		clk = clock.NewReal()
 	}
-	h := &handlerSet{store: st, logger: logger, clk: clk, vapid: vm, verifier: verifier}
+	h := &handlerSet{store: st, logger: logger, clk: clk, vapid: vm, verifier: verifier, endpointGuard: endpointGuard}
 	// PushSubscription/get and PushSubscription/set are Core methods per
 	// RFC 8620 §5.2. Register them under CapabilityCore so the standard
 	// "using": ["urn:ietf:params:jmap:core"] is sufficient.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
@@ -29,6 +30,15 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithGuard(t, nil)
+}
+
+// newFixtureWithGuard is newFixture with an endpointGuard wired into
+// the handlerSet, so tests can exercise the re #211 SSRF policy
+// without touching the real network (the guard's resolver is swapped
+// per-test via netguard.Guard.SetResolverIPsForTest).
+func newFixtureWithGuard(t *testing.T, guard *netguard.Guard) *fixture {
 	t.Helper()
 	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil, clock.NewReal())
 	if err != nil {
@@ -49,7 +59,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("vapid.Generate: %v", err)
 	}
 	mgr := vapid.NewWithKey(kp)
-	h := &handlerSet{store: st, logger: nil, clk: clock.NewFake(clock.NewFake(clock.NewReal().Now()).Now()), vapid: mgr}
+	h := &handlerSet{store: st, logger: nil, clk: clock.NewFake(clock.NewFake(clock.NewReal().Now()).Now()), vapid: mgr, endpointGuard: guard}
 	return &fixture{
 		t:       t,
 		store:   st,

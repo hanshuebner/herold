@@ -351,7 +351,7 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 	if transport == store.PushTransportFCM {
 		row, serr = buildFCMCreateRow(pid, in)
 	} else {
-		row, serr = buildWebPushCreateRow(pid, in)
+		row, serr = h.buildWebPushCreateRow(ctx, pid, in)
 	}
 	if serr != nil {
 		return store.PushSubscription{}, serr, nil
@@ -394,14 +394,43 @@ func buildFCMCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSub
 // buildWebPushCreateRow validates and builds the store row for a
 // kind="webpush" (or omitted-kind) /set { create } payload — the
 // pre-existing RFC 8620 §7.2 shape.
-func buildWebPushCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError) {
+//
+// Endpoint egress policy (re #211): the URL is a caller-supplied
+// target the server will POST to on every delivery, so it is run
+// through h.endpointGuard's scheme/port validation and a DNS
+// resolution check before the row is ever persisted. This is a
+// fail-fast convenience, not the security boundary -- the DNS answer
+// can legitimately change between now and the next delivery attempt,
+// so the dispatcher's outbound HTTP client applies the identical
+// policy again at dial time (internal/netguard.Guard.DialContext),
+// which is the check that cannot be raced.
+func (h *handlerSet) buildWebPushCreateRow(ctx context.Context, pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError) {
 	if strings.TrimSpace(in.URL) == "" {
 		return store.PushSubscription{}, &setError{
 			Type: "invalidProperties", Properties: []string{"url"},
 			Description: "url is required",
 		}
 	}
-	if !strings.HasPrefix(in.URL, "https://") {
+	if h.endpointGuard != nil {
+		u, err := h.endpointGuard.ValidateURL(in.URL)
+		if err != nil {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"url"},
+				Description: err.Error(),
+			}
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := h.endpointGuard.CheckHost(checkCtx, u.Hostname()); err != nil {
+			return store.PushSubscription{}, &setError{
+				Type: "invalidProperties", Properties: []string{"url"},
+				Description: "url endpoint is not permitted: " + err.Error(),
+			}
+		}
+	} else if !strings.HasPrefix(in.URL, "https://") {
+		// No guard wired (test-only fixtures that do not exercise the
+		// network policy; production always supplies one) -- fall back
+		// to the scheme-only check this path always enforced.
 		return store.PushSubscription{}, &setError{
 			Type: "invalidProperties", Properties: []string{"url"},
 			Description: "url must use https",
