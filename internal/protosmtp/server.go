@@ -197,6 +197,7 @@ type Server struct {
 	bouncePoster  BouncePoster
 	subQueue      SubmissionQueue
 	webhookDisp   WebhookDispatcher
+	mlistExpander MailingListExpander
 	// extImg is the operator policy for inbound HTML external-image
 	// internalization (17-external-images.md). Zero value means
 	// passthrough (no rewrite). Read on every inbound message; SIGHUP
@@ -399,6 +400,20 @@ func (s *Server) SetSubmissionQueue(q SubmissionQueue) {
 // before listeners bind.
 func (s *Server) SetWebhookDispatcher(d WebhookDispatcher) {
 	s.webhookDisp = d
+}
+
+// SetMailingListExpander installs the mailing-list fan-out handle
+// (issue #183, REQ-MLIST-10..12). Built after the outbound queue (the
+// Expander submits through it and ARC-seals with a DKIM key manager
+// keyed off the same store), so wiring is late, mirroring
+// SetSubmissionQueue. nil is permitted and collapses a RCPT TO that
+// resolved to a mailing list to "accept and drop, audit-logged" -- see
+// finishMessageWithBlob's mailingList branch.
+//
+// Concurrency: same shape as SetBouncePoster; operators set this before
+// listeners bind.
+func (s *Server) SetMailingListExpander(e MailingListExpander) {
+	s.mlistExpander = e
 }
 
 // HandleConn drives one already-accepted connection through the SMTP

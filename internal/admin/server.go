@@ -46,6 +46,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/maildkim"
 	"github.com/hanshuebner/herold/internal/maildmarc"
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/mailspf"
 	"github.com/hanshuebner/herold/internal/netguard"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -641,6 +642,18 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// queue.Submit shape JMAP EmailSubmission/set and the HTTP send API
 	// already use post-3.1.5.
 	smtpServer.SetSubmissionQueue(outboundQ)
+
+	// Mailing-list fan-out (Stage 1, issue #183, REQ-MLIST-10..12/20..24/
+	// 30..32). The Expander submits fan-out copies through the same
+	// outboundQ every other outbound path uses and ARC-seals with a DKIM
+	// key manager over the same store the operator's DKIM keys already
+	// live in -- no separate signer setup. Built after outboundQ exists,
+	// so wiring is late (SetMailingListExpander), mirroring
+	// SetSubmissionQueue above.
+	mlistKeyMgr := keymgmt.NewManager(st.Meta(), logger.With("subsystem", "maillist-arc"), clk, nil)
+	mlistSealer := mailarc.NewSealer(mlistKeyMgr, nil, logger.With("subsystem", "maillist-arc"))
+	mlistExpander := maillist.NewExpander(st.Meta(), outboundQ, mlistSealer, clk, logger.With("subsystem", "maillist"))
+	smtpServer.SetMailingListExpander(mlistExpander)
 
 	// Webhook dispatcher (Phase 3 Wave 3.5c-Z + Track A/C). Constructs
 	// a process-local signing key for fetch URLs; persistent rotation

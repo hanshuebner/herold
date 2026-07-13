@@ -23,6 +23,7 @@ import (
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/srs"
+	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/taggedaddr"
 	heroldtls "github.com/hanshuebner/herold/internal/tls"
 )
@@ -156,6 +157,12 @@ type rcptEntry struct {
 	// own principals, resolveInboundSRS resolves principalID directly
 	// instead (normal local delivery; srsBounceTo stays empty).
 	srsBounceTo string
+	// mailingList is set when this recipient's address is a hosted
+	// mailing list's posting_address (REQ-MLIST-10, issue #183).
+	// principalID stays 0; DATA-time dispatch expands to the list's
+	// active/each roster via internal/maillist instead of local mailbox
+	// delivery or forwarding.
+	mailingList *store.MailingList
 }
 
 // runSession is invoked by Server.Serve for each accepted connection.
@@ -725,6 +732,26 @@ func (sess *session) cmdRCPT(rest string) bool {
 		domain:    domain,
 		notify:    rp.notify,
 		orcpt:     rp.orcpt,
+	}
+
+	// REQ-MLIST-10: mail to a hosted mailing list's posting_address
+	// resolves to the list and is expanded at DATA-finish time, ahead of
+	// -- and independent from -- the normal principal/alias/plugin
+	// resolution chain below. This applies uniformly to relay-in and
+	// submission listeners: an internal poster and an external poster
+	// both address the list the same way. GetMailingListByPostingAddress
+	// is a case-insensitive indexed lookup; ErrNotFound (the overwhelming
+	// majority of RCPTs, which never name a list) falls through to the
+	// mode-specific resolution unchanged.
+	if ml, mlErr := sess.srv.store.Meta().GetMailingListByPostingAddress(sess.ctx, addr); mlErr == nil {
+		entry.mailingList = &ml
+		sess.envelope.rcpts = append(sess.envelope.rcpts, entry)
+		sess.st = stateRecipients
+		sess.writeReply("250 2.1.5 recipient ok")
+		return false
+	} else if !errors.Is(mlErr, store.ErrNotFound) {
+		sess.writeReply("451 4.3.0 directory lookup failed")
+		return false
 	}
 
 	// REQ-DIR-RCPT-12: the resolve_rcpt hook is inbound-only. Submission

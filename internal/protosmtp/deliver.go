@@ -232,6 +232,20 @@ func (sess *session) finishMessageWithBlob(
 		messageID = id
 	}
 	for _, rc := range sess.envelope.rcpts {
+		if rc.mailingList != nil {
+			// REQ-MLIST-10..12/20..24/30..32, issue #183: this recipient
+			// is a hosted mailing list's posting_address. Expansion is
+			// its own path -- no local mailbox insert, no per-recipient
+			// Sieve, no reaction/tagged-address handling -- since the
+			// list rewrites the message per member copy and re-injects
+			// each copy through the normal outbound queue (member
+			// principals loop back through inbound delivery again via
+			// the queue's loopback deliverer, where their own Sieve
+			// applies to their own copy).
+			sess.expandMailingList(ctx, rc, msg, finalBytes, authResults)
+			anyOK = true
+			continue
+		}
 		if rc.synthetic {
 			// REQ-DIR-RCPT-07: synthetic recipient. Skip mailbox insert,
 			// per-recipient Sieve, and (unless opted in) spam

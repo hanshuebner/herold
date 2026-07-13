@@ -3,6 +3,7 @@ package protosmtp
 import (
 	"context"
 
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
@@ -23,6 +24,21 @@ import (
 // directly.
 type SubmissionQueue interface {
 	Submit(ctx context.Context, msg queue.Submission) (queue.EnvelopeID, error)
+}
+
+// MailingListExpander is the seam between the SMTP DATA-phase loop and
+// internal/maillist (issue #183, REQ-MLIST-10..12). When a RCPT TO
+// resolved to a hosted mailing list's posting_address (rcptEntry.
+// mailingList), DATA-finish calls Expand instead of local mailbox
+// delivery or forwarding; the guard checks, header/ARC shaping, and
+// roster-streamed enqueue all live in internal/maillist, not here.
+//
+// The interface is the narrow shape *maillist.Expander exposes; kept as
+// an interface (rather than importing *maillist.Expander directly at
+// the Server-field level) purely for test substitution, matching the
+// SubmissionQueue / WebhookDispatcher seams above.
+type MailingListExpander interface {
+	Expand(ctx context.Context, in maillist.ExpandInput) (maillist.ExpandResult, error)
 }
 
 // SyntheticDispatch carries the per-message inputs for a synthetic-
