@@ -761,6 +761,75 @@ func TestSignerInvoked(t *testing.T) {
 	}
 }
 
+// TestDeliver_HeaderOverlay_PrependedUnsigned exercises the REQ-MLIST-11
+// (issue #184) header-overlay mechanism on the unsigned delivery path:
+// Submission.HeaderOverlay is persisted on the queue row (not spliced
+// into Body, so the blob store never sees a distinct byte slice per
+// overlay value) and Queue.deliver prepends it to the wire stream ahead
+// of Body.
+func TestDeliver_HeaderOverlay_PrependedUnsigned(t *testing.T) {
+	f := newFixture(t, fixtureOpts{concurrency: 4, perHost: 2})
+	overlay := "List-Unsubscribe: <https://mail.example.test/lists/1/unsubscribe?token=abc>\r\n" +
+		"List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
+	f.submit(t, queue.Submission{
+		MailFrom:      "list+bounce@local.test",
+		Recipients:    []string{"member@dest.test"},
+		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		HeaderOverlay: []byte(overlay),
+	})
+	if !waitFor(t, 5*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatal("deliver never called")
+	}
+	calls := f.deliv.callsCopy()
+	if len(calls) != 1 {
+		t.Fatalf("delivery calls: %d", len(calls))
+	}
+	want := overlay + "Subject: hi\r\n\r\nbody\r\n"
+	if string(calls[0].MessageBytes) != want {
+		t.Fatalf("delivered bytes = %q, want overlay prepended to body verbatim: %q", calls[0].MessageBytes, want)
+	}
+}
+
+// TestDeliver_HeaderOverlay_PrependedAfterSigning proves the overlay is
+// spliced onto the wire stream AFTER the signing pass, not before: it
+// must be the very first bytes on the wire, ahead of whatever the Signer
+// (here recordingSigner, which prepends its own marker header) produced.
+// This is the ordering REQ-MLIST-11's design note relies on -- an
+// unsigned header prepended above a signature does not invalidate it,
+// exactly because it sits outside the signed byte range.
+func TestDeliver_HeaderOverlay_PrependedAfterSigning(t *testing.T) {
+	signer := &recordingSigner{}
+	f := newFixture(t, fixtureOpts{
+		concurrency: 4,
+		perHost:     2,
+		signer:      signer,
+	})
+	overlay := "List-Unsubscribe: <https://mail.example.test/lists/1/unsubscribe?token=abc>\r\n"
+	f.submit(t, queue.Submission{
+		MailFrom:      "alice@local.test",
+		Recipients:    []string{"bob@dest.test"},
+		Body:          strings.NewReader("Subject: hi\r\n\r\nbody\r\n"),
+		Sign:          true,
+		SigningDomain: "local.test",
+		HeaderOverlay: []byte(overlay),
+	})
+	if !waitFor(t, 5*time.Second, func() bool {
+		return f.deliv.callCount() >= 1
+	}) {
+		t.Fatal("deliver never called")
+	}
+	calls := f.deliv.callsCopy()
+	if len(calls) != 1 {
+		t.Fatalf("delivery calls: %d", len(calls))
+	}
+	want := overlay + "X-Test-Signed: local.test;\r\n" + "Subject: hi\r\n\r\nbody\r\n"
+	if string(calls[0].MessageBytes) != want {
+		t.Fatalf("delivered bytes = %q, want overlay ahead of the signed message: %q", calls[0].MessageBytes, want)
+	}
+}
+
 // TestSignerFailureIsPermanentNotUnsignedDelivery is the regression
 // guard for re #20: when Sign=true and the signer returns a non-context
 // error, the queue must classify the row as a permanent failure and

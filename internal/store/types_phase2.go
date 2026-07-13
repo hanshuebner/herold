@@ -211,6 +211,16 @@ type QueueItem struct {
 	IdempotencyKey string
 	// CreatedAt is the insert instant.
 	CreatedAt time.Time
+	// HeaderOverlay is an optional small per-recipient header block
+	// (a few hundred bytes, e.g. a mailing-list's REQ-MLIST-56
+	// List-Unsubscribe / List-Unsubscribe-Post pair) that Queue.deliver
+	// prepends to the shared body blob as it streams to the wire, still
+	// unsigned, after any DKIM signing pass. It is never persisted into
+	// BodyBlobHash, so N rows sharing identical content but distinct
+	// HeaderOverlay values still share exactly one body blob
+	// (REQ-MLIST-11, issue #184). Empty when the submission carries no
+	// per-recipient header variation, the overwhelming majority of rows.
+	HeaderOverlay string
 }
 
 // QueueFilter narrows a ListQueueItems read. Zero values mean "no

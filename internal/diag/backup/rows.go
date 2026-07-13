@@ -375,6 +375,11 @@ type QueueRow struct {
 	DSNOrcpt        string  `json:"dsn_orcpt"`
 	IdempotencyKey  *string `json:"idempotency_key,omitempty"`
 	CreatedAtUs     int64   `json:"created_at_us"`
+	// HeaderOverlay is the REQ-MLIST-11 per-recipient header block
+	// (migration 0087) Queue.deliver prepends to the shared body blob at
+	// wire-delivery time. Empty for every row with no per-recipient
+	// header variation.
+	HeaderOverlay string `json:"header_overlay"`
 }
 
 type DKIMKeyRow struct {

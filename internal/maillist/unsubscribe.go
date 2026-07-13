@@ -20,15 +20,19 @@ import (
 // member of exactly one list, REQ-MLIST-59), so the two header lines
 // below are the one piece of a fan-out copy's content that is NOT
 // list-wide-identical across members, unlike List-ID/List-Post/
-// Auto-Submitted (shape.go's buildPrependedHeaders). Expand.go applies
-// them per member, after ARC-sealing (mailarc.Sealer.Seal is called once
-// over the list-wide-identical content, REQ-MLIST-21): a per-recipient
+// Auto-Submitted (shape.go's buildPrependedHeaders). Expand.go renders
+// them per member as a queue.Submission.HeaderOverlay, carried on the
+// queue row rather than spliced into the message body: a per-recipient
 // header is, by construction, never something a single shared signature
 // can cover, exactly like the per-member VERP envelope MAIL FROM this
 // package already produces (REQ-MLIST-50) -- List-Unsubscribe is the
-// same pattern realised as a header instead of an envelope field. ARC/
-// DKIM verifiers never require the absence of an unsigned header from a
-// signature's covered set, so this costs nothing on the receiving end.
+// same pattern realised as a header instead of an envelope field. Queue
+// deliver applies the overlay at wire-delivery time, after ARC-sealing
+// (mailarc.Sealer.Seal, called once over the list-wide-identical content,
+// REQ-MLIST-21) and after DKIM signing, so the persisted body blob stays
+// one shared blob across the whole fan-out (REQ-MLIST-11, issue #184).
+// Neither DKIM's nor ARC's signed-header set covers List-Unsubscribe, so
+// this costs nothing on the receiving end.
 
 // UnsubscribeTokenTTL bounds how long a minted TokenPurposeUnsubscribe
 // token stays valid (REQ-MLIST-58: "a bounded TTL"). Long enough that a
@@ -56,20 +60,21 @@ func UnsubscribeURL(baseURL string, ts *TokenSigner, ml store.MailingList, membe
 	return strings.TrimRight(baseURL, "/") + fmt.Sprintf(UnsubscribePath, uint64(ml.ID)) + "?token=" + token, nil
 }
 
-// prependUnsubscribeHeaders splices the REQ-MLIST-56/57 header pair onto
-// the very front of msg (an already fully rendered, and -- when
-// ml.ARCSeal is on -- already ARC-sealed, fan-out copy). msg is expected
-// to begin directly with a header line (ShapeMessage's / mailarc's own
-// output shape), so a plain byte-level prepend keeps the header/body
-// separator intact without re-parsing.
-func prependUnsubscribeHeaders(msg []byte, unsubscribeURL string) []byte {
+// unsubscribeHeaderOverlay renders the REQ-MLIST-56/57 header pair for
+// one member as a standalone byte block -- NOT spliced onto the shared
+// fan-out copy. Expand.go carries the result on the per-recipient
+// queue.Submission.HeaderOverlay field instead of mutating the message
+// body, so the shared, list-wide-identical body (and, when ml.ARCSeal is
+// on, its ARC seal) stays a single persisted blob across every member's
+// copy (REQ-MLIST-11, issue #184): Queue.deliver prepends this overlay to
+// the shared blob at wire-delivery time, after any DKIM signing pass.
+func unsubscribeHeaderOverlay(unsubscribeURL string) []byte {
 	var b bytes.Buffer
-	b.Grow(len(msg) + 128)
+	b.Grow(128)
 	b.WriteString("List-Unsubscribe: <")
 	b.WriteString(sanitizeForHeader(unsubscribeURL))
 	b.WriteString(">\r\n")
 	b.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
-	b.Write(msg)
 	return b.Bytes()
 }
 

@@ -137,6 +137,18 @@ type Submission struct {
 	// in QueueStateQueued and remains invisible to the deliverer until
 	// SendAt arrives. The zero value behaves like "deliver immediately".
 	SendAt time.Time
+	// HeaderOverlay is an optional small per-recipient header block
+	// (e.g. a mailing list's REQ-MLIST-56 List-Unsubscribe /
+	// List-Unsubscribe-Post pair) recorded on the queue row and
+	// prepended to Body at wire-delivery time, after any DKIM signing
+	// pass. Unlike Body, Recipients never fan a single Submission call
+	// out to distinct HeaderOverlay values — a caller that needs
+	// per-recipient overlays (like maillist.Expand's per-member
+	// fan-out) calls Submit once per recipient with a single-element
+	// Recipients slice and its own HeaderOverlay, so Body (and
+	// therefore the persisted blob) stays shared across every one of
+	// those calls (REQ-MLIST-11, issue #184).
+	HeaderOverlay []byte
 }
 
 // Queue is the persistent outbound queue orchestrator: scheduler,
@@ -357,6 +369,7 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			DSNEnvID:        msg.DSNEnvelopeID,
 			IdempotencyKey:  idemKey,
 			CreatedAt:       now,
+			HeaderOverlay:   string(msg.HeaderOverlay),
 		}
 		// Stash signing intent + REQUIRETLS in DSNOrcpt and Headers
 		// blob? No — both fields are typed and load-bearing. Use a
@@ -843,6 +856,20 @@ func (q *Queue) deliver(parentCtx context.Context, item store.QueueItem) {
 		// Unsigned path: stream the blob reader directly to the
 		// deliverer; no full-body allocation (REQ-STORE-17/19).
 		messageReader = blobReader
+	}
+
+	// REQ-MLIST-11 (issue #184): a per-row header overlay (e.g. a mailing
+	// list's per-member List-Unsubscribe pair) is spliced onto the very
+	// front of the wire stream here, AFTER any DKIM signing pass above.
+	// The overlay is deliberately unsigned: neither DKIM's nor ARC's
+	// signed-header set (h=) names List-Unsubscribe, so an unsigned
+	// header added above the signature line does not affect verification
+	// on the receiving end. This keeps the persisted body blob --
+	// including the DKIM-Signature SignStream renders over it -- shared
+	// and list-wide-identical across every fan-out copy; only this small
+	// row-local field varies per recipient.
+	if len(item.HeaderOverlay) > 0 {
+		messageReader = io.MultiReader(strings.NewReader(item.HeaderOverlay), messageReader)
 	}
 
 	req := DeliveryRequest{

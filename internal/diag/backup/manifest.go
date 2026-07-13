@@ -607,7 +607,15 @@ const CurrentBackupVersion = 1
 //	List-Unsubscribe / RFC 8058 one-click header pair and the
 //	token-authorised subscriber self-service management page. No new
 //	table; MailingListRow gains the one field.
-const CurrentSchemaVersion = 86
+//
+// 87 — 0087_queue_header_overlay.sql (issue #184, REQ-MLIST-11 regression).
+//
+//	Adds queue.header_overlay: the small per-recipient header block
+//	(e.g. List-Unsubscribe/List-Unsubscribe-Post) Queue.deliver prepends
+//	to the shared body blob at wire-delivery time, so per-recipient
+//	header variation no longer requires a distinct persisted blob per
+//	fan-out copy. No new table; QueueRow gains the one field.
+const CurrentSchemaVersion = 87
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

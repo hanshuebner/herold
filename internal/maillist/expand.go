@@ -245,7 +245,7 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 				slog.String("err", mfErr.Error()))
 			return nil
 		}
-		memberBody := shaped
+		var headerOverlay []byte
 		if canUnsubscribe {
 			unsubURL, uErr := UnsubscribeURL(e.PublicBaseURL, e.TokenSigner, ml, m.ID, e.Clock.Now())
 			if uErr != nil {
@@ -255,13 +255,20 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 					slog.Uint64("member_id", uint64(m.ID)),
 					slog.String("err", uErr.Error()))
 			} else {
-				memberBody = prependUnsubscribeHeaders(shaped, unsubURL)
+				headerOverlay = unsubscribeHeaderOverlay(unsubURL)
 			}
 		}
+		// REQ-MLIST-11: shaped is the one list-wide-identical, already
+		// (optionally) ARC-sealed byte slice reused across every member;
+		// the per-member List-Unsubscribe pair rides on HeaderOverlay
+		// instead of being spliced into Body, so the queue's
+		// content-addressed blob store dedups every Submit call below
+		// down to one stored blob regardless of roster size.
 		if _, serr := e.Submitter.Submit(ctx, queue.Submission{
 			MailFrom:      mailFrom,
 			Recipients:    []string{addr},
-			Body:          bytes.NewReader(memberBody),
+			Body:          bytes.NewReader(shaped),
+			HeaderOverlay: headerOverlay,
 			Sign:          true,
 			SigningDomain: ml.Domain,
 			DSNNotify:     store.DSNNotifyFailure,

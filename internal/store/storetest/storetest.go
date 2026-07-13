@@ -124,6 +124,7 @@ func Run(t *testing.T, f Factory) {
 		{"OAuthRefreshToken_CascadeOnDeletePrincipal", testOAuthRefreshTokenCascadeOnDeletePrincipal},
 		// -- Phase 2 Wave 2.0 --------------------------------------
 		{"QueueEnqueueAndList", testQueueEnqueueAndList},
+		{"QueueHeaderOverlay_Roundtrip", testQueueHeaderOverlayRoundtrip},
 		{"QueueIdempotency", testQueueIdempotency},
 		{"QueueClaimDueTransitionsState", testQueueClaimDueTransitionsState},
 		{"QueueCompleteSuccessVsFailure", testQueueCompleteSuccessVsFailure},
@@ -4550,6 +4551,56 @@ func testQueueEnqueueAndList(t *testing.T, s store.Store) {
 	}
 	if len(byOther) != 0 {
 		t.Fatalf("byOther len = %d, want 0", len(byOther))
+	}
+}
+
+// testQueueHeaderOverlayRoundtrip exercises migration 0087's
+// queue.header_overlay column (issue #184, REQ-MLIST-11): a row
+// enqueued with HeaderOverlay set round-trips the exact bytes through
+// GetQueueItem and ListQueueItems, and a row that leaves it unset (the
+// overwhelming majority of submissions) reads back empty rather than
+// NULL-related scan errors.
+func testQueueHeaderOverlayRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "queue-overlay@example.com")
+	const overlay = "List-Unsubscribe: <https://mail.example.test/lists/1/unsubscribe?token=abc>\r\n" +
+		"List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
+	idWithOverlay := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID:   p.ID,
+		MailFrom:      "list+bounce@example.com",
+		RcptTo:        "member@dest.test",
+		EnvelopeID:    "env-overlay-1",
+		HeaderOverlay: overlay,
+	})
+	idNoOverlay := mustEnqueue(t, s, store.QueueItem{
+		PrincipalID: p.ID,
+		MailFrom:    "alice@example.com",
+		RcptTo:      "bob@dest.test",
+		EnvelopeID:  "env-overlay-2",
+	})
+
+	got, err := s.Meta().GetQueueItem(ctx, idWithOverlay)
+	if err != nil {
+		t.Fatalf("GetQueueItem(withOverlay): %v", err)
+	}
+	if got.HeaderOverlay != overlay {
+		t.Fatalf("HeaderOverlay = %q, want %q", got.HeaderOverlay, overlay)
+	}
+
+	gotNo, err := s.Meta().GetQueueItem(ctx, idNoOverlay)
+	if err != nil {
+		t.Fatalf("GetQueueItem(noOverlay): %v", err)
+	}
+	if gotNo.HeaderOverlay != "" {
+		t.Fatalf("HeaderOverlay = %q, want empty", gotNo.HeaderOverlay)
+	}
+
+	list, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{EnvelopeID: "env-overlay-1"})
+	if err != nil {
+		t.Fatalf("ListQueueItems: %v", err)
+	}
+	if len(list) != 1 || list[0].HeaderOverlay != overlay {
+		t.Fatalf("ListQueueItems result = %+v, want one row with HeaderOverlay = %q", list, overlay)
 	}
 }
 

@@ -178,13 +178,21 @@ func (f *fakeSubmitter) Calls() []queue.Submission {
 	return out
 }
 
+// bodyOf returns the delivered wire representation of one Submit call:
+// HeaderOverlay (the REQ-MLIST-56 per-member List-Unsubscribe pair, when
+// present) prepended to Body -- exactly what Queue.deliver streams to the
+// wire (queue.go's deliver splices HeaderOverlay onto the shared Body at
+// delivery time, never into the persisted blob itself). Assertions in
+// this file check the delivered bytes, not the persisted blob's own
+// content, so they stay correct whether or not Body carries any
+// per-recipient variation.
 func bodyOf(t *testing.T, sub queue.Submission) string {
 	t.Helper()
 	b, err := io.ReadAll(sub.Body)
 	if err != nil {
 		t.Fatalf("read submission body: %v", err)
 	}
-	return string(b)
+	return string(sub.HeaderOverlay) + string(b)
 }
 
 // TestExpand_OnlyActiveEachMembers exercises REQ-MLIST-10/REQ-MLIST-03:
@@ -913,6 +921,111 @@ func TestExpand_UnsubscribeHeaders_PerMemberDistinctTokens(t *testing.T) {
 		}
 		if len(tokensByMember) != 2 || tokensByMember[m1.ID] == tokensByMember[m2.ID] {
 			t.Fatalf("expected two distinct per-member tokens, got %v", tokensByMember)
+		}
+	})
+}
+
+// TestExpand_UnsubscribeEnabled_SharesOneBlob is THE regression test for
+// issue #184: a list with UnsubscribeEnabled -- the migration 0086
+// default for every list -- fanned out to N members through the REAL
+// outbound queue and REAL blob store must still persist exactly ONE body
+// blob, shared by all N resulting rows, even though every row's
+// List-Unsubscribe token differs. Before the fix, each member's distinct
+// per-member token was spliced into the message body prior to Submit, so
+// the content-addressed blob store saw N distinct byte slices and
+// persisted N distinct blobs -- a live-instance repro found 5 members / 1
+// post producing 5 distinct blob_hash values (count(distinct
+// body_blob_hash), count(*) = "5|5"). This test fails against that
+// behaviour and passes once the per-member token rides on
+// queue.Submission.HeaderOverlay instead of the message body (REQ-MLIST-11).
+func TestExpand_UnsubscribeEnabled_SharesOneBlob(t *testing.T) {
+	runOnBothBackends(t, func(t *testing.T, st store.Store) {
+		ml := mustInsertList(t, st, "list@example.test", false)
+		ml.UnsubscribeEnabled = true
+		if err := st.Meta().UpdateMailingList(context.Background(), ml); err != nil {
+			t.Fatalf("UpdateMailingList: %v", err)
+		}
+		const n = 5
+		for i := 0; i < n; i++ {
+			mustAddExternalMember(t, st, ml.ID, fmt.Sprintf("m%d@example.net", i), store.MailingListMemberActive)
+		}
+
+		clk := clock.NewFake(time.Now())
+		q := queue.New(queue.Options{
+			Store:  st,
+			Logger: discardLogger(),
+			Clock:  clk,
+			// Deliverer is never invoked: Submit only persists rows; no
+			// Run() call happens in this test.
+		})
+		ts := maillist.NewTokenSigner(testDataKey())
+		exp := maillist.NewExpander(st.Meta(), q, nil, clk, discardLogger())
+		exp.TokenSigner = ts
+		exp.PublicBaseURL = "https://mail.example.test"
+		res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+			List:   ml,
+			Parsed: mustParse(t, testMessage),
+			Raw:    []byte(testMessage),
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if res.MemberCount != n {
+			t.Fatalf("MemberCount = %d, want %d", res.MemberCount, n)
+		}
+
+		items, err := st.Meta().ListQueueItems(context.Background(), store.QueueFilter{Limit: 100})
+		if err != nil {
+			t.Fatalf("ListQueueItems: %v", err)
+		}
+		if len(items) != n {
+			t.Fatalf("queue items = %d, want %d", len(items), n)
+		}
+		distinct := map[string]bool{}
+		for _, it := range items {
+			distinct[it.BodyBlobHash] = true
+			if it.BodyBlobHash == "" {
+				t.Fatalf("queue item %d has empty BodyBlobHash", it.ID)
+			}
+			if it.HeaderOverlay == "" {
+				t.Errorf("queue item %d has empty HeaderOverlay despite UnsubscribeEnabled=true", it.ID)
+			}
+		}
+		if len(distinct) != 1 {
+			t.Fatalf("distinct body_blob_hash values = %d, want 1 (fan-out must share one blob regardless of per-member List-Unsubscribe tokens); hashes: %v", len(distinct), distinct)
+		}
+
+		// Cross-check directly against the metadata store's own blob
+		// refcount (blob_refs), incremented once per EnqueueMessage call:
+		// it must equal the member count, proving the store itself (not
+		// just the queue row projection) sees one blob referenced by
+		// every fan-out copy.
+		var sharedHash string
+		for h := range distinct {
+			sharedHash = h
+		}
+		if r, err := st.Blobs().Get(context.Background(), sharedHash); err != nil {
+			t.Fatalf("shared blob %q not present in blob store: %v", sharedHash, err)
+		} else {
+			_ = r.Close()
+		}
+		_, refCount, err := st.Meta().GetBlobRef(context.Background(), sharedHash)
+		if err != nil {
+			t.Fatalf("GetBlobRef(%q): %v", sharedHash, err)
+		}
+		if refCount != int64(n) {
+			t.Fatalf("shared blob ref_count = %d, want %d", refCount, n)
+		}
+
+		// Every row's overlay carries a distinct per-member token (never
+		// shared across members, mirroring the VERP isolation guarantee).
+		tokens := map[string]bool{}
+		for _, it := range items {
+			tok := extractUnsubscribeToken(t, it.HeaderOverlay)
+			tokens[tok] = true
+		}
+		if len(tokens) != n {
+			t.Fatalf("distinct per-member tokens = %d, want %d (overlay must not collapse to one shared token)", len(tokens), n)
 		}
 	})
 }
