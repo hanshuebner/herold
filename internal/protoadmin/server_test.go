@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1297,6 +1298,413 @@ func TestAuditLog_NoDomainOperatorSeesEmpty(t *testing.T) {
 	if len(page.Items) != 0 {
 		t.Errorf("no-domain operator leaked %d audit entry/entries; want 0 (fail-closed): %+v",
 			len(page.Items), page.Items)
+	}
+}
+
+// TestAuditLog_DomainMutations_TaggedAndOperatorScoped exercises the real
+// admin mutation handlers (not a hand-seeded AuditLogEntry) to prove
+// protoadmin.appendAuditDomain actually populates AuditLogEntry.Domain at
+// the domain-scoped call sites (alias.*, domain.*), closing the gap left
+// open by 50df8989 where appendAudit always wrote domain="" (re #145).
+//
+// Security properties asserted:
+//   - A domain-scoped operator sees the domain-tagged entries for ITS OWN
+//     domain (positive: alias.create/domain.create for alpha.example).
+//   - The same operator does NOT see entries for a domain it does not
+//     manage (beta.example) -- no leak.
+//   - The same operator does NOT see a server-wide action (principal.create,
+//     domain="") -- an unscoped action never becomes visible to an operator
+//     by accident.
+//   - A super-admin still sees every domain's entries AND the server-wide
+//     one.
+func TestAuditLog_DomainMutations_TaggedAndOperatorScoped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, adminKey := h.bootstrap("sa-audittag@example.com")
+	sa, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-audittag@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	sa.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, sa); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+
+	// Two real domains, created through the REST endpoint so domain.create
+	// is exercised (and audit-tagged) too.
+	for _, d := range []string{"alpha.example", "beta.example"} {
+		res, buf := h.doRequest("POST", "/api/v1/domains", adminKey, map[string]any{"name": d})
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create domain %s: %d: %s", d, res.StatusCode, buf)
+		}
+	}
+
+	// An alias on each domain, through the REST endpoint (alias.create).
+	for _, d := range []string{"alpha.example", "beta.example"} {
+		res, buf := h.doRequest("POST", "/api/v1/aliases", adminKey, map[string]any{
+			"local":               "info",
+			"domain":              d,
+			"target_principal_id": sa.ID,
+		})
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create alias on %s: %d: %s", d, res.StatusCode, buf)
+		}
+	}
+
+	// A server-wide action: creating an ordinary principal. Must stay
+	// domain="" and therefore invisible to any domain-scoped operator.
+	_ = h.createPrincipal(adminKey, "someone@example.com")
+
+	// Domain-scoped operator managing alpha.example only.
+	opID := h.createPrincipal(adminKey, "op-audittag@example.com")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal operator: %v", err)
+	}
+	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
+		t.Fatalf("AssignManagedDomain: %v", err)
+	}
+	_, opKey := h.createAPIKey(adminKey, opID)
+
+	type entry struct {
+		Action string `json:"action"`
+		Domain string `json:"domain"`
+	}
+	fetchAudit := func(key string, query string) []entry {
+		t.Helper()
+		res, buf := h.doRequest("GET", "/api/v1/audit"+query, key, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/v1/audit%s: %d: %s", query, res.StatusCode, buf)
+		}
+		var page struct {
+			Items []entry `json:"items"`
+		}
+		if err := json.Unmarshal(buf, &page); err != nil {
+			t.Fatalf("decode: %v: %s", err, buf)
+		}
+		return page.Items
+	}
+
+	// Super-admin sees everything: both domains' entries and the
+	// server-wide one.
+	saItems := fetchAudit(adminKey, "?limit=1000")
+	wantSA := map[string]bool{
+		"domain.create alpha.example": false,
+		"domain.create beta.example":  false,
+		"alias.create alpha.example":  false,
+		"alias.create beta.example":   false,
+		"principal.create ":           false,
+	}
+	for _, it := range saItems {
+		key := it.Action + " " + it.Domain
+		if _, ok := wantSA[key]; ok {
+			wantSA[key] = true
+		}
+	}
+	for k, seen := range wantSA {
+		if !seen {
+			t.Errorf("super-admin missing expected audit entry %q", k)
+		}
+	}
+
+	// Domain-scoped operator: only alpha.example, never beta.example, never
+	// the server-wide principal.create.
+	opItems := fetchAudit(opKey, "?limit=1000")
+	if len(opItems) == 0 {
+		t.Fatal("operator: got 0 audit entries; want alpha.example's domain.create + alias.create")
+	}
+	sawAlphaDomainCreate := false
+	sawAlphaAliasCreate := false
+	for _, it := range opItems {
+		if it.Domain != "alpha.example" {
+			t.Errorf("operator scope leaked domain=%q action=%q; want only alpha.example", it.Domain, it.Action)
+		}
+		if it.Action == "principal.create" {
+			t.Errorf("operator saw server-wide action %q; must never be visible to a domain operator", it.Action)
+		}
+		if it.Action == "domain.create" && it.Domain == "alpha.example" {
+			sawAlphaDomainCreate = true
+		}
+		if it.Action == "alias.create" && it.Domain == "alpha.example" {
+			sawAlphaAliasCreate = true
+		}
+	}
+	if !sawAlphaDomainCreate {
+		t.Error("operator did not see its own domain.create entry for alpha.example")
+	}
+	if !sawAlphaAliasCreate {
+		t.Error("operator did not see its own alias.create entry for alpha.example")
+	}
+}
+
+// TestAuditLog_OperatorScope_DefeatAttempts tries to defeat the REQ-ADM-307
+// domain filter on GET /api/v1/audit from the perspective of a malicious or
+// confused domain-scoped operator: an explicit (unsupported) domain query
+// parameter, an action filter combined with domain scope, and keyset
+// pagination. Every attempt MUST fail closed -- the operator never sees a
+// beta.example entry through any of these paths (re #145).
+func TestAuditLog_OperatorScope_DefeatAttempts(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, adminKey := h.bootstrap("sa-defeat@example.com")
+	sa, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-defeat@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	sa.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, sa); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+	for _, d := range []string{"alpha.example", "beta.example"} {
+		res, buf := h.doRequest("POST", "/api/v1/domains", adminKey, map[string]any{"name": d})
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create domain %s: %d: %s", d, res.StatusCode, buf)
+		}
+	}
+	// Several alpha-domain entries (for pagination) and one beta entry
+	// (the thing that must never leak).
+	for i := 0; i < 3; i++ {
+		res, buf := h.doRequest("POST", "/api/v1/aliases", adminKey, map[string]any{
+			"local":               fmt.Sprintf("info%d", i),
+			"domain":              "alpha.example",
+			"target_principal_id": sa.ID,
+		})
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create alpha alias %d: %d: %s", i, res.StatusCode, buf)
+		}
+	}
+	res, buf := h.doRequest("POST", "/api/v1/aliases", adminKey, map[string]any{
+		"local":               "secret",
+		"domain":              "beta.example",
+		"target_principal_id": sa.ID,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create beta alias: %d: %s", res.StatusCode, buf)
+	}
+
+	opID := h.createPrincipal(adminKey, "op-defeat@example.com")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal operator: %v", err)
+	}
+	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
+		t.Fatalf("AssignManagedDomain: %v", err)
+	}
+	_, opKey := h.createAPIKey(adminKey, opID)
+
+	type entry struct {
+		ID     uint64 `json:"id"`
+		Action string `json:"action"`
+		Domain string `json:"domain"`
+	}
+	assertNoLeak := func(t *testing.T, items []entry) {
+		t.Helper()
+		for _, it := range items {
+			if it.Domain == "beta.example" {
+				t.Errorf("defeat attempt succeeded: leaked beta.example entry action=%q", it.Action)
+			}
+		}
+	}
+
+	t.Run("explicit_domain_query_param_ignored", func(t *testing.T) {
+		res, buf := h.doRequest("GET", "/api/v1/audit?domain=beta.example", opKey, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/v1/audit?domain=beta.example: %d: %s", res.StatusCode, buf)
+		}
+		var page struct {
+			Items []entry `json:"items"`
+		}
+		if err := json.Unmarshal(buf, &page); err != nil {
+			t.Fatalf("decode: %v: %s", err, buf)
+		}
+		assertNoLeak(t, page.Items)
+	})
+
+	t.Run("action_filter_intersects_not_replaces_scope", func(t *testing.T) {
+		res, buf := h.doRequest("GET", "/api/v1/audit?action=alias.create", opKey, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/v1/audit?action=alias.create: %d: %s", res.StatusCode, buf)
+		}
+		var page struct {
+			Items []entry `json:"items"`
+		}
+		if err := json.Unmarshal(buf, &page); err != nil {
+			t.Fatalf("decode: %v: %s", err, buf)
+		}
+		assertNoLeak(t, page.Items)
+		if len(page.Items) == 0 {
+			t.Error("action filter combined with domain scope returned 0 rows; want the 3 alpha.example alias.create entries")
+		}
+		for _, it := range page.Items {
+			if it.Action != "alias.create" {
+				t.Errorf("got action=%q; want only alias.create", it.Action)
+			}
+		}
+	})
+
+	t.Run("pagination_stays_scoped", func(t *testing.T) {
+		var beforeID uint64
+		seen := map[uint64]bool{}
+		for page := 0; page < 20; page++ {
+			path := "/api/v1/audit?limit=1"
+			if beforeID != 0 {
+				path += fmt.Sprintf("&before_id=%d", beforeID)
+			}
+			res, buf := h.doRequest("GET", path, opKey, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s: %d: %s", path, res.StatusCode, buf)
+			}
+			var pageBody struct {
+				Items []entry `json:"items"`
+				Next  *string `json:"next"`
+			}
+			if err := json.Unmarshal(buf, &pageBody); err != nil {
+				t.Fatalf("decode: %v: %s", err, buf)
+			}
+			assertNoLeak(t, pageBody.Items)
+			for _, it := range pageBody.Items {
+				seen[it.ID] = true
+			}
+			if pageBody.Next == nil {
+				break
+			}
+			n, err := strconv.ParseUint(*pageBody.Next, 10, 64)
+			if err != nil {
+				t.Fatalf("parse next cursor %q: %v", *pageBody.Next, err)
+			}
+			beforeID = n
+		}
+		if len(seen) < 3 {
+			t.Errorf("pagination collected %d alpha.example entries across pages; want >= 3", len(seen))
+		}
+	})
+}
+
+// TestAuditLog_QueueMutationsTaggedWithSenderDomain proves queue.hold (and
+// by the same code path retry/release/delete) is domain-tagged from the
+// queue item's sender domain, so a domain-scoped operator's audit page
+// shows its own queue actions without leaking another domain's (re #145).
+func TestAuditLog_QueueMutationsTaggedWithSenderDomain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	_, adminKey := h.bootstrap("sa-qaudit@example.com")
+	sa, err := h.h.Store.Meta().GetPrincipalByEmail(ctx, "sa-qaudit@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	sa.Flags |= store.PrincipalFlagSuperAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, sa); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+
+	opID := h.createPrincipal(adminKey, "op-qaudit@example.com")
+	op, err := h.h.Store.Meta().GetPrincipalByID(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	op.Flags = store.PrincipalFlagAdmin
+	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
+		t.Fatalf("UpdatePrincipal operator: %v", err)
+	}
+	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
+		t.Fatalf("AssignManagedDomain: %v", err)
+	}
+	_, opKey := h.createAPIKey(adminKey, opID)
+
+	var alphaID, betaID store.QueueItemID
+	for _, tc := range []struct {
+		mailFrom string
+		dst      *store.QueueItemID
+	}{
+		{"sender@alpha.example", &alphaID},
+		{"sender@beta.example", &betaID},
+	} {
+		id, err := h.h.Store.Meta().EnqueueMessage(ctx, store.QueueItem{
+			PrincipalID: sa.ID,
+			MailFrom:    tc.mailFrom,
+			RcptTo:      "dest@remote.test",
+			EnvelopeID:  store.EnvelopeID("env-" + tc.mailFrom),
+		})
+		if err != nil {
+			t.Fatalf("EnqueueMessage %s: %v", tc.mailFrom, err)
+		}
+		*tc.dst = id
+	}
+
+	for _, id := range []store.QueueItemID{alphaID, betaID} {
+		res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/queue/%d/hold", id), adminKey, nil)
+		if res.StatusCode != http.StatusNoContent {
+			t.Fatalf("hold queue item %d: %d: %s", id, res.StatusCode, buf)
+		}
+	}
+
+	type entry struct {
+		Action  string `json:"action"`
+		Domain  string `json:"domain"`
+		Subject string `json:"subject"`
+	}
+	fetchAudit := func(key string) []entry {
+		t.Helper()
+		res, buf := h.doRequest("GET", "/api/v1/audit?action=queue.hold&limit=1000", key, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/v1/audit: %d: %s", res.StatusCode, buf)
+		}
+		var page struct {
+			Items []entry `json:"items"`
+		}
+		if err := json.Unmarshal(buf, &page); err != nil {
+			t.Fatalf("decode: %v: %s", err, buf)
+		}
+		return page.Items
+	}
+
+	saItems := fetchAudit(adminKey)
+	wantSubjects := map[string]bool{
+		fmt.Sprintf("queue:%d", alphaID): false,
+		fmt.Sprintf("queue:%d", betaID):  false,
+	}
+	for _, it := range saItems {
+		if _, ok := wantSubjects[it.Subject]; ok {
+			wantSubjects[it.Subject] = true
+		}
+	}
+	for subj, seen := range wantSubjects {
+		if !seen {
+			t.Errorf("super-admin missing queue.hold audit entry for %s", subj)
+		}
+	}
+
+	opItems := fetchAudit(opKey)
+	if len(opItems) == 0 {
+		t.Fatal("operator: got 0 queue.hold audit entries; want alpha.example's")
+	}
+	alphaSubject := fmt.Sprintf("queue:%d", alphaID)
+	betaSubject := fmt.Sprintf("queue:%d", betaID)
+	sawAlpha := false
+	for _, it := range opItems {
+		if it.Domain != "alpha.example" {
+			t.Errorf("operator scope leaked domain=%q subject=%q", it.Domain, it.Subject)
+		}
+		if it.Subject == betaSubject {
+			t.Errorf("operator scope leaked beta.example's queue.hold entry: %+v", it)
+		}
+		if it.Subject == alphaSubject {
+			sawAlpha = true
+		}
+	}
+	if !sawAlpha {
+		t.Error("operator did not see its own queue.hold entry for alpha.example")
 	}
 }
 

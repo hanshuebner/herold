@@ -152,18 +152,43 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // appendAudit writes an audit log entry describing a successful or
-// failed mutation. The store is the durable sink; a slog line tagged
-// activity=user at info (success mutations) or activity=audit at warn
-// (auth events) lets log tailers see the event in real time (REQ-OPS-86).
-//
-// Auth-related actions (auth.login, auth.logout) are tagged audit;
-// all other mutations are tagged user.
+// failed mutation, with an empty Domain. Call sites that act on a
+// specific mail domain (aliases, domain management, DKIM, per-domain
+// attachment policy, queue items, webhooks, mailing lists) MUST use
+// appendAuditDomain instead so a domain-scoped operator's audit page
+// (REQ-ADM-307) actually shows their own actions.
 func (s *Server) appendAudit(
 	ctx context.Context,
 	action, subject string,
 	outcome store.AuditOutcome,
 	message string,
 	metadata map[string]string,
+) {
+	s.appendAuditDomain(ctx, action, subject, outcome, message, metadata, "")
+}
+
+// appendAuditDomain is appendAudit with an explicit domain tag. domain
+// records which mail domain the action pertains to (e.g. "example.com");
+// pass "" for actions that are not domain-scoped by nature (server-wide
+// settings, principal/API-key management, auth events) so those entries
+// stay visible to super-admins only -- ListAuditLog's fail-closed IN-list
+// filter on a non-empty operator Domains scope never matches an empty
+// Domain, so an unscoped action never becomes visible to a domain
+// operator by accident.
+//
+// The store is the durable sink; a slog line tagged activity=user at info
+// (success mutations) or activity=audit at warn (auth events) lets log
+// tailers see the event in real time (REQ-OPS-86).
+//
+// Auth-related actions (auth.login, auth.logout) are tagged audit;
+// all other mutations are tagged user.
+func (s *Server) appendAuditDomain(
+	ctx context.Context,
+	action, subject string,
+	outcome store.AuditOutcome,
+	message string,
+	metadata map[string]string,
+	domain string,
 ) {
 	actorKind := store.ActorSystem
 	actorID := "system"
@@ -194,6 +219,7 @@ func (s *Server) appendAudit(
 		Outcome:    outcome,
 		Message:    message,
 		Metadata:   metadata,
+		Domain:     domain,
 	}
 	auditTimer := observe.StartStoreOp("append_audit")
 	err := s.store.Meta().AppendAuditLog(ctx, entry)

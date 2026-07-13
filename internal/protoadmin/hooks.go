@@ -326,12 +326,12 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		s.writeHookError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "hook.create",
+	s.appendAuditDomain(r.Context(), "hook.create",
 		fmt.Sprintf("webhook:%d", inserted.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"owner_kind": inserted.OwnerKind.String(),
 			"owner_id":   inserted.OwnerID,
-		})
+		}, webhookDomain(inserted))
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/webhooks/%d", inserted.ID))
 	// Include the plaintext secret ONCE in the response so the operator can
 	// configure the receiver. Subsequent reads omit it.
@@ -439,9 +439,9 @@ func (s *Server) handlePatchWebhook(w http.ResponseWriter, r *http.Request) {
 		s.writeHookError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "hook.update",
+	s.appendAuditDomain(r.Context(), "hook.update",
 		fmt.Sprintf("webhook:%d", hook.ID),
-		store.OutcomeSuccess, "", nil)
+		store.OutcomeSuccess, "", nil, webhookDomain(hook))
 	updated, err := s.store.Meta().GetWebhook(r.Context(), hook.ID)
 	if err != nil {
 		s.writeHookError(w, r, err)
@@ -459,13 +459,30 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Resolve the owning domain before deleting so the audit entry can be
+	// domain-tagged (REQ-ADM-307); best-effort -- an unresolved owner
+	// still lets the delete proceed, it just audits with domain="".
+	domain := ""
+	if hook, err := s.store.Meta().GetWebhook(r.Context(), id); err == nil {
+		domain = webhookDomain(hook)
+	}
 	if err := s.store.Meta().DeleteWebhook(r.Context(), id); err != nil {
 		s.writeHookError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "hook.delete",
-		fmt.Sprintf("webhook:%d", id), store.OutcomeSuccess, "", nil)
+	s.appendAuditDomain(r.Context(), "hook.delete",
+		fmt.Sprintf("webhook:%d", id), store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// webhookDomain returns the mail domain a webhook is scoped to when its
+// owner_kind is "domain" (REQ-ADM-307 audit-log domain tagging), or "" for
+// principal-owned webhooks, which are not domain-scoped.
+func webhookDomain(h store.Webhook) string {
+	if h.OwnerKind == store.WebhookOwnerDomain {
+		return h.OwnerID
+	}
+	return ""
 }
 
 func (s *Server) writeHookError(w http.ResponseWriter, r *http.Request, err error) {

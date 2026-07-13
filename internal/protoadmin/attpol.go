@@ -160,11 +160,11 @@ func (s *Server) handlePutDomainAttPol(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "attpol.domain.upsert",
+	s.appendAuditDomain(r.Context(), "attpol.domain.upsert",
 		"domain:"+domain,
 		store.OutcomeSuccess,
 		fmt.Sprintf("policy=%s", row.Policy.String()),
-		map[string]string{"policy": row.Policy.String()})
+		map[string]string{"policy": row.Policy.String()}, domain)
 	writeJSON(w, http.StatusOK, attpolResponse{
 		Policy:     row.Policy.String(),
 		RejectText: row.RejectText,

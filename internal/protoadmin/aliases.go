@@ -1,6 +1,7 @@
 package protoadmin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -97,9 +98,9 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 	} else {
 		auditMeta["target_id"] = strconv.FormatUint(uint64(a.TargetPrincipal), 10)
 	}
-	s.appendAudit(r.Context(), "alias.create",
+	s.appendAuditDomain(r.Context(), "alias.create",
 		fmt.Sprintf("alias:%d", a.ID),
-		store.OutcomeSuccess, "", auditMeta)
+		store.OutcomeSuccess, "", auditMeta, a.Domain)
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/aliases/%d", a.ID))
 	writeJSON(w, http.StatusCreated, toAliasDTO(a))
 }
@@ -116,12 +117,34 @@ func (s *Server) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
 			"alias id must be a positive integer", raw)
 		return
 	}
+	// Resolve the alias's domain before deleting so the audit entry can be
+	// domain-tagged (REQ-ADM-307); best-effort -- an unresolved domain
+	// still lets the delete proceed, it just audits with domain="".
+	domain := s.aliasDomainByID(r.Context(), store.AliasID(n))
 	if err := s.store.Meta().DeleteAlias(r.Context(), store.AliasID(n)); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "alias.delete",
+	s.appendAuditDomain(r.Context(), "alias.delete",
 		fmt.Sprintf("alias:%d", n),
-		store.OutcomeSuccess, "", nil)
+		store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// aliasDomainByID best-effort resolves the domain of an existing alias for
+// audit-log domain tagging (REQ-ADM-307). Returns "" if the alias cannot be
+// found; the store has no get-by-id lookup for aliases, so this scans the
+// full alias list, which is acceptable on the admin delete path (rare,
+// operator-driven, not a hot path).
+func (s *Server) aliasDomainByID(ctx context.Context, id store.AliasID) string {
+	rows, err := s.store.Meta().ListAliases(ctx, "")
+	if err != nil {
+		return ""
+	}
+	for _, a := range rows {
+		if a.ID == id {
+			return a.Domain
+		}
+	}
+	return ""
 }

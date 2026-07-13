@@ -1,6 +1,7 @@
 package protoadmin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -181,6 +182,21 @@ func (s *Server) handleGetQueueItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toQueueItemDTO(q))
 }
 
+// queueItemDomain best-effort resolves a queue item's sender domain (the
+// domain part of MailFrom, matching the SenderDomains filter it is
+// eventually judged against) for audit-log domain tagging (REQ-ADM-307).
+// Returns "" when the item cannot be read (e.g. concurrently deleted) or
+// MailFrom has no "@"; the mutation call that follows still enforces
+// existence via its own error path, so a resolution failure here never
+// masks a real error.
+func (s *Server) queueItemDomain(ctx context.Context, id store.QueueItemID) string {
+	item, err := s.store.Meta().GetQueueItem(ctx, id)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(emailDomainOf(item.MailFrom))
+}
+
 func (s *Server) handleRetryQueueItem(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
@@ -190,12 +206,13 @@ func (s *Server) handleRetryQueueItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	domain := s.queueItemDomain(r.Context(), id)
 	if err := s.store.Meta().RescheduleQueueItem(r.Context(), id, s.clk.Now(), ""); err != nil {
 		s.writeQueueError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "queue.retry",
-		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil)
+	s.appendAuditDomain(r.Context(), "queue.retry",
+		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -208,12 +225,13 @@ func (s *Server) handleHoldQueueItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	domain := s.queueItemDomain(r.Context(), id)
 	if err := s.store.Meta().HoldQueueItem(r.Context(), id); err != nil {
 		s.writeQueueError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "queue.hold",
-		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil)
+	s.appendAuditDomain(r.Context(), "queue.hold",
+		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -226,12 +244,13 @@ func (s *Server) handleReleaseQueueItem(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	domain := s.queueItemDomain(r.Context(), id)
 	if err := s.store.Meta().ReleaseQueueItem(r.Context(), id); err != nil {
 		s.writeQueueError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "queue.release",
-		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil)
+	s.appendAuditDomain(r.Context(), "queue.release",
+		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -244,12 +263,13 @@ func (s *Server) handleDeleteQueueItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	domain := s.queueItemDomain(r.Context(), id)
 	if err := s.store.Meta().DeleteQueueItem(r.Context(), id); err != nil {
 		s.writeQueueError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "queue.delete",
-		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil)
+	s.appendAuditDomain(r.Context(), "queue.delete",
+		fmt.Sprintf("queue:%d", id), store.OutcomeSuccess, "", nil, domain)
 	w.WriteHeader(http.StatusNoContent)
 }
 

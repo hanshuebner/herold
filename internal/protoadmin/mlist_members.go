@@ -224,12 +224,12 @@ func (s *Server) handleAddMailingListMember(w http.ResponseWriter, r *http.Reque
 		s.writeMlistError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mlist.member.add",
+	s.appendAuditDomain(r.Context(), "mlist.member.add",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"member_id": strconv.FormatUint(uint64(added.ID), 10),
 			"address":   mlistMemberAddressLabel(added),
-		})
+		}, l.Domain)
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/lists/%d/members/%d", l.ID, added.ID))
 	writeJSON(w, http.StatusCreated, toMailingListMemberDTO(added))
 }
@@ -352,7 +352,7 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 	case rejected:
 		action = "mlist.member.reject"
 	}
-	s.appendAudit(r.Context(), action,
+	s.appendAuditDomain(r.Context(), action,
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"member_id":             strconv.FormatUint(uint64(updated.ID), 10),
@@ -360,7 +360,7 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 			"delivery_mode":         string(updated.DeliveryMode),
 			"was_suspended":         strconv.FormatBool(wasSuspended),
 			"was_awaiting_approval": strconv.FormatBool(wasAwaitingApproval),
-		})
+		}, l.Domain)
 	writeJSON(w, http.StatusOK, toMailingListMemberDTO(updated))
 }
 
@@ -392,12 +392,12 @@ func (s *Server) handleRemoveMailingListMember(w http.ResponseWriter, r *http.Re
 		s.writeMlistError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mlist.member.remove",
+	s.appendAuditDomain(r.Context(), "mlist.member.remove",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"member_id": strconv.FormatUint(uint64(m.ID), 10),
 			"address":   mlistMemberAddressLabel(m),
-		})
+		}, l.Domain)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -480,12 +480,12 @@ func (s *Server) handleImportMailingListMembers(w http.ResponseWriter, r *http.R
 				"list_id", l.ID, "member_id", added.ID, "err", err.Error())
 		}
 	}
-	s.appendAudit(r.Context(), "mlist.member.import",
+	s.appendAuditDomain(r.Context(), "mlist.member.import",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"added":   strconv.Itoa(resp.Added),
 			"skipped": strconv.Itoa(resp.Skipped),
-		})
+		}, l.Domain)
 	writeJSON(w, http.StatusOK, resp)
 }
 

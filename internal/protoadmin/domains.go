@@ -61,9 +61,9 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "domain.create",
+	s.appendAuditDomain(r.Context(), "domain.create",
 		fmt.Sprintf("domain:%s", name),
-		store.OutcomeSuccess, "", nil)
+		store.OutcomeSuccess, "", nil, name)
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/domains/%s", name))
 	writeJSON(w, http.StatusCreated, toDomainDTO(got))
 }
@@ -83,8 +83,8 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "domain.delete",
+	s.appendAuditDomain(r.Context(), "domain.delete",
 		fmt.Sprintf("domain:%s", name),
-		store.OutcomeSuccess, "", nil)
+		store.OutcomeSuccess, "", nil, name)
 	w.WriteHeader(http.StatusNoContent)
 }

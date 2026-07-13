@@ -101,12 +101,12 @@ func (s *Server) handleGenerateDKIMKey(w http.ResponseWriter, r *http.Request) {
 	// DNS plugin picks up the new selector automatically. For now operators
 	// must publish the TXT manually (or via the DNS plugin's own reconcile
 	// loop). The txt body in the response is ready to paste into a zone file.
-	s.appendAudit(r.Context(), "dkim_rotate",
+	s.appendAuditDomain(r.Context(), "dkim_rotate",
 		fmt.Sprintf("domain:%s", name),
 		store.OutcomeSuccess, "", map[string]string{
 			"selector":  selector,
 			"algorithm": alg.String(),
-		})
+		}, name)
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/domains/%s/dkim", name))
 	writeJSON(w, http.StatusCreated, dkimKeyDTO{
@@ -215,10 +215,10 @@ func (s *Server) handleDeleteDKIMKey(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "dkim_retire",
+	s.appendAuditDomain(r.Context(), "dkim_retire",
 		fmt.Sprintf("domain:%s", name),
 		store.OutcomeSuccess, "", map[string]string{
 			"selector": selector,
-		})
+		}, name)
 	w.WriteHeader(http.StatusNoContent)
 }

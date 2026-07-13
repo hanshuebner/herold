@@ -447,12 +447,12 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		s.writeMlistError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mlist.create",
+	s.appendAuditDomain(r.Context(), "mlist.create",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"posting_address": l.PostingAddress,
 			"owner_id":        strconv.FormatUint(uint64(ownerID), 10),
-		})
+		}, l.Domain)
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/lists/%d", l.ID))
 	writeJSON(w, http.StatusCreated, s.newDKIMKeyMissingChecker(r.Context()).dto(l))
 }
@@ -703,12 +703,12 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 		s.writeMlistError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mlist.update",
+	s.appendAuditDomain(r.Context(), "mlist.update",
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"posting_address": updated.PostingAddress,
 			"owner_id":        strconv.FormatUint(uint64(updated.OwnerID), 10),
-		})
+		}, updated.Domain)
 	writeJSON(w, http.StatusOK, s.newDKIMKeyMissingChecker(r.Context()).dto(updated))
 }
 
@@ -739,8 +739,8 @@ func (s *Server) handleDeleteMailingList(w http.ResponseWriter, r *http.Request)
 			_ = s.store.Meta().DeleteGrant(r.Context(), g)
 		}
 	}
-	s.appendAudit(r.Context(), "mlist.delete",
+	s.appendAuditDomain(r.Context(), "mlist.delete",
 		fmt.Sprintf("mlist:%d", l.ID),
-		store.OutcomeSuccess, "", map[string]string{"posting_address": l.PostingAddress})
+		store.OutcomeSuccess, "", map[string]string{"posting_address": l.PostingAddress}, l.Domain)
 	w.WriteHeader(http.StatusNoContent)
 }
