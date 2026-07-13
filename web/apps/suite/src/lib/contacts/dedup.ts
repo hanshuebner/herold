@@ -4,13 +4,45 @@
  * Detection (REQ-CONT-90):
  *   - Cluster contacts by shared email (case-insensitive exact match after
  *     normalisation).
- *   - Cluster by shared normalised phone (strip non-digits, compare).
+ *   - Cluster by shared normalised phone (strip non-digits, compare) —
+ *     but only when the number is shared by at most
+ *     MAX_SHARED_PHONE_CONTACTS distinct contacts (see below).
  *   - Cluster by close display-name match (case/space-normalised plus a
  *     small edit-distance threshold).
  *
  * The candidate set is gathered cheaply via Contact/query text filter;
  * final clustering and deduplication are client-side only — no server
  * dedup method is needed (REQ-CONT-90).
+ *
+ * Generic phone number guard (re herold#223):
+ *   A phone number carries no clustering signal once it is shared by more
+ *   than MAX_SHARED_PHONE_CONTACTS distinct contacts — a company
+ *   switchboard, a hotline, or a directory-assistance short code (e.g. the
+ *   German "11833") is stored verbatim on many unrelated address-book
+ *   entries, and global union-find would otherwise chain all of them into
+ *   one "duplicate" cluster. Two contacts sharing one specific number is
+ *   still the strongest possible signal that they are the same person
+ *   recorded twice (the identical-number pair does not need a matching
+ *   name — plenty of real duplicates have no name at all), so that case
+ *   still clusters on phone alone. Once a third distinct contact turns up
+ *   on the same number, the number is reclassified as generic and is
+ *   dropped from phone-based clustering entirely: none of the contacts
+ *   sharing it are unioned by that number, though they may still cluster
+ *   via a matching email or a close/exact name (a name match survives
+ *   independently of this guard).
+ *
+ *   This mirrors the server-side vCard re-import matcher
+ *   (`findPhoneNameImportMatches` in
+ *   internal/protojmap/contacts/vcard_transport.go, re herold#206), which
+ *   never treats phone as a match key by itself and requires an exact name
+ *   match alongside it. The two rules diverge only for the pair case: the
+ *   import matcher's job is a fully automatic, unattended skip-on-reimport
+ *   decision, so it always requires the extra name corroboration to avoid
+ *   silently absorbing a card into the wrong contact. This client dedup
+ *   view always puts a human in front of the result — an operator merges
+ *   or dismisses each cluster explicitly — so a two-contact identical-
+ *   number match can be surfaced for review without the name requirement,
+ *   without ever reintroducing herold#223's many-way false-positive chain.
  *
  * Dismissed pairs (REQ-CONT-91):
  *   Remembered in localStorage per principal as sorted "id1:id2" tokens.
@@ -191,10 +223,26 @@ export function extractCandidate(raw: Record<string, unknown>): ContactCandidate
 // ── Clustering ────────────────────────────────────────────────────────────────
 
 /**
+ * Maximum number of distinct contacts that may share one normalised phone
+ * number before that number is treated as generic and excluded from
+ * phone-based clustering (re herold#223). Two contacts sharing a number is
+ * kept as a clustering signal — the strongest available evidence of an
+ * accidental duplicate entry. Three or more distinct contacts sharing the
+ * same number is far more likely a reused institutional number (switchboard,
+ * hotline, directory-assistance short code) than three separate accidental
+ * copies of one person, so at that point the number stops unioning anyone
+ * on its own; genuine duplicates within such a group still cluster via a
+ * matching email or name.
+ */
+export const MAX_SHARED_PHONE_CONTACTS = 2;
+
+/**
  * Cluster a list of candidates into duplicate groups.
  *
  * Algorithm:
- * 1. Build adjacency pairs from shared emails, shared phones, and close names.
+ * 1. Build adjacency pairs from shared emails, shared phones (excluding
+ *    generic numbers shared by more than MAX_SHARED_PHONE_CONTACTS distinct
+ *    contacts, re herold#223), and close names.
  * 2. Union-find merges overlapping pairs into clusters.
  * 3. Return clusters with 2+ members; filter out singletons.
  *
@@ -287,8 +335,13 @@ export function clusterDuplicates(
     }
   }
 
-  // Phone pairs.
+  // Phone pairs. A number shared by more than MAX_SHARED_PHONE_CONTACTS
+  // distinct contacts is generic and unions no one on its own (re
+  // herold#223) — skip the whole index entry rather than just capping the
+  // pair count, so no contact in an oversized group is unioned via this
+  // number, directly or transitively.
   for (const ids of phoneIndex.values()) {
+    if (ids.length > MAX_SHARED_PHONE_CONTACTS) continue;
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
         const a = ids[i]!;
@@ -639,6 +692,7 @@ export function defaultMergeChoices(cluster: DuplicateCluster): MergeChoices {
 // ── Test surface ──────────────────────────────────────────────────────────────
 
 export const _internals_forTest = {
+  MAX_SHARED_PHONE_CONTACTS,
   normalizeEmail,
   normalizePhone,
   normalizeDisplayName,

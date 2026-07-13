@@ -215,10 +215,76 @@ describe('clusterDuplicates: phone matching', () => {
     return { id, displayName, emails: [], phones: phones.map(normalizePhone).filter((p) => p.length >= 4), raw: { id } };
   }
 
-  it('clusters two contacts sharing a normalised phone', () => {
+  it('clusters two contacts sharing a normalised phone (true duplicate)', () => {
     const candidates = [
       makeCandidate('c1', ['+49 123 456'], 'Alice A'),
       makeCandidate('c2', ['49123456'],    'Alice B'),
+    ];
+    const clusters = clusterDuplicates(candidates, new Set());
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]!.reasons).toContain('phone');
+  });
+
+  it('still clusters two unnamed contacts sharing one identical number (true duplicate, no name)', () => {
+    // Regression case from herold#223's own screenshot: the genuine
+    // duplicate pair carries no display name at all, so a name-corroboration
+    // requirement would have broken this case. A shared number pair (below
+    // the generic-number threshold) must remain sufficient on its own.
+    const candidates = [
+      makeCandidate('c1', ['491701234567'], ''),
+      makeCandidate('c2', ['491701234567'], ''),
+    ];
+    const clusters = clusterDuplicates(candidates, new Set());
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]!.contacts.map((c) => c.id).sort()).toEqual(['c1', 'c2']);
+    expect(clusters[0]!.reasons).toContain('phone');
+  });
+
+  it('does NOT cluster unrelated contacts that merely share a generic phone number (herold#223)', () => {
+    // Reproduces the reported German directory-assistance short code
+    // "11833" shared across six unrelated contacts with three distinct
+    // names ("11833", "Auskunft", "Vermittlung"), two of each.
+    const candidates = [
+      makeCandidate('c1', ['11833'], '11833'),
+      makeCandidate('c2', ['11833'], '11833'),
+      makeCandidate('c3', ['11833'], 'Auskunft'),
+      makeCandidate('c4', ['11833'], 'Auskunft'),
+      makeCandidate('c5', ['11833'], 'Vermittlung'),
+      makeCandidate('c6', ['11833'], 'Vermittlung'),
+    ];
+    const clusters = clusterDuplicates(candidates, new Set());
+    // None of the clusters formed may pull differently-named contacts
+    // together via the shared generic number.
+    for (const cluster of clusters) {
+      expect(cluster.reasons).not.toContain('phone');
+      const names = new Set(cluster.contacts.map((c) => c.displayName));
+      expect(names.size).toBe(1); // only same-named pairs may still cluster (via 'name')
+    }
+    // The three identically-named pairs still cluster via the name match,
+    // proving the fix does not suppress genuine same-name duplicates.
+    expect(clusters).toHaveLength(3);
+    for (const cluster of clusters) {
+      expect(cluster.contacts).toHaveLength(2);
+      expect(cluster.reasons).toContain('name');
+    }
+  });
+
+  it('does not chain three-or-more unrelated contacts sharing one generic number, even with distinct names', () => {
+    const candidates = [
+      makeCandidate('c1', ['5551234'], 'Alice Company'),
+      makeCandidate('c2', ['5551234'], 'Bob Corp'),
+      makeCandidate('c3', ['5551234'], 'Carol Inc'),
+    ];
+    const clusters = clusterDuplicates(candidates, new Set());
+    expect(clusters).toHaveLength(0);
+  });
+
+  it('two distinct contacts sharing a specific (non-generic) number still cluster even with different names', () => {
+    // Below the generic-number threshold: still the strongest available
+    // signal, per the fix's chosen N=2 (MAX_SHARED_PHONE_CONTACTS).
+    const candidates = [
+      makeCandidate('c1', ['4915799912345'], 'Peter Mueller'),
+      makeCandidate('c2', ['4915799912345'], 'Petra Mueller'),
     ];
     const clusters = clusterDuplicates(candidates, new Set());
     expect(clusters).toHaveLength(1);
