@@ -185,9 +185,15 @@ func TestPublicServer_TamperedToken_Refused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnsubscribeURL: %v", err)
 	}
-	// Flip the last character of the token to invalidate the AEAD tag.
+	// Flip the token's FIRST character to invalidate the AEAD tag. The
+	// first character's six bits are always significant, so the sealed
+	// bytes always change. The last character is not a sound choice: when
+	// the sealed length is not a multiple of three it carries unused low
+	// bits, and flipping only those leaves the decoded bytes -- and hence
+	// the token -- identical.
 	tampered := strings.TrimPrefix(u, testPublicBaseURL)
-	tampered = tampered[:len(tampered)-1] + flipChar(tampered[len(tampered)-1])
+	tok := tampered[strings.Index(tampered, "token=")+len("token="):]
+	tampered = strings.Replace(tampered, "token="+tok, "token="+flipChar(tok[0])+tok[1:], 1)
 
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		body, ct := "", ""

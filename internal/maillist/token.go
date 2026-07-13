@@ -151,7 +151,11 @@ func (s *TokenSigner) Verify(purpose TokenPurpose, listID store.MailingListID, t
 	if purpose == tokenPurposeUnset {
 		return 0, ErrInvalidToken
 	}
-	sealed, err := base64.RawURLEncoding.DecodeString(token)
+	// Strict() rejects a non-canonical encoding, i.e. one whose final
+	// character carries unused low bits that are set. Without it, several
+	// distinct token strings decode to the same sealed bytes and all
+	// verify, so a token altered in those bits is still accepted.
+	sealed, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil {
 		return 0, ErrInvalidToken
 	}
