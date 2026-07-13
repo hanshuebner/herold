@@ -22,6 +22,13 @@ export interface MailingListSummary {
   owner_principal_id: number;
   subject_tag?: string;
   arc_seal: boolean;
+  /**
+   * True when arc_seal is enabled but domain currently has no active DKIM
+   * key (REQ-MLIST-21, issue #183): fanned-out copies go out unsealed.
+   * Computed by the server at read time; absent (falsy) when arc_seal is
+   * false or the domain has an active key.
+   */
+  dkim_key_missing?: boolean;
   posting_policy: string;
   subscribe_policy: string;
   max_message_size_bytes?: number;

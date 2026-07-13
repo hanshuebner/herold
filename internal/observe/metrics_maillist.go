@@ -12,8 +12,12 @@ import (
 //     admin-configured set of hosted lists on a deployment -- not an
 //     arbitrary user-supplied value -- so it is an acceptable label
 //     (same cardinality class as "domain" elsewhere in this file).
-//   - outcome (fanout_total): "delivered" | "loop" | "auto_submitted" |
-//     "oversize".
+//   - outcome (fanout_total): "delivered" | "unsealed" | "loop" |
+//     "auto_submitted" | "oversize". "unsealed" (REQ-MLIST-21, issue #183)
+//     is a fan-out copy delivered WITHOUT ARC sealing because the list has
+//     ARCSeal enabled but sealing failed (most commonly no active DKIM key
+//     for the domain) -- distinct from "delivered" so a dashboard/alert
+//     can see the degradation.
 //   - state (members): the roster state counted at the last fan-out scan.
 var (
 	mailingListMetricsOnce sync.Once

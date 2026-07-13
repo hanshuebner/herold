@@ -14,12 +14,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/mailauth"
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/queue"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
@@ -408,6 +411,9 @@ func TestExpand_ARCSeal_PreservesFrom(t *testing.T) {
 	if res.Dropped || res.MemberCount != 1 {
 		t.Fatalf("result = %+v, want one delivered copy", res)
 	}
+	if res.Unsealed {
+		t.Fatalf("result.Unsealed = true on the happy sealed path; want false")
+	}
 	calls := sub.Calls()
 	if len(calls) != 1 {
 		t.Fatalf("Submit calls = %d, want 1", len(calls))
@@ -418,6 +424,171 @@ func TestExpand_ARCSeal_PreservesFrom(t *testing.T) {
 	}
 	if !strings.Contains(body, "From: poster@sender.test\r\n") {
 		t.Fatalf("original From: header not preserved in sealed copy:\n%s", body)
+	}
+}
+
+// captureLogger returns a logger recording every emitted entry (as
+// logfmt text, level included) into buf, so a test can assert on the log
+// level and message content without depending on stdlib slog's exact
+// wire format beyond "level=X" and the message substring.
+func captureLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+// TestExpand_ARCSeal_NoActiveKey_FansOutUnsealed_WithDistinctOutcome is the
+// issue #183 regression test: a list with ARCSeal=true whose domain has NO
+// active DKIM key (the normal state for a freshly onboarded domain, per
+// the live-verifier repro in the ticket) must still deliver the post --
+// dropping mail is the worse failure -- but the degradation must be
+// impossible to miss:
+//   - the fanout_total metric records a DISTINCT "unsealed" outcome, not
+//     the same "delivered" bucket a normal sealed copy gets;
+//   - the log line is ERROR, not WARN;
+//   - a distinct OutcomeFailure audit row is written;
+//   - the delivered copy itself carries no ARC-Seal/ARC-Message-Signature
+//     headers (it really did go out unsealed, not silently re-sealed by
+//     some other path).
+//
+// Exercises the real mailarc.Sealer against a keymgmt.Manager with no
+// generated key, reproducing "mailarc: no active DKIM key for <domain>"
+// verbatim rather than a stand-in fake error.
+func TestExpand_ARCSeal_NoActiveKey_FansOutUnsealed_WithDistinctOutcome(t *testing.T) {
+	runOnBothBackends(t, func(t *testing.T, st store.Store) {
+		ml := mustInsertList(t, st, "list@example.test", true)
+		mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+
+		clk := clock.NewFake(time.Now())
+		km := keymgmt.NewManager(st.Meta(), discardLogger(), clk, rand.Reader)
+		// Deliberately no km.GenerateKey call: ml.Domain has no active
+		// DKIM key, the "fresh domain" state the ticket calls out.
+		sealer := mailarc.NewSealer(km, nil, discardLogger())
+
+		observe.RegisterMailingListMetrics()
+		listLabel := ml.PostingAddress
+		beforeUnsealed := testutil.ToFloat64(observe.MailingListFanoutTotal.WithLabelValues(listLabel, "unsealed"))
+		beforeDelivered := testutil.ToFloat64(observe.MailingListFanoutTotal.WithLabelValues(listLabel, "delivered"))
+
+		logger, logbuf := captureLogger()
+		sub := &fakeSubmitter{}
+		exp := maillist.NewExpander(st.Meta(), sub, sealer, clk, logger)
+		res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+			List:   ml,
+			Parsed: mustParse(t, testMessage),
+			Raw:    []byte(testMessage),
+			Auth:   mailauth.AuthResults{ARC: mailauth.ARCResult{Status: mailauth.AuthNone}},
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+
+		// The post is still delivered -- dropping mail is the worse
+		// failure -- but flagged as unsealed.
+		if res.Dropped {
+			t.Fatalf("result.Dropped = true; a sealing failure must not drop the post: %+v", res)
+		}
+		if res.MemberCount != 1 {
+			t.Fatalf("MemberCount = %d, want 1 (still delivered despite the seal failure)", res.MemberCount)
+		}
+		if !res.Unsealed {
+			t.Fatalf("result.Unsealed = false; want true (sealing failed)")
+		}
+		calls := sub.Calls()
+		if len(calls) != 1 {
+			t.Fatalf("Submit calls = %d, want 1", len(calls))
+		}
+		body := bodyOf(t, calls[0])
+		if strings.Contains(body, "ARC-Seal:") || strings.Contains(body, "ARC-Message-Signature:") {
+			t.Fatalf("delivered copy carries an ARC set despite the seal failure:\n%s", body)
+		}
+
+		// Distinct metric outcome: "unsealed" incremented, "delivered" NOT.
+		afterUnsealed := testutil.ToFloat64(observe.MailingListFanoutTotal.WithLabelValues(listLabel, "unsealed"))
+		afterDelivered := testutil.ToFloat64(observe.MailingListFanoutTotal.WithLabelValues(listLabel, "delivered"))
+		if afterUnsealed != beforeUnsealed+1 {
+			t.Errorf("fanout_total{outcome=unsealed} = %v, want %v", afterUnsealed, beforeUnsealed+1)
+		}
+		if afterDelivered != beforeDelivered {
+			t.Errorf("fanout_total{outcome=delivered} = %v, want unchanged at %v (must not double-count as a normal delivery)", afterDelivered, beforeDelivered)
+		}
+
+		// ERROR log, not WARN, and it names the actual failure.
+		logged := logbuf.String()
+		if !strings.Contains(logged, "level=ERROR") {
+			t.Errorf("no ERROR-level log line for the seal failure; got:\n%s", logged)
+		}
+		if strings.Contains(logged, "level=WARN") && strings.Contains(logged, "arc seal failed") {
+			t.Errorf("seal failure logged at WARN, want ERROR only; got:\n%s", logged)
+		}
+		if !strings.Contains(logged, "no active DKIM key") {
+			t.Errorf("log line missing the underlying mailarc error; got:\n%s", logged)
+		}
+
+		// Distinct OutcomeFailure audit row, separate from the ordinary
+		// "delivered" success path (which writes no per-post audit row at
+		// all in S1 -- only guard drops and this degradation do).
+		logs, err := st.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{
+			Action: "maillist.fanout.unsealed",
+		})
+		if err != nil {
+			t.Fatalf("ListAuditLog: %v", err)
+		}
+		found := false
+		for _, row := range logs {
+			if row.Subject == fmt.Sprintf("mailing_list:%d", ml.ID) {
+				found = true
+				if row.Outcome != store.OutcomeFailure {
+					t.Errorf("audit row Outcome = %v, want OutcomeFailure", row.Outcome)
+				}
+				if !strings.Contains(row.Message, "no active DKIM key") {
+					t.Errorf("audit row Message = %q, want it to name the seal failure", row.Message)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no maillist.fanout.unsealed audit row for mailing_list:%d; rows=%+v", ml.ID, logs)
+		}
+	})
+}
+
+// TestExpand_ARCSeal_NoSealerWired_FansOutUnsealed covers the other
+// unsealed-degradation path: ARCSeal=true but no Sealer at all is wired
+// into the Expander (a deployment/wiring gap rather than a missing key).
+// Must produce the same distinct signals as the missing-key case.
+func TestExpand_ARCSeal_NoSealerWired_FansOutUnsealed(t *testing.T) {
+	st := openSQLiteStore(t)
+	ml := mustInsertList(t, st, "list@example.test", true)
+	mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+
+	logger, logbuf := captureLogger()
+	sub := &fakeSubmitter{}
+	exp := maillist.NewExpander(st.Meta(), sub, nil, clock.NewFake(time.Now()), logger)
+	res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+		List:   ml,
+		Parsed: mustParse(t, testMessage),
+		Raw:    []byte(testMessage),
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if res.Dropped || res.MemberCount != 1 || !res.Unsealed {
+		t.Fatalf("result = %+v, want delivered+unsealed", res)
+	}
+	if !strings.Contains(logbuf.String(), "level=ERROR") {
+		t.Errorf("no ERROR-level log line for the missing Sealer; got:\n%s", logbuf.String())
+	}
+	logs, err := st.Meta().ListAuditLog(context.Background(), store.AuditLogFilter{Action: "maillist.fanout.unsealed"})
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	found := false
+	for _, row := range logs {
+		if row.Subject == fmt.Sprintf("mailing_list:%d", ml.ID) && row.Outcome == store.OutcomeFailure {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no maillist.fanout.unsealed audit row for mailing_list:%d", ml.ID)
 	}
 }
 

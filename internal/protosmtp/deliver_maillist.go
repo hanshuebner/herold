@@ -70,4 +70,9 @@ func (sess *session) expandMailingList(
 		slog.String("activity", observe.ActivityUser),
 		slog.String("list", ml.PostingAddress),
 		slog.Int("member_count", result.MemberCount))
+	if result.Unsealed {
+		sess.log.ErrorContext(ctx, "maillist: fan-out delivered unsealed (ARC seal failed)",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("list", ml.PostingAddress))
+	}
 }

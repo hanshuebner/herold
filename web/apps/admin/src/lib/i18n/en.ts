@@ -362,6 +362,8 @@ export const en = {
   'mlistDetail.config.error.displayNameRequired': 'Display name must not be empty.',
   'mlistDetail.config.error.invalidOwnerId': 'Owner principal ID must be a positive number.',
   'mlistDetail.config.error.invalidMaxSize': 'Max message size must be a non-negative number.',
+  'mlistDetail.warning.dkimKeyMissing':
+    'ARC-seal is enabled, but {domain} has no active DKIM key. Fanned-out copies are being delivered WITHOUT an ARC seal. Provision a DKIM key for this domain to restore protection.',
   'mlistDetail.roster.title': 'Roster',
   'mlistDetail.roster.addMember': 'Add member',
   'mlistDetail.roster.import': 'Import',

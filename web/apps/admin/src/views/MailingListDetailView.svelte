@@ -392,6 +392,12 @@
   {/if}
 
   {#if mlistDetail.status === 'ready' && mlistDetail.list}
+    {#if mlistDetail.list.dkim_key_missing}
+      <div class="dkim-warning" role="alert">
+        {t('mlistDetail.warning.dkimKeyMissing', { domain: mlistDetail.list.domain })}
+      </div>
+    {/if}
+
     <!-- Config section -->
     <div class="section">
       <div class="section-header">
@@ -854,6 +860,16 @@
     background: color-mix(in srgb, var(--support-error) 10%, transparent);
     border-radius: var(--radius-md);
     border-left: 3px solid var(--support-error);
+    margin-bottom: var(--spacing-05);
+  }
+
+  .dkim-warning {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: color-mix(in srgb, var(--support-warning) 15%, transparent);
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--support-warning);
     margin-bottom: var(--spacing-05);
   }
 

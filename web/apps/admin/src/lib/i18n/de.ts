@@ -362,6 +362,8 @@ export const de = {
   'mlistDetail.config.error.displayNameRequired': 'Der Anzeigename darf nicht leer sein.',
   'mlistDetail.config.error.invalidOwnerId': 'Die Eigentümer-Principal-ID muss eine positive Zahl sein.',
   'mlistDetail.config.error.invalidMaxSize': 'Die maximale Nachrichtengröße muss eine nichtnegative Zahl sein.',
+  'mlistDetail.warning.dkimKeyMissing':
+    'ARC-Versiegelung ist aktiviert, aber {domain} hat keinen aktiven DKIM-Schlüssel. Weitergeleitete Kopien werden OHNE ARC-Versiegelung zugestellt. Richten Sie für diese Domain einen DKIM-Schlüssel ein, um den Schutz wiederherzustellen.',
   'mlistDetail.roster.title': 'Mitgliederliste',
   'mlistDetail.roster.addMember': 'Mitglied hinzufügen',
   'mlistDetail.roster.import': 'Importieren',

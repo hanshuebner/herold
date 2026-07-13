@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +81,32 @@ func newMlistTestEnv(t *testing.T, be submissionBackend, adminEmail string) *mli
 	return &mlistTestEnv{h: h, adminID: id, adminKey: key}
 }
 
+// insertLocalDomain inserts a locally hosted domain AND provisions it
+// with an active DKIM key, mirroring an onboarded domain in production.
+// A mailing list's arc_seal defaults to true (REQ-MLIST-01), and issue
+// #183's config-time gate (requireActiveDKIMKeyForARCSeal) now refuses to
+// create or configure an arc_seal-enabled list on a domain with no active
+// key -- so every test in this file that exercises the default-arc_seal
+// list-creation path needs one. Tests that specifically exercise the
+// keyless-domain gate use insertLocalDomainNoKey instead.
 func (e *mlistTestEnv) insertLocalDomain(t *testing.T, name string) {
+	t.Helper()
+	e.insertLocalDomainNoKey(t, name)
+	if err := e.h.Store().UpsertDKIMKey(context.Background(), store.DKIMKey{
+		Domain:        name,
+		Selector:      "s1",
+		Algorithm:     store.DKIMAlgorithmEd25519SHA256,
+		PrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", // gitleaks:allow (synthetic test fixture, not a real key)
+		PublicKeyB64:  "dGVzdA==",
+		Status:        store.DKIMKeyStatusActive,
+	}); err != nil {
+		t.Fatalf("UpsertDKIMKey(%s): %v", name, err)
+	}
+}
+
+// insertLocalDomainNoKey inserts a locally hosted domain with no DKIM key
+// at all, for tests exercising the REQ-MLIST-21 config-time gate itself.
+func (e *mlistTestEnv) insertLocalDomainNoKey(t *testing.T, name string) {
 	t.Helper()
 	if err := e.h.Store().InsertDomain(context.Background(), store.Domain{Name: name, IsLocal: true}); err != nil {
 		t.Fatalf("InsertDomain(%s): %v", name, err)
@@ -702,4 +728,166 @@ func assertAuditAction(t *testing.T, e *mlistTestEnv, action, subject string) {
 		}
 	}
 	t.Errorf("no audit row for action=%s subject=%s (rows=%+v)", action, subject, rows)
+}
+
+// TestMailingLists_ARCSealRequiresDKIMKey is the issue #183 config-time
+// regression test for REQ-MLIST-21: creating a list, enabling arc_seal,
+// or relocating an arc_seal-enabled list into a domain with no active
+// DKIM key must be refused with a clear 400 -- a freshly onboarded
+// domain (no `dkim generate` run yet) is the NORMAL state, not an
+// exotic edge case. The gate only fires on those three actions, not on
+// every unrelated PATCH; a domain's key can also be revoked well after
+// list creation, so GET must independently surface dkim_key_missing at
+// read time regardless of when the key disappeared. Runs on both SQLite
+// and (when HEROLD_PG_DSN is set) Postgres.
+func TestMailingLists_ARCSealRequiresDKIMKey(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_ARCSealRequiresDKIMKey(t, be) })
+	}
+}
+
+func testMailingLists_ARCSealRequiresDKIMKey(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-arcseal-gate@example.test")
+	e.insertLocalDomainNoKey(t, "keyless.example")
+	e.insertLocalDomain(t, "keyed.example") // insertLocalDomain also provisions an active key
+
+	// 1. Create with the default arc_seal (true) on a keyless domain:
+	// refused with a 400 naming the problem and the remedy.
+	res, buf := e.h.doRequest("POST", "/api/v1/lists", e.adminKey, map[string]any{
+		"posting_address": "ann@keyless.example",
+		"display_name":    "Ann",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create arc_seal-default on keyless domain: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(buf, &problem); err != nil {
+		t.Fatalf("unmarshal problem: %v", err)
+	}
+	if problem["type"] != "https://netzhansa.com/problems/dkim_key_required" {
+		t.Errorf("problem type = %v; want .../dkim_key_required", problem["type"])
+	}
+	if detail, _ := problem["detail"].(string); !strings.Contains(detail, "keyless.example") {
+		t.Errorf("problem detail = %q; want it to name the domain and a remedy", detail)
+	}
+
+	// 2. Explicit arc_seal=false on the same keyless domain: allowed --
+	// the gate only applies when arc_seal is (to become) enabled.
+	res, buf = e.h.doRequest("POST", "/api/v1/lists", e.adminKey, map[string]any{
+		"posting_address": "ann@keyless.example",
+		"display_name":    "Ann",
+		"arc_seal":        false,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create arc_seal=false on keyless domain: status=%d body=%s; want 201", res.StatusCode, buf)
+	}
+	var noSealList map[string]any
+	_ = json.Unmarshal(buf, &noSealList)
+	noSealID := idOf(t, noSealList)
+
+	// 3. Default arc_seal=true on a domain WITH an active key: allowed,
+	// and the response carries no dkim_key_missing warning.
+	res, buf = e.h.doRequest("POST", "/api/v1/lists", e.adminKey, map[string]any{
+		"posting_address": "team@keyed.example",
+		"display_name":    "Team",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create arc_seal-default on keyed domain: status=%d body=%s; want 201", res.StatusCode, buf)
+	}
+	var sealedList map[string]any
+	_ = json.Unmarshal(buf, &sealedList)
+	sealedID := idOf(t, sealedList)
+	if v, present := sealedList["dkim_key_missing"]; present && v != false {
+		t.Errorf("dkim_key_missing on a keyed-domain list = %v; want absent/false", v)
+	}
+
+	// 4. PATCH arc_seal false->true on the keyless-domain list: refused.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", noSealID), e.adminKey,
+		map[string]any{"arc_seal": true})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("PATCH arc_seal=true on keyless-domain list: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+
+	// 5. PATCH relocating the keyed-domain (arc_seal=true) list INTO the
+	// keyless domain: refused, and the list must not have actually moved.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", sealedID), e.adminKey,
+		map[string]any{"posting_address": "team@keyless.example"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("PATCH relocate arc_seal-enabled list into keyless domain: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+	res, buf = e.h.doRequest("GET", fmt.Sprintf("/api/v1/lists/%d", sealedID), e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET after refused relocate: %d: %s", res.StatusCode, buf)
+	}
+	var stillSealed map[string]any
+	_ = json.Unmarshal(buf, &stillSealed)
+	if stillSealed["posting_address"] != "team@keyed.example" {
+		t.Errorf("posting_address after refused relocate = %v; want unchanged", stillSealed["posting_address"])
+	}
+
+	// 6. An unrelated PATCH (display_name) on the arc_seal=true/keyed list
+	// still works: the gate is not a blanket re-check on every PATCH.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", sealedID), e.adminKey,
+		map[string]any{"display_name": "Team Renamed"})
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("unrelated PATCH on arc_seal-enabled/keyed list: status=%d body=%s; want 200", res.StatusCode, buf)
+	}
+
+	// 7. Revoke keyed.example's DKIM key well after list creation (the
+	// runtime-degradation scenario internal/maillist/expand.go handles at
+	// fan-out time). An unrelated PATCH must still succeed -- the
+	// config-time gate only fires on the three actions above -- but GET
+	// must now surface dkim_key_missing so the operator sees the
+	// degradation regardless of when the key disappeared.
+	keys, err := e.h.Store().ListDKIMKeys(context.Background(), "keyed.example")
+	if err != nil {
+		t.Fatalf("ListDKIMKeys: %v", err)
+	}
+	for _, k := range keys {
+		k.Status = store.DKIMKeyStatusRetired
+		if err := e.h.Store().UpsertDKIMKey(context.Background(), k); err != nil {
+			t.Fatalf("retire key: %v", err)
+		}
+	}
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", sealedID), e.adminKey,
+		map[string]any{"display_name": "Team Renamed Again"})
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("unrelated PATCH after key revoked: status=%d body=%s; want 200 (gate fires only on arc_seal-on/relocate)", res.StatusCode, buf)
+	}
+	res, buf = e.h.doRequest("GET", fmt.Sprintf("/api/v1/lists/%d", sealedID), e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET after key revoked: %d: %s", res.StatusCode, buf)
+	}
+	var afterRevoke map[string]any
+	_ = json.Unmarshal(buf, &afterRevoke)
+	if afterRevoke["dkim_key_missing"] != true {
+		t.Errorf("dkim_key_missing after key revoked = %v; want true", afterRevoke["dkim_key_missing"])
+	}
+
+	// 8. GET /api/v1/lists collection also surfaces the flag (exercises
+	// the per-page dkimKeyMissingChecker path, not just the single-item
+	// GET).
+	res, buf = e.h.doRequest("GET", "/api/v1/lists?domain=keyed.example", e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list lists: %d: %s", res.StatusCode, buf)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("unmarshal page: %v", err)
+	}
+	found := false
+	for _, it := range page.Items {
+		if idOf(t, it) == sealedID {
+			found = true
+			if it["dkim_key_missing"] != true {
+				t.Errorf("collection dkim_key_missing = %v; want true", it["dkim_key_missing"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("collection listing missing list %d", sealedID)
+	}
 }

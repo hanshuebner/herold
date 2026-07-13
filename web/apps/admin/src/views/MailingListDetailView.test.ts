@@ -128,4 +128,40 @@ describe('MailingListDetailView', () => {
       expect(deleteCalled).toBe(true);
     });
   });
+
+  it('shows a DKIM-key-missing warning banner when arc_seal is enabled but the domain has no active key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/members')) {
+          return Promise.resolve(jsonResponse({ items: [], next: null }));
+        }
+        return Promise.resolve(jsonResponse(mailingListDTO({ arc_seal: true, dkim_key_missing: true })));
+      }),
+    );
+
+    render(MailingListDetailView, { props: { id: '1' } });
+
+    const banner = await screen.findByText(/ARC-seal is enabled/i);
+    expect(banner).toBeInTheDocument();
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(banner.textContent).toContain('example.local');
+  });
+
+  it('shows no warning banner when the domain has an active DKIM key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/members')) {
+          return Promise.resolve(jsonResponse({ items: [], next: null }));
+        }
+        return Promise.resolve(jsonResponse(mailingListDTO({ arc_seal: true })));
+      }),
+    );
+
+    render(MailingListDetailView, { props: { id: '1' } });
+
+    await screen.findByLabelText('Display name');
+    expect(screen.queryByText(/ARC-seal is enabled/i)).not.toBeInTheDocument();
+  });
 });

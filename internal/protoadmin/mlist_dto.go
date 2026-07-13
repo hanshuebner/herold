@@ -13,14 +13,22 @@ import (
 
 // mailingListDTO is the wire representation of a MailingList row.
 type mailingListDTO struct {
-	ID                  uint64    `json:"id"`
-	PrincipalID         uint64    `json:"principal_id"`
-	PostingAddress      string    `json:"posting_address"`
-	Domain              string    `json:"domain"`
-	DisplayName         string    `json:"display_name"`
-	OwnerPrincipalID    uint64    `json:"owner_principal_id"`
-	SubjectTag          string    `json:"subject_tag,omitempty"`
-	ARCSeal             bool      `json:"arc_seal"`
+	ID               uint64 `json:"id"`
+	PrincipalID      uint64 `json:"principal_id"`
+	PostingAddress   string `json:"posting_address"`
+	Domain           string `json:"domain"`
+	DisplayName      string `json:"display_name"`
+	OwnerPrincipalID uint64 `json:"owner_principal_id"`
+	SubjectTag       string `json:"subject_tag,omitempty"`
+	ARCSeal          bool   `json:"arc_seal"`
+	// DKIMKeyMissing is true when ARCSeal is enabled but Domain currently
+	// has no active DKIM key (REQ-MLIST-21, issue #183): sealing will fail
+	// at fan-out time and copies go out unsealed. Only ever set when
+	// ARCSeal is true; omitted (false) otherwise. Computed at read time
+	// from store.GetActiveDKIMKey, not stored on the row, so it always
+	// reflects the domain's current key state even if the key was
+	// generated or revoked after the list was configured.
+	DKIMKeyMissing      bool      `json:"dkim_key_missing,omitempty"`
 	PostingPolicy       string    `json:"posting_policy"`
 	SubscribePolicy     string    `json:"subscribe_policy"`
 	MaxMessageSizeBytes int64     `json:"max_message_size_bytes,omitempty"`

@@ -36,13 +36,28 @@ type Expander struct {
 	Meta      store.Metadata
 	Submitter Submitter
 	// Sealer performs ARC-sealing. May be nil; when a list has
-	// ARCSeal=true and Sealer is nil, Expand logs a warning and fans
-	// out unsealed rather than dropping the post -- ARC is a
-	// deliverability improvement, not a delivery precondition.
+	// ARCSeal=true and Sealer is nil (or Sealer.Seal errors, e.g. no
+	// active DKIM key for the domain), Expand logs an ERROR, records a
+	// distinct "unsealed" fan-out outcome and audit row, and still fans
+	// out unsealed rather than dropping the post -- dropping mail is the
+	// worse failure, but the degradation must never be silent (REQ-MLIST-21,
+	// issue #183).
 	Sealer Sealer
 	Clock  clock.Clock
 	Logger *slog.Logger
 }
+
+// unsealedOutcome is the fan-out-metric outcome label recorded when
+// ARCSeal is enabled but sealing failed (REQ-MLIST-21, issue #183): the
+// post is still delivered (dropping mail is the worse failure), but the
+// outcome is distinct from a normal sealed "delivered" fan-out so a
+// dashboard/alert can see the degradation.
+const unsealedOutcome = "unsealed"
+
+// deliveredOutcome is the fan-out-metric outcome label for a normal
+// fan-out: either ARCSeal is disabled, or it is enabled and sealing
+// succeeded.
+const deliveredOutcome = "delivered"
 
 // NewExpander constructs an Expander. clk defaults to clock.NewReal and
 // logger to slog.Default when nil.
@@ -105,6 +120,14 @@ type ExpandResult struct {
 	// MemberCount is the number of active/each members successfully
 	// submitted to the outbound queue.
 	MemberCount int
+	// Unsealed is true when List.ARCSeal is enabled but this post's
+	// fan-out copies went out WITHOUT an ARC set because sealing failed
+	// (no Sealer wired, or Sealer.Seal errored -- most commonly no active
+	// DKIM key for the domain, e.g. after a mid-lifecycle key revocation).
+	// The post is still fanned out (dropping mail is the worse failure);
+	// Unsealed lets a caller observe the degradation beyond the ERROR log
+	// line and the distinct metric/audit outcome Expand also records.
+	Unsealed bool
 }
 
 // Expand runs the REQ-MLIST-30..32 loop/abuse guards and, if the post
@@ -139,19 +162,24 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 	}
 
 	shaped := ShapeMessage(in.Raw, ml, in.Parsed.Headers.Get("Subject"))
+	unsealed := false
 	if ml.ARCSeal {
 		switch {
 		case e.Sealer == nil:
-			e.Logger.WarnContext(ctx, "maillist: arc_seal enabled but no Sealer wired; fanning out unsealed",
+			e.Logger.ErrorContext(ctx, "maillist: arc_seal enabled but no Sealer wired; fanning out unsealed",
 				slog.String("activity", observe.ActivitySystem),
 				slog.String("list", listLabel))
+			unsealed = true
+			e.auditUnsealed(ctx, ml, "no Sealer wired")
 		default:
 			sealed, serr := e.Sealer.Seal(ctx, shaped, in.Auth, ml.Domain)
 			if serr != nil {
-				e.Logger.WarnContext(ctx, "maillist: arc seal failed; fanning out unsealed",
+				e.Logger.ErrorContext(ctx, "maillist: arc seal failed; fanning out unsealed",
 					slog.String("activity", observe.ActivitySystem),
 					slog.String("list", listLabel),
 					slog.String("err", serr.Error()))
+				unsealed = true
+				e.auditUnsealed(ctx, ml, serr.Error())
 			} else {
 				shaped = sealed
 			}
@@ -192,14 +220,19 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 		return ExpandResult{}, fmt.Errorf("maillist: stream members: %w", err)
 	}
 
-	observe.MailingListFanoutTotal.WithLabelValues(listLabel, "delivered").Add(float64(memberCount))
+	outcome := deliveredOutcome
+	if unsealed {
+		outcome = unsealedOutcome
+	}
+	observe.MailingListFanoutTotal.WithLabelValues(listLabel, outcome).Add(float64(memberCount))
 	observe.MailingListMembers.WithLabelValues(listLabel, string(store.MailingListMemberActive)).Set(float64(memberCount))
 	observe.MailingListExpandSeconds.WithLabelValues(listLabel).Observe(e.Clock.Now().Sub(start).Seconds())
 	e.Logger.InfoContext(ctx, "maillist: fan-out complete",
 		slog.String("activity", observe.ActivityUser),
 		slog.String("list", listLabel),
-		slog.Int("member_count", memberCount))
-	return ExpandResult{MemberCount: memberCount}, nil
+		slog.Int("member_count", memberCount),
+		slog.String("outcome", outcome))
+	return ExpandResult{MemberCount: memberCount, Unsealed: unsealed}, nil
 }
 
 // memberAddress resolves the address one roster row fans out to: the
@@ -237,6 +270,35 @@ func (e *Expander) audit(ctx context.Context, ml store.MailingList, action, msg 
 		Domain:    ml.Domain,
 	}); err != nil {
 		e.Logger.WarnContext(ctx, "maillist: audit log append failed",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("list", ml.PostingAddress),
+			slog.String("err", err.Error()))
+	}
+}
+
+// auditUnsealed records REQ-MLIST-21's runtime-degradation case (issue
+// #183): a list configured with ARCSeal=true failed to seal a fan-out
+// copy -- most commonly, no active DKIM key for the domain, e.g. after a
+// mid-lifecycle key revocation the config-time gate in protoadmin cannot
+// catch. The post is still fanned out (dropping mail is the worse
+// failure), but this audit row's Outcome is OutcomeFailure, distinct from
+// every other maillist audit action's OutcomeSuccess, so the operator can
+// tell an unsealed fan-out apart from a normal delivered one.
+func (e *Expander) auditUnsealed(ctx context.Context, ml store.MailingList, reason string) {
+	if e.Meta == nil {
+		return
+	}
+	if err := e.Meta.AppendAuditLog(ctx, store.AuditLogEntry{
+		At:        e.Clock.Now(),
+		ActorKind: store.ActorSystem,
+		ActorID:   "maillist",
+		Action:    "maillist.fanout.unsealed",
+		Subject:   fmt.Sprintf("mailing_list:%d", ml.ID),
+		Outcome:   store.OutcomeFailure,
+		Message:   fmt.Sprintf("arc_seal enabled but sealing failed; fanned out unsealed: %s", reason),
+		Domain:    ml.Domain,
+	}); err != nil {
+		e.Logger.ErrorContext(ctx, "maillist: unsealed-fanout audit log append failed",
 			slog.String("activity", observe.ActivitySystem),
 			slog.String("list", ml.PostingAddress),
 			slog.String("err", err.Error()))

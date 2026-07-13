@@ -22,6 +22,7 @@ package protoadmin
 // decision separately".
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -69,6 +70,64 @@ func (s *Server) writeMlistError(w http.ResponseWriter, r *http.Request, err err
 	s.writeStoreError(w, r, err)
 }
 
+// requireActiveDKIMKeyForARCSeal enforces REQ-MLIST-21 at configuration
+// time (issue #183): arc_seal may only be turned on, or a list relocated
+// into a new domain while arc_seal stays on, when domain already has an
+// active DKIM key. Without this gate, a freshly onboarded domain (the
+// normal state before an operator has run `dkim generate`) silently loses
+// ARC protection at fan-out time with only a log line as the signal — the
+// defect this ticket fixes. Writes a 400 naming the problem and the
+// remedy on failure; a store error other than ErrNotFound is surfaced as
+// its own 500 via writeStoreError rather than misreported as "no key".
+func (s *Server) requireActiveDKIMKeyForARCSeal(w http.ResponseWriter, r *http.Request, domain string) bool {
+	_, err := s.store.Meta().GetActiveDKIMKey(r.Context(), domain)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeProblem(w, r, http.StatusBadRequest, "dkim_key_required",
+			fmt.Sprintf("domain %s has no active DKIM key", domain),
+			fmt.Sprintf("arc_seal requires an active DKIM key on %s; provision one first "+
+				"(POST /api/v1/domains/%s/dkim, or `herold dkim generate %s`), or set arc_seal=false", domain, domain, domain))
+		return false
+	}
+	s.writeStoreError(w, r, err)
+	return false
+}
+
+// dkimKeyMissingChecker answers "does domain currently lack an active DKIM
+// key" for the mailingListDTO.DKIMKeyMissing field, caching one lookup per
+// distinct domain so a collection page listing many lists on the same
+// domain issues one active-key read per domain rather than one per row.
+type dkimKeyMissingChecker struct {
+	ctx   context.Context
+	s     *Server
+	cache map[string]bool
+}
+
+func (s *Server) newDKIMKeyMissingChecker(ctx context.Context) *dkimKeyMissingChecker {
+	return &dkimKeyMissingChecker{ctx: ctx, s: s, cache: map[string]bool{}}
+}
+
+func (c *dkimKeyMissingChecker) missing(domain string) bool {
+	if v, ok := c.cache[domain]; ok {
+		return v
+	}
+	_, err := c.s.store.Meta().GetActiveDKIMKey(c.ctx, domain)
+	m := err != nil
+	c.cache[domain] = m
+	return m
+}
+
+// dto converts l, populating DKIMKeyMissing when l.ARCSeal is set.
+func (c *dkimKeyMissingChecker) dto(l store.MailingList) mailingListDTO {
+	dto := toMailingListDTO(l)
+	if l.ARCSeal {
+		dto.DKIMKeyMissing = c.missing(l.Domain)
+	}
+	return dto
+}
+
 // handleListMailingLists handles GET /api/v1/lists (REQ-MLIST-40a).
 //
 // A super-admin with no ?domain= filter gets the store's native
@@ -94,6 +153,7 @@ func (s *Server) handleListMailingLists(w http.ResponseWriter, r *http.Request) 
 	}
 
 	scope := s.mlistAuthorizedDomains(r.Context(), caller)
+	checker := s.newDKIMKeyMissingChecker(r.Context())
 
 	if scope.SuperAdmin {
 		rows, err := s.store.Meta().ListMailingLists(r.Context(), store.MailingListFilter{
@@ -103,7 +163,7 @@ func (s *Server) handleListMailingLists(w http.ResponseWriter, r *http.Request) 
 			s.writeMlistError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, mailingListPage(rows, limit))
+		writeJSON(w, http.StatusOK, mailingListPage(rows, limit, checker))
 		return
 	}
 
@@ -120,7 +180,7 @@ func (s *Server) handleListMailingLists(w http.ResponseWriter, r *http.Request) 
 			s.writeMlistError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, mailingListPage(rows, limit))
+		writeJSON(w, http.StatusOK, mailingListPage(rows, limit, checker))
 		return
 	}
 
@@ -141,16 +201,16 @@ func (s *Server) handleListMailingLists(w http.ResponseWriter, r *http.Request) 
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
-	writeJSON(w, http.StatusOK, mailingListPage(merged, limit))
+	writeJSON(w, http.StatusOK, mailingListPage(merged, limit, checker))
 }
 
 // mailingListPage converts rows to the pageDTO envelope. Next carries the
 // last row's id when the page is full (len(rows) == limit), the same
 // "maybe more" heuristic handleListPrincipals uses.
-func mailingListPage(rows []store.MailingList, limit int) pageDTO[mailingListDTO] {
+func mailingListPage(rows []store.MailingList, limit int, checker *dkimKeyMissingChecker) pageDTO[mailingListDTO] {
 	items := make([]mailingListDTO, 0, len(rows))
 	for _, l := range rows {
-		items = append(items, toMailingListDTO(l))
+		items = append(items, checker.dto(l))
 	}
 	var next *string
 	if len(rows) == limit && len(rows) > 0 {
@@ -256,6 +316,9 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 	if req.ARCSeal != nil {
 		arcSeal = *req.ARCSeal
 	}
+	if arcSeal && !s.requireActiveDKIMKeyForARCSeal(w, r, domain) {
+		return
+	}
 
 	group, err := s.store.Meta().InsertPrincipal(r.Context(), store.Principal{
 		Kind:           store.PrincipalKindGroup,
@@ -296,7 +359,7 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 			"owner_id":        strconv.FormatUint(uint64(ownerID), 10),
 		})
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/lists/%d", l.ID))
-	writeJSON(w, http.StatusCreated, toMailingListDTO(l))
+	writeJSON(w, http.StatusCreated, s.newDKIMKeyMissingChecker(r.Context()).dto(l))
 }
 
 // handleGetMailingList handles GET /api/v1/lists/{id}.
@@ -312,7 +375,7 @@ func (s *Server) handleGetMailingList(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMlistListAccess(w, r, caller, l) {
 		return
 	}
-	writeJSON(w, http.StatusOK, toMailingListDTO(l))
+	writeJSON(w, http.StatusOK, s.newDKIMKeyMissingChecker(r.Context()).dto(l))
 }
 
 // patchMailingListRequest is the PATCH /api/v1/lists/{id} body. Every
@@ -351,6 +414,12 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 
 	oldOwner := l.OwnerID
 	newOwner := l.OwnerID
+	// finalDomain/relocating track whether this PATCH moves the list to a
+	// new domain, so the arc_seal-requires-a-key gate below (REQ-MLIST-21,
+	// issue #183) can check the DESTINATION domain rather than l.Domain,
+	// which the store recomputes from PostingAddress only on Update.
+	finalDomain := l.Domain
+	relocating := false
 
 	if req.PostingAddress != nil {
 		address, domain, err := store.NormalizeMailingListAddress(*req.PostingAddress)
@@ -372,6 +441,8 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 			if !s.requireMlistDomainAccess(w, r, caller, domain) {
 				return
 			}
+			finalDomain = domain
+			relocating = true
 		}
 		l.PostingAddress = address
 	}
@@ -413,6 +484,18 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 		l.MaxMessageSizeBytes = *req.MaxMessageSizeBytes
 	}
 
+	// REQ-MLIST-21 config-time gate (issue #183): only checked when this
+	// PATCH is the thing turning arc_seal on, or relocating an
+	// already-arc_seal-enabled list into a new domain -- not on every
+	// unrelated PATCH to a list whose domain lost its key sometime after
+	// arc_seal was already enabled (that degradation is handled at
+	// fan-out time, see internal/maillist/expand.go).
+	if l.ARCSeal && (req.ARCSeal != nil || relocating) {
+		if !s.requireActiveDKIMKeyForARCSeal(w, r, finalDomain) {
+			return
+		}
+	}
+
 	if err := s.store.Meta().UpdateMailingList(r.Context(), l); err != nil {
 		s.writeMlistError(w, r, err)
 		return
@@ -438,7 +521,7 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 			"posting_address": updated.PostingAddress,
 			"owner_id":        strconv.FormatUint(uint64(updated.OwnerID), 10),
 		})
-	writeJSON(w, http.StatusOK, toMailingListDTO(updated))
+	writeJSON(w, http.StatusOK, s.newDKIMKeyMissingChecker(r.Context()).dto(updated))
 }
 
 // handleDeleteMailingList handles DELETE /api/v1/lists/{id}. Cascades the

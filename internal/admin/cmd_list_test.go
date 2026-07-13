@@ -22,6 +22,20 @@ func TestCLIList_CRUD_And_Members(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertDomain: %v", err)
 	}
+	// A mailing list's arc_seal defaults to true (REQ-MLIST-01), and
+	// issue #183's config-time gate refuses to create one on a domain
+	// with no active DKIM key; provision one so this CRUD walk exercises
+	// the default-arc_seal path like a real onboarded domain would.
+	if err := env.store.Meta().UpsertDKIMKey(context.Background(), store.DKIMKey{
+		Domain:        "lists.test",
+		Selector:      "s1",
+		Algorithm:     store.DKIMAlgorithmEd25519SHA256,
+		PrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", // gitleaks:allow (synthetic test fixture, not a real key)
+		PublicKeyB64:  "dGVzdA==",
+		Status:        store.DKIMKeyStatusActive,
+	}); err != nil {
+		t.Fatalf("UpsertDKIMKey: %v", err)
+	}
 	seedPrincipal(t, env, "internal-member@lists.test")
 
 	out, _, err := env.run("list", "create", "announce@lists.test", "Announce", "--json")
