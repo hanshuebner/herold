@@ -748,6 +748,60 @@ describe('sanitizeHtml — lone half of color/background-color pair (issue #231)
     const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
     expect(body).toContain('font-weight:bold');
   });
+
+  describe('the `background` shorthand', () => {
+    it('strips a lone `background:` shorthand carrying only a color', () => {
+      const html = '<span style="background:#1a1111">text</span>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).not.toContain('background');
+      expect(body).not.toContain('style=');
+    });
+
+    it('strips a lone `background:` shorthand with !important', () => {
+      const html = '<span style="background: #1a1111 !important">text</span>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).not.toContain('background');
+    });
+
+    it('keeps a `background:` shorthand carrying a color when `color` is also declared (complete pair)', () => {
+      const html = '<span style="background:url(https://x.test/bg.png) #fff;color:#000">text</span>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).toContain('background:url(https://x.test/bg.png) #fff');
+      expect(body).toContain('color:#000');
+    });
+
+    it('does not strip a `background:` shorthand that carries no color at all', () => {
+      // background-image-only shorthand: no collision is possible because
+      // no background color is declared, so the pair rule must not fire.
+      const html = '<div style="background:url(https://x.test/bg.png) no-repeat">text</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).toContain('background:url(https://x.test/bg.png) no-repeat');
+    });
+
+    it('strips a lone `background:` shorthand mixing an image and a color when no `color` is declared', () => {
+      const html = '<div style="background:url(https://x.test/bg.png) #1a1111 no-repeat">text</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      // The whole shorthand is dropped (documented trade-off), not just
+      // the color token, so no residual color risk remains.
+      expect(body).not.toContain('background');
+    });
+
+    it('recognizes a named-color background shorthand as a lone half', () => {
+      const html = '<span style="background:navy">text</span>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).not.toContain('background');
+    });
+
+    it('does not confuse `background-color:` or `background-image:` longhands with the `background` shorthand', () => {
+      const html = '<span style="background-color:#1a1111">a</span>' +
+        '<div style="background-image:url(https://x.test/bg.png)">b</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      // The background-color span: stripped (lone half).
+      expect(body).not.toContain('background-color');
+      // The background-image div: no color at all, left untouched.
+      expect(body).toContain('background-image:url(https://x.test/bg.png)');
+    });
+  });
 });
 
 describe('sanitizeHtml — iframe body sizing (issue #158)', () => {

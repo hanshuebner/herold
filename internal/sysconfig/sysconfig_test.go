@@ -224,6 +224,104 @@ tls = "starttls"
 	}
 }
 
+// -- [server.push.network] SSRF-guard knobs (re #211) -----------------
+
+func TestParse_PushNetworkAllowlist(t *testing.T) {
+	const cfgText = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.push.network]
+allowed_hosts = ["push.internal.example", "10.0.5.9"]
+allow_insecure = true
+allowed_ports = [8080]
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(cfgText))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	net := cfg.Server.Push.Network
+	if len(net.AllowedHosts) != 2 || net.AllowedHosts[0] != "push.internal.example" || net.AllowedHosts[1] != "10.0.5.9" {
+		t.Errorf("allowed_hosts: got %v", net.AllowedHosts)
+	}
+	if !net.AllowInsecure {
+		t.Errorf("allow_insecure: got false, want true")
+	}
+	if len(net.AllowedPorts) != 1 || net.AllowedPorts[0] != 8080 {
+		t.Errorf("allowed_ports: got %v", net.AllowedPorts)
+	}
+}
+
+func TestValidate_PushNetworkRejectsEmptyAllowedHost(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.push.network]
+allowed_hosts = [""]
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatal("expected error for empty allowed_hosts entry")
+	}
+	if !strings.Contains(err.Error(), "allowed_hosts") {
+		t.Fatalf("error %q should mention allowed_hosts", err.Error())
+	}
+}
+
+func TestValidate_PushNetworkRejectsOutOfRangePort(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.push.network]
+allowed_ports = [70000]
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatal("expected error for out-of-range allowed_ports entry")
+	}
+	if !strings.Contains(err.Error(), "allowed_ports") {
+		t.Fatalf("error %q should mention allowed_ports", err.Error())
+	}
+}
+
 func TestParse_ChatRetentionDefaults(t *testing.T) {
 	const bare = `
 [server]
