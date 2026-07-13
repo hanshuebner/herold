@@ -1413,13 +1413,25 @@ type UIConfig struct {
 	// bytes, the server generates a random per-process key (sessions are
 	// invalidated on every restart and a WARN is emitted at startup).
 	SigningKeyEnv string `toml:"signing_key_env,omitempty"`
-	// ElevationTTL is the time-to-live for a successful TOTP step-up
-	// elevation record (REQ-AUTH-74, issue #79). After this window the
-	// admin-endpoint gate returns 403 step_up_required again.  Default
-	// is 15 minutes ("15m"). Operators on high-security deployments may
-	// shorten this; operators who need longer admin windows may extend it
-	// up to 1 hour. Values outside [1m, 1h] are rejected by Validate.
+	// ElevationTTL is deprecated: use ElevationIdleTTL. Accepted as a
+	// backward-compatible alias -- when ElevationIdleTTL is unset and this
+	// is set, its value seeds ElevationIdleTTL (applyDefaults). Retained so
+	// existing system.toml files with `elevation_ttl` keep working.
 	ElevationTTL Duration `toml:"elevation_ttl,omitempty"`
+	// ElevationIdleTTL is the idle window for a TOTP step-up elevation
+	// record (REQ-AUTH-74, REQ-AUTH-ELEV-CONFIG, issue #225): the elevation
+	// gate extends this deadline to now+ElevationIdleTTL on every request
+	// that passes the active-elevation check, so a continuously active
+	// operator is never interrupted. Default 15 minutes ("15m"). Values
+	// outside [1m, 1h] are rejected by Validate.
+	ElevationIdleTTL Duration `toml:"elevation_idle_ttl,omitempty"`
+	// ElevationAbsoluteTTL is the hard cap on elevation lifetime, measured
+	// from the elevation's grant time (login TOTP or step-up) and never
+	// extended by activity (REQ-AUTH-74, REQ-AUTH-ELEV-CONFIG, issue #225).
+	// Past this deadline re-step-up is required no matter how active the
+	// operator is. Default 8 hours ("8h"). Values outside [15m, 24h] are
+	// rejected by Validate.
+	ElevationAbsoluteTTL Duration `toml:"elevation_absolute_ttl,omitempty"`
 }
 
 // QueueConfig exposes operator-facing knobs for the outbound delivery queue.
@@ -2301,6 +2313,19 @@ func applyDefaults(c *Config) {
 	if c.Server.UI.ElevationTTL == 0 {
 		c.Server.UI.ElevationTTL = Duration(15 * time.Minute)
 	}
+	// ElevationIdleTTL / ElevationAbsoluteTTL (REQ-AUTH-74,
+	// REQ-AUTH-ELEV-CONFIG, issue #225). An unset idle TTL falls back to
+	// the deprecated ElevationTTL alias before applying the 15m default,
+	// so existing `elevation_ttl` config keeps working unchanged.
+	if c.Server.UI.ElevationIdleTTL == 0 {
+		c.Server.UI.ElevationIdleTTL = c.Server.UI.ElevationTTL
+	}
+	if c.Server.UI.ElevationIdleTTL == 0 {
+		c.Server.UI.ElevationIdleTTL = Duration(15 * time.Minute)
+	}
+	if c.Server.UI.ElevationAbsoluteTTL == 0 {
+		c.Server.UI.ElevationAbsoluteTTL = Duration(8 * time.Hour)
+	}
 	// Image proxy defaults (REQ-SEND-70..78). Operators get a working
 	// proxy without any TOML; the constants here mirror protoimg's
 	// own defaults so a missing block and an empty block behave the
@@ -2865,6 +2890,21 @@ func Validate(c *Config) error {
 	// indefinitely (> 1 h weakens the step-up protection).
 	if dur := c.Server.UI.ElevationTTL.AsDuration(); dur < time.Minute || dur > time.Hour {
 		return fmt.Errorf("sysconfig: [server.ui] elevation_ttl %s must be between 1m and 1h", dur)
+	}
+	// Elevation idle/absolute TTLs (REQ-AUTH-74, REQ-AUTH-ELEV-CONFIG,
+	// issue #225). Idle range mirrors the legacy elevation_ttl bound
+	// ([1m, 1h]); absolute range is [15m, 24h] per REQ-AUTH-ELEV-CONFIG.
+	// The idle window must not exceed the absolute cap -- an idle TTL
+	// longer than the absolute deadline can never actually slide, which is
+	// almost certainly an operator typo rather than intent.
+	if dur := c.Server.UI.ElevationIdleTTL.AsDuration(); dur < time.Minute || dur > time.Hour {
+		return fmt.Errorf("sysconfig: [server.ui] elevation_idle_ttl %s must be between 1m and 1h", dur)
+	}
+	if dur := c.Server.UI.ElevationAbsoluteTTL.AsDuration(); dur < 15*time.Minute || dur > 24*time.Hour {
+		return fmt.Errorf("sysconfig: [server.ui] elevation_absolute_ttl %s must be between 15m and 24h", dur)
+	}
+	if idle, abs := c.Server.UI.ElevationIdleTTL.AsDuration(), c.Server.UI.ElevationAbsoluteTTL.AsDuration(); idle > abs {
+		return fmt.Errorf("sysconfig: [server.ui] elevation_idle_ttl %s exceeds elevation_absolute_ttl %s", idle, abs)
 	}
 	// Image proxy (REQ-SEND-70..78). Catch operator typos that would
 	// otherwise produce a silently-disabled feature: negative budgets

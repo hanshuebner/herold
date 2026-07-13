@@ -343,16 +343,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// reach here with loginElevated=true, so elevationExpiresAt stays nil.
 	var elevationExpiresAt *string
 	if loginElevated {
-		elevTTL := s.opts.ElevationTTL
-		if elevTTL <= 0 {
-			elevTTL = 15 * time.Minute
-		}
-		expiresAt := s.clk.Now().Add(elevTTL)
+		now := s.clk.Now()
+		idleTTL, absoluteTTL := s.elevationTTLs()
+		expiresAt := now.Add(idleTTL)
 		elev := store.ElevationRow{
-			SessionID:   sess.CSRFToken,
-			PrincipalID: pid,
-			ElevatedAt:  s.clk.Now(),
-			ExpiresAt:   expiresAt,
+			SessionID:        sess.CSRFToken,
+			PrincipalID:      pid,
+			ElevatedAt:       now,
+			IdleDeadline:     expiresAt,
+			AbsoluteDeadline: now.Add(absoluteTTL),
 		}
 		if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
 			// Non-fatal: log at warn and continue. The session is valid;
@@ -363,7 +362,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 				"principal_id", uint64(pid),
 				"err", err)
 		} else {
-			ts := expiresAt.UTC().Format(time.RFC3339)
+			ts := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
 			elevationExpiresAt = &ts
 		}
 	}
@@ -618,17 +617,15 @@ func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := s.opts.ElevationTTL
-	if ttl <= 0 {
-		ttl = 15 * time.Minute
-	}
 	now := s.clk.Now()
-	expiresAt := now.Add(ttl)
+	idleTTL, absoluteTTL := s.elevationTTLs()
+	expiresAt := now.Add(idleTTL)
 	elev := store.ElevationRow{
-		SessionID:   sessID,
-		PrincipalID: p.ID,
-		ElevatedAt:  now,
-		ExpiresAt:   expiresAt,
+		SessionID:        sessID,
+		PrincipalID:      p.ID,
+		ElevatedAt:       now,
+		IdleDeadline:     expiresAt,
+		AbsoluteDeadline: now.Add(absoluteTTL),
 	}
 	if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
 		s.loggerFrom(ctx).Error("protoadmin.auth.stepup_upsert_failed",
@@ -639,25 +636,34 @@ func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	effective := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
 	s.loggerFrom(ctx).InfoContext(ctx, "protoadmin.auth.stepup_success",
 		"activity", observe.ActivityAudit,
 		"principal_id", uint64(p.ID),
-		"expires_at", expiresAt.UTC().Format(time.RFC3339))
+		"expires_at", effective)
 	s.appendAudit(ctx, "auth.step_up", "principal:"+p.CanonicalEmail,
 		store.OutcomeSuccess, "",
 		map[string]string{
 			"remote":     remoteHost(r.RemoteAddr),
-			"expires_at": expiresAt.UTC().Format(time.RFC3339),
+			"expires_at": effective,
 		})
 
 	writeJSON(w, http.StatusOK, stepUpResponse{
-		ElevationExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+		ElevationExpiresAt: effective,
 	})
 }
 
 // activeElevationExpiry returns the elevation_expires_at string for the
-// current session, or nil when there is no active elevation. Used to
-// populate whoami and me responses (REQ-AUTH-74, issue #79).
+// current session, or nil when there is no active elevation. The value is
+// the earlier of the elevation's idle and absolute deadlines (REQ-AUTH-75:
+// "the effective elevation deadline -- the earlier of the elevation's
+// idle_deadline and absolute_deadline"). Used to populate whoami and me
+// responses (REQ-AUTH-74, issue #79, issue #225). Read-only: unlike the
+// requireElevation/requireSelfServiceElevation gates, probing whoami/me
+// does not itself extend the idle deadline -- only a request that
+// actually required and passed the elevation check does (REQ-AUTH-74),
+// otherwise merely polling this endpoint would keep an idle elevation
+// alive forever.
 func (s *Server) activeElevationExpiry(r *http.Request) *string {
 	sessID := s.sessionIDFromRequest(r)
 	if sessID == "" {
@@ -667,8 +673,35 @@ func (s *Server) activeElevationExpiry(r *http.Request) *string {
 	if err != nil {
 		return nil
 	}
-	ts := elev.ExpiresAt.UTC().Format(time.RFC3339)
+	ts := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
 	return &ts
+}
+
+// effectiveElevationDeadline returns the earlier of e's idle and absolute
+// deadlines -- the moment the elevation actually lapses next (REQ-AUTH-75).
+func effectiveElevationDeadline(e store.ElevationRow) time.Time {
+	if e.AbsoluteDeadline.Before(e.IdleDeadline) {
+		return e.AbsoluteDeadline
+	}
+	return e.IdleDeadline
+}
+
+// elevationTTLs returns the configured elevation idle and absolute TTLs,
+// applying the same defaults as applyDefaults (15m / 8h) so callers never
+// see a zero duration (REQ-AUTH-74, REQ-AUTH-ELEV-CONFIG, issue #225).
+func (s *Server) elevationTTLs() (idle, absolute time.Duration) {
+	idle = s.opts.ElevationIdleTTL
+	if idle <= 0 {
+		idle = s.opts.ElevationTTL
+	}
+	if idle <= 0 {
+		idle = 15 * time.Minute
+	}
+	absolute = s.opts.ElevationAbsoluteTTL
+	if absolute <= 0 {
+		absolute = 8 * time.Hour
+	}
+	return idle, absolute
 }
 
 // buildClientlogMeta populates the clientlog block in whoamiResponse by

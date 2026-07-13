@@ -521,6 +521,11 @@ func (s *Server) requireSelfServiceElevation(w http.ResponseWriter, r *http.Requ
 		})
 		return false
 	}
+	// The request passed the active-elevation check: slide the idle
+	// deadline forward so continued activity keeps the elevation alive
+	// past its originally granted deadline (REQ-AUTH-74, issue #225).
+	// Best-effort -- a failure here must not fail the in-flight request.
+	s.extendElevation(r.Context(), sessID)
 	return true
 }
 
@@ -618,6 +623,40 @@ func (s *Server) requireElevation(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// The caller is a genuinely-admin principal (checked above) with a
+		// genuinely active elevation record for this session: slide the
+		// idle deadline forward so continued admin-SPA activity keeps the
+		// elevation alive past its originally granted deadline instead of
+		// interrupting the operator mid-task (REQ-AUTH-74, issue #225).
+		// Best-effort -- a failure here must not fail the in-flight request.
+		s.extendElevation(r.Context(), sessID)
+
 		next(w, r)
+	}
+}
+
+// extendElevation slides sessID's elevation idle deadline forward to
+// now+ElevationIdleTTL, clamped to the elevation's absolute deadline
+// (REQ-AUTH-74, issue #225). Called only after a caller has already passed
+// GetActiveElevation in the same request (requireElevation,
+// requireSelfServiceElevation), so a store.ErrNotFound here means the
+// elevation was concurrently revoked or reached its absolute cap between
+// the read and this write -- a benign race, not a bug. The write is
+// best-effort: failures are logged at warn and never fail the in-flight
+// request, mirroring UpdateSessionLastSeen (REQ-AUTH-74).
+func (s *Server) extendElevation(ctx context.Context, sessID string) {
+	idleTTL, _ := s.elevationTTLs()
+	now := s.clk.Now()
+	if err := s.store.Meta().ExtendElevation(ctx, sessID, now.UnixMicro(), idleTTL.Microseconds()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Benign race (concurrent revocation/absolute-cap expiry
+			// between the GetActiveElevation read and this write); the
+			// in-flight request was already authorized off the read.
+			return
+		}
+		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.elevation_extend_failed",
+			"activity", observe.ActivityInternal,
+			"session_id", sessID,
+			"err", err)
 	}
 }

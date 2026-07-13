@@ -244,12 +244,24 @@ type Options struct {
 	// (REQ-AUTH-CSRF). Nil / unset signing key disables cookie auth so
 	// existing deployments that wire only Bearer keys are unaffected.
 	Session authsession.SessionConfig
-	// ElevationTTL is the time-to-live for a successful TOTP step-up
-	// elevation (REQ-AUTH-74, issue #79). Zero applies the default
-	// (15 minutes). Admin-scoped endpoints require a valid elevation row
-	// that was created within this window. Sourced from
-	// sysconfig UIConfig.ElevationTTL at server boot.
+	// ElevationTTL is deprecated: use ElevationIdleTTL. Accepted as an
+	// alias for backward compatibility; applyDefaults seeds ElevationIdleTTL
+	// from it when the latter is zero.
 	ElevationTTL time.Duration
+	// ElevationIdleTTL is the idle window for a TOTP step-up elevation
+	// (REQ-AUTH-74, REQ-AUTH-ELEV-CONFIG, issue #225). Zero applies the
+	// default (15 minutes). The elevation gate extends a session's
+	// elevation idle deadline to now+ElevationIdleTTL on every request
+	// that passes the active-elevation check, clamped to never exceed
+	// ElevationAbsoluteTTL, so a continuously active operator is not
+	// interrupted mid-task. Sourced from sysconfig UIConfig.ElevationIdleTTL
+	// at server boot.
+	ElevationIdleTTL time.Duration
+	// ElevationAbsoluteTTL is the hard cap on elevation lifetime, measured
+	// from grant time and never extended by activity (REQ-AUTH-74,
+	// REQ-AUTH-ELEV-CONFIG, issue #225). Zero applies the default (8 hours).
+	// Sourced from sysconfig UIConfig.ElevationAbsoluteTTL at server boot.
+	ElevationAbsoluteTTL time.Duration
 	// ExternalSubmissionDataKey is the 32-byte data key used to seal and
 	// open per-identity submission credentials (REQ-AUTH-EXT-SUBMIT-02).
 	// Sourced from sysconfig.SecretsConfig.DataKeyRef at server boot.
@@ -495,6 +507,17 @@ func NewServer(
 	}
 	if opts.ElevationTTL <= 0 {
 		opts.ElevationTTL = 15 * time.Minute
+	}
+	// ElevationIdleTTL falls back to the deprecated ElevationTTL alias
+	// before applying the 15m default (REQ-AUTH-74, issue #225).
+	if opts.ElevationIdleTTL <= 0 {
+		opts.ElevationIdleTTL = opts.ElevationTTL
+	}
+	if opts.ElevationIdleTTL <= 0 {
+		opts.ElevationIdleTTL = 15 * time.Minute
+	}
+	if opts.ElevationAbsoluteTTL <= 0 {
+		opts.ElevationAbsoluteTTL = 8 * time.Hour
 	}
 	// Default ExternalProbe: when no probe is injected and no data key is
 	// configured, the 503 fires before the probe is reached. When a data

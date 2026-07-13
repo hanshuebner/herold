@@ -821,16 +821,19 @@ type SessionRow struct {
 }
 
 // SessionElevationRow mirrors one row of the session_elevations table
-// introduced in migration 0067 (REQ-AUTH-74, issue #79). Excluded from
-// backup by default: elevation records expire after elevation_ttl (default
-// 15 minutes) and restoring stale rows into a fresh system has no effect
-// because the parent session_id would also be absent. The row is listed in
-// TableNames so VerifyBundle has a typed receiver; the backup writes an empty JSONL.
+// introduced in migration 0067 (REQ-AUTH-74, issue #79) and extended by
+// migration 0091 (REQ-AUTH-ELEV-CONFIG, issue #225) with a separate
+// absolute deadline. Excluded from backup by default: elevation records
+// expire after the idle or absolute TTL (defaults 15 minutes / 8 hours)
+// and restoring stale rows into a fresh system has no effect because the
+// parent session_id would also be absent. The row is listed in TableNames
+// so VerifyBundle has a typed receiver; the backup writes an empty JSONL.
 type SessionElevationRow struct {
-	SessionID   string `json:"session_id"`
-	PrincipalID int64  `json:"principal_id"`
-	ElevatedAt  int64  `json:"elevated_at_us"`
-	ExpiresAt   int64  `json:"expires_at_us"`
+	SessionID        string `json:"session_id"`
+	PrincipalID      int64  `json:"principal_id"`
+	ElevatedAt       int64  `json:"elevated_at_us"`
+	IdleDeadline     int64  `json:"idle_deadline_us"`
+	AbsoluteDeadline int64  `json:"absolute_deadline_us"`
 }
 
 // OAuthAuthCodeRow mirrors one row of the oauth_auth_codes table

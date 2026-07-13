@@ -2564,16 +2564,31 @@ type Metadata interface {
 	// -- REQ-AUTH-74 / issue #79: step-up elevation rows ----------------
 
 	// UpsertElevation inserts or replaces the elevation row for
-	// e.SessionID.  A second step-up within the same session resets the
-	// window to now + elevation_ttl so the caller always gets a fresh
-	// expires_at after each correct TOTP submission.
+	// e.SessionID.  A second step-up (or a TOTP-gated login) within the
+	// same session resets the window so the caller always gets a fresh
+	// idle_deadline_us and absolute_deadline_us after each grant.
 	UpsertElevation(ctx context.Context, e ElevationRow) error
 
 	// GetActiveElevation returns the elevation row for sessionID when it
-	// exists and expires_at_us > nowMicros.  Returns ErrNotFound when no
-	// active elevation exists (never elevated, elevation expired, or the
-	// session was deleted / logged out).
+	// exists and nowMicros is before BOTH idle_deadline_us and
+	// absolute_deadline_us (REQ-AUTH-74).  Returns ErrNotFound when no
+	// active elevation exists (never elevated, idle or absolute deadline
+	// elapsed, or the session was deleted / logged out).
 	GetActiveElevation(ctx context.Context, sessionID string, nowMicros int64) (ElevationRow, error)
+
+	// ExtendElevation slides idle_deadline_us for sessionID forward to
+	// nowMicros + idleTTLMicros, clamped to never exceed the row's
+	// absolute_deadline_us (REQ-AUTH-74). Only a row that is currently
+	// active per GetActiveElevation's condition is updated -- extending a
+	// row whose idle or absolute deadline has already elapsed would
+	// resurrect an elevation the model considers over. Returns
+	// store.ErrNotFound when no active elevation row exists for
+	// sessionID. Callers that already confirmed activity via
+	// GetActiveElevation earlier in the same request treat ErrNotFound
+	// here as a benign race with a concurrent revocation/expiry: they log
+	// at warn and continue serving the in-flight request rather than
+	// reject it (REQ-AUTH-74: "the write is best-effort").
+	ExtendElevation(ctx context.Context, sessionID string, nowMicros int64, idleTTLMicros int64) error
 
 	// DeleteElevation removes the elevation row for sessionID.  Returns
 	// ErrNotFound when the row is absent (already expired or never created).
@@ -2582,10 +2597,11 @@ type Metadata interface {
 	// when the sessions row is deleted; this method is for explicit removal.
 	DeleteElevation(ctx context.Context, sessionID string) error
 
-	// EvictExpiredElevations deletes all elevation rows whose expires_at_us
-	// is <= nowMicros.  Returns the number of rows deleted.  Intended for a
-	// periodic background sweeper; the on-request gate in GetActiveElevation
-	// already enforces expiry so this is a cosmetic cleanup only.
+	// EvictExpiredElevations deletes all elevation rows whose
+	// idle_deadline_us or absolute_deadline_us is <= nowMicros.  Returns
+	// the number of rows deleted.  Intended for a periodic background
+	// sweeper; the on-request gate in GetActiveElevation already enforces
+	// expiry so this is a cosmetic cleanup only.
 	EvictExpiredElevations(ctx context.Context, nowMicros int64) (deleted int, err error)
 
 	// -- Attachment shares (REQ-SHARE-01..23) --------------------------

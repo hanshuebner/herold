@@ -1229,23 +1229,37 @@ type SessionRow struct {
 }
 
 // ElevationRow is one row in the session_elevations table. It records a
-// successful TOTP step-up for a session and grants access to admin-scoped
-// endpoints until expires_at_us elapses (REQ-AUTH-74, issue #79).
+// successful TOTP step-up (or a TOTP-gated login) for a session and grants
+// access to admin- and self-service-elevation-scoped endpoints while it is
+// active (REQ-AUTH-74, issue #79, issue #225).
 //
 // The row is keyed on session_id (one elevation per session at a time).
 // A subsequent step-up overwrites the row via ON CONFLICT so the window
 // always starts fresh on re-elevation.  Deleting the parent sessions row
 // (logout, idle expiry) cascades here automatically via the FK.
+//
+// The elevation is bounded by two independent deadlines (REQ-AUTH-74):
+// IdleDeadline slides forward on every request that passes the
+// active-elevation check (ExtendElevation), so a continuously active
+// operator is never interrupted; AbsoluteDeadline is fixed at grant time
+// and never extended, capping elevation lifetime regardless of activity.
+// The elevation is active while now is before BOTH deadlines.
 type ElevationRow struct {
 	// SessionID matches the CSRFToken / session_id in the sessions table.
 	SessionID string
 	// PrincipalID is the elevating principal (denormalised from the session
 	// row for middleware convenience).
 	PrincipalID PrincipalID
-	// ElevatedAt is the instant the step-up completed.
+	// ElevatedAt is the instant the step-up (or TOTP-gated login) completed.
 	ElevatedAt time.Time
-	// ExpiresAt is the instant the elevation lapses.
-	ExpiresAt time.Time
+	// IdleDeadline is the instant the elevation lapses absent further
+	// elevated activity. Extended by ExtendElevation on every request that
+	// passes the active-elevation check, clamped to never exceed
+	// AbsoluteDeadline.
+	IdleDeadline time.Time
+	// AbsoluteDeadline is the instant the elevation unconditionally lapses,
+	// set once at grant time (login or step-up) and never extended.
+	AbsoluteDeadline time.Time
 }
 
 // AuditLogFilter narrows a ListAuditLog read. Unset (zero) fields are

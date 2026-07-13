@@ -307,7 +307,16 @@ func TestStepUp_AdminEndpoint_BlockedWithoutElevation(t *testing.T) {
 }
 
 // TestStepUp_ElevationExpiry_BlocksAfterTTL asserts that once the elevation
-// record expires, admin endpoints return 403 again.
+// idles past its TTL with NO interim admin activity, admin endpoints return
+// 403 again (REQ-AUTH-74, issue #225: the elevation's idle deadline is a
+// sliding window extended by every passing admin request, not a one-shot
+// fixed grant-time deadline -- so this test must not make an admin request
+// inside the window, or that request would itself extend the deadline and
+// the "past the window" check below would no longer be past anything).
+// The interaction between an intervening admin request and the sliding
+// deadline is covered separately by
+// TestElevation_ContinuousActivity_ExtendsPastOriginalFixedDeadline in
+// elevation_sliding_test.go.
 func TestStepUp_ElevationExpiry_BlocksAfterTTL(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
@@ -321,17 +330,13 @@ func TestStepUp_ElevationExpiry_BlocksAfterTTL(t *testing.T) {
 		t.Fatalf("step-up: status=%d", sc)
 	}
 
-	// Just inside the 15-minute window: admin endpoint accessible.
-	sh.clk.Advance(14 * time.Minute)
-	if sc, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, ""); sc != http.StatusOK {
-		t.Errorf("admin GET before expiry: status=%d, want 200", sc)
-	}
-
-	// Just past the window: elevation expired, admin endpoint returns 403.
-	sh.clk.Advance(2 * time.Minute)
+	// Idle straight past the 15-minute idle TTL with no interim admin
+	// activity: the deadline is never slid forward, so the elevation
+	// lapses and the admin endpoint returns 403.
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
 	sc, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
 	if sc != http.StatusForbidden {
-		t.Errorf("admin GET after elevation expiry: status=%d, want 403", sc)
+		t.Errorf("admin GET after idle expiry with no interim activity: status=%d, want 403", sc)
 	}
 }
 

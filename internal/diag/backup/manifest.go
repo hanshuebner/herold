@@ -643,7 +643,20 @@ const CurrentBackupVersion = 1
 //	Fixes message research's retrospective trace silently rewriting
 //	itself when a message is later moved out of Junk. No new table;
 //	MessageRow gains the one field.
-const CurrentSchemaVersion = 90
+//
+// 91 — 0091_session_elevation_absolute_cap.sql (REQ-AUTH-74,
+//
+//	REQ-AUTH-ELEV-CONFIG, issue #225). Renames session_elevations.
+//	expires_at_us to idle_deadline_us and adds absolute_deadline_us
+//	(backfilled from idle_deadline_us for existing rows). Splits the
+//	single fixed elevation deadline into a sliding idle deadline
+//	(extended by ExtendElevation on every request that passes the
+//	active-elevation check) and a fixed absolute cap that is never
+//	extended, fixing elevation expiring on a fixed wall-clock deadline
+//	regardless of operator activity. No new table; SessionElevationRow
+//	gains one field and renames another. Excluded from backup for the
+//	same reason as before (elevation rows expire naturally).
+const CurrentSchemaVersion = 91
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

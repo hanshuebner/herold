@@ -9,7 +9,7 @@ import (
 )
 
 // testElevationUpsertGetRoundtrip verifies that UpsertElevation stores a row
-// and GetActiveElevation returns it when the record has not yet expired.
+// and GetActiveElevation returns it when neither deadline has passed.
 func testElevationUpsertGetRoundtrip(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -27,16 +27,17 @@ func testElevationUpsertGetRoundtrip(t *testing.T, s store.Store) {
 	}
 
 	elev := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  now,
-		ExpiresAt:   now.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
 		t.Fatalf("UpsertElevation: %v", err)
 	}
 
-	// Query with nowMicros before the expiry.
+	// Query with nowMicros before either deadline.
 	got, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, now.Add(1*time.Minute).UnixMicro())
 	if err != nil {
 		t.Fatalf("GetActiveElevation: %v", err)
@@ -50,14 +51,17 @@ func testElevationUpsertGetRoundtrip(t *testing.T, s store.Store) {
 	if !got.ElevatedAt.Equal(elev.ElevatedAt) {
 		t.Errorf("ElevatedAt = %v; want %v", got.ElevatedAt, elev.ElevatedAt)
 	}
-	if !got.ExpiresAt.Equal(elev.ExpiresAt) {
-		t.Errorf("ExpiresAt = %v; want %v", got.ExpiresAt, elev.ExpiresAt)
+	if !got.IdleDeadline.Equal(elev.IdleDeadline) {
+		t.Errorf("IdleDeadline = %v; want %v", got.IdleDeadline, elev.IdleDeadline)
+	}
+	if !got.AbsoluteDeadline.Equal(elev.AbsoluteDeadline) {
+		t.Errorf("AbsoluteDeadline = %v; want %v", got.AbsoluteDeadline, elev.AbsoluteDeadline)
 	}
 }
 
 // testElevationGetExpiredReturnsNotFound verifies that GetActiveElevation
-// returns ErrNotFound when the elevation record's expires_at is in the past
-// relative to the supplied nowMicros.
+// returns ErrNotFound when the elevation record's idle deadline is in the
+// past relative to the supplied nowMicros.
 func testElevationGetExpiredReturnsNotFound(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -75,20 +79,61 @@ func testElevationGetExpiredReturnsNotFound(t *testing.T, s store.Store) {
 	}
 
 	elev := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  now,
-		ExpiresAt:   now.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
 		t.Fatalf("UpsertElevation: %v", err)
 	}
 
-	// Query with nowMicros after the expiry.
-	afterExpiry := now.Add(16 * time.Minute).UnixMicro()
-	_, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, afterExpiry)
+	// Query with nowMicros after the idle deadline (but well before the
+	// absolute deadline) -- idle expiry alone must reject the row.
+	afterIdleExpiry := now.Add(16 * time.Minute).UnixMicro()
+	_, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, afterIdleExpiry)
 	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetActiveElevation after expiry: got %v; want ErrNotFound", err)
+		t.Errorf("GetActiveElevation after idle expiry: got %v; want ErrNotFound", err)
+	}
+}
+
+// testElevationGetExpiredByAbsoluteCapReturnsNotFound verifies that
+// GetActiveElevation rejects a row whose absolute deadline has elapsed even
+// though its idle deadline (as originally granted) has not -- the two
+// bounds are independent (REQ-AUTH-74, issue #225).
+func testElevationGetExpiredByAbsoluteCapReturnsNotFound(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "elev-abs-expired@example.test").ID
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sess := store.SessionRow{
+		SessionID:   "elev-sess-abs-expired",
+		PrincipalID: pid,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+	}
+	if err := s.Meta().UpsertSession(ctx, sess); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	elev := store.ElevationRow{
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(30 * time.Minute),
+		AbsoluteDeadline: now.Add(20 * time.Minute),
+	}
+	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
+		t.Fatalf("UpsertElevation: %v", err)
+	}
+
+	// nowMicros is before IdleDeadline but after AbsoluteDeadline.
+	afterAbsExpiry := now.Add(25 * time.Minute).UnixMicro()
+	_, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, afterAbsExpiry)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveElevation after absolute-cap expiry: got %v; want ErrNotFound", err)
 	}
 }
 
@@ -124,10 +169,11 @@ func testElevationUpsertRefreshesWindow(t *testing.T, s store.Store) {
 	}
 
 	first := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  now,
-		ExpiresAt:   now.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, first); err != nil {
 		t.Fatalf("UpsertElevation first: %v", err)
@@ -136,17 +182,18 @@ func testElevationUpsertRefreshesWindow(t *testing.T, s store.Store) {
 	// Re-elevate: window shifts forward.
 	later := now.Add(10 * time.Minute)
 	second := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  later,
-		ExpiresAt:   later.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       later,
+		IdleDeadline:     later.Add(15 * time.Minute),
+		AbsoluteDeadline: later.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, second); err != nil {
 		t.Fatalf("UpsertElevation second: %v", err)
 	}
 
-	// Original expiry (15 min from now) is still before the new expiry
-	// (25 min from now); query between the two should still return active.
+	// Original idle deadline (15 min from now) is still before the new
+	// deadline (25 min from now); query between the two should still be active.
 	midway := now.Add(20 * time.Minute).UnixMicro()
 	got, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, midway)
 	if err != nil {
@@ -155,8 +202,8 @@ func testElevationUpsertRefreshesWindow(t *testing.T, s store.Store) {
 	if !got.ElevatedAt.Equal(second.ElevatedAt) {
 		t.Errorf("ElevatedAt = %v; want second elevation %v", got.ElevatedAt, second.ElevatedAt)
 	}
-	if !got.ExpiresAt.Equal(second.ExpiresAt) {
-		t.Errorf("ExpiresAt = %v; want second elevation %v", got.ExpiresAt, second.ExpiresAt)
+	if !got.IdleDeadline.Equal(second.IdleDeadline) {
+		t.Errorf("IdleDeadline = %v; want second elevation %v", got.IdleDeadline, second.IdleDeadline)
 	}
 }
 
@@ -179,10 +226,11 @@ func testElevationDeleteRemovesRow(t *testing.T, s store.Store) {
 	}
 
 	elev := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  now,
-		ExpiresAt:   now.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
 		t.Fatalf("UpsertElevation: %v", err)
@@ -229,10 +277,11 @@ func testElevationCascadeOnSessionDelete(t *testing.T, s store.Store) {
 	}
 
 	elev := store.ElevationRow{
-		SessionID:   sess.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  now,
-		ExpiresAt:   now.Add(15 * time.Minute),
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
 	}
 	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
 		t.Fatalf("UpsertElevation: %v", err)
@@ -250,7 +299,8 @@ func testElevationCascadeOnSessionDelete(t *testing.T, s store.Store) {
 }
 
 // testElevationEvictExpired verifies that EvictExpiredElevations removes rows
-// whose expires_at is in the past and leaves unexpired rows intact.
+// whose idle deadline OR absolute deadline is in the past and leaves rows
+// that are active on both bounds intact (REQ-AUTH-74, issue #225).
 func testElevationEvictExpired(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -259,10 +309,17 @@ func testElevationEvictExpired(t *testing.T, s store.Store) {
 	epoch := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	past := epoch.Add(-1 * time.Minute)
 	future := epoch.Add(15 * time.Minute)
+	farFuture := epoch.Add(8 * time.Hour)
 
 	// Parent sessions.
-	sessExpired := store.SessionRow{
-		SessionID:   "elev-sess-evict-expired",
+	sessIdleExpired := store.SessionRow{
+		SessionID:   "elev-sess-evict-idle-expired",
+		PrincipalID: pid,
+		CreatedAt:   epoch.Add(-30 * time.Minute),
+		ExpiresAt:   epoch.Add(7 * 24 * time.Hour),
+	}
+	sessAbsExpired := store.SessionRow{
+		SessionID:   "elev-sess-evict-abs-expired",
 		PrincipalID: pid,
 		CreatedAt:   epoch.Add(-30 * time.Minute),
 		ExpiresAt:   epoch.Add(7 * 24 * time.Hour),
@@ -273,26 +330,38 @@ func testElevationEvictExpired(t *testing.T, s store.Store) {
 		CreatedAt:   epoch.Add(-5 * time.Minute),
 		ExpiresAt:   epoch.Add(7 * 24 * time.Hour),
 	}
-	for _, sr := range []store.SessionRow{sessExpired, sessAlive} {
+	for _, sr := range []store.SessionRow{sessIdleExpired, sessAbsExpired, sessAlive} {
 		if err := s.Meta().UpsertSession(ctx, sr); err != nil {
 			t.Fatalf("UpsertSession %q: %v", sr.SessionID, err)
 		}
 	}
 
-	elevExpired := store.ElevationRow{
-		SessionID:   sessExpired.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  epoch.Add(-16 * time.Minute),
-		ExpiresAt:   past,
+	elevIdleExpired := store.ElevationRow{
+		SessionID:        sessIdleExpired.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       epoch.Add(-16 * time.Minute),
+		IdleDeadline:     past,
+		AbsoluteDeadline: farFuture,
+	}
+	elevAbsExpired := store.ElevationRow{
+		SessionID:        sessAbsExpired.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       epoch.Add(-16 * time.Minute),
+		IdleDeadline:     future,
+		AbsoluteDeadline: past,
 	}
 	elevAlive := store.ElevationRow{
-		SessionID:   sessAlive.SessionID,
-		PrincipalID: pid,
-		ElevatedAt:  epoch.Add(-1 * time.Minute),
-		ExpiresAt:   future,
+		SessionID:        sessAlive.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       epoch.Add(-1 * time.Minute),
+		IdleDeadline:     future,
+		AbsoluteDeadline: farFuture,
 	}
-	if err := s.Meta().UpsertElevation(ctx, elevExpired); err != nil {
-		t.Fatalf("UpsertElevation expired: %v", err)
+	if err := s.Meta().UpsertElevation(ctx, elevIdleExpired); err != nil {
+		t.Fatalf("UpsertElevation idle-expired: %v", err)
+	}
+	if err := s.Meta().UpsertElevation(ctx, elevAbsExpired); err != nil {
+		t.Fatalf("UpsertElevation abs-expired: %v", err)
 	}
 	if err := s.Meta().UpsertElevation(ctx, elevAlive); err != nil {
 		t.Fatalf("UpsertElevation alive: %v", err)
@@ -302,16 +371,173 @@ func testElevationEvictExpired(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("EvictExpiredElevations: %v", err)
 	}
-	if deleted != 1 {
-		t.Errorf("deleted = %d; want 1", deleted)
+	if deleted != 2 {
+		t.Errorf("deleted = %d; want 2", deleted)
 	}
 
-	// Expired elevation must be gone.
-	if _, err := s.Meta().GetActiveElevation(ctx, elevExpired.SessionID, epoch.Add(-2*time.Minute).UnixMicro()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetActiveElevation expired: got %v; want ErrNotFound", err)
+	// Both expired elevations must be gone.
+	if _, err := s.Meta().GetActiveElevation(ctx, elevIdleExpired.SessionID, epoch.Add(-2*time.Minute).UnixMicro()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveElevation idle-expired: got %v; want ErrNotFound", err)
+	}
+	if _, err := s.Meta().GetActiveElevation(ctx, elevAbsExpired.SessionID, epoch.Add(-2*time.Minute).UnixMicro()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveElevation abs-expired: got %v; want ErrNotFound", err)
 	}
 	// Alive elevation must still be present.
 	if _, err := s.Meta().GetActiveElevation(ctx, elevAlive.SessionID, epoch.UnixMicro()); err != nil {
 		t.Errorf("GetActiveElevation alive: %v", err)
+	}
+}
+
+// testElevationExtendSlidesIdleDeadline verifies that ExtendElevation moves
+// idle_deadline_us forward to now+idleTTL, past the row's originally granted
+// idle deadline, when the new deadline stays within the absolute cap
+// (REQ-AUTH-74, issue #225 -- the core sliding-window fix).
+func testElevationExtendSlidesIdleDeadline(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "elev-extend@example.test").ID
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sess := store.SessionRow{
+		SessionID:   "elev-sess-extend",
+		PrincipalID: pid,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+	}
+	if err := s.Meta().UpsertSession(ctx, sess); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	idleTTL := 15 * time.Minute
+	elev := store.ElevationRow{
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(idleTTL),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
+	}
+	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
+		t.Fatalf("UpsertElevation: %v", err)
+	}
+
+	// Simulate an authenticated admin request at now+10m (before the
+	// original 15m idle deadline) that passes the active-elevation check
+	// and extends it.
+	activityAt := now.Add(10 * time.Minute)
+	if err := s.Meta().ExtendElevation(ctx, sess.SessionID, activityAt.UnixMicro(), idleTTL.Microseconds()); err != nil {
+		t.Fatalf("ExtendElevation: %v", err)
+	}
+
+	// A query at the ORIGINAL fixed idle deadline (now+15m) must now
+	// succeed: this is the sliding-window behaviour the fix adds. Before
+	// the fix, this exact query returned ErrNotFound.
+	got, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, now.Add(15*time.Minute).UnixMicro())
+	if err != nil {
+		t.Fatalf("GetActiveElevation at original fixed deadline after extension: %v", err)
+	}
+	wantIdleDeadline := activityAt.Add(idleTTL)
+	if !got.IdleDeadline.Equal(wantIdleDeadline) {
+		t.Errorf("IdleDeadline after extend = %v; want %v", got.IdleDeadline, wantIdleDeadline)
+	}
+	// AbsoluteDeadline must be untouched by the extension.
+	if !got.AbsoluteDeadline.Equal(elev.AbsoluteDeadline) {
+		t.Errorf("AbsoluteDeadline after extend = %v; want unchanged %v", got.AbsoluteDeadline, elev.AbsoluteDeadline)
+	}
+}
+
+// testElevationExtendClampedToAbsoluteDeadline verifies that
+// ExtendElevation never pushes idle_deadline_us past absolute_deadline_us,
+// even when idleTTL alone would compute a later instant (REQ-AUTH-74,
+// issue #225 -- continuous activity must not defeat the absolute cap).
+func testElevationExtendClampedToAbsoluteDeadline(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "elev-extend-clamp@example.test").ID
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sess := store.SessionRow{
+		SessionID:   "elev-sess-extend-clamp",
+		PrincipalID: pid,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+	}
+	if err := s.Meta().UpsertSession(ctx, sess); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	idleTTL := 15 * time.Minute
+	absoluteDeadline := now.Add(20 * time.Minute)
+	elev := store.ElevationRow{
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(idleTTL),
+		AbsoluteDeadline: absoluteDeadline,
+	}
+	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
+		t.Fatalf("UpsertElevation: %v", err)
+	}
+
+	// Activity at now+10m: naive now+idleTTL = now+25m, which is past the
+	// now+20m absolute deadline. The extension must clamp to the absolute
+	// deadline, not to the naive sum.
+	activityAt := now.Add(10 * time.Minute)
+	if err := s.Meta().ExtendElevation(ctx, sess.SessionID, activityAt.UnixMicro(), idleTTL.Microseconds()); err != nil {
+		t.Fatalf("ExtendElevation: %v", err)
+	}
+	got, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, now.Add(19*time.Minute).UnixMicro())
+	if err != nil {
+		t.Fatalf("GetActiveElevation before absolute cap: %v", err)
+	}
+	if !got.IdleDeadline.Equal(absoluteDeadline) {
+		t.Errorf("IdleDeadline after clamped extend = %v; want absolute deadline %v", got.IdleDeadline, absoluteDeadline)
+	}
+
+	// A second extension attempt after the absolute deadline has elapsed
+	// must fail (the row is no longer active) and must not resurrect it.
+	pastAbsolute := absoluteDeadline.Add(time.Minute)
+	if err := s.Meta().ExtendElevation(ctx, sess.SessionID, pastAbsolute.UnixMicro(), idleTTL.Microseconds()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ExtendElevation past absolute deadline: got %v; want ErrNotFound", err)
+	}
+	if _, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, pastAbsolute.UnixMicro()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveElevation past absolute deadline after failed extend: got %v; want ErrNotFound", err)
+	}
+}
+
+// testElevationExtendNotFoundWhenIdleExpired verifies that ExtendElevation
+// refuses to resurrect a row whose idle deadline has already elapsed
+// (REQ-AUTH-74, issue #225).
+func testElevationExtendNotFoundWhenIdleExpired(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	pid := mustInsertPrincipal(t, s, "elev-extend-idle-gone@example.test").ID
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sess := store.SessionRow{
+		SessionID:   "elev-sess-extend-idle-gone",
+		PrincipalID: pid,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+	}
+	if err := s.Meta().UpsertSession(ctx, sess); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	elev := store.ElevationRow{
+		SessionID:        sess.SessionID,
+		PrincipalID:      pid,
+		ElevatedAt:       now,
+		IdleDeadline:     now.Add(15 * time.Minute),
+		AbsoluteDeadline: now.Add(8 * time.Hour),
+	}
+	if err := s.Meta().UpsertElevation(ctx, elev); err != nil {
+		t.Fatalf("UpsertElevation: %v", err)
+	}
+
+	pastIdle := now.Add(16 * time.Minute)
+	if err := s.Meta().ExtendElevation(ctx, sess.SessionID, pastIdle.UnixMicro(), (15 * time.Minute).Microseconds()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ExtendElevation on idle-expired row: got %v; want ErrNotFound", err)
+	}
+	if _, err := s.Meta().GetActiveElevation(ctx, sess.SessionID, pastIdle.UnixMicro()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveElevation after failed extend on idle-expired row: got %v; want ErrNotFound", err)
 	}
 }

@@ -405,15 +405,19 @@ func Run(t *testing.T, f Factory) {
 		{"Session_ListByPrincipal_Empty", testSessionListByPrincipalEmpty},
 		{"Session_Tombstone", testSessionTombstone},
 		{"Session_Tombstone_NotFound", testSessionTombstoneNotFound},
-		// -- Elevation (session_elevations table, REQ-AUTH-74, issue #79) --
+		// -- Elevation (session_elevations table, REQ-AUTH-74, issue #79, issue #225) --
 		{"Elevation_UpsertGet_Roundtrip", testElevationUpsertGetRoundtrip},
 		{"Elevation_Get_Expired_ReturnsNotFound", testElevationGetExpiredReturnsNotFound},
+		{"Elevation_Get_ExpiredByAbsoluteCap_ReturnsNotFound", testElevationGetExpiredByAbsoluteCapReturnsNotFound},
 		{"Elevation_Get_NotFound", testElevationGetNotFound},
 		{"Elevation_Upsert_RefreshesWindow", testElevationUpsertRefreshesWindow},
 		{"Elevation_Delete_RemovesRow", testElevationDeleteRemovesRow},
 		{"Elevation_Delete_NotFound", testElevationDeleteNotFound},
 		{"Elevation_Cascade_OnSessionDelete", testElevationCascadeOnSessionDelete},
 		{"Elevation_EvictExpired_RemovesExpiredLeavesAlive", testElevationEvictExpired},
+		{"Elevation_Extend_SlidesIdleDeadline", testElevationExtendSlidesIdleDeadline},
+		{"Elevation_Extend_ClampedToAbsoluteDeadline", testElevationExtendClampedToAbsoluteDeadline},
+		{"Elevation_Extend_NotFoundWhenIdleExpired", testElevationExtendNotFoundWhenIdleExpired},
 		// -- IMAP import (issue #25, REQ-IMAP-IMP-02, -15..19, -34, -42, -70, -74) --
 		{"IMAPImport_CreateGet_Roundtrip", testIMAPImport_CreateGetRoundtrip},
 		{"IMAPImport_ListByPrincipal", testIMAPImport_ListByPrincipal},
