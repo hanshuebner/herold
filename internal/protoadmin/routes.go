@@ -187,6 +187,23 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// owned by the parallel agent.
 	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", authAdmin(s.handleDiagDNSCheck))
 
+	// Hosted mailing lists, Stage 1 (epic #183, REQ-MLIST-40a). CRUD for
+	// the list row (mlist.go) plus roster CRUD and bulk import/export
+	// (mlist_members.go). Every handler applies requireAdmin here and
+	// then narrows further to the caller's domain/list grant scope
+	// (REQ-MLIST-05, internal/authz) inside the handler.
+	mux.HandleFunc("GET /api/v1/lists", authAdmin(s.handleListMailingLists))
+	mux.HandleFunc("POST /api/v1/lists", authAdmin(s.handleCreateMailingList))
+	mux.HandleFunc("GET /api/v1/lists/{id}", authAdmin(s.handleGetMailingList))
+	mux.HandleFunc("PATCH /api/v1/lists/{id}", authAdmin(s.handlePatchMailingList))
+	mux.HandleFunc("DELETE /api/v1/lists/{id}", authAdmin(s.handleDeleteMailingList))
+	mux.HandleFunc("GET /api/v1/lists/{id}/members", authAdmin(s.handleListMailingListMembers))
+	mux.HandleFunc("POST /api/v1/lists/{id}/members", authAdmin(s.handleAddMailingListMember))
+	mux.HandleFunc("PATCH /api/v1/lists/{id}/members/{mid}", authAdmin(s.handlePatchMailingListMember))
+	mux.HandleFunc("DELETE /api/v1/lists/{id}/members/{mid}", authAdmin(s.handleRemoveMailingListMember))
+	mux.HandleFunc("POST /api/v1/lists/{id}/members/import", authAdmin(s.handleImportMailingListMembers))
+	mux.HandleFunc("GET /api/v1/lists/{id}/members/export", authAdmin(s.handleExportMailingListMembers))
+
 	// External SMTP submission per-Identity credentials
 	// (REQ-AUTH-EXT-SUBMIT-04). Also registered in RegisterSelfServiceRoutes
 	// for the public listener. All four endpoints are gated by requireSelfOnly

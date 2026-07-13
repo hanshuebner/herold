@@ -1,0 +1,123 @@
+package protoadmin
+
+import (
+	"time"
+
+	"github.com/hanshuebner/herold/internal/store"
+)
+
+// Hosted mailing lists, Stage 1 admin REST (epic #183,
+// docs/design/server/requirements/28-mailing-lists.md REQ-MLIST-40a).
+// This file is the DTO layer over store.MailingList / store.MailingListMember;
+// mlist.go and mlist_members.go hold the handlers and authorization.
+
+// mailingListDTO is the wire representation of a MailingList row.
+type mailingListDTO struct {
+	ID                  uint64    `json:"id"`
+	PrincipalID         uint64    `json:"principal_id"`
+	PostingAddress      string    `json:"posting_address"`
+	Domain              string    `json:"domain"`
+	DisplayName         string    `json:"display_name"`
+	OwnerPrincipalID    uint64    `json:"owner_principal_id"`
+	SubjectTag          string    `json:"subject_tag,omitempty"`
+	ARCSeal             bool      `json:"arc_seal"`
+	PostingPolicy       string    `json:"posting_policy"`
+	SubscribePolicy     string    `json:"subscribe_policy"`
+	MaxMessageSizeBytes int64     `json:"max_message_size_bytes,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+func toMailingListDTO(l store.MailingList) mailingListDTO {
+	dto := mailingListDTO{
+		ID:                  uint64(l.ID),
+		PrincipalID:         uint64(l.PrincipalID),
+		PostingAddress:      l.PostingAddress,
+		Domain:              l.Domain,
+		DisplayName:         l.DisplayName,
+		OwnerPrincipalID:    uint64(l.OwnerID),
+		ARCSeal:             l.ARCSeal,
+		PostingPolicy:       string(l.PostingPolicy),
+		SubscribePolicy:     string(l.SubscribePolicy),
+		MaxMessageSizeBytes: l.MaxMessageSizeBytes,
+		CreatedAt:           l.CreatedAt,
+		UpdatedAt:           l.UpdatedAt,
+	}
+	if l.SubjectTag != nil {
+		dto.SubjectTag = *l.SubjectTag
+	}
+	return dto
+}
+
+// mailingListMemberDTO is the wire representation of a roster row
+// (REQ-MLIST-02). Exactly one of PrincipalID / ExternalAddress is
+// non-zero, mirroring the store's XOR constraint.
+type mailingListMemberDTO struct {
+	ID              uint64     `json:"id"`
+	ListID          uint64     `json:"list_id"`
+	PrincipalID     uint64     `json:"principal_id,omitempty"`
+	ExternalAddress string     `json:"external_address,omitempty"`
+	State           string     `json:"state"`
+	DeliveryMode    string     `json:"delivery_mode"`
+	BounceScore     float64    `json:"bounce_score,omitempty"`
+	LastBounceAt    *time.Time `json:"last_bounce_at,omitempty"`
+	AddedAt         time.Time  `json:"added_at"`
+	AddedBy         uint64     `json:"added_by,omitempty"`
+}
+
+func toMailingListMemberDTO(m store.MailingListMember) mailingListMemberDTO {
+	dto := mailingListMemberDTO{
+		ID:           uint64(m.ID),
+		ListID:       uint64(m.ListID),
+		State:        string(m.State),
+		DeliveryMode: string(m.DeliveryMode),
+		BounceScore:  m.BounceScore,
+		LastBounceAt: m.LastBounceAt,
+		AddedAt:      m.AddedAt,
+	}
+	if m.PrincipalID != nil {
+		dto.PrincipalID = uint64(*m.PrincipalID)
+	}
+	if m.ExternalAddress != nil {
+		dto.ExternalAddress = *m.ExternalAddress
+	}
+	if m.AddedBy != nil {
+		dto.AddedBy = uint64(*m.AddedBy)
+	}
+	return dto
+}
+
+// mlistStateFromString maps the wire vocabulary to store.MailingListMemberState.
+// An empty string is accepted and means "no filter" / "use the store default".
+func mlistStateFromString(s string) (store.MailingListMemberState, bool) {
+	switch s {
+	case "":
+		return "", true
+	case string(store.MailingListMemberActive):
+		return store.MailingListMemberActive, true
+	case string(store.MailingListMemberSuspended):
+		return store.MailingListMemberSuspended, true
+	case string(store.MailingListMemberUnsubscribed):
+		return store.MailingListMemberUnsubscribed, true
+	case string(store.MailingListMemberPending):
+		return store.MailingListMemberPending, true
+	default:
+		return "", false
+	}
+}
+
+// mlistDeliveryModeFromString maps the wire vocabulary to
+// store.MailingListDeliveryMode. An empty string means "no filter" / "use
+// the store default (each)".
+func mlistDeliveryModeFromString(s string) (store.MailingListDeliveryMode, bool) {
+	switch s {
+	case "":
+		return "", true
+	case string(store.MailingListDeliveryEach):
+		return store.MailingListDeliveryEach, true
+	case string(store.MailingListDeliveryNoMail):
+		return store.MailingListDeliveryNoMail, true
+	default:
+		return "", false
+	}
+}
