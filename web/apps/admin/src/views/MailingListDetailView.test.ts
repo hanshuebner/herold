@@ -164,4 +164,77 @@ describe('MailingListDetailView', () => {
     await screen.findByLabelText('Display name');
     expect(screen.queryByText(/ARC-seal is enabled/i)).not.toBeInTheDocument();
   });
+
+  // Stage 3 self-subscription (epic #185, REQ-MLIST-60..63).
+
+  it('PATCHes subscribe_policy when the select is changed and saved', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        return Promise.resolve(jsonResponse(mailingListDTO({ subscribe_policy: body.subscribe_policy })));
+      }
+      if (url.includes('/members')) return Promise.resolve(jsonResponse({ items: [], next: null }));
+      return Promise.resolve(jsonResponse(mailingListDTO()));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(MailingListDetailView, { props: { id: '1' } });
+
+    const select = (await screen.findByLabelText('Subscribe policy')) as HTMLSelectElement;
+    expect(select.value).toBe('closed');
+    await fireEvent.change(select, { target: { value: 'open' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH');
+      expect(patchCall).toBeDefined();
+    });
+    const patchCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH');
+    const body = JSON.parse((patchCall?.[1] as RequestInit).body as string) as { subscribe_policy?: string };
+    expect(body.subscribe_policy).toBe('open');
+  });
+
+  it('shows Approve/Reject actions for an awaiting-approval member and PATCHes state', async () => {
+    let lastPatchBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH' && url.includes('/members/')) {
+        lastPatchBody = JSON.parse(init.body as string) as Record<string, unknown>;
+        return Promise.resolve(jsonResponse(memberDTO({ state: 'active' })));
+      }
+      if (url.includes('/members')) {
+        return Promise.resolve(jsonResponse({ items: [memberDTO({ state: 'awaiting-approval' })], next: null }));
+      }
+      return Promise.resolve(jsonResponse(mailingListDTO({ subscribe_policy: 'request-approval' })));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(MailingListDetailView, { props: { id: '1' } });
+
+    await screen.findByText('someone@gmail.com');
+    const approveBtn = screen.getByRole('button', { name: 'Approve' });
+    expect(approveBtn).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+
+    await fireEvent.click(approveBtn);
+
+    await waitFor(() => {
+      expect(lastPatchBody).toEqual({ state: 'active' });
+    });
+  });
+
+  it('does not show Approve/Reject actions for an active member', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/members')) return Promise.resolve(jsonResponse({ items: [memberDTO()], next: null }));
+        return Promise.resolve(jsonResponse(mailingListDTO()));
+      }),
+    );
+
+    render(MailingListDetailView, { props: { id: '1' } });
+
+    await screen.findByText('someone@gmail.com');
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
 });

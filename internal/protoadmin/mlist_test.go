@@ -1065,3 +1065,152 @@ func testMailingLists_MemberSummary(t *testing.T, be submissionBackend) {
 		t.Fatalf("summary = %+v; want active=2 suspended=1 unsubscribed=1 pending=0", summary)
 	}
 }
+
+// TestMailingLists_SubscribePolicy_SettableViaPATCH is Stage 3's REQ-MLIST-60
+// admin surface (issue #185): subscribe_policy defaults to closed on create
+// (already asserted in TestMailingLists_CRUD_SuperAdmin), is settable to
+// request-approval and open via PATCH, and rejects an unrecognised value.
+func TestMailingLists_SubscribePolicy_SettableViaPATCH(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_SubscribePolicy_SettableViaPATCH(t, be) })
+	}
+}
+
+func testMailingLists_SubscribePolicy_SettableViaPATCH(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-subpolicy@example.test")
+	e.insertLocalDomain(t, "subpolicy.example")
+	id := idOf(t, e.createList(t, "list@subpolicy.example", "List"))
+
+	for _, policy := range []string{"request-approval", "open", "closed"} {
+		res, buf := e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,
+			map[string]any{"subscribe_policy": policy})
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("PATCH subscribe_policy=%s: %d: %s", policy, res.StatusCode, buf)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(buf, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got["subscribe_policy"] != policy {
+			t.Errorf("subscribe_policy after PATCH = %v; want %s", got["subscribe_policy"], policy)
+		}
+	}
+
+	// Also settable at creation time.
+	created := e.createList(t, "list2@subpolicy.example", "List2")
+	res, buf := e.h.doRequest("POST", "/api/v1/lists", e.adminKey, map[string]any{
+		"posting_address":  "list3@subpolicy.example",
+		"display_name":     "List3",
+		"subscribe_policy": "open",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create with subscribe_policy=open: %d: %s", res.StatusCode, buf)
+	}
+	var withPolicy map[string]any
+	_ = json.Unmarshal(buf, &withPolicy)
+	if withPolicy["subscribe_policy"] != "open" {
+		t.Errorf("subscribe_policy at create = %v; want open", withPolicy["subscribe_policy"])
+	}
+	_ = created
+
+	// An invalid value is rejected (400), not silently accepted.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,
+		map[string]any{"subscribe_policy": "bogus"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PATCH subscribe_policy=bogus: %d: %s; want 400", res.StatusCode, buf)
+	}
+}
+
+// TestMailingLists_ApproveReject_RequestApprovalMember is the REQ-MLIST-62
+// operator surface: an awaiting-approval member is visible in the roster
+// and the summary counts, PATCH state=active approves it (recorded as
+// mlist.member.approve, distinct from a bare reactivation), and on a
+// separate member PATCH state=unsubscribed rejects it (recorded as
+// mlist.member.reject).
+func TestMailingLists_ApproveReject_RequestApprovalMember(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_ApproveReject_RequestApprovalMember(t, be) })
+	}
+}
+
+func testMailingLists_ApproveReject_RequestApprovalMember(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-approve@example.test")
+	e.insertLocalDomain(t, "approve.example")
+	id := idOf(t, e.createList(t, "list@approve.example", "List"))
+	listID := store.MailingListID(id)
+
+	approveMe, err := e.h.Store().AddMailingListMember(context.Background(), store.MailingListMember{
+		ListID:          listID,
+		ExternalAddress: strPtrTest("approve-me@example.net"),
+		State:           store.MailingListMemberAwaitingApproval,
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember(approveMe): %v", err)
+	}
+	rejectMe, err := e.h.Store().AddMailingListMember(context.Background(), store.MailingListMember{
+		ListID:          listID,
+		ExternalAddress: strPtrTest("reject-me@example.net"),
+		State:           store.MailingListMemberAwaitingApproval,
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember(rejectMe): %v", err)
+	}
+
+	// The summary surfaces the awaiting-approval count for the operator.
+	res, buf := e.h.doRequest("GET", fmt.Sprintf("/api/v1/lists/%d/members/summary", id), e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("summary: %d: %s", res.StatusCode, buf)
+	}
+	var summary struct {
+		AwaitingApproval int `json:"awaiting_approval"`
+	}
+	if err := json.Unmarshal(buf, &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if summary.AwaitingApproval != 2 {
+		t.Fatalf("summary.awaiting_approval = %d; want 2", summary.AwaitingApproval)
+	}
+
+	// Approve.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d/members/%d", id, approveMe.ID), e.adminKey,
+		map[string]any{"state": "active"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("approve: %d: %s", res.StatusCode, buf)
+	}
+	var approved map[string]any
+	_ = json.Unmarshal(buf, &approved)
+	if approved["state"] != "active" {
+		t.Errorf("state after approve = %v; want active", approved["state"])
+	}
+
+	// Reject.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d/members/%d", id, rejectMe.ID), e.adminKey,
+		map[string]any{"state": "unsubscribed"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("reject: %d: %s", res.StatusCode, buf)
+	}
+	var rejected map[string]any
+	_ = json.Unmarshal(buf, &rejected)
+	if rejected["state"] != "unsubscribed" {
+		t.Errorf("state after reject = %v; want unsubscribed", rejected["state"])
+	}
+
+	logs, err := e.h.Store().ListAuditLog(context.Background(), store.AuditLogFilter{Action: "mlist.member.approve"})
+	if err != nil {
+		t.Fatalf("ListAuditLog(approve): %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("mlist.member.approve audit rows = %d; want 1", len(logs))
+	}
+	logs, err = e.h.Store().ListAuditLog(context.Background(), store.AuditLogFilter{Action: "mlist.member.reject"})
+	if err != nil {
+		t.Fatalf("ListAuditLog(reject): %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("mlist.member.reject audit rows = %d; want 1", len(logs))
+	}
+}
+
+func strPtrTest(s string) *string { return &s }

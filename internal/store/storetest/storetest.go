@@ -514,6 +514,9 @@ func Run(t *testing.T, f Factory) {
 		{"MailingListMember_SuspendIfActiveIsCAS", testMailingListMember_SuspendIfActiveIsCAS},
 		{"MailingListMember_Reactivate", testMailingListMember_Reactivate},
 		{"MailingListMember_CountByState", testMailingListMember_CountByState},
+		// -- Hosted mailing lists, Stage 3 self-subscription (issue #185,
+		// REQ-MLIST-60..63, migration 0088) --
+		{"MailingListMember_GetByAddress", testMailingListMember_GetByAddress},
 	}
 	for _, c := range cases {
 		tc := c

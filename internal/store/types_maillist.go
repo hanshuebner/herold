@@ -72,8 +72,20 @@ const (
 	// further mail.
 	MailingListMemberUnsubscribed MailingListMemberState = "unsubscribed"
 	// MailingListMemberPending awaits double opt-in confirmation
-	// (Stage 3) or owner approval. Receives no mail while pending.
+	// (Stage 3): the address has neither been added by an admin nor
+	// confirmed its own subscribe request yet. Receives no mail while
+	// pending.
 	MailingListMemberPending MailingListMemberState = "pending"
+	// MailingListMemberAwaitingApproval is Stage 3's second gate on a
+	// `request-approval` list (REQ-MLIST-62): the address has already
+	// confirmed the double opt-in token (proving control of the
+	// mailbox), but the list's owner_principal has not yet approved
+	// the request. Distinct from MailingListMemberPending so the
+	// operator view can tell "nobody has confirmed this address yet"
+	// apart from "the address confirmed; an owner decision is
+	// outstanding" -- the roster's very reason for existing on a
+	// request-approval list. Receives no mail while awaiting approval.
+	MailingListMemberAwaitingApproval MailingListMemberState = "awaiting-approval"
 )
 
 // MailingListDeliveryMode is a roster row's delivery mode (REQ-MLIST-04).

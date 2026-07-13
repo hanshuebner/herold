@@ -717,6 +717,16 @@ type Metadata interface {
 	// GetMailingListMember returns the roster row by id, or ErrNotFound.
 	GetMailingListMember(ctx context.Context, id MailingListMemberID) (MailingListMember, error)
 
+	// GetMailingListMemberByAddress returns listID's external-address
+	// roster row for address (canonicalised the same way
+	// AddMailingListMember stores it: lowercased, trimmed), or
+	// ErrNotFound. This is the Stage 3 self-service subscribe lookup
+	// (REQ-MLIST-61): it looks up only ExternalAddress rows, not a
+	// principal-linked member whose CanonicalEmail happens to match --
+	// the public subscribe endpoint has no principal context and
+	// always creates/updates an ExternalAddress row.
+	GetMailingListMemberByAddress(ctx context.Context, listID MailingListID, address string) (MailingListMember, error)
+
 	// RemoveMailingListMember deletes the roster row. Returns
 	// ErrNotFound if absent.
 	RemoveMailingListMember(ctx context.Context, id MailingListMemberID) error

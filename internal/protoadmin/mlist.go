@@ -272,6 +272,10 @@ type createMailingListRequest struct {
 	// to true (mirroring ARCSeal's own "default on" convention) unless
 	// the caller explicitly sets it false.
 	UnsubscribeEnabled *bool `json:"unsubscribe_enabled,omitempty"`
+	// SubscribePolicy sets the Stage 3 self-subscription policy (epic
+	// #185, REQ-MLIST-60): "closed" (the default), "request-approval",
+	// or "open". Empty/omitted keeps the store default (closed).
+	SubscribePolicy string `json:"subscribe_policy,omitempty"`
 	// BouncePolicy overrides the REQ-MLIST-53 deployment-default bounce
 	// scoring policy for this list. Any field left unset keeps the
 	// deployment default for that field.
@@ -331,6 +335,12 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 	if req.UnsubscribeEnabled != nil {
 		unsubscribeEnabled = *req.UnsubscribeEnabled
 	}
+	subscribePolicy, ok := mlistSubscribePolicyFromString(req.SubscribePolicy)
+	if !ok {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"subscribe_policy must be one of closed, request-approval, open", req.SubscribePolicy)
+		return
+	}
 
 	group, err := s.store.Meta().InsertPrincipal(r.Context(), store.Principal{
 		Kind:           store.PrincipalKindGroup,
@@ -365,6 +375,7 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		ARCSeal:             arcSeal,
 		MaxMessageSizeBytes: req.MaxMessageSize,
 		UnsubscribeEnabled:  unsubscribeEnabled,
+		SubscribePolicy:     subscribePolicy,
 		BouncePolicyJSON:    bouncePolicyJSON,
 	})
 	if err != nil {
@@ -413,6 +424,9 @@ type patchMailingListRequest struct {
 	MaxMessageSizeBytes *int64  `json:"max_message_size_bytes,omitempty"`
 	// UnsubscribeEnabled gates REQ-MLIST-56/57/58 (epic #184).
 	UnsubscribeEnabled *bool `json:"unsubscribe_enabled,omitempty"`
+	// SubscribePolicy sets the Stage 3 self-subscription policy (epic
+	// #185, REQ-MLIST-60): "closed", "request-approval", or "open".
+	SubscribePolicy *string `json:"subscribe_policy,omitempty"`
 	// BouncePolicy, when present, patches the REQ-MLIST-53 per-list
 	// bounce-scoring policy; any of its own fields left unset keeps that
 	// field's current (or default) value.
@@ -506,6 +520,15 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.UnsubscribeEnabled != nil {
 		l.UnsubscribeEnabled = *req.UnsubscribeEnabled
+	}
+	if req.SubscribePolicy != nil {
+		policy, ok := mlistSubscribePolicyFromString(*req.SubscribePolicy)
+		if !ok || policy == "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"subscribe_policy must be one of closed, request-approval, open", *req.SubscribePolicy)
+			return
+		}
+		l.SubscribePolicy = policy
 	}
 	if req.MaxMessageSizeBytes != nil {
 		if *req.MaxMessageSizeBytes < 0 {

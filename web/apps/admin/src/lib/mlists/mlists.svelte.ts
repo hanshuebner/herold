@@ -5,9 +5,10 @@
  * internal/protoadmin/mlist.go's mailingListPage). MailingListSummary
  * mirrors internal/protoadmin/mlist_dto.go's mailingListDTO field-for-field:
  * every id is a JSON number, subject_tag/max_message_size_bytes are
- * omitempty (absent rather than null/empty when unset), and posting_policy /
- * subscribe_policy are read-only in S1 (server always sends "open" /
- * "closed" -- see docs/design/server/requirements/28-mailing-lists.md).
+ * omitempty (absent rather than null/empty when unset). posting_policy is
+ * read-only (server always sends "open"); subscribe_policy is editable via
+ * PATCH /api/v1/lists/{id} (Stage 3 self-subscription, epic #185,
+ * REQ-MLIST-60 -- see MailingListDetailView.svelte's config form).
  */
 
 import { apiGet, apiPost } from '../api/client';

@@ -615,7 +615,15 @@ const CurrentBackupVersion = 1
 //	to the shared body blob at wire-delivery time, so per-recipient
 //	header variation no longer requires a distinct persisted blob per
 //	fan-out copy. No new table; QueueRow gains the one field.
-const CurrentSchemaVersion = 87
+//
+// 88 — 0088_mailing_list_member_awaiting_approval.sql (issue #185,
+//
+//	REQ-MLIST-60..63, Stage 3 self-subscription). Widens
+//	mailing_list_member.state to accept 'awaiting-approval': a
+//	request-approval list's confirmed-but-not-yet-owner-approved
+//	subscriber. No new table or column; MailingListMemberRow.State
+//	simply accepts one more string value.
+const CurrentSchemaVersion = 88
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

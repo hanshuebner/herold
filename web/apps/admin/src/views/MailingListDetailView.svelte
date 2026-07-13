@@ -25,9 +25,16 @@
   let editArcSeal = $state(true);
   let editMaxMessageSize = $state('');
   let editOwnerPrincipalId = $state('');
+  let editSubscribePolicy = $state('closed');
   let configError = $state<string | null>(null);
   let configSaving = $state(false);
   let configSaved = $state(false);
+
+  const subscribePolicyOptions: { value: string; labelKey: string }[] = [
+    { value: 'closed', labelKey: 'mlistDetail.config.subscribePolicy.closed' },
+    { value: 'request-approval', labelKey: 'mlistDetail.config.subscribePolicy.requestApproval' },
+    { value: 'open', labelKey: 'mlistDetail.config.subscribePolicy.open' },
+  ];
 
   $effect(() => {
     const list = mlistDetail.list;
@@ -37,6 +44,7 @@
       editArcSeal = list.arc_seal;
       editMaxMessageSize = list.max_message_size_bytes ? String(list.max_message_size_bytes) : '';
       editOwnerPrincipalId = String(list.owner_principal_id);
+      editSubscribePolicy = list.subscribe_policy ?? 'closed';
     }
   });
 
@@ -71,6 +79,7 @@
       arc_seal: editArcSeal,
       max_message_size_bytes: maxSize,
       owner_principal_id: ownerId,
+      subscribe_policy: editSubscribePolicy,
     });
     configSaving = false;
 
@@ -113,6 +122,7 @@
     { value: 'suspended', labelKey: 'mlistDetail.roster.state.suspended' },
     { value: 'unsubscribed', labelKey: 'mlistDetail.roster.state.unsubscribed' },
     { value: 'pending', labelKey: 'mlistDetail.roster.state.pending' },
+    { value: 'awaiting-approval', labelKey: 'mlistDetail.roster.state.awaitingApproval' },
   ];
   const modeFilterOptions: { value: MailingListMemberModeFilter; labelKey: string }[] = [
     { value: '', labelKey: 'mlistDetail.roster.mode.all' },
@@ -142,6 +152,21 @@
     const delivery_mode = (e.currentTarget as HTMLSelectElement).value;
     memberRowError = null;
     const result = await mlistDetail.updateMember(id, memberId, { delivery_mode });
+    if (!result.ok) memberRowError = result.errorMessage;
+  }
+
+  // REQ-MLIST-62: an awaiting-approval member (Stage 3 request-approval
+  // policy, epic #185) gets one-click approve/reject actions in addition
+  // to the generic state select above -- both map onto the same PATCH
+  // .../members/{mid} {state} the select already uses.
+  async function approveMember(memberId: number): Promise<void> {
+    memberRowError = null;
+    const result = await mlistDetail.updateMember(id, memberId, { state: 'active' });
+    if (!result.ok) memberRowError = result.errorMessage;
+  }
+  async function rejectMember(memberId: number): Promise<void> {
+    memberRowError = null;
+    const result = await mlistDetail.updateMember(id, memberId, { state: 'unsubscribed' });
     if (!result.ok) memberRowError = result.errorMessage;
   }
 
@@ -458,11 +483,23 @@
             {t('mlistDetail.config.arcSeal')}
           </label>
         </div>
+        <div class="field">
+          <label for="ml-subscribepolicy" class="label">{t('mlistDetail.config.subscribePolicy')}</label>
+          <select
+            id="ml-subscribepolicy"
+            class="select"
+            value={editSubscribePolicy}
+            onchange={(e) => { editSubscribePolicy = (e.currentTarget as HTMLSelectElement).value; }}
+            disabled={configSaving}
+          >
+            {#each subscribePolicyOptions as opt (opt.value)}
+              <option value={opt.value}>{t(opt.labelKey)}</option>
+            {/each}
+          </select>
+          <p class="field-hint">{t('mlistDetail.config.subscribePolicyHint')}</p>
+        </div>
         <p class="field-hint">
-          {t('mlistDetail.config.policyHint', {
-            posting: mlistDetail.list.posting_policy,
-            subscribe: mlistDetail.list.subscribe_policy,
-          })}
+          {t('mlistDetail.config.policyHint', { posting: mlistDetail.list.posting_policy })}
         </p>
 
         {#if configError}
@@ -582,9 +619,19 @@
                       </button>
                     </div>
                   {:else}
-                    <button type="button" class="btn-ghost-sm" onclick={() => { removeConfirmId = member.id; memberRowError = null; }}>
-                      {t('mlistDetail.roster.remove')}
-                    </button>
+                    <div class="row-actions">
+                      {#if member.state === 'awaiting-approval'}
+                        <button type="button" class="btn-approve-sm" onclick={() => void approveMember(member.id)}>
+                          {t('mlistDetail.roster.approve')}
+                        </button>
+                        <button type="button" class="btn-danger-sm" onclick={() => void rejectMember(member.id)}>
+                          {t('mlistDetail.roster.reject')}
+                        </button>
+                      {/if}
+                      <button type="button" class="btn-ghost-sm" onclick={() => { removeConfirmId = member.id; memberRowError = null; }}>
+                        {t('mlistDetail.roster.remove')}
+                      </button>
+                    </div>
                   {/if}
                 </td>
               </tr>
@@ -1359,5 +1406,29 @@
   }
   .btn-ghost-sm:hover {
     background: var(--layer-02);
+  }
+
+  .row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--spacing-02);
+  }
+
+  .btn-approve-sm {
+    padding: var(--spacing-01) var(--spacing-03);
+    background: var(--support-success);
+    color: var(--text-on-color);
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    white-space: nowrap;
+    transition: filter var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .btn-approve-sm:hover {
+    filter: brightness(0.9);
   }
 </style>

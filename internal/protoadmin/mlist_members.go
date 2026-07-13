@@ -101,7 +101,7 @@ func (s *Server) handleListMailingListMembers(w http.ResponseWriter, r *http.Req
 	state, ok := mlistStateFromString(q.Get("state"))
 	if !ok {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"state must be one of active, suspended, unsubscribed, pending", q.Get("state"))
+			"state must be one of active, suspended, unsubscribed, pending, awaiting-approval", q.Get("state"))
 		return
 	}
 	mode, ok := mlistDeliveryModeFromString(q.Get("delivery_mode"))
@@ -162,7 +162,7 @@ func (req createMemberRequest) toMailingListMember(listID store.MailingListID) (
 		if req.State == "" {
 			state = store.MailingListMemberActive
 		} else {
-			return store.MailingListMember{}, "state must be one of active, suspended, unsubscribed, pending"
+			return store.MailingListMember{}, "state must be one of active, suspended, unsubscribed, pending, awaiting-approval"
 		}
 	}
 	mode, ok := mlistDeliveryModeFromString(req.DeliveryMode)
@@ -265,12 +265,14 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 		return
 	}
 	wasSuspended := m.State == store.MailingListMemberSuspended
+	wasAwaitingApproval := m.State == store.MailingListMemberAwaitingApproval
 	reactivated := false
+	rejected := false
 	if req.State != nil {
 		state, ok := mlistStateFromString(*req.State)
 		if !ok || state == "" {
 			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-				"state must be one of active, suspended, unsubscribed, pending", *req.State)
+				"state must be one of active, suspended, unsubscribed, pending, awaiting-approval", *req.State)
 			return
 		}
 		if state == store.MailingListMemberActive {
@@ -279,14 +281,25 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 			// state overwrite, since a member's bounce history should not
 			// survive being brought back onto the roster (whether it was
 			// suspended, or e.g. an operator reversing an unsubscribe).
+			// From awaiting-approval, this is ALSO the REQ-MLIST-62 owner
+			// approval action.
 			if err := s.store.Meta().ReactivateMailingListMember(r.Context(), m.ID); err != nil {
 				s.writeMlistError(w, r, err)
 				return
 			}
 			reactivated = true
-		} else if err := s.store.Meta().UpdateMailingListMemberState(r.Context(), m.ID, state); err != nil {
-			s.writeMlistError(w, r, err)
-			return
+		} else {
+			if wasAwaitingApproval && state == store.MailingListMemberUnsubscribed {
+				// REQ-MLIST-62's owner rejection: an awaiting-approval
+				// request the owner declines is recorded as unsubscribed
+				// (never delivers, keeps roster history) rather than a
+				// bare state overwrite going unlabeled in the audit trail.
+				rejected = true
+			}
+			if err := s.store.Meta().UpdateMailingListMemberState(r.Context(), m.ID, state); err != nil {
+				s.writeMlistError(w, r, err)
+				return
+			}
 		}
 	}
 	if req.DeliveryMode != nil {
@@ -307,20 +320,29 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 		return
 	}
 	action := "mlist.member.update"
-	if reactivated {
+	switch {
+	case reactivated && wasAwaitingApproval:
+		// REQ-MLIST-62 owner approval: distinct from a plain
+		// bounce-recovery reactivation so the operator approval queue can
+		// filter on it directly.
+		action = "mlist.member.approve"
+	case reactivated:
 		// A distinct action (REQ-MLIST-55) so the operator bounce/
 		// suspension view can filter reactivations without guessing them
 		// out of the generic update audit trail; wasSuspended records
 		// what state it was reactivated FROM for that view.
 		action = "mlist.member.reactivate"
+	case rejected:
+		action = "mlist.member.reject"
 	}
 	s.appendAudit(r.Context(), action,
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
-			"member_id":     strconv.FormatUint(uint64(updated.ID), 10),
-			"state":         string(updated.State),
-			"delivery_mode": string(updated.DeliveryMode),
-			"was_suspended": strconv.FormatBool(wasSuspended),
+			"member_id":             strconv.FormatUint(uint64(updated.ID), 10),
+			"state":                 string(updated.State),
+			"delivery_mode":         string(updated.DeliveryMode),
+			"was_suspended":         strconv.FormatBool(wasSuspended),
+			"was_awaiting_approval": strconv.FormatBool(wasAwaitingApproval),
 		})
 	writeJSON(w, http.StatusOK, toMailingListMemberDTO(updated))
 }
@@ -498,10 +520,11 @@ func (s *Server) handleExportMailingListMembers(w http.ResponseWriter, r *http.R
 // pageDTO collection -- an operator bounce/suspension view needs this
 // count once per list render, not a paginated roster walk.
 type mailingListMemberSummaryDTO struct {
-	Active       int `json:"active"`
-	Suspended    int `json:"suspended"`
-	Unsubscribed int `json:"unsubscribed"`
-	Pending      int `json:"pending"`
+	Active           int `json:"active"`
+	Suspended        int `json:"suspended"`
+	Unsubscribed     int `json:"unsubscribed"`
+	Pending          int `json:"pending"`
+	AwaitingApproval int `json:"awaiting_approval"`
 }
 
 // handleMailingListMemberSummary handles GET
@@ -525,9 +548,10 @@ func (s *Server) handleMailingListMemberSummary(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, mailingListMemberSummaryDTO{
-		Active:       counts[store.MailingListMemberActive],
-		Suspended:    counts[store.MailingListMemberSuspended],
-		Unsubscribed: counts[store.MailingListMemberUnsubscribed],
-		Pending:      counts[store.MailingListMemberPending],
+		Active:           counts[store.MailingListMemberActive],
+		Suspended:        counts[store.MailingListMemberSuspended],
+		Unsubscribed:     counts[store.MailingListMemberUnsubscribed],
+		Pending:          counts[store.MailingListMemberPending],
+		AwaitingApproval: counts[store.MailingListMemberAwaitingApproval],
 	})
 }

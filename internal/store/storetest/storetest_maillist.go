@@ -374,6 +374,7 @@ func testMailingListMember_StateTransitionsAndRemove(t *testing.T, s store.Store
 		store.MailingListMemberSuspended,
 		store.MailingListMemberUnsubscribed,
 		store.MailingListMemberPending,
+		store.MailingListMemberAwaitingApproval,
 		store.MailingListMemberActive,
 	} {
 		if err := s.Meta().UpdateMailingListMemberState(ctx, mem.ID, state); err != nil {
@@ -763,6 +764,57 @@ func testMailingListMember_CountByState(t *testing.T, s store.Store) {
 	}
 	if otherCounts[store.MailingListMemberActive] != 1 {
 		t.Errorf("other list counts[active] = %d; want 1 (no leak from list l)", otherCounts[store.MailingListMemberActive])
+	}
+}
+
+// testMailingListMember_GetByAddress exercises the Stage 3 self-service
+// subscribe lookup (REQ-MLIST-61): GetMailingListMemberByAddress finds an
+// ExternalAddress row case-insensitively, scoped to its own list, and
+// returns ErrNotFound for an absent address or a principal-linked member
+// (no ExternalAddress column value to match against).
+func testMailingListMember_GetByAddress(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-getaddr-owner@example.com")
+	l1 := mustInsertMailingList(t, s, "getaddr1@example.com", owner.ID)
+	l2 := mustInsertMailingList(t, s, "getaddr2@example.com", owner.ID)
+
+	mem, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l1.ID, ExternalAddress: strPtr("GetAddr-Member@Example.NET"),
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember: %v", err)
+	}
+
+	got, err := s.Meta().GetMailingListMemberByAddress(ctx, l1.ID, "getaddr-member@example.net")
+	if err != nil {
+		t.Fatalf("GetMailingListMemberByAddress: %v", err)
+	}
+	if got.ID != mem.ID {
+		t.Errorf("GetMailingListMemberByAddress ID = %d; want %d", got.ID, mem.ID)
+	}
+
+	// Scoped to its own list: the same address on a different list is
+	// ErrNotFound.
+	if _, err := s.Meta().GetMailingListMemberByAddress(ctx, l2.ID, "getaddr-member@example.net"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetMailingListMemberByAddress (other list): got %v; want ErrNotFound", err)
+	}
+
+	// An address never added is ErrNotFound.
+	if _, err := s.Meta().GetMailingListMemberByAddress(ctx, l1.ID, "nobody@example.net"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetMailingListMemberByAddress (absent): got %v; want ErrNotFound", err)
+	}
+
+	// A principal-linked member (no ExternalAddress) never matches by
+	// address, even if the principal's own CanonicalEmail happens to be
+	// the address queried.
+	principalMember := mustInsertPrincipal(t, s, "getaddr-principal@example.net")
+	if _, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l1.ID, PrincipalID: &principalMember.ID,
+	}); err != nil {
+		t.Fatalf("AddMailingListMember principal: %v", err)
+	}
+	if _, err := s.Meta().GetMailingListMemberByAddress(ctx, l1.ID, "getaddr-principal@example.net"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetMailingListMemberByAddress (principal-linked, no external_address row): got %v; want ErrNotFound", err)
 	}
 }
 

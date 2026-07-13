@@ -353,6 +353,16 @@ func (m *metadata) GetMailingListMember(ctx context.Context, id store.MailingLis
 	return scanMailingListMemberPG(row)
 }
 
+// GetMailingListMemberByAddress implements the store.Metadata method of
+// the same name (Stage 3, REQ-MLIST-61). Mirrors
+// storesqlite/metadata_maillist.go.
+func (m *metadata) GetMailingListMemberByAddress(ctx context.Context, listID store.MailingListID, address string) (store.MailingListMember, error) {
+	row := m.s.pool.QueryRow(ctx,
+		`SELECT `+mailingListMemberColumnsPG+` FROM mailing_list_member WHERE list_id = $1 AND external_address = $2`,
+		int64(listID), store.CanonicalizeExternalAddress(address))
+	return scanMailingListMemberPG(row)
+}
+
 func (m *metadata) RemoveMailingListMember(ctx context.Context, id store.MailingListMemberID) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx, `DELETE FROM mailing_list_member WHERE id = $1`, int64(id))

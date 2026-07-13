@@ -209,6 +209,27 @@ func mlistStateFromString(s string) (store.MailingListMemberState, bool) {
 		return store.MailingListMemberUnsubscribed, true
 	case string(store.MailingListMemberPending):
 		return store.MailingListMemberPending, true
+	case string(store.MailingListMemberAwaitingApproval):
+		return store.MailingListMemberAwaitingApproval, true
+	default:
+		return "", false
+	}
+}
+
+// mlistSubscribePolicyFromString maps the wire vocabulary to
+// store.MailingListSubscribePolicy (Stage 3, REQ-MLIST-60, issue #185).
+// An empty string is accepted and means "leave unset" (caller resolves
+// the store default, closed).
+func mlistSubscribePolicyFromString(s string) (store.MailingListSubscribePolicy, bool) {
+	switch s {
+	case "":
+		return "", true
+	case string(store.MailingListSubscribeClosed):
+		return store.MailingListSubscribeClosed, true
+	case string(store.MailingListSubscribeRequestApproval):
+		return store.MailingListSubscribeRequestApproval, true
+	case string(store.MailingListSubscribeOpen):
+		return store.MailingListSubscribeOpen, true
 	default:
 		return "", false
 	}

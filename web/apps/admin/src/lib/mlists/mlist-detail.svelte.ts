@@ -42,6 +42,8 @@ export interface PatchMailingListPayload {
   subject_tag?: string;
   arc_seal?: boolean;
   max_message_size_bytes?: number;
+  /** Stage 3 self-subscription policy (epic #185, REQ-MLIST-60). */
+  subscribe_policy?: string;
 }
 
 /** Wire shape for POST /api/v1/lists/{id}/members (createMemberRequest). */
@@ -72,7 +74,13 @@ export interface ImportMembersResult {
 }
 
 /** '' means "no filter" -- matches the server's mlistStateFromString("") case. */
-export type MailingListMemberStateFilter = '' | 'active' | 'suspended' | 'unsubscribed' | 'pending';
+export type MailingListMemberStateFilter =
+  | ''
+  | 'active'
+  | 'suspended'
+  | 'unsubscribed'
+  | 'pending'
+  | 'awaiting-approval';
 export type MailingListMemberModeFilter = '' | 'each' | 'nomail';
 
 export type MlistDetailStatus = 'idle' | 'loading' | 'ready' | 'error';

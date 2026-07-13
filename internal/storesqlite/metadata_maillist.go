@@ -356,6 +356,17 @@ func (m *metadata) GetMailingListMember(ctx context.Context, id store.MailingLis
 	return scanMailingListMember(row)
 }
 
+// GetMailingListMemberByAddress implements the store.Metadata method of
+// the same name (Stage 3, REQ-MLIST-61): looks up an ExternalAddress
+// roster row by (list_id, external_address), canonicalising address the
+// same way AddMailingListMember does before comparing.
+func (m *metadata) GetMailingListMemberByAddress(ctx context.Context, listID store.MailingListID, address string) (store.MailingListMember, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT `+mailingListMemberColumns+` FROM mailing_list_member WHERE list_id = ? AND external_address = ?`,
+		int64(listID), store.CanonicalizeExternalAddress(address))
+	return scanMailingListMember(row)
+}
+
 func (m *metadata) RemoveMailingListMember(ctx context.Context, id store.MailingListMemberID) error {
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM mailing_list_member WHERE id = ?`, int64(id))
