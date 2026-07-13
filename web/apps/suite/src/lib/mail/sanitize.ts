@@ -444,6 +444,206 @@ function isDeclaredColor(value: string): boolean {
 }
 
 /**
+ * `currentColor` never constitutes an independently declared half of a
+ * color pair: as `color`'s own value it is a pass-through to whatever
+ * this element would inherit anyway (identical to not declaring `color`
+ * at all); as `background-color` (longhand or resolved out of a
+ * `background` shorthand) it is *tautologically* identical to this same
+ * element's foreground, so it can never provide independent contrast --
+ * `color:red; background-color:currentColor` paints solid red on red,
+ * whatever `red` ends up being. Detecting the literal keyword is enough;
+ * no color math is needed for this rule.
+ */
+function isCurrentColorKeyword(value: string): boolean {
+  return value.trim().toLowerCase() === 'currentcolor';
+}
+
+/**
+ * Parse a CSS color value into concrete, unpremultiplied sRGBA
+ * components in [0, 255] (alpha in [0, 1]), or `null` when the syntax
+ * is not one of the finite, well-defined forms this function covers:
+ * hex (#rgb/#rgba/#rrggbb/#rrggbbaa), rgb()/rgba(), hsl()/hsla() (both
+ * legacy comma and modern space/slash argument syntax), and a modest
+ * set of CSS keyword colors.
+ *
+ * This is used ONLY by `colorsAreIndistinguishable` below, to compare
+ * two colors the CSSOM has already told us are independently declared.
+ * It never decides "is a color declared at all" -- that question is
+ * answered entirely by `isDeclaredColor` against the browser's own
+ * `CSSStyleDeclaration`, which handles every CSS color syntax including
+ * ones this parser does not (`oklch()`, `lab()`, `color-mix()`, ...).
+ * An unresolvable value here simply means "cannot prove these two
+ * colors are the same", which safely defaults to leaving the sender's
+ * pair untouched -- never to stripping it.
+ */
+function parseCssColorForComparison(
+  value: string,
+): [number, number, number, number] | null {
+  const v = value.trim().toLowerCase();
+  if (v === '') return null;
+
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(v);
+  if (hex) {
+    const h = hex[1]!;
+    const chan = (s: string) => parseInt(s.length === 1 ? s + s : s, 16);
+    if (h.length <= 4) {
+      const [r, g, b, a] = h.split('');
+      return [chan(r!), chan(g!), chan(b!), a !== undefined ? chan(a) / 255 : 1];
+    }
+    return [
+      chan(h.slice(0, 2)),
+      chan(h.slice(2, 4)),
+      chan(h.slice(4, 6)),
+      h.length === 8 ? chan(h.slice(6, 8)) / 255 : 1,
+    ];
+  }
+
+  const fn = /^(rgba?|hsla?)\(([^)]*)\)$/.exec(v);
+  if (fn) {
+    const kind = fn[1]!.startsWith('rgb') ? 'rgb' : 'hsl';
+    const args = fn[2]!.split(/[\s,/]+/).map((s) => s.trim()).filter(Boolean);
+    if (args.length < 3) return null;
+    const alpha = parseAlphaComponent(args[3]);
+    if (alpha === null) return null;
+    if (kind === 'rgb') {
+      const r = parseRgbChannel(args[0]);
+      const g = parseRgbChannel(args[1]);
+      const b = parseRgbChannel(args[2]);
+      if (r === null || g === null || b === null) return null;
+      return [r, g, b, alpha];
+    }
+    const h = parseHueComponent(args[0]);
+    const s = parsePercentComponent(args[1]);
+    const l = parsePercentComponent(args[2]);
+    if (h === null || s === null || l === null) return null;
+    return [...hslToRgb(h, s, l), alpha];
+  }
+
+  const named = NAMED_COLORS_FOR_COMPARISON[v];
+  if (named) return [named[0], named[1], named[2], 1];
+  return null;
+}
+
+function parseRgbChannel(tok: string | undefined): number | null {
+  if (tok === undefined) return null;
+  if (tok.endsWith('%')) {
+    const pct = parseFloat(tok);
+    return isFinite(pct) ? clampByte((pct / 100) * 255) : null;
+  }
+  const n = parseFloat(tok);
+  return isFinite(n) ? clampByte(n) : null;
+}
+
+function parsePercentComponent(tok: string | undefined): number | null {
+  if (tok === undefined || !tok.endsWith('%')) return null;
+  const pct = parseFloat(tok);
+  return isFinite(pct) ? Math.min(100, Math.max(0, pct)) / 100 : null;
+}
+
+function parseHueComponent(tok: string | undefined): number | null {
+  if (tok === undefined) return null;
+  const n = parseFloat(tok); // deg suffix parses as its numeric prefix
+  return isFinite(n) ? ((n % 360) + 360) % 360 : null;
+}
+
+function parseAlphaComponent(tok: string | undefined): number | null {
+  if (tok === undefined) return 1;
+  if (tok.endsWith('%')) {
+    const pct = parseFloat(tok);
+    return isFinite(pct) ? Math.min(1, Math.max(0, pct / 100)) : null;
+  }
+  const n = parseFloat(tok);
+  return isFinite(n) ? Math.min(1, Math.max(0, n)) : null;
+}
+
+function clampByte(n: number): number {
+  return Math.round(Math.min(255, Math.max(0, n)));
+}
+
+/** Standard HSL -> sRGB conversion (CSS Color Level 3 formula). */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let [r1, g1, b1] = [0, 0, 0];
+  if (hp < 1) [r1, g1, b1] = [c, x, 0];
+  else if (hp < 2) [r1, g1, b1] = [x, c, 0];
+  else if (hp < 3) [r1, g1, b1] = [0, c, x];
+  else if (hp < 4) [r1, g1, b1] = [0, x, c];
+  else if (hp < 5) [r1, g1, b1] = [x, 0, c];
+  else [r1, g1, b1] = [c, 0, x];
+  const m = l - c / 2;
+  return [clampByte((r1 + m) * 255), clampByte((g1 + m) * 255), clampByte((b1 + m) * 255)];
+}
+
+// Modest keyword table for the comparison parser above -- CSS1 basic 16
+// plus the extended names issue #231 was specifically reported against
+// (the old detection-side keyword list this replaced covered only 41 of
+// the 148 CSS Color Level 4 names; incompleteness here is safe by
+// construction, since it only ever weakens the NEW same-color check
+// below toward "cannot prove, so preserve" -- it never weakens whether a
+// color is detected as declared at all, which the CSSOM already answers
+// completely in `isDeclaredColor`).
+const NAMED_COLORS_FOR_COMPARISON: Record<string, [number, number, number]> = {
+  black: [0, 0, 0], silver: [192, 192, 192], gray: [128, 128, 128], grey: [128, 128, 128],
+  white: [255, 255, 255], maroon: [128, 0, 0], red: [255, 0, 0], purple: [128, 0, 128],
+  fuchsia: [255, 0, 255], green: [0, 128, 0], lime: [0, 255, 0], olive: [128, 128, 0],
+  yellow: [255, 255, 0], navy: [0, 0, 128], blue: [0, 0, 255], teal: [0, 128, 128],
+  aqua: [0, 255, 255], orange: [255, 165, 0],
+  midnightblue: [25, 25, 112], darkblue: [0, 0, 139], darkred: [139, 0, 0],
+  darkgreen: [0, 100, 0], dimgray: [105, 105, 105], dimgrey: [105, 105, 105],
+  darkslategray: [47, 79, 79], darkslategrey: [47, 79, 79], firebrick: [178, 34, 34],
+  saddlebrown: [139, 69, 19], indianred: [205, 92, 92], sienna: [160, 82, 45],
+};
+
+function relativeLuminanceForComparison([r, g, b]: [number, number, number, number]): number {
+  const chan = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+}
+
+/**
+ * Below this WCAG contrast ratio, two independently declared colors are
+ * treated as painting the same practical color -- i.e. a "complete pair"
+ * that is actually invisible by construction (issue #231 adversarial
+ * case: `color:red; background-color:currentColor`, and the equivalent
+ * `color:#f00; background-color:#ff0000`). Chosen well below any
+ * accessibility compliance threshold (WCAG AA is 3:1 for large text,
+ * 4.5:1 for normal text) so this rule only catches colors that are
+ * visually the same or nearly so, and never strips a sender's
+ * deliberate low-but-legible color choice -- e.g. `#999999` on white is
+ * ~2.85:1 and stays untouched; a lone-half true collision like the
+ * reported `rgb(26,17,17)` background against the iframe's own default
+ * text color measures ~1.02:1, and `currentColor` measures exactly
+ * 1:1 -- both are comfortably below this threshold, and nothing a
+ * sender would plausibly choose on purpose is this close.
+ */
+const DEGENERATE_CONTRAST_THRESHOLD = 1.5;
+
+/**
+ * True when `colorValue` and `bgValue` (two independently declared,
+ * CSSOM-confirmed colors) resolve to practically the same paint color.
+ * Colors that either parser cannot resolve, or that carry any
+ * transparency (compositing a translucent color against its actual
+ * backdrop needs ambient context this detached-fragment pass does not
+ * have), are treated as "cannot determine" and never reported as
+ * indistinguishable -- see `parseCssColorForComparison`'s doc comment on
+ * why an unresolvable value must never cause a strip.
+ */
+function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolean {
+  const c = parseCssColorForComparison(colorValue);
+  const b = parseCssColorForComparison(bgValue);
+  if (!c || !b) return false;
+  if (c[3] < 1 || b[3] < 1) return false;
+  const lc = relativeLuminanceForComparison(c);
+  const lb = relativeLuminanceForComparison(b);
+  const ratio = (Math.max(lc, lb) + 0.05) / (Math.min(lc, lb) + 0.05);
+  return ratio < DEGENERATE_CONTRAST_THRESHOLD;
+}
+
+/**
  * Honour a sender's inline foreground/background color declaration only
  * when BOTH halves of the pair are present on the same element. When only
  * one half is declared, the sender did not fully specify a foreground/
@@ -516,6 +716,27 @@ function isDeclaredColor(value: string): boolean {
  * sanitizer pass -- run on a detached DOMPurify fragment with no layout
  * -- cannot do.
  *
+ * A "complete pair" is not automatically a real one, though: two further
+ * checks run before a pair is accepted as-is.
+ *   - `currentColor` is never counted as an independently declared half
+ *     (see `isCurrentColorKeyword`) -- `color:red;
+ *     background-color:currentColor` looks complete to a naive check
+ *     but paints solid red-on-red. Stripped unconditionally before
+ *     classification, so it always falls through to the lone-half (or
+ *     no-half) branch below.
+ *   - When both halves ARE independently, concretely declared, they are
+ *     additionally checked for whether they resolve to practically the
+ *     SAME paint color (`colorsAreIndistinguishable`, WCAG contrast
+ *     ratio below `DEGENERATE_CONTRAST_THRESHOLD`) -- e.g.
+ *     `color:#f00; background-color:#ff0000`. A pair that is invisible
+ *     by construction is exactly as broken as a lone half and is
+ *     dropped in full, falling back to Herold's own paired theme colors
+ *     like any other undeclared pair. This check is deliberately
+ *     conservative: an unresolvable color syntax (`oklch()`,
+ *     `color-mix()`, ...) or any non-opaque alpha never triggers it, so
+ *     it can under-detect exotic same-color pairs but can never
+ *     over-strip a sender's legitimate, merely-low-contrast styling.
+ *
  * Requires `document` (see the file header: `sanitizeHtml` already
  * depends on it via DOMPurify's `RETURN_DOM_FRAGMENT` mode and
  * `document.createTreeWalker`), so this carries no new environment
@@ -529,15 +750,39 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
     if (!style) continue;
     const probe = document.createElement('div');
     probe.setAttribute('style', style);
-    const hasColor = isDeclaredColor(probe.style.color);
-    const hasBackground = isDeclaredColor(probe.style.backgroundColor);
-    if (hasColor === hasBackground) continue; // both present or neither — leave as-is.
-    if (hasColor) probe.style.removeProperty('color');
-    if (hasBackground) {
+
+    if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
+    if (isCurrentColorKeyword(probe.style.backgroundColor)) {
       probe.style.removeProperty('background-color');
       probe.style.removeProperty('background');
     }
+
+    let hasColor = isDeclaredColor(probe.style.color);
+    let hasBackground = isDeclaredColor(probe.style.backgroundColor);
+
+    if (
+      hasColor &&
+      hasBackground &&
+      colorsAreIndistinguishable(probe.style.color, probe.style.backgroundColor)
+    ) {
+      hasColor = false;
+      hasBackground = false;
+      probe.style.removeProperty('color');
+      probe.style.removeProperty('background-color');
+      probe.style.removeProperty('background');
+    } else if (hasColor !== hasBackground) {
+      if (hasColor) probe.style.removeProperty('color');
+      if (hasBackground) {
+        probe.style.removeProperty('background-color');
+        probe.style.removeProperty('background');
+      }
+    }
+    // both true (a genuine, distinguishable, complete pair) or both
+    // false (nothing declared, or both halves stripped above) -- no
+    // further mutation.
+
     const kept = probe.getAttribute('style');
+    if (kept === style) continue; // nothing changed -- keep original text byte-for-byte.
     if (kept) {
       el.setAttribute('style', kept);
     } else {

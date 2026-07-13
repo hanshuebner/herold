@@ -291,6 +291,51 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
         const el = document.querySelector('span')!;
         assertReadable(window, el, 'lone light color, no background');
       });
+
+      it('DEGENERATE PAIR: background-color:currentColor paired with an explicit color paints solid-on-solid', () => {
+        // Adversarial case found by independent verification: both halves
+        // resolve to a non-empty CSSOM value, so a naive "both declared"
+        // check accepts this as a complete pair -- but currentColor ties
+        // the background to whatever `color` resolves to, so it is
+        // red-on-red (or whatever color) by construction.
+        const html = '<span style="color:red;background-color:currentColor">text</span>';
+        const srcdoc = sanitizeHtml(html, { loadImages: false });
+        const { window, document } = renderSrcdoc(srcdoc, theme);
+        const el = document.querySelector('span')!;
+        assertReadable(window, el, 'color:red; background-color:currentColor');
+      });
+
+      it('DEGENERATE PAIR, symmetric case: color:currentColor paired with an explicit background', () => {
+        // color:currentColor is a no-op pass-through to the inherited
+        // color -- pairing it with an explicit background-color is
+        // effectively a lone background declaration.
+        const html = '<span style="color:currentColor;background-color:#1a1111">text</span>';
+        const srcdoc = sanitizeHtml(html, { loadImages: false });
+        const { window, document } = renderSrcdoc(srcdoc, theme);
+        const el = document.querySelector('span')!;
+        assertReadable(window, el, 'color:currentColor; background-color:#1a1111');
+      });
+
+      it('both sides currentColor: a pure no-op pair, must not survive as an empty/no-op style', () => {
+        const html = '<span style="color:currentColor;background-color:currentColor;font-weight:bold">text</span>';
+        const srcdoc = sanitizeHtml(html, { loadImages: false });
+        const { window, document } = renderSrcdoc(srcdoc, theme);
+        const el = document.querySelector('span')!;
+        assertReadable(window, el, 'color:currentColor; background-color:currentColor');
+        expect(el.getAttribute('style') ?? '').not.toContain('currentColor');
+      });
+
+      it('SAME COLOR, different syntax: color:#f00 and background-color:#ff0000 are the identical color', () => {
+        // The general contrast-based rule (not just the currentColor
+        // special case): two independently declared, syntactically
+        // different values that resolve to the same paint color are
+        // exactly as invisible as currentColor.
+        const html = '<span style="color:#f00;background-color:#ff0000">text</span>';
+        const srcdoc = sanitizeHtml(html, { loadImages: false });
+        const { window, document } = renderSrcdoc(srcdoc, theme);
+        const el = document.querySelector('span')!;
+        assertReadable(window, el, 'color:#f00; background-color:#ff0000 (same color, different syntax)');
+      });
     });
 
     describe(`${theme} theme -- complete sender pairs are preserved exactly`, () => {
@@ -314,6 +359,22 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
         expect(parseColor(window.getComputedStyle(el).backgroundColor)).toEqual([26, 17, 17, 1]);
         expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
         expect(el.getAttribute('style') ?? '').toContain('url(');
+      });
+
+      it('a legitimate LOW-but-adequate-contrast sender pair is preserved, not over-stripped', () => {
+        // white on a medium brand blue: ~3.34:1 -- below WCAG AA for
+        // normal text (4.5:1) but a real, deliberate, readable design
+        // choice (a common button/badge style), and well above the
+        // DEGENERATE_CONTRAST_THRESHOLD (1.5:1). Proves the general
+        // contrast-based degenerate check does not over-strip ordinary
+        // low-contrast styling -- only colors that are the same or
+        // nearly so.
+        const html = '<span style="color:#ffffff;background-color:#4a90d9">text</span>';
+        const srcdoc = sanitizeHtml(html, { loadImages: false });
+        const { window, document } = renderSrcdoc(srcdoc, theme);
+        const el = document.querySelector('span')!;
+        expect(parseColor(window.getComputedStyle(el).color)).toEqual([255, 255, 255, 1]);
+        expect(parseColor(window.getComputedStyle(el).backgroundColor)).toEqual([0x4a, 0x90, 0xd9, 1]);
       });
     });
   }
