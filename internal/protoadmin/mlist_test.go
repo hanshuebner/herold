@@ -891,3 +891,171 @@ func testMailingLists_ARCSealRequiresDKIMKey(t *testing.T, be submissionBackend)
 		t.Fatalf("collection listing missing list %d", sealedID)
 	}
 }
+
+// TestMailingLists_BouncePolicy_ConfigureAndDefault exercises REQ-MLIST-53:
+// a freshly created list's bounce_policy reflects the deployment
+// defaults; a partial PATCH overrides only the given fields and leaves
+// the rest at their default. Runs on both SQLite and (when HEROLD_PG_DSN
+// is set) Postgres.
+func TestMailingLists_BouncePolicy_ConfigureAndDefault(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_BouncePolicy_ConfigureAndDefault(t, be) })
+	}
+}
+
+func testMailingLists_BouncePolicy_ConfigureAndDefault(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-bouncepolicy@example.test")
+	e.insertLocalDomain(t, "bouncepolicy.example")
+
+	created := e.createList(t, "bp@bouncepolicy.example", "BP")
+	id := idOf(t, created)
+	bp, ok := created["bounce_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("bounce_policy missing or wrong shape in create response: %v", created)
+	}
+	if bp["hard_weight"] != 1.0 || bp["soft_weight"] != 0.25 || bp["suspend_threshold"] != 1.0 {
+		t.Errorf("default bounce_policy = %v; want hard_weight=1 soft_weight=0.25 suspend_threshold=1", bp)
+	}
+	if bp["decay_window_seconds"].(float64) != float64(7*24*3600) {
+		t.Errorf("default decay_window_seconds = %v; want %d (7 days)", bp["decay_window_seconds"], 7*24*3600)
+	}
+
+	// Partial PATCH: only suspend_threshold overridden.
+	res, buf := e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,
+		map[string]any{"bounce_policy": map[string]any{"suspend_threshold": 2.5}})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("patch bounce_policy: %d: %s", res.StatusCode, buf)
+	}
+	var patched map[string]any
+	_ = json.Unmarshal(buf, &patched)
+	patchedBP := patched["bounce_policy"].(map[string]any)
+	if patchedBP["suspend_threshold"] != 2.5 {
+		t.Errorf("suspend_threshold after patch = %v; want 2.5", patchedBP["suspend_threshold"])
+	}
+	if patchedBP["hard_weight"] != 1.0 {
+		t.Errorf("hard_weight after unrelated patch = %v; want unchanged default 1", patchedBP["hard_weight"])
+	}
+
+	// Invalid values are rejected with 400 and do not mutate the policy.
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey,
+		map[string]any{"bounce_policy": map[string]any{"suspend_threshold": -1}})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch bounce_policy negative threshold: status=%d body=%s; want 400", res.StatusCode, buf)
+	}
+	res, buf = e.h.doRequest("GET", fmt.Sprintf("/api/v1/lists/%d", id), e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get after rejected patch: %d: %s", res.StatusCode, buf)
+	}
+	var afterReject map[string]any
+	_ = json.Unmarshal(buf, &afterReject)
+	if afterReject["bounce_policy"].(map[string]any)["suspend_threshold"] != 2.5 {
+		t.Errorf("suspend_threshold changed by a rejected patch: %v", afterReject["bounce_policy"])
+	}
+}
+
+// TestMailingLists_MemberReactivate_ResetsScoreAndAudits exercises
+// REQ-MLIST-55 through the admin REST/PATCH surface `list member-set`
+// wraps: PATCH state=active on a suspended, non-zero-score member resets
+// bounce_score/last_bounce_at and produces a distinct
+// mlist.member.reactivate audit row. Runs on both SQLite and (when
+// HEROLD_PG_DSN is set) Postgres.
+func TestMailingLists_MemberReactivate_ResetsScoreAndAudits(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_MemberReactivate_ResetsScoreAndAudits(t, be) })
+	}
+}
+
+func testMailingLists_MemberReactivate_ResetsScoreAndAudits(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-reactivate@example.test")
+	e.insertLocalDomain(t, "reactivate.example")
+	listID := idOf(t, e.createList(t, "reactivate@reactivate.example", "Reactivate"))
+
+	res, buf := e.h.doRequest("POST", fmt.Sprintf("/api/v1/lists/%d/members", listID), e.adminKey,
+		map[string]any{"external_address": "bouncy@example.net"})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("add member: %d: %s", res.StatusCode, buf)
+	}
+	var member map[string]any
+	_ = json.Unmarshal(buf, &member)
+	memberID := idOf(t, member)
+
+	// Simulate an auto-suspend's aftermath directly at the store layer
+	// (this test exercises the REST reactivation surface, not scoring
+	// itself -- internal/maillist's own tests cover the scoring path).
+	if _, err := e.h.Store().RecordMailingListMemberBounce(context.Background(), store.MailingListMemberID(memberID), time.Now(), 3.0, time.Hour); err != nil {
+		t.Fatalf("RecordMailingListMemberBounce: %v", err)
+	}
+	if _, err := e.h.Store().SuspendMailingListMemberIfActive(context.Background(), store.MailingListMemberID(memberID)); err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive: %v", err)
+	}
+
+	res, buf = e.h.doRequest("PATCH", fmt.Sprintf("/api/v1/lists/%d/members/%d", listID, memberID), e.adminKey,
+		map[string]any{"state": "active"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("reactivate: %d: %s", res.StatusCode, buf)
+	}
+	var reactivated map[string]any
+	_ = json.Unmarshal(buf, &reactivated)
+	if reactivated["state"] != "active" {
+		t.Errorf("state after reactivate = %v; want active", reactivated["state"])
+	}
+	if reactivated["bounce_score"] != nil && reactivated["bounce_score"] != float64(0) {
+		t.Errorf("bounce_score after reactivate = %v; want 0/omitted", reactivated["bounce_score"])
+	}
+	if _, present := reactivated["last_bounce_at"]; present && reactivated["last_bounce_at"] != nil {
+		t.Errorf("last_bounce_at after reactivate = %v; want nil/omitted", reactivated["last_bounce_at"])
+	}
+	assertAuditAction(t, e, "mlist.member.reactivate", fmt.Sprintf("mlist:%d", listID))
+}
+
+// TestMailingLists_MemberSummary exercises the REQ-MLIST-54 operator
+// bounce/suspension view's summary endpoint: per-list roster counts by
+// state. Runs on both SQLite and (when HEROLD_PG_DSN is set) Postgres.
+func TestMailingLists_MemberSummary(t *testing.T) {
+	for _, be := range openSubmissionBackends(t) {
+		be := be
+		t.Run(be.name, func(t *testing.T) { testMailingLists_MemberSummary(t, be) })
+	}
+}
+
+func testMailingLists_MemberSummary(t *testing.T, be submissionBackend) {
+	e := newMlistTestEnv(t, be, "sa-summary@example.test")
+	e.insertLocalDomain(t, "summary.example")
+	listID := idOf(t, e.createList(t, "summary@summary.example", "Summary"))
+
+	addrs := map[string]string{
+		"active1@example.net":       "",
+		"active2@example.net":       "",
+		"suspended1@example.net":    "suspended",
+		"unsubscribed1@example.net": "unsubscribed",
+	}
+	for addr, state := range addrs {
+		body := map[string]any{"external_address": addr}
+		if state != "" {
+			body["state"] = state
+		}
+		res, buf := e.h.doRequest("POST", fmt.Sprintf("/api/v1/lists/%d/members", listID), e.adminKey, body)
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("add member %s: %d: %s", addr, res.StatusCode, buf)
+		}
+	}
+
+	res, buf := e.h.doRequest("GET", fmt.Sprintf("/api/v1/lists/%d/members/summary", listID), e.adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("summary: %d: %s", res.StatusCode, buf)
+	}
+	var summary struct {
+		Active       int `json:"active"`
+		Suspended    int `json:"suspended"`
+		Unsubscribed int `json:"unsubscribed"`
+		Pending      int `json:"pending"`
+	}
+	if err := json.Unmarshal(buf, &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if summary.Active != 2 || summary.Suspended != 1 || summary.Unsubscribed != 1 || summary.Pending != 0 {
+		t.Fatalf("summary = %+v; want active=2 suspended=1 unsubscribed=1 pending=0", summary)
+	}
+}

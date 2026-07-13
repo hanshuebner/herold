@@ -128,6 +128,58 @@ func TestCLIList_CRUD_And_Members(t *testing.T) {
 		t.Fatalf("could not find external member id in roster: %s", out)
 	}
 
+	// member-set: suspend then reactivate (REQ-MLIST-55), and member-summary
+	// reflects the roster counts by state at each step.
+	out, _, err = env.run("list", "member-set", listID, extMemberID, "--state", "suspended", "--json")
+	if err != nil {
+		t.Fatalf("member-set suspend: %v", err)
+	}
+	var suspended map[string]any
+	if err := json.Unmarshal([]byte(out), &suspended); err != nil {
+		t.Fatalf("unmarshal member-set suspend output: %v", err)
+	}
+	if suspended["state"] != "suspended" {
+		t.Fatalf("state after member-set suspend = %v", suspended["state"])
+	}
+
+	out, _, err = env.run("list", "member-summary", listID, "--json")
+	if err != nil {
+		t.Fatalf("member-summary: %v", err)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(out), &summary); err != nil {
+		t.Fatalf("unmarshal member-summary: %v", err)
+	}
+	if summary["suspended"] != float64(1) {
+		t.Fatalf("member-summary suspended = %v; want 1 (out=%s)", summary["suspended"], out)
+	}
+
+	out, _, err = env.run("list", "member-set", listID, extMemberID, "--state", "active", "--json")
+	if err != nil {
+		t.Fatalf("member-set reactivate: %v", err)
+	}
+	var reactivated map[string]any
+	if err := json.Unmarshal([]byte(out), &reactivated); err != nil {
+		t.Fatalf("unmarshal member-set reactivate output: %v", err)
+	}
+	if reactivated["state"] != "active" {
+		t.Fatalf("state after member-set reactivate = %v", reactivated["state"])
+	}
+	if v, present := reactivated["bounce_score"]; present && v != float64(0) {
+		t.Fatalf("bounce_score after reactivate = %v; want 0/omitted", v)
+	}
+
+	out, _, err = env.run("list", "member-summary", listID, "--json")
+	if err != nil {
+		t.Fatalf("member-summary after reactivate: %v", err)
+	}
+	if err := json.Unmarshal([]byte(out), &summary); err != nil {
+		t.Fatalf("unmarshal member-summary after reactivate: %v", err)
+	}
+	if summary["active"] != float64(2) || summary["suspended"] != float64(0) {
+		t.Fatalf("member-summary after reactivate = %v; want active=2 suspended=0", summary)
+	}
+
 	// Bulk export round trip: export to a file, then import it into the
 	// same list (via --import) and confirm the previously exported
 	// members are recognised (they will surface as "conflict", not

@@ -672,7 +672,7 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	mlistExpander.TokenSigner = mlistTokenSigner
 	smtpServer.SetMailingListExpander(mlistExpander)
 
-	mlistBounceProcessor := maillist.NewBounceProcessor(st.Meta(), mlistTokenSigner, clk, logger.With("subsystem", "maillist-bounce"))
+	mlistBounceProcessor := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), mlistTokenSigner, clk, logger.With("subsystem", "maillist-bounce"))
 	smtpServer.SetMailingListBounceProcessor(mlistBounceProcessor)
 
 	// Webhook dispatcher (Phase 3 Wave 3.5c-Z + Track A/C). Constructs

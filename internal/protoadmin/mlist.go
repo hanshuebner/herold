@@ -268,6 +268,10 @@ type createMailingListRequest struct {
 	SubjectTag     string `json:"subject_tag,omitempty"`
 	ARCSeal        *bool  `json:"arc_seal,omitempty"`
 	MaxMessageSize int64  `json:"max_message_size_bytes,omitempty"`
+	// BouncePolicy overrides the REQ-MLIST-53 deployment-default bounce
+	// scoring policy for this list. Any field left unset keeps the
+	// deployment default for that field.
+	BouncePolicy *bouncePolicyPatchDTO `json:"bounce_policy,omitempty"`
 }
 
 // handleCreateMailingList handles POST /api/v1/lists (REQ-MLIST-01,
@@ -335,6 +339,15 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		tag := req.SubjectTag
 		subjectTag = &tag
 	}
+	bouncePolicyJSON := "{}"
+	if req.BouncePolicy != nil {
+		var verr string
+		bouncePolicyJSON, verr = applyBouncePolicyPatch("{}", *req.BouncePolicy)
+		if verr != "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", verr, "")
+			return
+		}
+	}
 	l, err := s.store.Meta().InsertMailingList(r.Context(), store.MailingList{
 		PrincipalID:         group.ID,
 		PostingAddress:      address,
@@ -343,6 +356,7 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		SubjectTag:          subjectTag,
 		ARCSeal:             arcSeal,
 		MaxMessageSizeBytes: req.MaxMessageSize,
+		BouncePolicyJSON:    bouncePolicyJSON,
 	})
 	if err != nil {
 		s.writeMlistError(w, r, err)
@@ -388,6 +402,10 @@ type patchMailingListRequest struct {
 	SubjectTag          *string `json:"subject_tag,omitempty"`
 	ARCSeal             *bool   `json:"arc_seal,omitempty"`
 	MaxMessageSizeBytes *int64  `json:"max_message_size_bytes,omitempty"`
+	// BouncePolicy, when present, patches the REQ-MLIST-53 per-list
+	// bounce-scoring policy; any of its own fields left unset keeps that
+	// field's current (or default) value.
+	BouncePolicy *bouncePolicyPatchDTO `json:"bounce_policy,omitempty"`
 }
 
 // handlePatchMailingList handles PATCH /api/v1/lists/{id}: rename (change
@@ -482,6 +500,14 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		l.MaxMessageSizeBytes = *req.MaxMessageSizeBytes
+	}
+	if req.BouncePolicy != nil {
+		newRaw, verr := applyBouncePolicyPatch(l.BouncePolicyJSON, *req.BouncePolicy)
+		if verr != "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", verr, "")
+			return
+		}
+		l.BouncePolicyJSON = newRaw
 	}
 
 	// REQ-MLIST-21 config-time gate (issue #183): only checked when this

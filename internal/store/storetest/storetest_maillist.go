@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -531,6 +532,237 @@ func testMailingListMember_RosterPaging(t *testing.T, s store.Store) {
 	}
 	if len(filtered) != len(eachActive) {
 		t.Fatalf("filtered roster = %d rows; want %d", len(filtered), len(eachActive))
+	}
+}
+
+// testMailingListMember_RecordBounceDecay exercises REQ-MLIST-53's
+// atomic scoring primitive: weight accumulates across bounces inside the
+// decay window, and a gap longer than the decay window discards the
+// prior score (a soft bounce from months ago must not accumulate
+// forever) rather than adding to it.
+func testMailingListMember_RecordBounceDecay(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-bounce-owner@example.com")
+	l := mustInsertMailingList(t, s, "bounce@example.com", owner.ID)
+	mem, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l.ID, ExternalAddress: strPtr("bounce-member@example.net"),
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember: %v", err)
+	}
+
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	window := 7 * 24 * time.Hour
+
+	// First bounce: no prior last_bounce_at, so the score is exactly the
+	// weight.
+	score, err := s.Meta().RecordMailingListMemberBounce(ctx, mem.ID, base, 0.25, window)
+	if err != nil {
+		t.Fatalf("RecordMailingListMemberBounce (1st): %v", err)
+	}
+	if score != 0.25 {
+		t.Fatalf("score after 1st bounce = %v; want 0.25", score)
+	}
+
+	// Second bounce inside the window: accumulates.
+	score, err = s.Meta().RecordMailingListMemberBounce(ctx, mem.ID, base.Add(time.Hour), 0.25, window)
+	if err != nil {
+		t.Fatalf("RecordMailingListMemberBounce (2nd): %v", err)
+	}
+	if score != 0.5 {
+		t.Fatalf("score after 2nd bounce (inside window) = %v; want 0.5", score)
+	}
+
+	// Third bounce well past the decay window from the 2nd: the prior
+	// score is discarded, not added to.
+	score, err = s.Meta().RecordMailingListMemberBounce(ctx, mem.ID, base.Add(time.Hour+window+time.Hour), 0.25, window)
+	if err != nil {
+		t.Fatalf("RecordMailingListMemberBounce (3rd, past decay): %v", err)
+	}
+	if score != 0.25 {
+		t.Fatalf("score after decay-window gap = %v; want 0.25 (prior score discarded)", score)
+	}
+
+	got, err := s.Meta().GetMailingListMember(ctx, mem.ID)
+	if err != nil {
+		t.Fatalf("GetMailingListMember: %v", err)
+	}
+	if got.BounceScore != 0.25 {
+		t.Errorf("persisted BounceScore = %v; want 0.25", got.BounceScore)
+	}
+	if got.LastBounceAt == nil || !got.LastBounceAt.Equal(base.Add(time.Hour+window+time.Hour)) {
+		t.Errorf("persisted LastBounceAt = %v; want %v", got.LastBounceAt, base.Add(time.Hour+window+time.Hour))
+	}
+
+	// decayWindow <= 0 means "never decay": a bounce far in the future
+	// still adds to the existing score.
+	score, err = s.Meta().RecordMailingListMemberBounce(ctx, mem.ID, base.Add(365*24*time.Hour), 1.0, 0)
+	if err != nil {
+		t.Fatalf("RecordMailingListMemberBounce (never-decay): %v", err)
+	}
+	if score != 1.25 {
+		t.Fatalf("score with decayWindow<=0 = %v; want 1.25 (0.25 + 1.0, no decay)", score)
+	}
+
+	if _, err := s.Meta().RecordMailingListMemberBounce(ctx, store.MailingListMemberID(999999), base, 1.0, window); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("RecordMailingListMemberBounce absent member: got %v; want ErrNotFound", err)
+	}
+}
+
+// testMailingListMember_SuspendIfActiveIsCAS exercises REQ-MLIST-54's
+// compare-and-swap suspend primitive: it transitions an active member
+// exactly once, reports transitioned=false on a second call (already
+// suspended) and on a member that starts out unsubscribed/pending, and
+// ErrNotFound only for a genuinely missing row.
+func testMailingListMember_SuspendIfActiveIsCAS(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-suspend-owner@example.com")
+	l := mustInsertMailingList(t, s, "suspend@example.com", owner.ID)
+	mem, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l.ID, ExternalAddress: strPtr("suspend-member@example.net"),
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember: %v", err)
+	}
+
+	transitioned, err := s.Meta().SuspendMailingListMemberIfActive(ctx, mem.ID)
+	if err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive (1st): %v", err)
+	}
+	if !transitioned {
+		t.Fatalf("SuspendMailingListMemberIfActive (1st) = false; want true (was active)")
+	}
+	got, err := s.Meta().GetMailingListMember(ctx, mem.ID)
+	if err != nil {
+		t.Fatalf("GetMailingListMember: %v", err)
+	}
+	if got.State != store.MailingListMemberSuspended {
+		t.Fatalf("State after suspend = %q; want suspended", got.State)
+	}
+
+	// Racing second call: already suspended, so no-op.
+	transitioned, err = s.Meta().SuspendMailingListMemberIfActive(ctx, mem.ID)
+	if err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive (2nd): %v", err)
+	}
+	if transitioned {
+		t.Errorf("SuspendMailingListMemberIfActive (2nd) = true; want false (already suspended)")
+	}
+
+	// A pending member is never auto-suspended by this primitive either.
+	pendingMem, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l.ID, ExternalAddress: strPtr("suspend-pending@example.net"), State: store.MailingListMemberPending,
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember pending: %v", err)
+	}
+	transitioned, err = s.Meta().SuspendMailingListMemberIfActive(ctx, pendingMem.ID)
+	if err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive (pending): %v", err)
+	}
+	if transitioned {
+		t.Errorf("SuspendMailingListMemberIfActive (pending) = true; want false")
+	}
+
+	if _, err := s.Meta().SuspendMailingListMemberIfActive(ctx, store.MailingListMemberID(999999)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SuspendMailingListMemberIfActive absent: got %v; want ErrNotFound", err)
+	}
+}
+
+// testMailingListMember_Reactivate exercises REQ-MLIST-55: reactivation
+// sets state back to active AND resets bounce_score/last_bounce_at,
+// regardless of the row's prior state.
+func testMailingListMember_Reactivate(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-reactivate-owner@example.com")
+	l := mustInsertMailingList(t, s, "reactivate@example.com", owner.ID)
+	mem, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l.ID, ExternalAddress: strPtr("reactivate-member@example.net"),
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember: %v", err)
+	}
+	if _, err := s.Meta().RecordMailingListMemberBounce(ctx, mem.ID, time.Now(), 1.0, time.Hour); err != nil {
+		t.Fatalf("RecordMailingListMemberBounce: %v", err)
+	}
+	if _, err := s.Meta().SuspendMailingListMemberIfActive(ctx, mem.ID); err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive: %v", err)
+	}
+
+	if err := s.Meta().ReactivateMailingListMember(ctx, mem.ID); err != nil {
+		t.Fatalf("ReactivateMailingListMember: %v", err)
+	}
+	got, err := s.Meta().GetMailingListMember(ctx, mem.ID)
+	if err != nil {
+		t.Fatalf("GetMailingListMember: %v", err)
+	}
+	if got.State != store.MailingListMemberActive {
+		t.Errorf("State after reactivate = %q; want active", got.State)
+	}
+	if got.BounceScore != 0 {
+		t.Errorf("BounceScore after reactivate = %v; want 0", got.BounceScore)
+	}
+	if got.LastBounceAt != nil {
+		t.Errorf("LastBounceAt after reactivate = %v; want nil", got.LastBounceAt)
+	}
+
+	if err := s.Meta().ReactivateMailingListMember(ctx, store.MailingListMemberID(999999)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ReactivateMailingListMember absent: got %v; want ErrNotFound", err)
+	}
+}
+
+// testMailingListMember_CountByState exercises the REQ-MLIST-54 operator
+// bounce/suspension view's aggregate primitive: per-list roster counts
+// grouped by state, scoped to the list (a second list's members must not
+// leak in).
+func testMailingListMember_CountByState(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-count-owner@example.com")
+	l := mustInsertMailingList(t, s, "count@example.com", owner.ID)
+	other := mustInsertMailingList(t, s, "count-other@example.com", owner.ID)
+
+	for i := 0; i < 3; i++ {
+		if _, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+			ListID: l.ID, ExternalAddress: strPtr(fmt.Sprintf("count-active-%d@example.net", i)),
+		}); err != nil {
+			t.Fatalf("AddMailingListMember active[%d]: %v", i, err)
+		}
+	}
+	susp, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: l.ID, ExternalAddress: strPtr("count-suspended@example.net"),
+	})
+	if err != nil {
+		t.Fatalf("AddMailingListMember suspended: %v", err)
+	}
+	if _, err := s.Meta().SuspendMailingListMemberIfActive(ctx, susp.ID); err != nil {
+		t.Fatalf("SuspendMailingListMemberIfActive: %v", err)
+	}
+	if _, err := s.Meta().AddMailingListMember(ctx, store.MailingListMember{
+		ListID: other.ID, ExternalAddress: strPtr("count-other-member@example.net"),
+	}); err != nil {
+		t.Fatalf("AddMailingListMember (other list): %v", err)
+	}
+
+	counts, err := s.Meta().CountMailingListMembersByState(ctx, l.ID)
+	if err != nil {
+		t.Fatalf("CountMailingListMembersByState: %v", err)
+	}
+	if counts[store.MailingListMemberActive] != 3 {
+		t.Errorf("counts[active] = %d; want 3", counts[store.MailingListMemberActive])
+	}
+	if counts[store.MailingListMemberSuspended] != 1 {
+		t.Errorf("counts[suspended] = %d; want 1", counts[store.MailingListMemberSuspended])
+	}
+	if counts[store.MailingListMemberUnsubscribed] != 0 {
+		t.Errorf("counts[unsubscribed] = %d; want 0 (absent key defaults to 0)", counts[store.MailingListMemberUnsubscribed])
+	}
+
+	otherCounts, err := s.Meta().CountMailingListMembersByState(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("CountMailingListMembersByState (other): %v", err)
+	}
+	if otherCounts[store.MailingListMemberActive] != 1 {
+		t.Errorf("other list counts[active] = %d; want 1 (no leak from list l)", otherCounts[store.MailingListMemberActive])
 	}
 }
 

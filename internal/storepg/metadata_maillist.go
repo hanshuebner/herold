@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -402,6 +403,107 @@ func (m *metadata) UpdateMailingListMemberDeliveryMode(ctx context.Context, id s
 		}
 		return nil
 	})
+}
+
+// RecordMailingListMemberBounce implements the store.Metadata method of
+// the same name (REQ-MLIST-53, issue #184). Mirrors
+// storesqlite/metadata_maillist.go: the decay decision and the score
+// write happen inside one runTx call.
+func (m *metadata) RecordMailingListMemberBounce(ctx context.Context, id store.MailingListMemberID, now time.Time, weight float64, decayWindow time.Duration) (float64, error) {
+	var newScore float64
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var score float64
+		var lastBounceUs *int64
+		if err := tx.QueryRow(ctx,
+			`SELECT bounce_score, last_bounce_at_us FROM mailing_list_member WHERE id = $1`,
+			int64(id)).Scan(&score, &lastBounceUs); err != nil {
+			return mapErr(err)
+		}
+		decayed := lastBounceUs == nil
+		if lastBounceUs != nil && decayWindow > 0 {
+			last := fromMicros(*lastBounceUs)
+			if now.Sub(last) > decayWindow {
+				decayed = true
+			}
+		}
+		if decayed {
+			newScore = weight
+		} else {
+			newScore = score + weight
+		}
+		ct, err := tx.Exec(ctx,
+			`UPDATE mailing_list_member SET bounce_score = $1, last_bounce_at_us = $2 WHERE id = $3`,
+			newScore, usMicros(now.UTC()), int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if ct.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+	return newScore, err
+}
+
+// SuspendMailingListMemberIfActive implements the store.Metadata method
+// of the same name (REQ-MLIST-54, issue #184): the UPDATE's own WHERE
+// clause is the compare-and-swap.
+func (m *metadata) SuspendMailingListMemberIfActive(ctx context.Context, id store.MailingListMemberID) (bool, error) {
+	var transitioned bool
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var exists int64
+		if err := tx.QueryRow(ctx,
+			`SELECT 1 FROM mailing_list_member WHERE id = $1`, int64(id)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		ct, err := tx.Exec(ctx,
+			`UPDATE mailing_list_member SET state = 'suspended' WHERE id = $1 AND state = 'active'`,
+			int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		transitioned = ct.RowsAffected() > 0
+		return nil
+	})
+	return transitioned, err
+}
+
+// ReactivateMailingListMember implements the store.Metadata method of
+// the same name (REQ-MLIST-55, issue #184).
+func (m *metadata) ReactivateMailingListMember(ctx context.Context, id store.MailingListMemberID) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE mailing_list_member SET state = 'active', bounce_score = 0, last_bounce_at_us = NULL WHERE id = $1`,
+			int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if ct.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// CountMailingListMembersByState implements the store.Metadata method of
+// the same name (issue #184).
+func (m *metadata) CountMailingListMembersByState(ctx context.Context, listID store.MailingListID) (map[store.MailingListMemberState]int, error) {
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT state, COUNT(*) FROM mailing_list_member WHERE list_id = $1 GROUP BY state`, int64(listID))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make(map[store.MailingListMemberState]int)
+	for rows.Next() {
+		var state string
+		var n int64
+		if err := rows.Scan(&state, &n); err != nil {
+			return nil, mapErr(err)
+		}
+		out[store.MailingListMemberState(state)] = int(n)
+	}
+	return out, mapErr(rows.Err())
 }
 
 func (m *metadata) ListMailingListMembers(ctx context.Context, filter store.MailingListRosterFilter) ([]store.MailingListMember, error) {

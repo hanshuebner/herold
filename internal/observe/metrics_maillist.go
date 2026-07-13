@@ -25,6 +25,18 @@ var (
 	MailingListFanoutTotal   *prometheus.CounterVec
 	MailingListMembers       *prometheus.GaugeVec
 	MailingListExpandSeconds *prometheus.HistogramVec
+
+	// MailingListSuspendedTotal counts REQ-MLIST-54 auto-suspend
+	// transitions, by list and by the classification of the bounce that
+	// crossed the threshold ("hard" | "soft" -- dsn.Classification's own
+	// String() vocabulary, minus "unknown" since an Unknown bounce never
+	// scores).
+	MailingListSuspendedTotal *prometheus.CounterVec
+	// MailingListBounceRate publishes, per list, the fraction of the
+	// active+suspended roster currently suspended -- the REQ-MLIST-54
+	// "per-list bounce rate" monitorability requirement. Recomputed each
+	// time a classified bounce is scored (internal/maillist.BounceProcessor).
+	MailingListBounceRate *prometheus.GaugeVec
 )
 
 // RegisterMailingListMetrics registers the mailing-list collector set
@@ -46,10 +58,20 @@ func RegisterMailingListMetrics() {
 			Help:    "Wall time to expand and enqueue one list post, by list.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"list"})
+		MailingListSuspendedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_mlist_suspended_total",
+			Help: "Total mailing-list member auto-suspensions, by list and triggering bounce classification (reason).",
+		}, []string{"list", "reason"})
+		MailingListBounceRate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "herold_mlist_bounce_rate",
+			Help: "Fraction of a list's active+suspended roster currently suspended, recomputed on each scored bounce.",
+		}, []string{"list"})
 		MustRegister(
 			MailingListFanoutTotal,
 			MailingListMembers,
 			MailingListExpandSeconds,
+			MailingListSuspendedTotal,
+			MailingListBounceRate,
 		)
 	})
 }

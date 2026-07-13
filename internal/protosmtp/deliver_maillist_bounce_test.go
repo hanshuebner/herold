@@ -75,7 +75,7 @@ func TestMailingListBounce_RCPT_RoutesToProcessorNotMailbox(t *testing.T) {
 	memberID := member.ID
 
 	ts := maillist.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
-	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), ts, f.ha.Clock, f.ha.Logger)}
+	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), f.ha.Store.Blobs(), ts, f.ha.Clock, f.ha.Logger)}
 	f.srv.SetMailingListBounceProcessor(bp)
 
 	verpAddr, err := maillist.VERPBounceAddress(ts, ml, memberID)
@@ -143,7 +143,7 @@ func TestMailingListBounce_ForgedToken_NoAttribution(t *testing.T) {
 
 	ts := maillist.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
 	otherTS := maillist.NewTokenSigner([]byte("ffffffffffffffffffffffffffffffff"))
-	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), ts, f.ha.Clock, f.ha.Logger)}
+	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), f.ha.Store.Blobs(), ts, f.ha.Clock, f.ha.Logger)}
 	f.srv.SetMailingListBounceProcessor(bp)
 
 	// Minted with a DIFFERENT key -- must not verify against ts.
@@ -191,7 +191,7 @@ func TestMailingListBounce_S1BounceAddress_NotRoutedAsVERP(t *testing.T) {
 	mustInsertTestMailingList(t, f.ha.Store, "announce@example.test")
 
 	ts := maillist.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
-	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), ts, f.ha.Clock, f.ha.Logger)}
+	bp := &capturingBounceProcessor{inner: maillist.NewBounceProcessor(f.ha.Store.Meta(), f.ha.Store.Blobs(), ts, f.ha.Clock, f.ha.Logger)}
 	f.srv.SetMailingListBounceProcessor(bp)
 
 	cli, closeFn := f.dial(t)

@@ -9,9 +9,12 @@ package protoadmin
 //	GET    /api/v1/lists/{id}/members            roster page
 //	POST   /api/v1/lists/{id}/members            add one member
 //	PATCH  /api/v1/lists/{id}/members/{mid}       update state/delivery_mode
+//	                                              (state=active is a REQ-MLIST-55
+//	                                              reactivation: also resets bounce_score)
 //	DELETE /api/v1/lists/{id}/members/{mid}       remove one member
 //	POST   /api/v1/lists/{id}/members/import      bulk add
 //	GET    /api/v1/lists/{id}/members/export      full roster dump
+//	GET    /api/v1/lists/{id}/members/summary     REQ-MLIST-54 per-list roster counts by state
 
 import (
 	"errors"
@@ -261,6 +264,8 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
+	wasSuspended := m.State == store.MailingListMemberSuspended
+	reactivated := false
 	if req.State != nil {
 		state, ok := mlistStateFromString(*req.State)
 		if !ok || state == "" {
@@ -268,7 +273,18 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 				"state must be one of active, suspended, unsubscribed, pending", *req.State)
 			return
 		}
-		if err := s.store.Meta().UpdateMailingListMemberState(r.Context(), m.ID, state); err != nil {
+		if state == store.MailingListMemberActive {
+			// REQ-MLIST-55: transitioning TO active is a reactivation,
+			// which also resets bounce_score/last_bounce_at -- not a bare
+			// state overwrite, since a member's bounce history should not
+			// survive being brought back onto the roster (whether it was
+			// suspended, or e.g. an operator reversing an unsubscribe).
+			if err := s.store.Meta().ReactivateMailingListMember(r.Context(), m.ID); err != nil {
+				s.writeMlistError(w, r, err)
+				return
+			}
+			reactivated = true
+		} else if err := s.store.Meta().UpdateMailingListMemberState(r.Context(), m.ID, state); err != nil {
 			s.writeMlistError(w, r, err)
 			return
 		}
@@ -290,12 +306,21 @@ func (s *Server) handlePatchMailingListMember(w http.ResponseWriter, r *http.Req
 		s.writeMlistError(w, r, err)
 		return
 	}
-	s.appendAudit(r.Context(), "mlist.member.update",
+	action := "mlist.member.update"
+	if reactivated {
+		// A distinct action (REQ-MLIST-55) so the operator bounce/
+		// suspension view can filter reactivations without guessing them
+		// out of the generic update audit trail; wasSuspended records
+		// what state it was reactivated FROM for that view.
+		action = "mlist.member.reactivate"
+	}
+	s.appendAudit(r.Context(), action,
 		fmt.Sprintf("mlist:%d", l.ID),
 		store.OutcomeSuccess, "", map[string]string{
 			"member_id":     strconv.FormatUint(uint64(updated.ID), 10),
 			"state":         string(updated.State),
 			"delivery_mode": string(updated.DeliveryMode),
+			"was_suspended": strconv.FormatBool(wasSuspended),
 		})
 	writeJSON(w, http.StatusOK, toMailingListMemberDTO(updated))
 }
@@ -465,4 +490,44 @@ func (s *Server) handleExportMailingListMembers(w http.ResponseWriter, r *http.R
 		next = &tok
 	}
 	writeJSON(w, http.StatusOK, pageDTO[mailingListMemberDTO]{Items: items, Next: next})
+}
+
+// mailingListMemberSummaryDTO is the GET .../members/summary response
+// (REQ-MLIST-54): the list's roster population grouped by
+// store.MailingListMemberState, as a scalar summary rather than a
+// pageDTO collection -- an operator bounce/suspension view needs this
+// count once per list render, not a paginated roster walk.
+type mailingListMemberSummaryDTO struct {
+	Active       int `json:"active"`
+	Suspended    int `json:"suspended"`
+	Unsubscribed int `json:"unsubscribed"`
+	Pending      int `json:"pending"`
+}
+
+// handleMailingListMemberSummary handles GET
+// /api/v1/lists/{id}/members/summary (REQ-MLIST-54: "an operator-visible
+// per-list bounce/suspension view"). Combined with the per-member
+// bounce_score/last_bounce_at already on mailingListMemberDTO (GET
+// .../members?state=suspended), this is the whole read surface issue
+// #184 exposes for that view.
+func (s *Server) handleMailingListMemberSummary(w http.ResponseWriter, r *http.Request) {
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	l, ok := s.loadListAndCheckAccess(w, r, caller)
+	if !ok {
+		return
+	}
+	counts, err := s.store.Meta().CountMailingListMembersByState(r.Context(), l.ID)
+	if err != nil {
+		s.writeMlistError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mailingListMemberSummaryDTO{
+		Active:       counts[store.MailingListMemberActive],
+		Suspended:    counts[store.MailingListMemberSuspended],
+		Unsubscribed: counts[store.MailingListMemberUnsubscribed],
+		Pending:      counts[store.MailingListMemberPending],
+	})
 }

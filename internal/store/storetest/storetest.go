@@ -507,6 +507,12 @@ func Run(t *testing.T, f Factory) {
 		{"MailingListMember_NoMailRequiresPrincipal", testMailingListMember_NoMailRequiresPrincipal},
 		{"MailingListMember_StateTransitionsAndRemove", testMailingListMember_StateTransitionsAndRemove},
 		{"MailingListMember_RosterPaging", testMailingListMember_RosterPaging},
+		// -- Hosted mailing lists, Stage 2 bounce scoring (issue #184,
+		// REQ-MLIST-53..55) --
+		{"MailingListMember_RecordBounceDecay", testMailingListMember_RecordBounceDecay},
+		{"MailingListMember_SuspendIfActiveIsCAS", testMailingListMember_SuspendIfActiveIsCAS},
+		{"MailingListMember_Reactivate", testMailingListMember_Reactivate},
+		{"MailingListMember_CountByState", testMailingListMember_CountByState},
 	}
 	for _, c := range cases {
 		tc := c

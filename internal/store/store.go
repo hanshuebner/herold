@@ -740,6 +740,46 @@ type Metadata interface {
 	// one call — the store caps Limit at 1000 regardless.
 	ListMailingListMembers(ctx context.Context, filter MailingListRosterFilter) ([]MailingListMember, error)
 
+	// -- Hosted mailing lists, Stage 2 bounce scoring (issue #184,
+	// REQ-MLIST-53..55) --------------------------------------------------
+
+	// RecordMailingListMemberBounce applies one classified bounce to the
+	// roster row identified by id (REQ-MLIST-53): if the row has no
+	// previous LastBounceAt, or now is more than decayWindow past it, any
+	// previously accumulated bounce_score is treated as fully decayed and
+	// the new score is exactly weight (a soft bounce from months ago must
+	// not accumulate forever); otherwise weight is added to the existing
+	// score. last_bounce_at is set to now unconditionally. decayWindow <=
+	// 0 means "never decay" (every bounce accumulates indefinitely). The
+	// read-decide-write happens inside one store-side transaction, so two
+	// calls racing for the same member never lose an update. Returns the
+	// persisted new score, or ErrNotFound if id does not exist.
+	RecordMailingListMemberBounce(ctx context.Context, id MailingListMemberID, now time.Time, weight float64, decayWindow time.Duration) (newScore float64, err error)
+
+	// SuspendMailingListMemberIfActive atomically transitions the roster
+	// row identified by id to suspended only if its current state is
+	// active (REQ-MLIST-54): a single conditional UPDATE doubles as a
+	// compare-and-swap, so concurrent callers racing to suspend the same
+	// member on the same threshold-crossing bounce can never both believe
+	// they made the transition -- exactly one gets transitioned=true and
+	// is responsible for the audit/metric/owner-notification side
+	// effects that follow. Returns transitioned=false (not an error) when
+	// the row was in any other state (already suspended, unsubscribed, or
+	// pending); ErrNotFound only when the row does not exist at all.
+	SuspendMailingListMemberIfActive(ctx context.Context, id MailingListMemberID) (transitioned bool, err error)
+
+	// ReactivateMailingListMember reactivates the roster row identified
+	// by id (REQ-MLIST-55): sets State to active and resets BounceScore
+	// to 0 and LastBounceAt to nil in one statement, regardless of the
+	// row's prior state. Returns ErrNotFound if id does not exist.
+	ReactivateMailingListMember(ctx context.Context, id MailingListMemberID) error
+
+	// CountMailingListMembersByState returns listID's roster population
+	// grouped by state, for the REQ-MLIST-54 operator bounce/suspension
+	// view and the per-list bounce-rate metric. States with zero members
+	// are simply absent from the map.
+	CountMailingListMembersByState(ctx context.Context, listID MailingListID) (map[MailingListMemberState]int, error)
+
 	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
 
 	// SetOIDCProviderAuthzTrusted flips the per-provider authz_trusted

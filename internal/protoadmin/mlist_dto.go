@@ -1,8 +1,11 @@
 package protoadmin
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -28,12 +31,18 @@ type mailingListDTO struct {
 	// from store.GetActiveDKIMKey, not stored on the row, so it always
 	// reflects the domain's current key state even if the key was
 	// generated or revoked after the list was configured.
-	DKIMKeyMissing      bool      `json:"dkim_key_missing,omitempty"`
-	PostingPolicy       string    `json:"posting_policy"`
-	SubscribePolicy     string    `json:"subscribe_policy"`
-	MaxMessageSizeBytes int64     `json:"max_message_size_bytes,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	DKIMKeyMissing      bool   `json:"dkim_key_missing,omitempty"`
+	PostingPolicy       string `json:"posting_policy"`
+	SubscribePolicy     string `json:"subscribe_policy"`
+	MaxMessageSizeBytes int64  `json:"max_message_size_bytes,omitempty"`
+	// BouncePolicy is the REQ-MLIST-53 per-list bounce-scoring policy,
+	// RESOLVED: every field always reflects the value actually in effect
+	// (the operator's override, or the deployment default), never a
+	// sparse partial. This is what the operator bounce/suspension view
+	// (issue #184) reads.
+	BouncePolicy bouncePolicyDTO `json:"bounce_policy"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 func toMailingListDTO(l store.MailingList) mailingListDTO {
@@ -48,6 +57,7 @@ func toMailingListDTO(l store.MailingList) mailingListDTO {
 		PostingPolicy:       string(l.PostingPolicy),
 		SubscribePolicy:     string(l.SubscribePolicy),
 		MaxMessageSizeBytes: l.MaxMessageSizeBytes,
+		BouncePolicy:        toBouncePolicyDTO(l.BouncePolicyJSON),
 		CreatedAt:           l.CreatedAt,
 		UpdatedAt:           l.UpdatedAt,
 	}
@@ -55,6 +65,91 @@ func toMailingListDTO(l store.MailingList) mailingListDTO {
 		dto.SubjectTag = *l.SubjectTag
 	}
 	return dto
+}
+
+// bouncePolicyDTO is the resolved (defaults-applied) REQ-MLIST-53
+// per-list bounce-scoring policy wire shape.
+type bouncePolicyDTO struct {
+	HardWeight         float64 `json:"hard_weight"`
+	SoftWeight         float64 `json:"soft_weight"`
+	DecayWindowSeconds int64   `json:"decay_window_seconds"`
+	SuspendThreshold   float64 `json:"suspend_threshold"`
+}
+
+// toBouncePolicyDTO resolves raw (store.MailingList.BouncePolicyJSON)
+// against the deployment defaults. A malformed stored value (should not
+// occur -- writes are validated, see applyBouncePolicyPatch) falls back
+// to an all-defaults policy rather than failing the whole list read.
+func toBouncePolicyDTO(raw string) bouncePolicyDTO {
+	pol, err := maillist.ParseBouncePolicy(raw)
+	if err != nil {
+		pol = maillist.BouncePolicy{}
+	}
+	r := pol.Resolve()
+	return bouncePolicyDTO{
+		HardWeight:         r.HardWeight,
+		SoftWeight:         r.SoftWeight,
+		DecayWindowSeconds: int64(r.DecayWindow / time.Second),
+		SuspendThreshold:   r.SuspendThreshold,
+	}
+}
+
+// bouncePolicyPatchDTO is the create/patch request shape for
+// bounce_policy: every field is optional, and only the fields present
+// override the list's current (or default) policy -- the same partial-
+// update convention every other mailing-list PATCH field already uses.
+type bouncePolicyPatchDTO struct {
+	HardWeight         *float64 `json:"hard_weight,omitempty"`
+	SoftWeight         *float64 `json:"soft_weight,omitempty"`
+	DecayWindowSeconds *int64   `json:"decay_window_seconds,omitempty"`
+	SuspendThreshold   *float64 `json:"suspend_threshold,omitempty"`
+}
+
+// applyBouncePolicyPatch merges patch onto the policy currently stored
+// as currentRaw and returns the new BouncePolicyJSON value. Returns a
+// user-facing validation error string (never touches the store) if any
+// provided field is out of range: weights must be non-negative, and
+// the threshold and decay window must be strictly positive (a
+// suspend_threshold of 0 or negative would suspend on the very first
+// classified bounce regardless of weight, and a decay_window <= 0 has
+// its own explicit "never decay" meaning at the store layer that a
+// per-list config field should not silently produce).
+func applyBouncePolicyPatch(currentRaw string, patch bouncePolicyPatchDTO) (string, string) {
+	pol, err := maillist.ParseBouncePolicy(currentRaw)
+	if err != nil {
+		pol = maillist.BouncePolicy{}
+	}
+	if patch.HardWeight != nil {
+		if *patch.HardWeight < 0 {
+			return "", "bounce_policy.hard_weight must be non-negative"
+		}
+		pol.HardWeight = *patch.HardWeight
+	}
+	if patch.SoftWeight != nil {
+		if *patch.SoftWeight < 0 {
+			return "", "bounce_policy.soft_weight must be non-negative"
+		}
+		pol.SoftWeight = *patch.SoftWeight
+	}
+	if patch.DecayWindowSeconds != nil {
+		if *patch.DecayWindowSeconds <= 0 {
+			return "", "bounce_policy.decay_window_seconds must be positive"
+		}
+		pol.DecayWindowSeconds = *patch.DecayWindowSeconds
+	}
+	if patch.SuspendThreshold != nil {
+		if *patch.SuspendThreshold <= 0 {
+			return "", "bounce_policy.suspend_threshold must be positive"
+		}
+		pol.SuspendThreshold = *patch.SuspendThreshold
+	}
+	b, err := json.Marshal(pol)
+	if err != nil {
+		// Marshalling a struct of plain numeric fields cannot fail; kept
+		// as a defensive fallback rather than a panic.
+		return "", fmt.Sprintf("encode bounce_policy: %v", err)
+	}
+	return string(b), ""
 }
 
 // mailingListMemberDTO is the wire representation of a roster row

@@ -48,7 +48,7 @@ func TestBounceProcessor_AttributesAndClassifies(t *testing.T) {
 			t.Fatalf("Sign: %v", err)
 		}
 
-		bp := maillist.NewBounceProcessor(st.Meta(), ts, clock.NewFake(time.Now()), discardLogger())
+		bp := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), ts, clock.NewFake(time.Now()), discardLogger())
 		res, err := bp.ProcessBounce(context.Background(), maillist.BounceInput{
 			List:  ml,
 			Token: token,
@@ -83,7 +83,7 @@ func TestBounceProcessor_UnverifiableToken_NoAttribution(t *testing.T) {
 	mustAddExternalMember(t, st, ml.ID, "member@example.net", store.MailingListMemberActive)
 
 	ts := maillist.NewTokenSigner(testDataKey())
-	bp := maillist.NewBounceProcessor(st.Meta(), ts, clock.NewFake(time.Now()), discardLogger())
+	bp := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), ts, clock.NewFake(time.Now()), discardLogger())
 	res, err := bp.ProcessBounce(context.Background(), maillist.BounceInput{
 		List:  ml,
 		Token: "forged-not-a-real-token",
@@ -123,7 +123,7 @@ func TestBounceProcessor_CrossListToken_NoAttribution(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	bp := maillist.NewBounceProcessor(st.Meta(), ts, clock.NewFake(time.Now()), discardLogger())
+	bp := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), ts, clock.NewFake(time.Now()), discardLogger())
 	res, err := bp.ProcessBounce(context.Background(), maillist.BounceInput{
 		List:  mlB,
 		Token: tokenForA,
@@ -144,7 +144,7 @@ func TestBounceProcessor_NoTokenSigner_NoAttribution(t *testing.T) {
 	st := openSQLiteStore(t)
 	ml := mustInsertList(t, st, "list@example.test", false)
 
-	bp := maillist.NewBounceProcessor(st.Meta(), nil, clock.NewFake(time.Now()), discardLogger())
+	bp := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), nil, clock.NewFake(time.Now()), discardLogger())
 	res, err := bp.ProcessBounce(context.Background(), maillist.BounceInput{
 		List:  ml,
 		Token: "anything",
@@ -173,7 +173,7 @@ func TestBounceProcessor_MalformedDSN_StillAttributedButUnknown(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	bp := maillist.NewBounceProcessor(st.Meta(), ts, clock.NewFake(time.Now()), discardLogger())
+	bp := maillist.NewBounceProcessor(st.Meta(), st.Blobs(), ts, clock.NewFake(time.Now()), discardLogger())
 	res, err := bp.ProcessBounce(context.Background(), maillist.BounceInput{
 		List:  ml,
 		Token: token,

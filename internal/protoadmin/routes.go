@@ -203,6 +203,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/lists/{id}/members/{mid}", authAdmin(s.handleRemoveMailingListMember))
 	mux.HandleFunc("POST /api/v1/lists/{id}/members/import", authAdmin(s.handleImportMailingListMembers))
 	mux.HandleFunc("GET /api/v1/lists/{id}/members/export", authAdmin(s.handleExportMailingListMembers))
+	mux.HandleFunc("GET /api/v1/lists/{id}/members/summary", authAdmin(s.handleMailingListMemberSummary))
 
 	// External SMTP submission per-Identity credentials
 	// (REQ-AUTH-EXT-SUBMIT-04). Also registered in RegisterSelfServiceRoutes

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -417,6 +418,120 @@ func (m *metadata) UpdateMailingListMemberDeliveryMode(ctx context.Context, id s
 		}
 		return nil
 	})
+}
+
+// RecordMailingListMemberBounce implements the store.Metadata method of
+// the same name (REQ-MLIST-53, issue #184). The decay decision and the
+// score write happen inside one runTx call, wrapped in the store's own
+// writer-serializing transaction, so a concurrent bounce for the same
+// member cannot read stale state.
+func (m *metadata) RecordMailingListMemberBounce(ctx context.Context, id store.MailingListMemberID, now time.Time, weight float64, decayWindow time.Duration) (float64, error) {
+	var newScore float64
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var score float64
+		var lastBounceUs sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT bounce_score, last_bounce_at_us FROM mailing_list_member WHERE id = ?`,
+			int64(id)).Scan(&score, &lastBounceUs); err != nil {
+			return mapErr(err)
+		}
+		decayed := !lastBounceUs.Valid
+		if lastBounceUs.Valid && decayWindow > 0 {
+			last := fromMicros(lastBounceUs.Int64)
+			if now.Sub(last) > decayWindow {
+				decayed = true
+			}
+		}
+		if decayed {
+			newScore = weight
+		} else {
+			newScore = score + weight
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailing_list_member SET bounce_score = ?, last_bounce_at_us = ? WHERE id = ?`,
+			newScore, usMicros(now.UTC()), int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+	return newScore, err
+}
+
+// SuspendMailingListMemberIfActive implements the store.Metadata method
+// of the same name (REQ-MLIST-54, issue #184): the UPDATE's own WHERE
+// clause is the compare-and-swap.
+func (m *metadata) SuspendMailingListMemberIfActive(ctx context.Context, id store.MailingListMemberID) (bool, error) {
+	var transitioned bool
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var exists int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM mailing_list_member WHERE id = ?`, int64(id)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailing_list_member SET state = 'suspended' WHERE id = ? AND state = 'active'`,
+			int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		transitioned = n > 0
+		return nil
+	})
+	return transitioned, err
+}
+
+// ReactivateMailingListMember implements the store.Metadata method of
+// the same name (REQ-MLIST-55, issue #184).
+func (m *metadata) ReactivateMailingListMember(ctx context.Context, id store.MailingListMemberID) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailing_list_member SET state = 'active', bounce_score = 0, last_bounce_at_us = NULL WHERE id = ?`,
+			int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// CountMailingListMembersByState implements the store.Metadata method of
+// the same name (issue #184).
+func (m *metadata) CountMailingListMembersByState(ctx context.Context, listID store.MailingListID) (map[store.MailingListMemberState]int, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT state, COUNT(*) FROM mailing_list_member WHERE list_id = ? GROUP BY state`, int64(listID))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make(map[store.MailingListMemberState]int)
+	for rows.Next() {
+		var state string
+		var n int64
+		if err := rows.Scan(&state, &n); err != nil {
+			return nil, mapErr(err)
+		}
+		out[store.MailingListMemberState(state)] = int(n)
+	}
+	return out, mapErr(rows.Err())
 }
 
 func (m *metadata) ListMailingListMembers(ctx context.Context, filter store.MailingListRosterFilter) ([]store.MailingListMember, error) {
