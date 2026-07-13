@@ -17,7 +17,7 @@ Server contract: `../server/requirements/06-filtering.md` Part C.
 
 | Disposition | Inbox | Presentation | Badge | Push |
 |---|---|---|---|---|
-| `pinned` | yes | own tab (max 3) | yes | yes |
+| `pinned` | yes | own tab (max 5) | yes | yes |
 | `bundled` | yes | one collapsed row in the stream | inline count only | no |
 | `daily` | yes | bundled, surfaced once a day | inline count only | no |
 | `weekly` | yes | bundled, surfaced once a week | inline count only | no |
@@ -42,7 +42,7 @@ categories compressed rather than removed. Nothing is ever reachable only throug
 a lane the user has stopped checking.
 
 ```
-  [Allgemein] [Hobby]              <- pinned tabs, max 3, opt-in
+  [Allgemein] [Hobby]              <- pinned tabs, max 5, opt-in
   ------------------------------------------------------------
     Torsten Bulck      Re: CC 2027            10. Juli
   > Werbung (12)                              10. Juli
@@ -54,12 +54,12 @@ a lane the user has stopped checking.
 | ID | Requirement |
 |----|-------------|
 | REQ-CAT-10 | The Inbox renders as one stream in date order. A `bundled` category collapses to a single row, positioned by its newest member, showing the category name, its unread count, and a preview of its senders. Expanding a bundle reveals its messages inline. |
-| REQ-CAT-11 | A `pinned` category renders as a tab above the stream. **At most 3** may be pinned. Pinning is an explicit user act; attempting a fourth prompts the user to unpin one. Selecting a tab filters the Inbox to that category. |
+| REQ-CAT-11 | A `pinned` category renders as a tab above the stream. **At most 5** may be pinned. Pinning is an explicit user act; attempting a sixth prompts the user to unpin one. Selecting a tab filters the Inbox to that category. |
 | REQ-CAT-12 | An empty bundle does not appear in the stream (hide-when-empty). A category in the sidebar may be set to appear only when it has unread mail (show-if-unread), per REQ-LBL-07a. These are two different predicates on two different surfaces, and both apply to one category. |
 | REQ-CAT-13 | A category **is** a label. It appears in the sidebar under Labels, is a drag-and-drop target, and opens a thread list like any label (REQ-LBL-20). Its inbox behaviour is a consequence of its disposition, not of it being a different kind of object. |
 | REQ-CAT-14 | Searching from a category-filtered Inbox preserves the filter unless the user explicitly changes it. |
 | REQ-CAT-15 | A bundle offers a one-gesture sweep: mark the whole bundle read, or archive it, without expanding it. |
-| REQ-CAT-16 | A `daily` or `weekly` bundle displays when it will next surface. Its mail is reachable at any time through the category itself; deferral governs the inbox stream, never access. |
+| REQ-CAT-16 | A `daily` or `weekly` bundle surfaces at a fixed hour the user sets (default 07:00 local, REQ-FILT-224) and displays when it will next surface. Its mail is reachable at any time through the category itself; deferral governs the inbox stream, never access. |
 
 ## Assigning and correcting
 
@@ -91,6 +91,7 @@ a lane the user has stopped checking.
 | REQ-CAT-50 | Categories, their definitions, compiled rulesets, dispositions, priority order, and named lists are per-account server state and sync across devices. A fresh suite tab reads them on bootstrap. |
 | REQ-CAT-51 | The server contract is `https://netzhansa.com/jmap/categorise` (see `../notes/server-contract.md`): the category collection with CRUD, the compile-and-preview flow, per-message provenance and trace, and re-categorisation. |
 | REQ-CAT-52 | Each category is exposed as a **virtual mailbox** so IMAP clients (Thunderbird, Apple Mail) can browse it as a folder. Membership remains a keyword — the store holds no second copy of the message and re-categorisation does not churn UIDs (ADR-0004 §3). |
+| REQ-CAT-53 | Writes from IMAP into a category folder mirror Gmail (REQ-FILT-223): copy assigns the category, move assigns it and files the message out of the inbox, expunge removes it. A category assigned from IMAP carries `user` provenance, so the Suite must render it as a user assignment and never let the classifier overwrite it. |
 
 ## Cross-references
 

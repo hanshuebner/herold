@@ -146,7 +146,7 @@ strategy mitigates.
 > is now a label, the vocabulary is user-owned state rather than an LLM-derived
 > list, the prompt textarea gives way to per-category definitions compiled into
 > rules, and the fixed tab strip gives way to a stream with bundles plus at most
-> three pinned tabs. The REQ IDs cited in this section (REQ-CAT-30, REQ-CAT-42)
+> five pinned tabs. The REQ IDs cited in this section (REQ-CAT-30, REQ-CAT-42)
 > refer to their pre-ADR-0004 meanings. Current spec:
 > `docs/design/web/requirements/05-categorisation.md`.
 

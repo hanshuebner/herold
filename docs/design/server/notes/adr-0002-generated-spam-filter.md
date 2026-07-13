@@ -1,6 +1,6 @@
 # ADR-0002: Generated spam filter -- the LLM as compiler, not as classifier
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-07-13)
 - Date: 2026-07-13
 - Area: server -- spam filtering, plugins, suite settings
 - Related requirements: REQ-FILT-01..02 (verdict shape), REQ-FILT-13 (classifier

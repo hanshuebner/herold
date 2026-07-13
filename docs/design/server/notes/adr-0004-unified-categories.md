@@ -1,6 +1,6 @@
 # ADR-0004: Unified categories -- one primitive, one disposition knob
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-07-13)
 - Date: 2026-07-13
 - Area: server -- filtering, store, JMAP; web -- suite inbox and settings
 - Related requirements: REQ-CAT-01..51 (suite categorisation), REQ-FILT-200..231
@@ -9,7 +9,8 @@
 - Scope statements in tension: G5 (LLM-first spam), G14 (LLM transparency),
   NG4 (traditional spam filtering)
 - Depends on: ADR-0002 (generated spam filter -- the LLM as compiler), ADR-0003
-  (plugins as first-class extensions). Neither is accepted yet. See "Dependencies".
+  (plugins as first-class extensions). Both accepted 2026-07-13; the three ship as
+  one project. See "Dependencies and build order".
 - Prior-art survey backing this ADR: 17 products, 53 sources. Cited inline.
 
 ## Context
@@ -125,15 +126,20 @@ A Category carries what a label carries, plus what a classifier needs:
 | `rules` | The compiled ruleset generated from `definition` (ADR-0002's DSL) |
 | `disposition` | The one knob. See below. |
 | `priority` | Position in a single user-ordered list. Breaks ties. |
-| `exclusive` | Mailpile's flag. Reserved; the default set is non-exclusive. |
 
 A category with no `definition` is exactly today's label: a name the user applies
 by hand. A category with a `definition` also fills itself. Nothing else changes.
 
+There is no exclusivity flag. Mailpile's framing (below) is what makes the merge
+legible, but the constraint it models is not one we need: `priority` already
+answers the only question exclusivity was there to answer -- which lane a
+multi-matching message shows in. An unimplemented field is a lie in the schema,
+so it is cut.
+
 ### 2. Disposition is the only knob, and it drives four things
 
 ```
-  pinned   -- its own tab. Badges. Notifies. Max 3.
+  pinned   -- its own tab. Badges. Notifies. Max 5.
   bundled  -- one collapsed row in the inbox stream, by newest member.
               Inline count. Does NOT badge the app. Does NOT push.
   daily    -- bundled, but surfaces once a day.
@@ -212,7 +218,7 @@ view shows all of it.
 order. Categories collapse to one row; they do not move elsewhere.
 
 ```
-  [Allgemein] [Hobby]              <- pinned tabs, max 3, opt-in
+  [Allgemein] [Hobby]              <- pinned tabs, max 5, opt-in
   ------------------------------------------------------------
     Torsten Bulck      Re: CC 2027            10. Juli
   > Werbung (12)                              10. Juli
@@ -221,7 +227,7 @@ order. Categories collapse to one row; they do not move elsewhere.
     Sparkasse          Kontoauszug             8. Juli
 ```
 
-Tabs are a scarce resource (max 3) that the user *promotes* a category into. The
+Tabs are a scarce resource (max 5) that the user *promotes* a category into. The
 rest bundle. Nothing is ever reachable only through a lane you stopped checking.
 
 ### 7. Visibility is a property of the surface, not of the category
@@ -339,20 +345,24 @@ shows an unread count badge when unread threads exist") is overridden by
 disposition: a bundled category deliberately does not badge, which is the entire
 point of bundling. REQ-LBL-01/03/06 gain the new fields.
 
-## Dependencies, honestly stated
+## Dependencies and build order
 
-This ADR is built on two proposals that **have not been accepted**:
+This ADR rests on two others, accepted the same day:
 
 - **ADR-0002** supplies the rule DSL, the evaluator, the feature registry, the
-  backtest-and-preview flow, and the trace. If it is rejected, section 8 collapses
-  and categorisation stays LLM-per-message; the other seven sections survive
-  intact, but "no LLM required" does not.
+  backtest-and-preview flow, and the trace. Section 8 is entirely its machinery.
 - **ADR-0003** supplies plugin installation, **plugin state**, and **plugin
   settings UI**. A category's compiled ruleset is per-principal state that a
-  plugin must be able to write, and REQ-PLUG-44 currently forbids a plugin from
-  touching the DB. Without ADR-0003 there is nowhere to keep it.
+  plugin must be able to write, and REQ-PLUG-44 forbids a plugin from touching
+  the DB. Without ADR-0003 there is nowhere to keep it.
 
-Sections 1-7 stand on their own. Section 8 does not.
+**These three ship as one project** (maintainer, 2026-07-13). Sections 1-7 could
+technically land on top of the existing per-message LLM categoriser, deferring
+section 8; that path was considered and rejected. It would put a per-message LLM
+call on the delivery path of a design built to remove it, and would need glue
+between the new Category object and the old categoriser that exists only to be
+deleted. The order is ADR-0003 (plugin state and UI), then ADR-0002 (evaluator),
+then this (Category object, virtual mailboxes, suite).
 
 ## Consequences
 
@@ -373,18 +383,45 @@ The priority list is a new thing for the user to understand. It earns its place 
 being the only place the Hobby-versus-Promotions question is answered, and by being
 answerable by reordering a list rather than by arguing with a classifier.
 
-## Open questions
+## Resolved (maintainer, 2026-07-13)
 
-- **Exclusivity.** The `exclusive` flag is specified but the default set does not
-  use it. Is there a category that should be exclusive, or does the priority list
-  make the flag dead weight we should cut?
-- **Virtual mailbox writes.** What does an IMAP `APPEND` or `COPY` into a category's
-  virtual mailbox mean? Simplest answer: it sets the keyword. Confirm.
-- **`daily` / `weekly` surfacing.** Does a deferred bundle materialise at a fixed
-  hour, or on first inbox open after the interval? Inbox by Gmail never documented
-  this.
-- **Migration.** Existing `$category-<name>` keywords are name-keyed; the Category
-  object is id-keyed. The five defaults migrate by name. What happens to a keyword
-  from a prompt the user has since edited away?
-- **Tab cap.** Three is asserted, not measured. It is defensible (Gmail 5, Outlook
-  2) but it is a guess.
+The questions this ADR opened, and how they were answered.
+
+**Exclusivity: cut.** `priority` already answers which lane a multi-matching
+message shows in, which is the only thing the flag was for. Mailpile's framing
+stays as the argument for the merge; the field does not ship.
+
+**Virtual mailbox writes: mirror Gmail.** `COPY` and `APPEND` into a category's
+virtual mailbox set that category's keyword, with `user` provenance so the
+evaluator never undoes it. `MOVE` sets the keyword *and* removes the message from
+INBOX -- which is precisely the `filed` disposition, arrived at from the other
+direction. `EXPUNGE` from a category folder clears the keyword and leaves the
+message where it is. Every IMAP user already knows these semantics from Gmail, so
+dragging a message onto "Hobby" in Thunderbird does what it looks like it does.
+
+**Deferral: a fixed hour the user sets.** A `daily` or `weekly` bundle
+materialises at a per-principal hour, defaulting to 07:00 local. Predictability is
+the entire value of batching -- the user learns when the newsletters arrive, the
+way they learn when the post does. Surfacing on first-open-after-interval would
+drift with the user's habits and never become a rhythm. The scheduler and the
+timezone both already exist for snooze.
+
+**Tab cap: five, matching Gmail.** Bundles are uncapped regardless, so the cap
+only governs how many parallel inboxes a user may opt into. Five is what arrivals
+from Gmail expect and it lets the five defaults all be tabs for a user who wants
+the old look. (This ADR originally proposed three, on the argument that a pinned
+tab is a place to forget mail and the scarcity is the point. Overruled.)
+
+**Migration: map the five defaults, drop the rest, and say so.** The five shipped
+names map onto the seeded Category objects. Any other `$category-<name>` keyword
+-- from an edited prompt, or a name the LLM invented under REQ-FILT-215's
+free-vocabulary response -- is removed. The migration **reports what it deleted**
+(names and message counts); a migration that discards user-visible state does not
+get to do it silently.
+
+## Still open
+
+- **Backtest sample** (inherited from ADR-0002): how much of the user's mail, and
+  chosen how? A biased sample makes the preview diff a lie. This bites
+  categorisation harder than spam, because a category's precision is judged
+  against mail the user has already sorted by eye.

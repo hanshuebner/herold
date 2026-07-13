@@ -154,7 +154,7 @@ itself — a natural-language `definition`, the `rules` compiled from it, a
 
   | Disposition | Inbox | Presentation | Badge | Push |
   |---|---|---|---|---|
-  | `pinned` | yes | own tab (max 3 per account) | yes | yes |
+  | `pinned` | yes | own tab (max 5 per account) | yes | yes |
   | `bundled` | yes | one collapsed row in the stream | inline count only | no |
   | `daily` | yes | bundled, surfaced once a day | inline count only | no |
   | `weekly` | yes | bundled, surfaced once a week | inline count only | no |
@@ -188,6 +188,22 @@ itself — a natural-language `definition`, the `rules` compiled from it, a
 
 - **REQ-FILT-220** "Re-categorise" re-runs the evaluator over the principal's recent mail (last N messages, configurable; default 1000) under the current rulesets. It runs as a background job with progress reporting, and it MUST NOT touch assignments whose provenance is `user` (REQ-FILT-206). Because evaluation is local and deterministic, this is a cheap operation.
 - **REQ-FILT-221** **Correction writes a rule.** When the user recategorises a message, the server persists the assignment with `user` provenance and offers to make it stick — by adding the sender, domain, or list-id to the target category's named list (ADR-0002's `lists`). Accepting writes a deterministic rule that needs no LLM call and cannot be undone by a later re-categorisation. This replaces the previous "recorded for prompt-tuning feedback" with a mechanism that actually changes the next verdict.
+
+### IMAP surface
+
+- **REQ-FILT-222** Each category is exposed to IMAP as a **virtual mailbox** backed by a saved `Email/query` on its keyword. The message is stored once; the virtual mailbox holds no copy, and re-categorisation does not allocate or burn UIDs.
+- **REQ-FILT-223** **Writes into a category's virtual mailbox mirror Gmail's semantics**, so that dragging a message onto a category folder in Thunderbird or Apple Mail does what it appears to do:
+  - `COPY` / `APPEND` into the category sets its `$category-*` keyword, with `user` provenance (REQ-FILT-206), so the evaluator never undoes it.
+  - `MOVE` sets the keyword **and** removes the message from INBOX — the `filed` disposition (REQ-FILT-204), reached from the IMAP side.
+  - `EXPUNGE` from the category clears the keyword; the message stays wherever else it lives.
+
+### Deferred bundles
+
+- **REQ-FILT-224** A `daily` or `weekly` category surfaces at a **fixed per-principal hour**, default 07:00 in the principal's timezone, user-configurable. Predictability is the value of batching: the user learns when this mail arrives. Deferral governs the inbox stream only — the mail is reachable through the category at any time, and is never withheld from search, IMAP, or the category's own view.
+
+### Migration
+
+- **REQ-FILT-225** Existing name-keyed `$category-<name>` keywords migrate to the id-keyed Category objects: the five shipped names (`primary`, `social`, `promotions`, `updates`, `forums`) map onto the seeded categories. Every other `$category-<name>` keyword — a name the user's edited prompt introduced, or one the LLM invented under the old free-vocabulary response contract — is **removed**. The migration **reports what it deleted**: each dropped name and the number of messages that carried it. A migration that discards user-visible state does not do it silently.
 
 ### Failure isolation
 

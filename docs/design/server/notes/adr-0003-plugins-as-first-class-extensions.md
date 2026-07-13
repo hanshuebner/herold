@@ -1,6 +1,6 @@
 # ADR-0003: Plugins as first-class extensions -- lifecycle, state, and UI
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-07-13)
 - Date: 2026-07-13
 - Area: server -- plugins, store, JMAP; web -- suite and admin settings
 - Related requirements: REQ-PLUG-01..06 (lifecycle), REQ-PLUG-10..13 (config),
