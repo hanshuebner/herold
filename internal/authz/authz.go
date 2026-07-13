@@ -74,6 +74,18 @@ func topLevel(kind store.GrantResourceKind) store.GrantLevel {
 	return ""
 }
 
+// DelegableLevel is the level a principal must hold on a resource of kind
+// to have authority to delegate access on it to someone else (REQ-AC-05:
+// "you may grant on a resource only at or below a level you hold with
+// authority to delegate (owner/superadmin)"; REQ-AC-68's claim-mapping-rule
+// author re-validation uses the same bar). It is topLevel exported for
+// callers outside this package (e.g. internal/protoadmin's claim-mapping
+// rule CRUD) that need to check "does the caller own/superadmin this
+// resource" without duplicating the per-kind level table.
+func DelegableLevel(kind store.GrantResourceKind) store.GrantLevel {
+	return topLevel(kind)
+}
+
 // higher returns whichever of a or b ranks higher within kind.
 func higher(kind store.GrantResourceKind, a, b store.GrantLevel) store.GrantLevel {
 	if rank(kind, b) > rank(kind, a) {
@@ -88,6 +100,15 @@ func higher(kind store.GrantResourceKind, a, b store.GrantLevel) store.GrantLeve
 func AtLeast(kind store.GrantResourceKind, got, required store.GrantLevel) bool {
 	r := rank(kind, required)
 	return r > 0 && rank(kind, got) >= r
+}
+
+// ValidLevel reports whether level is one of kind's known per-kind levels
+// (the "small fixed set of access levels per resource kind" of the REQ-AC
+// intro). The zero level and any unrecognised string are invalid for every
+// kind. Used by admin surfaces (e.g. claim-mapping rule CRUD) to reject a
+// malformed level at the API boundary rather than storing an inert rule.
+func ValidLevel(kind store.GrantResourceKind, level store.GrantLevel) bool {
+	return rank(kind, level) > 0
 }
 
 // flagSuperAdmin reports whether p carries the super-admin flag. Migration

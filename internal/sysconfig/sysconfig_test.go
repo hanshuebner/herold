@@ -2948,6 +2948,99 @@ tls = "starttls"
 	}
 }
 
+func TestParse_IdPClaimStalenessDefaults(t *testing.T) {
+	const bare = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(bare))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.IdPClaimStaleness.StalenessDays != 30 {
+		t.Errorf("default idp claim staleness_days: got %d, want 30",
+			cfg.Server.IdPClaimStaleness.StalenessDays)
+	}
+	if cfg.Server.IdPClaimStaleness.SweepIntervalSeconds != 3600 {
+		t.Errorf("default idp claim sweep_interval_seconds: got %d, want 3600",
+			cfg.Server.IdPClaimStaleness.SweepIntervalSeconds)
+	}
+}
+
+func TestValidate_IdPClaimStalenessRejectsNegativeStalenessDays(t *testing.T) {
+	// staleness_days = 0 is treated as "use default" by applyDefaults
+	// (zero-value convention); staleness_days = -1 is an explicit negative
+	// that applyDefaults leaves alone and Validate must reject.
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.idp_claim_staleness]
+staleness_days = -1
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected staleness_days floor error")
+	}
+	if !strings.Contains(err.Error(), "staleness_days") {
+		t.Errorf("error should name staleness_days, got: %v", err)
+	}
+}
+
+func TestValidate_IdPClaimStalenessRejectsLowSweepInterval(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[server.idp_claim_staleness]
+staleness_days = 30
+sweep_interval_seconds = 5
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected sweep_interval_seconds floor error")
+	}
+	if !strings.Contains(err.Error(), "sweep_interval_seconds") {
+		t.Errorf("error should name sweep_interval_seconds, got: %v", err)
+	}
+}
+
 // TestValidate_PortZeroRequiresReportFile asserts that a [[listener]] with
 // port 0 is rejected unless [server].port_report_file is also set, and that
 // setting port_report_file clears the error.

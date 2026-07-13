@@ -346,6 +346,11 @@ type ServerConfig struct {
 	// (REQ-STORE-90). Defaults match the trashretention package
 	// constants: 30 days, 1-hour sweep interval.
 	TrashRetention TrashRetentionConfig `toml:"trash_retention,omitempty"`
+	// IdPClaimStaleness configures the periodic sweep that removes
+	// "idp:<provider>" grants from principals who have stopped logging in
+	// (REQ-AC-63b). Defaults match the idpstalesweep package constants:
+	// 30-day staleness window, 1-hour sweep interval.
+	IdPClaimStaleness IdPClaimStalenessConfig `toml:"idp_claim_staleness,omitempty"`
 	// AttachmentShares configures the attachment-share feature
 	// (docs/design/server/requirements/25-attachment-shares.md
 	// REQ-SHARE-30..52). An omitted section produces a fully functional
@@ -1356,6 +1361,24 @@ type TrashRetentionConfig struct {
 	RetentionDays int `toml:"retention_days,omitempty"`
 	// SweepIntervalSeconds is the cadence at which the sweeper scans
 	// Trash mailboxes. Default 3600 (1 hour). Validate rejects values
+	// below 60 to avoid unnecessary load and above 86400 (1 day).
+	SweepIntervalSeconds int `toml:"sweep_interval_seconds,omitempty"`
+}
+
+// IdPClaimStalenessConfig tunes the idp: grant staleness sweeper
+// (REQ-AC-63b): how long a claim-mapping-derived grant survives without a
+// fresh login before it is removed, and how often the sweeper scans. The
+// defaults applied at applyDefaults match the package constants in
+// internal/idpstalesweep.
+type IdPClaimStalenessConfig struct {
+	// StalenessDays is the number of days after which an idp:<provider>
+	// grant whose last_asserted_at has not been refreshed by a login is
+	// removed. Default 30 (REQ-AC-63b: "default bounded, e.g. 30 days").
+	// Validate rejects values below 1 (cannot be zero) or above 3650
+	// (10 years is a typo).
+	StalenessDays int `toml:"staleness_days,omitempty"`
+	// SweepIntervalSeconds is the cadence at which the sweeper scans for
+	// stale idp: grants. Default 3600 (1 hour). Validate rejects values
 	// below 60 to avoid unnecessary load and above 86400 (1 day).
 	SweepIntervalSeconds int `toml:"sweep_interval_seconds,omitempty"`
 }
@@ -2542,6 +2565,15 @@ func applyDefaults(c *Config) {
 	if c.Server.TrashRetention.SweepIntervalSeconds == 0 {
 		c.Server.TrashRetention.SweepIntervalSeconds = 3600
 	}
+	// idp: grant staleness sweeper (REQ-AC-63b). Defaults mirror the
+	// idpstalesweep package constants: 30-day staleness, 1-hour sweep
+	// interval.
+	if c.Server.IdPClaimStaleness.StalenessDays == 0 {
+		c.Server.IdPClaimStaleness.StalenessDays = 30
+	}
+	if c.Server.IdPClaimStaleness.SweepIntervalSeconds == 0 {
+		c.Server.IdPClaimStaleness.SweepIntervalSeconds = 3600
+	}
 	// Client-log ingest (REQ-OPS-219). Defaults match the table in
 	// REQ-OPS-216. A missing [clientlog] block produces a fully
 	// functional configuration with the documented default values.
@@ -3055,6 +3087,25 @@ func Validate(c *Config) error {
 	if tr.SweepIntervalSeconds > 86400 {
 		return fmt.Errorf("sysconfig: [server.trash_retention] sweep_interval_seconds %d exceeds 1d ceiling",
 			tr.SweepIntervalSeconds)
+	}
+	// idp: grant staleness sweeper (REQ-AC-63b). staleness_days must be in
+	// [1, 3650]; sweep_interval_seconds in [60, 86400].
+	is := c.Server.IdPClaimStaleness
+	if is.StalenessDays < 1 {
+		return fmt.Errorf("sysconfig: [server.idp_claim_staleness] staleness_days %d must be >= 1",
+			is.StalenessDays)
+	}
+	if is.StalenessDays > 3650 {
+		return fmt.Errorf("sysconfig: [server.idp_claim_staleness] staleness_days %d exceeds 3650 (10-year) ceiling",
+			is.StalenessDays)
+	}
+	if is.SweepIntervalSeconds < 60 {
+		return fmt.Errorf("sysconfig: [server.idp_claim_staleness] sweep_interval_seconds %d below 60s floor",
+			is.SweepIntervalSeconds)
+	}
+	if is.SweepIntervalSeconds > 86400 {
+		return fmt.Errorf("sysconfig: [server.idp_claim_staleness] sweep_interval_seconds %d exceeds 1d ceiling",
+			is.SweepIntervalSeconds)
 	}
 	// Video calls (REQ-CALL-*). When the operator supplies TURN URIs
 	// they MUST also point us at the shared secret via env / file

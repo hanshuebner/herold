@@ -939,6 +939,41 @@ func RegisterArchiveretentionMetrics() {
 	})
 }
 
+// idpstalesweep metrics (epic #188, REQ-AC-63b). Same shape as
+// trashretention/archiveretention.
+var (
+	idpstalesweepMetricsOnce sync.Once
+
+	IdpstalesweepSweepsTotal          prometheus.Counter
+	IdpstalesweepGrantsRemovedTotal   prometheus.Counter
+	IdpstalesweepSweepDurationSeconds prometheus.Histogram
+)
+
+// RegisterIdpstalesweepMetrics registers the idpstalesweep collector set;
+// idempotent.
+func RegisterIdpstalesweepMetrics() {
+	idpstalesweepMetricsOnce.Do(func() {
+		IdpstalesweepSweepsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_idpstalesweep_sweeps_total",
+			Help: "Total idp: grant staleness sweep ticks executed.",
+		})
+		IdpstalesweepGrantsRemovedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herold_idpstalesweep_grants_removed_total",
+			Help: "Total idp:<provider> grants removed by the staleness sweep worker.",
+		})
+		IdpstalesweepSweepDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "herold_idpstalesweep_sweep_duration_seconds",
+			Help:    "idp: grant staleness sweep worker sweep duration.",
+			Buckets: prometheus.DefBuckets,
+		})
+		MustRegister(
+			IdpstalesweepSweepsTotal,
+			IdpstalesweepGrantsRemovedTotal,
+			IdpstalesweepSweepDurationSeconds,
+		)
+	})
+}
+
 // protojmap chat / calendars / contacts metrics. Label vocabulary is
 // closed by the registered method set in each datatype's Register*
 // constructor; methods not registered cannot be invoked, so cardinality

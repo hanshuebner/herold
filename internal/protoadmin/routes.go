@@ -192,6 +192,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/oauth2/clients/{id}", authAdmin(s.handleUpdateOAuthClient))
 	mux.HandleFunc("DELETE /api/v1/oauth2/clients/{id}", authAdmin(s.handleDeleteOAuthClient))
 
+	// External-IdP claim-to-grant mapping admin surface (epic #188,
+	// REQ-AC-60..70). authz-trusted is additionally superadmin-gated
+	// inside the handler (REQ-AC-66); allowlist and rule CRUD are
+	// admin-gated here and further narrowed to the caller's own
+	// delegable resource authority inside the handler (REQ-AC-64).
+	mux.HandleFunc("PUT /api/v1/oidc/providers/{id}/authz-trusted", authAdmin(s.handleSetOIDCProviderAuthzTrusted))
+	mux.HandleFunc("GET /api/v1/oidc/providers/{id}/claim-allowlist", authAdmin(s.handleListClaimAllowlist))
+	mux.HandleFunc("POST /api/v1/oidc/providers/{id}/claim-allowlist", authAdmin(s.handleAddClaimAllowlistEntry))
+	mux.HandleFunc("DELETE /api/v1/oidc/providers/{id}/claim-allowlist/{claim}", authAdmin(s.handleDeleteClaimAllowlistEntry))
+	mux.HandleFunc("GET /api/v1/oidc/providers/{id}/claim-mapping-rules", authAdmin(s.handleListClaimMappingRules))
+	mux.HandleFunc("POST /api/v1/oidc/providers/{id}/claim-mapping-rules", authAdmin(s.handleCreateClaimMappingRule))
+	mux.HandleFunc("DELETE /api/v1/oidc/providers/{id}/claim-mapping-rules/{rule_id}", authAdmin(s.handleDeleteClaimMappingRule))
+
 	// Diag (DNS check). Backup/restore/migrate live in a sibling file
 	// owned by the parallel agent.
 	mux.HandleFunc("GET /api/v1/diag/dns-check/{domain}", authAdmin(s.handleDiagDNSCheck))

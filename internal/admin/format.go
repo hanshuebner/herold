@@ -469,13 +469,14 @@ func writeOIDCProviderListHuman(w io.Writer, out map[string]any) error {
 		return nil
 	}
 	t := cliout.NewTable(w)
-	t.Header("ID", "NAME", "ISSUER", "CLIENT-ID", "CREATED")
+	t.Header("ID", "NAME", "ISSUER", "CLIENT-ID", "AUTHZ-TRUSTED", "CREATED")
 	for _, it := range items {
 		t.Row(
 			sval(it, "id"),
 			sval(it, "name"),
 			sval(it, "issuer"),
 			sval(it, "client_id"),
+			bval(it, "authz_trusted"),
 			tval(it, "created_at"),
 		)
 	}
@@ -490,6 +491,70 @@ func writeOIDCProviderHuman(w io.Writer, out map[string]any) error {
 		{"issuer", sval(out, "issuer")},
 		{"client_id", sval(out, "client_id")},
 		{"scopes", ssval(out, "scopes")},
+		{"authz_trusted", bval(out, "authz_trusted")},
+		{"created_at", tval(out, "created_at")},
+	})
+	return nil
+}
+
+// ---- IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) ----------------
+
+// writeClaimAllowlistHuman renders a provider's authorization-claim
+// allowlist (REQ-AC-67) as a table.
+func writeClaimAllowlistHuman(w io.Writer, out map[string]any) error {
+	items := itemsFrom(out)
+	if len(items) == 0 {
+		fmt.Fprintln(w, "(no allowlisted claims)")
+		return nil
+	}
+	t := cliout.NewTable(w)
+	t.Header("CLAIM")
+	for _, it := range items {
+		t.Row(sval(it, "claim"))
+	}
+	return t.Flush()
+}
+
+// writeClaimMappingRuleListHuman renders a provider's claim-mapping rules
+// (REQ-AC-60) as a table. ORPHANED and AUTHORITY-VALID surface REQ-AC-68's
+// "author authority re-validated at evaluation time" so an operator can
+// spot a permanently-inert rule without cross-referencing the audit log.
+func writeClaimMappingRuleListHuman(w io.Writer, out map[string]any) error {
+	items := itemsFrom(out)
+	if len(items) == 0 {
+		fmt.Fprintln(w, "(no claim-mapping rules)")
+		return nil
+	}
+	t := cliout.NewTable(w)
+	t.Header("ID", "CLAIM", "MATCH-VALUE", "RESOURCE", "LEVEL", "CREATED-BY", "ORPHANED", "AUTHORITY-VALID")
+	for _, it := range items {
+		t.Row(
+			fval(it, "id"),
+			sval(it, "claim"),
+			sval(it, "match_value"),
+			sval(it, "resource_kind")+":"+sval(it, "resource_id"),
+			sval(it, "level"),
+			fval(it, "created_by"),
+			bval(it, "orphaned"),
+			bval(it, "author_authority_valid"),
+		)
+	}
+	return t.Flush()
+}
+
+// writeClaimMappingRuleHuman renders a single claim-mapping rule record.
+func writeClaimMappingRuleHuman(w io.Writer, out map[string]any) error {
+	cliout.KV(w, [][2]string{
+		{"id", fval(out, "id")},
+		{"provider", sval(out, "provider")},
+		{"claim", sval(out, "claim")},
+		{"match_value", sval(out, "match_value")},
+		{"resource_kind", sval(out, "resource_kind")},
+		{"resource_id", sval(out, "resource_id")},
+		{"level", sval(out, "level")},
+		{"created_by", fval(out, "created_by")},
+		{"orphaned", bval(out, "orphaned")},
+		{"author_authority_valid", bval(out, "author_authority_valid")},
 		{"created_at", tval(out, "created_at")},
 	})
 	return nil

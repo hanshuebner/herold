@@ -155,9 +155,14 @@ type oidcProviderDTO struct {
 	Scopes    []string `json:"scopes"`
 	// AutoProvision / AutoProvisionDomain expose the REQ-AUTH-56
 	// first-login auto-provisioning opt-in (issue #230).
-	AutoProvision       bool      `json:"auto_provision"`
-	AutoProvisionDomain string    `json:"auto_provision_domain,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
+	AutoProvision       bool   `json:"auto_provision"`
+	AutoProvisionDomain string `json:"auto_provision_domain,omitempty"`
+	// AuthzTrusted mirrors store.OIDCProvider.AuthzTrusted (epic #188,
+	// REQ-AC-66): whether this provider's claims may be consulted by
+	// claim-mapping rules. Settable only via PUT
+	// /api/v1/oidc/providers/{id}/authz-trusted by a server:superadmin.
+	AuthzTrusted bool      `json:"authz_trusted"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 func toOIDCProviderDTO(p store.OIDCProvider) oidcProviderDTO {
@@ -169,6 +174,7 @@ func toOIDCProviderDTO(p store.OIDCProvider) oidcProviderDTO {
 		Scopes:              append([]string(nil), p.Scopes...),
 		AutoProvision:       p.AutoProvision,
 		AutoProvisionDomain: p.AutoProvisionDomain,
+		AuthzTrusted:        p.AuthzTrusted,
 		CreatedAt:           p.CreatedAt,
 	}
 }

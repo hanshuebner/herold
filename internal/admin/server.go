@@ -40,6 +40,7 @@ import (
 	"github.com/hanshuebner/herold/internal/extsubmit"
 	"github.com/hanshuebner/herold/internal/fcm"
 	"github.com/hanshuebner/herold/internal/identityverify"
+	"github.com/hanshuebner/herold/internal/idpstalesweep"
 	"github.com/hanshuebner/herold/internal/imapimport"
 	"github.com/hanshuebner/herold/internal/linkpreview"
 	"github.com/hanshuebner/herold/internal/mailarc"
@@ -1315,6 +1316,27 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	g.Go(func() error {
 		if err := archiveRetentionWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.LogAttrs(context.Background(), slog.LevelWarn, "archiveretention worker exited", slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	})
+
+	// IdP claim-mapping grant staleness sweeper (epic #188, REQ-AC-63b).
+	// Removes idp:<provider> grants whose last_asserted_at has not been
+	// refreshed by a login within the configured staleness window, so a
+	// member who stops logging in does not retain IdP-derived access
+	// indefinitely. Bounded by the lifecycle errgroup so shutdown drains
+	// it.
+	idpStaleSweepWorker := idpstalesweep.NewWorker(idpstalesweep.Options{
+		Meta:          st.Meta(),
+		Logger:        logger.With("subsystem", "idpstalesweep"),
+		Clock:         clk,
+		Staleness:     time.Duration(cfg.Server.IdPClaimStaleness.StalenessDays) * 24 * time.Hour,
+		SweepInterval: time.Duration(cfg.Server.IdPClaimStaleness.SweepIntervalSeconds) * time.Second,
+	})
+	g.Go(func() error {
+		if err := idpStaleSweepWorker.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.LogAttrs(context.Background(), slog.LevelWarn, "idpstalesweep worker exited", slog.String("err", err.Error()))
 			return err
 		}
 		return nil

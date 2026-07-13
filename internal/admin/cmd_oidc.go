@@ -150,6 +150,196 @@ func newOIDCCmd() *cobra.Command {
 	updCmd.Flags().String("client-secret-env", "", "name of the environment variable holding the new client secret")
 	prov.AddCommand(updCmd)
 
+	// External-IdP claim-to-grant mapping (epic #188, REQ-AC-60..70): the
+	// per-provider authz_trusted flag, the authorization-claim allowlist,
+	// and mapping-rule CRUD. See docs/design/server/requirements/07-access-control.md.
+	trustCmd := &cobra.Command{
+		Use:   "trust <name-or-id>",
+		Short: "flag a provider authz_trusted (superadmin only, REQ-AC-66)",
+		Long: "Claim-to-grant mapping is inert for a provider until a server:superadmin\n" +
+			"explicitly flags it authz_trusted. A provider usable for login is not\n" +
+			"thereby usable to confer grants (REQ-AC-66). Pass --untrust to revert.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			untrust, _ := cmd.Flags().GetBool("untrust")
+			body := map[string]any{"authz_trusted": !untrust}
+			var out map[string]any
+			err = client.do(cmd.Context(), "PUT", "/api/v1/oidc/providers/"+args[0]+"/authz-trusted", body, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeOIDCProviderHuman(cmd.OutOrStdout(), out)
+		},
+	}
+	trustCmd.Flags().Bool("untrust", false, "clear authz_trusted instead of setting it")
+	prov.AddCommand(trustCmd)
+
+	allowlistCmd := &cobra.Command{
+		Use:   "claim-allowlist",
+		Short: "manage a provider's authorization-claim allowlist (REQ-AC-67)",
+	}
+	c.AddCommand(allowlistCmd)
+	allowlistCmd.AddCommand(&cobra.Command{
+		Use:   "list <provider>",
+		Short: "list a provider's allowlisted claims",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "GET", "/api/v1/oidc/providers/"+args[0]+"/claim-allowlist", nil, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeClaimAllowlistHuman(cmd.OutOrStdout(), out)
+		},
+	})
+	allowlistCmd.AddCommand(&cobra.Command{
+		Use:   "add <provider> <claim>",
+		Short: "add a claim to a provider's allowlist",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			body := map[string]any{"claim": args[1]}
+			err = client.do(cmd.Context(), "POST", "/api/v1/oidc/providers/"+args[0]+"/claim-allowlist", body, nil)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "claim allowlisted: "+args[0]+" -> "+args[1])
+			return nil
+		},
+	})
+	allowlistCmd.AddCommand(&cobra.Command{
+		Use:   "remove <provider> <claim>",
+		Short: "remove a claim from a provider's allowlist",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			err = client.do(cmd.Context(), "DELETE", "/api/v1/oidc/providers/"+args[0]+"/claim-allowlist/"+args[1], nil, nil)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "claim removed from allowlist: "+args[0]+" -> "+args[1])
+			return nil
+		},
+	})
+
+	ruleCmd := &cobra.Command{
+		Use:   "claim-mapping-rule",
+		Short: "manage a provider's claim-to-grant mapping rules (REQ-AC-60)",
+	}
+	c.AddCommand(ruleCmd)
+	ruleCmd.AddCommand(&cobra.Command{
+		Use:   "list <provider>",
+		Short: "list a provider's claim-mapping rules",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "GET", "/api/v1/oidc/providers/"+args[0]+"/claim-mapping-rules", nil, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeClaimMappingRuleListHuman(cmd.OutOrStdout(), out)
+		},
+	})
+	addRuleCmd := &cobra.Command{
+		Use:   "add <provider>",
+		Short: "author a new claim-mapping rule (bounded by the caller's own delegable authority, REQ-AC-64)",
+		Long: "Adds a rule that, on a future OIDC login against <provider>, maps a claim\n" +
+			"match onto a grant. The caller must currently hold delegable authority\n" +
+			"(owner/superadmin) over the named resource -- you cannot author a rule\n" +
+			"granting access to a domain or list you do not own (REQ-AC-64). resource-kind\n" +
+			"\"server\" is always refused: server:superadmin is never IdP-derivable.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			claim, _ := cmd.Flags().GetString("claim")
+			matchValue, _ := cmd.Flags().GetString("match-value")
+			resourceKind, _ := cmd.Flags().GetString("resource-kind")
+			resourceID, _ := cmd.Flags().GetString("resource-id")
+			level, _ := cmd.Flags().GetString("level")
+			body := map[string]any{
+				"claim":         claim,
+				"match_value":   matchValue,
+				"resource_kind": resourceKind,
+				"resource_id":   resourceID,
+				"level":         level,
+			}
+			var out map[string]any
+			err = client.do(cmd.Context(), "POST", "/api/v1/oidc/providers/"+args[0]+"/claim-mapping-rules", body, &out)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			if g.jsonOut || !isTerminal(cmd.OutOrStdout()) {
+				return writeResult(cmd.OutOrStdout(), g, out)
+			}
+			return writeClaimMappingRuleHuman(cmd.OutOrStdout(), out)
+		},
+	}
+	addRuleCmd.Flags().String("claim", "", "claim name to inspect, e.g. \"groups\" (must be on the provider's allowlist)")
+	addRuleCmd.Flags().String("match-value", "", "string the claim's value must contain (array) or equal (scalar)")
+	addRuleCmd.Flags().String("resource-kind", "", "domain | list | mailbox (never server, REQ-AC-64)")
+	addRuleCmd.Flags().String("resource-id", "", "domain name / list id / mailbox id")
+	addRuleCmd.Flags().String("level", "", "grant level to confer when the rule matches, e.g. operator, owner, moderator, read, write, admin")
+	_ = addRuleCmd.MarkFlagRequired("claim")
+	_ = addRuleCmd.MarkFlagRequired("match-value")
+	_ = addRuleCmd.MarkFlagRequired("resource-kind")
+	_ = addRuleCmd.MarkFlagRequired("resource-id")
+	_ = addRuleCmd.MarkFlagRequired("level")
+	ruleCmd.AddCommand(addRuleCmd)
+	ruleCmd.AddCommand(&cobra.Command{
+		Use:   "remove <provider> <rule-id>",
+		Short: "remove a claim-mapping rule (author, a current resource-authority holder, or superadmin)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			err = client.do(cmd.Context(), "DELETE", "/api/v1/oidc/providers/"+args[0]+"/claim-mapping-rules/"+args[1], nil, nil)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "claim-mapping rule removed: "+args[1])
+			return nil
+		},
+	})
+
 	c.AddCommand(&cobra.Command{
 		Use:   "link-list <principal-email>",
 		Short: "list a principal's external OIDC link mappings",
