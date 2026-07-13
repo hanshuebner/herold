@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -578,6 +579,48 @@ func TestSessionAuth_Login_RequiresTOTPWhenEnrolled(t *testing.T) {
 	}
 	if okBody["elevation_expires_at"] == nil {
 		t.Errorf("elevation_expires_at missing/nil after TOTP-gated login: %v", okBody)
+	}
+}
+
+// TestSessionAuth_Login_MissingAndWrongCode_ResponsesAreIdentical asserts
+// the full-body form of the anti-oracle property REQ-AUTH-JSON-LOGIN
+// requires only at the "type" level: a caller who omits totp_code and a
+// caller who submits a wrong one receive byte-for-byte identical JSON
+// bodies (every key, not just "type"). An earlier version of this fix
+// claimed this property in a code comment while shipping two different
+// "title" strings ("TOTP code required" vs "TOTP code is invalid or
+// expired"), which a verifier caught by comparing full bodies -- this test
+// exists so that gap cannot silently reopen.
+func TestSessionAuth_Login_MissingAndWrongCode_ResponsesAreIdentical(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _ := sh.bootstrapWithPassword("totp-login-identical-body@example.com")
+
+	pid, err := sh.dir.Authenticate(context.Background(), email, password)
+	if err != nil {
+		t.Fatalf("Authenticate (get pid): %v", err)
+	}
+	secret, _, err := sh.dir.EnrollTOTP(context.Background(), pid)
+	if err != nil {
+		t.Fatalf("EnrollTOTP: %v", err)
+	}
+	enrollCode, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+	if err := sh.dir.ConfirmTOTP(context.Background(), pid, enrollCode); err != nil {
+		t.Fatalf("ConfirmTOTP: %v", err)
+	}
+	sh.clk.Advance(time.Second)
+
+	missingStatus, missingBody := sh.doLogin(email, password, nil)
+	wrongStatus, wrongBody := sh.doLogin(email, password, map[string]any{"totp_code": "000000"})
+
+	if missingStatus != http.StatusUnauthorized || wrongStatus != http.StatusUnauthorized {
+		t.Fatalf("status codes: missing=%d wrong=%d, want both 401", missingStatus, wrongStatus)
+	}
+	if !reflect.DeepEqual(missingBody, wrongBody) {
+		t.Errorf("missing-code and wrong-code response bodies differ:\nmissing=%#v\nwrong=  %#v", missingBody, wrongBody)
 	}
 }
 

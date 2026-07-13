@@ -243,24 +243,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// TOTP gate (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228): a
 	// TOTP-enrolled principal must present a valid code before a session
 	// is issued -- a stolen password alone must not yield a usable mail
-	// session. Absent and incorrect codes both surface as the identical
-	// step_up_required 401 (same type, same body shape) so a caller
-	// cannot distinguish "no code supplied" from "wrong code supplied"
-	// from the response alone. This mirrors the check IssueDeviceToken and
-	// IssueAuthorizationCode perform via directory.VerifyTOTP -- the same
-	// primitive, the same rate-limit bucket -- so all three credential-
-	// exchange paths hold an enrolled principal to identical strength.
-	// A principal with no TOTP enrolled is unaffected: TOTPCode is not
-	// consulted and login proceeds on password alone, exactly as before.
+	// session. Absent and incorrect codes both call writeLoginStepUpRequired
+	// with byte-for-byte the same title/detail/extras, so the two 401
+	// response bodies are genuinely identical (pinned by
+	// TestSessionAuth_Login_MissingAndWrongCode_ResponsesAreIdentical) --
+	// not just matching on "type" as REQ-AUTH-JSON-LOGIN requires. This
+	// mirrors the check IssueDeviceToken and IssueAuthorizationCode perform
+	// via directory.VerifyTOTP -- the same primitive, the same rate-limit
+	// bucket -- so all three credential-exchange paths hold an enrolled
+	// principal to identical strength. A principal with no TOTP enrolled is
+	// unaffected: TOTPCode is not consulted and login proceeds on password
+	// alone, exactly as before.
 	loginElevated := false
 	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		if req.TOTPCode == "" {
 			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.login_totp_required",
 				"activity", observe.ActivityAudit, "principal_id", uint64(pid))
 			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code required")
-			writeProblemWithExtras(w, r, http.StatusUnauthorized,
-				"step_up_required", "TOTP code required", "",
-				map[string]any{"step_up_required": true})
+			writeLoginStepUpRequired(w, r)
 			return
 		}
 		if verr := s.dir.VerifyTOTP(ctx, pid, req.TOTPCode); verr != nil {
@@ -275,9 +275,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.login_totp_invalid",
 				"activity", observe.ActivityAudit, "principal_id", uint64(pid))
 			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code invalid")
-			writeProblemWithExtras(w, r, http.StatusUnauthorized,
-				"step_up_required", "TOTP code is invalid or expired", "",
-				map[string]any{"step_up_required": true})
+			writeLoginStepUpRequired(w, r)
 			return
 		}
 		loginElevated = true
@@ -399,6 +397,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
 		ElevationExpiresAt:  elevationExpiresAt,
 	})
+}
+
+// writeLoginStepUpRequired writes the 401 step_up_required problem body for
+// POST /api/v1/auth/login. It is the SOLE call site for both the
+// missing-totp_code and the wrong-totp_code branches of handleLogin's TOTP
+// gate, so the two responses are byte-for-byte identical (same type, title,
+// status, and step_up_required extra) -- a caller cannot distinguish "no
+// code supplied" from "wrong code supplied" from the response alone. Tested
+// by TestSessionAuth_Login_MissingAndWrongCode_ResponsesAreIdentical.
+func writeLoginStepUpRequired(w http.ResponseWriter, r *http.Request) {
+	writeProblemWithExtras(w, r, http.StatusUnauthorized,
+		"step_up_required", "TOTP code required", "",
+		map[string]any{"step_up_required": true})
 }
 
 // authMeResponse is the JSON body returned by GET /api/v1/auth/me.

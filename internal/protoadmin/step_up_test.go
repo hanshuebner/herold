@@ -156,6 +156,107 @@ func TestStepUp_NonAdmin_Returns403(t *testing.T) {
 	}
 }
 
+// TestStepUp_NonAdminWithTOTP_LoginElevatesButAdminRouteStill403 is a
+// regression guard for issue #228: a TOTP-gated login now creates an
+// elevation record for ANY TOTP-enrolled principal, admin or not
+// (REQ-AUTH-74(a)) -- previously only an admin could ever reach a live
+// elevation record, since step-up itself refused non-admins before
+// touching the elevations table. requireElevation (auth.go) checks
+// PrincipalFlagAdmin BEFORE it ever consults the elevation record, so a
+// non-admin's login-time elevation must stay inert for admin-gated routes.
+// This is exactly the kind of property that could silently regress into a
+// privilege escalation if that check were ever reordered or dropped, so it
+// is pinned here rather than only exercised live in a browser.
+func TestStepUp_NonAdminWithTOTP_LoginElevatesButAdminRouteStill403(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+
+	// Bootstrap an admin to get an API key for creating + enrolling TOTP on
+	// the non-admin principal (requireSelfOrAdmin permits an admin to act
+	// on another principal's TOTP enrollment).
+	_, _, adminKey := sh.bootstrapWithPassword("stepup-nonadmin-totp-admin@example.com")
+
+	const nonAdminEmail = "stepup-nonadmin-totp@example.com"
+	const nonAdminPass = "hunter2hunter2hunter2"
+	res, raw := sh.doRequest("POST", "/api/v1/principals", adminKey, map[string]any{
+		"email":    nonAdminEmail,
+		"password": nonAdminPass,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create non-admin principal: status=%d body=%s", res.StatusCode, raw)
+	}
+	var created struct {
+		ID uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal created principal: %v body=%s", err, raw)
+	}
+
+	enrollRes, enrollRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/enroll", created.ID), adminKey, nil)
+	if enrollRes.StatusCode != http.StatusOK {
+		t.Fatalf("totp/enroll: status=%d body=%s", enrollRes.StatusCode, enrollRaw)
+	}
+	var enrollBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(enrollRaw, &enrollBody); err != nil {
+		t.Fatalf("unmarshal enroll: %v body=%s", err, enrollRaw)
+	}
+	enrollCode, err := otpGenerateCode(enrollBody.Secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (enroll): %v", err)
+	}
+	confirmRes, confirmRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/confirm", created.ID), adminKey,
+		map[string]any{"code": enrollCode})
+	if confirmRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("totp/confirm: status=%d body=%s", confirmRes.StatusCode, confirmRaw)
+	}
+	sh.clk.Advance(time.Second)
+
+	// Log in as the non-admin principal, with the required TOTP code, on a
+	// fresh cookie jar. This creates an elevation record (REQ-AUTH-74(a)).
+	jar, _ := cookiejar.New(nil)
+	sh.cookieJar = jar
+	sh.cookieJarClient.Jar = jar
+	loginCode, err := otpGenerateCode(enrollBody.Secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	loginStatus, loginBody := sh.doLogin(nonAdminEmail, nonAdminPass, map[string]any{"totp_code": loginCode})
+	if loginStatus != http.StatusOK {
+		t.Fatalf("non-admin TOTP login: status=%d body=%v, want 200", loginStatus, loginBody)
+	}
+	// Confirm the login itself created an elevation -- otherwise this test
+	// would not be exercising the property it claims to guard.
+	if loginBody["elevation_expires_at"] == nil {
+		t.Fatalf("non-admin login: elevation_expires_at missing/nil (expected an elevation record): %v", loginBody)
+	}
+
+	// Whoami must not report the admin role.
+	_, whoRaw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
+	var who map[string]any
+	_ = json.Unmarshal(whoRaw, &who)
+	for _, role := range who["roles"].([]interface{}) {
+		if role == "admin" {
+			t.Fatalf("non-admin whoami reports admin role: %v", who["roles"])
+		}
+	}
+
+	// Despite the active elevation, an admin-gated route must still 403 --
+	// with the "not an admin" denial, not a step_up_required one.
+	sc2, raw2 := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
+	if sc2 != http.StatusForbidden {
+		t.Fatalf("non-admin GET /api/v1/principals despite active elevation: status=%d body=%s, want 403", sc2, raw2)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(raw2, &body)
+	if body["step_up_required"] == true {
+		t.Errorf("non-admin 403 must be the admin-flag denial, not step_up_required: %v", body)
+	}
+}
+
 // TestStepUp_NoCSRF_Returns403 asserts that step-up without an X-CSRF-Token
 // returns 403 (CSRF gate fires inside requireAuth, REQ-AUTH-CSRF).
 func TestStepUp_NoCSRF_Returns403(t *testing.T) {
