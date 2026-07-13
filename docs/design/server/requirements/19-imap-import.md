@@ -288,6 +288,15 @@ channel a first-class, user-visible label and defines the removal flow.)*
 | REQ-IMAP-IMP-104 | **Keep semantics.** With `delete_imported_mail = false` the imported mail stays in place. The provenance label is retained as an ordinary user label (the account is gone, but the user can still browse / rename / delete the label themselves). The account configuration, sealed credential, folder cursors, and `imapimport_message_state` rows are removed. |
 | REQ-IMAP-IMP-105 | The removal flow (both keep and purge) is **idempotent and crash-safe**: it is performed in the store transaction that deletes the account, or as a resumable post-delete sweep keyed on the (now-detached) provenance label, so a herold restart mid-purge completes the purge rather than orphaning half-deleted mail. |
 
+## Migration into a separated sub-account
+
+An imported identity MAY be separated into its own sub-account (`02-identity-and-auth.md` § Sub-accounts), at which point the mail it already brought into the shared inbox moves with it. `imapimport_message_state` attributes every ingested message to the account that ingested it, so the move is exact rather than heuristic.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-IMAP-IMP-106 | Separating an import account (REQ-SUBACCT-09) migrates the mail it ingested into the new sub-account: for each message tracked in the account's `imapimport_message_state`, the message's mailbox memberships are reparented into the sub-account's Mailbox tree, and the provenance label of REQ-IMAP-IMP-100 becomes that tree's root. A message also claimed by another source (native delivery, a second import account) is **copied** into the sub-account and retains its membership in the parent account, on the dedup-safe principle of REQ-IMAP-IMP-103 — separation never destroys a message that arrived through a channel other than this one. |
+| REQ-IMAP-IMP-107 | The migration is **idempotent and crash-safe**, as a resumable sweep keyed on the account's `message_state` rows: a herold restart mid-migration completes it. At no point is a message absent from both accounts, and on completion no message tracked solely by this account remains in the parent account. Newly-arrived mail for a separated account is ingested directly into the sub-account and never lands in the parent. |
+
 ## Operator surface
 
 | ID | Requirement |

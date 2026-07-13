@@ -48,7 +48,7 @@ These are spec-only for now — implementation lands when the sibling app does.
 
 - **NG1.** Native iOS / Android applications. **Mobile and tablet web is in scope as a first-class experience** (`requirements/24-mobile-and-touch.md`) — installable as a PWA, full responsive layout, full touch interaction model, browser-level push notifications (`requirements/25-push-notifications.md`). Native apps remain out: the PWA + Web Push delivers app-icon, standalone-window, and notification UX without a native build pipeline.
 - **NG2.** Offline mode. No service-worker cache, no IndexedDB outbox, no operating-while-disconnected. Reconnect-and-resync is the resilience model.
-- **NG3.** Multi-account UI. v1 binds to one JMAP Account; account switching is not a feature.
+- **NG3.** ~~Multi-account UI.~~ **In scope** (`requirements/02-mail-basics.md` § Sub-accounts): a principal's mail MAY be split across several JMAP accounts — a separated local identity, or a deferred external mail account — and the suite carries a scope switcher between them plus a combined view across all of them.
 - **NG4.** Delegation, shared mailboxes, admin / multi-user views.
 - **NG5.** S/MIME and PGP — encryption, signing, key management. Out for v1; revisit only if the user changes their mail-handling pattern.
 - **NG6.** **Within the suite:** calendar and contacts *management* (creating events, editing the address book) live in the sibling apps the calendar app and the contacts app, not in mail. **Always out of the Suite scope:** video conferencing, generic file storage, ad-hoc note-taking. Mail-side integration with iMIP and with the contacts data is in scope and lives under "Cross-app integration points" above.

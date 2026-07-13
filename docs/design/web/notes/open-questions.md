@@ -9,10 +9,13 @@ The Resolved log at the bottom records decisions (with date) so the trail is sea
 | # | Question | Affects | Status |
 |---|----------|---------|--------|
 | 6 | What threshold makes an action a P0 keyboard shortcut? | `requirements/10-keyboard.md` | Open until first capture lands. Default in `notes/capture-integration.md`: count ≥ 10 AND ≥ 50% keyboard. |
-| 8 | Multi-account: confirmed out for v1 only, or out forever? | `00-scope.md` NG3 | Revisit later. Tentative: out for v1 only. |
 | 10 | Plain-text vs HTML compose default | `requirements/02-mail-basics.md` REQ-MAIL-16 | Open until capture |
 
 ## Resolved
+
+### 2026-07-13
+
+- **R8 (was Q8) — Multi-account.** In scope. A principal's mail MAY be split across several JMAP accounts, each a **sub-account**: its own Mailbox tree, Identity set, Sieve scripts, and state strings, modelled server-side as a sub-principal owned by the parent principal. Two features consume it — a separated local identity (an imported or secondary address kept out of the shared inbox) and a deferred external mail account — differing only in transport. The suite carries a combined view across accounts plus a scope switcher into each. The substrate is specified against both transports at once, so external accounts add a transport rather than a second account model. Affects `00-scope.md` NG3, `requirements/02-mail-basics.md` § Sub-accounts (REQ-MAIL-SUB-01..09), `../server/requirements/02-identity-and-auth.md` § Sub-accounts (REQ-SUBACCT-01..11), `../server/requirements/19-imap-import.md` REQ-IMAP-IMP-106/107.
 
 ### 2026-04-25
 

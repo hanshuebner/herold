@@ -9,7 +9,8 @@ A **principal** is the subject of authentication and authorization. Three kinds:
 | **Individual** | A human account. Has one or more email addresses, one password credential, optional 2FA, optional OAuth-linked identities. |
 | **Group** | A set of individual principals. Addressable (mail to the group fans out to members). Not authenticatable. |
 | **Admin** | A principal with administrative permissions. Can be an individual with an admin role, not a separate object type. |
-- **REQ-AUTH-01** Every email address in the system resolves to exactly one principal (individual or group). No floating addresses.
+| **Sub-principal** | A mail container owned by an individual principal, carrying its own Mailbox tree, Identity set, Sieve scripts, and JMAP state strings. Addressable. Not authenticatable. Backs the sub-account model (§ Sub-accounts). |
+- **REQ-AUTH-01** Every email address in the system resolves to exactly one principal (individual, group, or sub-principal). No floating addresses.
 - **REQ-AUTH-02** An individual principal MAY have multiple addresses: one canonical + N aliases. Aliases MAY be on different domains.
 - **REQ-AUTH-03** A principal MAY have a catch-all address per domain (e.g. `*@example.com`), but only if the principal also owns the domain. Limit one catch-all per domain.
 - **REQ-AUTH-04** Principal names (login handles) are case-insensitive ASCII. Internal IDs are opaque (UUID or 64-bit snowflake).
@@ -291,11 +292,31 @@ resend_daily_cap = 5
 
 When the broader "external mail accounts" feature lands (next section), Identities created by this v1 flow continue to live on the local JMAP account. External accounts add their own JMAP-account-scoped Identities orthogonally; no migration of v1 Identities is required. The user MAY end up with overlapping Identities (e.g. `hans@gmail.com` on both the local account via this flow + the deferred external Gmail account); the deferred feature is responsible for surfacing the overlap to the user, not for collapsing the rows.
 
+## Sub-accounts
+
+A principal's mail MAY be split across more than one JMAP account. Two features want this: a **separated local identity** (an imported or secondary address the user keeps out of the shared inbox) and an **external mail account** (a mirrored Gmail or Microsoft 365 mailbox, § External transport identities). Both are the same object — a sub-account — and differ only in transport.
+
+A sub-account is a **sub-principal**. Mailbox trees, Identity sets, Sieve scripts, and JMAP state strings are already keyed by principal, so a sub-principal carries its own by construction, and the session's existing secondary-account surface (REQ-PROTO-33, built for shared mailboxes) already knows how to advertise an account the caller does not own.
+
+Web-side counterpart: `../../web/requirements/02-mail-basics.md` § Sub-accounts: separated identities.
+
+- **REQ-SUBACCT-01** A sub-account is a principal owned by exactly one individual principal (its **parent**). It carries its own Mailbox tree, Identity set, Sieve scripts, and JMAP state strings.
+- **REQ-SUBACCT-02** A sub-principal is not authenticatable. No credential may be set on it, and it is rejected on every auth path: session-cookie login, device token, the OAuth2 authorization-code grant, IMAP, SMTP submission, and ManageSieve. A user reaches their sub-accounts only by authenticating as the parent.
+- **REQ-SUBACCT-03** The JMAP session descriptor enumerates each of the caller's sub-accounts in `accounts` (RFC 8620 §2), each with its own `accountCapabilities` and its own state-string namespace. `primaryAccounts` continues to name the parent's own account.
+- **REQ-SUBACCT-04** Isolation. Mailboxes, Threads, Emails, and Identities never cross a JMAP-account boundary. A query scoped to the parent account never returns a sub-account's mail, and vice versa; the two accounts' state strings advance independently.
+- **REQ-SUBACCT-05** Quota. A sub-account's mail counts against its parent's quota. A principal cannot enlarge its storage allowance by separating an identity.
+- **REQ-SUBACCT-06** Admin surface. Sub-principals are not users: they do not appear in admin principal lists or user counts, and are surfaced as sub-accounts of their parent. Deleting the parent deletes its sub-accounts and their mail.
+- **REQ-SUBACCT-07** Transport. Each sub-account has an inbound and an outbound transport. Inbound is local delivery, IMAP import (`19-imap-import.md`), or an external IMAP mirror (REQ-AUTH-EXT-04). Outbound is herold's queue or an external SMTP endpoint (REQ-AUTH-EXT-SUBMIT-*). One account model serves all of them; a new transport does not add a new account model.
+- **REQ-SUBACCT-08** Outbound transport is a property of the Identity and separation a property of the account, and the two compose without interaction: an Identity moved into a sub-account keeps whatever external-submission config it carries.
+- **REQ-SUBACCT-09** Promotion. Separating an existing Identity creates a sub-principal, moves that Identity into it, and migrates the mail already attributed to that Identity into the new account (REQ-IMAP-IMP-106). Promotion is idempotent and crash-safe: a restart mid-migration completes it rather than stranding mail across two accounts.
+- **REQ-SUBACCT-10** Removal. Deleting a sub-account carries an explicit keep-or-purge choice for its mail, on the model of REQ-IMAP-IMP-102: keep moves the mail back to the parent account, purge destroys it. Neither path modifies an external server's mailbox.
+- **REQ-SUBACCT-11** Capability gating. Sub-account support is advertised as `https://netzhansa.com/jmap/sub-accounts` at the JMAP session level. Absent the capability, a client surfaces no account switcher and no separation affordance.
+
 ## External transport identities (deferred)
 
 *(Added 2026-04-29: scopes a future "external mail accounts" feature where a herold principal aggregates one or more external IMAP+SMTP accounts. Spec-only; not scheduled for v1 implementation. Web-side counterpart: `../../web/requirements/02-mail-basics.md` § External mail accounts.)*
 
-The model: an individual principal MAY associate one or more **external mail accounts** with their local principal. Each external account contributes its own JMAP account to the principal's session (RFC 8620 §2), with its own Mailbox tree, Identity set, state strings, and Sieve script. The local principal remains primary — authentication, password, 2FA, and admin authority are unaffected by external accounts.
+The model: an individual principal MAY associate one or more **external mail accounts** with their local principal. Each external account is a sub-account (§ Sub-accounts) whose inbound transport is an external IMAP mirror and whose outbound transport is an external SMTP endpoint. It contributes its own JMAP account to the principal's session (RFC 8620 §2), with its own Mailbox tree, Identity set, state strings, and Sieve script. The local principal remains primary — authentication, password, 2FA, and admin authority are unaffected by external accounts.
 
 External accounts are orthogonal to OIDC federation (REQ-AUTH-50+): OIDC federates *authentication* (an external IdP can log the user in to herold), while external accounts federate *transport* (herold acts as a client to an external mail server on the user's behalf). A user MAY use both in any combination.
 
