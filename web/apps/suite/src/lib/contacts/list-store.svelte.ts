@@ -321,6 +321,12 @@ class ContactsListStore {
    * destroyed rows from the list and the selection set immediately rather
    * than waiting for the Contact/changes sync round-trip. Returns the ids
    * that could not be destroyed (empty on full success).
+   *
+   * If the destroy empties the visible window, re-runs the list query
+   * (re #222) rather than leaving the view on a spliced-to-empty `rows`
+   * array while the server still holds further matching pages -- the
+   * contacts counterpart of the mail store's bulk-empty-refresh fix
+   * (re #148).
    */
   async bulkDelete(ids: string[]): Promise<string[]> {
     if (ids.length === 0) return [];
@@ -344,9 +350,27 @@ class ContactsListStore {
       const nextSelected = new Set(this.selectedIds);
       for (const id of destroyed) nextSelected.delete(id);
       this.selectedIds = nextSelected;
+      this.#refillIfEmptied();
     }
 
     return failed;
+  }
+
+  /**
+   * Re-run the list query from the first page if a bulk delete just
+   * emptied the visible window while the list is still loaded. The window
+   * model has no discrete "page" state -- `rows` is always a growing slice
+   * starting at position 0 -- so re-querying from scratch both backfills
+   * the view and never strands the user on an out-of-range position, even
+   * when the destroy emptied the last loaded page. Fire-and-forget, like
+   * the mail store's #refreshFolderIfEmptied (re #148, re #222).
+   */
+  #refillIfEmptied(): void {
+    if (this.rows.length === 0 && this.status === 'ready') {
+      void this.#reload().catch((err) => {
+        console.warn('contacts list refresh after bulk-empty failed', err);
+      });
+    }
   }
 
   #accountId(): string | null {
