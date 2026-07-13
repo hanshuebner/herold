@@ -707,6 +707,49 @@ describe('sanitizeHtml — script/style filters', () => {
   });
 });
 
+describe('sanitizeHtml — lone half of color/background-color pair (issue #231)', () => {
+  it('strips a lone background-color so it does not collide with the iframe theme text color', () => {
+    const html = '<span style="font-size:12.8px;background-color:rgb(26,17,17)">text</span>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('background-color');
+    // The unrelated declaration is preserved.
+    expect(body).toContain('font-size:12.8px');
+  });
+
+  it('strips a lone color so it does not collide with the iframe theme background', () => {
+    const html = '<span style="color:rgb(240,240,240)">text</span>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('color:rgb(240,240,240)');
+  });
+
+  it('keeps a fully-specified color/background-color pair intact', () => {
+    const html = '<span style="color:#ffffff;background-color:#000000">text</span>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('color:#ffffff');
+    expect(body).toContain('background-color:#000000');
+  });
+
+  it('removes the style attribute entirely when it held only the lone half', () => {
+    const html = '<span style="background-color:rgb(26,17,17)">text</span>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('style=');
+  });
+
+  it('does not confuse background-color with color when only background-color is set', () => {
+    // Regression guard: a naive substring check for "color:" would also
+    // match "background-color:" and incorrectly report both halves present.
+    const html = '<p style="background-color: rgb(26,17,17);">para</p>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('background-color');
+  });
+
+  it('leaves elements with no color declarations untouched', () => {
+    const html = '<p style="font-weight:bold">text</p>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('font-weight:bold');
+  });
+});
+
 describe('sanitizeHtml — iframe body sizing (issue #158)', () => {
   it('establishes a block formatting context on <body> so a trailing element\'s default UA margin (e.g. a <p>) does not collapse through and disappear from body.scrollHeight, clipping the last line', () => {
     const out = sanitizeHtml('<p>Liebe Gruesse,<br>Hans</p>', { loadImages: false });

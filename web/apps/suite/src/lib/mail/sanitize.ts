@@ -123,6 +123,12 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
     rewriteImage(img, options);
   }
 
+  // Strip a lone half of an inline color/background-color pair (issue #231):
+  // an element that declares only one of the two inherits the other from
+  // the iframe's own theme, which can collide (sender's dark background +
+  // Herold's dark-mode text color, or the mirror case in light mode).
+  sanitizeInlineColorPairs(fragment);
+
   // Wrap quoted-history regions (blockquote / gmail_quote / Apple-style
   // attribution divs) in <details>. Only the first quoted region per
   // body is wrapped — nested replies inside a quote stay nested.
@@ -422,6 +428,63 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   img.setAttribute('src', `/proxy/image?url=${encodeURIComponent(src)}`);
   img.setAttribute('referrerpolicy', 'no-referrer');
   img.setAttribute('loading', 'lazy');
+}
+
+/**
+ * Split an inline style attribute value into individual declarations.
+ * A plain split on ";" is sufficient here: sender inline styles are text
+ * data (never executed), and the color/background-color values this
+ * function inspects (keywords, #hex, rgb()/rgba()/hsl()) do not contain
+ * semicolons, so no CSS-value-aware parser is needed.
+ */
+function splitStyleDeclarations(style: string): string[] {
+  return style
+    .split(';')
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0);
+}
+
+/**
+ * Honour a sender's inline `color` / `background-color` declaration only
+ * when BOTH halves of the pair are present on the same element. When only
+ * one half is declared, the sender did not fully specify a foreground/
+ * background pair — leaving the other half to inherit from the reading
+ * pane's own theme (`wrapInIframeDocument`'s light/dark body color) can
+ * produce a combination the sender never intended and never saw, including
+ * unreadable near-invisible text (issue #231). Stripping the lone half
+ * makes the element fall back to Herold's own paired foreground and
+ * background, which are always mutually legible in both themes.
+ *
+ * An element that declares both halves is left untouched: that is a
+ * complete, self-consistent pair the sender chose deliberately, and
+ * removing either half would break intentional styling (e.g. a callout
+ * box with light text on a dark brand color).
+ *
+ * Because CSS `color`/`background-color` are inherited/painted per
+ * element, not merged across ancestors, checking each styled element in
+ * isolation is sufficient to close the reported collision: the failure
+ * mode is one element's declared half meeting the iframe body's inherited
+ * half, not two different elements' halves meeting each other.
+ */
+function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
+  for (const el of fragment.querySelectorAll<HTMLElement>('[style]')) {
+    const style = el.getAttribute('style');
+    if (!style) continue;
+    const declarations = splitStyleDeclarations(style);
+    const hasColor = declarations.some((d) => /^color\s*:/i.test(d));
+    const hasBackground = declarations.some((d) => /^background-color\s*:/i.test(d));
+    if (hasColor === hasBackground) continue; // both present or neither — leave as-is.
+    const kept = declarations.filter((d) => {
+      if (hasColor && /^color\s*:/i.test(d)) return false;
+      if (hasBackground && /^background-color\s*:/i.test(d)) return false;
+      return true;
+    });
+    if (kept.length > 0) {
+      el.setAttribute('style', kept.join('; '));
+    } else {
+      el.removeAttribute('style');
+    }
+  }
 }
 
 /**
