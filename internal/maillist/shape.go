@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -232,15 +233,69 @@ func SizeExceeds(msgSize int64, ml store.MailingList, deploymentDefault int64) b
 	return msgSize > limit
 }
 
+// bounceTag is the fixed "+bounce" marker shared by both the S1
+// list-wide bounce address (BounceAddress) and the S2 per-member VERP
+// address (VERPBounceAddress): the S2 shape is exactly the S1 shape
+// with "-<token>" inserted before "@", so recognising an inbound VERP
+// bounce address (ParseVERPBounceLocalPart) only has to look for this
+// one marker.
+const bounceTag = "+bounce"
+
+// bounceTokenSep separates bounceTag from the per-member token in a
+// VERP bounce local-part: "<list>+bounce-<token>".
+const bounceTokenSep = "-"
+
 // BounceAddress computes the S1 envelope MAIL FROM for a list's
 // fan-out copies (REQ-MLIST-22): a fixed, list-wide address with a
 // "+bounce" suffix on the posting address's local-part. It has no
-// per-member attribution. Stage 2's VERP token (REQ-MLIST-50,
-// "<list>+bounce-<hmac(member_id)>@<domain>") extends this exact prefix
-// with a per-member HMAC suffix, so the later change only adds a
-// suffix here rather than restructuring the envelope-sender seam.
+// per-member attribution. Stage 2 callers with a TokenSigner wired use
+// VERPBounceAddress instead, which extends this exact prefix with a
+// per-member token suffix (REQ-MLIST-50).
 func BounceAddress(ml store.MailingList) string {
-	return listLocalPart(ml) + "+bounce@" + ml.Domain
+	return listLocalPart(ml) + bounceTag + "@" + ml.Domain
+}
+
+// VERPBounceAddress computes the REQ-MLIST-50 per-member envelope MAIL
+// FROM: "<list>+bounce-<token>@<domain>", where token authenticates
+// (ml.ID, memberID) via ts.Sign with TokenPurposeVERP and no expiry (see
+// TokenSigner.Sign's doc comment for why a VERP token never expires).
+func VERPBounceAddress(ts *TokenSigner, ml store.MailingList, memberID store.MailingListMemberID) (string, error) {
+	token, err := ts.Sign(TokenPurposeVERP, ml.ID, memberID, time.Time{})
+	if err != nil {
+		return "", fmt.Errorf("maillist: verp bounce address: %w", err)
+	}
+	return listLocalPart(ml) + bounceTag + bounceTokenSep + token + "@" + ml.Domain, nil
+}
+
+// ParseVERPBounceLocalPart recognises the "<list-local-part>+bounce-<token>"
+// shape of a VERP bounce local-part (REQ-MLIST-51's inbound-routing
+// seam) and splits it into the list's own local-part (base -- rejoin
+// with the recipient domain and look up via
+// store.GetMailingListByPostingAddress) and the opaque per-member
+// token. ok is false when localPart does not carry the
+// bounceTag+bounceTokenSep marker at all: an ordinary address,
+// including the plain S1 "<list>+bounce" address with no token suffix,
+// which is not a VERP address and is left to the normal resolution
+// chain.
+//
+// This recognises the SHAPE only; the token itself is opaque here and
+// unverified -- verification happens once, in the bounce processor
+// (TokenSigner.Verify), so a forged or expired token still reaches the
+// normal RCPT-accept path and is dropped without attribution later
+// (REQ-MLIST-52), rather than distinguishing "malformed shape" from
+// "bad token" at RCPT time.
+func ParseVERPBounceLocalPart(localPart string) (base, token string, ok bool) {
+	marker := bounceTag + bounceTokenSep
+	i := strings.Index(localPart, marker)
+	if i < 0 {
+		return "", "", false
+	}
+	base = localPart[:i]
+	token = localPart[i+len(marker):]
+	if base == "" || token == "" {
+		return "", "", false
+	}
+	return base, token, true
 }
 
 // buildPrependedHeaders renders the REQ-MLIST-20/24 headers a fan-out

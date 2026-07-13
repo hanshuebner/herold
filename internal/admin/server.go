@@ -653,7 +653,27 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	mlistKeyMgr := keymgmt.NewManager(st.Meta(), logger.With("subsystem", "maillist-arc"), clk, nil)
 	mlistSealer := mailarc.NewSealer(mlistKeyMgr, nil, logger.With("subsystem", "maillist-arc"))
 	mlistExpander := maillist.NewExpander(st.Meta(), outboundQ, mlistSealer, clk, logger.With("subsystem", "maillist"))
+
+	// VERP bounce tokens (Stage 2, REQ-MLIST-50/51/52, issue #184).
+	// Loaded independently of the external-submission/IMAP-import data-
+	// key loads below (each guards its own feature's boot-time
+	// availability): a missing/unresolvable data_key_ref degrades to
+	// the S1 list-wide bounce address (logged loudly by Expander) rather
+	// than failing boot, since a dev/test instance may not have
+	// configured secrets yet.
+	var mlistTokenSigner *maillist.TokenSigner
+	if dk, dkErr := secrets.LoadDataKey(cfg.Server.Secrets); dkErr != nil {
+		logger.Warn("maillist: data key not available; VERP bounce tokens disabled (falling back to the S1 list-wide bounce address)",
+			slog.String("subsystem", "maillist"),
+			slog.String("err", dkErr.Error()))
+	} else {
+		mlistTokenSigner = maillist.NewTokenSigner(dk)
+	}
+	mlistExpander.TokenSigner = mlistTokenSigner
 	smtpServer.SetMailingListExpander(mlistExpander)
+
+	mlistBounceProcessor := maillist.NewBounceProcessor(st.Meta(), mlistTokenSigner, clk, logger.With("subsystem", "maillist-bounce"))
+	smtpServer.SetMailingListBounceProcessor(mlistBounceProcessor)
 
 	// Webhook dispatcher (Phase 3 Wave 3.5c-Z + Track A/C). Constructs
 	// a process-local signing key for fetch URLs; persistent rotation

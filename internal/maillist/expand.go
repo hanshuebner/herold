@@ -43,8 +43,16 @@ type Expander struct {
 	// worse failure, but the degradation must never be silent (REQ-MLIST-21,
 	// issue #183).
 	Sealer Sealer
-	Clock  clock.Clock
-	Logger *slog.Logger
+	// TokenSigner mints the REQ-MLIST-50 per-member VERP envelope MAIL
+	// FROM. May be nil (e.g. no deployment data key configured yet, or a
+	// test that does not exercise VERP): Expand then falls back to the
+	// S1 list-wide BounceAddress and logs a loud ERROR once per Expand
+	// call, matching the Sealer-nil degrade-not-drop posture above --
+	// dropping the post would be the worse failure, but a deployment
+	// running without VERP attribution must be impossible to miss.
+	TokenSigner *TokenSigner
+	Clock       clock.Clock
+	Logger      *slog.Logger
 }
 
 // unsealedOutcome is the fan-out-metric outcome label recorded when
@@ -186,7 +194,11 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 		}
 	}
 
-	mailFrom := BounceAddress(ml)
+	if e.TokenSigner == nil {
+		e.Logger.ErrorContext(ctx, "maillist: no TokenSigner wired; fanning out with the S1 list-wide bounce address instead of a per-member VERP token",
+			slog.String("activity", observe.ActivitySystem),
+			slog.String("list", listLabel))
+	}
 	memberCount := 0
 	err := store.StreamActiveEachMembers(ctx, e.Meta, ml.ID, func(m store.MailingListMember) error {
 		addr, aerr := e.memberAddress(ctx, m)
@@ -196,6 +208,15 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 				slog.String("list", listLabel),
 				slog.Uint64("member_id", uint64(m.ID)),
 				slog.String("err", aerr.Error()))
+			return nil
+		}
+		mailFrom, mfErr := e.bounceMailFrom(ml, m.ID)
+		if mfErr != nil {
+			e.Logger.WarnContext(ctx, "maillist: skip member; verp token sign failed",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("list", listLabel),
+				slog.Uint64("member_id", uint64(m.ID)),
+				slog.String("err", mfErr.Error()))
 			return nil
 		}
 		if _, serr := e.Submitter.Submit(ctx, queue.Submission{
@@ -250,6 +271,17 @@ func (e *Expander) memberAddress(ctx context.Context, m store.MailingListMember)
 		return p.CanonicalEmail, nil
 	}
 	return "", fmt.Errorf("member %d has neither external address nor principal id", m.ID)
+}
+
+// bounceMailFrom computes one fan-out copy's envelope MAIL FROM
+// (REQ-MLIST-22/50): the per-member VERP token address when a
+// TokenSigner is wired (Stage 2), falling back to the S1 list-wide
+// BounceAddress otherwise.
+func (e *Expander) bounceMailFrom(ml store.MailingList, memberID store.MailingListMemberID) (string, error) {
+	if e.TokenSigner == nil {
+		return BounceAddress(ml), nil
+	}
+	return VERPBounceAddress(e.TokenSigner, ml, memberID)
 }
 
 // audit records a loop/abuse-guard drop (REQ-MLIST-30: "dropped with an

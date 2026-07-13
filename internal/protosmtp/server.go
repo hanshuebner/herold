@@ -198,6 +198,7 @@ type Server struct {
 	subQueue      SubmissionQueue
 	webhookDisp   WebhookDispatcher
 	mlistExpander MailingListExpander
+	mlistBounce   MailingListBounceProcessor
 	// extImg is the operator policy for inbound HTML external-image
 	// internalization (17-external-images.md). Zero value means
 	// passthrough (no rewrite). Read on every inbound message; SIGHUP
@@ -414,6 +415,17 @@ func (s *Server) SetWebhookDispatcher(d WebhookDispatcher) {
 // listeners bind.
 func (s *Server) SetMailingListExpander(e MailingListExpander) {
 	s.mlistExpander = e
+}
+
+// SetMailingListBounceProcessor installs the mailing-list VERP bounce
+// handle (REQ-MLIST-51/52, issue #184). nil is permitted and collapses
+// a RCPT TO that matched a VERP bounce-address shape to "accept and
+// drop, logged" -- see expandMailingListBounce.
+//
+// Concurrency: same shape as SetBouncePoster; operators set this before
+// listeners bind.
+func (s *Server) SetMailingListBounceProcessor(p MailingListBounceProcessor) {
+	s.mlistBounce = p
 }
 
 // HandleConn drives one already-accepted connection through the SMTP

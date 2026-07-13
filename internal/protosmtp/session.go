@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/sasl"
 	"github.com/hanshuebner/herold/internal/srs"
@@ -163,6 +164,23 @@ type rcptEntry struct {
 	// active/each roster via internal/maillist instead of local mailbox
 	// delivery or forwarding.
 	mailingList *store.MailingList
+	// mailingListBounce is set when this recipient's address matched a
+	// hosted list's VERP bounce-address SHAPE ("<list>+bounce-<token>@
+	// <domain>", REQ-MLIST-50/51, issue #184) via
+	// maillist.ParseVERPBounceLocalPart. Only the shape and the naming
+	// list are resolved at RCPT time; the token itself is unverified
+	// until DATA-finish. principalID stays 0; DATA-time dispatch hands
+	// the accepted message to the bounce processor instead of local
+	// mailbox delivery, list expansion, or forwarding.
+	mailingListBounce *mailingListBounceTarget
+}
+
+// mailingListBounceTarget carries the RCPT-time-resolved list and the
+// unverified per-member token for one VERP-bounce-addressed recipient
+// (rcptEntry.mailingListBounce).
+type mailingListBounceTarget struct {
+	List  store.MailingList
+	Token string
 }
 
 // runSession is invoked by Server.Serve for each accepted connection.
@@ -752,6 +770,29 @@ func (sess *session) cmdRCPT(rest string) bool {
 	} else if !errors.Is(mlErr, store.ErrNotFound) {
 		sess.writeReply("451 4.3.0 directory lookup failed")
 		return false
+	}
+
+	// REQ-MLIST-51, issue #184: the exact posting-address lookup above
+	// found no list (the overwhelming common case); check whether this
+	// recipient is instead a VERP bounce address for a hosted list
+	// ("<list>+bounce-<token>@<domain>", REQ-MLIST-50). Only the SHAPE
+	// is recognised here -- which list's posting-address prefix
+	// matches -- not the token itself; verification happens once, at
+	// DATA-finish, in maillist's bounce processor (REQ-MLIST-52's
+	// fail-closed contract covers a forged/expired token there, not
+	// here, matching how a DSN is always accepted and only classified
+	// once it is fully received).
+	if base, token, shaped := maillist.ParseVERPBounceLocalPart(local); shaped {
+		if ml, mlErr := sess.srv.store.Meta().GetMailingListByPostingAddress(sess.ctx, base+"@"+domain); mlErr == nil {
+			entry.mailingListBounce = &mailingListBounceTarget{List: ml, Token: token}
+			sess.envelope.rcpts = append(sess.envelope.rcpts, entry)
+			sess.st = stateRecipients
+			sess.writeReply("250 2.1.5 recipient ok")
+			return false
+		} else if !errors.Is(mlErr, store.ErrNotFound) {
+			sess.writeReply("451 4.3.0 directory lookup failed")
+			return false
+		}
 	}
 
 	// REQ-DIR-RCPT-12: the resolve_rcpt hook is inbound-only. Submission

@@ -41,6 +41,17 @@ type MailingListExpander interface {
 	Expand(ctx context.Context, in maillist.ExpandInput) (maillist.ExpandResult, error)
 }
 
+// MailingListBounceProcessor is the seam between the SMTP DATA-phase
+// loop and internal/maillist's bounce processor (REQ-MLIST-51/52, issue
+// #184). When a RCPT TO matched a hosted list's VERP bounce-address
+// shape (rcptEntry.mailingListBounce), DATA-finish calls ProcessBounce
+// instead of local mailbox delivery, list expansion, or forwarding; the
+// token verification, DSN parsing, and classification all live in
+// internal/maillist / internal/dsn, not here.
+type MailingListBounceProcessor interface {
+	ProcessBounce(ctx context.Context, in maillist.BounceInput) (maillist.BounceResult, error)
+}
+
 // SyntheticDispatch carries the per-message inputs for a synthetic-
 // recipient webhook delivery.  It mirrors protowebhook.SyntheticDispatch
 // without importing protowebhook here; the protosmtp ↔ protowebhook

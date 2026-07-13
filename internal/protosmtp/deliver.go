@@ -232,6 +232,17 @@ func (sess *session) finishMessageWithBlob(
 		messageID = id
 	}
 	for _, rc := range sess.envelope.rcpts {
+		if rc.mailingListBounce != nil {
+			// REQ-MLIST-50..52, issue #184: this recipient matched a
+			// hosted list's VERP bounce-address shape. No local mailbox
+			// insert, no list expansion, no forwarding -- the accepted
+			// message (expected to be a DSN) is handed to the bounce
+			// processor, which verifies the token and classifies the
+			// failure.
+			sess.expandMailingListBounce(ctx, rc, finalBytes)
+			anyOK = true
+			continue
+		}
 		if rc.mailingList != nil {
 			// REQ-MLIST-10..12/20..24/30..32, issue #183: this recipient
 			// is a hosted mailing list's posting_address. Expansion is

@@ -3,6 +3,7 @@ package maillist_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/maillist"
 	"github.com/hanshuebner/herold/internal/store"
@@ -39,6 +40,58 @@ func TestListIdentifier(t *testing.T) {
 func TestBounceAddress(t *testing.T) {
 	if got, want := maillist.BounceAddress(testList()), "announce+bounce@example.test"; got != want {
 		t.Fatalf("BounceAddress = %q, want %q", got, want)
+	}
+}
+
+// TestVERPBounceAddress_ShapeAndRoundTrip exercises REQ-MLIST-50's
+// address shape and that the embedded token round-trips through
+// ParseVERPBounceLocalPart + TokenSigner.Verify back to the list and
+// member it was minted for.
+func TestVERPBounceAddress_ShapeAndRoundTrip(t *testing.T) {
+	ml := testList()
+	ts := maillist.NewTokenSigner(testDataKey())
+	addr, err := maillist.VERPBounceAddress(ts, ml, 42)
+	if err != nil {
+		t.Fatalf("VERPBounceAddress: %v", err)
+	}
+	if !strings.HasPrefix(addr, "announce+bounce-") {
+		t.Fatalf("VERPBounceAddress = %q, want prefix \"announce+bounce-\"", addr)
+	}
+	if !strings.HasSuffix(addr, "@example.test") {
+		t.Fatalf("VERPBounceAddress = %q, want suffix \"@example.test\"", addr)
+	}
+
+	local := strings.TrimSuffix(addr, "@example.test")
+	base, token, ok := maillist.ParseVERPBounceLocalPart(local)
+	if !ok {
+		t.Fatalf("ParseVERPBounceLocalPart(%q) did not recognise the VERP shape", local)
+	}
+	if base != "announce" {
+		t.Fatalf("ParseVERPBounceLocalPart base = %q, want \"announce\"", base)
+	}
+	memberID, err := ts.Verify(maillist.TokenPurposeVERP, ml.ID, token, time.Now())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if memberID != 42 {
+		t.Fatalf("Verify member id = %d, want 42", memberID)
+	}
+}
+
+// TestParseVERPBounceLocalPart_OrdinaryAddressesNotMatched exercises the
+// negative cases: the plain S1 bounce address (no token suffix) and
+// ordinary local-parts must not be recognised as a VERP shape.
+func TestParseVERPBounceLocalPart_OrdinaryAddressesNotMatched(t *testing.T) {
+	cases := []string{
+		"announce",
+		"announce+bounce", // S1 shape, no token
+		"alice+something", // unrelated sub-addressing
+		"",
+	}
+	for _, lp := range cases {
+		if _, _, ok := maillist.ParseVERPBounceLocalPart(lp); ok {
+			t.Errorf("ParseVERPBounceLocalPart(%q) = ok, want not recognised", lp)
+		}
 	}
 }
 

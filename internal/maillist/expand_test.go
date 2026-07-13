@@ -714,3 +714,101 @@ func TestExpand_EmptyRoster(t *testing.T) {
 		t.Fatalf("empty roster should fan out to nobody without error: %+v", res)
 	}
 }
+
+// TestExpand_VERPMailFrom exercises REQ-MLIST-50: with a TokenSigner
+// wired, every fan-out copy's envelope MAIL FROM is a per-member VERP
+// token address, and each token verifies back to exactly the member it
+// was sent to (never to any other member on the roster).
+func TestExpand_VERPMailFrom(t *testing.T) {
+	runOnBothBackends(t, func(t *testing.T, st store.Store) {
+		ml := mustInsertList(t, st, "list@example.test", false)
+		m1 := mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+		m2 := mustAddExternalMember(t, st, ml.ID, "b@example.net", store.MailingListMemberActive)
+
+		ts := maillist.NewTokenSigner([]byte("0123456789abcdef0123456789abcdef"))
+		sub := &fakeSubmitter{}
+		exp := maillist.NewExpander(st.Meta(), sub, nil, clock.NewFake(time.Now()), discardLogger())
+		exp.TokenSigner = ts
+		res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+			List:   ml,
+			Parsed: mustParse(t, testMessage),
+			Raw:    []byte(testMessage),
+		})
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if res.MemberCount != 2 {
+			t.Fatalf("MemberCount = %d, want 2", res.MemberCount)
+		}
+
+		byRecipient := map[string]store.MailingListMemberID{
+			"a@example.net": m1.ID,
+			"b@example.net": m2.ID,
+		}
+		calls := sub.Calls()
+		if len(calls) != 2 {
+			t.Fatalf("Submit calls = %d, want 2", len(calls))
+		}
+		seen := map[store.MailingListMemberID]bool{}
+		for _, c := range calls {
+			if len(c.Recipients) != 1 {
+				t.Fatalf("Recipients = %v, want exactly one", c.Recipients)
+			}
+			wantMember, ok := byRecipient[c.Recipients[0]]
+			if !ok {
+				t.Fatalf("unexpected recipient %q", c.Recipients[0])
+			}
+			if !strings.HasPrefix(c.MailFrom, "list+bounce-") || !strings.HasSuffix(c.MailFrom, "@example.test") {
+				t.Fatalf("MailFrom for %s = %q, want the REQ-MLIST-50 VERP shape", c.Recipients[0], c.MailFrom)
+			}
+			local := strings.TrimSuffix(c.MailFrom, "@example.test")
+			_, token, ok := maillist.ParseVERPBounceLocalPart(local)
+			if !ok {
+				t.Fatalf("MailFrom %q for %s does not parse as a VERP bounce local-part", c.MailFrom, c.Recipients[0])
+			}
+			gotMember, verr := ts.Verify(maillist.TokenPurposeVERP, ml.ID, token, time.Now())
+			if verr != nil {
+				t.Fatalf("Verify token for %s: %v", c.Recipients[0], verr)
+			}
+			if gotMember != wantMember {
+				t.Fatalf("MailFrom for %s verified to member %d, want %d", c.Recipients[0], gotMember, wantMember)
+			}
+			seen[gotMember] = true
+		}
+		if len(seen) != 2 {
+			t.Fatalf("expected two distinct member attributions, got %v", seen)
+		}
+	})
+}
+
+// TestExpand_NoTokenSigner_FallsBackToS1BounceAddress verifies that
+// without a TokenSigner wired, Expand still fans out (never drops the
+// post) using the S1 list-wide bounce address, and logs the
+// degradation loudly rather than silently.
+func TestExpand_NoTokenSigner_FallsBackToS1BounceAddress(t *testing.T) {
+	st := openSQLiteStore(t)
+	ml := mustInsertList(t, st, "list@example.test", false)
+	mustAddExternalMember(t, st, ml.ID, "a@example.net", store.MailingListMemberActive)
+
+	logger, logbuf := captureLogger()
+	sub := &fakeSubmitter{}
+	exp := maillist.NewExpander(st.Meta(), sub, nil, clock.NewFake(time.Now()), logger)
+	res, err := exp.Expand(context.Background(), maillist.ExpandInput{
+		List:   ml,
+		Parsed: mustParse(t, testMessage),
+		Raw:    []byte(testMessage),
+	})
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if res.Dropped || res.MemberCount != 1 {
+		t.Fatalf("result = %+v, want one delivered copy", res)
+	}
+	calls := sub.Calls()
+	if len(calls) != 1 || calls[0].MailFrom != "list+bounce@example.test" {
+		t.Fatalf("MailFrom = %+v, want the S1 list-wide bounce address", calls)
+	}
+	if !strings.Contains(logbuf.String(), "level=ERROR") || !strings.Contains(logbuf.String(), "no TokenSigner wired") {
+		t.Errorf("no loud ERROR log for the missing TokenSigner; got:\n%s", logbuf.String())
+	}
+}
