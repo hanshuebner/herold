@@ -107,6 +107,10 @@ the **public** listener (not the admin listener), guarded only by signed tokens:
 - `GET/POST /lists/{list}/confirm?token=...` -> `pending` -> `active`.
 - One-click `List-Unsubscribe` POST (RFC 8058, REQ-MLIST-57) and
   `POST /lists/{list}/unsubscribe` -> `unsubscribed`.
+- `GET` on the same `List-Unsubscribe` token URL -> the subscriber self-service
+  management page (REQ-MLIST-58): membership view, unsubscribe, and re-subscribe
+  routed through the double-opt-in path. GET is safe by construction because
+  MUAs prefetch it (REQ-MLIST-58/59).
 
 Tokens are HMAC-signed with a bounded TTL; no session is required, which is what
 lets an MUA's one-click button and link-prefetch work. These share the token

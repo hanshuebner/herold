@@ -42,7 +42,7 @@ header contract are chosen once, but each is delivered independently.
 | Stage | Scope |
 |----|----|
 | **S1 (v1)** | Static admin-maintained roster; fan-out with `List-*` headers, ARC-seal, optional subject tag, loop protection; admin CRUD (REST/CLI/UI). No posting policy, no bounce automation, no self-subscribe, no archive mailbox. |
-| **S2** | VERP return-path; bounce ingestion, classification, per-member scoring, monitorable auto-suspend; `List-Unsubscribe` + RFC 8058 one-click generation and token endpoint. |
+| **S2** | VERP return-path; bounce ingestion, classification, per-member scoring, monitorable auto-suspend; `List-Unsubscribe` + RFC 8058 one-click generation and token endpoint; token-authorised subscriber self-service management page. |
 | **S3** | Self-subscription with double opt-in and per-list subscription gating. |
 | **S4** | One list-owned archive mailbox; `nomail` (non-delivery) membership; ACL read grants; read-only IMAP/JMAP/Suite access for members. |
 | **Later** | Moderation (held posts + owner approval) with UI — the maintainer's designated **v2** milestone; optional conditional From-munge fallback. |
@@ -118,6 +118,19 @@ header contract are chosen once, but each is delivered independently.
 |----|-------------|
 | REQ-MLIST-56 | When a list enables unsubscribe, each fanned-out copy MUST carry `List-Unsubscribe` (a herold-hosted HTTPS token URL, and optionally a `mailto:`), plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click` per RFC 8058. This is the producer end of `../../web/requirements/14-unsubscribe.md`. |
 | REQ-MLIST-57 | A one-click unsubscribe POST to the token URL MUST unsubscribe the addressed member (set `unsubscribed`) without requiring an authenticated session, validating the signed token only. GET on the same URL renders a minimal confirmation page for MUA previews that fetch the link. |
+
+### Subscriber self-service management
+
+A subscriber on a hosted list is usually an external address with no herold
+account, so their management surface is authorised by a signed token rather than
+a session. The page is reached by header alone: the message body is never
+rewritten to carry a per-member footer, which keeps the shared blob deduped
+(REQ-MLIST-11) and leaves the poster's DKIM signature intact (REQ-MLIST-21).
+
+| ID | Requirement |
+|----|-------------|
+| REQ-MLIST-58 | GET on the signed `List-Unsubscribe` token URL (REQ-MLIST-57) MUST render a self-service management page for the addressed member, showing the list, the subscribed address, and the membership state, and offering unsubscribe and — where the list's subscription policy permits — re-subscribe. No session is required; the member-scoped token is HMAC-signed with a bounded TTL and shares the token machinery of the VERP bounce tokens (REQ-MLIST-50) and one-click unsubscribe (REQ-MLIST-56). GET remains safe: MUAs prefetch it, so it renders and never mutates membership. |
+| REQ-MLIST-59 | The management page carries exactly the authority of the token that opened it: it acts on the addressed member of the addressed list only, and MUST NOT enumerate or act on any other member or list. Re-subscribe from the page follows the double-opt-in confirmation path (REQ-MLIST-63), so a leaked or forwarded token restores delivery only after the address itself confirms. |
 
 ## Stage 3 — Self-subscription
 
