@@ -18,6 +18,8 @@
   import PrincipalDetailView from './views/PrincipalDetailView.svelte';
   import DomainsView from './views/DomainsView.svelte';
   import DomainDetailView from './views/DomainDetailView.svelte';
+  import MailingListsView from './views/MailingListsView.svelte';
+  import MailingListDetailView from './views/MailingListDetailView.svelte';
   import QueueView from './views/QueueView.svelte';
   import QueueItemView from './views/QueueItemView.svelte';
   import AuditView from './views/AuditView.svelte';
@@ -44,6 +46,11 @@
     key: 'g o',
     description: t('shortcuts.goDomains'),
     action: () => router.navigate('/domains'),
+  });
+  keyboard.registerGlobal({
+    key: 'g m',
+    description: t('shortcuts.goLists'),
+    action: () => router.navigate('/lists'),
   });
   keyboard.registerGlobal({
     key: 'g q',
@@ -202,6 +209,13 @@
       ? (router.parts[1] ?? null)
       : null,
   );
+
+  /** The mailing list ID segment for /lists/:id routes. */
+  const mlistId = $derived(
+    router.matches('lists') && router.parts.length >= 2
+      ? (router.parts[1] ?? null)
+      : null,
+  );
 </script>
 
 <style>
@@ -286,6 +300,10 @@
       <DomainDetailView name={domainName} />
     {:else if router.matches('domains')}
       <DomainsView />
+    {:else if router.matches('lists') && mlistId !== null}
+      <MailingListDetailView id={mlistId} />
+    {:else if router.matches('lists')}
+      <MailingListsView />
     {:else if router.matches('queue') && queueId !== null}
       <QueueItemView id={queueId} />
     {:else if router.matches('queue')}
