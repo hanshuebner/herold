@@ -47,9 +47,9 @@ import (
 func TestRoles_Login_AdminPrincipal(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("roles-login-admin@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("roles-login-admin@example.com")
 
-	code, body := sh.doLogin(email, password, nil)
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: status=%d body=%v", code, body)
 	}
@@ -97,9 +97,9 @@ func TestRoles_Login_EndUserPrincipal(t *testing.T) {
 func TestRoles_Whoami_AdminPrincipal(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("roles-whoami-admin@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("roles-whoami-admin@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	code, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
@@ -156,12 +156,10 @@ func TestRoles_ServerStatus_HasAdminRole(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("roles-status@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	// A TOTP-gated login already elevates (REQ-AUTH-74(a), issue #228); no
+	// separate step-up is needed before the admin-gated server/status call.
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
-	}
-	sh.clk.Advance(time.Second)
-	if sc, _ := sh.doStepUp(secret); sc != http.StatusOK {
-		t.Fatalf("step-up: status=%d", sc)
 	}
 
 	code, raw := sh.doWithCookie("GET", "/api/v1/server/status", nil, "")
@@ -179,6 +177,16 @@ func TestRoles_ServerStatus_HasAdminRole(t *testing.T) {
 // -------------------------------------------------------------------------
 // PART B: self-service elevation gate helpers
 // -------------------------------------------------------------------------
+
+// defaultElevationTTL mirrors protoadmin's unset-ElevationTTL default
+// (server.go: opts.ElevationTTL defaults to 15m). None of this file's
+// harnesses override it. A TOTP-gated login now creates an initial
+// elevation record (REQ-AUTH-74(a), issue #228), so a test that wants to
+// exercise the self-service gate's "no active elevation" branch must let
+// that login-time elevation lapse first by advancing the clock past this
+// TTL -- the same way a real elevation naturally expires during ordinary
+// day-to-day use of a still-valid session.
+const defaultElevationTTL = 15 * time.Minute
 
 // assertSelfServiceElevation is the shared checker: it verifies that the
 // response body carries step_up_required=true and elevation_scope=self-service.
@@ -210,11 +218,15 @@ func assertSelfServiceElevation(t *testing.T, status int, raw []byte) {
 func TestSelfServiceElevation_APIKey_TOTPNoElevation_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("sse-apikey-noelev@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-apikey-noelev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	// The TOTP-gated login above already elevated the session
+	// (REQ-AUTH-74(a)); let that elevation lapse so this test can exercise
+	// the "no active elevation" branch of the self-service gate.
+	sh.clk.Advance(defaultElevationTTL + time.Minute)
 
 	// Look up admin principal ID from whoami.
 	_, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
@@ -236,7 +248,9 @@ func TestSelfServiceElevation_APIKey_AfterStepUp_Succeeds(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-apikey-elev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	// The TOTP-gated login already creates an elevation (REQ-AUTH-74(a));
+	// the explicit step-up refreshes it and still exercises the endpoint.
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	sh.clk.Advance(time.Second)
@@ -322,11 +336,14 @@ func TestSelfServiceElevation_APIKey_Bearer_Succeeds(t *testing.T) {
 func TestSelfServiceElevation_Password_TOTPNoElevation_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("sse-pw-noelev@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-pw-noelev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	// Let the login-time elevation (REQ-AUTH-74(a)) lapse so this test can
+	// exercise the "no active elevation" branch of the self-service gate.
+	sh.clk.Advance(defaultElevationTTL + time.Minute)
 
 	_, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
 	var who map[string]any
@@ -348,7 +365,7 @@ func TestSelfServiceElevation_Password_AfterStepUp_Succeeds(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-pw-elev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	sh.clk.Advance(time.Second)
@@ -406,11 +423,14 @@ func TestSelfServiceElevation_Password_NoTOTP_Succeeds(t *testing.T) {
 func TestSelfServiceElevation_TOTPDisable_TOTPNoElevation_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("sse-totp-dis-noelev@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-totp-dis-noelev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	// Let the login-time elevation (REQ-AUTH-74(a)) lapse so this test can
+	// exercise the "no active elevation" branch of the self-service gate.
+	sh.clk.Advance(defaultElevationTTL + time.Minute)
 
 	_, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
 	var who map[string]any
@@ -431,7 +451,7 @@ func TestSelfServiceElevation_TOTPDisable_AfterStepUp_Succeeds(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-totp-dis-elev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	sh.clk.Advance(time.Second)
@@ -530,9 +550,9 @@ func submissionPutBody() map[string]any {
 func TestSelfServiceElevation_Submission_TOTPEnrolled_NoElevation_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarnessForSubmission(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("sse-sub-noelev@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-sub-noelev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 
@@ -570,7 +590,7 @@ func TestSelfServiceElevation_Submission_AfterStepUp_Succeeds(t *testing.T) {
 	sh := newSessionHarnessForSubmission(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("sse-sub-elev@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	sh.clk.Advance(time.Second)

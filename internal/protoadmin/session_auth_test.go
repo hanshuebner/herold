@@ -130,21 +130,32 @@ func (sh *sessionHarness) bootstrapAdminAndEnrollTOTP(email string) (string, str
 	if err := sh.dir.ConfirmTOTP(ctx, pid, code); err != nil {
 		sh.t.Fatalf("ConfirmTOTP: %v", err)
 	}
-	// Advance one second so the next code generated for login is a
-	// different time-step than the enrollment code (avoids the
-	// directory's anti-replay window).
+	// Advance one second so the next code generated for login is a fresh
+	// time-step rather than the one just used for enrollment. The
+	// directory's TOTP verifier has no anti-replay tracking (issue #228
+	// analysis), so this isn't strictly required for correctness today,
+	// but it keeps every test independent of that gap.
 	sh.clk.Advance(time.Second)
 	return em, pw, key, secret
 }
 
-// doLoginWithTOTP is retained for compatibility with tests written before the
-// step-up model. The totp_code field is now ignored at login (REQ-AUTH-JSON-LOGIN,
-// REQ-AUTH-SCOPE-03, issue #79); login only accepts {email, password}. The
-// function still generates a TOTP code so callers can later reuse the secret
-// via doStepUp without re-generating.
+// doLoginWithTOTP posts {email, password, totp_code} to /api/v1/auth/login,
+// generating totp_code from totpSecret at the harness's current clock
+// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228: TOTP is evaluated at login
+// for an enrolled principal). extra is merged in after totp_code so a
+// caller can override it (e.g. to submit a deliberately wrong code) or add
+// unrelated fields.
 func (sh *sessionHarness) doLoginWithTOTP(email, password, totpSecret string, extra map[string]any) (int, map[string]any) {
 	sh.t.Helper()
-	return sh.doLogin(email, password, extra)
+	code, err := otpGenerateCode(totpSecret, sh.clk.Now())
+	if err != nil {
+		sh.t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	body := map[string]any{"totp_code": code}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return sh.doLogin(email, password, body)
 }
 
 // doStepUp posts to POST /api/v1/auth/step-up with a fresh TOTP code and
@@ -297,9 +308,9 @@ func TestSessionAuth_BearerOnlyStillWorks(t *testing.T) {
 func TestSessionAuth_Login_SetsCookiesAndReturnsScopes(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("login-scope@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("login-scope@example.com")
 
-	code, body := sh.doLogin(email, password, nil)
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: status=%d body=%v", code, body)
 	}
@@ -335,9 +346,9 @@ func TestSessionAuth_Login_SetsCookiesAndReturnsScopes(t *testing.T) {
 func TestSessionAuth_CookieGET_NoCSRF_Succeeds(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("cookie-get@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("cookie-get@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -356,9 +367,9 @@ func TestSessionAuth_CookieGET_NoCSRF_Succeeds(t *testing.T) {
 func TestSessionAuth_CookiePOST_WithoutCSRF_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("no-csrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("no-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -380,7 +391,7 @@ func TestSessionAuth_CookiePOST_WithCSRF_Succeeds(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("with-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -405,9 +416,9 @@ func TestSessionAuth_CookiePOST_WithCSRF_Succeeds(t *testing.T) {
 func TestSessionAuth_CookiePOST_CSRFMismatch_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("csrf-mismatch@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("csrf-mismatch@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -426,9 +437,9 @@ func TestSessionAuth_CookiePOST_CSRFMismatch_Returns403(t *testing.T) {
 func TestSessionAuth_GetWithExtraCSRF_OK(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("extra-csrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("extra-csrf@example.com")
 
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -448,10 +459,10 @@ func TestSessionAuth_GetWithExtraCSRF_OK(t *testing.T) {
 func TestSessionAuth_Logout_ClearsCookiesThenReturns401(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("logout-user@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("logout-user@example.com")
 
 	// Login.
-	code, _ := sh.doLogin(email, password, nil)
+	code, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -496,14 +507,16 @@ func TestSessionAuth_Login_BadCredentials_Returns401(t *testing.T) {
 	}
 }
 
-// TestSessionAuth_Login_TotpFieldIgnored asserts that the totp_code field is
-// completely ignored at login (REQ-AUTH-JSON-LOGIN, issue #79). A TOTP-enrolled
-// principal can log in with email+password only; TOTP is evaluated separately at
-// POST /api/v1/auth/step-up.
-func TestSessionAuth_Login_TotpFieldIgnored(t *testing.T) {
+// TestSessionAuth_Login_RequiresTOTPWhenEnrolled asserts the core property of
+// issue #228: a TOTP-enrolled principal cannot obtain a session on password
+// alone. Missing and wrong codes both refuse the session with the identical
+// step_up_required 401 shape (no oracle distinguishing "no code" from "wrong
+// code"); the correct code succeeds and elevation_expires_at is populated
+// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, REQ-AUTH-74(a)).
+func TestSessionAuth_Login_RequiresTOTPWhenEnrolled(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _ := sh.bootstrapWithPassword("totp-login-ignored@example.com")
+	email, password, _ := sh.bootstrapWithPassword("totp-login-required@example.com")
 
 	// Enroll TOTP.
 	pid, err := sh.dir.Authenticate(context.Background(), email, password)
@@ -521,21 +534,82 @@ func TestSessionAuth_Login_TotpFieldIgnored(t *testing.T) {
 	if err := sh.dir.ConfirmTOTP(context.Background(), pid, enrollCode); err != nil {
 		t.Fatalf("ConfirmTOTP: %v", err)
 	}
+	sh.clk.Advance(time.Second)
 
-	// Login without a totp_code field: must succeed.
-	loginCode, loginBody := sh.doLogin(email, password, nil)
-	if loginCode != http.StatusOK {
-		t.Fatalf("login without totp_code: status=%d body=%v, want 200", loginCode, loginBody)
+	// 1. No totp_code field: refused, no session.
+	missingCode, missingBody := sh.doLogin(email, password, nil)
+	if missingCode != http.StatusUnauthorized {
+		t.Fatalf("login without totp_code: status=%d body=%v, want 401", missingCode, missingBody)
+	}
+	if missingBody["step_up_required"] != true {
+		t.Errorf("missing-code response step_up_required=%v, want true: %v", missingBody["step_up_required"], missingBody)
+	}
+	if sh.sessionCookiePresent() {
+		t.Fatal("session cookie set after login without totp_code")
+	}
+
+	// 2. Wrong totp_code: refused, no session, identical response shape to (1).
+	wrongCode, wrongBody := sh.doLogin(email, password, map[string]any{"totp_code": "000000"})
+	if wrongCode != http.StatusUnauthorized {
+		t.Fatalf("login with wrong totp_code: status=%d body=%v, want 401", wrongCode, wrongBody)
+	}
+	if wrongBody["step_up_required"] != true {
+		t.Errorf("wrong-code response step_up_required=%v, want true: %v", wrongBody["step_up_required"], wrongBody)
+	}
+	if wrongBody["type"] != missingBody["type"] {
+		t.Errorf("wrong-code type=%v differs from missing-code type=%v; both must be indistinguishable", wrongBody["type"], missingBody["type"])
+	}
+	if sh.sessionCookiePresent() {
+		t.Fatal("session cookie set after login with wrong totp_code")
+	}
+
+	// 3. Correct totp_code: succeeds, session issued, elevation created
+	// immediately (REQ-AUTH-74(a)).
+	code, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	okCode, okBody := sh.doLogin(email, password, map[string]any{"totp_code": code})
+	if okCode != http.StatusOK {
+		t.Fatalf("login with correct totp_code: status=%d body=%v, want 200", okCode, okBody)
 	}
 	if !sh.sessionCookiePresent() {
-		t.Fatal("session cookie not set after login")
+		t.Fatal("session cookie not set after login with correct totp_code")
 	}
-	// Login also with a totp_code field (ignored): must still succeed.
+	if okBody["elevation_expires_at"] == nil {
+		t.Errorf("elevation_expires_at missing/nil after TOTP-gated login: %v", okBody)
+	}
+}
+
+// TestSessionAuth_Login_TOTPReplay_Gap documents the current, deliberate gap
+// (issue #228 acceptance): directory.VerifyTOTP has no anti-replay tracking,
+// so the same code accepted once is still accepted again within its validity
+// window. This test pins that behaviour rather than silently relying on it;
+// if replay prevention is added later, this test starts failing and must be
+// updated to assert the second attempt is refused.
+func TestSessionAuth_Login_TOTPReplay_Gap(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("totp-login-replay@example.com")
+
+	code, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+
+	first, firstBody := sh.doLogin(email, password, map[string]any{"totp_code": code})
+	if first != http.StatusOK {
+		t.Fatalf("first login: status=%d body=%v, want 200", first, firstBody)
+	}
+
+	// Fresh cookie jar simulating a second, independent login attempt
+	// replaying the exact same code within its validity window.
 	sh.cookieJar, _ = cookiejar.New(nil)
 	sh.cookieJarClient.Jar = sh.cookieJar
-	loginCode2, loginBody2 := sh.doLogin(email, password, map[string]any{"totp_code": "ignored"})
-	if loginCode2 != http.StatusOK {
-		t.Fatalf("login with ignored totp_code: status=%d body=%v, want 200", loginCode2, loginBody2)
+	second, secondBody := sh.doLogin(email, password, map[string]any{"totp_code": code})
+	if second != http.StatusOK {
+		t.Fatalf("replayed login: status=%d body=%v -- if this now fails with 401, "+
+			"anti-replay protection was added; update this test to assert refusal", second, secondBody)
 	}
 }
 
@@ -596,9 +670,9 @@ func TestSessionAuth_Login_BadCredentials_AuditsFailure(t *testing.T) {
 func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("auditlogout@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("auditlogout@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	if code, _ := sh.doWithCookie("POST", "/api/v1/auth/logout", nil, sh.csrfToken()); code != http.StatusNoContent {
@@ -627,9 +701,9 @@ func TestSessionAuth_Logout_AuditRecordCarriesPrincipal(t *testing.T) {
 func TestWhoAmI_WithValidSession(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("whoami-ok@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("whoami-ok@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 
@@ -679,9 +753,9 @@ func TestWhoAmI_WithoutCredentials(t *testing.T) {
 func TestWhoAmI_AfterLogout(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("whoami-logout@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("whoami-logout@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
 	// whoami OK while session is live.
@@ -729,13 +803,11 @@ func TestServerStatus_IncludesPrincipalInfo(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("status-principal@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	// A TOTP-gated login already elevates the session (REQ-AUTH-74(a),
+	// issue #228), so no separate step-up is needed before the admin-gated
+	// server/status endpoint.
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: %d", code)
-	}
-	// Step up to get admin elevation.
-	sh.clk.Advance(time.Second)
-	if sc, _ := sh.doStepUp(secret); sc != http.StatusOK {
-		t.Fatalf("step-up: status=%d", sc)
 	}
 
 	code, raw := sh.doWithCookie("GET", "/api/v1/server/status", nil, "")
@@ -791,52 +863,57 @@ func TestSessionAuth_AdminWithoutTOTP_LoginSucceedsStepUpRefused(t *testing.T) {
 	}
 }
 
-// TestSessionAuth_AdminWithTOTP_LoginAndStepUpSucceeds asserts that an admin
-// principal with TOTP enrolled can log in with password only and then step up
-// (REQ-AUTH-74, issue #79). The totp_code field at login is silently ignored.
-func TestSessionAuth_AdminWithTOTP_LoginAndStepUpSucceeds(t *testing.T) {
+// TestSessionAuth_AdminWithTOTP_LoginElevatesImmediately asserts that an
+// admin principal with TOTP enrolled must supply a valid totp_code at login
+// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228), and that a successful
+// TOTP-gated login immediately elevates the session (REQ-AUTH-74(a)) so the
+// admin-gated endpoint is reachable without a further step-up prompt.
+func TestSessionAuth_AdminWithTOTP_LoginElevatesImmediately(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-with-totp@example.com")
 
-	// Login: password-only, no totp_code.
-	code, body := sh.doLogin(email, password, nil)
+	// Login without totp_code: refused (no session at all).
+	missingCode, _ := sh.doLogin(email, password, nil)
+	if missingCode != http.StatusUnauthorized {
+		t.Fatalf("login without totp_code: status=%d, want 401", missingCode)
+	}
+	if sh.sessionCookiePresent() {
+		t.Fatal("session cookie set despite missing totp_code")
+	}
+
+	// Login with a valid totp_code: succeeds.
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
-		t.Fatalf("admin login after enrollment: status=%d body=%v, want 200", code, body)
+		t.Fatalf("admin login with totp_code: status=%d body=%v, want 200", code, body)
 	}
 	if !sh.sessionCookiePresent() {
 		t.Errorf("session cookie missing after successful login")
 	}
+	if body["elevation_expires_at"] == nil {
+		t.Errorf("elevation_expires_at missing/nil after TOTP-gated login: %v", body)
+	}
 
-	// Admin endpoint without step-up: 403 step_up_required.
+	// Admin endpoint is reachable immediately -- no separate step-up needed.
 	getCode, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
-	if getCode != http.StatusForbidden {
-		t.Errorf("admin endpoint without elevation: status=%d, want 403", getCode)
-	}
-
-	// Step up.
-	sh.clk.Advance(time.Second)
-	if sc, _ := sh.doStepUp(secret); sc != http.StatusOK {
-		t.Fatalf("step-up: status=%d", sc)
-	}
-
-	// Admin endpoint now accessible.
-	getCode2, _ := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
-	if getCode2 != http.StatusOK {
-		t.Errorf("admin endpoint after elevation: status=%d, want 200", getCode2)
+	if getCode != http.StatusOK {
+		t.Errorf("admin endpoint immediately after TOTP-gated login: status=%d, want 200", getCode)
 	}
 }
 
 // TestBootstrapSuperadmin_TOTPEnrollmentViaAPIKey is the end-to-end
 // integration test for the bootstrap-to-first-login flow (issue #12 slice 6).
-// The bootstrap API key is the Bearer credential for TOTP enrollment; the
-// password-login endpoint is NOT blocked at login under the step-up model
-// (REQ-AUTH-JSON-LOGIN, issue #79). The superadmin can log in immediately
-// after bootstrap; admin operations require a subsequent step-up.
+// The bootstrap API key is the Bearer credential for TOTP enrollment. The
+// freshly bootstrapped superadmin has no TOTP enrolled yet, so the TOTP
+// gate at login (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228) does not
+// apply to it: password login succeeds immediately, same as any
+// non-enrolled principal. Once TOTP is enrolled, admin operations require
+// an elevation, obtained here via an explicit step-up (the pre-enrollment
+// session was never TOTP-gated, so it was not auto-elevated at login).
 //
 // Flow under test:
 //  1. Bootstrap → (pid, password, apiKey).
-//  2. Password login → 200 (no TOTP gate at login).
+//  2. Password login → 200 (no TOTP enrolled yet).
 //  3. POST /api/v1/principals/{pid}/totp/enroll  with Bearer apiKey → 200 + secret.
 //  4. POST /api/v1/principals/{pid}/totp/confirm with first code and Bearer → 204.
 //  5. POST /api/v1/auth/step-up with valid TOTP code → 200 + elevation_expires_at.
@@ -949,10 +1026,10 @@ func TestSessionAuth_IdleGate_RejectsStaleCookie(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 30 * time.Minute
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("idle-gate@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-gate@example.com")
 
 	// Login mints a fresh session row with LastSeenAt = now.
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -986,9 +1063,9 @@ func TestSessionAuth_IdleGate_TouchSlidesDeadline(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 30 * time.Minute
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("idle-slide@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-slide@example.com")
 
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -1013,9 +1090,9 @@ func TestSessionAuth_IdleGate_TouchSlidesDeadline(t *testing.T) {
 func TestSessionAuth_NoIdleGate_WhenIdleTTLZero(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t) // IdleTTL=0
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("no-idle@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("no-idle@example.com")
 
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -1074,8 +1151,8 @@ func TestSessionAuth_AdminSession_UsesSessionTTL(t *testing.T) {
 		cookieJarClient: cookieClient,
 	}
 
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin-ttl-unified@example.com")
-	code, body := sh.doLogin(email, password, nil)
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-ttl-unified@example.com")
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("admin login: status=%d body=%v", code, body)
 	}
@@ -1104,9 +1181,9 @@ func TestSessionAuth_IdleGate_CookieSession(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 30 * time.Minute
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin-idle-unified@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin-idle-unified@example.com")
 
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -1134,11 +1211,15 @@ func TestSessionAuth_SessionRecord_DeviceContext(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 7 * 24 * time.Hour
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("devctx@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("devctx@example.com")
+	totpCode, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
 
 	// Set a recognisable UA on the login request via a custom request.
 	const wantUA = "TestBrowser/1.0"
-	loginBody, _ := json.Marshal(map[string]any{"email": email, "password": password})
+	loginBody, _ := json.Marshal(map[string]any{"email": email, "password": password, "totp_code": totpCode})
 	loginReq, _ := http.NewRequest("POST", sh.baseURL+"/api/v1/auth/login", bytes.NewReader(loginBody))
 	loginReq.Header.Set("Content-Type", "application/json")
 	loginReq.Header.Set("User-Agent", wantUA)
@@ -1177,9 +1258,9 @@ func TestSessionAuth_Logout_DeletesSessionRow(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 7 * 24 * time.Hour
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("logout-row@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("logout-row@example.com")
 
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -1212,9 +1293,9 @@ func TestSessionAuth_IdleExpired_TypedProblem(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 30 * time.Minute
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("idle-typed@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-typed@example.com")
 
-	loginCode, _ := sh.doLogin(email, password, nil)
+	loginCode, _ := sh.doLoginWithTOTP(email, password, secret, nil)
 	if loginCode != http.StatusOK {
 		t.Fatalf("login: status=%d", loginCode)
 	}
@@ -1244,9 +1325,9 @@ func TestSessionAuth_LoginResponse_SessionIdleDeadline(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 7 * 24 * time.Hour
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-login@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-login@example.com")
 
-	code, body := sh.doLogin(email, password, nil)
+	code, body := sh.doLoginWithTOTP(email, password, secret, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login: status=%d body=%v", code, body)
 	}
@@ -1274,9 +1355,9 @@ func TestAuthMe_SessionIdleDeadline(t *testing.T) {
 	t.Parallel()
 	const idleTTL = 7 * 24 * time.Hour
 	sh := newSessionHarnessWithIdleTTL(t, idleTTL)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-me@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("idle-deadline-me@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 

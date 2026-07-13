@@ -3,16 +3,24 @@ package protoadmin
 // session_auth.go implements the JSON login / logout / whoami / step-up
 // endpoints for the public REST surface (REQ-AUTH-SESSION-REST, REQ-AUTH-74).
 //
-// POST /api/v1/auth/login    -- accepts {email, password} only; issues
+// POST /api/v1/auth/login    -- accepts {email, password, totp_code?}. A
 //
+//	principal with TOTP enrolled MUST present a valid, current totp_code or
+//	the endpoint refuses the session (401 step_up_required); a principal
+//	with no TOTP enrolled logs in with password alone, unaffected
+//	(REQ-AUTH-42, REQ-AUTH-JSON-LOGIN, issue #228). On success it issues
 //	herold_public_session + herold_public_csrf cookies carrying end-user
-//	scope only (REQ-AUTH-SCOPE-01, REQ-AUTH-JSON-LOGIN).  TOTP is NOT
-//	evaluated at login; admin scope is never baked into the cookie.
+//	scope only (REQ-AUTH-SCOPE-01); admin scope is never baked into the
+//	cookie. A successful TOTP-gated login also creates an initial
+//	elevation record (REQ-AUTH-74(a)) so the freshly authenticated session
+//	starts elevated and does not need an immediate second step-up prompt.
 //
 // POST /api/v1/auth/step-up  -- accepts {totp_code}; verifies TOTP and
 //
-//	creates a server-side elevation record (REQ-AUTH-74).  Returns
-//	{elevation_expires_at}.  Admin endpoints require a valid elevation.
+//	creates (or refreshes) the server-side elevation record (REQ-AUTH-74).
+//	Returns {elevation_expires_at}. Admin endpoints require a valid
+//	elevation, and an elevation created at login satisfies this exactly
+//	like one created here.
 //
 // POST /api/v1/auth/logout   -- clears the cookies, returns 204.
 // GET  /api/v1/auth/whoami   -- returns 200 + {principal_id, email, scopes,
@@ -21,7 +29,9 @@ package protoadmin
 //
 // These endpoints are NOT protected by requireAuth (they ARE the auth
 // boundary). They are rate-limited via the per-source-IP bucket so
-// brute-force is throttled before any principal is resolved.
+// brute-force is throttled before any principal is resolved; TOTP
+// verification is additionally rate-limited per (principal, source) by
+// directory.VerifyTOTP, identically to the step-up and device-token paths.
 
 import (
 	"context"
@@ -39,16 +49,22 @@ import (
 )
 
 // loginRequest is the JSON body accepted by POST /api/v1/auth/login.
-// Login accepts only email and password; TOTP is NOT evaluated here
-// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, REQ-AUTH-SCOPE-03). Admin scope is
-// never baked into the issued cookie. After login, an admin principal must
-// POST /api/v1/auth/step-up with their TOTP code to obtain an elevation
-// record that gates admin-scoped endpoints (REQ-AUTH-74).
+// TOTP is evaluated at login (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228):
+// a principal with TOTP enrolled must supply a valid, current TOTPCode or
+// the request is refused with no session issued. A principal with no TOTP
+// enrolled logs in with password alone; TOTPCode is ignored for them.
+// Admin scope is never baked into the issued cookie regardless of TOTP
+// state -- a freshly authenticated TOTP-gated session starts elevated
+// (REQ-AUTH-74(a)), but admin operations still authorize off the separate
+// elevation record, not the cookie's scope set.
 type loginRequest struct {
 	// Email is the principal's canonical email address.
 	Email string `json:"email"`
 	// Password is the principal's plain-text password for verification.
 	Password string `json:"password"`
+	// TOTPCode is the current 6-digit TOTP code. Required only when the
+	// principal has TOTP enrolled; ignored otherwise.
+	TOTPCode string `json:"totp_code,omitempty"`
 }
 
 // loginResponse is the JSON body returned on a successful login.
@@ -78,6 +94,12 @@ type loginResponse struct {
 	// this deadline and re-arms it after each whoami/me response.
 	// Omitted when IdleTTL is zero (idle gate disabled).
 	SessionIdleDeadline string `json:"session_idle_deadline,omitempty"`
+	// ElevationExpiresAt is the RFC 3339 UTC expiry of the elevation record
+	// created by this login when the principal has TOTP enrolled (REQ-AUTH-74(a)),
+	// or null when the principal has no TOTP enrolled and therefore no
+	// elevation was created. The Suite/admin SPA uses this to show the
+	// step-up countdown immediately without a separate whoami round-trip.
+	ElevationExpiresAt *string `json:"elevation_expires_at"`
 }
 
 // clientlogSessionMeta is the per-session clientlog descriptor embedded
@@ -154,10 +176,14 @@ func principalRoles(p store.Principal) []string {
 // MaxAge is set to a 365-day fallback when TTL=0 (idle-only mode); the
 // server-side idle gate is the sole expiry mechanism (REQ-AUTH-72, issue #78).
 //
-// TOTP is NOT evaluated at login (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42): the
-// issued session always carries only end-user scope (REQ-AUTH-SCOPE-01).
-// Admin principals must separately POST /api/v1/auth/step-up to create an
-// elevation record for admin-gated endpoints (REQ-AUTH-74, issue #79).
+// TOTP is evaluated at login (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228):
+// a principal with TOTP enrolled must present a valid totp_code before any
+// session is issued -- password alone never yields a session for an
+// enrolled principal. The issued session always carries only end-user
+// scope (REQ-AUTH-SCOPE-01) regardless; a TOTP-gated login additionally
+// creates an initial elevation record (REQ-AUTH-74(a)) so the fresh
+// session starts elevated. A non-enrolled principal logs in with password
+// alone and receives no elevation (elevation_expires_at: null).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit by source IP before touching the directory, matching
 	// the bootstrap and JMAP login posture.
@@ -214,10 +240,55 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TOTP gate (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228): a
+	// TOTP-enrolled principal must present a valid code before a session
+	// is issued -- a stolen password alone must not yield a usable mail
+	// session. Absent and incorrect codes both surface as the identical
+	// step_up_required 401 (same type, same body shape) so a caller
+	// cannot distinguish "no code supplied" from "wrong code supplied"
+	// from the response alone. This mirrors the check IssueDeviceToken and
+	// IssueAuthorizationCode perform via directory.VerifyTOTP -- the same
+	// primitive, the same rate-limit bucket -- so all three credential-
+	// exchange paths hold an enrolled principal to identical strength.
+	// A principal with no TOTP enrolled is unaffected: TOTPCode is not
+	// consulted and login proceeds on password alone, exactly as before.
+	loginElevated := false
+	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		if req.TOTPCode == "" {
+			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.login_totp_required",
+				"activity", observe.ActivityAudit, "principal_id", uint64(pid))
+			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code required")
+			writeProblemWithExtras(w, r, http.StatusUnauthorized,
+				"step_up_required", "TOTP code required", "",
+				map[string]any{"step_up_required": true})
+			return
+		}
+		if verr := s.dir.VerifyTOTP(ctx, pid, req.TOTPCode); verr != nil {
+			if errors.Is(verr, directory.ErrRateLimited) {
+				s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.login_totp_rate_limited",
+					"activity", observe.ActivityAudit, "principal_id", uint64(pid))
+				s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp rate-limited")
+				writeProblem(w, r, http.StatusTooManyRequests,
+					"rate_limited", "too many TOTP attempts; please wait and try again", "")
+				return
+			}
+			s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.auth.login_totp_invalid",
+				"activity", observe.ActivityAudit, "principal_id", uint64(pid))
+			s.auditLoginFailure(r, p.CanonicalEmail, pid, "totp code invalid")
+			writeProblemWithExtras(w, r, http.StatusUnauthorized,
+				"step_up_required", "TOTP code is invalid or expired", "",
+				map[string]any{"step_up_required": true})
+			return
+		}
+		loginElevated = true
+	}
+
 	// Issue an end-user-scoped session. The admin scope is never baked
 	// into the cookie (REQ-AUTH-SCOPE-01, REQ-AUTH-SCOPE-03). Admin
-	// operations require a subsequent TOTP step-up that creates a
-	// server-side elevation record (REQ-AUTH-74, issue #79).
+	// operations authorize off the elevation record, not the cookie's
+	// scope set; a TOTP-gated login has already created that record
+	// below (REQ-AUTH-74(a)) so no further step-up is required until it
+	// expires.
 	sessScopes := auth.NewScopeSet(auth.AllEndUserScopes...)
 
 	// Session lifetime: all sessions use the idle-only model. When
@@ -265,6 +336,40 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"err", err)
 	}
 
+	// A TOTP-gated login creates an initial elevation record so the fresh
+	// session starts elevated (REQ-AUTH-74(a)) -- the principal just
+	// proved possession of both factors, so a second immediate step-up
+	// prompt for the same window would be redundant. Depends on the
+	// session row above via the elevations table's session_id FK, so it
+	// must run after UpsertSession succeeds. Non-enrolled logins never
+	// reach here with loginElevated=true, so elevationExpiresAt stays nil.
+	var elevationExpiresAt *string
+	if loginElevated {
+		elevTTL := s.opts.ElevationTTL
+		if elevTTL <= 0 {
+			elevTTL = 15 * time.Minute
+		}
+		expiresAt := s.clk.Now().Add(elevTTL)
+		elev := store.ElevationRow{
+			SessionID:   sess.CSRFToken,
+			PrincipalID: pid,
+			ElevatedAt:  s.clk.Now(),
+			ExpiresAt:   expiresAt,
+		}
+		if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
+			// Non-fatal: log at warn and continue. The session is valid;
+			// the principal falls back to an explicit POST /auth/step-up
+			// for admin-gated endpoints, matching the non-elevated path.
+			s.loggerFrom(ctx).Warn("protoadmin.login.elevation_upsert_failed",
+				"activity", observe.ActivityInternal,
+				"principal_id", uint64(pid),
+				"err", err)
+		} else {
+			ts := expiresAt.UTC().Format(time.RFC3339)
+			elevationExpiresAt = &ts
+		}
+	}
+
 	// Attach the just-authenticated principal to the audit context so
 	// the success record carries actor=principal/<id> rather than the
 	// pre-auth actor=system fallback (REQ-ADM-300).
@@ -292,6 +397,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Scopes:              sessScopes.Slice(),
 		SessionExpiresAt:    sess.ExpiresAt.UTC().Format(time.RFC3339),
 		SessionIdleDeadline: s.sessionIdleDeadlineStr(),
+		ElevationExpiresAt:  elevationExpiresAt,
 	})
 }
 

@@ -98,9 +98,11 @@ func newSessionTestHarness(t *testing.T) *sessionTestHarness {
 }
 
 // loginWithClient posts to /api/v1/auth/login using the provided client.
-func (sth *sessionTestHarness) loginWithClient(t *testing.T, client *http.Client, email, password string) {
+// totpCode is included when non-empty (REQ-AUTH-JSON-LOGIN, issue #228: a
+// TOTP-enrolled principal must present a valid code at login).
+func (sth *sessionTestHarness) loginWithClient(t *testing.T, client *http.Client, email, password, totpCode string) {
 	t.Helper()
-	body := fmt.Sprintf(`{"email":%q,"password":%q}`, email, password)
+	body := fmt.Sprintf(`{"email":%q,"password":%q,"totp_code":%q}`, email, password, totpCode)
 	req, _ := http.NewRequest("POST", sth.sh.baseURL+"/api/v1/auth/login",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -147,13 +149,20 @@ func TestSessionList_ReturnsOwnSessions(t *testing.T) {
 	sh := sth.sh
 
 	// Bootstrap and enroll TOTP (admin principal required by login flow).
-	em, pw, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin@sessions.test")
+	em, pw, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin@sessions.test")
 
 	// Log in with client 1 (session A).
-	sh.doLogin(em, pw, nil)
+	sh.doLoginWithTOTP(em, pw, secret, nil)
 
 	// Log in with client 2 (session B) — different cookie jar, same principal.
-	sth.loginWithClient(t, sth.client2, em, pw)
+	// A fresh code is needed since the login above already consumed the
+	// current time-step's code from client 1's perspective.
+	sh.clk.Advance(time.Second)
+	code2, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (client2 login): %v", err)
+	}
+	sth.loginWithClient(t, sth.client2, em, pw, code2)
 
 	// List sessions from client 1 — must see both sessions.
 	code, raw := sh.doWithCookie("GET", "/api/v1/auth/sessions", nil, "")
@@ -188,11 +197,16 @@ func TestSessionRevoke_OtherSession_GetsTombstoneError(t *testing.T) {
 	sth := newSessionTestHarness(t)
 	sh := sth.sh
 
-	em, pw, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-revoke.test")
+	em, pw, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-revoke.test")
 
 	// Log in both clients.
-	sh.doLogin(em, pw, nil)
-	sth.loginWithClient(t, sth.client2, em, pw)
+	sh.doLoginWithTOTP(em, pw, secret, nil)
+	sh.clk.Advance(time.Second)
+	code2, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (client2 login): %v", err)
+	}
+	sth.loginWithClient(t, sth.client2, em, pw, code2)
 
 	// List sessions from client1 to find client2's session id.
 	code, raw := sh.doWithCookie("GET", "/api/v1/auth/sessions", nil, "")
@@ -251,8 +265,8 @@ func TestSessionRevoke_CurrentSession_ClearsCookies(t *testing.T) {
 	sth := newSessionTestHarness(t)
 	sh := sth.sh
 
-	em, pw, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-self.test")
-	sh.doLogin(em, pw, nil)
+	em, pw, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-self.test")
+	sh.doLoginWithTOTP(em, pw, secret, nil)
 
 	// List to find current session id.
 	code, raw := sh.doWithCookie("GET", "/api/v1/auth/sessions", nil, "")
@@ -303,7 +317,7 @@ func TestSessionRevoke_WrongOwner_Returns404(t *testing.T) {
 	sth := newSessionTestHarness(t)
 	sh := sth.sh
 
-	em, pw, _, _ := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-owner.test")
+	em, pw, _, secret := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-owner.test")
 
 	// Manually insert a session row belonging to a different principal so we
 	// can target its session_id without a cookie.
@@ -324,7 +338,7 @@ func TestSessionRevoke_WrongOwner_Returns404(t *testing.T) {
 	}
 
 	// Log in as admin.
-	sh.doLogin(em, pw, nil)
+	sh.doLoginWithTOTP(em, pw, secret, nil)
 	csrf := sh.csrfToken()
 
 	// Try to revoke the foreign session — must get 404.
@@ -338,8 +352,8 @@ func TestSessionRevoke_AuditLog(t *testing.T) {
 	sth := newSessionTestHarness(t)
 	sh := sth.sh
 
-	em, pw, apiKey, _ := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-audit.test")
-	sh.doLogin(em, pw, nil)
+	em, pw, apiKey, secret := sh.bootstrapAdminAndEnrollTOTP("admin@sessions-audit.test")
+	sh.doLoginWithTOTP(em, pw, secret, nil)
 
 	// List + revoke the current session.
 	code, raw := sh.doWithCookie("GET", "/api/v1/auth/sessions", nil, "")
@@ -425,8 +439,11 @@ func TestAdminSessionList_ListsTargetPrincipalSessions(t *testing.T) {
 		t.Fatalf("UpsertSession user: %v", err)
 	}
 
-	// Log in as admin and step up.
-	sh.doLogin(em, pw, nil)
+	// Log in as admin. Login already elevates the session (REQ-AUTH-74(a),
+	// issue #228); the explicit step-up call refreshes the elevation and
+	// still exercises the step-up endpoint.
+	sh.doLoginWithTOTP(em, pw, totpSecret, nil)
+	sh.clk.Advance(time.Second)
 	sh.doStepUp(totpSecret)
 
 	// Admin GET /api/v1/admin/principals/{pid}/sessions.
@@ -483,7 +500,8 @@ func TestAdminSessionRevoke_RevokesByID(t *testing.T) {
 	}
 
 	// Log in as admin + step up.
-	sh.doLogin(em, pw, nil)
+	sh.doLoginWithTOTP(em, pw, totpSecret, nil)
+	sh.clk.Advance(time.Second)
 	sh.doStepUp(totpSecret)
 	csrf := sh.csrfToken()
 

@@ -299,12 +299,15 @@ func TestScopeBoundary_NonAdminGets403OnAdminRoutes(t *testing.T) {
 }
 
 // TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes verifies the positive
-// path: an admin principal with TOTP enrolled can login, step-up, and then
-// reach admin-gated REST routes. Under the step-up model (issue #79):
-//   - Login always issues an end-user session (no admin scope in the cookie).
-//   - POST /api/v1/auth/step-up with a valid TOTP code creates an elevation
-//     record that gates the admin surface.
-//   - While a live elevation record exists, admin-gated routes return 200.
+// path: an admin principal with TOTP enrolled can login and reach
+// admin-gated REST routes immediately. TOTP is required at login
+// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228):
+//   - Login issues an end-user-scoped session (no admin scope in the cookie)
+//     only after a valid totp_code is presented.
+//   - A successful TOTP-gated login also creates an initial elevation record
+//     (REQ-AUTH-74(a)), so admin-gated routes are reachable right away, with
+//     no separate step-up prompt needed for the freshly authenticated session.
+//   - POST /api/v1/auth/step-up still works to refresh/extend that elevation.
 func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 	_, addrs, done, cancel := startTestServer(t)
 	t.Cleanup(func() {
@@ -331,10 +334,15 @@ func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	h.confirmTOTP(adminPID, adminAPIKey, totpSecret)
 
-	// Login — TOTP code is ignored at login time; the field is accepted for
-	// backwards compatibility but no longer evaluated (REQ-AUTH-42, issue #79).
-	// Login always returns end-user scope only.
-	adminCookies := h.loginAndGetCookies(adminEmail, adminPassword, "")
+	// Login requires a valid totp_code for this TOTP-enrolled principal
+	// (REQ-AUTH-JSON-LOGIN, REQ-AUTH-42, issue #228). Login always returns
+	// end-user scope only in the cookie (REQ-AUTH-SCOPE-01); admin
+	// authorization comes from the separate elevation record created below.
+	loginCode, err := adminScopeBoundaryOTPCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("generate login TOTP code: %v", err)
+	}
+	adminCookies := h.loginAndGetCookies(adminEmail, adminPassword, loginCode)
 
 	// Verify that whoami reports end-user scopes only (no 'admin').
 	req, _ := http.NewRequest("GET", "http://"+h.publicAddr+"/api/v1/auth/whoami", nil)
@@ -361,13 +369,16 @@ func TestScopeBoundary_AdminWithTOTPGets200OnAdminRoutes(t *testing.T) {
 		}
 	}
 
-	// Before step-up, admin-gated routes must return 403 step_up_required.
+	// The TOTP-gated login already created an elevation record
+	// (REQ-AUTH-74(a)), so admin-gated routes are reachable immediately.
 	code := h.getWithCookies("/api/v1/server/status", adminCookies)
-	if code != http.StatusForbidden {
-		t.Errorf("admin GET /api/v1/server/status before step-up: status=%d, want 403", code)
+	if code != http.StatusOK {
+		t.Errorf("admin GET /api/v1/server/status immediately after TOTP-gated login: status=%d, want 200", code)
 	}
 
-	// Step-up: POST /api/v1/auth/step-up with a fresh TOTP code.
+	// Step-up still works to (re-)elevate: POST /api/v1/auth/step-up with a
+	// fresh TOTP code.
+	time.Sleep(2 * time.Second)
 	totpCode, err := adminScopeBoundaryOTPCode(totpSecret, time.Now())
 	if err != nil {
 		t.Fatalf("generate step-up TOTP code: %v", err)

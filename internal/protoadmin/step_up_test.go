@@ -24,6 +24,14 @@ import (
 	"time"
 )
 
+// stepUpDefaultElevationTTL mirrors protoadmin's unset-ElevationTTL default
+// (server.go: opts.ElevationTTL defaults to 15m); none of this file's
+// harnesses override it. A TOTP-gated login now creates an initial
+// elevation record (REQ-AUTH-74(a), issue #228), so a test that wants a
+// "no active elevation" starting state must let that login-time elevation
+// lapse first.
+const stepUpDefaultElevationTTL = 15 * time.Minute
+
 // TestStepUp_ValidTOTP_CreatesElevation asserts that a correct TOTP code
 // returns 200 with elevation_expires_at, and the session can then reach
 // admin-gated endpoints (REQ-AUTH-74, issue #79).
@@ -32,8 +40,8 @@ func TestStepUp_ValidTOTP_CreatesElevation(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-valid@example.com")
 
-	// Login (password only).
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	// Login with the required TOTP code (REQ-AUTH-JSON-LOGIN, issue #228).
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 
@@ -68,9 +76,9 @@ func TestStepUp_ValidTOTP_CreatesElevation(t *testing.T) {
 func TestStepUp_InvalidCode_Returns401(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("stepup-bad-code@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-bad-code@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 
@@ -153,9 +161,9 @@ func TestStepUp_NonAdmin_Returns403(t *testing.T) {
 func TestStepUp_NoCSRF_Returns403(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("stepup-nocsrf@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-nocsrf@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 
@@ -168,15 +176,20 @@ func TestStepUp_NoCSRF_Returns403(t *testing.T) {
 }
 
 // TestStepUp_AdminEndpoint_BlockedWithoutElevation asserts that admin-gated
-// endpoints return 403 with step_up_required when no elevation exists.
+// endpoints return 403 with step_up_required when no elevation exists. A
+// TOTP-gated login creates an initial elevation (REQ-AUTH-74(a), issue
+// #228), so this test reaches the "no active elevation" state the way it
+// naturally occurs in production: by letting that elevation lapse while the
+// session itself stays valid.
 func TestStepUp_AdminEndpoint_BlockedWithoutElevation(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
-	email, password, _, _ := sh.bootstrapAdminAndEnrollTOTP("stepup-blocked@example.com")
+	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-blocked@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
 
 	sc, raw := sh.doWithCookie("GET", "/api/v1/principals", nil, "")
 	var body map[string]any
@@ -199,7 +212,7 @@ func TestStepUp_ElevationExpiry_BlocksAfterTTL(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-expiry@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 	sh.clk.Advance(time.Second)
@@ -222,17 +235,20 @@ func TestStepUp_ElevationExpiry_BlocksAfterTTL(t *testing.T) {
 }
 
 // TestStepUp_WhoamiShowsElevationExpiresAt asserts that GET /api/v1/auth/whoami
-// returns a non-null elevation_expires_at after step-up, and null before (REQ-AUTH-74).
+// returns a non-null elevation_expires_at after step-up, and null once any
+// prior elevation (including the one a TOTP-gated login creates,
+// REQ-AUTH-74(a), issue #228) has lapsed (REQ-AUTH-74).
 func TestStepUp_WhoamiShowsElevationExpiresAt(t *testing.T) {
 	t.Parallel()
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-whoami@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
 
-	// Before step-up: elevation_expires_at key must be present, value null.
+	// Before (re-)step-up: elevation_expires_at key must be present, value null.
 	sc, raw := sh.doWithCookie("GET", "/api/v1/auth/whoami", nil, "")
 	if sc != http.StatusOK {
 		t.Fatalf("whoami: status=%d", sc)
@@ -275,11 +291,14 @@ func TestStepUp_AuthMe_ShowsElevationExpiresAt(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-authme@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
+	// Let the login-time elevation (REQ-AUTH-74(a)) lapse to reach the
+	// "no active elevation" starting state this test wants to assert.
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
 
-	// Before step-up.
+	// Before (re-)step-up.
 	sc, raw := sh.doWithCookie("GET", "/api/v1/auth/me", nil, "")
 	if sc != http.StatusOK {
 		t.Fatalf("auth/me: status=%d body=%s", sc, raw)
@@ -331,7 +350,7 @@ func TestStepUp_Re_ElevationRefreshesWindow(t *testing.T) {
 	sh := newSessionHarness(t)
 	email, password, _, secret := sh.bootstrapAdminAndEnrollTOTP("stepup-refresh@example.com")
 
-	if code, _ := sh.doLogin(email, password, nil); code != http.StatusOK {
+	if code, _ := sh.doLoginWithTOTP(email, password, secret, nil); code != http.StatusOK {
 		t.Fatalf("login: status=%d", code)
 	}
 
