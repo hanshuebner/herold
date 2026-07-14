@@ -70,6 +70,13 @@ func Run(t *testing.T, f Factory) {
 		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
 		{"ListMessagesWithInternalizePendingByReceivedAt_OrdersByReceivedAt", testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt},
 		{"QuotaEnforcement", testQuotaEnforcement},
+		// Sub-account substrate (issue #227, REQ-SUBACCT-01..06).
+		{"SubPrincipals_InsertListResolve", testSubPrincipals_InsertListResolve},
+		{"SubPrincipals_RejectsCredential", testSubPrincipals_RejectsCredential},
+		{"SubPrincipals_RejectsInvalidParent", testSubPrincipals_RejectsInvalidParent},
+		{"SubPrincipals_ExcludedFromAdminLists", testSubPrincipals_ExcludedFromAdminLists},
+		{"SubPrincipals_QuotaCountsAgainstParent", testSubPrincipals_QuotaCountsAgainstParent},
+		{"SubPrincipals_DeleteParentCascades", testSubPrincipals_DeleteParentCascades},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
 		{"BlobDedup", testBlobDedup},

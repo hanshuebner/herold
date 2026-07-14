@@ -91,11 +91,11 @@ func (m *metadata) InsertPrincipal(ctx context.Context, p store.Principal) (stor
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO principals (kind, canonical_email, display_name, password_hash,
 			  totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us,
-			  clientlog_telemetry_enabled)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10) RETURNING id`,
+			  clientlog_telemetry_enabled, parent_principal_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11) RETURNING id`,
 			int32(p.Kind), strings.ToLower(p.CanonicalEmail), p.DisplayName, p.PasswordHash,
 			p.TOTPSecret, p.QuotaBytes, int64(p.Flags), usMicros(now), usMicros(now),
-			p.ClientlogTelemetryEnabled,
+			p.ClientlogTelemetryEnabled, nullablePrincipalID(p.ParentPrincipalID),
 		).Scan(&id); err != nil {
 			return fmt.Errorf("principal %q: %w", strings.ToLower(p.CanonicalEmail), mapErr(err))
 		}
@@ -126,12 +126,14 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 		       quota_bytes, flags, seen_addresses_enabled,
 		       avatar_blob_hash, avatar_blob_size, xface_enabled,
 		       clientlog_telemetry_enabled,
+		       parent_principal_id,
 		       created_at_us, updated_at_us
 		  FROM principals `+where, args...)
 	var p store.Principal
 	var kind int32
 	var flags int64
 	var avatarHash *string
+	var parentID *int64
 	var createdUs, updatedUs int64
 	var totp []byte
 	var id int64
@@ -139,6 +141,7 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 		&totp, &p.QuotaBytes, &flags, &p.SeenAddressesEnabled,
 		&avatarHash, &p.AvatarBlobSize, &p.XFaceEnabled,
 		&p.ClientlogTelemetryEnabled,
+		&parentID,
 		&createdUs, &updatedUs)
 	if err != nil {
 		return store.Principal{}, mapErr(err)
@@ -149,12 +152,42 @@ func (m *metadata) selectPrincipal(ctx context.Context, where string, args ...an
 	if avatarHash != nil {
 		p.AvatarBlobHash = *avatarHash
 	}
+	if parentID != nil {
+		p.ParentPrincipalID = store.PrincipalID(*parentID)
+	}
 	p.CreatedAt = fromMicros(createdUs)
 	p.UpdatedAt = fromMicros(updatedUs)
 	if len(totp) > 0 {
 		p.TOTPSecret = totp
 	}
 	return p, nil
+}
+
+// nullablePrincipalID returns nil for the zero PrincipalID (no parent) or
+// the id as int64 otherwise, for binding into a nullable FK column.
+func nullablePrincipalID(id store.PrincipalID) any {
+	if id == 0 {
+		return nil
+	}
+	return int64(id)
+}
+
+// quotaPrincipalID resolves the principal whose quota_bytes/used_bytes
+// govern storage owned by pid: pid itself, unless pid is a sub-principal
+// (REQ-SUBACCT-05), in which case its parent. Every used_bytes read or
+// write in this file goes through this resolution so a sub-account's
+// mail counts against its parent's quota rather than its own (the
+// sub-principal's own quota_bytes/used_bytes columns are never touched).
+func quotaPrincipalID(ctx context.Context, tx pgx.Tx, pid int64) (int64, error) {
+	var parent *int64
+	if err := tx.QueryRow(ctx,
+		`SELECT parent_principal_id FROM principals WHERE id = $1`, pid).Scan(&parent); err != nil {
+		return 0, mapErr(err)
+	}
+	if parent != nil {
+		return *parent, nil
+	}
+	return pid, nil
 }
 
 func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error {
@@ -186,6 +219,106 @@ func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error
 		}
 		return nil
 	})
+}
+
+// -- sub-principals (REQ-SUBACCT-01..06) -------------------------------
+
+func (m *metadata) InsertSubPrincipal(ctx context.Context, parentID store.PrincipalID, p store.Principal) (store.Principal, error) {
+	if p.PasswordHash != "" || len(p.TOTPSecret) > 0 {
+		return store.Principal{}, fmt.Errorf(
+			"storepg: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
+	}
+	now := m.s.clock.Now().UTC()
+	var id int64
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var parentKind int32
+		var parentOfParent *int64
+		if err := tx.QueryRow(ctx,
+			`SELECT kind, parent_principal_id FROM principals WHERE id = $1`,
+			int64(parentID)).Scan(&parentKind, &parentOfParent); err != nil {
+			return mapErr(err)
+		}
+		if store.PrincipalKind(parentKind) != store.PrincipalKindUser {
+			return fmt.Errorf(
+				"storepg: sub-principal parent must be an individual principal: %w", store.ErrInvalidArgument)
+		}
+		if parentOfParent != nil {
+			return fmt.Errorf(
+				"storepg: sub-principals cannot nest: %w", store.ErrInvalidArgument)
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO principals (kind, canonical_email, display_name, password_hash,
+			  totp_secret, quota_bytes, flags, used_bytes, created_at_us, updated_at_us,
+			  parent_principal_id)
+			VALUES ($1, $2, $3, '', NULL, 0, $4, 0, $5, $6, $7) RETURNING id`,
+			int32(store.PrincipalKindSubAccount), strings.ToLower(p.CanonicalEmail), p.DisplayName,
+			int64(p.Flags), usMicros(now), usMicros(now), int64(parentID),
+		).Scan(&id); err != nil {
+			return fmt.Errorf("sub-principal %q: %w", strings.ToLower(p.CanonicalEmail), mapErr(err))
+		}
+		return nil
+	})
+	if err != nil {
+		return store.Principal{}, err
+	}
+	p.ID = store.PrincipalID(id)
+	p.Kind = store.PrincipalKindSubAccount
+	p.ParentPrincipalID = parentID
+	p.PasswordHash = ""
+	p.TOTPSecret = nil
+	p.QuotaBytes = 0
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	p.SeenAddressesEnabled = true
+	p.CanonicalEmail = strings.ToLower(p.CanonicalEmail)
+	return p, nil
+}
+
+func (m *metadata) ListSubPrincipals(ctx context.Context, parentID store.PrincipalID) ([]store.Principal, error) {
+	rows, err := m.s.pool.Query(ctx, `
+		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
+		       quota_bytes, flags, created_at_us, updated_at_us
+		  FROM principals WHERE parent_principal_id = $1 ORDER BY id ASC`,
+		int64(parentID))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Principal
+	for rows.Next() {
+		var p store.Principal
+		var kind int32
+		var flags int64
+		var createdUs, updatedUs int64
+		var totp []byte
+		var id int64
+		if err := rows.Scan(&id, &kind, &p.CanonicalEmail, &p.DisplayName, &p.PasswordHash,
+			&totp, &p.QuotaBytes, &flags, &createdUs, &updatedUs); err != nil {
+			return nil, mapErr(err)
+		}
+		p.ID = store.PrincipalID(id)
+		p.Kind = store.PrincipalKind(kind)
+		p.Flags = store.PrincipalFlags(flags)
+		p.ParentPrincipalID = parentID
+		p.CreatedAt = fromMicros(createdUs)
+		p.UpdatedAt = fromMicros(updatedUs)
+		if len(totp) > 0 {
+			p.TOTPSecret = totp
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (m *metadata) GetSubPrincipalParent(ctx context.Context, subID store.PrincipalID) (store.Principal, error) {
+	sub, err := m.GetPrincipalByID(ctx, subID)
+	if err != nil {
+		return store.Principal{}, err
+	}
+	if sub.Kind != store.PrincipalKindSubAccount || sub.ParentPrincipalID == 0 {
+		return store.Principal{}, store.ErrNotFound
+	}
+	return m.GetPrincipalByID(ctx, sub.ParentPrincipalID)
 }
 
 // -- domains ----------------------------------------------------------
@@ -749,6 +882,10 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 		if err != nil {
 			return mapErr(err)
 		}
+		qpid, err := quotaPrincipalID(ctx, tx, pid)
+		if err != nil {
+			return err
+		}
 		// Gather messages that would have no remaining membership after
 		// we remove all message_mailboxes rows for this mailbox.
 		orphanRows, err := tx.Query(ctx, `
@@ -786,7 +923,7 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 			}
 			if _, err := tx.Exec(ctx,
 				`UPDATE principals SET used_bytes = used_bytes - $1, updated_at_us = $2 WHERE id = $3`,
-				o.size, usMicros(now), pid); err != nil {
+				o.size, usMicros(now), qpid); err != nil {
 				return mapErr(err)
 			}
 		}
@@ -895,9 +1032,16 @@ func (m *metadata) insertMessageTx(
 				return mapErr(err)
 			}
 		}
+		// A sub-account's mail counts against its parent's quota
+		// (REQ-SUBACCT-05): resolve the quota-owning principal before
+		// reading quota_bytes/used_bytes.
+		qpid, err := quotaPrincipalID(ctx, tx, pid)
+		if err != nil {
+			return err
+		}
 		var quota, used int64
 		if err := tx.QueryRow(ctx, `
-			SELECT quota_bytes, used_bytes FROM principals WHERE id = $1`, pid).Scan(&quota, &used); err != nil {
+			SELECT quota_bytes, used_bytes FROM principals WHERE id = $1`, qpid).Scan(&quota, &used); err != nil {
 			return mapErr(err)
 		}
 		if quota > 0 && used+msg.Size > quota {
@@ -1042,7 +1186,7 @@ func (m *metadata) insertMessageTx(
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE principals SET used_bytes = used_bytes + $1, updated_at_us = $2 WHERE id = $3`,
-			msg.Size, usMicros(now), pid); err != nil {
+			msg.Size, usMicros(now), qpid); err != nil {
 			return mapErr(err)
 		}
 		return incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now)
@@ -1192,10 +1336,18 @@ func (m *metadata) ReplaceMessageBody(
 		if err != nil {
 			return mapErr(err)
 		}
+		// A sub-account's mail counts against its parent's quota
+		// (REQ-SUBACCT-05): resolve the quota-owning principal once,
+		// used for both the growth check and the used_bytes adjustment
+		// below.
+		qpid, err := quotaPrincipalID(ctx, tx, pid)
+		if err != nil {
+			return err
+		}
 		if delta := size - oldSize; delta > 0 {
 			var quota, used int64
 			if err := tx.QueryRow(ctx,
-				`SELECT quota_bytes, used_bytes FROM principals WHERE id = $1`, pid).Scan(&quota, &used); err != nil {
+				`SELECT quota_bytes, used_bytes FROM principals WHERE id = $1`, qpid).Scan(&quota, &used); err != nil {
 				return mapErr(err)
 			}
 			if quota > 0 && used+delta > quota {
@@ -1229,7 +1381,7 @@ func (m *metadata) ReplaceMessageBody(
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE principals SET used_bytes = used_bytes + $1, updated_at_us = $2 WHERE id = $3`,
-			size-oldSize, usMicros(now), pid); err != nil {
+			size-oldSize, usMicros(now), qpid); err != nil {
 			return mapErr(err)
 		}
 		if oldHash != ref.Hash {
@@ -1554,6 +1706,10 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 		if err != nil {
 			return mapErr(err)
 		}
+		qpid, err := quotaPrincipalID(ctx, tx, pid)
+		if err != nil {
+			return err
+		}
 		var removed int
 		for _, id := range ids {
 			// Check membership exists.
@@ -1595,7 +1751,7 @@ func (m *metadata) ExpungeMessages(ctx context.Context, mailboxID store.MailboxI
 					}
 					if _, err := tx.Exec(ctx,
 						`UPDATE principals SET used_bytes = used_bytes - $1, updated_at_us = $2 WHERE id = $3`,
-						size, usMicros(now), pid); err != nil {
+						size, usMicros(now), qpid); err != nil {
 						return mapErr(err)
 					}
 				}
@@ -1917,9 +2073,13 @@ func (m *metadata) RemoveMessageFromMailbox(ctx context.Context, msgID store.Mes
 				if err := decRef(ctx, tx, hash, now); err != nil {
 					return err
 				}
+				qpid, err := quotaPrincipalID(ctx, tx, pid)
+				if err != nil {
+					return err
+				}
 				if _, err := tx.Exec(ctx,
 					`UPDATE principals SET used_bytes = used_bytes - $1, updated_at_us = $2 WHERE id = $3`,
-					size, usMicros(now), pid); err != nil {
+					size, usMicros(now), qpid); err != nil {
 					return mapErr(err)
 				}
 			}
@@ -2480,11 +2640,13 @@ func (m *metadata) ListPrincipals(ctx context.Context, after store.PrincipalID, 
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
+	// Sub-principals are not users: excluded from admin principal lists
+	// and user counts (REQ-SUBACCT-06).
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, created_at_us, updated_at_us
-		  FROM principals WHERE id > $1 ORDER BY id ASC LIMIT $2`,
-		int64(after), limit)
+		  FROM principals WHERE id > $1 AND kind != $2 ORDER BY id ASC LIMIT $3`,
+		int64(after), int32(store.PrincipalKindSubAccount), limit)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -2527,14 +2689,18 @@ func (m *metadata) SearchPrincipalsByText(ctx context.Context, prefix string, li
 	// Match display_name anywhere and canonical_email from its start so a
 	// prefix containing '@' (e.g. "admin@" or "admin@exa") still matches
 	// the full address "admin@example.local".
+	// Sub-principals are excluded from this admin/directory-search
+	// surface (REQ-SUBACCT-06).
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, created_at_us, updated_at_us
 		  FROM principals
-		 WHERE lower(display_name) LIKE $1 OR lower(canonical_email) LIKE $2
-		 LIMIT $3`,
+		 WHERE (lower(display_name) LIKE $1 OR lower(canonical_email) LIKE $2)
+		   AND kind != $3
+		 LIMIT $4`,
 		"%"+lower+"%",
 		lower+"%",
+		int32(store.PrincipalKindSubAccount),
 		limit*2, // over-fetch; Go-side sort trims to limit
 	)
 	if err != nil {
@@ -2584,16 +2750,20 @@ func (m *metadata) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, d
 	}
 	lower := strings.ToLower(prefix)
 	lowerDomain := strings.ToLower(domain)
+	// Sub-principals are excluded from this admin/directory-search
+	// surface (REQ-SUBACCT-06).
 	rows, err := m.s.pool.Query(ctx, `
 		SELECT id, kind, canonical_email, display_name, password_hash, totp_secret,
 		       quota_bytes, flags, created_at_us, updated_at_us
 		  FROM principals
 		 WHERE (lower(display_name) LIKE $1 OR lower(canonical_email) LIKE $2)
 		   AND lower(canonical_email) LIKE $3
-		 LIMIT $4`,
+		   AND kind != $4
+		 LIMIT $5`,
 		"%"+lower+"%",
 		lower+"%",
 		"%@"+lowerDomain,
+		int32(store.PrincipalKindSubAccount),
 		limit*2, // over-fetch; Go-side sort trims to limit
 	)
 	if err != nil {
@@ -2630,6 +2800,77 @@ func (m *metadata) SearchPrincipalsByTextInDomain(ctx context.Context, prefix, d
 
 // -- DeletePrincipal --------------------------------------------------
 
+// cleanupOwnedMailData decrements blob refcounts for every message owned
+// by pid and wipes the per-principal tables that lack ON DELETE CASCADE
+// to principals (state_changes, audit_log, queue). Shared by
+// DeletePrincipal for both the target principal and, when it owns
+// sub-principals, each of those (REQ-SUBACCT-06: deleting the parent
+// deletes its sub-accounts and their mail, not just their rows).
+func cleanupOwnedMailData(ctx context.Context, tx pgx.Tx, pid int64, now time.Time) error {
+	hashRows, err := tx.Query(ctx, `
+		SELECT blob_hash FROM messages WHERE principal_id = $1`,
+		pid)
+	if err != nil {
+		return mapErr(err)
+	}
+	var hashes []string
+	for hashRows.Next() {
+		var h string
+		if err := hashRows.Scan(&h); err != nil {
+			hashRows.Close()
+			return mapErr(err)
+		}
+		hashes = append(hashes, h)
+	}
+	hashRows.Close()
+	for _, h := range hashes {
+		if err := decRef(ctx, tx, h, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM state_changes WHERE principal_id = $1`, pid); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM audit_log WHERE principal_id = $1`, pid); err != nil {
+		return mapErr(err)
+	}
+	// Phase 2 queue rows: drop and decrement body-blob refcounts.
+	// queue.principal_id is ON DELETE SET NULL so we explicitly
+	// remove rows where this principal was the submitter; rows
+	// arising from a Sieve redirect under a different principal
+	// stay alive.
+	queueRows, err := tx.Query(ctx,
+		`SELECT body_blob_hash FROM queue WHERE principal_id = $1`, pid)
+	if err != nil {
+		return mapErr(err)
+	}
+	var queueHashes []string
+	for queueRows.Next() {
+		var h string
+		if err := queueRows.Scan(&h); err != nil {
+			queueRows.Close()
+			return mapErr(err)
+		}
+		queueHashes = append(queueHashes, h)
+	}
+	queueRows.Close()
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM queue WHERE principal_id = $1`, pid); err != nil {
+		return mapErr(err)
+	}
+	for _, h := range queueHashes {
+		if h == "" {
+			continue
+		}
+		if err := decRef(ctx, tx, h, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
@@ -2639,66 +2880,34 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 		if err != nil {
 			return mapErr(err)
 		}
-		hashRows, err := tx.Query(ctx, `
-			SELECT blob_hash FROM messages WHERE principal_id = $1`,
-			int64(pid))
+		// Sub-principals owned by pid (REQ-SUBACCT-06): their mail and
+		// per-principal bookkeeping are cleaned up here, before the
+		// cascading delete below removes the sub-principal rows
+		// themselves (and, via their own principal_id FKs, their
+		// mailboxes/messages) -- FK cascade alone does not run blob
+		// refcount / state_changes / audit_log / queue cleanup.
+		subRows, err := tx.Query(ctx,
+			`SELECT id FROM principals WHERE parent_principal_id = $1`, int64(pid))
 		if err != nil {
 			return mapErr(err)
 		}
-		var hashes []string
-		for hashRows.Next() {
-			var h string
-			if err := hashRows.Scan(&h); err != nil {
-				hashRows.Close()
+		var subIDs []int64
+		for subRows.Next() {
+			var sid int64
+			if err := subRows.Scan(&sid); err != nil {
+				subRows.Close()
 				return mapErr(err)
 			}
-			hashes = append(hashes, h)
+			subIDs = append(subIDs, sid)
 		}
-		hashRows.Close()
-		for _, h := range hashes {
-			if err := decRef(ctx, tx, h, now); err != nil {
+		subRows.Close()
+		for _, sid := range subIDs {
+			if err := cleanupOwnedMailData(ctx, tx, sid, now); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM state_changes WHERE principal_id = $1`, int64(pid)); err != nil {
-			return mapErr(err)
-		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM audit_log WHERE principal_id = $1`, int64(pid)); err != nil {
-			return mapErr(err)
-		}
-		// Phase 2 queue rows: drop and decrement body-blob refcounts.
-		// queue.principal_id is ON DELETE SET NULL so we explicitly
-		// remove rows where this principal was the submitter; rows
-		// arising from a Sieve redirect under a different principal
-		// stay alive.
-		queueRows, err := tx.Query(ctx,
-			`SELECT body_blob_hash FROM queue WHERE principal_id = $1`, int64(pid))
-		if err != nil {
-			return mapErr(err)
-		}
-		var queueHashes []string
-		for queueRows.Next() {
-			var h string
-			if err := queueRows.Scan(&h); err != nil {
-				queueRows.Close()
-				return mapErr(err)
-			}
-			queueHashes = append(queueHashes, h)
-		}
-		queueRows.Close()
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM queue WHERE principal_id = $1`, int64(pid)); err != nil {
-			return mapErr(err)
-		}
-		for _, h := range queueHashes {
-			if h == "" {
-				continue
-			}
-			if err := decRef(ctx, tx, h, now); err != nil {
-				return err
-			}
+		if err := cleanupOwnedMailData(ctx, tx, int64(pid), now); err != nil {
+			return err
 		}
 		res, err := tx.Exec(ctx,
 			`DELETE FROM principals WHERE id = $1`, int64(pid))

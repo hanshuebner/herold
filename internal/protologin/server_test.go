@@ -157,6 +157,46 @@ func TestLogin_BadCreds_Returns401(t *testing.T) {
 	}
 }
 
+// TestLogin_SubPrincipal_Returns401 proves REQ-SUBACCT-02: a
+// sub-principal cannot obtain a session cookie via POST
+// /api/v1/auth/login, even when its row carries a verifiably-correct
+// password hash. The forced-credential write bypasses
+// InsertSubPrincipal's own refusal to persist one, so this isolates the
+// login handler's own defense (Directory.Authenticate's Kind check) from
+// "it never had a password to begin with".
+func TestLogin_SubPrincipal_Returns401(t *testing.T) {
+	t.Parallel()
+	ts, fs, dir, _, _ := newTestServer(t)
+	ctx := context.Background()
+
+	parent, err := dir.CreatePrincipal(ctx, "subparent@example.com", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("CreatePrincipal(parent): %v", err)
+	}
+	donor, err := dir.CreatePrincipal(ctx, "subdonor@example.com", "sub-account-password-cookie")
+	if err != nil {
+		t.Fatalf("CreatePrincipal(donor): %v", err)
+	}
+	donorRow, err := fs.Meta().GetPrincipalByID(ctx, donor)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(donor): %v", err)
+	}
+	subEmail := "subaccount@example.com"
+	sub, err := fs.Meta().InsertSubPrincipal(ctx, parent, store.Principal{CanonicalEmail: subEmail})
+	if err != nil {
+		t.Fatalf("InsertSubPrincipal: %v", err)
+	}
+	sub.PasswordHash = donorRow.PasswordHash
+	if err := fs.Meta().UpdatePrincipal(ctx, sub); err != nil {
+		t.Fatalf("UpdatePrincipal(force credential): %v", err)
+	}
+
+	code, _ := doLogin(t, &http.Client{}, ts.URL, subEmail, "sub-account-password-cookie", nil)
+	if code != http.StatusUnauthorized {
+		t.Errorf("sub-principal login: status=%d, want 401", code)
+	}
+}
+
 // TestLogin_MissingFields_Returns400 asserts empty email/password -> 400.
 func TestLogin_MissingFields_Returns400(t *testing.T) {
 	t.Parallel()

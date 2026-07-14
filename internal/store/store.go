@@ -129,6 +129,30 @@ type Metadata interface {
 	// principal was deleted between read and write.
 	UpdatePrincipal(ctx context.Context, p Principal) error
 
+	// InsertSubPrincipal creates a new sub-principal owned by parentID
+	// (REQ-SUBACCT-01). p supplies CanonicalEmail and DisplayName; Kind
+	// is forced to PrincipalKindSubAccount and ParentPrincipalID to
+	// parentID regardless of what the caller sets, and QuotaBytes /
+	// UsedBytes are always stored as 0 on the returned row -- the
+	// sub-account's mail counts against the parent's quota, never its
+	// own (REQ-SUBACCT-05). Returns ErrInvalidArgument if p carries a
+	// PasswordHash or TOTPSecret (REQ-SUBACCT-02: a sub-principal is
+	// never authenticatable) or if parentID identifies a principal that
+	// is itself a sub-principal (no nesting) or is not
+	// PrincipalKindUser. Returns ErrNotFound if parentID does not exist,
+	// ErrConflict on duplicate CanonicalEmail.
+	InsertSubPrincipal(ctx context.Context, parentID PrincipalID, p Principal) (Principal, error)
+
+	// ListSubPrincipals returns every sub-principal owned by parentID, in
+	// ascending ID order. Returns an empty (nil) slice when parentID has
+	// no sub-accounts or does not exist.
+	ListSubPrincipals(ctx context.Context, parentID PrincipalID) ([]Principal, error)
+
+	// GetSubPrincipalParent resolves subID's owning parent
+	// (REQ-SUBACCT-01). Returns ErrNotFound if subID does not exist or
+	// is not a sub-principal (Kind != PrincipalKindSubAccount).
+	GetSubPrincipalParent(ctx context.Context, subID PrincipalID) (Principal, error)
+
 	// GetMailboxByID returns a single mailbox. Returns ErrNotFound if
 	// no such mailbox exists.
 	GetMailboxByID(ctx context.Context, id MailboxID) (Mailbox, error)
@@ -1062,13 +1086,22 @@ type Metadata interface {
 	// not exist. Blob refcounts are decremented for every removed
 	// message so the blob GC can reclaim bytes once the grace window
 	// elapses; the method does not itself call Blobs.Delete.
+	//
+	// When pid owns sub-principals (REQ-SUBACCT-01), deleting it deletes
+	// them too, along with their mail: the same bookkeeping (blob
+	// refcount decrement, state-change / audit-log / queue cleanup) runs
+	// for each owned sub-principal in the same transaction before the
+	// cascading delete removes the sub-principal rows themselves
+	// (REQ-SUBACCT-06).
 	DeletePrincipal(ctx context.Context, pid PrincipalID) error
 
 	// ListPrincipals returns principals with ID > after, in ascending ID
 	// order, up to limit entries. Callers paginate by feeding the last
 	// returned ID back as after; a zero after starts at the first row.
 	// A non-positive limit applies the default cap of 1000; any value
-	// above 1000 is silently lowered to 1000 to bound memory.
+	// above 1000 is silently lowered to 1000 to bound memory. Excludes
+	// sub-principals (REQ-SUBACCT-06: not users, do not appear in admin
+	// principal lists or user counts).
 	ListPrincipals(ctx context.Context, after PrincipalID, limit int) ([]Principal, error)
 
 	// SearchPrincipalsByText returns principals whose DisplayName contains
@@ -1078,7 +1111,8 @@ type Metadata interface {
 	// alphabetical by DisplayName then CanonicalEmail. limit caps the result;
 	// values <= 0 are treated as 1 and values > 1000 are clamped to 1000.
 	// Used exclusively by Principal/query with a textPrefix filter
-	// (docs/design/web/architecture/07-chat-protocol.md).
+	// (docs/design/web/architecture/07-chat-protocol.md). Excludes
+	// sub-principals (REQ-SUBACCT-06).
 	SearchPrincipalsByText(ctx context.Context, prefix string, limit int) ([]Principal, error)
 
 	// SearchPrincipalsByTextInDomain is identical to SearchPrincipalsByText
@@ -1087,7 +1121,7 @@ type Metadata interface {
 	// domain is empty (or whitespace-only), the method behaves identically to
 	// SearchPrincipalsByText with no domain restriction. Used by
 	// Directory/search to provide compose-window autocomplete scoped to the
-	// caller's email domain.
+	// caller's email domain. Excludes sub-principals (REQ-SUBACCT-06).
 	SearchPrincipalsByTextInDomain(ctx context.Context, prefix, domain string, limit int) ([]Principal, error)
 
 	// GetFTSCursor returns the persisted cursor value for key, or

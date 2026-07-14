@@ -715,7 +715,23 @@ const CurrentBackupVersion = 1
 //	original sender/recipient address as a substring, so the existing
 //	address-contains search cannot find it. No new table; QueueRow
 //	gains the one field.
-const CurrentSchemaVersion = 96
+//
+// 97 — 0097_sub_principals.sql (issue #227, REQ-SUBACCT-01..11 --
+//
+//	store half). Adds principals.parent_principal_id: a nullable
+//	self-referencing FK (ON DELETE CASCADE) that turns a principals row
+//	into a sub-principal (store.PrincipalKindSubAccount) owned by an
+//	individual principal. A sub-principal carries its own Mailbox tree /
+//	Identity set / Sieve scripts / state strings by construction (same
+//	table, same per-principal machinery); it is never authenticatable
+//	(directory.Authenticate rejects it, the single seam behind session-
+//	cookie, device-token, OAuth2 authorization-code, IMAP, SMTP-
+//	submission, and ManageSieve login) and is excluded from the admin
+//	principal-list surfaces. Its mail counts against the parent's quota:
+//	InsertMessage / ReplaceMessageBody / the delete and expunge paths
+//	resolve the quota-owning principal before touching used_bytes. No
+//	new table; PrincipalRow gains the one nullable field.
+const CurrentSchemaVersion = 97
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

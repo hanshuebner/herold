@@ -77,6 +77,16 @@ const (
 	PrincipalKindGroup
 	// PrincipalKindService is a non-human API consumer (send API, webhook).
 	PrincipalKindService
+	// PrincipalKindSubAccount is a sub-principal: a mail container owned
+	// by exactly one individual principal (its ParentPrincipalID),
+	// carrying its own Mailbox tree, Identity set, Sieve scripts, and
+	// JMAP state strings (REQ-SUBACCT-01). Never authenticatable
+	// (REQ-SUBACCT-02): no auth path accepts a PrincipalKindSubAccount
+	// row, and the store rejects a credential (PasswordHash/TOTPSecret)
+	// on one. Excluded from the admin principal lists / user counts
+	// (REQ-SUBACCT-06). Its mail counts against ParentPrincipalID's
+	// quota, never its own (REQ-SUBACCT-05).
+	PrincipalKindSubAccount
 )
 
 // PrincipalFlags is a bitfield of boolean attributes on a Principal.
@@ -170,10 +180,24 @@ type Principal struct {
 	// precedence over the system default in either direction. Only
 	// kind=log and kind=vital events are gated; kind=error is always sent.
 	ClientlogTelemetryEnabled *bool
+	// ParentPrincipalID is non-zero only when Kind ==
+	// PrincipalKindSubAccount: the id of the owning individual principal
+	// (REQ-SUBACCT-01). Zero for every ordinary principal (individual,
+	// group, service). A sub-account's mail counts against this
+	// principal's quota (REQ-SUBACCT-05); the sub-principal's own
+	// QuotaBytes / UsedBytes are unused and always zero.
+	ParentPrincipalID PrincipalID
 	// CreatedAt is the instant the principal row was inserted.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation to the row.
 	UpdatedAt time.Time
+}
+
+// IsSubAccount reports whether p is a sub-principal (REQ-SUBACCT-01):
+// not itself authenticatable, and reached only via the parent's own
+// session (REQ-SUBACCT-02).
+func (p Principal) IsSubAccount() bool {
+	return p.Kind == PrincipalKindSubAccount
 }
 
 // NamedSieveScript is one entry in the per-principal multi-script

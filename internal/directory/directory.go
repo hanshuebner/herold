@@ -452,6 +452,18 @@ func (d *Directory) Authenticate(ctx context.Context, email, password string) (P
 		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
 		return 0, ErrUnauthorized
 	}
+	// A sub-principal is never authenticatable (REQ-SUBACCT-02): it
+	// carries no credential and is reached only via the parent's own
+	// session. This single check is the seam behind every password auth
+	// path -- session-cookie login, device tokens (IssueDeviceToken),
+	// the OAuth2 authorization-code grant (IssueAuthorizationCode, both
+	// via authenticateWithOptionalTOTP), and SASL PLAIN/LOGIN (IMAP,
+	// SMTP submission, ManageSieve), all of which call Authenticate.
+	if p.Kind == store.PrincipalKindSubAccount {
+		d.rl.record(key)
+		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()
+		return 0, ErrUnauthorized
+	}
 	if !verifyPassword(p.PasswordHash, password) {
 		d.rl.record(key)
 		observe.AuthAttemptsTotal.WithLabelValues("password", "fail").Inc()

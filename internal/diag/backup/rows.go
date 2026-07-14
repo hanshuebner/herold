@@ -47,6 +47,10 @@ type PrincipalRow struct {
 	AvatarBlobHash string `json:"avatar_blob_hash,omitempty" nullable:"true"`
 	AvatarBlobSize int64  `json:"avatar_blob_size,omitempty"`
 	XFaceEnabled   bool   `json:"xface_enabled,omitempty"`
+	// ParentPrincipalID is the migration-0097 sub-account substrate
+	// (issue #227, REQ-SUBACCT-01): non-nil only for a sub-principal
+	// (Kind == PrincipalKindSubAccount), naming its owning parent.
+	ParentPrincipalID *int64 `json:"parent_principal_id,omitempty" nullable:"true"`
 }
 
 // PrincipalManagedDomainRow mirrors the principal_managed_domains table
