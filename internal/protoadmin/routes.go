@@ -234,6 +234,24 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/lists/{id}/members/export", authAdmin(s.handleExportMailingListMembers))
 	mux.HandleFunc("GET /api/v1/lists/{id}/members/summary", authAdmin(s.handleMailingListMemberSummary))
 
+	// Hosted mailing lists, moderation (v2 milestone, issue #189,
+	// REQ-MLIST-80). requireAdmin here, then requireMlistModerateAccess
+	// (list:owner OR list:moderator OR domain:operator OR super-admin)
+	// inside each handler -- REQ-AC-41's wider grant set than the S1
+	// config/roster surface above accepts.
+	mux.HandleFunc("GET /api/v1/lists/{id}/held", authAdmin(s.handleListMailingListHeldPosts))
+	mux.HandleFunc("GET /api/v1/lists/{id}/held/{hid}", authAdmin(s.handleGetMailingListHeldPost))
+	mux.HandleFunc("GET /api/v1/lists/{id}/held/{hid}/raw", authAdmin(s.handleGetMailingListHeldPostRaw))
+	mux.HandleFunc("POST /api/v1/lists/{id}/held/{hid}/approve", authAdmin(s.handleApproveMailingListHeldPost))
+	mux.HandleFunc("POST /api/v1/lists/{id}/held/{hid}/reject", authAdmin(s.handleRejectMailingListHeldPost))
+	mux.HandleFunc("POST /api/v1/lists/{id}/held/{hid}/discard", authAdmin(s.handleDiscardMailingListHeldPost))
+	// list:moderator grant assignment (REQ-AC-41): owner-level access,
+	// same gate as the rest of the list-config surface above -- a
+	// moderator may action held posts but must not mint more moderators.
+	mux.HandleFunc("GET /api/v1/lists/{id}/moderators", authAdmin(s.handleListMailingListModerators))
+	mux.HandleFunc("POST /api/v1/lists/{id}/moderators", authAdmin(s.handleAddMailingListModerator))
+	mux.HandleFunc("DELETE /api/v1/lists/{id}/moderators/{pid}", authAdmin(s.handleRemoveMailingListModerator))
+
 	// External SMTP submission per-Identity credentials
 	// (REQ-AUTH-EXT-SUBMIT-04). Also registered in RegisterSelfServiceRoutes
 	// for the public listener. All four endpoints are gated by requireSelfOnly

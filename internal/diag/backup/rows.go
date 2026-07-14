@@ -334,6 +334,30 @@ type MailingListMemberRow struct {
 	AddedBy         *int64  `json:"added_by,omitempty"`
 }
 
+// MailingListHeldPostRow mirrors the mailing_list_held_post table
+// introduced in migration 0094 (issue #189, REQ-MLIST-80, moderation v2
+// milestone). FK to mailing_list(id) ON DELETE CASCADE, so restored
+// after mailing_list; DecidedBy FKs principals(id) ON DELETE SET NULL.
+// BlobHash/BlobSize name a blob backed up generically via blob_refs (see
+// manifest.go's TableNames comment); this row does not itself carry the
+// blob bytes.
+type MailingListHeldPostRow struct {
+	ID              int64  `json:"id"`
+	ListID          int64  `json:"list_id"`
+	BlobHash        string `json:"blob_hash"`
+	BlobSize        int64  `json:"blob_size"`
+	FromAddress     string `json:"from_address"`
+	Subject         string `json:"subject"`
+	MessageID       string `json:"message_id"`
+	AuthResultsJSON string `json:"auth_results_json"`
+	Reason          string `json:"reason"`
+	Status          string `json:"status"`
+	HeldAtUs        int64  `json:"held_at_us"`
+	DecidedAtUs     *int64 `json:"decided_at_us,omitempty"`
+	DecidedBy       *int64 `json:"decided_by,omitempty"`
+	DecisionNote    string `json:"decision_note"`
+}
+
 type StateChangeRow struct {
 	ID             int64  `json:"id"`
 	PrincipalID    int64  `json:"principal_id"`

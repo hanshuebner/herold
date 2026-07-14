@@ -79,6 +79,48 @@ func mlistResourceID(id store.MailingListID) string {
 	return strconv.FormatUint(uint64(id), 10)
 }
 
+// mlistModerateAccess reports whether caller may moderate held posts on
+// list l (approve/reject/discard, and read the held-post queue,
+// REQ-MLIST-80/REQ-AC-41): mlistListAccess's set (super-admin,
+// domain:operator, or list:owner) OR a bare list:moderator grant --
+// the one level the S1 admin CRUD surface (mlistListAccess) does NOT
+// accept, since REQ-AC-41 scopes it to moderation and roster-read only,
+// never config or roster-write.
+func (s *Server) mlistModerateAccess(ctx context.Context, caller store.Principal, l store.MailingList) bool {
+	if s.mlistListAccess(ctx, caller, l) {
+		return true
+	}
+	lvl, err := authz.Resolve(ctx, s.store.Meta(), caller,
+		authz.Resource{Kind: store.GrantResourceList, ID: mlistResourceID(l.ID)})
+	if err != nil {
+		return false
+	}
+	return authz.AtLeast(store.GrantResourceList, lvl, store.GrantLevelModerator)
+}
+
+// requireMlistModerateAccess writes 403 and returns false when caller
+// may not moderate list l's held posts. Callers MUST have already
+// passed requireAdmin.
+func (s *Server) requireMlistModerateAccess(w http.ResponseWriter, r *http.Request, caller store.Principal, l store.MailingList) bool {
+	if s.mlistModerateAccess(r.Context(), caller, l) {
+		return true
+	}
+	writeProblem(w, r, http.StatusForbidden, "forbidden",
+		"insufficient privileges to moderate this list", "")
+	return false
+}
+
+// requireMlistRosterReadAccess writes 403 and returns false when caller
+// may not READ list l's roster: mlistModerateAccess's set, exactly --
+// REQ-AC-41 grants list:moderator "read of the list's roster, without
+// config or roster-write authority", so roster-read shares its gate
+// with the held-post moderation surface rather than the owner-only
+// mlistListAccess gate the roster-WRITE endpoints keep. Callers MUST
+// have already passed requireAdmin.
+func (s *Server) requireMlistRosterReadAccess(w http.ResponseWriter, r *http.Request, caller store.Principal, l store.MailingList) bool {
+	return s.requireMlistModerateAccess(w, r, caller, l)
+}
+
 // mlistAuthorizedDomains returns the domains caller may list/create
 // mailing lists on: every domain via ResolveOperatorScope for a
 // domain-scoped operator, or nil (meaning "unrestricted") for a
@@ -113,6 +155,45 @@ func (s *Server) revokeListOwner(ctx context.Context, l store.MailingList, owner
 	err := s.store.Meta().DeleteGrant(ctx, store.Grant{
 		SubjectKind:  store.GrantSubjectPrincipal,
 		SubjectID:    uint64(ownerID),
+		ResourceKind: store.GrantResourceList,
+		ResourceID:   mlistResourceID(l.ID),
+		Provenance:   store.GrantProvenanceLocal,
+	})
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+// grantListModerator writes (or idempotently confirms) a list:moderator
+// grant for principalID on list l, attributing the grant to actorID
+// (REQ-AC-41, REQ-MLIST-80, issue #189: "assignable by the list:owner").
+// InsertGrant's natural key is (subject, resource, provenance) WITHOUT
+// level, so a principal that already holds any local grant on this list
+// (most notably list:owner, which already ranks above moderator per
+// REQ-AC-03's total order) is unaffected: the insert is a no-op rather
+// than downgrading an owner to moderator.
+func (s *Server) grantListModerator(ctx context.Context, l store.MailingList, principalID, actorID store.PrincipalID) error {
+	granter := actorID
+	_, err := s.store.Meta().InsertGrant(ctx, store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(principalID),
+		ResourceKind: store.GrantResourceList,
+		ResourceID:   mlistResourceID(l.ID),
+		Level:        store.GrantLevelModerator,
+		Provenance:   store.GrantProvenanceLocal,
+		GrantedBy:    &granter,
+	})
+	return err
+}
+
+// revokeListModerator deletes the local list:moderator-scope grant (of
+// whatever level) held by principalID on list l. Absent rows are not an
+// error.
+func (s *Server) revokeListModerator(ctx context.Context, l store.MailingList, principalID store.PrincipalID) error {
+	err := s.store.Meta().DeleteGrant(ctx, store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(principalID),
 		ResourceKind: store.GrantResourceList,
 		ResourceID:   mlistResourceID(l.ID),
 		Provenance:   store.GrantProvenanceLocal,

@@ -66,6 +66,17 @@ func (sess *session) expandMailingList(
 			slog.String("reason", string(result.DropReason)))
 		return
 	}
+	if result.Held {
+		// REQ-MLIST-80: the `moderated` posting policy held this post for
+		// an owner/moderator decision instead of fanning it out. As far
+		// as the accepting MTA is concerned this is still a successful
+		// RCPT (see the function doc comment above).
+		sess.log.InfoContext(ctx, "maillist: post held for moderation",
+			slog.String("activity", observe.ActivityUser),
+			slog.String("list", ml.PostingAddress),
+			slog.Uint64("held_post_id", uint64(result.HeldPostID)))
+		return
+	}
 	sess.log.InfoContext(ctx, "maillist: post fanned out",
 		slog.String("activity", observe.ActivityUser),
 		slog.String("list", ml.PostingAddress),

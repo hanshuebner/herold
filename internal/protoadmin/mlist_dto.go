@@ -236,6 +236,27 @@ func mlistStateFromString(s string) (store.MailingListMemberState, bool) {
 	}
 }
 
+// mlistPostingPolicyFromString maps the wire vocabulary to
+// store.MailingListPostingPolicy (REQ-MLIST-80, moderation v2
+// milestone, issue #189). An empty string is accepted and means "leave
+// unset" (caller resolves the store default, open).
+func mlistPostingPolicyFromString(s string) (store.MailingListPostingPolicy, bool) {
+	switch s {
+	case "":
+		return "", true
+	case string(store.MailingListPostingOpen):
+		return store.MailingListPostingOpen, true
+	case string(store.MailingListPostingMembersOnly):
+		return store.MailingListPostingMembersOnly, true
+	case string(store.MailingListPostingAnnounceOnly):
+		return store.MailingListPostingAnnounceOnly, true
+	case string(store.MailingListPostingModerated):
+		return store.MailingListPostingModerated, true
+	default:
+		return "", false
+	}
+}
+
 // mlistSubscribePolicyFromString maps the wire vocabulary to
 // store.MailingListSubscribePolicy (Stage 3, REQ-MLIST-60, issue #185).
 // An empty string is accepted and means "leave unset" (caller resolves

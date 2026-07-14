@@ -308,6 +308,11 @@ type createMailingListRequest struct {
 	// #185, REQ-MLIST-60): "closed" (the default), "request-approval",
 	// or "open". Empty/omitted keeps the store default (closed).
 	SubscribePolicy string `json:"subscribe_policy,omitempty"`
+	// PostingPolicy sets the REQ-MLIST-80 moderation-v2 posting policy
+	// (issue #189): "open" (the default), "members-only",
+	// "announce-only", or "moderated". Empty/omitted keeps the store
+	// default (open).
+	PostingPolicy string `json:"posting_policy,omitempty"`
 	// BouncePolicy overrides the REQ-MLIST-53 deployment-default bounce
 	// scoring policy for this list. Any field left unset keeps the
 	// deployment default for that field.
@@ -383,6 +388,12 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 			"subscribe_policy must be one of closed, request-approval, open", req.SubscribePolicy)
 		return
 	}
+	postingPolicy, ok := mlistPostingPolicyFromString(req.PostingPolicy)
+	if !ok {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"posting_policy must be one of open, members-only, announce-only, moderated", req.PostingPolicy)
+		return
+	}
 
 	if req.ArchiveRetentionDays < 0 || req.ArchiveRetentionMaxMessages < 0 {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
@@ -434,6 +445,7 @@ func (s *Server) handleCreateMailingList(w http.ResponseWriter, r *http.Request)
 		MaxMessageSizeBytes:         req.MaxMessageSize,
 		UnsubscribeEnabled:          unsubscribeEnabled,
 		SubscribePolicy:             subscribePolicy,
+		PostingPolicy:               postingPolicy,
 		BouncePolicyJSON:            bouncePolicyJSON,
 		ArchiveMailboxID:            archiveMailboxID,
 		ArchiveRetentionDays:        req.ArchiveRetentionDays,
@@ -488,6 +500,10 @@ type patchMailingListRequest struct {
 	// SubscribePolicy sets the Stage 3 self-subscription policy (epic
 	// #185, REQ-MLIST-60): "closed", "request-approval", or "open".
 	SubscribePolicy *string `json:"subscribe_policy,omitempty"`
+	// PostingPolicy sets the REQ-MLIST-80 moderation-v2 posting policy
+	// (issue #189): "open", "members-only", "announce-only", or
+	// "moderated".
+	PostingPolicy *string `json:"posting_policy,omitempty"`
 	// BouncePolicy, when present, patches the REQ-MLIST-53 per-list
 	// bounce-scoring policy; any of its own fields left unset keeps that
 	// field's current (or default) value.
@@ -599,6 +615,15 @@ func (s *Server) handlePatchMailingList(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		l.SubscribePolicy = policy
+	}
+	if req.PostingPolicy != nil {
+		policy, ok := mlistPostingPolicyFromString(*req.PostingPolicy)
+		if !ok || policy == "" {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+				"posting_policy must be one of open, members-only, announce-only, moderated", *req.PostingPolicy)
+			return
+		}
+		l.PostingPolicy = policy
 	}
 	if req.MaxMessageSizeBytes != nil {
 		if *req.MaxMessageSizeBytes < 0 {

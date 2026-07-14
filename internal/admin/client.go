@@ -151,6 +151,52 @@ func (c *Client) do(ctx context.Context, method, path string, body any, into any
 	return nil
 }
 
+// doRaw issues a GET (or other method with no request body) and returns
+// the raw response bytes verbatim on 2xx, without attempting a JSON
+// decode -- for endpoints that serve a non-JSON content type (e.g.
+// GET .../held/{hid}/raw's message/rfc822). Errors still decode as
+// RFC 7807 problem+json, exactly like do.
+func (c *Client) doRaw(ctx context.Context, method, path string, body any) ([]byte, error) {
+	if c == nil {
+		return nil, errors.New("admin-client: nil client")
+	}
+	var reqBody io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("admin-client: marshal: %w", err)
+		}
+		reqBody = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("admin-client: request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("admin-client: %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("admin-client: read body: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		var pd ProblemDetails
+		if err := json.Unmarshal(raw, &pd); err != nil || pd.Status == 0 {
+			pd = ProblemDetails{Status: resp.StatusCode, Title: http.StatusText(resp.StatusCode), Detail: string(raw)}
+		}
+		return nil, &pd
+	}
+	return raw, nil
+}
+
 // credentialsFile is the CLI's on-disk store of the API key. It lives
 // under the user's $HOME/.herold/ by default; tests override via
 // SetCredentialsPath.

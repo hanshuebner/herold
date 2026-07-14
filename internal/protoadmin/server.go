@@ -281,6 +281,16 @@ type Options struct {
 	// (REQ-AUTH-EXT-SUBMIT-03). Used by the OAuth start/callback endpoints.
 	OAuthProviders map[string]OAuthProviderOptions
 
+	// MailingListModerator drives the held-post moderation endpoints
+	// (POST .../held/{hid}/approve|reject|discard, REQ-MLIST-80, issue
+	// #189). Nil leaves those three endpoints returning 501; the GET
+	// (list/show/raw) endpoints work regardless since they only read the
+	// store. The production wiring passes the SAME *maillist.Expander
+	// instance the SMTP server's mailing-list expander uses
+	// (admin/server.go), so approval fans out through the identical S1
+	// path a never-held post would.
+	MailingListModerator MailingListModerator
+
 	// ExternalRetryer, when non-nil, is called after a successful OAuth
 	// token exchange persists a recovered identity (re #70,
 	// REQ-AUTH-EXT-SUBMIT-05). It retries any submissions that were

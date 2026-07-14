@@ -569,3 +569,157 @@ func (m *metadata) ListMailingListMembers(ctx context.Context, filter store.Mail
 	}
 	return out, mapErr(rows.Err())
 }
+
+// -- Hosted mailing lists, moderation (v2 milestone, issue #189,
+// REQ-MLIST-80) --------------------------------------------------------
+// Mirrors storesqlite/metadata_maillist.go's held-post methods.
+
+const mailingListHeldPostColumnsPG = `
+	id, list_id, blob_hash, blob_size, from_address, subject, message_id,
+	auth_results_json, reason, status, held_at_us, decided_at_us,
+	decided_by, decision_note`
+
+func scanMailingListHeldPostPG(row rowScanner) (store.MailingListHeldPost, error) {
+	var (
+		id, listID      int64
+		blobHash        string
+		blobSize        int64
+		fromAddress     string
+		subject         string
+		messageID       string
+		authResultsJSON string
+		reason          string
+		status          string
+		heldAtUs        int64
+		decidedAtUs     *int64
+		decidedBy       *int64
+		decisionNote    string
+	)
+	if err := row.Scan(&id, &listID, &blobHash, &blobSize, &fromAddress, &subject, &messageID,
+		&authResultsJSON, &reason, &status, &heldAtUs, &decidedAtUs, &decidedBy, &decisionNote); err != nil {
+		return store.MailingListHeldPost{}, mapErr(err)
+	}
+	h := store.MailingListHeldPost{
+		ID:              store.MailingListHeldPostID(id),
+		ListID:          store.MailingListID(listID),
+		BlobHash:        blobHash,
+		BlobSize:        blobSize,
+		FromAddress:     fromAddress,
+		Subject:         subject,
+		MessageID:       messageID,
+		AuthResultsJSON: authResultsJSON,
+		Reason:          store.MailingListHeldPostReason(reason),
+		Status:          store.MailingListHeldPostStatus(status),
+		HeldAt:          fromMicros(heldAtUs),
+		DecisionNote:    decisionNote,
+	}
+	if decidedAtUs != nil {
+		v := fromMicros(*decidedAtUs)
+		h.DecidedAt = &v
+	}
+	if decidedBy != nil {
+		v := store.PrincipalID(*decidedBy)
+		h.DecidedBy = &v
+	}
+	return h, nil
+}
+
+// InsertMailingListHeldPost implements the store.Metadata method of the
+// same name. Mirrors storesqlite: the row insert and the blob_refs
+// IncRef happen inside one transaction.
+func (m *metadata) InsertMailingListHeldPost(ctx context.Context, h store.MailingListHeldPost) (store.MailingListHeldPost, error) {
+	now := m.s.clock.Now().UTC()
+	var id int64
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			INSERT INTO mailing_list_held_post
+				(list_id, blob_hash, blob_size, from_address, subject, message_id,
+				 auth_results_json, reason, status, held_at_us)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)
+			RETURNING id`,
+			int64(h.ListID), h.BlobHash, h.BlobSize, h.FromAddress, h.Subject, h.MessageID,
+			h.AuthResultsJSON, string(h.Reason), usMicros(now))
+		if err := row.Scan(&id); err != nil {
+			return fmt.Errorf("mailing list held post: %w", mapErr(err))
+		}
+		return incRef(ctx, tx, h.BlobHash, h.BlobSize, now)
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, store.MailingListHeldPostID(id))
+}
+
+func (m *metadata) GetMailingListHeldPost(ctx context.Context, id store.MailingListHeldPostID) (store.MailingListHeldPost, error) {
+	row := m.s.pool.QueryRow(ctx,
+		`SELECT `+mailingListHeldPostColumnsPG+` FROM mailing_list_held_post WHERE id = $1`, int64(id))
+	return scanMailingListHeldPostPG(row)
+}
+
+func (m *metadata) ListMailingListHeldPosts(ctx context.Context, filter store.MailingListHeldPostFilter) ([]store.MailingListHeldPost, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	clauses := []string{"list_id = $1"}
+	args := []any{int64(filter.ListID)}
+	idx := 2
+	if filter.Status != "" {
+		clauses = append(clauses, fmt.Sprintf("status = $%d", idx))
+		args = append(args, string(filter.Status))
+		idx++
+	}
+	if filter.AfterID != 0 {
+		clauses = append(clauses, fmt.Sprintf("id > $%d", idx))
+		args = append(args, int64(filter.AfterID))
+		idx++
+	}
+	q := `SELECT ` + mailingListHeldPostColumnsPG + ` FROM mailing_list_held_post
+		WHERE ` + strings.Join(clauses, " AND ") + fmt.Sprintf(" ORDER BY id ASC LIMIT $%d", idx)
+	args = append(args, limit)
+	rows, err := m.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.MailingListHeldPost, 0)
+	for rows.Next() {
+		h, err := scanMailingListHeldPostPG(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// DecideMailingListHeldPost implements the store.Metadata method of the
+// same name. Mirrors storesqlite: the UPDATE's own WHERE status =
+// 'pending' clause is the compare-and-swap, and the blob_refs DecRef
+// happens in the same transaction as the transition.
+func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.MailingListHeldPostID, status store.MailingListHeldPostStatus, decidedBy store.PrincipalID, note string, now time.Time) (store.MailingListHeldPost, error) {
+	now = now.UTC()
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var blobHash string
+		if err := tx.QueryRow(ctx,
+			`SELECT blob_hash FROM mailing_list_held_post WHERE id = $1`, int64(id)).Scan(&blobHash); err != nil {
+			return mapErr(err)
+		}
+		ct, err := tx.Exec(ctx, `
+			UPDATE mailing_list_held_post
+			   SET status = $1, decided_at_us = $2, decided_by = $3, decision_note = $4
+			 WHERE id = $5 AND status = 'pending'`,
+			string(status), usMicros(now), int64(decidedBy), note, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		if ct.RowsAffected() == 0 {
+			return store.ErrConflict
+		}
+		return decRef(ctx, tx, blobHash, now)
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, id)
+}

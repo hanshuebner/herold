@@ -66,6 +66,24 @@ func (s *Server) loadListAndCheckAccess(w http.ResponseWriter, r *http.Request, 
 	return l, true
 }
 
+// loadListAndCheckRosterReadAccess is the prologue for the three
+// roster-READ handlers (list, export, summary): load the parent list,
+// then apply requireMlistRosterReadAccess -- REQ-AC-41's list:moderator
+// grant reads the roster even though it cannot write it, so these three
+// endpoints accept a wider grant set than loadListAndCheckAccess (which
+// the roster-WRITE handlers keep using unchanged). Callers MUST have
+// already passed requireAdmin.
+func (s *Server) loadListAndCheckRosterReadAccess(w http.ResponseWriter, r *http.Request, caller store.Principal) (store.MailingList, bool) {
+	l, ok := s.loadMailingList(w, r)
+	if !ok {
+		return store.MailingList{}, false
+	}
+	if !s.requireMlistRosterReadAccess(w, r, caller, l) {
+		return store.MailingList{}, false
+	}
+	return l, true
+}
+
 // loadMemberInList loads a roster row by {mid} and verifies it belongs to
 // l — member ids are a global sequence, so without this check a caller
 // authorized on list A could address a member row belonging to list B via
@@ -94,7 +112,7 @@ func (s *Server) handleListMailingListMembers(w http.ResponseWriter, r *http.Req
 	if !requireAdmin(w, r, caller) {
 		return
 	}
-	l, ok := s.loadListAndCheckAccess(w, r, caller)
+	l, ok := s.loadListAndCheckRosterReadAccess(w, r, caller)
 	if !ok {
 		return
 	}
@@ -503,7 +521,7 @@ func (s *Server) handleExportMailingListMembers(w http.ResponseWriter, r *http.R
 	if !requireAdmin(w, r, caller) {
 		return
 	}
-	l, ok := s.loadListAndCheckAccess(w, r, caller)
+	l, ok := s.loadListAndCheckRosterReadAccess(w, r, caller)
 	if !ok {
 		return
 	}
@@ -572,7 +590,7 @@ func (s *Server) handleMailingListMemberSummary(w http.ResponseWriter, r *http.R
 	if !requireAdmin(w, r, caller) {
 		return
 	}
-	l, ok := s.loadListAndCheckAccess(w, r, caller)
+	l, ok := s.loadListAndCheckRosterReadAccess(w, r, caller)
 	if !ok {
 		return
 	}

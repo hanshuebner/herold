@@ -790,6 +790,46 @@ type Metadata interface {
 	// are simply absent from the map.
 	CountMailingListMembersByState(ctx context.Context, listID MailingListID) (map[MailingListMemberState]int, error)
 
+	// -- Hosted mailing lists, moderation (v2 milestone, issue #189,
+	// REQ-MLIST-80) --------------------------------------------------------
+
+	// InsertMailingListHeldPost stores a new held-post row for a post that
+	// a list's posting policy held rather than fanned out or rejected.
+	// h.BlobHash/h.BlobSize identify a blob the caller has ALREADY written
+	// via Blobs.Put; InsertMailingListHeldPost registers a blob_refs
+	// reference for it (the same caller-managed IncRefBlob mechanism
+	// non-message blobs like identity avatars use) in the same
+	// transaction as the row insert, so a crash between the two can never
+	// leave the row without its blob kept alive. h.Status is always
+	// written as MailingListHeldPostPending regardless of the caller-
+	// supplied value. Returns the stored row with its assigned ID and
+	// HeldAt. Returns ErrNotFound if h.ListID does not exist.
+	InsertMailingListHeldPost(ctx context.Context, h MailingListHeldPost) (MailingListHeldPost, error)
+
+	// GetMailingListHeldPost returns the held-post row by id, or
+	// ErrNotFound.
+	GetMailingListHeldPost(ctx context.Context, id MailingListHeldPostID) (MailingListHeldPost, error)
+
+	// ListMailingListHeldPosts returns held-post rows matching filter in
+	// ascending ID order, paged via filter.AfterID/Limit — the moderation
+	// surface's "list held posts" read.
+	ListMailingListHeldPosts(ctx context.Context, filter MailingListHeldPostFilter) ([]MailingListHeldPost, error)
+
+	// DecideMailingListHeldPost atomically transitions held post id from
+	// MailingListHeldPostPending to status (approved/rejected/discarded),
+	// recording decidedBy/now/note, and releases the held-post's own
+	// blob_refs reference (DecRefBlob) in the same transaction — safe
+	// for "approved" because the caller MUST have already completed
+	// fan-out (which takes its own queue/archive references) before
+	// calling this; for "rejected"/"discarded", releasing here is what
+	// lets the blob become GC-eligible when nothing else references it.
+	// The UPDATE's own WHERE status='pending' clause is the compare-and-
+	// swap: returns ErrConflict if the row is not currently pending
+	// (already decided by a prior or concurrent call), ErrNotFound if id
+	// does not exist at all. Returns the row as it stands after the
+	// transition on success.
+	DecideMailingListHeldPost(ctx context.Context, id MailingListHeldPostID, status MailingListHeldPostStatus, decidedBy PrincipalID, note string, now time.Time) (MailingListHeldPost, error)
+
 	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
 
 	// SetOIDCProviderAuthzTrusted flips the per-provider authz_trusted

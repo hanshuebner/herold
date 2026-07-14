@@ -594,3 +594,164 @@ func (m *metadata) ListMailingListMembers(ctx context.Context, filter store.Mail
 	}
 	return out, mapErr(rows.Err())
 }
+
+// -- Hosted mailing lists, moderation (v2 milestone, issue #189,
+// REQ-MLIST-80) --------------------------------------------------------
+
+const mailingListHeldPostColumns = `
+	id, list_id, blob_hash, blob_size, from_address, subject, message_id,
+	auth_results_json, reason, status, held_at_us, decided_at_us,
+	decided_by, decision_note`
+
+func scanMailingListHeldPost(row rowScanner) (store.MailingListHeldPost, error) {
+	var (
+		id, listID      int64
+		blobHash        string
+		blobSize        int64
+		fromAddress     string
+		subject         string
+		messageID       string
+		authResultsJSON string
+		reason          string
+		status          string
+		heldAtUs        int64
+		decidedAtUs     sql.NullInt64
+		decidedBy       sql.NullInt64
+		decisionNote    string
+	)
+	if err := row.Scan(&id, &listID, &blobHash, &blobSize, &fromAddress, &subject, &messageID,
+		&authResultsJSON, &reason, &status, &heldAtUs, &decidedAtUs, &decidedBy, &decisionNote); err != nil {
+		return store.MailingListHeldPost{}, mapErr(err)
+	}
+	h := store.MailingListHeldPost{
+		ID:              store.MailingListHeldPostID(id),
+		ListID:          store.MailingListID(listID),
+		BlobHash:        blobHash,
+		BlobSize:        blobSize,
+		FromAddress:     fromAddress,
+		Subject:         subject,
+		MessageID:       messageID,
+		AuthResultsJSON: authResultsJSON,
+		Reason:          store.MailingListHeldPostReason(reason),
+		Status:          store.MailingListHeldPostStatus(status),
+		HeldAt:          fromMicros(heldAtUs),
+		DecisionNote:    decisionNote,
+	}
+	if decidedAtUs.Valid {
+		v := fromMicros(decidedAtUs.Int64)
+		h.DecidedAt = &v
+	}
+	if decidedBy.Valid {
+		v := store.PrincipalID(decidedBy.Int64)
+		h.DecidedBy = &v
+	}
+	return h, nil
+}
+
+// InsertMailingListHeldPost implements the store.Metadata method of the
+// same name: the row insert and the blob_refs IncRef happen inside one
+// transaction (mirrors the identity-avatar-blob caller-managed
+// refcounting pattern), so a crash between the two can never leave the
+// row without its blob kept alive.
+func (m *metadata) InsertMailingListHeldPost(ctx context.Context, h store.MailingListHeldPost) (store.MailingListHeldPost, error) {
+	now := m.s.clock.Now().UTC()
+	var id int64
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO mailing_list_held_post
+				(list_id, blob_hash, blob_size, from_address, subject, message_id,
+				 auth_results_json, reason, status, held_at_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+			int64(h.ListID), h.BlobHash, h.BlobSize, h.FromAddress, h.Subject, h.MessageID,
+			h.AuthResultsJSON, string(h.Reason), usMicros(now))
+		if err != nil {
+			return fmt.Errorf("mailing list held post: %w", mapErr(err))
+		}
+		lastID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("storesqlite: last insert id: %w", err)
+		}
+		id = lastID
+		return incRef(ctx, tx, h.BlobHash, h.BlobSize, now)
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, store.MailingListHeldPostID(id))
+}
+
+func (m *metadata) GetMailingListHeldPost(ctx context.Context, id store.MailingListHeldPostID) (store.MailingListHeldPost, error) {
+	row := m.s.db.QueryRowContext(ctx,
+		`SELECT `+mailingListHeldPostColumns+` FROM mailing_list_held_post WHERE id = ?`, int64(id))
+	return scanMailingListHeldPost(row)
+}
+
+func (m *metadata) ListMailingListHeldPosts(ctx context.Context, filter store.MailingListHeldPostFilter) ([]store.MailingListHeldPost, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	clauses := []string{"list_id = ?"}
+	args := []any{int64(filter.ListID)}
+	if filter.Status != "" {
+		clauses = append(clauses, "status = ?")
+		args = append(args, string(filter.Status))
+	}
+	if filter.AfterID != 0 {
+		clauses = append(clauses, "id > ?")
+		args = append(args, int64(filter.AfterID))
+	}
+	q := `SELECT ` + mailingListHeldPostColumns + ` FROM mailing_list_held_post
+		WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.MailingListHeldPost, 0)
+	for rows.Next() {
+		h, err := scanMailingListHeldPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// DecideMailingListHeldPost implements the store.Metadata method of the
+// same name: the UPDATE's own WHERE status = 'pending' clause is the
+// compare-and-swap (mirroring SuspendMailingListMemberIfActive above),
+// and the blob_refs DecRef happens in the same transaction as the
+// transition so the two can never observably diverge.
+func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.MailingListHeldPostID, status store.MailingListHeldPostStatus, decidedBy store.PrincipalID, note string, now time.Time) (store.MailingListHeldPost, error) {
+	now = now.UTC()
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var blobHash string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT blob_hash FROM mailing_list_held_post WHERE id = ?`, int64(id)).Scan(&blobHash); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE mailing_list_held_post
+			   SET status = ?, decided_at_us = ?, decided_by = ?, decision_note = ?
+			 WHERE id = ? AND status = 'pending'`,
+			string(status), usMicros(now), int64(decidedBy), note, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrConflict
+		}
+		return decRef(ctx, tx, blobHash, now)
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, id)
+}

@@ -135,6 +135,13 @@ const (
 	DropReasonAutoSubmitted DropReason = "auto_submitted"
 	// DropReasonOversize is REQ-MLIST-32.
 	DropReasonOversize DropReason = "oversize"
+	// DropReasonNotMember is REQ-MLIST-80's members-only posting policy:
+	// the poster's From: address is not an active roster member (nor the
+	// list owner).
+	DropReasonNotMember DropReason = "not_member"
+	// DropReasonNotAnnouncer is REQ-MLIST-80's announce-only posting
+	// policy: the poster's From: address is not the list owner.
+	DropReasonNotAnnouncer DropReason = "not_announcer"
 )
 
 // ExpandResult reports the outcome of one Expand call.
@@ -161,6 +168,13 @@ type ExpandResult struct {
 	// nil; also false (with a loud ERROR log) if archiving was configured
 	// but filing failed -- filing failure never drops or blocks fan-out.
 	Archived bool
+	// Held is true when the post was queued for an owner/moderator
+	// decision rather than fanned out or rejected (REQ-MLIST-80,
+	// `moderated` posting policy). Dropped and Unsealed/Archived/
+	// MemberCount are all their zero values when Held is true.
+	Held bool
+	// HeldPostID identifies the held-post row when Held is true.
+	HeldPostID store.MailingListHeldPostID
 }
 
 // Expand runs the REQ-MLIST-30..32 loop/abuse guards and, if the post
@@ -174,7 +188,6 @@ type ExpandResult struct {
 // reference it.
 func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, error) {
 	observe.RegisterMailingListMetrics()
-	start := e.Clock.Now()
 	ml := in.List
 	listLabel := ml.PostingAddress
 
@@ -193,6 +206,62 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 		observe.MailingListFanoutTotal.WithLabelValues(listLabel, string(DropReasonOversize)).Inc()
 		return ExpandResult{Dropped: true, DropReason: DropReasonOversize}, nil
 	}
+
+	// REQ-MLIST-80: the posting-policy gate runs AFTER the loop/abuse
+	// guards above (so a held or later-approved post can never become a
+	// way around them, per those guards' own "already applied to held
+	// posts" contract) and BEFORE fanOut (so a rejected or held post
+	// never reaches the queue or the archive -- fanOut is the only place
+	// either happens).
+	decision, holdReason, derr := decidePosting(ctx, e.Meta, ml, in.Parsed)
+	if derr != nil {
+		return ExpandResult{}, fmt.Errorf("maillist: posting policy check: %w", derr)
+	}
+	switch decision {
+	case PostReject:
+		reason := DropReasonNotMember
+		if ml.PostingPolicy == store.MailingListPostingAnnounceOnly {
+			reason = DropReasonNotAnnouncer
+		}
+		e.audit(ctx, ml, "maillist.post.rejected", fmt.Sprintf("reason=%s policy=%s from=%s", reason, ml.PostingPolicy, posterAddress(in.Parsed)))
+		observe.MailingListFanoutTotal.WithLabelValues(listLabel, string(reason)).Inc()
+		e.Logger.InfoContext(ctx, "maillist: post rejected by posting policy",
+			slog.String("activity", observe.ActivityUser),
+			slog.String("list", listLabel),
+			slog.String("policy", string(ml.PostingPolicy)))
+		return ExpandResult{Dropped: true, DropReason: reason}, nil
+	case PostHold:
+		held, herr := e.holdPost(ctx, ml, in, holdReason)
+		if herr != nil {
+			return ExpandResult{}, fmt.Errorf("maillist: hold post: %w", herr)
+		}
+		e.audit(ctx, ml, "maillist.post.held", fmt.Sprintf("held_post_id=%d reason=%s", held.ID, held.Reason))
+		observe.MailingListFanoutTotal.WithLabelValues(listLabel, heldOutcome).Inc()
+		e.Logger.InfoContext(ctx, "maillist: post held for moderation",
+			slog.String("activity", observe.ActivityUser),
+			slog.String("list", listLabel),
+			slog.Uint64("held_post_id", uint64(held.ID)))
+		return ExpandResult{Held: true, HeldPostID: held.ID}, nil
+	}
+
+	return e.fanOut(ctx, ml, in)
+}
+
+// fanOut shapes one fan-out copy (REQ-MLIST-20..24) and submits it to
+// the outbound queue once per active/each member, streamed incrementally
+// from the roster via store.StreamActiveEachMembers (REQ-MLIST-12): a
+// large roster is never held in memory as N full copies, only as the
+// one shaped byte slice reused across every Submit call. The queue's
+// content-addressed blob store dedups that identical slice down to one
+// stored blob (REQ-MLIST-11) regardless of how many Submit calls
+// reference it. Called for an ALLOWED post from Expand, and again from
+// ApproveHeldPost (hold.go) once an owner/moderator approves a held
+// post -- the SAME tail either way, so an approved post's List-*
+// headers, VERP, ARC seal, and archive filing are identical to a post
+// that was never held.
+func (e *Expander) fanOut(ctx context.Context, ml store.MailingList, in ExpandInput) (ExpandResult, error) {
+	start := e.Clock.Now()
+	listLabel := ml.PostingAddress
 
 	shaped := ShapeMessage(in.Raw, ml, in.Parsed.Headers.Get("Subject"))
 	unsealed := false

@@ -679,7 +679,18 @@ const CurrentBackupVersion = 1
 //	CompleteSignIn consults to derive the new principal's canonical
 //	email (local-part from the verified `email` claim, domain from this
 //	column). No new table; OIDCProviderRow gains the one field.
-const CurrentSchemaVersion = 93
+//
+// 94 — 0094_mailing_list_held_post.sql (issue #189, REQ-MLIST-80,
+//
+//	moderation v2 milestone). Adds mailing_list_held_post: a post a
+//	list's posting policy held (the `moderated` policy holds every
+//	post; `members-only`/`announce-only` reject a non-conforming post
+//	outright, no row) rather than fanning out or rejecting, pending an
+//	owner/moderator approve/reject/discard decision. The row's
+//	blob_hash/blob_size reference the held message's raw bytes in the
+//	normal content-addressed blob store, kept alive by a caller-managed
+//	blob_refs reference for as long as status stays 'pending'.
+const CurrentSchemaVersion = 94
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -783,6 +794,13 @@ var TableNames = []string{
 	// FKs mailing_list(id), restored immediately after it.
 	"mailing_list",
 	"mailing_list_member",
+	// Hosted mailing lists, moderation (v2 milestone, issue #189,
+	// REQ-MLIST-80, migration 0094). FK to mailing_list(id) ON DELETE
+	// CASCADE and principals(id) ON DELETE SET NULL (decided_by);
+	// restored after both. Its blob (blob_hash/blob_size) is backed up
+	// like any other blob-referencing row: blob_refs and the blob tree
+	// itself are handled generically, not by this table's own entry.
+	"mailing_list_held_post",
 	"messages",
 	// Phase 3 Wave 3.11 M:N message-mailbox membership (migration 0024).
 	// FK to messages(id) and mailboxes(id); restored after both parents.

@@ -28,14 +28,28 @@ type MailingListID uint64
 // MailingListMemberID identifies a mailing_list_member row.
 type MailingListMemberID uint64
 
-// MailingListPostingPolicy governs who may post to a list. S1 supports
-// only MailingListPostingOpen; members-only / announce-only / moderated
-// are reserved for a later stage (REQ-MLIST-80) and not enforced here.
+// MailingListPostingPolicy governs who may post to a list (REQ-MLIST-80,
+// the v2 moderation milestone, issue #189). internal/maillist's
+// decidePosting is the sole interpreter of these values; this package
+// only stores and validates the string.
 type MailingListPostingPolicy string
 
-// MailingListPostingOpen is the S1 posting policy: any address may post
-// (subject to the loop/abuse guards, REQ-MLIST-30..32).
-const MailingListPostingOpen MailingListPostingPolicy = "open"
+const (
+	// MailingListPostingOpen is the S1 default: any address may post
+	// (subject to the loop/abuse guards, REQ-MLIST-30..32).
+	MailingListPostingOpen MailingListPostingPolicy = "open"
+	// MailingListPostingMembersOnly restricts posting to the list's
+	// active roster members (and the list owner); a non-member post is
+	// rejected (REQ-MLIST-80).
+	MailingListPostingMembersOnly MailingListPostingPolicy = "members-only"
+	// MailingListPostingAnnounceOnly restricts posting to the list
+	// owner; every other post is rejected (REQ-MLIST-80).
+	MailingListPostingAnnounceOnly MailingListPostingPolicy = "announce-only"
+	// MailingListPostingModerated holds every post, regardless of
+	// sender, for an explicit owner/moderator approve/reject/discard
+	// decision (REQ-MLIST-80).
+	MailingListPostingModerated MailingListPostingPolicy = "moderated"
+)
 
 // MailingListSubscribePolicy governs self-service subscription (Stage 3,
 // REQ-MLIST-60). S1 lists are always MailingListSubscribeClosed; the
@@ -312,4 +326,130 @@ func StreamActiveEachMembers(ctx context.Context, m Metadata, listID MailingList
 			return nil
 		}
 	}
+}
+
+// StreamActiveMembers walks listID's active roster in ascending ID
+// order, calling fn once per member, regardless of delivery mode.
+// Unlike StreamActiveEachMembers (the fan-out entry point, which only
+// wants each-mode recipients), this is the membership-identity check
+// REQ-MLIST-80's members-only posting policy uses: a nomail (archive-
+// only) active member is still a member for posting-authorization
+// purposes even though fan-out never sends them an email copy.
+func StreamActiveMembers(ctx context.Context, m Metadata, listID MailingListID, fn func(MailingListMember) error) error {
+	after := MailingListMemberID(0)
+	for {
+		page, err := m.ListMailingListMembers(ctx, MailingListRosterFilter{
+			ListID:  listID,
+			State:   MailingListMemberActive,
+			AfterID: after,
+			Limit:   maillistStreamPageSize,
+		})
+		if err != nil {
+			return err
+		}
+		for _, mem := range page {
+			if err := fn(mem); err != nil {
+				return err
+			}
+			after = mem.ID
+		}
+		if len(page) < maillistStreamPageSize {
+			return nil
+		}
+	}
+}
+
+// -- Hosted mailing lists, moderation (v2 milestone, issue #189,
+// REQ-MLIST-80) -------------------------------------------------------
+
+// MailingListHeldPostID identifies a mailing_list_held_post row.
+type MailingListHeldPostID uint64
+
+// MailingListHeldPostStatus is a held post's lifecycle state.
+type MailingListHeldPostStatus string
+
+const (
+	// MailingListHeldPostPending awaits an owner/moderator decision. The
+	// only state a post is ever created in.
+	MailingListHeldPostPending MailingListHeldPostStatus = "pending"
+	// MailingListHeldPostApproved was fanned out through the normal S1
+	// path after an owner/moderator decision.
+	MailingListHeldPostApproved MailingListHeldPostStatus = "approved"
+	// MailingListHeldPostRejected was declined by an owner/moderator;
+	// never fanned out.
+	MailingListHeldPostRejected MailingListHeldPostStatus = "rejected"
+	// MailingListHeldPostDiscarded was silently dropped by an
+	// owner/moderator; never fanned out. Distinct from Rejected only in
+	// the operator-visible label/audit action.
+	MailingListHeldPostDiscarded MailingListHeldPostStatus = "discarded"
+)
+
+// MailingListHeldPostReason names why a post was held. Today the only
+// producer is the moderated posting policy; the type leaves room for a
+// future reason (e.g. a content filter) without a schema change.
+type MailingListHeldPostReason string
+
+// MailingListHeldReasonModerated is REQ-MLIST-80's "moderated" posting
+// policy: every post is held regardless of sender.
+const MailingListHeldReasonModerated MailingListHeldPostReason = "moderated"
+
+// MailingListHeldPost is one row of the mailing_list_held_post table: a
+// post a list's posting policy held instead of fanning out or rejecting
+// (REQ-MLIST-80). The row, not an in-memory queue, is what makes a held
+// post survive a restart. BlobHash/BlobSize identify the post's raw
+// message bytes in the content-addressed blob store, kept alive by a
+// caller-managed blob_refs reference for as long as Status is Pending.
+type MailingListHeldPost struct {
+	// ID is the assigned primary key.
+	ID MailingListHeldPostID
+	// ListID is the owning list.
+	ListID MailingListID
+	// BlobHash / BlobSize identify the held post's raw message bytes
+	// (header block + body, CRLF-terminated — the same shape
+	// ExpandInput.Raw carries), stored via the normal content-addressed
+	// blob store.
+	BlobHash string
+	BlobSize int64
+	// FromAddress is the lowercased RFC 5322 From: address of the
+	// poster, used for display and re-derivable from the blob but kept
+	// denormalised so the moderation list view needs no blob read.
+	FromAddress string
+	// Subject / MessageID are likewise denormalised from the held
+	// message's headers for the moderation list view.
+	Subject   string
+	MessageID string
+	// AuthResultsJSON is the JSON encoding of the held message's
+	// mailauth.AuthResults (this package does not import mailauth;
+	// internal/maillist marshals/unmarshals it), preserved so approval
+	// can ARC-seal with the SAME "prior" hop the post would have carried
+	// had it been allowed immediately.
+	AuthResultsJSON string
+	// Reason names why the post was held.
+	Reason MailingListHeldPostReason
+	// Status is the row's lifecycle state.
+	Status MailingListHeldPostStatus
+	// HeldAt is the instant the row was inserted.
+	HeldAt time.Time
+	// DecidedAt / DecidedBy / DecisionNote are set together when Status
+	// leaves Pending. DecidedBy is nil while Pending, or if the deciding
+	// principal was later deleted (ON DELETE SET NULL).
+	DecidedAt    *time.Time
+	DecidedBy    *PrincipalID
+	DecisionNote string
+}
+
+// MailingListHeldPostFilter narrows a ListMailingListHeldPosts read.
+type MailingListHeldPostFilter struct {
+	// ListID restricts to one list. Always required by callers in
+	// practice; the zero value matches no rows (list ids start at 1).
+	ListID MailingListID
+	// Status, when non-empty, restricts to that status. Empty means no
+	// status constraint. Callers building the moderation queue pass
+	// MailingListHeldPostPending.
+	Status MailingListHeldPostStatus
+	// Limit caps the result set (default and max 1000).
+	Limit int
+	// AfterID is the keyset cursor: rows whose ID > AfterID. Zero starts
+	// at the first row.
+	AfterID MailingListHeldPostID
 }

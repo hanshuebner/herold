@@ -891,6 +891,13 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		},
 		IMAPImportDataKey: imapImportDataKey,
 		IMAPImportStatus:  imapImportPoolStatusAdapter{pool: imapImportPool},
+		// Mailing-list moderation (v2 milestone, issue #189, REQ-MLIST-80):
+		// the SAME Expander instance the SMTP server's mailing-list
+		// expander uses (SetMailingListExpander above), so an approved
+		// held post fans out through the identical S1 path a never-held
+		// post would -- same List-* headers, VERP, ARC seal, and archive
+		// filing.
+		MailingListModerator: mlistExpander,
 		// Translation proxy (re #84): operator opt-in [translation] block.
 		// When absent or disabled, POST /api/v1/translate returns 501 with
 		// the stable "translation_not_configured" code and the Suite hides

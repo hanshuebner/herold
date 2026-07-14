@@ -24,7 +24,8 @@ func newListCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use: "list",
 		Short: "mailing list management (create, delete, list, show, rename, set, member-add, member-set, " +
-			"member-approve, member-reject, member-remove, member-summary, members)",
+			"member-approve, member-reject, member-remove, member-summary, members, held, held-show, held-raw, " +
+			"held-approve, held-reject, held-discard, moderators, moderator-add, moderator-remove)",
 	}
 
 	createCmd := &cobra.Command{
@@ -69,6 +70,9 @@ func newListCmd() *cobra.Command {
 			if sp, _ := cmd.Flags().GetString("subscribe-policy"); sp != "" {
 				body["subscribe_policy"] = sp
 			}
+			if pp, _ := cmd.Flags().GetString("posting-policy"); pp != "" {
+				body["posting_policy"] = pp
+			}
 			if cmd.Flags().Changed("archive-enabled") {
 				v, _ := cmd.Flags().GetBool("archive-enabled")
 				body["archive_enabled"] = v
@@ -97,6 +101,7 @@ func newListCmd() *cobra.Command {
 	createCmd.Flags().String("max-size", "", "per-post size ceiling (accepts K/M/G/T suffixes; default: deployment default)")
 	createCmd.Flags().Bool("unsubscribe-enabled", true, "emit List-Unsubscribe / RFC 8058 one-click headers and the self-service management page (REQ-MLIST-56..58)")
 	createCmd.Flags().String("subscribe-policy", "", "self-subscription policy: closed, request-approval, open (default: closed, REQ-MLIST-60)")
+	createCmd.Flags().String("posting-policy", "", "posting policy: open, members-only, announce-only, moderated (default: open, REQ-MLIST-80)")
 	createCmd.Flags().Bool("archive-enabled", false, "create the list's archive mailbox (REQ-MLIST-70)")
 	createCmd.Flags().Int64("archive-retention-days", 0, "archive retention age bound in days; 0 means unbounded (REQ-MLIST-74)")
 	createCmd.Flags().Int64("archive-retention-max-messages", 0, "archive retention count bound; 0 means unbounded (REQ-MLIST-74)")
@@ -195,9 +200,10 @@ func newListCmd() *cobra.Command {
 	})
 
 	setCmd := &cobra.Command{
-		Use:   "set <list-id>",
-		Short: "update a mailing list's config (display-name, subject-tag, arc-seal, max-size, owner, unsubscribe-enabled, subscribe-policy, archive-*)",
-		Args:  cobra.ExactArgs(1),
+		Use: "set <list-id>",
+		Short: "update a mailing list's config (display-name, subject-tag, arc-seal, max-size, owner, " +
+			"unsubscribe-enabled, subscribe-policy, posting-policy, archive-*)",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g := globals(cmd.Context())
 			client, err := clientFromGlobals(g)
@@ -241,6 +247,10 @@ func newListCmd() *cobra.Command {
 				v, _ := cmd.Flags().GetString("subscribe-policy")
 				body["subscribe_policy"] = v
 			}
+			if cmd.Flags().Changed("posting-policy") {
+				v, _ := cmd.Flags().GetString("posting-policy")
+				body["posting_policy"] = v
+			}
 			if cmd.Flags().Changed("archive-enabled") {
 				v, _ := cmd.Flags().GetBool("archive-enabled")
 				body["archive_enabled"] = v
@@ -258,7 +268,7 @@ func newListCmd() *cobra.Command {
 			}
 			if len(body) == 0 {
 				return errors.New("list set: at least one of --display-name, --subject-tag, --arc-seal, --max-size, --owner, " +
-					"--unsubscribe-enabled, --subscribe-policy, --archive-enabled, --archive-retention-days, " +
+					"--unsubscribe-enabled, --subscribe-policy, --posting-policy, --archive-enabled, --archive-retention-days, " +
 					"--archive-retention-max-messages, --bounce-* is required")
 			}
 			var out map[string]any
@@ -275,6 +285,7 @@ func newListCmd() *cobra.Command {
 	setCmd.Flags().String("owner", "", "reassign ownership to this principal (email or id)")
 	setCmd.Flags().Bool("unsubscribe-enabled", true, "emit List-Unsubscribe / RFC 8058 one-click headers and the self-service management page (REQ-MLIST-56..58)")
 	setCmd.Flags().String("subscribe-policy", "", "self-subscription policy: closed, request-approval, open (REQ-MLIST-60)")
+	setCmd.Flags().String("posting-policy", "", "posting policy: open, members-only, announce-only, moderated (REQ-MLIST-80)")
 	setCmd.Flags().Bool("archive-enabled", false, "enable (true) or disable (false) the list's archive mailbox (REQ-MLIST-70); disabling detaches read access but keeps the mailbox and its content")
 	setCmd.Flags().Int64("archive-retention-days", 0, "archive retention age bound in days; 0 means unbounded (REQ-MLIST-74)")
 	setCmd.Flags().Int64("archive-retention-max-messages", 0, "archive retention count bound; 0 means unbounded (REQ-MLIST-74)")
@@ -492,6 +503,222 @@ func newListCmd() *cobra.Command {
 	membersCmd.Flags().String("out", "", "write the JSON response to this file instead of stdout (pairs with --export for bulk backup)")
 	membersCmd.Flags().String("import", "", "bulk-import members from a JSON file (accepts the shape 'members --export --out' writes)")
 	c.AddCommand(membersCmd)
+
+	// Moderation (v2 milestone, issue #189, REQ-MLIST-80/REQ-AC-41): the
+	// held-post queue and approve/reject/discard, plus assigning the
+	// list:moderator grant. Mirrors /api/v1/lists/{id}/held and
+	// /api/v1/lists/{id}/moderators.
+	heldCmd := &cobra.Command{
+		Use:   "held <list-id>",
+		Short: "list held posts awaiting moderation (optionally filtered by --status)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			path := fmt.Sprintf("/api/v1/lists/%s/held", args[0])
+			sep := "?"
+			if st, _ := cmd.Flags().GetString("status"); st != "" {
+				path += sep + "status=" + st
+				sep = "&"
+			}
+			if after, _ := cmd.Flags().GetString("after"); after != "" {
+				path += sep + "after=" + after
+				sep = "&"
+			}
+			if limit, _ := cmd.Flags().GetInt("limit"); limit > 0 {
+				path += sep + fmt.Sprintf("limit=%d", limit)
+			}
+			var out map[string]any
+			if err := client.do(cmd.Context(), "GET", path, nil, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	}
+	heldCmd.Flags().String("status", "", "filter by status (pending, approved, rejected, discarded); default: all")
+	heldCmd.Flags().String("after", "", "pagination cursor")
+	heldCmd.Flags().Int("limit", 0, "page size")
+	c.AddCommand(heldCmd)
+
+	c.AddCommand(&cobra.Command{
+		Use:   "held-show <list-id> <held-post-id>",
+		Short: "show one held post's metadata (from, subject, status, reason)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/held/%s", args[0], args[1])
+			if err := client.do(cmd.Context(), "GET", path, nil, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	heldRawCmd := &cobra.Command{
+		Use:   "held-raw <list-id> <held-post-id>",
+		Short: "write a held post's raw message/rfc822 bytes to --out (or stdout)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			path := fmt.Sprintf("/api/v1/lists/%s/held/%s/raw", args[0], args[1])
+			raw, err := client.doRaw(cmd.Context(), "GET", path, nil)
+			if err != nil {
+				return wrapPendingRESTError(err)
+			}
+			if outFile, _ := cmd.Flags().GetString("out"); outFile != "" {
+				if err := os.WriteFile(outFile, raw, 0o600); err != nil {
+					return fmt.Errorf("list held-raw: %w", err)
+				}
+				writeLine(cmd.OutOrStdout(), g, "wrote "+outFile)
+				return nil
+			}
+			_, err = cmd.OutOrStdout().Write(raw)
+			return err
+		},
+	}
+	heldRawCmd.Flags().String("out", "", "write to this file instead of stdout")
+	c.AddCommand(heldRawCmd)
+
+	c.AddCommand(&cobra.Command{
+		Use:   "held-approve <list-id> <held-post-id>",
+		Short: "approve a held post: fans out through the normal path (REQ-MLIST-80)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/held/%s/approve", args[0], args[1])
+			if err := client.do(cmd.Context(), "POST", path, nil, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	heldRejectCmd := &cobra.Command{
+		Use:   "held-reject <list-id> <held-post-id>",
+		Short: "reject a held post: never fanned out (REQ-MLIST-80)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			body := map[string]any{}
+			if note, _ := cmd.Flags().GetString("note"); note != "" {
+				body["note"] = note
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/held/%s/reject", args[0], args[1])
+			if err := client.do(cmd.Context(), "POST", path, body, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	}
+	heldRejectCmd.Flags().String("note", "", "optional moderator note recorded on the decision")
+	c.AddCommand(heldRejectCmd)
+
+	heldDiscardCmd := &cobra.Command{
+		Use:   "held-discard <list-id> <held-post-id>",
+		Short: "discard a held post: never fanned out (REQ-MLIST-80)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			body := map[string]any{}
+			if note, _ := cmd.Flags().GetString("note"); note != "" {
+				body["note"] = note
+			}
+			var out map[string]any
+			path := fmt.Sprintf("/api/v1/lists/%s/held/%s/discard", args[0], args[1])
+			if err := client.do(cmd.Context(), "POST", path, body, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	}
+	heldDiscardCmd.Flags().String("note", "", "optional moderator note recorded on the decision")
+	c.AddCommand(heldDiscardCmd)
+
+	c.AddCommand(&cobra.Command{
+		Use:   "moderators <list-id>",
+		Short: "show the list:moderator grants on a list (REQ-AC-41)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			var out map[string]any
+			if err := client.do(cmd.Context(), "GET", fmt.Sprintf("/api/v1/lists/%s/moderators", args[0]), nil, &out); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, out)
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "moderator-add <list-id> <principal>",
+		Short: "grant list:moderator (approve/reject/discard held posts, read the roster) to a principal (REQ-AC-41)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[1])
+			if err != nil {
+				return fmt.Errorf("list moderator-add: %w", err)
+			}
+			path := fmt.Sprintf("/api/v1/lists/%s/moderators", args[0])
+			if err := client.do(cmd.Context(), "POST", path, map[string]any{"principal_id": mustParseUint(pid)}, nil); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "moderator granted: "+args[1])
+			return nil
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "moderator-remove <list-id> <principal-id>",
+		Short: "revoke a principal's list:moderator grant",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			client, err := clientFromGlobals(g)
+			if err != nil {
+				return err
+			}
+			path := fmt.Sprintf("/api/v1/lists/%s/moderators/%s", args[0], args[1])
+			if err := client.do(cmd.Context(), "DELETE", path, nil, nil); err != nil {
+				return wrapPendingRESTError(err)
+			}
+			writeLine(cmd.OutOrStdout(), g, "moderator revoked: "+args[1])
+			return nil
+		},
+	})
 
 	return c
 }
