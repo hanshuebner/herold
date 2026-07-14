@@ -19,6 +19,7 @@
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
   import { labelForeground } from '../lib/mail/label-color';
+  import { threadSubject } from '../lib/mail/thread-subject';
   import ArchiveIcon from '../lib/icons/ArchiveIcon.svelte';
   import TrashIcon from '../lib/icons/TrashIcon.svelte';
   import MarkReadIcon from '../lib/icons/MarkReadIcon.svelte';
@@ -786,6 +787,22 @@
   }
 
   /**
+   * Stable list-row subject (re #246). A collapsed thread's representative
+   * email is chosen server-side as the newest message in the thread
+   * (`collapseByThread`, RFC 8621 §4.4.3) -- when that newest message is a
+   * delivery-failure bounce/DSN, its own subject would retitle the whole
+   * row. Uses the same `threadSubject()` stable-subject rule ThreadReader's
+   * header and ThreadWindowView already apply to the opened thread, over
+   * the same `threadEmails()` membership, so the row and the opened thread
+   * always agree.
+   */
+  function rowSubject(email: Email): string {
+    const emails = mail.threadEmails(email.threadId);
+    const fallback = email.subject || '(no subject)';
+    return emails.length > 0 ? threadSubject(emails, fallback) : fallback;
+  }
+
+  /**
    * Returns the deduplicated logical-message count for the thread containing
    * this email, or 0 when thread data has not been loaded yet. Uses the
    * committed snapshot length when available (after the thread has been
@@ -1203,7 +1220,7 @@
                     aria-label={t('mail.list.internalizePending.tooltip')}
                   ><ImageIcon size={14} /></span>
                 {/if}
-                <span class="subject">{email.subject || '(no subject)'}</span>
+                <span class="subject">{rowSubject(email)}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
               <span class="attachment" aria-hidden={!email.hasAttachment}>
@@ -1555,7 +1572,7 @@
                     aria-label={t('mail.list.internalizePending.tooltip')}
                   ><ImageIcon size={14} /></span>
                 {/if}
-                <span class="subject">{email.subject || '(no subject)'}</span>
+                <span class="subject">{rowSubject(email)}</span>
                 <span class="preview"> — {email.preview}</span>
               </span>
               <span class="attachment" aria-hidden={!email.hasAttachment}>

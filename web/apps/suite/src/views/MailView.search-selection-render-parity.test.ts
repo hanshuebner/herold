@@ -99,6 +99,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     clearSearchHistory: vi.fn(),
     runSearch: vi.fn().mockResolvedValue(undefined),
     threadDedupeCount: vi.fn().mockReturnValue(1),
+    threadEmails: vi.fn().mockReturnValue([]),
     customMailboxes: [],
   },
 }));

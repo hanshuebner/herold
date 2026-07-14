@@ -502,6 +502,7 @@ class MailStore {
     //     whose emailIds intersect the changed set.
     const refreshAllThreads =
       delta === null || delta.created.size > 0;
+    const refreshedThreadIds: string[] = [];
     for (const [tid, status] of this.threadLoadStatus) {
       if (status !== 'ready') continue;
       let needsRefresh = refreshAllThreads;
@@ -516,6 +517,7 @@ class MailStore {
         }
       }
       if (needsRefresh) {
+        refreshedThreadIds.push(tid);
         tasks.push(
           this.refreshThread(tid).catch((err) => {
             console.error('thread refresh after state change failed', err);
@@ -525,6 +527,19 @@ class MailStore {
     }
     if (tasks.length > 0) await Promise.all(tasks);
     this.emailState = newState;
+
+    // Background arrivals into a ready-but-not-open thread (re #246): a
+    // reply/bounce that threads into a cached thread the user previously
+    // opened but is not currently reading has no banner UI to gate it
+    // behind, so surface it in that thread's membership/count as soon as
+    // refreshThread() above has fetched the live Thread.emailIds. The
+    // currently-open thread is excluded -- #processFreshArrivals below
+    // owns its commit/gate/banner flow so "Neue Antwort anzeigen" still
+    // defers freshly-arrived external messages until the user accepts them.
+    for (const tid of refreshedThreadIds) {
+      if (tid === this.openThreadId) continue;
+      this.#syncCommittedSnapshotToLive(tid);
+    }
 
     // REQ-EXTIMG-BG-INTERNAL-32: the settings → privacy "Image processing"
     // section's pending count (REQ-EXTIMG-BG-32) is no longer refreshed
@@ -699,6 +714,31 @@ class MailStore {
     if (toAdd.length === 0) return;
     const next = new Map(this.committedThreadEmailIds);
     next.set(threadId, [...existing, ...toAdd]);
+    this.committedThreadEmailIds = next;
+  }
+
+  /**
+   * Advance `threadId`'s committed snapshot to include any ids present in
+   * the just-refreshed live `Thread.emailIds` but missing from the
+   * snapshot (re #246). Used for threads that are `ready` but not the
+   * currently-open thread: unlike the open thread, there is no "Neue
+   * Antwort anzeigen" banner to gate a background arrival behind, so
+   * `threadEmails()`/`threadDedupeCount()` should reflect the live
+   * membership immediately rather than staying pinned to whatever was
+   * committed on the thread's last cold load or last accepted arrival.
+   * No-op if the thread has never been cold-loaded (no committed entry
+   * yet) or its live membership hasn't grown.
+   */
+  #syncCommittedSnapshotToLive(threadId: string): void {
+    const existing = this.committedThreadEmailIds.get(threadId);
+    if (existing === undefined) return;
+    const thread = this.threads.get(threadId);
+    if (!thread) return;
+    const existingSet = new Set(existing);
+    const newIds = thread.emailIds.filter((id) => !existingSet.has(id));
+    if (newIds.length === 0) return;
+    const next = new Map(this.committedThreadEmailIds);
+    next.set(threadId, [...existing, ...newIds]);
     this.committedThreadEmailIds = next;
   }
 
