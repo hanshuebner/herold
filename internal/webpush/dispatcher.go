@@ -458,7 +458,7 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		}
 		decision := Evaluate(ctx, rules, d.store, ev, d.clock.Now())
 		if !decision.Allow {
-			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_by_rule").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_by_rule", string(sub.Transport.Normalized())).Inc()
 			d.logger.LogAttrs(ctx, slog.LevelDebug,
 				"webpush: dropped by rule",
 				slog.Uint64("subscription", uint64(sub.ID)),
@@ -476,7 +476,7 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		// auto-prune the row.
 		if vapidPub != "" && sub.VAPIDKeyAtRegistration != "" &&
 			sub.VAPIDKeyAtRegistration != vapidPub {
-			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_no_match_vapid", string(sub.Transport.Normalized())).Inc()
 			d.logger.LogAttrs(ctx, slog.LevelWarn,
 				"webpush: subscription stale; client must re-register",
 				slog.Uint64("subscription", uint64(sub.ID)),
@@ -559,13 +559,13 @@ func (d *Dispatcher) sendOne(
 	switch out, entered := d.rl.Allow(sub.ID); out {
 	case rateOK:
 	case rateBucketExhausted:
-		observe.WebPushDeliveriesTotal.WithLabelValues("rate_limited").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("rate_limited", string(sub.Transport.Normalized())).Inc()
 		return
 	case rateDailyExhausted:
-		observe.WebPushDeliveriesTotal.WithLabelValues("rate_limited").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("rate_limited", string(sub.Transport.Normalized())).Inc()
 		return
 	case rateCooldown:
-		observe.WebPushDeliveriesTotal.WithLabelValues("cooldown").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("cooldown", string(sub.Transport.Normalized())).Inc()
 		if entered {
 			d.logger.LogAttrs(ctx, slog.LevelWarn,
 				"webpush: subscription entered cooldown (sustained excess)",
@@ -595,10 +595,17 @@ func (d *Dispatcher) sendOne(
 }
 
 // dispatchDeliver routes to the transport-specific delivery path
-// (re #200). Every subscription reaches here having already passed
-// the shared rule-evaluation, rate-limit, and coalescing gates in
-// sendOne / flushCoalesced — only the low-level "how do I actually
-// reach this device" step differs between Web Push and FCM.
+// (re #200, #236). Every subscription reaches here having already
+// passed the shared rule-evaluation, rate-limit, and coalescing gates
+// in sendOne / flushCoalesced — only the low-level "how do I actually
+// reach this device" step differs across transports.
+//
+// PushTransportUnifiedPush (re #236) reuses `deliver` -- the same
+// RFC 8030/8291 encrypt + POST + retry/backoff + coalesce +
+// unregister-on-410/404 path Web Push uses -- with the VAPID
+// `Authorization` header suppressed at post() time. That header is
+// the only wire difference between the two transports, so there is no
+// separate deliverUnifiedPush to keep in sync.
 func (d *Dispatcher) dispatchDeliver(
 	ctx context.Context,
 	sub store.PushSubscription,
@@ -608,8 +615,21 @@ func (d *Dispatcher) dispatchDeliver(
 	switch sub.Transport.Normalized() {
 	case store.PushTransportFCM:
 		d.deliverFCM(ctx, sub, payload, coalesceTag, urgency)
+	case store.PushTransportUnifiedPush:
+		d.deliver(ctx, sub, payload, coalesceTag, urgency, true)
+	case store.PushTransportWebPush:
+		d.deliver(ctx, sub, payload, coalesceTag, urgency, false)
 	default:
-		d.deliver(ctx, sub, payload, coalesceTag, urgency)
+		// An unrecognised transport value is a logged rejection, never
+		// a silent Web Push delivery (re #236) -- a row whose transport
+		// the JMAP /set handler never validated must not receive a
+		// VAPID-authenticated POST as if it were an ordinary Web Push
+		// endpoint.
+		d.logger.LogAttrs(ctx, slog.LevelWarn,
+			"webpush: unrecognised push transport; dropping delivery",
+			slog.Uint64("subscription", uint64(sub.ID)),
+			slog.String("transport", string(sub.Transport)))
+		observe.WebPushDeliveriesTotal.WithLabelValues("rejected", "unknown").Inc()
 	}
 }
 
@@ -827,7 +847,11 @@ func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSub
 	if sub.Transport.Normalized() == store.PushTransportFCM {
 		return d.sendVerificationPingFCM(ctx, sub)
 	}
-	if !d.vapid.Configured() {
+	transport := string(sub.Transport.Normalized())
+	// UnifiedPush (re #236) shares this whole path with Web Push --
+	// only the VAPID Authorization header is omitted, at post() time.
+	suppressAuth := sub.Transport.Normalized() == store.PushTransportUnifiedPush
+	if !suppressAuth && !d.vapid.Configured() {
 		return vapid.ErrNotConfigured
 	}
 	// RFC 8620 §7.2.1 PushVerification: a push-subscription record's
@@ -848,7 +872,7 @@ func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSub
 			return fmt.Errorf("webpush: encrypt verification: %w", err)
 		}
 	}
-	resp, err := d.post(ctx, sub, payload, "", "high", encrypted)
+	resp, err := d.post(ctx, sub, payload, "", "high", encrypted, suppressAuth)
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: verification ping failed",
 			slog.Uint64("subscription", uint64(sub.ID)),
@@ -858,15 +882,15 @@ func (d *Dispatcher) SendVerificationPing(ctx context.Context, sub store.PushSub
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		observe.WebPushDeliveriesTotal.WithLabelValues("success").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("success", transport).Inc()
 		return nil
 	case resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound:
-		observe.WebPushDeliveriesTotal.WithLabelValues("gone").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("gone", transport).Inc()
 		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 		d.rl.Forget(sub.ID)
 		return fmt.Errorf("webpush: gateway returned %d on verification ping; subscription deleted", resp.StatusCode)
 	default:
-		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("rejected", transport).Inc()
 		return fmt.Errorf("webpush: gateway returned %d on verification ping", resp.StatusCode)
 	}
 }
@@ -903,28 +927,33 @@ func (d *Dispatcher) sendVerificationPingFCM(ctx context.Context, sub store.Push
 	}
 	switch {
 	case status >= 200 && status < 300:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success", "fcm").Inc()
 		return nil
 	case status == http.StatusNotFound:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone", "fcm").Inc()
 		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 		d.rl.Forget(sub.ID)
 		return fmt.Errorf("webpush: fcm returned %d on verification ping; subscription deleted", status)
 	default:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected", "fcm").Inc()
 		return fmt.Errorf("webpush: fcm returned %d on verification ping", status)
 	}
 }
 
 // deliver runs the encrypt + POST path for a non-verification push.
-// Outcome handling per REQ-PROTO-123 lives here.
+// Outcome handling per REQ-PROTO-123 lives here. suppressAuth (re
+// #236) omits the VAPID `Authorization` header at post() time -- the
+// only wire difference between the Web Push and UnifiedPush
+// transports, both of which call deliver unchanged.
 func (d *Dispatcher) deliver(
 	ctx context.Context,
 	sub store.PushSubscription,
 	payload []byte,
 	coalesceTag string,
 	urgency string,
+	suppressAuth bool,
 ) {
+	transport := string(sub.Transport.Normalized())
 	// Same keys-optional split as SendVerificationPing: encrypt only
 	// when the client provided Web Push (RFC 8291) keys. Without keys
 	// the JSON body is posted as plaintext (RFC 8620 §7.2.1).
@@ -937,17 +966,17 @@ func (d *Dispatcher) deliver(
 			d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: encrypt",
 				slog.Uint64("subscription", uint64(sub.ID)),
 				slog.String("err", err.Error()))
-			observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("rejected", transport).Inc()
 			return
 		}
 	}
 	startedAt := d.clock.Now()
-	resp, err := d.post(ctx, sub, body, coalesceTag, urgency, encrypted)
+	resp, err := d.post(ctx, sub, body, coalesceTag, urgency, encrypted, suppressAuth)
 	if err != nil {
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: post",
 			slog.Uint64("subscription", uint64(sub.ID)),
 			slog.String("err", err.Error()))
-		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("rejected", transport).Inc()
 		d.scheduleRetry(sub, true)
 		return
 	}
@@ -956,7 +985,7 @@ func (d *Dispatcher) deliver(
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		observe.WebPushDeliveriesTotal.WithLabelValues("success").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("success", transport).Inc()
 		d.clearRetry(sub.ID)
 		d.markCoalesceSent(sub.ID, coalesceTag)
 		// Best-effort touch of UpdatedAt by a no-op update; the
@@ -966,29 +995,29 @@ func (d *Dispatcher) deliver(
 		// not fatal — the success metric has already incremented.
 		_ = d.store.Meta().UpdatePushSubscription(ctx, sub)
 	case resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound:
-		observe.WebPushDeliveriesTotal.WithLabelValues("gone").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("gone", transport).Inc()
 		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 		d.clearRetry(sub.ID)
 		d.dropCoalesce(sub.ID)
 		d.rl.Forget(sub.ID)
 	case resp.StatusCode >= 500:
-		observe.WebPushDeliveriesTotal.WithLabelValues("retry").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("retry", transport).Inc()
 		d.scheduleRetry(sub, true)
 	case resp.StatusCode >= 400:
 		// 4xx other than 410/404: bounded retry, then destroy.
 		exhausted := d.scheduleRetry(sub, false)
 		if exhausted {
-			observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("rejected", transport).Inc()
 			_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 			d.clearRetry(sub.ID)
 			d.dropCoalesce(sub.ID)
 			d.rl.Forget(sub.ID)
 		} else {
-			observe.WebPushDeliveriesTotal.WithLabelValues("retry").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("retry", transport).Inc()
 		}
 	default:
 		// 1xx / 3xx: unexpected. Log and treat as non-success.
-		observe.WebPushDeliveriesTotal.WithLabelValues("rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("rejected", transport).Inc()
 	}
 }
 
@@ -1027,7 +1056,7 @@ func (d *Dispatcher) deliverFCM(
 		d.logger.LogAttrs(ctx, slog.LevelWarn,
 			"webpush: FCM transport not configured; dropping FCM subscription's push",
 			slog.Uint64("subscription", uint64(sub.ID)))
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_not_configured").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_not_configured", "fcm").Inc()
 		return
 	}
 	startedAt := d.clock.Now()
@@ -1040,7 +1069,7 @@ func (d *Dispatcher) deliverFCM(
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm send",
 			slog.Uint64("subscription", uint64(sub.ID)),
 			slog.String("err", err.Error()))
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected", "fcm").Inc()
 		d.scheduleRetry(sub, true)
 		return
 	}
@@ -1048,32 +1077,32 @@ func (d *Dispatcher) deliverFCM(
 
 	switch {
 	case status >= 200 && status < 300:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_success", "fcm").Inc()
 		d.clearRetry(sub.ID)
 		d.markCoalesceSent(sub.ID, coalesceTag)
 		_ = d.store.Meta().UpdatePushSubscription(ctx, sub)
 	case status == http.StatusNotFound:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_gone", "fcm").Inc()
 		_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 		d.clearRetry(sub.ID)
 		d.dropCoalesce(sub.ID)
 		d.rl.Forget(sub.ID)
 	case status >= 500:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry", "fcm").Inc()
 		d.scheduleRetry(sub, true)
 	case status >= 400:
 		exhausted := d.scheduleRetry(sub, false)
 		if exhausted {
-			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected", "fcm").Inc()
 			_ = d.store.Meta().DeletePushSubscription(ctx, sub.ID)
 			d.clearRetry(sub.ID)
 			d.dropCoalesce(sub.ID)
 			d.rl.Forget(sub.ID)
 		} else {
-			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry").Inc()
+			observe.WebPushDeliveriesTotal.WithLabelValues("fcm_retry", "fcm").Inc()
 		}
 	default:
-		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected").Inc()
+		observe.WebPushDeliveriesTotal.WithLabelValues("fcm_rejected", "fcm").Inc()
 		d.logger.LogAttrs(ctx, slog.LevelWarn, "webpush: fcm unexpected status",
 			slog.Uint64("subscription", uint64(sub.ID)),
 			slog.Int("status", status),
@@ -1081,29 +1110,24 @@ func (d *Dispatcher) deliverFCM(
 	}
 }
 
-// post builds and sends one outbound HTTP request. It signs a fresh
-// VAPID JWT per request (audience = origin of sub.URL) and attaches
-// the RFC 8030 transport headers.
+// post builds and sends one outbound HTTP request. Unless suppressAuth
+// is set it signs a fresh VAPID JWT per request (audience = origin of
+// sub.URL) and attaches it as the Authorization header, alongside the
+// other RFC 8030 transport headers.
+//
+// suppressAuth (re #236) is the UnifiedPush transport's one wire
+// difference from Web Push: a UnifiedPush distributor endpoint is not
+// VAPID-authenticated, so the header must not appear on the wire. No
+// JWT is signed in that case either, so a deployment running
+// UnifiedPush-only need not provision a VAPID keypair.
 func (d *Dispatcher) post(
 	ctx context.Context,
 	sub store.PushSubscription,
 	body []byte,
 	coalesceTag, urgency string,
 	encrypted bool,
+	suppressAuth bool,
 ) (*http.Response, error) {
-	audience, err := vapid.AudienceFromEndpoint(sub.URL)
-	if err != nil {
-		return nil, err
-	}
-	now := d.clock.Now()
-	jwt, err := d.vapid.SignVAPIDJWT(audience, now, now.Add(d.jwtExpiry), d.subject)
-	if err != nil {
-		return nil, fmt.Errorf("webpush: sign jwt: %w", err)
-	}
-	pub, err := d.vapid.PublicKeyB64URL()
-	if err != nil {
-		return nil, fmt.Errorf("webpush: public key: %w", err)
-	}
 	reqCtx, cancel := context.WithTimeout(ctx, d.httpTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, sub.URL, bytes.NewReader(body))
@@ -1121,7 +1145,22 @@ func (d *Dispatcher) post(
 	}
 	req.Header.Set("TTL", fmt.Sprintf("%d", DefaultTTLSeconds))
 	req.Header.Set("Urgency", urgency)
-	req.Header.Set("Authorization", fmt.Sprintf("vapid t=%s, k=%s", jwt, pub))
+	if !suppressAuth {
+		audience, err := vapid.AudienceFromEndpoint(sub.URL)
+		if err != nil {
+			return nil, err
+		}
+		now := d.clock.Now()
+		jwt, err := d.vapid.SignVAPIDJWT(audience, now, now.Add(d.jwtExpiry), d.subject)
+		if err != nil {
+			return nil, fmt.Errorf("webpush: sign jwt: %w", err)
+		}
+		pub, err := d.vapid.PublicKeyB64URL()
+		if err != nil {
+			return nil, fmt.Errorf("webpush: public key: %w", err)
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("vapid t=%s, k=%s", jwt, pub))
+	}
 	if coalesceTag != "" {
 		// REQ-PROTO-124: the coalesce-tag rides on the RFC 8030 §5.4
 		// Topic header so the gateway / browser replaces a prior

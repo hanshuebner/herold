@@ -56,11 +56,13 @@ type jmapQuietHours struct {
 type jmapPushSubscription struct {
 	ID             jmapID `json:"id"`
 	DeviceClientID string `json:"deviceClientId"`
-	// Kind selects the outbound transport (re #200): "webpush" (the
-	// default, matches the RFC 8620 §7.2 shape below) or "fcm" (the
-	// native Android client, carrying fcmToken instead of url/keys).
-	// Omitted on the wire when empty so existing Web Push clients see
-	// no new required field.
+	// Kind selects the outbound transport (re #200, #236): "webpush"
+	// (the default, matches the RFC 8620 §7.2 shape below), "fcm" (the
+	// native Android client, carrying fcmToken instead of url/keys), or
+	// "unifiedpush" (a self-hosted UnifiedPush distributor endpoint,
+	// carrying the same url/keys shape as "webpush" minus the outbound
+	// VAPID Authorization header). Omitted on the wire when empty so
+	// existing Web Push clients see no new required field.
 	Kind string   `json:"kind,omitempty"`
 	URL  string   `json:"url"`
 	Keys jmapKeys `json:"keys"`

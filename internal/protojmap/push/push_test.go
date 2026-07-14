@@ -649,6 +649,107 @@ func TestPushSet_Create_WebPushDefaultKind(t *testing.T) {
 	}
 }
 
+// -- UnifiedPush transport (re #236) -----------------------------------
+
+// TestPushSet_Create_UnifiedPush proves kind="unifiedpush" is accepted
+// with the same url + RFC 8291 keys shape kind="webpush" uses (re
+// #236: the two transports share buildEndpointCreateRow; only the
+// dispatcher's outbound Authorization header differs).
+func TestPushSet_Create_UnifiedPush(t *testing.T) {
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				DeviceClientID: "up-device-1",
+				Kind:           "unifiedpush",
+				URL:            "https://distributor.example.test/UP/deadbeef",
+				Keys:           validKeysJSON(),
+				Types:          []string{"Email"},
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	if len(resp.NotCreated) != 0 {
+		t.Fatalf("NotCreated non-empty: %+v", resp.NotCreated)
+	}
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not in created")
+	}
+	if created.Kind != "unifiedpush" {
+		t.Fatalf("Kind = %q, want unifiedpush", created.Kind)
+	}
+	if created.URL != "https://distributor.example.test/UP/deadbeef" {
+		t.Fatalf("URL = %q, want the registered distributor endpoint", created.URL)
+	}
+	if created.FCMToken != "" {
+		t.Fatalf("FCMToken = %q, want empty for a UnifiedPush subscription", created.FCMToken)
+	}
+
+	// Round-trips through /get with the same shape.
+	getResp, merr := f.invokeGet(f.ctx(), getRequest{IDs: ptrSlice([]jmapID{created.ID})})
+	if merr != nil {
+		t.Fatalf("Get: %v", merr)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("Get list len = %d, want 1", len(getResp.List))
+	}
+	if getResp.List[0].Kind != "unifiedpush" || getResp.List[0].URL != "https://distributor.example.test/UP/deadbeef" {
+		t.Fatalf("Get: got %+v, want kind=unifiedpush with the registered endpoint", getResp.List[0])
+	}
+}
+
+// TestPushSet_Create_UnifiedPush_RequiresURL proves a UnifiedPush
+// create without a url is rejected the same way a Web Push create
+// without a url is (both flow through buildEndpointCreateRow).
+func TestPushSet_Create_UnifiedPush_RequiresURL(t *testing.T) {
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				DeviceClientID: "up-device-1",
+				Kind:           "unifiedpush",
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	serr, ok := resp.NotCreated["c1"]
+	if !ok {
+		t.Fatalf("expected NotCreated, got Created: %+v", resp.Created)
+	}
+	if serr.Type != "invalidProperties" || len(serr.Properties) != 1 || serr.Properties[0] != "url" {
+		t.Fatalf("error = %+v, want invalidProperties on url", serr)
+	}
+}
+
+// TestPushSet_Create_UnifiedPush_RejectsNonHTTPS proves the same
+// scheme requirement webpush enforces applies to unifiedpush too.
+func TestPushSet_Create_UnifiedPush_RejectsNonHTTPS(t *testing.T) {
+	f := newFixture(t)
+	resp, merr := f.invokeSet(f.ctx(), setRequest{
+		Create: map[string]json.RawMessage{
+			"c1": mustJSON(pushCreateInput{
+				Kind: "unifiedpush",
+				URL:  "http://insecure.example.test",
+				Keys: validKeysJSON(),
+			}),
+		},
+	})
+	if merr != nil {
+		t.Fatalf("Execute: %v", merr)
+	}
+	if _, ok := resp.NotCreated["c1"]; !ok {
+		t.Fatalf("expected NotCreated, got Created: %+v", resp.Created)
+	}
+	if resp.NotCreated["c1"].Type != "invalidProperties" {
+		t.Fatalf("error type = %q, want invalidProperties", resp.NotCreated["c1"].Type)
+	}
+}
+
 func TestPushSet_RejectsImmutableFCMFields(t *testing.T) {
 	f := newFixture(t)
 	createResp, merr := f.invokeSet(f.ctx(), setRequest{

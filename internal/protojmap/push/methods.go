@@ -320,18 +320,20 @@ func (s *setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 }
 
 // parseTransportKind validates the wire-form "kind" property (re
-// #200). Empty defaults to Web Push (the pre-existing shape); any
-// other value must be exactly "webpush" or "fcm".
+// #200, #236). Empty defaults to Web Push (the pre-existing shape);
+// any other value must be exactly "webpush", "fcm", or "unifiedpush".
 func parseTransportKind(kind string) (store.PushTransport, *setError) {
 	switch kind {
 	case "", string(store.PushTransportWebPush):
 		return store.PushTransportWebPush, nil
 	case string(store.PushTransportFCM):
 		return store.PushTransportFCM, nil
+	case string(store.PushTransportUnifiedPush):
+		return store.PushTransportUnifiedPush, nil
 	default:
 		return "", &setError{
 			Type: "invalidProperties", Properties: []string{"kind"},
-			Description: `kind must be "webpush" or "fcm"`,
+			Description: `kind must be "webpush", "fcm", or "unifiedpush"`,
 		}
 	}
 }
@@ -339,9 +341,13 @@ func parseTransportKind(kind string) (store.PushTransport, *setError) {
 // createSubscription validates a /set { create } payload, allocates
 // the verification code, persists the row, and returns the freshly
 // loaded store.PushSubscription so the caller can render it. Branches
-// on the wire "kind" property (re #200): a Web Push row requires
-// url + optional keys per RFC 8620 §7.2; an FCM row requires
-// fcmToken and leaves url/keys empty.
+// on the wire "kind" property (re #200, #236): a Web Push or
+// UnifiedPush row requires url + optional keys per RFC 8620 §7.2 (the
+// two kinds share buildEndpointCreateRow -- a UnifiedPush distributor
+// endpoint is validated and delivered to exactly like a Web Push
+// gateway, differing only in the outbound Authorization header the
+// dispatcher omits); an FCM row requires fcmToken and leaves url/keys
+// empty.
 func (h *handlerSet) createSubscription(ctx context.Context, pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError, error) {
 	transport, serr := parseTransportKind(in.Kind)
 	if serr != nil {
@@ -351,7 +357,7 @@ func (h *handlerSet) createSubscription(ctx context.Context, pid store.Principal
 	if transport == store.PushTransportFCM {
 		row, serr = buildFCMCreateRow(pid, in)
 	} else {
-		row, serr = h.buildWebPushCreateRow(ctx, pid, in)
+		row, serr = h.buildEndpointCreateRow(ctx, pid, in, transport)
 	}
 	if serr != nil {
 		return store.PushSubscription{}, serr, nil
@@ -391,9 +397,14 @@ func buildFCMCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSub
 	}, nil
 }
 
-// buildWebPushCreateRow validates and builds the store row for a
-// kind="webpush" (or omitted-kind) /set { create } payload — the
-// pre-existing RFC 8620 §7.2 shape.
+// buildEndpointCreateRow validates and builds the store row for a
+// kind="webpush" (or omitted-kind) or kind="unifiedpush" /set
+// { create } payload — the RFC 8620 §7.2 url+keys shape both
+// transports share (re #236: a UnifiedPush distributor endpoint is
+// registered identically to a Web Push gateway's; only the
+// dispatcher's outbound Authorization header differs, at delivery
+// time). transport is stamped onto the persisted row unchanged from
+// what parseTransportKind decided.
 //
 // Endpoint egress policy (re #211): the URL is a caller-supplied
 // target the server will POST to on every delivery, so it is run
@@ -403,8 +414,10 @@ func buildFCMCreateRow(pid store.PrincipalID, in pushCreateInput) (store.PushSub
 // can legitimately change between now and the next delivery attempt,
 // so the dispatcher's outbound HTTP client applies the identical
 // policy again at dial time (internal/netguard.Guard.DialContext),
-// which is the check that cannot be raced.
-func (h *handlerSet) buildWebPushCreateRow(ctx context.Context, pid store.PrincipalID, in pushCreateInput) (store.PushSubscription, *setError) {
+// which is the check that cannot be raced. This applies equally to
+// UnifiedPush endpoints -- [server.push.network]'s allowlist is how an
+// operator permits a self-hosted distributor on their own network.
+func (h *handlerSet) buildEndpointCreateRow(ctx context.Context, pid store.PrincipalID, in pushCreateInput, transport store.PushTransport) (store.PushSubscription, *setError) {
 	if strings.TrimSpace(in.URL) == "" {
 		return store.PushSubscription{}, &setError{
 			Type: "invalidProperties", Properties: []string{"url"},
@@ -483,7 +496,7 @@ func (h *handlerSet) buildWebPushCreateRow(ctx context.Context, pid store.Princi
 	return store.PushSubscription{
 		PrincipalID:            pid,
 		DeviceClientID:         in.DeviceClientID,
-		Transport:              store.PushTransportWebPush,
+		Transport:              transport,
 		URL:                    in.URL,
 		P256DH:                 p256dh,
 		Auth:                   authBytes,

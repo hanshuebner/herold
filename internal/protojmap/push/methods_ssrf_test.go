@@ -141,3 +141,85 @@ func TestPushSet_Create_HTTPRejectedByDefault(t *testing.T) {
 	f := newFixtureWithGuard(t, g)
 	assertRejectedAtCreate(t, f, "http://push.gateway.example.test/wpush/abc123")
 }
+
+// -- UnifiedPush transport (re #236) -------------------------------
+//
+// UnifiedPush shares buildEndpointCreateRow (and therefore
+// h.endpointGuard) with Web Push, so the SSRF policy applies
+// identically: an attacker-controlled UnifiedPush distributor endpoint
+// resolving to an internal address is refused at create time the same
+// way a malicious Web Push gateway endpoint would be, and an operator-
+// allowlisted self-hosted distributor on a private address is still
+// accepted.
+
+func createOneUnifiedPushRequest(url string) setRequest {
+	return setRequest{
+		Create: map[string]json.RawMessage{
+			"a": mustJSON(pushCreateInput{
+				DeviceClientID: "d1",
+				Kind:           "unifiedpush",
+				URL:            url,
+			}),
+		},
+	}
+}
+
+func assertUnifiedPushRejectedAtCreate(t *testing.T, f *fixture, url string) {
+	t.Helper()
+	resp, merr := f.invokeSet(f.ctx(), createOneUnifiedPushRequest(url))
+	if merr != nil {
+		t.Fatalf("Execute returned method error instead of a set-error: %+v", merr)
+	}
+	if len(resp.Created) != 0 {
+		t.Fatalf("endpoint %q was accepted and persisted: %+v", url, resp.Created)
+	}
+	se, ok := resp.NotCreated["a"]
+	if !ok {
+		t.Fatalf("endpoint %q: expected a notCreated entry, got %+v", url, resp)
+	}
+	if se.Type != "invalidProperties" {
+		t.Fatalf("endpoint %q: got set-error type %q, want invalidProperties", url, se.Type)
+	}
+}
+
+func assertUnifiedPushAcceptedAtCreate(t *testing.T, f *fixture, url string) {
+	t.Helper()
+	resp, merr := f.invokeSet(f.ctx(), createOneUnifiedPushRequest(url))
+	if merr != nil {
+		t.Fatalf("Execute returned method error: %+v", merr)
+	}
+	if len(resp.NotCreated) != 0 {
+		t.Fatalf("endpoint %q was rejected: %+v", url, resp.NotCreated)
+	}
+	if len(resp.Created) != 1 {
+		t.Fatalf("endpoint %q: expected 1 created row, got %+v", url, resp.Created)
+	}
+	created := resp.Created["a"]
+	if created.Kind != "unifiedpush" {
+		t.Fatalf("endpoint %q: Kind = %q, want unifiedpush", url, created.Kind)
+	}
+}
+
+func TestPushSet_Create_UnifiedPush_MetadataEndpointRejected(t *testing.T) {
+	f, _ := newGuardedFixture(t, net.ParseIP("169.254.169.254"))
+	assertUnifiedPushRejectedAtCreate(t, f, "https://attacker.example.test/UP/hook")
+}
+
+func TestPushSet_Create_UnifiedPush_RFC1918EndpointRejected(t *testing.T) {
+	f, _ := newGuardedFixture(t, net.ParseIP("10.1.2.3"))
+	assertUnifiedPushRejectedAtCreate(t, f, "https://attacker.example.test/UP/hook")
+}
+
+func TestPushSet_Create_UnifiedPush_AllowlistedPrivateEndpointAccepted(t *testing.T) {
+	// Standing in for a real UnifiedPush distributor self-hosted on the
+	// operator's own network -- the primary reason
+	// [server.push.network].allowed_hosts exists (re #236 references
+	// section pointing at #211's allowlist).
+	f, _ := newGuardedFixture(t, net.ParseIP("10.9.9.9"), "push.internal.example")
+	assertUnifiedPushAcceptedAtCreate(t, f, "https://push.internal.example/UP/deadbeef")
+}
+
+func TestPushSet_Create_UnifiedPush_LegitimatePublicEndpointAccepted(t *testing.T) {
+	f, _ := newGuardedFixture(t, net.ParseIP("203.0.113.55"))
+	assertUnifiedPushAcceptedAtCreate(t, f, "https://distributor.example.test/UP/abc123")
+}

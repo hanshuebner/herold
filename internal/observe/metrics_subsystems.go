@@ -1086,10 +1086,18 @@ func RegisterTLSCertMetrics() {
 }
 
 // Web Push dispatcher metrics (Phase 3 Wave 3.8b, REQ-PROTO-123 +
-// REQ-PROTO-126). Label vocabulary is closed:
+// REQ-PROTO-126; transport label added re #200 / #236). Label
+// vocabulary is closed:
 //
 //   - outcome (deliveries_total): "success" | "retry" | "gone" |
-//     "rejected" | "rate_limited" | "cooldown".
+//     "rejected" | "rate_limited" | "cooldown" | "dropped_by_rule" |
+//     "dropped_no_match_vapid", plus the FCM-prefixed variants
+//     "fcm_success" | "fcm_retry" | "fcm_gone" | "fcm_rejected" |
+//     "fcm_not_configured" (re #200).
+//   - transport (deliveries_total): "webpush" | "fcm" | "unifiedpush"
+//     (re #236) | "unknown" (an unrecognised store.PushTransport value
+//     that dispatchDeliver's default arm rejected rather than
+//     delivering).
 //
 // The two GaugeFunc collectors read live state owned by the
 // Dispatcher (subscription count cached after each tick; cooldown
@@ -1176,8 +1184,8 @@ func RegisterWebPushMetrics(subsSource, cooldownSource func() float64) {
 	webpushMetricsOnce.Do(func() {
 		WebPushDeliveriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "herold_webpush_deliveries_total",
-			Help: "Total Web Push deliveries dispatched, by outcome.",
-		}, []string{"outcome"})
+			Help: "Total push deliveries dispatched, by outcome and transport (webpush|fcm|unifiedpush|unknown).",
+		}, []string{"outcome", "transport"})
 		WebPushDeliverySeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "herold_webpush_delivery_seconds",
 			Help:    "Push-endpoint round-trip time for Web Push deliveries.",

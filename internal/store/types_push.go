@@ -28,8 +28,10 @@ type PushSubscriptionID uint64
 // PushSubscription row uses (re #200). PushTransportWebPush is the
 // RFC 8030/8291/8292 Web Push path the suite's service worker uses;
 // PushTransportFCM is the Firebase Cloud Messaging path the native
-// Android client uses. The zero value ("") is treated as
-// PushTransportWebPush throughout for backward compatibility with
+// Android client uses; PushTransportUnifiedPush (re #236) is the
+// self-hosted, Google-independent unifiedpush.org path a UnifiedPush
+// distributor on the device consumes. The zero value ("") is treated
+// as PushTransportWebPush throughout for backward compatibility with
 // rows written before this field existed.
 type PushTransport string
 
@@ -41,6 +43,14 @@ const (
 	// FCMToken carries the device registration token; URL/P256DH/Auth
 	// are unused (stored empty).
 	PushTransportFCM PushTransport = "fcm"
+	// PushTransportUnifiedPush is the UnifiedPush distributor transport
+	// (re #236). URL/P256DH/Auth carry the same RFC 8291 Web Push
+	// endpoint + encryption keys as PushTransportWebPush -- a UnifiedPush
+	// distributor's endpoint is delivered to exactly like a Web Push
+	// gateway's -- except the outbound POST omits the VAPID
+	// `Authorization` header, since UnifiedPush distributors do not
+	// authenticate the sender that way. FCMToken is unused.
+	PushTransportUnifiedPush PushTransport = "unifiedpush"
 )
 
 // Normalized returns t, treating the zero value as

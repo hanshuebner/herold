@@ -513,6 +513,8 @@ func Run(t *testing.T, f Factory) {
 		// -- FCM push-subscription transport (migration 0078, re #200) --
 		{"PushSubscription_FCMTransport_CRUD", testPushSubscription_FCMTransport_CRUD},
 		{"PushSubscription_WebPushTransport_DefaultsAndUnaffected", testPushSubscription_WebPushTransport_DefaultsAndUnaffected},
+		// -- UnifiedPush push-subscription transport (re #236) --
+		{"PushSubscription_UnifiedPushTransport_CRUD", testPushSubscription_UnifiedPushTransport_CRUD},
 		// -- SRS return-path rewriting secrets (issue #204, migration 0081) --
 		{"SRSSecrets_InsertAndList", testSRSSecrets_InsertAndList},
 		// -- Hosted mailing lists, Stage 1 storage foundation (epic #183,
@@ -11479,5 +11481,79 @@ func testPushSubscription_WebPushTransport_DefaultsAndUnaffected(t *testing.T, s
 	}
 	if got.FCMToken != "" {
 		t.Fatalf("FCMToken = %q, want empty for a Web Push subscription", got.FCMToken)
+	}
+}
+
+// testPushSubscription_UnifiedPushTransport_CRUD exercises the
+// UnifiedPush transport (re #236): a subscription with
+// Transport=PushTransportUnifiedPush carries the same url/P256DH/Auth
+// shape as PushTransportWebPush (both are delivered to via an RFC
+// 8291-encrypted POST; only the dispatcher's outbound Authorization
+// header differs, at delivery time -- not a store-level distinction).
+// Covers insert, get, list-by-principal, immutability of Transport
+// across an update, and delete on both backends per STANDARDS §8.4.
+func testPushSubscription_UnifiedPushTransport_CRUD(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "unifiedpush-user@example.com")
+
+	id, err := s.Meta().InsertPushSubscription(ctx, store.PushSubscription{
+		PrincipalID:    p.ID,
+		DeviceClientID: "up-device-1",
+		Transport:      store.PushTransportUnifiedPush,
+		URL:            "https://distributor.example.test/UP/deadbeef",
+		P256DH:         make([]byte, 65),
+		Auth:           make([]byte, 16),
+		Types:          []string{"Email"},
+		Verified:       true,
+	})
+	if err != nil {
+		t.Fatalf("InsertPushSubscription: %v", err)
+	}
+
+	got, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription: %v", err)
+	}
+	if got.Transport != store.PushTransportUnifiedPush {
+		t.Fatalf("Transport = %q, want %q", got.Transport, store.PushTransportUnifiedPush)
+	}
+	if got.URL != "https://distributor.example.test/UP/deadbeef" {
+		t.Fatalf("URL = %q, want the registered distributor endpoint", got.URL)
+	}
+	if len(got.P256DH) != 65 || len(got.Auth) != 16 {
+		t.Fatalf("P256DH/Auth = %d/%d bytes, want 65/16", len(got.P256DH), len(got.Auth))
+	}
+	if got.FCMToken != "" {
+		t.Fatalf("FCMToken = %q, want empty for a UnifiedPush subscription", got.FCMToken)
+	}
+
+	list, err := s.Meta().ListPushSubscriptionsByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListPushSubscriptionsByPrincipal: %v", err)
+	}
+	if len(list) != 1 || list[0].Transport != store.PushTransportUnifiedPush || list[0].URL != got.URL {
+		t.Fatalf("ListPushSubscriptionsByPrincipal: got %+v, want one UnifiedPush row matching %+v", list, got)
+	}
+
+	// Transport/URL are immutable post-create; UpdatePushSubscription
+	// only ever touches the mutable fields, so a round-trip through
+	// Update must leave them untouched.
+	got.Types = []string{"Email", "ChatMessage"}
+	if err := s.Meta().UpdatePushSubscription(ctx, got); err != nil {
+		t.Fatalf("UpdatePushSubscription: %v", err)
+	}
+	afterUpdate, err := s.Meta().GetPushSubscription(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPushSubscription after update: %v", err)
+	}
+	if afterUpdate.Transport != store.PushTransportUnifiedPush || afterUpdate.URL != got.URL {
+		t.Fatalf("Transport/URL changed across an update: got %+v", afterUpdate)
+	}
+
+	if err := s.Meta().DeletePushSubscription(ctx, id); err != nil {
+		t.Fatalf("DeletePushSubscription: %v", err)
+	}
+	if _, err := s.Meta().GetPushSubscription(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPushSubscription after delete: got err=%v, want ErrNotFound", err)
 	}
 }
