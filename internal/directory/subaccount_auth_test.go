@@ -10,9 +10,11 @@ package directory_test
 // core) before minting anything -- so a rejection here is a rejection
 // on every one of those paths.
 //
-// Each test forces a valid credential onto a sub-principal row via a
-// direct store write (something no application code path does --
-// InsertSubPrincipal refuses a credential outright) specifically so the
+// Each test forces a valid credential onto a sub-principal row via a raw
+// SQL write (storesqlite.ForceCredentialForTest) that bypasses
+// UpdatePrincipal -- no store.Store API can do this any more, since both
+// InsertSubPrincipal and UpdatePrincipal refuse to persist a credential
+// on a sub-principal (REQ-SUBACCT-02, #241) -- specifically so the
 // assertion proves the Kind check is what blocks authentication, not
 // merely the absence of a password.
 
@@ -23,12 +25,17 @@ import (
 
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
 // forceCredentialOntoSubPrincipal creates a sub-principal under parentID
 // and force-writes a working password hash onto its row by borrowing the
 // hash from a disposable ordinary principal created with the same
-// password. Returns the sub-principal's email and the matching
+// password. The write goes straight to SQL via
+// storesqlite.ForceCredentialForTest because UpdatePrincipal itself now
+// refuses to persist a credential onto a sub-principal row (#241) -- this
+// constructs the otherwise-unreachable precondition the auth-layer tests
+// below need. Returns the sub-principal's email and the matching
 // plaintext password.
 func forceCredentialOntoSubPrincipal(t *testing.T, ctx context.Context, dir *directory.Directory, fs store.Store, parentID store.PrincipalID, subEmail, password string) string {
 	t.Helper()
@@ -54,14 +61,17 @@ func forceCredentialOntoSubPrincipal(t *testing.T, ctx context.Context, dir *dir
 		t.Fatalf("GetPrincipalByID(donor): %v", err)
 	}
 
-	sub.PasswordHash = donorRow.PasswordHash
-	if err := fs.Meta().UpdatePrincipal(ctx, sub); err != nil {
-		t.Fatalf("UpdatePrincipal(force credential onto sub-principal): %v", err)
+	sqliteStore, ok := fs.(*storesqlite.Store)
+	if !ok {
+		t.Fatalf("fs is %T, want *storesqlite.Store (ForceCredentialForTest is sqlite-only; newDir wires storesqlite)", fs)
+	}
+	if err := sqliteStore.ForceCredentialForTest(ctx, sub.ID, donorRow.PasswordHash, nil); err != nil {
+		t.Fatalf("ForceCredentialForTest(force credential onto sub-principal): %v", err)
 	}
 
 	// Confirm the forced write landed and the row is still a
-	// sub-principal (UpdatePrincipal must not have silently reclassified
-	// it) before handing back to the caller.
+	// sub-principal (the raw write must not have altered Kind) before
+	// handing back to the caller.
 	forced, err := fs.Meta().GetPrincipalByID(ctx, sub.ID)
 	if err != nil {
 		t.Fatalf("GetPrincipalByID(sub after force-write): %v", err)

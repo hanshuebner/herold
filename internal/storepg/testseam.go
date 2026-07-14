@@ -2,7 +2,10 @@ package storepg
 
 import (
 	"context"
+	"fmt"
 	"strings"
+
+	"github.com/hanshuebner/herold/internal/store"
 )
 
 // TruncateAll wipes every application table while preserving the
@@ -175,4 +178,35 @@ func (s *Store) TruncateAll(ctx context.Context) error {
 		return nil
 	}
 	return lastErr
+}
+
+// ForceCredentialForTest writes passwordHash/totpSecret directly onto the
+// principals row identified by id, bypassing UpdatePrincipal's
+// REQ-SUBACCT-02 guard (sub-principal cannot carry a credential).
+//
+// This is a TEST-ONLY helper — it is in a regular (non-_test) build file
+// because external test packages (internal/directory, internal/protologin,
+// internal/sasl) need to construct a sub-principal row that carries a
+// verifiably-correct credential in order to prove that the auth layer
+// (Directory.Authenticate and everything built on it) rejects a
+// sub-principal even when the row is credentialed -- a defense-in-depth
+// property that is otherwise unreachable through any store API, since
+// both InsertSubPrincipal and UpdatePrincipal refuse to persist a
+// credential on a sub-principal. It is intentionally not on the
+// store.Store interface, so production code cannot reach it without an
+// explicit *storepg.Store import + type assertion.
+func (s *Store) ForceCredentialForTest(ctx context.Context, id store.PrincipalID, passwordHash string, totpSecret []byte) error {
+	now := usMicros(s.clock.Now().UTC())
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE principals
+		   SET password_hash = $1, totp_secret = $2, updated_at_us = $3
+		 WHERE id = $4`,
+		passwordHash, totpSecret, now, int64(id))
+	if err != nil {
+		return fmt.Errorf("storepg: ForceCredentialForTest: %w", mapErr(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("storepg: ForceCredentialForTest: %w", store.ErrNotFound)
+	}
+	return nil
 }

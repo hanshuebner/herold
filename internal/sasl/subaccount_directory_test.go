@@ -11,10 +11,12 @@ package sasl_test
 // harnesses.
 //
 // The sub-principal here carries a force-written, verifiably-correct
-// password hash (something no application code path ever does --
-// InsertSubPrincipal refuses a credential outright) so the assertion
-// proves the store-level Kind check inside Directory.Authenticate is
-// what blocks the mechanism, not merely the absence of a password.
+// password hash, written straight to SQL via
+// storesqlite.ForceCredentialForTest (something no store.Store API can
+// do any more -- InsertSubPrincipal and UpdatePrincipal both refuse a
+// credential outright, REQ-SUBACCT-02, #241) so the assertion proves the
+// Kind check inside Directory.Authenticate is what blocks the mechanism,
+// not merely the absence of a password.
 
 import (
 	"context"
@@ -73,9 +75,28 @@ func newSubAccountDirectory(t *testing.T, password string) (*directory.Directory
 	if err != nil {
 		t.Fatalf("InsertSubPrincipal: %v", err)
 	}
-	sub.PasswordHash = donorRow.PasswordHash
-	if err := fs.Meta().UpdatePrincipal(ctx, sub); err != nil {
-		t.Fatalf("UpdatePrincipal(force credential): %v", err)
+	// UpdatePrincipal now refuses to persist a credential onto a
+	// sub-principal row (#241), so the forced-credential precondition is
+	// constructed with a raw SQL write instead.
+	sqliteStore, ok := fs.(*storesqlite.Store)
+	if !ok {
+		t.Fatalf("fs is %T, want *storesqlite.Store (ForceCredentialForTest is sqlite-only)", fs)
+	}
+	if err := sqliteStore.ForceCredentialForTest(ctx, sub.ID, donorRow.PasswordHash, nil); err != nil {
+		t.Fatalf("ForceCredentialForTest(force credential): %v", err)
+	}
+
+	// Confirm the forced write landed and the row is still a
+	// sub-principal (the raw write must not have altered Kind).
+	forced, err := fs.Meta().GetPrincipalByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub after force-write): %v", err)
+	}
+	if forced.PasswordHash == "" {
+		t.Fatalf("forced credential did not persist")
+	}
+	if forced.Kind != store.PrincipalKindSubAccount {
+		t.Fatalf("forced-credential row Kind = %v, want PrincipalKindSubAccount", forced.Kind)
 	}
 	return dir, subEmail
 }

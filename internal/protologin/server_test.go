@@ -160,10 +160,12 @@ func TestLogin_BadCreds_Returns401(t *testing.T) {
 // TestLogin_SubPrincipal_Returns401 proves REQ-SUBACCT-02: a
 // sub-principal cannot obtain a session cookie via POST
 // /api/v1/auth/login, even when its row carries a verifiably-correct
-// password hash. The forced-credential write bypasses
-// InsertSubPrincipal's own refusal to persist one, so this isolates the
-// login handler's own defense (Directory.Authenticate's Kind check) from
-// "it never had a password to begin with".
+// password hash. The forced-credential write goes straight to SQL via
+// storesqlite.ForceCredentialForTest -- no store.Store API can persist a
+// credential onto a sub-principal any more (InsertSubPrincipal and
+// UpdatePrincipal both refuse it, #241) -- so this isolates the login
+// handler's own defense (Directory.Authenticate's Kind check) from "it
+// never had a password to begin with".
 func TestLogin_SubPrincipal_Returns401(t *testing.T) {
 	t.Parallel()
 	ts, fs, dir, _, _ := newTestServer(t)
@@ -186,9 +188,26 @@ func TestLogin_SubPrincipal_Returns401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertSubPrincipal: %v", err)
 	}
-	sub.PasswordHash = donorRow.PasswordHash
-	if err := fs.Meta().UpdatePrincipal(ctx, sub); err != nil {
-		t.Fatalf("UpdatePrincipal(force credential): %v", err)
+	sqliteStore, ok := fs.(*storesqlite.Store)
+	if !ok {
+		t.Fatalf("fs is %T, want *storesqlite.Store (ForceCredentialForTest is sqlite-only; newTestServer wires storesqlite)", fs)
+	}
+	if err := sqliteStore.ForceCredentialForTest(ctx, sub.ID, donorRow.PasswordHash, nil); err != nil {
+		t.Fatalf("ForceCredentialForTest(force credential): %v", err)
+	}
+
+	// Confirm the forced write landed and the row is still a
+	// sub-principal (the raw write must not have altered Kind) before
+	// exercising the login handler.
+	forced, err := fs.Meta().GetPrincipalByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub after force-write): %v", err)
+	}
+	if forced.PasswordHash == "" {
+		t.Fatalf("forced credential did not persist")
+	}
+	if forced.Kind != store.PrincipalKindSubAccount {
+		t.Fatalf("forced-credential row Kind = %v, want PrincipalKindSubAccount", forced.Kind)
 	}
 
 	code, _ := doLogin(t, &http.Client{}, ts.URL, subEmail, "sub-account-password-cookie", nil)
