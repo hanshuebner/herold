@@ -731,10 +731,15 @@ func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.Maili
 
 // ClaimMailingListHeldPostForApproval implements the store.Metadata
 // method of the same name (issue #189 verification fix). Mirrors
-// storesqlite: the CAS that makes "a held post is fanned out at most
-// once" hold under concurrent ApproveHeldPost calls.
+// storesqlite: the single atomic UPDATE that makes "a held post is
+// fanned out at most once" hold under any number of concurrent OR
+// sequential (crash-resumed) ApproveHeldPost calls, matching either a
+// fresh 'pending' row or a stale 'approving' row (decided_at_us older
+// than store.MailingListHeldPostApprovalLeaseTTL) in the same WHERE
+// clause.
 func (m *metadata) ClaimMailingListHeldPostForApproval(ctx context.Context, id store.MailingListHeldPostID, decidedBy store.PrincipalID, now time.Time) (store.MailingListHeldPost, error) {
 	now = now.UTC()
+	staleCutoff := usMicros(now.Add(-store.MailingListHeldPostApprovalLeaseTTL))
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		var exists int64
 		if err := tx.QueryRow(ctx,
@@ -744,8 +749,10 @@ func (m *metadata) ClaimMailingListHeldPostForApproval(ctx context.Context, id s
 		ct, err := tx.Exec(ctx, `
 			UPDATE mailing_list_held_post
 			   SET status = 'approving', decided_at_us = $1, decided_by = $2
-			 WHERE id = $3 AND status = 'pending'`,
-			usMicros(now), int64(decidedBy), int64(id))
+			 WHERE id = $3
+			   AND (status = 'pending'
+			        OR (status = 'approving' AND decided_at_us < $4))`,
+			usMicros(now), int64(decidedBy), int64(id), staleCutoff)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -789,4 +796,31 @@ func (m *metadata) FinalizeMailingListHeldPostApproval(ctx context.Context, id s
 		return store.MailingListHeldPost{}, err
 	}
 	return m.GetMailingListHeldPost(ctx, id)
+}
+
+// ClaimMailingListHeldPostArchive implements the store.Metadata method
+// of the same name (issue #189 verification fix). Mirrors storesqlite:
+// the archive-side exactly-once CAS on the archived_at_us NULL/non-NULL
+// latch.
+func (m *metadata) ClaimMailingListHeldPostArchive(ctx context.Context, id store.MailingListHeldPostID, now time.Time) (bool, error) {
+	now = now.UTC()
+	claimed := false
+	err := m.runTx(ctx, func(tx pgx.Tx) error {
+		var exists int64
+		if err := tx.QueryRow(ctx,
+			`SELECT 1 FROM mailing_list_held_post WHERE id = $1`, int64(id)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		ct, err := tx.Exec(ctx, `
+			UPDATE mailing_list_held_post
+			   SET archived_at_us = $1
+			 WHERE id = $2 AND archived_at_us IS NULL`,
+			usMicros(now), int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		claimed = ct.RowsAffected() == 1
+		return nil
+	})
+	return claimed, err
 }

@@ -762,12 +762,19 @@ func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.Maili
 }
 
 // ClaimMailingListHeldPostForApproval implements the store.Metadata
-// method of the same name (issue #189 verification fix): the CAS that
-// makes "a held post is fanned out at most once" hold under concurrent
+// method of the same name (issue #189 verification fix): the single
+// atomic UPDATE that makes "a held post is fanned out at most once"
+// hold under any number of concurrent OR sequential (crash-resumed)
 // ApproveHeldPost calls. Does NOT touch blob_refs -- the blob is still
-// needed to read the raw bytes for fan-out after this call returns.
+// needed to read the raw bytes for fan-out after this call returns. The
+// WHERE clause matches a fresh 'pending' row OR an 'approving' row
+// whose decided_at_us has aged past store.MailingListHeldPostApprovalLeaseTTL
+// (a stale claim, reclaimable); a fresh, non-stale 'approving' row
+// matches neither arm, so a concurrent racer's claim affects zero rows
+// and returns ErrConflict.
 func (m *metadata) ClaimMailingListHeldPostForApproval(ctx context.Context, id store.MailingListHeldPostID, decidedBy store.PrincipalID, now time.Time) (store.MailingListHeldPost, error) {
 	now = now.UTC()
+	staleCutoff := usMicros(now.Add(-store.MailingListHeldPostApprovalLeaseTTL))
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		var exists int64
 		if err := tx.QueryRowContext(ctx,
@@ -777,8 +784,10 @@ func (m *metadata) ClaimMailingListHeldPostForApproval(ctx context.Context, id s
 		res, err := tx.ExecContext(ctx, `
 			UPDATE mailing_list_held_post
 			   SET status = 'approving', decided_at_us = ?, decided_by = ?
-			 WHERE id = ? AND status = 'pending'`,
-			usMicros(now), int64(decidedBy), int64(id))
+			 WHERE id = ?
+			   AND (status = 'pending'
+			        OR (status = 'approving' AND decided_at_us < ?))`,
+			usMicros(now), int64(decidedBy), int64(id), staleCutoff)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -830,4 +839,36 @@ func (m *metadata) FinalizeMailingListHeldPostApproval(ctx context.Context, id s
 		return store.MailingListHeldPost{}, err
 	}
 	return m.GetMailingListHeldPost(ctx, id)
+}
+
+// ClaimMailingListHeldPostArchive implements the store.Metadata method
+// of the same name (issue #189 verification fix): the archive-side
+// exactly-once CAS, mirroring ClaimMailingListHeldPostForApproval's
+// existence-vs-CAS shape but on the archived_at_us NULL/non-NULL latch
+// instead of the status column.
+func (m *metadata) ClaimMailingListHeldPostArchive(ctx context.Context, id store.MailingListHeldPostID, now time.Time) (bool, error) {
+	now = now.UTC()
+	claimed := false
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var exists int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM mailing_list_held_post WHERE id = ?`, int64(id)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE mailing_list_held_post
+			   SET archived_at_us = ?
+			 WHERE id = ? AND archived_at_us IS NULL`,
+			usMicros(now), int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		claimed = n == 1
+		return nil
+	})
+	return claimed, err
 }

@@ -133,20 +133,28 @@ type ExpandInput struct {
 	// "no SASL signal; fall back to the DMARC/DKIM-backed From: check"
 	// (see policy.go's posterAuthenticated).
 	SubmissionPrincipalID *store.PrincipalID
-	// IdempotencyKeyPrefix, when non-empty, makes every per-member
-	// queue.Submission this call's fanOut issues idempotent: each
-	// Submission's IdempotencyKey is derived from this prefix plus the
-	// member id, so calling fanOut twice for the SAME logical post
-	// (e.g. resuming an approval left in the MailingListHeldPostApproving
-	// state after a crash, or two goroutines racing to resume it) never
-	// mails a member twice -- the queue's own idempotency-key uniqueness
-	// constraint collapses the duplicate Submit to a no-op for any
-	// member already enqueued by an earlier attempt (issue #189
-	// verification fix). Empty for the normal (never-held) Expand path,
-	// which calls fanOut exactly once per accepted message and has no
+	// HeldPostID, when non-zero, marks this fanOut call as fanning out a
+	// held post (ApproveHeldPost's own call into fanOut) rather than a
+	// freshly-accepted, never-held message. It drives two exactly-once
+	// mechanisms that only matter for a call that might be repeated for
+	// the SAME logical post (a crash-resumed approval, or a stale-lease
+	// reclaim -- see store.MailingListHeldPostApprovalLeaseTTL):
+	//
+	//   - every per-member queue.Submission fanOut issues carries an
+	//     IdempotencyKey derived from HeldPostID plus the member id, so
+	//     the queue's own idempotency-key uniqueness constraint
+	//     collapses a duplicate Submit to a no-op for any member
+	//     already enqueued by an earlier attempt;
+	//   - fileArchive claims store.Metadata.ClaimMailingListHeldPostArchive
+	//     before its own InsertMessage call, so only the FIRST attempt
+	//     at fanning out this held post ever files an archive copy
+	//     (issue #189 verification fix, second hardening pass).
+	//
+	// Zero (the default) for the normal (never-held) Expand path, which
+	// calls fanOut exactly once per accepted message and has no
 	// retry/resume concept, so Submissions there carry no idempotency
-	// key at all (unchanged S1/S2 behaviour).
-	IdempotencyKeyPrefix string
+	// key and fileArchive there is ungated (unchanged S1/S2 behaviour).
+	HeldPostID store.MailingListHeldPostID
 }
 
 // DropReason enumerates why Expand declined to fan out a post.
@@ -319,7 +327,11 @@ func (e *Expander) fanOut(ctx context.Context, ml store.MailingList, in ExpandIn
 	// the same shaped (optionally ARC-sealed) bytes every "each" member's
 	// copy is built from -- independent of the member loop below, so a
 	// list with only nomail members (or none at all) still archives.
-	archived := e.fileArchive(ctx, ml, shaped, in.Parsed)
+	// When in.HeldPostID is set, fileArchive itself claims a durable
+	// per-held-post latch before filing, so a crash-resumed or
+	// stale-lease-reclaimed call to fanOut for the SAME held post never
+	// files a second copy.
+	archived := e.fileArchive(ctx, ml, shaped, in.Parsed, in.HeldPostID)
 
 	if e.TokenSigner == nil {
 		e.Logger.ErrorContext(ctx, "maillist: no TokenSigner wired; fanning out with the S1 list-wide bounce address instead of a per-member VERP token",
@@ -379,8 +391,8 @@ func (e *Expander) fanOut(ctx context.Context, ml store.MailingList, in ExpandIn
 		// content-addressed blob store dedups every Submit call below
 		// down to one stored blob regardless of roster size.
 		var idempKey string
-		if in.IdempotencyKeyPrefix != "" {
-			idempKey = fmt.Sprintf("%s-member-%d", in.IdempotencyKeyPrefix, m.ID)
+		if in.HeldPostID != 0 {
+			idempKey = fmt.Sprintf("%s-member-%d", heldPostIdempotencyPrefix(in.HeldPostID), m.ID)
 		}
 		_, serr := e.Submitter.Submit(ctx, queue.Submission{
 			MailFrom:       mailFrom,

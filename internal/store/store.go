@@ -862,16 +862,29 @@ type Metadata interface {
 	DecideMailingListHeldPost(ctx context.Context, id MailingListHeldPostID, status MailingListHeldPostStatus, decidedBy PrincipalID, note string, now time.Time) (MailingListHeldPost, error)
 
 	// ClaimMailingListHeldPostForApproval atomically transitions held
-	// post id from MailingListHeldPostPending to
-	// MailingListHeldPostApproving, recording decidedBy/now as the
-	// approval's initiator, WITHOUT releasing the blob_refs reference
-	// (fan-out still needs to read the raw bytes after this call
-	// returns). The UPDATE's own WHERE status='pending' clause is the
-	// compare-and-swap that makes "at most one caller ever fans this
-	// post out" hold under concurrent ApproveHeldPost calls: only the
-	// caller whose CAS actually flips the row can proceed to fan out;
-	// every other concurrent caller gets ErrConflict here, before ever
-	// touching the queue. Returns ErrNotFound if id does not exist.
+	// post id to MailingListHeldPostApproving, recording decidedBy/now
+	// as the claim's initiator, WITHOUT releasing the blob_refs
+	// reference (fan-out still needs to read the raw bytes after this
+	// call returns). This is the ONLY place ApproveHeldPost arbitrates
+	// concurrency -- callers never read the row's status first and
+	// branch on it; every ApproveHeldPost call goes straight to this
+	// single atomic UPDATE. The UPDATE's own WHERE clause is the
+	// compare-and-swap, and it matches two disjoint cases in one
+	// statement:
+	//
+	//   - status = 'pending': the normal first claim.
+	//   - status = 'approving' AND the existing decided_at_us is older
+	//     than MailingListHeldPostApprovalLeaseTTL: a stale claim left
+	//     behind by a process that died between claiming and
+	//     FinalizeMailingListHeldPostApproval, now reclaimable by a
+	//     later call (an operator re-issuing approve).
+	//
+	// Of any number of concurrent or sequential callers racing this
+	// method for the same id, AT MOST ONE ever flips the row (a fresh,
+	// non-stale 'approving' row matches neither clause, so every
+	// caller racing the current claim holder gets ErrConflict here,
+	// before ever touching the queue or the archive). Returns
+	// ErrNotFound if id does not exist.
 	ClaimMailingListHeldPostForApproval(ctx context.Context, id MailingListHeldPostID, decidedBy PrincipalID, now time.Time) (MailingListHeldPost, error)
 
 	// FinalizeMailingListHeldPostApproval atomically transitions held
@@ -886,6 +899,22 @@ type Metadata interface {
 	// caller should treat a resulting already-Approved row as success,
 	// not as a real failure), ErrNotFound if id does not exist.
 	FinalizeMailingListHeldPostApproval(ctx context.Context, id MailingListHeldPostID, now time.Time) (MailingListHeldPost, error)
+
+	// ClaimMailingListHeldPostArchive atomically flips held post id's
+	// archived_at_us column from NULL to now, and reports whether THIS
+	// call won that compare-and-swap. internal/maillist's fileArchive
+	// calls this immediately before its own Blobs.Put/InsertMessage:
+	// claimed=false means an earlier attempt at fanning out this SAME
+	// held post already filed the archive copy (a crash-resumed
+	// approval, or a stale-lease reclaim via
+	// ClaimMailingListHeldPostForApproval), so the caller MUST skip
+	// InsertMessage entirely rather than filing a second copy. This is
+	// the archive-side analogue of the per-member IdempotencyKey the
+	// queue Submit path already uses for the identical "at most one
+	// copy across any number of resumed/racing fan-out attempts"
+	// purpose (issue #189 verification fix, REQ-MLIST-70/80). Returns
+	// ErrNotFound if id does not exist.
+	ClaimMailingListHeldPostArchive(ctx context.Context, id MailingListHeldPostID, now time.Time) (claimed bool, err error)
 
 	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
 

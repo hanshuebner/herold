@@ -1,0 +1,25 @@
+-- 0098_mailing_list_held_post_archived_at.sql -- adds the per-held-post
+-- exactly-once archive-filing latch (issue #189 verification fix,
+-- second hardening pass, REQ-MLIST-70/80).
+--
+-- ApproveHeldPost's claim/reclaim CAS (ClaimMailingListHeldPostForApproval,
+-- migration 0095/0096-era logic) already guarantees at most one caller
+-- is ever actively fanning a given held post out at a time. But a
+-- crash-resumed attempt still calls fanOut a SECOND time for the SAME
+-- held post (that is the whole point of resume), and fileArchive's own
+-- InsertMessage call had no idempotency guard of its own: a held post
+-- whose first attempt archived it successfully before the process died
+-- got filed into the archive mailbox again on resume.
+--
+-- archived_at_us is that per-held-post exactly-once latch: NULL until
+-- the archive copy is filed, then set once by whichever attempt's
+-- ClaimMailingListHeldPostArchive call wins the "archived_at_us IS
+-- NULL" compare-and-swap. Every later attempt at fanning out the SAME
+-- held post (a resumed approval, or a concurrent racer) sees it already
+-- set and skips InsertMessage entirely. Mirrors the per-member
+-- idempotency key the queue Submit path already relies on for the
+-- identical purpose.
+--
+-- Forward-only. Mirrors storepg 0098.
+
+ALTER TABLE mailing_list_held_post ADD COLUMN archived_at_us INTEGER;

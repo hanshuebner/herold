@@ -360,6 +360,10 @@ type MailingListHeldPostRow struct {
 	DecidedAtUs     *int64 `json:"decided_at_us,omitempty"`
 	DecidedBy       *int64 `json:"decided_by,omitempty"`
 	DecisionNote    string `json:"decision_note"`
+	// ArchivedAtUs is migration 0097's per-held-post exactly-once
+	// archive-filing latch (issue #189 verification fix): nil until
+	// fileArchive's ClaimMailingListHeldPostArchive call wins the CAS.
+	ArchivedAtUs *int64 `json:"archived_at_us,omitempty"`
 }
 
 type StateChangeRow struct {

@@ -90,9 +90,9 @@ func (e *Expander) readHeldBlob(ctx context.Context, held store.MailingListHeldP
 	return raw, nil
 }
 
-// heldPostIdempotencyPrefix computes the ExpandInput.IdempotencyKeyPrefix
-// used for every fan-out this held post ever triggers (its first
-// approval attempt and any later resume of a stuck
+// heldPostIdempotencyPrefix computes the per-member queue.Submission
+// IdempotencyKey prefix used for every fan-out this held post ever
+// triggers (its first approval attempt and any later resume of a stuck
 // MailingListHeldPostApproving row), so a retried or concurrently
 // racing fan-out of the SAME held post can never mail a member twice
 // (issue #189 verification fix).
@@ -102,23 +102,27 @@ func heldPostIdempotencyPrefix(id store.MailingListHeldPostID) string {
 
 // ApproveHeldPost approves held post id (REQ-MLIST-80: "an approved
 // held post fans out normally"), fanning it out through the normal S1
-// path exactly once no matter how many concurrent callers invoke this
-// method for the same id (issue #189 verification fix). This is a
-// two-phase, claim-then-act protocol, not a single CAS after the fact:
+// path exactly once no matter how many concurrent OR sequential
+// (crash-resumed) callers invoke this method for the same id (issue
+// #189 verification fix, second hardening pass). Three steps, and
+// concurrency is arbitrated in EXACTLY ONE of them:
 //
-//  1. Claim: ClaimMailingListHeldPostForApproval atomically transitions
-//     the row pending -> approving. This is the ONLY place concurrency
-//     is arbitrated -- the UPDATE ... WHERE status = 'pending' in that
-//     store call is a single atomic statement, so of any number of
-//     concurrent callers racing this method for the same id, AT MOST
-//     ONE wins the claim; every other caller's claim affects zero rows,
-//     returns store.ErrConflict here, and NEVER reaches step 2 --
-//     mail is only ever sent by the caller that won the claim.
-//  2. fanOut: the winning caller (or a later caller resuming an
-//     already-'approving' row, see below) reads the blob, reparses it,
-//     and runs the SAME shape/ARC-seal/archive/enqueue tail Expand uses
-//     for a never-held post, with a per-(held post, member) idempotency
-//     key so re-running this step is itself safe.
+//  1. Claim: ClaimMailingListHeldPostForApproval is a single atomic
+//     UPDATE that transitions the row to 'approving' -- matching either
+//     a fresh 'pending' row (the normal case) or a stale 'approving' row
+//     whose claim has aged past store.MailingListHeldPostApprovalLeaseTTL
+//     (a crash-resume case). This call is made UNCONDITIONALLY, with no
+//     prior read of the row's status: there is no read-then-branch here
+//     to race. Of any number of concurrent or sequential callers racing
+//     this method for the same id, AT MOST ONE wins the claim; every
+//     other caller's claim affects zero rows, returns store.ErrConflict
+//     here (a genuinely concurrent peer still holds a fresh claim, or
+//     the row is in a terminal state), and NEVER reaches step 2.
+//  2. fanOut: the winning caller reads the blob, reparses it, and runs
+//     the SAME shape/ARC-seal/archive/enqueue tail Expand uses for a
+//     never-held post, with in.HeldPostID set so both the per-member
+//     queue idempotency key and fileArchive's own claim make re-running
+//     this step for the SAME held post (a crash-resume) safe.
 //  3. Finalize: FinalizeMailingListHeldPostApproval atomically
 //     transitions approving -> approved and releases the held post's
 //     own blob_refs reference (fan-out's own queue/archive references
@@ -127,40 +131,29 @@ func heldPostIdempotencyPrefix(id store.MailingListHeldPostID) string {
 // Crash recovery: if the process dies between steps 1 and 3, the row is
 // left durably, visibly in MailingListHeldPostApproving -- never
 // silently reverted to "undecided" and never silently reported as
-// fanned out when it was not. Calling ApproveHeldPost AGAIN on such a
-// row does not re-claim it (step 1 is skipped for an already-approving
-// row) but resumes at step 2: fanOut's per-member idempotency keys mean
-// any member already mailed by the earlier, interrupted attempt is
-// skipped rather than mailed again, so resuming (including two
-// concurrent resume calls racing each other) is itself safe. There is
-// no automatic background sweep for a stuck 'approving' row in this
-// version; an operator (or the moderation UI) re-issuing the approve
-// action is the recovery path, and the held-post list surfaces
-// 'approving' as a status distinct from both 'pending' and 'approved'
-// so a stuck row is visible rather than silently lost.
+// fanned out when it was not. Once its claim ages past the lease TTL, a
+// LATER call to ApproveHeldPost on such a row reclaims it via the SAME
+// step-1 UPDATE (not a separate resume code path) and resumes: fanOut's
+// per-member idempotency keys mean any member already mailed by the
+// earlier, interrupted attempt is skipped rather than mailed again, and
+// fileArchive's own claim means the archive gets no second copy either.
+// There is no automatic background sweep for a stuck 'approving' row in
+// this version; an operator (or the moderation UI) re-issuing the
+// approve action after the lease has gone stale is the recovery path,
+// and the held-post list surfaces 'approving' as a status distinct from
+// both 'pending' and 'approved' so a stuck row is visible rather than
+// silently lost.
 func (e *Expander) ApproveHeldPost(ctx context.Context, id store.MailingListHeldPostID, approver store.PrincipalID) (ExpandResult, error) {
-	held, err := e.Meta.GetMailingListHeldPost(ctx, id)
+	held, err := e.Meta.ClaimMailingListHeldPostForApproval(ctx, id, approver, e.Clock.Now())
 	if err != nil {
+		// ErrConflict here means either a genuinely concurrent peer
+		// still holds a fresh (non-stale) claim on this row, or the row
+		// is already in a terminal state (approved/rejected/discarded);
+		// either way this call must not proceed to fanOut.
+		// ErrNotFound means id does not exist. This is the ONLY place
+		// this method arbitrates concurrency -- there is no read of
+		// held.Status anywhere in this function to branch on.
 		return ExpandResult{}, err
-	}
-	switch held.Status {
-	case store.MailingListHeldPostPending:
-		claimed, cerr := e.Meta.ClaimMailingListHeldPostForApproval(ctx, id, approver, e.Clock.Now())
-		if cerr != nil {
-			// ErrConflict here means we lost the race: some other
-			// concurrent caller's claim won and (or will) fan this post
-			// out; we must not proceed to fanOut at all.
-			return ExpandResult{}, cerr
-		}
-		held = claimed
-	case store.MailingListHeldPostApproving:
-		// Resuming a claim left in-flight by an earlier call (this
-		// process or a prior one) that died, or whose fanOut/finalize
-		// step failed, before completing. No new claim is taken -- the
-		// row is already ours (or shared with a concurrent resumer,
-		// which fanOut's idempotency keys make safe).
-	default:
-		return ExpandResult{}, store.ErrConflict
 	}
 	ml, err := e.Meta.GetMailingList(ctx, held.ListID)
 	if err != nil {
@@ -185,11 +178,11 @@ func (e *Expander) ApproveHeldPost(ctx context.Context, id store.MailingListHeld
 		_ = json.Unmarshal([]byte(held.AuthResultsJSON), &auth)
 	}
 	res, err := e.fanOut(ctx, ml, ExpandInput{
-		List:                 ml,
-		Parsed:               parsed,
-		Raw:                  raw,
-		Auth:                 auth,
-		IdempotencyKeyPrefix: heldPostIdempotencyPrefix(id),
+		List:       ml,
+		Parsed:     parsed,
+		Raw:        raw,
+		Auth:       auth,
+		HeldPostID: id,
 	})
 	if err != nil {
 		// fanOut itself failed outright (not a per-member skip, which

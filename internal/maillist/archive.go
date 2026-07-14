@@ -102,11 +102,27 @@ func imapURLPathEscape(s string) string {
 // persists -- REQ-MLIST-11's dedup guarantee extended to the archive
 // copy, not a second stored body.
 //
+// heldPostID, when non-zero (fanOut was called for a held post via
+// ApproveHeldPost), gates InsertMessage behind
+// store.Metadata.ClaimMailingListHeldPostArchive: only the FIRST call
+// that ever reaches here for a given held post wins that claim and
+// actually files the archive copy. A crash-resumed approval or a
+// stale-lease reclaim (see store.MailingListHeldPostApprovalLeaseTTL)
+// calls fanOut, and therefore fileArchive, a second time for the SAME
+// held post; without this gate that second call would file a second,
+// duplicate archive copy every time (issue #189 verification fix,
+// second hardening pass -- the member Submit path already had this
+// exactly-once discipline via its own per-member idempotency key, but
+// fileArchive's InsertMessage call had none). Zero (the normal,
+// never-held Expand path, which calls fanOut exactly once ever) skips
+// the claim entirely.
+//
 // Best-effort like the Sealer/TokenSigner degradation paths in Expand:
 // a failure here is logged loudly and does not drop or fail the post
 // (dropping mail, or blocking fan-out on an archive-only failure, is the
-// worse failure). Returns true when the post was actually filed.
-func (e *Expander) fileArchive(ctx context.Context, ml store.MailingList, shaped []byte, parsed mailparse.Message) bool {
+// worse failure). Returns true when the post is (now, or already)
+// archived.
+func (e *Expander) fileArchive(ctx context.Context, ml store.MailingList, shaped []byte, parsed mailparse.Message, heldPostID store.MailingListHeldPostID) bool {
 	if ml.ArchiveMailboxID == nil {
 		return false
 	}
@@ -114,6 +130,21 @@ func (e *Expander) fileArchive(ctx context.Context, ml store.MailingList, shaped
 		e.Logger.ErrorContext(ctx, "maillist: archive_mailbox_id set but no Blobs/Meta wired; post not archived",
 			"list", ml.PostingAddress)
 		return false
+	}
+	if heldPostID != 0 {
+		claimed, cerr := e.Meta.ClaimMailingListHeldPostArchive(ctx, heldPostID, e.Clock.Now())
+		if cerr != nil {
+			e.Logger.ErrorContext(ctx, "maillist: archive: claim held post archive slot failed; post not archived",
+				"list", ml.PostingAddress, "held_post_id", uint64(heldPostID), "err", cerr.Error())
+			return false
+		}
+		if !claimed {
+			// An earlier attempt at fanning out this SAME held post
+			// (a crash-resumed approval, or a losing concurrent
+			// resumer) already filed the archive copy. Report the post
+			// as archived -- it is -- without filing a second copy.
+			return true
+		}
 	}
 	ref, err := e.Blobs.Put(ctx, bytes.NewReader(shaped))
 	if err != nil {

@@ -405,6 +405,28 @@ type MailingListHeldPostReason string
 // policy: every post is held regardless of sender.
 const MailingListHeldReasonModerated MailingListHeldPostReason = "moderated"
 
+// MailingListHeldPostApprovalLeaseTTL bounds how long
+// ClaimMailingListHeldPostForApproval's own claim on a held post is
+// honoured before a LATER claim attempt against the same row is allowed
+// to reclaim it (REQ-MLIST-80, issue #189 verification fix, second
+// hardening pass). The row's decided_at_us, already recorded as the
+// claim's own timestamp, doubles as the lease start -- no separate lease
+// column is needed. A row whose decided_at_us is within this window of
+// "now" is presumed still actively owned by whichever caller holds the
+// claim (a genuinely concurrent racer); every other claim attempt
+// against it fails closed with ErrConflict, exactly as a fresh
+// 'pending' claim would fail against a second concurrent claimant. A
+// row whose decided_at_us has aged past this window is presumed
+// abandoned by a process that died between the claim and
+// FinalizeMailingListHeldPostApproval, and becomes reclaimable: the
+// SAME atomic UPDATE that performs the original pending->approving
+// claim also performs this reclaim (approving-and-stale->approving,
+// with a fresh decided_at_us) -- there is no separate "resume" code
+// path or read-then-branch anywhere in the caller. This is the ONLY
+// place a stuck 'approving' row becomes actionable again; there is no
+// background sweep.
+const MailingListHeldPostApprovalLeaseTTL = 5 * time.Minute
+
 // MailingListHeldPost is one row of the mailing_list_held_post table: a
 // post a list's posting policy held instead of fanning out or rejecting
 // (REQ-MLIST-80). The row, not an in-memory queue, is what makes a held

@@ -731,7 +731,17 @@ const CurrentBackupVersion = 1
 //	InsertMessage / ReplaceMessageBody / the delete and expunge paths
 //	resolve the quota-owning principal before touching used_bytes. No
 //	new table; PrincipalRow gains the one nullable field.
-const CurrentSchemaVersion = 97
+//
+// 98 — 0098_mailing_list_held_post_archived_at.sql (issue #189
+//
+//	verification fix, second hardening pass, REQ-MLIST-70/80). Adds
+//	mailing_list_held_post.archived_at_us: a per-held-post exactly-once
+//	latch (NULL until filed, set once by whichever ApproveHeldPost
+//	attempt's ClaimMailingListHeldPostArchive call wins the CAS) so a
+//	crash-resumed or stale-lease-reclaimed approval never files a
+//	second archive copy of the same held post. No new table;
+//	MailingListHeldPostRow gains the one field.
+const CurrentSchemaVersion = 98
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
