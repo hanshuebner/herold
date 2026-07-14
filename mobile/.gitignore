@@ -1,0 +1,15 @@
+# Local SDK path, machine-specific -- never committed.
+local.properties
+
+# Gradle / Android build output.
+.gradle/
+build/
+*/build/
+.cxx/
+.idea/
+captures/
+*.iml
+
+# SQLDelight generated verification database (checked-in schema is the
+# source of truth; the .db snapshot is derived).
+*.db

@@ -1,0 +1,17 @@
+-- Local-store seam for the offline model
+-- (docs/design/android/requirements/02-offline-and-sync.md). This is the
+-- Phase 0 skeleton table; the sync engine and full schema (threads, emails,
+-- outbox) land with Phase 1.
+
+CREATE TABLE mailbox (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    unreadCount INTEGER NOT NULL DEFAULT 0
+);
+
+selectAll:
+SELECT * FROM mailbox;
+
+insertOrReplace:
+INSERT OR REPLACE INTO mailbox(id, name, unreadCount)
+VALUES (?, ?, ?);
