@@ -122,6 +122,7 @@ func Run(t *testing.T, f Factory) {
 		{"OAuthRefreshToken_Rotate_SingleUse", testOAuthRefreshTokenRotateSingleUse},
 		{"OAuthRefreshToken_RevokeFamily_DeletesAccessKeys", testOAuthRefreshTokenRevokeFamilyDeletesAccessKeys},
 		{"OAuthRefreshToken_CascadeOnDeletePrincipal", testOAuthRefreshTokenCascadeOnDeletePrincipal},
+		{"OAuthRefreshToken_ListByPrincipal_ActiveOnly", testOAuthRefreshTokenListByPrincipalActiveOnly},
 		// -- OAuth2 client registry (issue #199, DB-backed client registry) --
 		{"OAuthClient_CRUD", testOAuthClientCRUD},
 		// -- Phase 2 Wave 2.0 --------------------------------------
@@ -1333,6 +1334,101 @@ func testOAuthRefreshTokenCascadeOnDeletePrincipal(t *testing.T, s store.Store) 
 	}
 	if _, err := s.Meta().GetOAuthRefreshTokenByHash(ctx, "rthash-casc"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetOAuthRefreshTokenByHash after principal delete = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthRefreshTokenListByPrincipalActiveOnly asserts that
+// ListOAuthRefreshTokensByPrincipal (issue #224 active-credentials view)
+// returns exactly one row per live rotation family -- the current
+// generation, not a rotated-away predecessor -- excludes a fully revoked
+// family, excludes another principal's rows, and returns nil for a
+// principal with no OAuth2 grant at all.
+func testOAuthRefreshTokenListByPrincipalActiveOnly(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "rt-list@example.com")
+	other := mustInsertPrincipal(t, s, "rt-list-other@example.com")
+
+	// Principal with zero grants: nil, not an error.
+	none, err := s.Meta().ListOAuthRefreshTokensByPrincipal(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal (none): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal (none) = %d rows, want 0", len(none))
+	}
+
+	// Family A: rotated once. Only the successor row should be listed.
+	rtA1, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-list-a1", FamilyID: "fam-list-a", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertOAuthRefreshToken A1: %v", err)
+	}
+	if _, err := s.Meta().MarkOAuthRefreshTokenRotated(ctx, rtA1.ID, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MarkOAuthRefreshTokenRotated A1: %v", err)
+	}
+	if _, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-list-a2", FamilyID: "fam-list-a", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthRefreshToken A2: %v", err)
+	}
+
+	// Family B: never rotated, still active.
+	if _, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-list-b", FamilyID: "fam-list-b", PrincipalID: p.ID,
+		ClientID: "other-client", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthRefreshToken B: %v", err)
+	}
+
+	// Family C: fully revoked. Must not appear.
+	if _, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-list-c", FamilyID: "fam-list-c", PrincipalID: p.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthRefreshToken C: %v", err)
+	}
+	if _, err := s.Meta().RevokeOAuthRefreshTokenFamily(ctx, "fam-list-c", time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("RevokeOAuthRefreshTokenFamily C: %v", err)
+	}
+
+	// Another principal's active grant must never leak into p's list.
+	if _, err := s.Meta().InsertOAuthRefreshToken(ctx, store.OAuthRefreshToken{
+		Hash: "rthash-list-other", FamilyID: "fam-list-other", PrincipalID: other.ID,
+		ClientID: "herold-android", ScopeJSON: `["mail.send"]`,
+		ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("InsertOAuthRefreshToken other: %v", err)
+	}
+
+	got, err := s.Meta().ListOAuthRefreshTokensByPrincipal(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal = %d rows, want 2: %+v", len(got), got)
+	}
+	hashes := map[string]bool{}
+	for _, rt := range got {
+		hashes[rt.Hash] = true
+		if rt.PrincipalID != p.ID {
+			t.Fatalf("row PrincipalID = %d, want %d", rt.PrincipalID, p.ID)
+		}
+		if !rt.RotatedAt.IsZero() || !rt.RevokedAt.IsZero() {
+			t.Fatalf("row %+v is not active (RotatedAt/RevokedAt set)", rt)
+		}
+	}
+	if !hashes["rthash-list-a2"] || !hashes["rthash-list-b"] {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal missing expected active rows: %+v", got)
+	}
+	if hashes["rthash-list-a1"] || hashes["rthash-list-c"] {
+		t.Fatalf("ListOAuthRefreshTokensByPrincipal leaked a rotated/revoked row: %+v", got)
 	}
 }
 

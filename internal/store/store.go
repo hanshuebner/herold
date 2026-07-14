@@ -937,6 +937,16 @@ type Metadata interface {
 	// number of refresh-token rows newly revoked.
 	RevokeOAuthRefreshTokenFamily(ctx context.Context, familyID string, revokedAt time.Time) (int64, error)
 
+	// ListOAuthRefreshTokensByPrincipal returns the currently-active
+	// refresh-token row (RotatedAt zero, RevokedAt zero) of every live
+	// rotation family owned by pid, in ascending ID order -- i.e. one
+	// row per distinct OAuth2 grant the principal currently holds,
+	// suitable for a self-service "active credentials" listing (issue
+	// #224). A rotated-away predecessor row is excluded: it is history,
+	// not a live credential. The returned slice is empty (nil) when the
+	// principal holds no active OAuth2 grant.
+	ListOAuthRefreshTokensByPrincipal(ctx context.Context, pid PrincipalID) ([]OAuthRefreshToken, error)
+
 	// -- OAuth2 native-client registry (issue #199, DB-backed client
 	// registry replacing the compiled-in map) --
 

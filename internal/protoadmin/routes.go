@@ -74,6 +74,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/auth/sessions/{session_id}", auth1(s.handleRevokeSession))
 	mux.HandleFunc("GET /api/v1/admin/principals/{pid}/sessions", authAdmin(s.handleAdminListSessions))
 	mux.HandleFunc("DELETE /api/v1/admin/principals/{pid}/sessions/{session_id}", authAdmin(s.handleAdminRevokeSession))
+	// Unified active-credentials view (issue #224): sessions + device
+	// tokens + OAuth2 grants in one self-service list, with a uniform
+	// revoke-by-(kind,id) action. Self-service only -- no admin variant
+	// exists; the kind-specific admin endpoints above (and the admin
+	// API-key/OAuth2-client surfaces) already cover operator visibility.
+	mux.HandleFunc("GET /api/v1/auth/credentials", auth1(s.handleListCredentials))
+	mux.HandleFunc("DELETE /api/v1/auth/credentials/{kind}/{id}", auth1(s.handleRevokeCredential))
 
 	// OIDC callback (unauth).
 	mux.HandleFunc("POST /api/v1/oidc/callback", s.handleOIDCCallback)
@@ -379,6 +386,14 @@ func (s *Server) RegisterSelfServiceRoutes(mux *http.ServeMux) {
 	// subset only (no admin variants on the public listener).
 	mux.HandleFunc("GET /api/v1/auth/sessions", auth1(s.handleListSessions))
 	mux.HandleFunc("DELETE /api/v1/auth/sessions/{session_id}", auth1(s.handleRevokeSession))
+
+	// Unified active-credentials view (issue #224): sessions + device
+	// tokens + OAuth2 grants in one self-service list, with a uniform
+	// revoke-by-(kind,id) action. This is the Suite's primary consumer
+	// of the two handlers (the admin-listener registration above exists
+	// so operator tooling / the admin SPA can reach it too).
+	mux.HandleFunc("GET /api/v1/auth/credentials", auth1(s.handleListCredentials))
+	mux.HandleFunc("DELETE /api/v1/auth/credentials/{kind}/{id}", auth1(s.handleRevokeCredential))
 
 	// Principal self-service: a non-admin principal may only access their
 	// own row; requireSelfOrAdmin inside each handler enforces this.

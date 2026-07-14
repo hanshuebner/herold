@@ -89,11 +89,28 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 			"session_id path parameter is required", "")
 		return
 	}
+	if !s.revokeOwnSession(w, r, caller, sessionID) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
+// revokeOwnSession tombstones sessionID, which MUST belong to caller
+// (TombstoneSession fails closed with store.ErrNotFound otherwise -- the
+// "wrong owner" case is reported as 404, never 403, so a caller cannot
+// distinguish "not yours" from "does not exist"). Also invalidates any
+// elevation record for the session and, when sessionID is the caller's
+// own current session, clears the session/CSRF cookies from the
+// response so a self-revoke logs the caller out cleanly rather than
+// leaving a half-authenticated browser state. Writes an error response
+// and returns false on failure; the caller must not write anything
+// further in that case. Shared by handleRevokeSession (REQ-AUTH-77) and
+// the unified credentials endpoint (handleRevokeCredential, issue #224).
+func (s *Server) revokeOwnSession(w http.ResponseWriter, r *http.Request, caller store.Principal, sessionID string) bool {
 	now := s.clk.Now()
 	if err := s.store.Meta().TombstoneSession(r.Context(), sessionID, caller.ID, now.UnixMicro(), tombstoneTTLMicros); err != nil {
 		s.writeStoreError(w, r, err)
-		return
+		return false
 	}
 	// Revoke any active elevation for this session as well (REQ-AUTH-77).
 	_ = s.store.Meta().DeleteElevation(r.Context(), sessionID)
@@ -110,8 +127,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		cfg := s.sessionConfig()
 		authsession.ClearSessionCookies(w, cfg)
 	}
-
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // handleAdminListSessions handles GET /api/v1/admin/principals/{pid}/sessions.

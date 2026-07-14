@@ -265,3 +265,29 @@ func (m *metadata) RevokeOAuthRefreshTokenFamily(ctx context.Context, familyID s
 	})
 	return n, err
 }
+
+// ListOAuthRefreshTokensByPrincipal returns the currently-active refresh
+// token row of every live rotation family owned by pid (issue #224
+// active-credentials view). See the store.Meta interface doc comment.
+func (m *metadata) ListOAuthRefreshTokensByPrincipal(ctx context.Context, pid store.PrincipalID) ([]store.OAuthRefreshToken, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT `+oauthRefreshTokenSelectCols+` FROM oauth_refresh_tokens
+		  WHERE principal_id = ? AND rotated_at_us IS NULL AND revoked_at_us IS NULL
+		  ORDER BY id`, int64(pid))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.OAuthRefreshToken
+	for rows.Next() {
+		rt, err := scanOAuthRefreshToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return out, nil
+}
