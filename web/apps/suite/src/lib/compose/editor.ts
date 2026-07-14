@@ -204,6 +204,70 @@ export function collectImageSrcs(doc: Node): Set<string> {
   return srcs;
 }
 
+/**
+ * True when a clipboard-supplied image `src` is safe to keep verbatim in
+ * pasted HTML: it already resolves to the herold origin (a `blob:` URL
+ * created by this tab, or a same-origin path), a `cid:` reference (the
+ * scheme the compose schema itself emits for uploaded inline images), or a
+ * `data:` URI (self-contained — no cross-site fetch happens when it
+ * renders). Any other URL is a foreign resource that the browser will
+ * refuse to load cross-site (issue #242) and must not survive paste.
+ */
+export function isAllowedPastedImageSrc(src: string): boolean {
+  if (!src) return false;
+  if (src.startsWith('cid:') || src.startsWith('data:')) return true;
+  try {
+    return new URL(src, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove `<img>` elements whose `src` is not herold-origin/cid:/data: from
+ * a pasted HTML fragment (issue #242). Used as `transformPastedHTML` so a
+ * clipboard flavor carrying only a foreign image URL (no raw image bytes)
+ * never becomes a broken image node instead of being silently dropped.
+ */
+export function stripForeignImagesFromPastedHtml(html: string): string {
+  if (!html.includes('<img')) return html;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html;
+  wrapper.querySelectorAll('img[src]').forEach((img) => {
+    if (!isAllowedPastedImageSrc(img.getAttribute('src') ?? '')) {
+      img.remove();
+    }
+  });
+  return wrapper.innerHTML;
+}
+
+/**
+ * Extract raw image `File`s from a paste/drop `DataTransfer` (issue #242).
+ * Clipboard sources that put both a `text/html` flavor (e.g. a foreign
+ * `<img src>`) and the raw image bytes on the clipboard — Google Photos
+ * among them — must have the raw bytes win: this is what lets the paste
+ * handler route the image through the same upload-and-`cid:` flow as
+ * drag-drop instead of falling through to the HTML parse.
+ */
+export function extractPastedImageFiles(dataTransfer: DataTransfer | null): File[] {
+  if (!dataTransfer) return [];
+  const files: File[] = [];
+  if (dataTransfer.files && dataTransfer.files.length > 0) {
+    for (const file of Array.from(dataTransfer.files)) {
+      if (file.type.startsWith('image/')) files.push(file);
+    }
+  }
+  if (files.length === 0 && dataTransfer.items) {
+    for (const item of Array.from(dataTransfer.items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+  }
+  return files;
+}
+
 export function createComposeEditor(
   target: HTMLElement,
   options: {
@@ -211,6 +275,14 @@ export function createComposeEditor(
     onChange: (state: EditorStateType) => void;
     /** Called with the src of each image node removed from the doc (issue #83). */
     onImageRemoved?: (src: string) => void;
+    /**
+     * Called with the raw image File(s) found on a paste's clipboard data
+     * (issue #242). The caller routes them through the same upload-and-cid
+     * flow used for drag-dropped files; the paste handler suppresses
+     * ProseMirror's default HTML-flavor paste whenever this fires so a
+     * foreign clipboard URL never wins over the raw bytes.
+     */
+    onImagePaste?: (files: File[]) => void;
   },
 ): EditorView {
   const doc = htmlToDoc(options.initialHtml);
@@ -240,6 +312,26 @@ export function createComposeEditor(
         }
       }
     },
+    handleDOMEvents: {
+      // Raw image bytes on the clipboard (issue #242) take priority over
+      // any accompanying text/html flavor: extract them here, before
+      // ProseMirror's own clipboard pipeline runs, and hand them to the
+      // caller's upload flow. Returning true (after preventDefault) skips
+      // ProseMirror's default paste handling entirely, so the foreign
+      // <img src> in the HTML flavor never gets a chance to be parsed.
+      paste(_view, event: ClipboardEvent) {
+        const files = extractPastedImageFiles(event.clipboardData);
+        if (files.length === 0 || !options.onImagePaste) return false;
+        event.preventDefault();
+        options.onImagePaste(files);
+        return true;
+      },
+    },
+    // No raw image bytes on the clipboard: fall back to ProseMirror's
+    // default HTML paste, but strip any <img> that isn't herold-origin so
+    // a foreign URL (e.g. Google Photos serving only a link, no bytes)
+    // does not survive as a broken image node (issue #242).
+    transformPastedHTML: stripForeignImagesFromPastedHtml,
   });
   return view;
 }

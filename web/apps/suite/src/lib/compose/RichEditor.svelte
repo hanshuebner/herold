@@ -17,6 +17,8 @@
     onView?: (view: EditorView | null) => void;
     /** Called when the user removes an image from the editor (issue #83). */
     onImageRemoved?: (src: string) => void;
+    /** Called with raw image bytes found on a paste's clipboard (issue #242). */
+    onImagePaste?: (files: File[]) => void;
     autofocus?: boolean;
     /**
      * Set of blob: objectURLs currently in the 'uploading' state (issue #83).
@@ -32,6 +34,7 @@
     onActiveChange,
     onView,
     onImageRemoved,
+    onImagePaste,
     autofocus = false,
     uploadingSrcs = new Set<string>(),
   }: Props = $props();
@@ -48,6 +51,7 @@
         onActiveChange?.(computeActive(state));
       },
       onImageRemoved,
+      onImagePaste,
     });
     currentView = view;
     onView?.(view);

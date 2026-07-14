@@ -873,6 +873,7 @@
                 onActiveChange={(a) => (active = a)}
                 onView={(v) => (editorView = v)}
                 {onImageRemoved}
+                onImagePaste={(files) => void handleInlineDrop(files)}
                 {uploadingSrcs}
               />
             {/key}
