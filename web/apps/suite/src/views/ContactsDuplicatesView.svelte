@@ -312,16 +312,15 @@
           </div>
         </li>
       {/each}
+      {#if duplicatesStore.hasMore}
+        <li class="sentinel" role="presentation" bind:this={sentinelEl}>
+          {#if duplicatesStore.status === 'loading-more'}
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span class="sr-only">{t('contacts.duplicates.loadingMore')}</span>
+          {/if}
+        </li>
+      {/if}
     </ul>
-
-    {#if duplicatesStore.hasMore}
-      <div class="sentinel" bind:this={sentinelEl} aria-hidden="true">
-        {#if duplicatesStore.status === 'loading-more'}
-          <span class="loading-spinner" aria-hidden="true"></span>
-          <span class="sr-only">{t('contacts.duplicates.loadingMore')}</span>
-        {/if}
-      </div>
-    {/if}
   {/if}
 </div>
 
