@@ -2,6 +2,7 @@ package mailparse
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -67,6 +68,93 @@ func FuzzParse(f *testing.F) {
 		// from the stored index without re-parsing the whole message.
 		checkPartIndexRoundtrip(t, data, msg)
 	})
+}
+
+// FuzzParseHeadersOnly drives Parse's too-large / header-recovery branch
+// (parseHeadersOnly, re #244) directly. FuzzParse's own MaxSize=1<<20 with an
+// all-sub-2KB seed corpus never grows an input past the cap under mutation
+// (confirmed: 0 hits in 3M executions), leaving parseHeadersOnly -- which
+// runs net/mail.ReadMessage plus RFC 2047 header/address decoding over
+// untrusted bytes -- effectively unfuzzed, contrary to STANDARDS §8.2's
+// "every wire parser has a fuzz target" requirement.
+//
+// Rather than pick a static MaxSize and hope mutation keeps inputs above it
+// (the exact failure mode above), MaxSize is derived from len(data)/2 inside
+// the fuzz function itself: every single execution -- seed or mutated --
+// therefore forces Parse into the too-large path deterministically,
+// regardless of what the mutator does to input length.
+func FuzzParseHeadersOnly(f *testing.F) {
+	seed := func(headers string, padTo int) []byte {
+		var b strings.Builder
+		b.WriteString(headers)
+		b.WriteString("\r\n")
+		for b.Len() < padTo {
+			b.WriteString("padding padding padding padding padding\r\n")
+		}
+		return []byte(b.String())
+	}
+	f.Add(seed("From: a@b\r\nTo: c@d\r\nSubject: s\r\nMessage-ID: <m1@x>\r\n", 1024))
+	f.Add(seed(
+		"From: =?utf-8?B?w6TDtsO8?= <a@b>\r\nSubject: =?utf-8?Q?Hi=21?=\r\n"+
+			"Message-ID: <m2@x>\r\nIn-Reply-To: <parent@x>\r\nReferences: <r1@x> <r2@x>\r\n",
+		2048))
+	// No header/body separator at all: parseHeadersOnly's mail.ReadMessage
+	// call fails outright, exercising the "even headers unparseable"
+	// fallback to a fully zero-value Message.
+	f.Add(bytes.Repeat([]byte("x"), 4096))
+	// Malformed encoded-word and an unterminated quoted display-name inside
+	// an oversized message, to probe the header/address decoders' error
+	// paths under the too-large branch specifically.
+	f.Add(seed("From: \"unterminated <a@b\r\nSubject: =?utf-8?Q?broken\r\n", 1024))
+	f.Add([]byte{})
+	f.Add([]byte{0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 2 {
+			return // MaxSize must be >= 1 for readCapped's limit+1 read to make sense.
+		}
+		opts := NewParseOptions()
+		opts.MaxSize = int64(len(data) / 2)
+
+		msg, err := Parse(bytes.NewReader(data), opts)
+
+		// Invariant: MaxSize was deliberately set below len(data), so Parse
+		// must always report ErrTooLarge on this path -- never succeed,
+		// never report a different Reason.
+		if !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("MaxSize=%d < len(data)=%d but Parse did not report ErrTooLarge: %v", opts.MaxSize, len(data), err)
+		}
+		// Invariant: the too-large path never walks the body -- Body stays
+		// the zero Part regardless of what parseHeadersOnly recovered.
+		if msg.Body.ContentType != "" || len(msg.Body.Children) != 0 {
+			t.Fatalf("too-large Message unexpectedly has a non-zero Body: %+v", msg.Body)
+		}
+		// Invariant: whatever header/address decoding recovered contains no
+		// NUL bytes -- garbage that would corrupt the env_* store columns
+		// or a downstream thread-resolution lookup rather than simply
+		// being absent.
+		checkNoNUL(t, "Envelope.MessageID", msg.Envelope.MessageID)
+		checkNoNUL(t, "Envelope.Subject", msg.Envelope.Subject)
+		checkNoNUL(t, "Envelope.Date", msg.Envelope.Date)
+		for _, id := range msg.Envelope.InReplyTo {
+			checkNoNUL(t, "Envelope.InReplyTo[]", id)
+		}
+		for _, ref := range msg.Envelope.References {
+			checkNoNUL(t, "Envelope.References[]", ref)
+		}
+		for _, a := range msg.Envelope.From {
+			checkNoNUL(t, "Envelope.From[].Name", a.Name)
+			checkNoNUL(t, "Envelope.From[].Address", a.Address)
+		}
+	})
+}
+
+// checkNoNUL fails the test if s contains an embedded NUL byte.
+func checkNoNUL(t *testing.T, field, s string) {
+	t.Helper()
+	if strings.IndexByte(s, 0) >= 0 {
+		t.Fatalf("%s contains a NUL byte: %q", field, s)
+	}
 }
 
 // checkPartIndexRoundtrip builds the part index for msg and verifies that, for

@@ -305,6 +305,18 @@ func renderFull(
 	return out, nil
 }
 
+// envelopeIsEmpty reports whether env carries none of the three fields a
+// successful parse always populates for a message with any headers at all
+// (MessageID/From/Subject). This is the exact fingerprint the pre-fix
+// mailparse.Parse-too-large defect (re #244) left behind:
+// buildEnvelopeFromParsed on the zero-value mailparse.Message it used to
+// return zeroed every field. A message that legitimately lacks a
+// Message-ID but has From/Subject does NOT match this and is left
+// untouched.
+func envelopeIsEmpty(env store.Envelope) bool {
+	return env.MessageID == "" && env.From == "" && env.Subject == ""
+}
+
 // tooLargeBodyPlaceholder degrades out's body-shaped fields to a defined,
 // non-empty placeholder for a message whose blob exceeds
 // mailparse.DefaultMaxSize. out already carries the correct envelope

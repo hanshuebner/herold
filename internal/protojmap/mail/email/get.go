@@ -344,9 +344,51 @@ func renderFullWithProperties(
 	parsed, err := parser(bytes.NewReader(rawBody))
 	if err != nil {
 		if errors.Is(err, mailparse.ErrTooLarge) {
-			// See renderFull's identical branch in render.go: the envelope
-			// in out is already correct (mailparse.Parse recovers headers
-			// even on this path, re #244); only the body degrades.
+			// mailparse.Parse recovers headers even on this path (re
+			// #244), so `parsed` here already carries a correct Envelope
+			// built straight from the stored raw blob's own headers.
+			//
+			// Rows created before the re #244 fix landed persisted a
+			// fully empty Envelope at create time (env_message_id
+			// included) and nothing else ever recomputes it -- the
+			// ticket calls this out explicitly ("written permanently
+			// ... nothing ever recomputes it"). A create-time-only fix
+			// leaves every already-broken row rendering "(no sender)"
+			// forever, so repair it lazily here: when the persisted
+			// envelope is the empty value left behind by that bug and
+			// the freshly recovered one is usable, persist the
+			// correction (repair-on-read, the same opportunistic-persist
+			// shape as the BodyMetaComputed backfill below) and use it
+			// for this response too. Chosen over a startup migration/
+			// backfill pass because the trigger condition (empty
+			// env_message_id) is cheap to test on the row already in
+			// hand, requires no full-table scan, and self-heals every
+			// affected row the first time it is next read -- no separate
+			// operational step to run against production.
+			if envelopeIsEmpty(m.Envelope) {
+				if recovered := buildEnvelopeFromParsed(parsed); !envelopeIsEmpty(recovered) {
+					// Normalize MessageID the same way the store does on
+					// persist (angle brackets stripped, lowercased) so this
+					// response matches every subsequent read of the now-
+					// repaired row instead of a one-off unnormalized form.
+					if recovered.MessageID != "" {
+						recovered.MessageID = mailparse.NormalizeMessageID(recovered.MessageID)
+					}
+					if meta != nil {
+						if berr := meta.BackfillMessageEnvelope(ctx, m.ID, recovered); berr != nil {
+							if logger != nil {
+								logger.LogAttrs(ctx, slog.LevelWarn, "email/get: backfill oversized-message envelope failed",
+									slog.String("activity", "system"),
+									slog.Uint64("message_id", uint64(m.ID)),
+									slog.String("err", berr.Error()),
+								)
+							}
+						}
+					}
+					m.Envelope = recovered
+					out = renderEmailMetadata(m)
+				}
+			}
 			return tooLargeBodyPlaceholder(out, m), nil
 		}
 		return out, nil

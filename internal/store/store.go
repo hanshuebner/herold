@@ -392,6 +392,21 @@ type Metadata interface {
 	// state. Returns ErrNotFound when id no longer exists.
 	SetMessageBodyMeta(ctx context.Context, id MessageID, preview string, hasAttachment bool) error
 
+	// BackfillMessageEnvelope overwrites the env_* cache columns
+	// (subject/from/to/cc/bcc/replyTo/messageId/inReplyTo/references/date)
+	// for the message identified by id, in a single UPDATE. Unlike
+	// ReplaceMessageBody, this does NOT touch the blob, size, refcounts,
+	// quota, preview/hasAttachment/bodyMetaComputed, or mailbox modseqs,
+	// and does NOT append a state-change entry -- it corrects a stale
+	// metadata cache in place, the same "opportunistic persist on read"
+	// shape as SetMessageBodyMeta, not a user-visible mutation of the
+	// message. Used to repair rows whose Envelope was persisted empty by
+	// the pre-fix mailparse.Parse-too-large defect (re #244): Email/get
+	// recovers the correct envelope from the stored raw blob's headers
+	// and calls this to fix the cache for subsequent reads. Idempotent.
+	// Returns ErrNotFound when id no longer exists.
+	BackfillMessageEnvelope(ctx context.Context, id MessageID, env Envelope) error
+
 	// ListMessagesNeedingBodyMeta returns up to limit MessageIDs in
 	// DESCENDING order (newest first, highest ID first) with id < beforeID,
 	// scanning only rows where body_meta_computed = 0. Pass beforeID = 0 to

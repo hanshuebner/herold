@@ -1839,6 +1839,27 @@ func (m *metadata) SetMessageBodyMeta(ctx context.Context, id store.MessageID, p
 	return nil
 }
 
+func (m *metadata) BackfillMessageEnvelope(ctx context.Context, id store.MessageID, env store.Envelope) error {
+	if env.MessageID != "" {
+		env.MessageID = mailparse.NormalizeMessageID(env.MessageID)
+	}
+	res, err := m.s.pool.Exec(ctx, `
+		UPDATE messages
+		   SET env_subject = $1, env_from = $2, env_to = $3, env_cc = $4, env_bcc = $5, env_reply_to = $6,
+		       env_message_id = $7, env_in_reply_to = $8, env_references = $9, env_date_us = $10
+		 WHERE id = $11`,
+		env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
+		env.MessageID, env.InReplyTo, env.References, usMicros(env.Date),
+		int64(id))
+	if err != nil {
+		return mapErr(err)
+	}
+	if res.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (m *metadata) ListMessagesNeedingBodyMeta(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
 	if limit <= 0 {
 		return nil, nil

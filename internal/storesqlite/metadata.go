@@ -1875,6 +1875,31 @@ func (m *metadata) SetMessageBodyMeta(ctx context.Context, id store.MessageID, p
 	return nil
 }
 
+func (m *metadata) BackfillMessageEnvelope(ctx context.Context, id store.MessageID, env store.Envelope) error {
+	if env.MessageID != "" {
+		env.MessageID = mailparse.NormalizeMessageID(env.MessageID)
+	}
+	res, err := m.s.db.ExecContext(ctx, `
+		UPDATE messages
+		   SET env_subject = ?, env_from = ?, env_to = ?, env_cc = ?, env_bcc = ?, env_reply_to = ?,
+		       env_message_id = ?, env_in_reply_to = ?, env_references = ?, env_date_us = ?
+		 WHERE id = ?`,
+		env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
+		env.MessageID, env.InReplyTo, env.References, usMicros(env.Date),
+		int64(id))
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storesqlite: rows affected: %w", err)
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (m *metadata) ListMessagesNeedingBodyMeta(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
 	if limit <= 0 {
 		return nil, nil

@@ -1717,6 +1717,111 @@ func TestEmailSet_Create_OversizedBody_EnvelopeAndPlaceholderBody(t *testing.T) 
 	}
 }
 
+// TestEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage pins the
+// re #244 gap the fix-verifier surfaced: create-time-only correctness does
+// not help a row that was ALREADY persisted with an empty envelope by the
+// pre-fix bug (the maintainer's actual reported message). This test starts
+// from exactly that state -- a row inserted directly via the store with an
+// empty Envelope, deliberately bypassing Email/set create -- and asserts
+// that a single Email/get call both (a) renders the correct sender/subject
+// in its response and (b) repairs the STORED row, so every later read is
+// correct too, not just this one response.
+func TestEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage(t *testing.T) {
+	testEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage(t, setupFixture(t))
+}
+
+// TestEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage_Postgres is
+// the Postgres leg: this test is the one exercising the new
+// store.Metadata.BackfillMessageEnvelope method added for the re #244
+// repair-on-read path, so both backend implementations need direct
+// coverage, not just storesqlite's. Skips when HEROLD_PG_DSN is not set.
+func TestEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage_Postgres(t *testing.T) {
+	testEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage(t, setupFixturePostgres(t))
+}
+
+// testEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage is the
+// backend-agnostic test body shared by the SQLite and Postgres variants
+// above.
+func testEmailGet_RepairsPreExistingEmptyEnvelope_OversizedMessage(t *testing.T, f *fixture) {
+	const tinyMaxSize = 200
+	email.SetParser(f.registry, func(r io.Reader) (mailparse.Message, error) {
+		opts := mailparse.NewParseOptions()
+		opts.MaxSize = tinyMaxSize
+		return mailparse.Parse(r, opts)
+	})
+
+	rawBody := "From: Carol <carol@example.test>\r\n" +
+		"To: Dave <dave@example.test>\r\n" +
+		"Subject: Legacy oversized message\r\n" +
+		"Message-ID: <legacy-oversized-1@example.test>\r\n" +
+		"\r\n" +
+		strings.Repeat("padding padding padding padding padding\n", 20)
+
+	// Simulate a row exactly as the pre-#244 code left it: the blob holds a
+	// perfectly good message with valid headers, but the row's cached
+	// Envelope was written empty because the create-time parse silently
+	// discarded its error. insertMessage writes the row directly via the
+	// store, bypassing Email/set entirely, so this is NOT a fresh create.
+	m := f.insertMessage(t, rawBody, "" /* subject */, "" /* from */, "dave@example.test", nil, "")
+
+	preRepair, err := f.srv.Store.Meta().GetMessage(context.Background(), m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if preRepair.Envelope.MessageID != "" || preRepair.Envelope.From != "" || preRepair.Envelope.Subject != "" {
+		t.Fatalf("test setup: expected an empty persisted envelope before repair, got %+v", preRepair.Envelope)
+	}
+
+	emailID := fmt.Sprintf("%d", m.ID)
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{emailID},
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d entries, want 1: %s", len(getResp.List), raw)
+	}
+	got := getResp.List[0]
+	if got["subject"] != "Legacy oversized message" {
+		t.Errorf("OBSERVED BUG: response subject = %v, want %q", got["subject"], "Legacy oversized message")
+	}
+	fromList, _ := got["from"].([]any)
+	if len(fromList) == 0 {
+		t.Errorf("OBSERVED BUG: response from is empty")
+	} else if first, ok := fromList[0].(map[string]any); !ok || first["email"] != "carol@example.test" {
+		t.Errorf("response from[0] = %v, want email carol@example.test", fromList)
+	}
+	msgIDs, _ := got["messageId"].([]any)
+	if len(msgIDs) == 0 || msgIDs[0] != "legacy-oversized-1@example.test" {
+		t.Errorf("OBSERVED BUG: response messageId = %v, want [legacy-oversized-1@example.test]", msgIDs)
+	}
+
+	// The critical assertion: the STORED row must now carry the recovered
+	// envelope too, so every subsequent read (this message's thread
+	// resolution, IMAP FETCH ENVELOPE, a second Email/get) sees the
+	// correction -- not just the one response above.
+	postRepair, err := f.srv.Store.Meta().GetMessage(context.Background(), m.ID)
+	if err != nil {
+		t.Fatalf("GetMessage after repair: %v", err)
+	}
+	if postRepair.Envelope.MessageID != "legacy-oversized-1@example.test" {
+		t.Errorf("OBSERVED BUG: persisted Envelope.MessageID after repair = %q, want %q",
+			postRepair.Envelope.MessageID, "legacy-oversized-1@example.test")
+	}
+	if postRepair.Envelope.From == "" {
+		t.Errorf("OBSERVED BUG: persisted Envelope.From after repair is still empty")
+	}
+	if postRepair.Envelope.Subject != "Legacy oversized message" {
+		t.Errorf("persisted Envelope.Subject after repair = %q, want %q",
+			postRepair.Envelope.Subject, "Legacy oversized message")
+	}
+}
+
 // TestEmailSet_Create_ReplyJoinsParentThread verifies that when a reply is
 // created via Email/set with inReplyTo pointing at an existing message, the
 // create response contains the SAME threadId as the parent (REQ-PROTO-40).

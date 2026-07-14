@@ -70,7 +70,22 @@ func (h Headers) Keys() []string {
 }
 
 // add appends a value for name, preserving order on the first occurrence of the key.
+//
+// value is sanitized by stripping any embedded NUL byte before storage:
+// RFC 5322 §2.2.1's unstructured header-body grammar (`*([FWS] VCHAR)
+// [FWS]`) admits only printable characters, so a raw NUL in a header line
+// is malformed input, not legitimate content. Left unstripped, it survives
+// unchanged through Subject/From/etc decoding and corrupts every downstream
+// consumer that assumes ordinary text: a Postgres TEXT column write fails
+// outright (NUL is not representable in Postgres's wire text format), and
+// callers that string-compare or index headers gain the C-string-style
+// hazard of a "silently truncated at the NUL" read despite Go strings being
+// otherwise 8-bit clean. Found by FuzzParseHeadersOnly (re #244); the
+// defect is general to any header line, not specific to that path.
 func (h *Headers) add(name, value string) {
+	if strings.IndexByte(value, 0) >= 0 {
+		value = strings.ReplaceAll(value, "\x00", "")
+	}
 	if h.values == nil {
 		h.values = map[string][]string{}
 	}
