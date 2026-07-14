@@ -214,7 +214,11 @@ func (d *Directory) IssueAuthorizationCodeForFederatedPrincipal(ctx context.Cont
 	if err != nil {
 		return "", fmt.Errorf("directory: load principal: %w", err)
 	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind -- including the federated-OIDC leg of the OAuth2
+	// authorization-code grant. IsAuthenticatable also covers
+	// PrincipalFlagDisabled.
+	if !p.IsAuthenticatable() {
 		return "", ErrUnauthorized
 	}
 	return d.mintAuthorizationCode(ctx, pid, client, req)

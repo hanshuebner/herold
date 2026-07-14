@@ -153,7 +153,10 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 					"err", err, "principal_id", pid)
 				return store.Principal{}, nil, "", false
 			}
-			if p.Flags.Has(store.PrincipalFlagDisabled) {
+			// REQ-SUBACCT-02: a sub-principal is never authenticatable, on
+			// any credential kind. IsAuthenticatable also covers
+			// PrincipalFlagDisabled.
+			if !p.IsAuthenticatable() {
 				return store.Principal{}, nil, "", false
 			}
 			// Extract the CSRF token (session_id) from the cookie when a
@@ -213,7 +216,9 @@ func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Pr
 			"err", err, "principal_id", key.PrincipalID)
 		return store.Principal{}, nil, false
 	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
+	if !p.IsAuthenticatable() {
 		return store.Principal{}, nil, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())

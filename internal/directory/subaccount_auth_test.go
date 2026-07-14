@@ -132,3 +132,35 @@ func TestSubPrincipal_IssueAuthorizationCode_Rejected(t *testing.T) {
 		t.Fatalf("IssueAuthorizationCode(sub-principal) = %v, want ErrUnauthorized", err)
 	}
 }
+
+// TestSubPrincipal_IssueAuthorizationCodeForFederatedPrincipal_Rejected
+// proves the federated leg of the OAuth2 authorization-code grant
+// (issue #238, no password/TOTP step -- the caller has already run
+// directoryoidc.RP.CompleteSignIn) refuses a sub-principal id, pinning
+// IssueAuthorizationCodeForFederatedPrincipal's own check independently
+// of CompleteSignIn's (directoryoidc/subaccount_auth_test.go covers
+// that upstream seam; this covers the same defence in depth
+// IssueAuthorizationCode already had for the password leg).
+func TestSubPrincipal_IssueAuthorizationCodeForFederatedPrincipal_Rejected(t *testing.T) {
+	ctx := context.Background()
+	dir, fs, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
+	parent, err := dir.CreatePrincipal(ctx, "fedsub-parent@example.test", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("CreatePrincipal(parent): %v", err)
+	}
+	sub, err := fs.Meta().InsertSubPrincipal(ctx, parent, store.Principal{
+		CanonicalEmail: "fedsub-sub@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertSubPrincipal: %v", err)
+	}
+
+	_, challenge := newPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	req := baseAuthorizeRequest(dir, clk.Now(), redirectURI, challenge)
+
+	if _, err := dir.IssueAuthorizationCodeForFederatedPrincipal(ctx, sub.ID, req); !errors.Is(err, directory.ErrUnauthorized) {
+		t.Fatalf("IssueAuthorizationCodeForFederatedPrincipal(sub-principal) = %v, want ErrUnauthorized", err)
+	}
+}

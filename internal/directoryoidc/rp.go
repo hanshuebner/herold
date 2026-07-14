@@ -523,6 +523,23 @@ func (r *RP) CompleteSignIn(ctx context.Context, state, code string) (PrincipalI
 		}
 		return 0, fmt.Errorf("directoryoidc: lookup link: %w", err)
 	}
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind -- including a linked external identity. Reject
+	// exactly as "no link for sub" would (ErrNotFound), so this leg
+	// carries no more enumeration signal than an unlinked subject does.
+	p, perr := r.meta.GetPrincipalByID(ctx, link.PrincipalID)
+	if perr != nil {
+		return 0, fmt.Errorf("directoryoidc: load principal: %w", perr)
+	}
+	if !p.IsAuthenticatable() {
+		r.logger.LogAttrs(ctx, slog.LevelWarn, "directoryoidc.sign_in.rejected",
+			slog.String("activity", observe.ActivityAudit),
+			slog.String("provider", string(pending.providerID)),
+			slog.Uint64("principal_id", uint64(link.PrincipalID)),
+			slog.String("reason", "principal not authenticatable"),
+		)
+		return 0, ErrNotFound
+	}
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "directoryoidc.sign_in",
 		slog.String("activity", observe.ActivityAudit),
 		slog.String("provider", string(pending.providerID)),
@@ -842,6 +859,18 @@ func (r *RP) VerifyAccessToken(ctx context.Context, providerID, token string) (P
 			return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
 		}
 		return 0, err
+	}
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind -- including a SASL OAUTHBEARER/XOAUTH2 bearer
+	// token (IMAP / SMTP submission) resolved via a linked identity.
+	// Rejected identically to "no link for sub" so this leg carries no
+	// more enumeration signal than an unlinked subject does.
+	p, perr := r.meta.GetPrincipalByID(ctx, link.PrincipalID)
+	if perr != nil {
+		return 0, fmt.Errorf("directoryoidc: load principal: %w", perr)
+	}
+	if !p.IsAuthenticatable() {
+		return 0, fmt.Errorf("%w: no link for sub", ErrNotFound)
 	}
 	return link.PrincipalID, nil
 }

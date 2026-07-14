@@ -200,6 +200,26 @@ func (p Principal) IsSubAccount() bool {
 	return p.Kind == PrincipalKindSubAccount
 }
 
+// IsAuthenticatable reports whether p may be treated as the successful
+// outcome of authentication on ANY protocol surface: not disabled, and
+// not a sub-principal (REQ-SUBACCT-02 -- "rejected on every auth path").
+// This is the single choke point every seam that resolves a principal
+// for authentication purposes must call, regardless of credential kind
+// (password, Bearer API key, session cookie, OIDC-linked token, OAuth2
+// grant): session-cookie login and verification, device tokens, the
+// OAuth2 authorization-code grant (password/TOTP and federated legs
+// alike), SASL PLAIN/LOGIN/OAUTHBEARER/XOAUTH2 (IMAP, SMTP submission,
+// ManageSieve), and the Bearer-API-key resolution shared by protoadmin,
+// protojmap, and protosend. A caller that loads a Principal by id (from
+// an API key, a session cookie, or an OIDC link) and intends to grant
+// access based on that id MUST check this before doing so -- checking
+// only PrincipalFlagDisabled is not sufficient once sub-principals
+// exist, because a sub-principal is never disabled by that flag but is
+// still never authenticatable.
+func (p Principal) IsAuthenticatable() bool {
+	return !p.Flags.Has(PrincipalFlagDisabled) && p.Kind != PrincipalKindSubAccount
+}
+
 // NamedSieveScript is one entry in the per-principal multi-script
 // table ManageSieve (RFC 5804) operates on. The runtime delivery
 // path uses the legacy GetSieveScript / SetSieveScript single-slot

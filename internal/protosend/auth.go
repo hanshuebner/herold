@@ -128,7 +128,9 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Princ
 			"err", err, "principal_id", key.PrincipalID)
 		return store.Principal{}, store.APIKey{}, false
 	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
+	if !p.IsAuthenticatable() {
 		return store.Principal{}, store.APIKey{}, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())

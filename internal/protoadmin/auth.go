@@ -226,7 +226,9 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
+	if !p.IsAuthenticatable() {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
 		return store.Principal{}, nil, false
 	}
@@ -268,7 +270,9 @@ func (s *Server) authenticateCookie(ctx context.Context, r *http.Request) (store
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, "", false
 	}
-	if p.Flags.Has(store.PrincipalFlagDisabled) {
+	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
+	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
+	if !p.IsAuthenticatable() {
 		observe.AuthAttemptsTotal.WithLabelValues("session", "fail").Inc()
 		return store.Principal{}, nil, "", false
 	}
