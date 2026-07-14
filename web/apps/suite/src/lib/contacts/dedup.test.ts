@@ -14,6 +14,7 @@ import {
   namesAreClose,
   extractCandidate,
   clusterDuplicates,
+  computeMatchDetails,
   loadDismissedPairs,
   dismissPair,
   buildMergedVM,
@@ -328,6 +329,85 @@ describe('clusterDuplicates: multi-reason', () => {
     const r = clusters[0]!.reasons;
     expect(r).toContain('email');
     expect(r).toContain('phone');
+  });
+});
+
+// ── computeMatchDetails (re #220) ──────────────────────────────────────────────
+
+describe('computeMatchDetails', () => {
+  it('reports the shared email for each member of an email-matched pair', () => {
+    const c1: ContactCandidate = {
+      id: 'c1', displayName: 'Alice Johnson', emails: ['alice@example.com'], phones: [],
+      raw: { id: 'c1' },
+    };
+    const c2: ContactCandidate = {
+      id: 'c2', displayName: 'Priya Patel', emails: ['alice@example.com'], phones: [],
+      raw: { id: 'c2' },
+    };
+    const cluster: DuplicateCluster = { contacts: [c1, c2], reasons: ['email'] };
+    const details = computeMatchDetails(cluster);
+    expect(details.get('c1')!.emails).toEqual(['alice@example.com']);
+    expect(details.get('c2')!.emails).toEqual(['alice@example.com']);
+    expect(details.get('c1')!.phones).toEqual([]);
+    expect(details.get('c1')!.closeNames).toEqual([]);
+  });
+
+  it('reports the shared phone for each member of a phone-matched pair', () => {
+    const c1: ContactCandidate = {
+      id: 'c1', displayName: 'Alice', emails: [], phones: ['491234567'], raw: { id: 'c1' },
+    };
+    const c2: ContactCandidate = {
+      id: 'c2', displayName: 'Bob', emails: [], phones: ['491234567'], raw: { id: 'c2' },
+    };
+    const cluster: DuplicateCluster = { contacts: [c1, c2], reasons: ['phone'] };
+    const details = computeMatchDetails(cluster);
+    expect(details.get('c1')!.phones).toEqual(['491234567']);
+    expect(details.get('c2')!.phones).toEqual(['491234567']);
+  });
+
+  it('reports the other member display name for a close-name match', () => {
+    const c1: ContactCandidate = {
+      id: 'c1', displayName: 'Alice Smith', emails: [], phones: [], raw: { id: 'c1' },
+    };
+    const c2: ContactCandidate = {
+      id: 'c2', displayName: 'Alice Smyth', emails: [], phones: [], raw: { id: 'c2' },
+    };
+    const cluster: DuplicateCluster = { contacts: [c1, c2], reasons: ['name'] };
+    const details = computeMatchDetails(cluster);
+    expect(details.get('c1')!.closeNames).toEqual(['Alice Smyth']);
+    expect(details.get('c2')!.closeNames).toEqual(['Alice Smith']);
+  });
+
+  it('does not report emails/phones unique to one member', () => {
+    const c1: ContactCandidate = {
+      id: 'c1', displayName: 'Alice Smith', emails: ['alice@example.com'], phones: [],
+      raw: { id: 'c1' },
+    };
+    const c2: ContactCandidate = {
+      id: 'c2', displayName: 'Alice Smyth', emails: ['other@example.com'], phones: [],
+      raw: { id: 'c2' },
+    };
+    const cluster: DuplicateCluster = { contacts: [c1, c2], reasons: ['name'] };
+    const details = computeMatchDetails(cluster);
+    expect(details.get('c1')!.emails).toEqual([]);
+    expect(details.get('c2')!.emails).toEqual([]);
+  });
+
+  it('unions matches across all other cluster members in a 3-way cluster', () => {
+    const c1: ContactCandidate = {
+      id: 'c1', displayName: 'Alice', emails: ['shared@example.com'], phones: [], raw: { id: 'c1' },
+    };
+    const c2: ContactCandidate = {
+      id: 'c2', displayName: 'Bob', emails: ['shared@example.com'], phones: [], raw: { id: 'c2' },
+    };
+    const c3: ContactCandidate = {
+      id: 'c3', displayName: 'Carol', emails: ['shared@example.com'], phones: [], raw: { id: 'c3' },
+    };
+    const cluster: DuplicateCluster = { contacts: [c1, c2, c3], reasons: ['email'] };
+    const details = computeMatchDetails(cluster);
+    expect(details.get('c1')!.emails).toEqual(['shared@example.com']);
+    expect(details.get('c2')!.emails).toEqual(['shared@example.com']);
+    expect(details.get('c3')!.emails).toEqual(['shared@example.com']);
   });
 });
 

@@ -388,6 +388,55 @@ export function clusterDuplicates(
   return result;
 }
 
+// ── Per-row match detail (re #220) ─────────────────────────────────────────────
+
+/** What a single cluster member matched on, and the specific values involved. */
+export interface RowMatchDetail {
+  emails: string[];
+  phones: string[];
+  /** Display names of other cluster members this contact's name is close to. */
+  closeNames: string[];
+}
+
+/**
+ * For every contact in a cluster, compute what it specifically matched
+ * against its OTHER cluster members -- the shared emails, shared phones,
+ * and/or close-name peers -- so a flat per-contact list row can show what
+ * matched on hover (re #220) instead of only the cluster-level reason
+ * badges `clusterDuplicates` already returns.
+ */
+export function computeMatchDetails(cluster: DuplicateCluster): Map<string, RowMatchDetail> {
+  const out = new Map<string, RowMatchDetail>();
+  const { contacts } = cluster;
+
+  for (let i = 0; i < contacts.length; i++) {
+    const a = contacts[i]!;
+    const emails = new Set<string>();
+    const phones = new Set<string>();
+    const closeNames: string[] = [];
+    const normA = normalizeDisplayName(a.displayName);
+
+    for (let j = 0; j < contacts.length; j++) {
+      if (i === j) continue;
+      const b = contacts[j]!;
+      for (const email of a.emails) {
+        if (b.emails.includes(email)) emails.add(email);
+      }
+      for (const phone of a.phones) {
+        if (b.phones.includes(phone)) phones.add(phone);
+      }
+      const normB = normalizeDisplayName(b.displayName);
+      if (normA && normB && namesAreClose(normA, normB) && b.displayName) {
+        closeNames.push(b.displayName);
+      }
+    }
+
+    out.set(a.id, { emails: [...emails], phones: [...phones], closeNames });
+  }
+
+  return out;
+}
+
 // ── Dismissed pairs (REQ-CONT-91) ─────────────────────────────────────────────
 
 function dismissedStorageKey(principalId: string): string {
@@ -700,6 +749,7 @@ export const _internals_forTest = {
   namesAreClose,
   extractCandidate,
   clusterDuplicates,
+  computeMatchDetails,
   loadDismissedPairs,
   dismissPair,
   buildMergedVM,

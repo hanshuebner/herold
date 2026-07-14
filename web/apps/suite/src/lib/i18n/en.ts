@@ -1385,6 +1385,18 @@ export const en = {
   'contacts.duplicates.dismiss': 'Not duplicates',
   'contacts.duplicates.back': 'Back',
   'contacts.duplicates.error': 'Could not scan for duplicates.',
+  'contacts.duplicates.ariaLabel': 'Possible duplicates',
+  'contacts.duplicates.loadingMore': 'Loading more duplicates…',
+  'contacts.duplicates.matchEmail': 'Same email',
+  'contacts.duplicates.matchPhone': 'Same phone',
+  'contacts.duplicates.matchName': 'Similar name to',
+  'contacts.duplicates.mergeConfirm.title': 'Merge {n} contacts?',
+  'contacts.duplicates.mergeConfirm.message':
+    'Each fully-selected duplicate group is merged into one contact; the rest of that group is permanently removed.',
+  'contacts.duplicates.mergeSuccess': 'Merged {n} duplicate groups.',
+  'contacts.duplicates.mergeSkipped':
+    '{n} selected contacts were skipped (no fully-selected group).',
+  'contacts.duplicates.mergeError': 'Merge failed.',
   'contacts.merge.title': 'Merge contacts',
   'contacts.merge.chosenName': 'Name to use',
   'contacts.merge.chosenPhoto': 'Photo to use',

@@ -1400,6 +1400,18 @@ export const de = {
   'contacts.duplicates.dismiss': 'Keine Duplikate',
   'contacts.duplicates.back': 'Zurück',
   'contacts.duplicates.error': 'Duplikate konnten nicht gesucht werden.',
+  'contacts.duplicates.ariaLabel': 'Mögliche Duplikate',
+  'contacts.duplicates.loadingMore': 'Weitere Duplikate werden geladen…',
+  'contacts.duplicates.matchEmail': 'Gleiche E-Mail',
+  'contacts.duplicates.matchPhone': 'Gleiches Telefon',
+  'contacts.duplicates.matchName': 'Ähnlicher Name wie',
+  'contacts.duplicates.mergeConfirm.title': '{n} Kontakte zusammenführen?',
+  'contacts.duplicates.mergeConfirm.message':
+    'Für jede vollständig ausgewählte Dublettengruppe wird ein zusammengeführter Kontakt erstellt; die übrigen Kontakte der Gruppe werden endgültig entfernt.',
+  'contacts.duplicates.mergeSuccess': '{n} Dublettengruppen wurden zusammengeführt.',
+  'contacts.duplicates.mergeSkipped':
+    '{n} ausgewählte Kontakte wurden übersprungen (keine vollständig ausgewählte Gruppe).',
+  'contacts.duplicates.mergeError': 'Zusammenführen fehlgeschlagen.',
   'contacts.merge.title': 'Kontakte zusammenführen',
   'contacts.merge.chosenName': 'Zu verwendender Name',
   'contacts.merge.chosenPhoto': 'Zu verwendendes Foto',
