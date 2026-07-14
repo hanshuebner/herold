@@ -1052,15 +1052,20 @@
     font-style: italic;
   }
 
+  /* Per re #233: plain-text and HTML messages must read as one coherent
+   * conversation, so the plain-text branch shares the HTML branch's
+   * proportional font and un-tinted background instead of presenting its
+   * own shaded monospace panel. `white-space: pre-wrap` is kept so the
+   * sender's line breaks and indentation (format=flowed bodies, ASCII art
+   * signatures) still render as authored; only the mono face and grey
+   * panel are dropped. */
   .text-body {
     margin: 0;
-    padding: var(--spacing-04);
-    background: var(--layer-01);
-    border-radius: var(--radius-md);
     white-space: pre-wrap;
     word-break: break-word;
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--type-body-01-size);
+    line-height: var(--type-body-01-line);
     color: var(--text-primary);
     overflow: auto;
   }
