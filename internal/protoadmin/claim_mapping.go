@@ -140,6 +140,14 @@ type claimAllowlistEntryDTO struct {
 	Claim string `json:"claim"`
 }
 
+// handleListClaimAllowlist lists the claim names a provider's mapping rules
+// may consult (REQ-AC-67). Deliberately not domain-scoped: the allowlist is
+// provider-level config (bare claim-name strings, e.g. "groups"; no
+// resource/domain attribute), visible to every admin on the same terms as
+// the rest of the OIDC-provider CRUD surface (GET /oidc/providers,
+// GET /oidc/providers/{id}), which is authAdmin-gated but not
+// domain-scoped -- a provider is server-level infrastructure, not owned by
+// any one domain, so there is no per-domain data here to leak.
 func (s *Server) handleListClaimAllowlist(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
@@ -225,6 +233,37 @@ func (s *Server) handleDeleteClaimAllowlistEntry(w http.ResponseWriter, r *http.
 
 // -- Claim-mapping rules ---------------------------------------------------
 
+// claimMappingRuleVisible reports whether caller may see rule in a listing
+// (REQ-ADM-307's "show nothing rather than leak", extended to this
+// domain-targeting admin config surface, matching the scoping every sibling
+// read endpoint applies -- message_research.go, mlist_authz.go, queue.go,
+// server_endpoints.go, system_events.go). A super-admin sees every rule. A
+// domain-scoped operator sees a domain-kind rule only when its target
+// domain is in their ResolveOperatorScope domain set; a list/mailbox-kind
+// rule only when they currently hold some grant-based authority over that
+// exact resource (authz.Resolve, fail-closed on error) -- the same
+// resource-scoped mechanism hasDelegableAuthority uses for the write path,
+// at any non-zero level rather than the delegable bar, since visibility is
+// not itself an authoring right.
+func (s *Server) claimMappingRuleVisible(r *http.Request, scope OperatorScope, caller store.Principal, rule store.ClaimMappingRule) bool {
+	if scope.SuperAdmin {
+		return true
+	}
+	if rule.ResourceKind == store.GrantResourceDomain {
+		for _, d := range scope.Domains {
+			if d == rule.ResourceID {
+				return true
+			}
+		}
+		return false
+	}
+	lvl, err := authz.Resolve(r.Context(), s.store.Meta(), caller, authz.Resource{Kind: rule.ResourceKind, ID: rule.ResourceID})
+	if err != nil {
+		return false
+	}
+	return lvl != ""
+}
+
 func (s *Server) handleListClaimMappingRules(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireAdmin(w, r, caller) {
@@ -244,8 +283,12 @@ func (s *Server) handleListClaimMappingRules(w http.ResponseWriter, r *http.Requ
 		s.writeStoreError(w, r, err)
 		return
 	}
+	scope := ResolveOperatorScope(r.Context(), s.store.Meta(), caller)
 	items := make([]claimMappingRuleDTO, 0, len(rules))
 	for _, rule := range rules {
+		if !s.claimMappingRuleVisible(r, scope, caller, rule) {
+			continue
+		}
 		items = append(items, s.claimMappingRuleDTOWithAuthority(r, rule))
 	}
 	writeJSON(w, http.StatusOK, pageDTO[claimMappingRuleDTO]{Items: items, Next: nil})

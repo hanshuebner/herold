@@ -344,6 +344,155 @@ func TestClaimMapping_Rule_Delete_AuthorOrAuthorityOrSuperAdmin(t *testing.T) {
 	}
 }
 
+// TestClaimMapping_ListRules_ScopedToOperatorDomains is REQ-ADM-307's
+// "show nothing rather than leak" applied to the claim-mapping-rule listing
+// (a follow-up to epic #188, re #188): a domain-scoped operator's rule
+// listing must return ONLY rules whose target is within their own operator
+// scope, never rules an unrelated domain-scoped operator authored on a
+// domain/list the caller holds no authority over. A super-admin's listing
+// is unrestricted.
+func TestClaimMapping_ListRules_ScopedToOperatorDomains(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("sa8@example.com")
+	promoteSuperAdmin(t, h, "sa8@example.com")
+	createOIDCProviderForTest(t, h, "corp8")
+
+	// Two independent domain operators, each owning a different domain.
+	opAID, opAKey := createDomainOperator(t, h, adminKey, "opa8@example.com")
+	grantDomainOwner(t, h, opAID, "a8.example.test")
+	opBID, opBKey := createDomainOperator(t, h, adminKey, "opb8@example.com")
+	grantDomainOwner(t, h, opBID, "b8.example.test")
+
+	ruleA := createClaimMappingRuleForTest(t, h, "corp8", opAKey, map[string]any{
+		"claim": "groups", "match_value": "a-ops", "resource_kind": "domain",
+		"resource_id": "a8.example.test", "level": "operator",
+	})
+	ruleB := createClaimMappingRuleForTest(t, h, "corp8", opBKey, map[string]any{
+		"claim": "groups", "match_value": "b-ops", "resource_kind": "domain",
+		"resource_id": "b8.example.test", "level": "operator",
+	})
+
+	// A super-admin's listing is unrestricted: both rules are visible.
+	res, buf := h.doRequest("GET", "/api/v1/oidc/providers/corp8/claim-mapping-rules", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("superadmin list = %d: %s", res.StatusCode, buf)
+	}
+	saIDs := claimMappingRuleIDs(t, buf)
+	if !saIDs[ruleA] || !saIDs[ruleB] {
+		t.Fatalf("superadmin listing missing a rule: got %v, want both %d and %d", saIDs, ruleA, ruleB)
+	}
+
+	// Operator A, scoped to domain a8.example.test, sees rule A but NOT
+	// rule B (which targets a domain operator A holds no authority over --
+	// this is the cross-domain read leak the fix closes).
+	res, buf = h.doRequest("GET", "/api/v1/oidc/providers/corp8/claim-mapping-rules", opAKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("operator A list = %d: %s", res.StatusCode, buf)
+	}
+	opAIDs := claimMappingRuleIDs(t, buf)
+	if !opAIDs[ruleA] {
+		t.Errorf("operator A listing missing own-domain rule %d: %s", ruleA, buf)
+	}
+	if opAIDs[ruleB] {
+		t.Errorf("operator A listing LEAKED cross-domain rule %d (targets b8.example.test, which operator A does not own): %s", ruleB, buf)
+	}
+
+	// Operator B symmetrically sees only rule B.
+	res, buf = h.doRequest("GET", "/api/v1/oidc/providers/corp8/claim-mapping-rules", opBKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("operator B list = %d: %s", res.StatusCode, buf)
+	}
+	opBIDs := claimMappingRuleIDs(t, buf)
+	if opBIDs[ruleA] {
+		t.Errorf("operator B listing LEAKED cross-domain rule %d (targets a8.example.test, which operator B does not own): %s", ruleA, buf)
+	}
+	if !opBIDs[ruleB] {
+		t.Errorf("operator B listing missing own-domain rule %d: %s", ruleB, buf)
+	}
+}
+
+// TestClaimMapping_ListRules_ScopedToListAuthority extends the operator-scope
+// filter to a non-domain (list-kind) rule target: a domain-scoped operator
+// with no grant at all on the list a rule targets does not see that rule;
+// once granted list:owner on the exact list, the rule becomes visible.
+func TestClaimMapping_ListRules_ScopedToListAuthority(t *testing.T) {
+	h := newHarness(t)
+	_, adminKey := h.bootstrap("sa9@example.com")
+	promoteSuperAdmin(t, h, "sa9@example.com")
+	createOIDCProviderForTest(t, h, "corp9")
+
+	opID, opKey := createDomainOperator(t, h, adminKey, "op9@example.com")
+
+	ruleID := createClaimMappingRuleForTest(t, h, "corp9", adminKey, map[string]any{
+		"claim": "groups", "match_value": "list-ops", "resource_kind": "list",
+		"resource_id": "999", "level": "owner",
+	})
+
+	// No grant on list 999 at all: rule not visible.
+	res, buf := h.doRequest("GET", "/api/v1/oidc/providers/corp9/claim-mapping-rules", opKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list rules (no grant) = %d: %s", res.StatusCode, buf)
+	}
+	if claimMappingRuleIDs(t, buf)[ruleID] {
+		t.Fatalf("operator with no list grant saw list-kind rule %d: %s", ruleID, buf)
+	}
+
+	// Grant list:owner on 999 and retry: now visible.
+	if _, err := h.h.Store.Meta().InsertGrant(context.Background(), store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(opID),
+		ResourceKind: store.GrantResourceList,
+		ResourceID:   "999",
+		Level:        store.GrantLevelOwner,
+		Provenance:   store.GrantProvenanceLocal,
+	}); err != nil {
+		t.Fatalf("InsertGrant list:owner: %v", err)
+	}
+	res, buf = h.doRequest("GET", "/api/v1/oidc/providers/corp9/claim-mapping-rules", opKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list rules (with grant) = %d: %s", res.StatusCode, buf)
+	}
+	if !claimMappingRuleIDs(t, buf)[ruleID] {
+		t.Fatalf("operator with list:owner grant did not see list-kind rule %d: %s", ruleID, buf)
+	}
+}
+
+// createClaimMappingRuleForTest authors a rule via the REST endpoint using
+// callerKey and returns its ID, failing the test on a non-201 response.
+func createClaimMappingRuleForTest(t *testing.T, h *harness, provider, callerKey string, body map[string]any) uint64 {
+	t.Helper()
+	res, buf := h.doRequest("POST", "/api/v1/oidc/providers/"+provider+"/claim-mapping-rules", callerKey, body)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create rule = %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("decode created rule: %v: %s", err, buf)
+	}
+	return created.ID
+}
+
+// claimMappingRuleIDs decodes a claim-mapping-rules listing response into a
+// set of the rule IDs present.
+func claimMappingRuleIDs(t *testing.T, buf []byte) map[uint64]bool {
+	t.Helper()
+	var page struct {
+		Items []struct {
+			ID uint64 `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &page); err != nil {
+		t.Fatalf("decode listing: %v: %s", err, buf)
+	}
+	out := make(map[uint64]bool, len(page.Items))
+	for _, it := range page.Items {
+		out[it.ID] = true
+	}
+	return out
+}
+
 // TestClaimMapping_Rule_OrphanedAuthorVisibleAndRemovable is REQ-AC-68's
 // operator-visible need: once a rule's author principal is deleted,
 // created_by resets to 0 (per epic #188's store-level contract) and the
