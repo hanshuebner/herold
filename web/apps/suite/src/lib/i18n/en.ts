@@ -346,6 +346,8 @@ export const en = {
   'msg.rawSource.close': 'Close',
   'msg.rawSource.loading': 'Loading raw source…',
   'msg.rawSource.error': 'Failed to load raw source',
+  'msg.rawSource.truncated':
+    'Showing the first 64 KB of the message. Use Download to save the complete original.',
 
   // ── Compose ─────────────────────────────────────────────────────────
   // ── Recipient field warnings (re #37) ───────────────────────────────

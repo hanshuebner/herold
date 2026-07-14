@@ -345,6 +345,8 @@ export const de = {
   'msg.rawSource.close': 'Schließen',
   'msg.rawSource.loading': 'Quelltext wird geladen…',
   'msg.rawSource.error': 'Quelltext konnte nicht geladen werden',
+  'msg.rawSource.truncated':
+    'Es werden die ersten 64 KB der Nachricht angezeigt. Über „Herunterladen“ kann das vollständige Original gespeichert werden.',
 
   // ── Compose ─────────────────────────────────────────────────────────
   // ── Empfänger-Warnungen (re #37) ────────────────────────────────────

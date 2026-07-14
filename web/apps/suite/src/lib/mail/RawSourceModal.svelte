@@ -1,12 +1,14 @@
 <script lang="ts">
   /**
-   * "Show original" modal (REQ-MAIL-142). Fetches the email's raw RFC 5322
-   * blob and renders it in a monospace pre block with a copy-to-clipboard
-   * affordance. Read-only; useful for debugging delivery and authentication.
+   * "Show original" modal (REQ-MAIL-142). Fetches a bounded prefix of the
+   * email's raw RFC 5322 blob and renders it in a monospace pre block with
+   * a copy-to-clipboard affordance. Read-only; useful for debugging
+   * delivery and authentication.
    *
    * Closes on Escape, backdrop click, or the explicit Close button.
    */
   import { t } from '../i18n/i18n.svelte';
+  import { toast } from '../toast/toast.svelte';
   import Button from '@herold/design-system/Button.svelte';
   import { untrack } from 'svelte';
 
@@ -25,10 +27,17 @@
   }
   let { open, sourceUrl, filename = null, onClose }: Props = $props();
 
+  // REQ-MAIL-142b: the modal never downloads, decodes, or renders more than
+  // this many bytes of the raw source for the preview pane, regardless of
+  // the actual message size. Large enough to show the full header block
+  // plus a substantial body excerpt; small enough that fetch/decode/render
+  // stay effectively instant even on a slow connection.
+  const PREVIEW_BYTE_LIMIT = 64 * 1024;
+
   type LoadState =
     | { kind: 'idle' }
     | { kind: 'loading' }
-    | { kind: 'ready'; text: string }
+    | { kind: 'ready'; text: string; truncated: boolean }
     | { kind: 'error'; message: string };
 
   // Variable named `loadState` rather than `state` to avoid svelte-check
@@ -37,6 +46,7 @@
   let lastFetchedUrl: string | null = $state(null);
   let copied = $state(false);
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+  let downloading = $state(false);
 
   // Trigger fetch when the modal becomes visible against a new URL. The
   // effect's tracked deps are `open` and `sourceUrl`; the writes to
@@ -58,6 +68,52 @@
     });
   });
 
+  /**
+   * Reads at most `limitBytes` of `res`'s body, decoding as UTF-8, and
+   * reports whether more data remained beyond the limit. When the limit is
+   * hit, the underlying reader is cancelled so the rest of the blob is
+   * never pulled over the network -- this is what keeps the preview fetch
+   * bounded regardless of how large the actual message is (REQ-MAIL-142b).
+   * Falls back to a full read (still capped for display) when the runtime
+   * has no streaming Response.body.
+   */
+  async function readPreview(
+    res: Response,
+    limitBytes: number,
+  ): Promise<{ text: string; truncated: boolean }> {
+    if (!res.body) {
+      const full = await res.text();
+      if (full.length <= limitBytes) return { text: full, truncated: false };
+      return { text: full.slice(0, limitBytes), truncated: true };
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let bytesRead = 0;
+    let truncated = false;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+      if (bytesRead >= limitBytes) {
+        truncated = true;
+        break;
+      }
+    }
+    if (truncated) {
+      void reader.cancel();
+    }
+    text += decoder.decode();
+    if (truncated && text.length > limitBytes) {
+      // A single chunk can carry well more than the limit; keep the
+      // display bound tight rather than showing whatever the last read
+      // happened to deliver.
+      text = text.slice(0, limitBytes);
+    }
+    return { text, truncated };
+  }
+
   async function load(url: string): Promise<void> {
     try {
       const res = await fetch(url, { credentials: 'include' });
@@ -65,8 +121,8 @@
         loadState = { kind: 'error', message: `HTTP ${res.status}` };
         return;
       }
-      const text = await res.text();
-      loadState = { kind: 'ready', text };
+      const { text, truncated } = await readPreview(res, PREVIEW_BYTE_LIMIT);
+      loadState = { kind: 'ready', text, truncated };
     } catch (err) {
       loadState = {
         kind: 'error',
@@ -76,26 +132,45 @@
   }
 
   /**
-   * Save the loaded source as a .eml file. Creates a Blob from the already-
-   * fetched text (no second network request), wires a temporary <a download>
-   * element, clicks it, then revokes the object URL immediately so the
-   * browser can GC the Blob. The clipboard is not involved — this path
-   * works for large messages that the Clipboard API would reject.
+   * Save the complete original message as a .eml file. Fetches the full
+   * blob independently of the bounded preview fetch above (the preview
+   * cancels its stream after PREVIEW_BYTE_LIMIT bytes, so its text is
+   * never a valid source for the download), wires a temporary
+   * <a download> element, clicks it, then revokes the object URL
+   * immediately so the browser can GC the Blob. The clipboard is not
+   * involved -- this path works for large messages that the Clipboard
+   * API would reject.
    */
-  function downloadEml(): void {
-    if (loadState.kind !== 'ready') return;
-    const blob = new Blob([loadState.text], { type: 'message/rfc822' });
-    const url = URL.createObjectURL(blob);
+  async function downloadEml(): Promise<void> {
+    if (!sourceUrl || downloading) return;
+    downloading = true;
     try {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename ?? 'message.eml';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      const res = await fetch(sourceUrl, { credentials: 'include' });
+      if (!res.ok) {
+        toast.show({ message: `${t('msg.rawSource.error')}: HTTP ${res.status}`, kind: 'error' });
+        return;
+      }
+      const raw = await res.blob();
+      const blob = new Blob([raw], { type: 'message/rfc822' });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename ?? 'message.eml';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      toast.show({
+        message: `${t('msg.rawSource.error')}: ${err instanceof Error ? err.message : String(err)}`,
+        kind: 'error',
+      });
     } finally {
-      URL.revokeObjectURL(url);
+      downloading = false;
     }
   }
 
@@ -139,7 +214,11 @@
       <header class="header">
         <h2 id="rsm-title" class="title">{t('msg.rawSource.title')}</h2>
         <div class="header-actions">
-          <Button variant="secondary" onclick={downloadEml} disabled={loadState.kind !== 'ready'}>
+          <Button
+            variant="secondary"
+            onclick={downloadEml}
+            disabled={loadState.kind !== 'ready' || downloading}
+          >
             {t('msg.rawSource.download')}
           </Button>
           <Button variant="secondary" onclick={copyToClipboard} disabled={loadState.kind !== 'ready'}>
@@ -159,6 +238,11 @@
             {t('msg.rawSource.error')}: {loadState.message}
           </p>
         {:else if loadState.kind === 'ready'}
+          {#if loadState.truncated}
+            <p class="status status-truncated" data-testid="raw-source-truncated">
+              {t('msg.rawSource.truncated')}
+            </p>
+          {/if}
           <pre class="source" data-testid="raw-source">{loadState.text}</pre>
         {/if}
       </div>
@@ -226,6 +310,8 @@
     background: var(--layer-01);
     border: 1px solid var(--border-subtle-01);
     border-radius: var(--radius-md);
+    display: flex;
+    flex-direction: column;
   }
 
   .source {
@@ -248,5 +334,11 @@
 
   .status-error {
     color: var(--support-error);
+  }
+
+  .status-truncated {
+    flex: none;
+    border-bottom: 1px solid var(--border-subtle-01);
+    background: var(--layer-accent-01, var(--layer-02));
   }
 </style>
