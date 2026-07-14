@@ -79,18 +79,52 @@ describe('replySubject / forwardSubject', () => {
 
   it('does not double-prepend Re:', () => {
     expect(replySubject('Re: Project plan')).toBe('Re: Project plan');
-    expect(replySubject('RE: Project plan')).toBe('RE: Project plan');
+    expect(replySubject('RE: Project plan')).toBe('Re: Project plan');
   });
 
   it('prepends Fwd: only once', () => {
     expect(forwardSubject('hi')).toBe('Fwd: hi');
     expect(forwardSubject('Fwd: hi')).toBe('Fwd: hi');
-    expect(forwardSubject('Fw: hi')).toBe('Fw: hi');
+    expect(forwardSubject('Fw: hi')).toBe('Fwd: hi');
   });
 
   it('handles null original subject', () => {
     expect(replySubject(null)).toBe('Re: ');
     expect(forwardSubject(null)).toBe('Fwd: ');
+  });
+
+  // re #248 — localized reply/forward markers must collapse to a single
+  // "Re: " / "Fwd: " instead of stacking on top of herold's own prefix.
+  it('collapses a localized reply marker instead of stacking (re #248)', () => {
+    expect(replySubject('AW: Anfrage')).toBe('Re: Anfrage');
+    expect(replySubject('Antwort: Anfrage')).toBe('Re: Anfrage');
+    expect(replySubject('SV: Fråga')).toBe('Re: Fråga');
+    expect(replySubject('VS: Kysymys')).toBe('Re: Kysymys');
+    expect(replySubject('Odp: Pytanie')).toBe('Re: Pytanie');
+    expect(replySubject('Res: Pergunta')).toBe('Re: Pergunta');
+    expect(replySubject('Rif: Domanda')).toBe('Re: Domanda');
+  });
+
+  it('collapses a mixed reply-marker chain to a single Re:', () => {
+    expect(replySubject('AW: Re: Foo')).toBe('Re: Foo');
+    expect(replySubject('Re: AW: Foo')).toBe('Re: Foo');
+  });
+
+  it('does not collapse a non-marker word ending in a colon', () => {
+    expect(replySubject('Bugfix: Foo')).toBe('Re: Bugfix: Foo');
+    expect(forwardSubject('Rechnung: Foo')).toBe('Fwd: Rechnung: Foo');
+  });
+
+  it('collapses a localized forward marker instead of stacking (re #248)', () => {
+    expect(forwardSubject('WG: Anfrage')).toBe('Fwd: Anfrage');
+    expect(forwardSubject('TR: Demande')).toBe('Fwd: Demande');
+    expect(forwardSubject('RV: Pregunta')).toBe('Fwd: Pregunta');
+    expect(forwardSubject('VB: Vraag')).toBe('Fwd: Vraag');
+  });
+
+  it('collapses a mixed forward-marker chain to a single Fwd:', () => {
+    expect(forwardSubject('WG: Fwd: Foo')).toBe('Fwd: Foo');
+    expect(forwardSubject('Fwd: WG: Foo')).toBe('Fwd: Foo');
   });
 });
 

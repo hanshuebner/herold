@@ -1666,16 +1666,44 @@ function addressListToString(list: Address[] | null | undefined): string {
   return list.map(addressToString).join(', ');
 }
 
+/**
+ * Localized reply-marker prefixes (re #248). English "Re" plus the German,
+ * Nordic, Polish, Portuguese/Spanish, and Italian equivalents commonly seen
+ * on mail relayed through non-English clients.
+ */
+const REPLY_MARKERS = ['re', 'aw', 'antwort', 'antw', 'sv', 'vs', 'odp', 'res', 'rif'];
+
+/**
+ * Localized forward-marker prefixes (re #248). English "Fwd"/"Fw" plus the
+ * German, French, and Spanish/Portuguese equivalents.
+ */
+const FORWARD_MARKERS = ['fwd', 'fw', 'wg', 'tr', 'rv', 'vb'];
+
+/**
+ * Strips a leading chain of whitelisted marker prefixes ("AW: Re: Foo" ->
+ * "Foo"). Only markers in `markers` collapse; a subject that legitimately
+ * starts with a non-marker word and a colon (e.g. "Bugfix: Foo") is left
+ * untouched — there is no generic "token ending in colon" fallback.
+ */
+function stripMarkerChain(subject: string, markers: string[]): string {
+  const pattern = new RegExp(`^(?:${markers.join('|')})\\s*:\\s*`, 'i');
+  let s = subject.trim();
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(pattern, '').trim();
+  } while (s !== prev);
+  return s;
+}
+
 function replySubject(orig: string | null): string {
   const s = orig ?? '';
-  if (/^re:\s*/i.test(s)) return s;
-  return `Re: ${s}`;
+  return `Re: ${stripMarkerChain(s, REPLY_MARKERS)}`;
 }
 
 function forwardSubject(orig: string | null): string {
   const s = orig ?? '';
-  if (/^fwd?:\s*/i.test(s)) return s;
-  return `Fwd: ${s}`;
+  return `Fwd: ${stripMarkerChain(s, FORWARD_MARKERS)}`;
 }
 
 /**
