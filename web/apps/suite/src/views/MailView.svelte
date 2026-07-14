@@ -117,15 +117,39 @@
     router.setParam('tab', tabKey === null ? null : tabKey.toLowerCase());
   }
 
-  /** The effective list email ids — tab-filtered when in inbox, raw otherwise. */
-  let effectiveListEmailIds = $derived(showTabs ? tabFilteredEmailIds : mail.listEmailIds);
+  /**
+   * The effective list email ids — tab-filtered when in inbox, raw
+   * otherwise — narrowed to ids that actually have a resolved `Email` in
+   * `mail.emails`. An id can be present in `mail.listEmailIds` (from the
+   * `Email/query` result) before or without its `Email/get` companion
+   * landing (in-flight page load, a JMAP `notFound` for a since-deleted
+   * id, ...); such an id renders no row. Keeping this list in lock-step
+   * with what actually renders is what makes it safe to pass to
+   * `selectRowClick` / `toggleSelectAllVisible`: a shift-click range or a
+   * select-all computed over `effectiveListEmailIds` can then never
+   * include an id with no on-screen checkbox, which would otherwise
+   * desync the toolbar's selection count from the rendered checked rows
+   * (re #202).
+   */
+  let effectiveListEmailIds = $derived(
+    (showTabs ? tabFilteredEmailIds : mail.listEmailIds).filter((id) => mail.emails.has(id)),
+  );
 
-  /** Resolved emails for the effective list. */
+  /** Resolved emails for the effective list — one-to-one with `effectiveListEmailIds`. */
   let effectiveListEmails = $derived(
     effectiveListEmailIds
       .map((id) => mail.emails.get(id))
       .filter((e): e is Email => e !== undefined),
   );
+
+  /**
+   * Ids of the rendered search-result rows, one-to-one with
+   * `mail.searchEmails` (which already drops any id from `searchEmailIds`
+   * lacking a resolved `Email`). The search list's shift-click / select-all
+   * paths use this instead of the raw `mail.searchEmailIds` for the same
+   * reason as `effectiveListEmailIds` above (re #202).
+   */
+  let renderedSearchEmailIds = $derived(mail.searchEmails.map((email) => email.id));
 
   // Kick off the list load when a folder route is shown. The load call is
   // wrapped in untrack() so the synchronous loadFolder/loadStatus read-
@@ -214,7 +238,7 @@
       {
         key: '*',
         description: 'Select / deselect all visible',
-        action: () => mail.toggleSelectAllVisible(mail.searchEmailIds),
+        action: () => mail.toggleSelectAllVisible(renderedSearchEmailIds),
       },
     ]);
     return pop;
@@ -982,7 +1006,7 @@
            #207) is search's counterpart to the folder list's
            whole-mailbox banner. -->
       <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
-        <SelectChooser visibleEmails={mail.searchEmails} visibleIds={mail.searchEmailIds} />
+        <SelectChooser visibleEmails={mail.searchEmails} visibleIds={renderedSearchEmailIds} />
         {#if mail.listSelectedIds.size > 0}
           <span class="bulk-count">
             {t('bulk.selected', {
@@ -1079,7 +1103,7 @@
             <button
               type="button"
               class="banner-btn banner-btn--secondary"
-              onclick={() => mail.selectAllVisible(mail.searchEmailIds)}
+              onclick={() => mail.selectAllVisible(renderedSearchEmailIds)}
             >
               {t('select.clearWholeMailbox')}
             </button>
@@ -1123,7 +1147,7 @@
                   // the `change` event it would fire) so the plain-click
                   // path below stays untouched.
                   e.preventDefault();
-                  mail.selectRowClick(email.id, true, mail.searchEmailIds);
+                  mail.selectRowClick(email.id, true, renderedSearchEmailIds);
                 }
               }}
               onchange={() => mail.toggleSelected(email.id)}

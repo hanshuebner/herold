@@ -2947,8 +2947,20 @@ class MailStore {
    * shift-clicks keep extending from the same starting point. A plain
    * click falls back to the existing per-row toggle and moves the anchor
    * to `id`.
+   *
+   * The default `visibleIds` is `listEmails`-derived (not the raw
+   * `listEmailIds`): `listEmailIds` can contain an id with no resolved
+   * `Email` yet (in-flight page load, a `notFound` for a since-deleted
+   * id, ...), and such an id renders no checkbox. Computing a range over
+   * it would select an id the toolbar counts but no row reflects (re
+   * #202). Callers with a further-filtered visible set (a category tab,
+   * a search result page) pass `visibleIds` explicitly.
    */
-  selectRowClick(id: string, shiftKey: boolean, visibleIds: string[] = this.listEmailIds): void {
+  selectRowClick(
+    id: string,
+    shiftKey: boolean,
+    visibleIds: string[] = this.listEmails.map((e) => e.id),
+  ): void {
     if (shiftKey && this.listSelectAnchorId !== null) {
       this.listWholeMailboxSelected = false;
       this.#wholeSelectionFilterOverride = undefined;
@@ -2960,10 +2972,12 @@ class MailStore {
 
   /**
    * Replace the selection with every id currently visible in the list.
-   * Defaults to the folder-list ids; pass `visibleIds` explicitly for a
-   * different visible set (e.g. the search-result list, re #159).
+   * Defaults to the resolved folder-list ids (`listEmails`, not the raw
+   * `listEmailIds` -- see `selectRowClick` for why); pass `visibleIds`
+   * explicitly for a different visible set (e.g. the search-result list,
+   * re #159).
    */
-  selectAllVisible(visibleIds: string[] = this.listEmailIds): void {
+  selectAllVisible(visibleIds: string[] = this.listEmails.map((e) => e.id)): void {
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
     this.listSelectedIds = new Set(visibleIds);

@@ -25,7 +25,12 @@
   }: { visibleEmails?: Email[]; visibleIds?: string[] } = $props();
 
   const effectiveEmails = $derived(visibleEmails ?? mail.listEmails);
-  const effectiveIds = $derived(visibleIds ?? mail.listEmailIds);
+  // Derived from `effectiveEmails`, not a separate `mail.listEmailIds`
+  // fallback: `listEmailIds` can hold an id with no resolved `Email` yet,
+  // which renders no checkbox. Selecting such an id would let the
+  // toolbar's selection count exceed the checked rows on screen (re
+  // #202).
+  const effectiveIds = $derived(visibleIds ?? effectiveEmails.map((e) => e.id));
 
   let menuOpen = $state(false);
   let rootEl = $state<HTMLElement | null>(null);
