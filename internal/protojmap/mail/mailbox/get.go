@@ -183,7 +183,7 @@ func loadMailboxForPrincipal(
 		}
 		return store.Mailbox{}, fmt.Errorf("mailbox: load: %w", err)
 	}
-	if mb.PrincipalID == pid {
+	if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
 		return mb, nil
 	}
 	rows, err := meta.GetMailboxACL(ctx, mb.ID)

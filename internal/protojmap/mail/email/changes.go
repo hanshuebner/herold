@@ -130,18 +130,16 @@ func (c *changesHandler) Execute(ctx context.Context, args json.RawMessage) (any
 	// before the destroy too, but conservative pass-through keeps the
 	// state machine honest).
 	keep := func(id store.MessageID) bool {
-		if callerPID == ownerPID {
-			return true
-		}
 		m, lerr := loadMessageForPrincipal(ctx, c.h.store.Meta(), callerPID, id)
 		if lerr != nil {
 			return false
 		}
-		mb, mberr := c.h.store.Meta().GetMailboxByID(ctx, m.MailboxID)
-		if mberr != nil {
-			return false
-		}
-		return mb.PrincipalID == ownerPID
+		// Unconditional account guard (not just when callerPID !=
+		// ownerPID): loadMessageForPrincipal also grants a sub-account's
+		// parent access to the sub-account's mail (REQ-SUBACCT-04), so a
+		// caller polling changes on her OWN account must still not see a
+		// message that in fact lives in her sub-account, and vice versa.
+		return m.PrincipalID == ownerPID
 	}
 	for id := range created {
 		if keep(id) {

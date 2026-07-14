@@ -693,11 +693,14 @@ func gatherCandidatesRaw(
 			if err != nil {
 				continue
 			}
-			if callerPID != ownerPID {
-				mb, mberr := st.Meta().GetMailboxByID(ctx, m.MailboxID)
-				if mberr != nil || mb.PrincipalID != ownerPID {
-					continue
-				}
+			// Unconditional account guard (not just when callerPID !=
+			// ownerPID): the FTS index is already scoped to ownerPID, but
+			// loadMessageForPrincipal also grants a sub-account's parent
+			// access to the sub-account's mail (REQ-SUBACCT-04), so this
+			// stays defense-in-depth against ever mixing a self-account
+			// query with a foreign or sub-account hit.
+			if m.PrincipalID != ownerPID {
+				continue
 			}
 			out = append(out, m)
 		}

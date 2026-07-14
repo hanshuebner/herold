@@ -364,10 +364,12 @@ func (h *handlerSet) createMailbox(
 			}, nil
 		}
 		parentID = parent.ID
-	} else if callerPID != ownerPID {
-		// Top-level create in a foreign account: there is no parent
-		// mailbox to enforce ACL against. Refuse rather than implicitly
-		// granting account-level admin.
+	} else if !protojmap.HasOwnerAccess(ctx, h.store.Meta(), callerPID, ownerPID) {
+		// Top-level create in a foreign (ACL-shared) account: there is no
+		// parent mailbox to enforce ACL against. Refuse rather than
+		// implicitly granting account-level admin. A sub-account's parent
+		// (REQ-SUBACCT-04) is exempt -- HasOwnerAccess treats them as the
+		// owner, matching every other rights check in this package.
 		return store.Mailbox{}, &setError{
 			Type:        "forbidden",
 			Description: "top-level mailbox creation in a shared account requires a parentId",

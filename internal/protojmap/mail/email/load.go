@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -15,13 +16,15 @@ import (
 // ACL on bob — those appear under bob's accountId as a secondary
 // account on her session instead. For caller != owner the result is
 // further filtered to the mailboxes the caller has Lookup right on
-// (direct ACL row or "anyone").
+// (direct ACL row or "anyone") -- unless ownerPID is the caller's own
+// sub-account (REQ-SUBACCT-04), in which case the full list is
+// returned, matching the same-account fast path.
 func listMailboxesForAccount(
 	ctx context.Context,
 	meta store.Metadata,
 	callerPID, ownerPID store.PrincipalID,
 ) ([]store.Mailbox, error) {
-	if callerPID == ownerPID {
+	if protojmap.HasOwnerAccess(ctx, meta, callerPID, ownerPID) {
 		owned, err := meta.ListMailboxes(ctx, ownerPID)
 		if err != nil {
 			return nil, fmt.Errorf("email: list mailboxes: %w", err)
@@ -65,7 +68,7 @@ func loadMessageForPrincipal(
 		}
 		return store.Message{}, fmt.Errorf("email: get mailbox: %w", err)
 	}
-	if mb.PrincipalID == pid {
+	if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
 		return m, nil
 	}
 	rows, err := meta.GetMailboxACL(ctx, mb.ID)
@@ -91,8 +94,10 @@ var errMessageMissing = errors.New("email: not found or not visible")
 
 // aclRightsForCaller returns the combined ACLRights mask for callerPID
 // against mb. The owning principal sees every right; non-owners receive
-// the OR of their direct ACL row and any "anyone" row. Used by the
-// cross-account create/update/destroy paths to gate operations on
+// the OR of their direct ACL row and any "anyone" row -- except a
+// sub-account's parent (REQ-SUBACCT-04), who also sees every right on
+// their own sub-account's mailboxes without needing an ACL row. Used by
+// the cross-account create/update/destroy paths to gate operations on
 // specific ACL bits (Insert / Write / Seen / DeleteMessage / Expunge).
 func aclRightsForCaller(
 	ctx context.Context,
@@ -100,7 +105,7 @@ func aclRightsForCaller(
 	callerPID store.PrincipalID,
 	mb store.Mailbox,
 ) (store.ACLRights, error) {
-	if mb.PrincipalID == callerPID {
+	if protojmap.HasOwnerAccess(ctx, meta, callerPID, mb.PrincipalID) {
 		return store.ACLRightsAll, nil
 	}
 	rows, err := meta.GetMailboxACL(ctx, mb.ID)

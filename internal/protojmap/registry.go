@@ -179,6 +179,18 @@ const (
 	// mechanism. Implemented under internal/protojmap/mail/email
 	// (retryimages.go).
 	CapabilityEmailImageRetry CapabilityID = "https://netzhansa.com/jmap/email-image-retry"
+
+	// CapabilitySubAccounts is the sub-account substrate capability
+	// (issue #227, REQ-SUBACCT-11). Advertised unconditionally: it
+	// signals that the session descriptor's `accounts` map may contain
+	// entries beyond the caller's primary account and any ACL-shared
+	// mailbox owner (REQ-PROTO-33) that are the caller's own
+	// sub-accounts (REQ-SUBACCT-01) — each with independent
+	// `accountCapabilities` and state-string namespace (REQ-SUBACCT-03).
+	// Absent the capability a client must not render an account switcher
+	// or separation affordance. The descriptor carries no additional
+	// properties for v1 (empty object).
+	CapabilitySubAccounts CapabilityID = "https://netzhansa.com/jmap/sub-accounts"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

@@ -232,14 +232,15 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 }
 
 // callerCanReadMailbox returns whether callerPID has Lookup right on
-// mailboxID via a direct ACL row, an "anyone" row, or direct
-// ownership. Implements REQ-PROTO-33.
+// mailboxID via a direct ACL row, an "anyone" row, direct ownership, or
+// -- for a mailbox owned by callerPID's own sub-account (REQ-SUBACCT-04)
+// -- the implicit owner-equivalent grant. Implements REQ-PROTO-33.
 func (h *handlerSet) callerCanReadMailbox(ctx context.Context, callerPID store.PrincipalID, mailboxID store.MailboxID) bool {
 	mb, err := h.store.Meta().GetMailboxByID(ctx, mailboxID)
 	if err != nil {
 		return false
 	}
-	if mb.PrincipalID == callerPID {
+	if protojmap.HasOwnerAccess(ctx, h.store.Meta(), callerPID, mb.PrincipalID) {
 		return true
 	}
 	rows, err := h.store.Meta().GetMailboxACL(ctx, mailboxID)

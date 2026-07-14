@@ -109,15 +109,17 @@ func (g *getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *p
 			}
 			return nil, serverFail(err)
 		}
-		// Cross-account guard: the message must live in a mailbox owned
-		// by the requested account; otherwise it does not exist for the
-		// purposes of this Email/get call (RFC 8621 §4.2 + REQ-PROTO-33).
-		if callerPID != ownerPID {
-			mb, mberr := g.h.store.Meta().GetMailboxByID(ctx, m.MailboxID)
-			if mberr != nil || mb.PrincipalID != ownerPID {
-				entries = append(entries, entry{raw: raw})
-				continue
-			}
+		// Account guard: the message must belong to the requested
+		// account; otherwise it does not exist for the purposes of this
+		// Email/get call (RFC 8621 §4.2 + REQ-PROTO-33). Unconditional
+		// (not just when callerPID != ownerPID): loadMessageForPrincipal
+		// also grants a sub-account's parent access to the sub-account's
+		// mail (REQ-SUBACCT-04), so a caller addressing her OWN account
+		// must still be blocked from seeing a message that in fact lives
+		// in her sub-account.
+		if m.PrincipalID != ownerPID {
+			entries = append(entries, entry{raw: raw})
+			continue
 		}
 		entries = append(entries, entry{raw: raw, mid: mid, msg: m, ok: true})
 		validIDs = append(validIDs, mid)

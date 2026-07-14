@@ -274,6 +274,12 @@ func NewServer(
 	// regardless of which data-type capabilities are enabled.
 	s.reg.Register(CapabilityCore, blobCopyHandler{store: s.store})
 	s.reg.installCapabilityDescriptor(CapabilityCore, coreCapabilityDescriptor(opts))
+	// Sub-account substrate (REQ-SUBACCT-11): advertised unconditionally
+	// at the session level, independent of which datatype packages are
+	// registered. buildSessionDescriptor populates accounts[] with the
+	// caller's sub-accounts whenever the store has any; this capability
+	// just tells the client the shape is meaningful to look for.
+	s.reg.installCapabilityDescriptor(CapabilitySubAccounts, struct{}{})
 	return s
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -79,14 +80,16 @@ func countMessages(
 
 // rightsForPrincipal returns the JMAP myRights envelope for pid against
 // mb. The owning principal sees the full rights set; non-owners receive
-// the projection of their ACL row (plus any "anyone" row).
+// the projection of their ACL row (plus any "anyone" row) -- except a
+// sub-account's parent (REQ-SUBACCT-04), who also sees the full rights
+// set on their own sub-account without needing an ACL row.
 func rightsForPrincipal(
 	ctx context.Context,
 	meta store.Metadata,
 	pid store.PrincipalID,
 	mb store.Mailbox,
 ) (myRights, error) {
-	if mb.PrincipalID == pid {
+	if protojmap.HasOwnerAccess(ctx, meta, pid, mb.PrincipalID) {
 		return rightsForOwner(), nil
 	}
 	rows, err := meta.GetMailboxACL(ctx, mb.ID)
@@ -113,13 +116,15 @@ func rightsForPrincipal(
 // ACL on another principal appear under that principal's accountId as a
 // secondary account on her session. For caller != owner the result is
 // further filtered to mailboxes the caller has Lookup right on (direct
-// ACL row or "anyone").
+// ACL row or "anyone") -- unless ownerPID is the caller's own
+// sub-account (REQ-SUBACCT-04), in which case the full list is
+// returned, matching the same-account fast path.
 func listMailboxesForAccount(
 	ctx context.Context,
 	meta store.Metadata,
 	callerPID, ownerPID store.PrincipalID,
 ) ([]store.Mailbox, error) {
-	if callerPID == ownerPID {
+	if protojmap.HasOwnerAccess(ctx, meta, callerPID, ownerPID) {
 		owned, err := meta.ListMailboxes(ctx, ownerPID)
 		if err != nil {
 			return nil, fmt.Errorf("mailbox: list mailboxes: %w", err)

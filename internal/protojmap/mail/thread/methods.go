@@ -137,11 +137,12 @@ func (h *handlerSet) listAllMessages(ctx context.Context, callerPID, ownerPID st
 }
 
 // accessibleMailboxes returns the mailbox set for the requested
-// (callerPID, ownerPID) routing. For caller == owner it is the owned
-// mailbox list; otherwise it is the ACL-shared subset owned by
-// ownerPID and visible to callerPID.
+// (callerPID, ownerPID) routing. For caller == owner, or when ownerPID
+// is caller's own sub-account (REQ-SUBACCT-04), it is the owned mailbox
+// list; otherwise it is the ACL-shared subset owned by ownerPID and
+// visible to callerPID.
 func (h *handlerSet) accessibleMailboxes(ctx context.Context, callerPID, ownerPID store.PrincipalID) ([]store.Mailbox, error) {
-	if callerPID == ownerPID {
+	if protojmap.HasOwnerAccess(ctx, h.store.Meta(), callerPID, ownerPID) {
 		return h.store.Meta().ListMailboxes(ctx, ownerPID)
 	}
 	shared, err := h.store.Meta().ListMailboxesAccessibleBy(ctx, callerPID)

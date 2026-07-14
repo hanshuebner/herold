@@ -58,9 +58,20 @@ func ResolveAccount(
 	// Foreign account: guard against stale numeric ids by confirming
 	// the owner principal still exists, then require at least one
 	// ACL-accessible mailbox in that owner's account.
-	if _, err := meta.GetPrincipalByID(ctx, ownerPID); err != nil {
+	owner, err := meta.GetPrincipalByID(ctx, ownerPID)
+	if err != nil {
 		return 0, NewMethodError("accountNotFound",
 			"account "+string(accountID)+" is not accessible to this principal")
+	}
+	// Sub-account (REQ-SUBACCT-01/03/04): the caller reaches their own
+	// sub-account unconditionally, without needing an ACL grant. A
+	// sub-principal is never itself an authenticated caller
+	// (REQ-SUBACCT-02, enforced at Directory.Authenticate), so this
+	// branch cannot be used to pivot from a sub-account to its parent
+	// or to a sibling sub-account -- only a genuine parent principal
+	// reaches here as callerPID.
+	if owner.IsSubAccount() && owner.ParentPrincipalID == callerPID {
+		return ownerPID, nil
 	}
 	accessible, err := meta.ListMailboxesAccessibleBy(ctx, callerPID)
 	if err != nil {
@@ -74,4 +85,30 @@ func ResolveAccount(
 	}
 	return 0, NewMethodError("accountNotFound",
 		"account "+string(accountID)+" is not accessible to this principal")
+}
+
+// HasOwnerAccess reports whether pid should be treated as having full
+// owner-equivalent rights on resources owned by ownerPID: either they
+// are the same principal, or ownerPID is a sub-account (REQ-SUBACCT-01)
+// whose parent is pid (REQ-SUBACCT-04: the parent reaches every one of
+// its own sub-accounts with full rights, without an explicit ACL grant
+// -- unlike an ACL-shared foreign account, which is filtered to the
+// caller's granted rights by each handler's ACL-checking helper).
+//
+// The mail/* packages' per-mailbox rights and listing helpers call this
+// wherever they previously fast-pathed on "pid == ownerPID": that
+// substitution is sufficient because a sub-account's mailboxes and
+// messages are ordinary rows keyed by the sub-account's own
+// PrincipalID, so the existing "am I the owner" branch already returns
+// the full unfiltered result -- it only needed to also fire when pid is
+// the sub-account's parent.
+func HasOwnerAccess(ctx context.Context, meta store.Metadata, pid, ownerPID store.PrincipalID) bool {
+	if pid == ownerPID {
+		return true
+	}
+	owner, err := meta.GetPrincipalByID(ctx, ownerPID)
+	if err != nil {
+		return false
+	}
+	return owner.IsSubAccount() && owner.ParentPrincipalID == pid
 }

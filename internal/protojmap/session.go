@@ -105,6 +105,11 @@ func (s *Server) buildSessionDescriptor(ctx context.Context, r *http.Request, p 
 	// re-checked by the mail/* handlers; this surface is purely the
 	// discovery hint.
 	s.appendSecondaryAccounts(ctx, accounts, accountCaps, p.ID)
+	// REQ-SUBACCT-03: surface every sub-account owned by the caller as
+	// its own accounts[] entry. Unlike appendSecondaryAccounts (ACL
+	// discovery), sub-accounts are unconditionally the caller's own --
+	// no ACL grant is involved.
+	s.appendSubAccounts(ctx, accounts, accountCaps, p.ID)
 	desc := sessionDescriptor{
 		Capabilities:    caps,
 		Accounts:        accounts,
@@ -176,6 +181,39 @@ func (s *Server) appendSecondaryAccounts(
 			Name:                owner.CanonicalEmail,
 			IsPersonal:          false,
 			IsReadOnly:          readOnly,
+			AccountCapabilities: accountCaps,
+		}
+	}
+}
+
+// appendSubAccounts adds one accounts[] entry per sub-principal owned
+// by callerPID (REQ-SUBACCT-01/03). A sub-account genuinely belongs to
+// the authenticated principal -- unlike an ACL-shared foreign account
+// surfaced by appendSecondaryAccounts -- so isPersonal is true.
+// isReadOnly is always false: the parent reaches every one of its own
+// sub-accounts with full owner rights (protojmap.HasOwnerAccess is the
+// seam every mail/* handler routes through). Failures fall through
+// silently for the same reason appendSecondaryAccounts does: a
+// transient store hiccup must not 500 session bootstrap.
+func (s *Server) appendSubAccounts(
+	ctx context.Context,
+	accounts map[Id]accountDesc,
+	accountCaps map[CapabilityID]any,
+	callerPID store.PrincipalID,
+) {
+	subs, err := s.store.Meta().ListSubPrincipals(ctx, callerPID)
+	if err != nil {
+		return
+	}
+	for _, sub := range subs {
+		id := AccountIDForPrincipal(sub.ID)
+		if _, dup := accounts[id]; dup {
+			continue
+		}
+		accounts[id] = accountDesc{
+			Name:                sub.CanonicalEmail,
+			IsPersonal:          true,
+			IsReadOnly:          false,
 			AccountCapabilities: accountCaps,
 		}
 	}
@@ -294,6 +332,21 @@ func (s *Server) sessionState(ctx context.Context) string {
 			if fst, fserr := s.store.Meta().GetJMAPStates(ctx, mb.PrincipalID); fserr == nil {
 				fmt.Fprintf(h, "fa=%d;mb=%d;em=%d;",
 					fst.PrincipalID, fst.Mailbox, fst.Email)
+			}
+		}
+	}
+	// REQ-SUBACCT-03: mix in every sub-account's own state digest so a
+	// mutation there invalidates the session-state hash too, even
+	// though the sub-account's own per-datatype "state" strings (as
+	// returned by Mailbox/get, Email/get, etc.) advance completely
+	// independently of the parent's -- each is read straight off the
+	// sub-account's own PrincipalID via the ordinary GetJMAPStates /
+	// GetMaxChangeSeqForKind path, never mixed with the parent's.
+	if subs, serr := s.store.Meta().ListSubPrincipals(ctx, p.ID); serr == nil {
+		for _, sub := range subs {
+			if sst, sserr := s.store.Meta().GetJMAPStates(ctx, sub.ID); sserr == nil {
+				fmt.Fprintf(h, "sa=%d;mb=%d;em=%d;",
+					sst.PrincipalID, sst.Mailbox, sst.Email)
 			}
 		}
 	}
