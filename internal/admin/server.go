@@ -2520,6 +2520,12 @@ func composeAdminAndUI(
 	// verification email stays short. Route it to the tagged admin handler
 	// so the same requireAuth + store logic applies.
 	publicMux.Handle("/verify-identity", taggedAdminHandler)
+	// /oauth2/ carries the native-client authorization-code + PKCE flow
+	// (authorize, token) and the external-OIDC federated sign-in built on
+	// top of it (authorize/federated, authorize/federated/callback). These
+	// are reached directly from a browser or a native app's Custom Tab, so
+	// they belong on the public listener alongside /api/v1/ (re #199, #238).
+	publicMux.Handle("/oauth2/", taggedAdminHandler)
 
 	// /metrics must NOT be served by the public listener. Register an
 	// explicit 404 so the suite SPA catch-all does not absorb the path.
