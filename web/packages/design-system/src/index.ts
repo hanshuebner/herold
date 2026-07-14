@@ -8,3 +8,4 @@
 
 export { default as Button } from './Button.svelte';
 export { default as CodeInput } from './CodeInput.svelte';
+export { default as Header } from './Header.svelte';

@@ -5,6 +5,7 @@
   import AppSwitcherMenu from './AppSwitcherMenu.svelte';
   import ProfileMenu from './ProfileMenu.svelte';
   import AdvancedSearchPanel from '../mail/AdvancedSearchPanel.svelte';
+  import Header from '@herold/design-system/Header.svelte';
   import { sync } from '../../lib/jmap/sync.svelte';
   import { router } from '../../lib/router/router.svelte';
   import { help } from '../help/help.svelte';
@@ -136,11 +137,13 @@
   );
 </script>
 
-<header class="global-bar">
-  <div class="brand-area">
-    <AppSwitcherMenu currentApp="mail" />
-    <a class="brand" href="/" aria-label={t('globalBar.brand')} title={buildInfo}>Herold</a>
-  </div>
+<Header class="global-bar">
+  {#snippet brand()}
+    <div class="brand-area">
+      <AppSwitcherMenu currentApp="mail" />
+      <a class="brand" href="/" aria-label={t('globalBar.brand')} title={buildInfo}>Herold</a>
+    </div>
+  {/snippet}
 
   <form class="search" onsubmit={onSubmit} role="search">
     <SearchIcon size={18} />
@@ -188,7 +191,7 @@
     </button>
     <ProfileMenu />
   </div>
-</header>
+</Header>
 
 {#if panelOpen && !isContactsRoute}
   <!-- Transparent backdrop captures click-outside to dismiss the panel. -->
@@ -207,15 +210,16 @@
 {/if}
 
 <style>
-  .global-bar {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
+  /* The flex row, height, background, and border-bottom common to both
+     apps' headers live in the shared Header component
+     (@herold/design-system/Header.svelte), which renders the actual
+     <header> element -- this component only supplies the `global-bar`
+     class name as data, so Svelte's own scoped styles cannot reach an
+     element rendered by a different component. :global() is the
+     documented escape hatch for exactly that case. */
+  :global(.global-bar) {
     gap: var(--spacing-04);
     padding: 0 var(--spacing-05) 0 0;
-    height: var(--spacing-08);
-    background: var(--layer-01);
-    border-bottom: 1px solid var(--border-subtle-01);
   }
 
   /* Brand area: fixed-width left column that aligns with the nav

@@ -2,6 +2,7 @@
   import { auth } from '../auth/auth.svelte';
   import { router } from '../router/router.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import Header from '@herold/design-system/Header.svelte';
 
   interface NavItem {
     labelKey: string;
@@ -33,10 +34,14 @@
 
 <div class="shell">
   <!-- TODO REQ-UI-13k: add AppSwitcherMenu burger button to the left of
-       the wordmark once a shared component package or inlined copy is
-       wired for the admin SPA. Admin is the 'admin' currentApp entry. -->
-  <header class="topbar">
-    <span class="wordmark">{t('shell.wordmark')}</span>
+       the wordmark. The header container itself is now the shared
+       @herold/design-system/Header.svelte component (re #205); the
+       switcher is a separate, suite-only component not yet ported here.
+       Admin is the 'admin' currentApp entry once it is. -->
+  <Header class="topbar">
+    {#snippet brand()}
+      <span class="wordmark">{t('shell.wordmark')}</span>
+    {/snippet}
     <div class="topbar-right">
       {#if auth.principal}
         <span class="principal-email">{auth.principal.email}</span>
@@ -49,7 +54,7 @@
         </button>
       {/if}
     </div>
-  </header>
+  </Header>
 
   <div class="body">
     <nav class="rail" aria-label={t('shell.mainNavigation')}>
@@ -89,16 +94,17 @@
     height: 100dvh;
   }
 
-  /* ---- Top bar ---- */
-  .topbar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
+  /* ---- Top bar ----
+     The flex row, height, background, and border-bottom common to both
+     apps' headers live in the shared Header component
+     (@herold/design-system/Header.svelte), which renders the actual
+     <header> element -- this component only supplies the `topbar` class
+     name as data, so Svelte's own scoped styles cannot reach an element
+     rendered by a different component. :global() is the documented
+     escape hatch for exactly that case. */
+  :global(.topbar) {
     justify-content: space-between;
     padding: 0 var(--spacing-06);
-    height: 48px;
-    background: var(--layer-01);
-    border-bottom: 1px solid var(--border-subtle-01);
   }
   .wordmark {
     font-family: var(--font-sans);
