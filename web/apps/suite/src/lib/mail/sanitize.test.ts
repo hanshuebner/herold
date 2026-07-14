@@ -724,6 +724,80 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(body.indexOf('Danke!')).toBeLessThan(detailsStart);
     });
 
+    it('folds an "On ... wrote:" introducer separated from the blockquote by inter-tag whitespace (real mail clients, not compose.svelte.ts)', () => {
+      // compose.svelte.ts's own formatReplyQuote concatenates tags with
+      // zero whitespace between them ("<p>...</p><blockquote>"). Real
+      // clients -- Thunderbird and essentially every other mail client --
+      // serialize HTML with a newline (and often indentation) between
+      // block-level tags, which the DOM parser turns into a whitespace-
+      // only TEXT NODE sitting between the introducer <p> and the
+      // <blockquote>. The introducer must still fold.
+      const html =
+        '<p>My reply.</p>\n' +
+        '<p>On Mon, 13 Jul 2026, Florian Test &lt;florian@example.local&gt; wrote:</p>\n' +
+        '  <blockquote>Original message.</blockquote>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      const introPos = body.indexOf('wrote:');
+      expect(introPos).toBeGreaterThan(detailsStart);
+      expect(introPos).toBeLessThan(detailsEnd);
+      expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+    });
+
+    it('folds a German name-first introducer separated from the blockquote by inter-tag whitespace', () => {
+      // The actual reported message shape: Thunderbird's German locale
+      // output, serialized with a newline between the introducer <p> and
+      // the <blockquote>.
+      const html =
+        '<p>Danke für die Einladung.</p>\n' +
+        '<p>Hans Hübner (Vorstandsvorsitzender VzEkC e.V.) schrieb am 13.07.26 um 16:53:</p>\n' +
+        '<blockquote>Original.</blockquote>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      const introPos = body.indexOf('schrieb am 13.07.26');
+      expect(introPos).toBeGreaterThan(detailsStart);
+      expect(introPos).toBeLessThan(detailsEnd);
+      expect(body.indexOf('Danke für die Einladung.')).toBeLessThan(detailsStart);
+    });
+
+    it('does not fold a genuine paragraph separated from the blockquote by inter-tag whitespace', () => {
+      // Whitespace-skipping must not make the detector greedier: the
+      // immediate non-empty previous sibling is still ordinary prose, not
+      // an attribution line, even once the intervening whitespace text
+      // node is skipped.
+      const html =
+        '<p>My reply.</p>\n' +
+        '<p>Here is some context I want you to read first.</p>\n' +
+        '<blockquote>Original message.</blockquote>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('Here is some context')).toBeLessThan(detailsStart);
+    });
+
+    it('does not walk past a genuine paragraph to find an earlier attribution line', () => {
+      // The backward skip must stop at the FIRST non-empty sibling and
+      // test only that one -- it must not skip over real prose looking
+      // for an attribution line further back.
+      const html =
+        '<p>On Mon, 13 Jul 2026, Alice &lt;a@x.test&gt; wrote:</p>\n' +
+        '<p>Here is some unrelated context.</p>\n' +
+        '<blockquote>Original message.</blockquote>\n';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).not.toBe(-1);
+      // Neither paragraph folds: the immediate previous sibling ("Here is
+      // some unrelated context.") is not an attribution line, so the
+      // backward sweep stops there without ever inspecting the earlier
+      // "wrote:" line.
+      expect(body.indexOf('Here is some unrelated context.')).toBeLessThan(detailsStart);
+      expect(body.indexOf('wrote:')).toBeLessThan(detailsStart);
+    });
+
     it('does not fold a genuine paragraph that merely precedes the quote', () => {
       // Heuristic discipline: ordinary text immediately before a blockquote
       // must stay outside the collapsed region -- only recognized

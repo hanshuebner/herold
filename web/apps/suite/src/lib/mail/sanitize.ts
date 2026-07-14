@@ -809,10 +809,11 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
  * content after the quote — in those cases the quote is left expanded so
  * the context remains readable (issue #49).
  *
- * A citation-introducer paragraph immediately preceding the quote (e.g.
- * compose.svelte.ts's own `<p>On {date}, {sender} wrote:</p><blockquote>`)
- * is folded into the collapsed region too (re #234) — see the backward
- * sweep below.
+ * A citation-introducer paragraph preceding the quote (e.g. compose.svelte.ts's
+ * own `<p>On {date}, {sender} wrote:</p><blockquote>`, or the same shape with
+ * a newline text node between the tags as real mail clients serialize it) is
+ * folded into the collapsed region too (re #234) — see the backward sweep
+ * below.
  */
 function collapseQuotedRegions(fragment: DocumentFragment): void {
   const root = fragment;
@@ -856,17 +857,36 @@ function collapseQuotedRegions(fragment: DocumentFragment): void {
   summary.setAttribute('aria-label', 'Show trimmed content');
   details.appendChild(summary);
 
-  // Backward sweep: fold a citation-introducer line immediately preceding
-  // the quote into the collapsed region too (re #234). At most one such
-  // node is absorbed, matching the plain-text contract of at most one
-  // attribution line per citation.
-  const introducer = candidate.previousSibling;
-  const insertionAnchor =
-    introducer !== null && isAttributionNode(introducer) ? introducer : candidate;
+  // Backward sweep: fold a citation-introducer line preceding the quote
+  // into the collapsed region too (re #234). Skips whitespace-only /
+  // empty siblings first, using the SAME isQuoteOrEmptyNode predicate the
+  // forward sweep above uses -- real mail clients (Thunderbird and
+  // essentially every other client) serialize a newline text node between
+  // block-level tags ("<p>...wrote:</p>\n<blockquote>..."), unlike
+  // compose.svelte.ts's own zero-whitespace output. Without this skip the
+  // introducer's immediate previous sibling is that whitespace text node,
+  // not the introducer paragraph, and the introducer is missed entirely.
+  // At most one non-empty node is inspected, matching the plain-text
+  // contract of at most one attribution line per citation.
+  let introducer: Node | null = candidate.previousSibling;
+  while (introducer !== null && isQuoteOrEmptyNode(introducer)) {
+    introducer = introducer.previousSibling;
+  }
+  if (introducer === null || !isAttributionNode(introducer)) {
+    introducer = null;
+  }
 
-  candidate.parentNode?.insertBefore(details, insertionAnchor);
-  if (insertionAnchor !== candidate) {
-    details.appendChild(insertionAnchor);
+  candidate.parentNode?.insertBefore(details, introducer ?? candidate);
+  if (introducer !== null) {
+    // Walk forward from the introducer to the candidate, absorbing it and
+    // every node in between (the whitespace/empty siblings the backward
+    // skip just walked past) into the collapsed region, in source order.
+    let n: Node | null = introducer;
+    while (n !== null && n !== candidate) {
+      const after: Node | null = n.nextSibling;
+      details.appendChild(n);
+      n = after;
+    }
   }
   details.appendChild(candidate);
 
