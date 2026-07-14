@@ -10,10 +10,13 @@
  *
  *   head      — always-visible content before the citation.
  *   collapsed — the single trailing citation, hidden behind "..." by default;
- *               empty when no qualifying citation is found.
- *   tail      — always-visible content that follows the citation (typically
- *               a "-- " signature block); empty when there is no trailing
- *               signature or when nothing is collapsed.
+ *               empty when no qualifying citation is found. Includes a
+ *               trailing signature block when one immediately follows the
+ *               citation (re #234) — see rule 4 below.
+ *   tail      — always empty. Retained as a field for the caller's render
+ *               order (head → [... toggle] → tail); a signature that
+ *               follows a collapsed citation folds into `collapsed`
+ *               instead of appearing here (see rule 4).
  *
  * Rendered in source order: head → [... toggle] → tail
  */
@@ -29,9 +32,10 @@ export type BodySplit = {
  * Rules:
  *
  * 1. Collapse AT MOST ONE citation — the single contiguous trailing quoted
- *    region: an optional attribution line ("On … wrote:" / "Am … schrieb:")
- *    immediately preceding consecutive `>`-prefixed lines (any nesting
- *    depth), with blank lines allowed within the run.
+ *    region: an optional attribution line ("On … wrote:" / "Am … schrieb:" /
+ *    "<Name> schrieb am … um …:") immediately preceding consecutive
+ *    `>`-prefixed lines (any nesting depth), with blank lines allowed within
+ *    the run.
  * 2. Collapse that citation ONLY IF everything that follows it to the end of
  *    the message is empty/whitespace or a signature block. A signature block
  *    begins at the first line matching `^-- ?$` and runs to the end.
@@ -40,9 +44,20 @@ export type BodySplit = {
  *    as `head` with `collapsed = ""`. This is the case when a quote appears
  *    at the top and new text follows: nothing is collapsed, everything is
  *    visible in order.
- * 4. Order is never changed: rendering head + collapsed + tail preserves the
- *    original source sequence. The signature is always in `tail` (shown),
- *    never moved into `head`.
+ * 4. A signature block that follows the collapsed citation folds away with
+ *    it (re #234) rather than staying visible in `tail`: `findSigDelimiter`
+ *    scans the WHOLE message for `^-- ?$`, so whenever both a citation and a
+ *    signature are found, the signature is necessarily the trailing content
+ *    of the message and immediately follows the citation — nothing else can
+ *    sit between them, because `findTrailingCitation` only matches when the
+ *    citation is already the last non-blank content before the signature
+ *    delimiter. A message with a citation and NO signature still collapses
+ *    normally with `tail` empty; a message with a signature and NO
+ *    qualifying citation is unaffected (rule 3's early return keeps the
+ *    signature visible in `head`, unfolded, since there is nothing to fold
+ *    it with).
+ * 5. Order is never changed: rendering head + collapsed + tail preserves the
+ *    original source sequence.
  */
 export function splitQuotedText(body: string): BodySplit {
   if (!body) return { head: '', collapsed: '', tail: '' };
@@ -52,25 +67,27 @@ export function splitQuotedText(body: string): BodySplit {
   // ── Step 1: locate trailing signature ──────────────────────────────────
   const sigStart = findSigDelimiter(lines);
   const bodyLines = sigStart >= 0 ? lines.slice(0, sigStart) : lines;
-  const tailLines = sigStart >= 0 ? lines.slice(sigStart) : [];
 
-  // ── Step 2: find the trailing citation within the body ─────────────────
+  // ── Step 2: find the trailing citation within the body (before any
+  // signature) ────────────────────────────────────────────────────────────
   const citationStart = findTrailingCitation(bodyLines);
 
   if (citationStart < 0) {
-    // No qualifying citation: render the full body verbatim, in order.
+    // No qualifying citation: render the full body verbatim, in order —
+    // including any signature, which has nothing to fold with (rule 4).
     return { head: body, collapsed: '', tail: '' };
   }
 
-  // ── Step 3: build the three parts, preserving source order ─────────────
+  // ── Step 3: build head; strip the trailing blank separator ─────────────
   const headLines = bodyLines.slice(0, citationStart);
-  // Strip trailing blank separator between head and citation.
   while (headLines.length > 0 && headLines[headLines.length - 1]!.trim() === '') {
     headLines.pop();
   }
 
-  const collapsedLines = bodyLines.slice(citationStart);
-  // Strip trailing blank lines from the citation.
+  // ── Step 4: collapsed spans from the citation start to the TRUE end of
+  // the message (not just the end of bodyLines) — see rule 4's doc comment
+  // for why a signature here is always contiguous with the citation. ─────
+  const collapsedLines = lines.slice(citationStart);
   while (
     collapsedLines.length > 0 &&
     collapsedLines[collapsedLines.length - 1]!.trim() === ''
@@ -81,17 +98,47 @@ export function splitQuotedText(body: string): BodySplit {
   return {
     head: headLines.join('\n'),
     collapsed: collapsedLines.join('\n'),
-    tail: tailLines.join('\n'),
+    tail: '',
   };
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
+// ── Shared helpers (also used by sanitize.ts's HTML-path quote collapse) ──
 
-const ATTRIBUTION_RE =
+// English "On <date>, <sender> wrote:" (also emitted verbatim by
+// compose.svelte.ts's formatReplyQuote, regardless of the active locale);
+// German "Am <date> schrieb <sender>:"; Spanish "El <date> <sender>
+// escribió:"; French "Le <date> <sender> a écrit:".
+const LEAD_ATTRIBUTION_RE =
   /^(On\b[\s\S]+\bwrote\s*:|Am\b[\s\S]+schrieb\b[\s\S]*:|El\b[\s\S]+escribi[oó]\s*:|Le\b[\s\S]+a\s+[ée]crit\s*:)\s*$/i;
 
-/** Matches the RFC 3676 signature delimiter "-- " and the common variant "--". */
-const SIG_DELIM_RE = /^-- ?$/;
+// German name-first attribution, as emitted by Thunderbird's German locale:
+// "<Name> schrieb am <dd.mm.yy> um <hh:mm>:" -- the sender's name precedes
+// "schrieb", so LEAD_ATTRIBUTION_RE's leading Am/On/El/Le anchor does not
+// match it. Anchored on a literal date (d.m.y) and time (h:mm) immediately
+// after "schrieb am" / "um" so ordinary prose that merely happens to
+// contain the words "schrieb am ... um ..." is not mistaken for an
+// auto-generated citation line -- that combination followed directly by a
+// colon is not a sentence shape German prose produces on its own.
+const NAME_FIRST_SCHRIEB_RE =
+  /^.+\bschrieb am\s+\d{1,2}\.\d{1,2}\.\d{2,4}\s+um\s+\d{1,2}:\d{2}\s*:\s*$/i;
+
+/**
+ * True when `line` (a single, already-trimmed line or element text) is an
+ * auto-generated citation-introducer line ("On ... wrote:", "Am ...
+ * schrieb ...:", "<Name> schrieb am ... um ...:", ...) rather than genuine
+ * new text. Shared between the plain-text citation scan below and
+ * sanitize.ts's HTML quoted-region collapse (re #234).
+ */
+export function isAttributionLine(line: string): boolean {
+  return LEAD_ATTRIBUTION_RE.test(line) || NAME_FIRST_SCHRIEB_RE.test(line);
+}
+
+/**
+ * Matches the RFC 3676 signature delimiter "-- " and the common variant
+ * "--", once the candidate text has been trimmed. Shared with sanitize.ts's
+ * HTML-path signature-block detection (re #234).
+ */
+export const SIG_DELIM_RE = /^-- ?$/;
 
 /**
  * Returns the index of the first signature-delimiter line (`^-- ?$`), or -1.
@@ -143,7 +190,7 @@ function findTrailingCitation(lines: string[]): number {
       continue;
     }
 
-    if (ATTRIBUTION_RE.test(trimmed)) {
+    if (isAttributionLine(trimmed)) {
       // Attribution line at the top of the run; include it and stop.
       citationStart = i;
       break;

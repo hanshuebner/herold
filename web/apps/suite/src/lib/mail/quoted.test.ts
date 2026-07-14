@@ -109,6 +109,47 @@ describe('splitQuotedText — classic top-post (fresh text above a trailing cita
       'My text.\n> Quoted paragraph 1.\n\n> Quoted paragraph 2.',
     );
   });
+
+  // re #234: Thunderbird's German locale puts the sender's name BEFORE
+  // "schrieb" ("<Name> schrieb am <date> um <time>:"), unlike the
+  // Am-first shape covered above.
+  it('splits at a German name-first attribution line ("<Name> schrieb am ... um ...:")', () => {
+    const body =
+      'Danke für die Einladung.\n' +
+      '\n' +
+      'Hans Hübner (Vorstandsvorsitzender VzEkC e.V.) schrieb am 13.07.26 um 16:53:\n' +
+      '> Liebe Mitglieder,\n' +
+      '> die nächste Vereinsversammlung findet am 20. Juli statt.';
+    const { head, collapsed, tail } = splitQuotedText(body);
+
+    expect(head).toBe('Danke für die Einladung.');
+    expect(collapsed).toContain('Hans Hübner (Vorstandsvorsitzender VzEkC e.V.) schrieb am 13.07.26 um 16:53:');
+    expect(collapsed).toContain('> Liebe Mitglieder,');
+    expect(tail).toBe('');
+
+    expect(visibleOrder(head, collapsed, tail)).toBe(
+      'Danke für die Einladung.\n' +
+        'Hans Hübner (Vorstandsvorsitzender VzEkC e.V.) schrieb am 13.07.26 um 16:53:\n' +
+        '> Liebe Mitglieder,\n' +
+        '> die nächste Vereinsversammlung findet am 20. Juli statt.',
+    );
+  });
+
+  it('does not treat an ordinary German sentence mentioning "schrieb am" as an attribution line', () => {
+    // Heuristic discipline: genuine prose that happens to contain the words
+    // "schrieb am" / "um" must NOT be mistaken for an auto-generated
+    // citation line just because a quote follows somewhere later. This
+    // sentence has no date/time shape and does not end in a colon, so it
+    // must stay in head, not fold into the citation.
+    const body =
+      'Ich erinnere mich noch, wie er schrieb am Wochenende um die Ecke zu fahren.\n' +
+      '\n' +
+      '> Older quoted history.';
+    const { head, collapsed } = splitQuotedText(body);
+
+    expect(head).toContain('Ich erinnere mich noch, wie er schrieb am Wochenende um die Ecke zu fahren.');
+    expect(collapsed).toBe('> Older quoted history.');
+  });
 });
 
 // ── shape 2: bottom-post — [quote][fresh] (ticket #116 example) ──────────────
@@ -151,10 +192,16 @@ describe('splitQuotedText — bottom-post (new text follows the quote)', () => {
   });
 });
 
-// ── shape 3: signature — [fresh][quote]["-- "\n sig] ─────────────────────────
+// ── shape 3: signature-only tail folds with the quote (re #234) ──────────────
+//
+// findSigDelimiter scans the WHOLE message, so whenever a citation is also
+// found the signature necessarily immediately follows it (see splitQuotedText's
+// rule 4 doc comment) -- there is no "quote, then real content, then
+// signature" shape reachable through this function. The signature therefore
+// always folds into `collapsed` alongside the citation; `tail` stays empty.
 
-describe('splitQuotedText — signature preserved in tail (order maintained)', () => {
-  it('collapses the citation and places the signature in tail', () => {
+describe('splitQuotedText — quote followed only by a signature folds together (re #234)', () => {
+  it('folds the citation and its trailing signature into collapsed; tail stays empty', () => {
     const body =
       'My text.\n' +
       '\n' +
@@ -168,15 +215,20 @@ describe('splitQuotedText — signature preserved in tail (order maintained)', (
     expect(head).toBe('My text.');
     expect(collapsed).toContain('On Mon, Alice');
     expect(collapsed).toContain('> Quoted.');
-    // Signature must be in tail, not moved into head.
-    expect(tail).toBe('-- \nMy signature.');
+    // The signature folds away with the quote instead of staying visible.
+    expect(collapsed).toContain('-- \nMy signature.');
+    expect(tail).toBe('');
     expect(head).not.toContain('signature');
 
-    // Order invariant: head → collapsed → tail matches source order.
+    // Order invariant: head → collapsed → tail matches source order. (The
+    // blank separator between head and the citation is consumed like any
+    // other head/citation boundary; the blank line WITHIN collapsed,
+    // between the quote and the signature, is preserved verbatim.)
     expect(visibleOrder(head, collapsed, tail)).toBe(
       'My text.\n' +
         'On Mon, Alice <a@x.test> wrote:\n' +
         '> Quoted.\n' +
+        '\n' +
         '-- \n' +
         'My signature.',
     );
@@ -187,8 +239,32 @@ describe('splitQuotedText — signature preserved in tail (order maintained)', (
     const { head, collapsed, tail } = splitQuotedText(body);
 
     expect(collapsed).toContain('> Quoted.');
-    expect(tail).toBe('--\nSig.');
+    expect(collapsed).toContain('--\nSig.');
+    expect(tail).toBe('');
     expect(head).not.toContain('Sig.');
+  });
+
+  it('does not fold the signature when real content sits between the quote and it', () => {
+    // "some final remark" is real, non-quoted content between the quote and
+    // the signature delimiter -- the trailing-most line of the pre-signature
+    // body is not quoted, so findTrailingCitation finds no citation at all
+    // and nothing collapses; the signature stays visible, unfolded, in head.
+    const body = '> quoted\n\nsome final remark\n\n-- \nSig';
+    const { head, collapsed, tail } = splitQuotedText(body);
+
+    expect(collapsed).toBe('');
+    expect(tail).toBe('');
+    expect(head).toBe(body);
+    expect(head).toContain('Sig');
+  });
+
+  it('leaves a signature with no citation visible in head (nothing to fold with)', () => {
+    const body = 'Just a note.\n\n-- \nSig only, no quote.';
+    const { head, collapsed, tail } = splitQuotedText(body);
+
+    expect(collapsed).toBe('');
+    expect(tail).toBe('');
+    expect(head).toBe(body);
   });
 });
 

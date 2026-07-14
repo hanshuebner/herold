@@ -690,6 +690,102 @@ describe('sanitizeHtml — quoted-history collapse', () => {
     expect(body).toContain('Original message that was replied to.');
     expect(body.indexOf('My reply.')).toBeLessThan(body.indexOf('<details'));
   });
+
+  // re #234: fold the citation-introducer paragraph and a trailing
+  // signature-only tail into the collapsed region.
+  describe('citation-introducer + trailing-signature folding (re #234)', () => {
+    it('folds compose.svelte.ts\'s own "On {date}, {sender} wrote:" introducer into details', () => {
+      // Exact shape emitted by compose.svelte.ts's formatReplyQuote: the
+      // introducer <p> is the blockquote's immediate previous sibling.
+      const html =
+        '<p>My reply.</p>' +
+        '<p>On Mon, 13 Jul 2026, Alice &lt;a@x.test&gt; wrote:</p>' +
+        '<blockquote>Original message.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      const introPos = body.indexOf('wrote:');
+      expect(introPos).toBeGreaterThan(detailsStart);
+      expect(introPos).toBeLessThan(detailsEnd);
+      // The fresh reply stays outside and before <details>.
+      expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+    });
+
+    it('folds a German name-first "<Name> schrieb am ... um ...:" introducer', () => {
+      const html =
+        '<p>Danke!</p>' +
+        '<p>Hans Hübner (Vorstandsvorsitzender VzEkC e.V.) schrieb am 13.07.26 um 16:53:</p>' +
+        '<blockquote>Original.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('schrieb am 13.07.26')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('Danke!')).toBeLessThan(detailsStart);
+    });
+
+    it('does not fold a genuine paragraph that merely precedes the quote', () => {
+      // Heuristic discipline: ordinary text immediately before a blockquote
+      // must stay outside the collapsed region -- only recognized
+      // auto-generated introducer shapes fold.
+      const html =
+        '<p>My reply.</p>' +
+        '<p>Here is some context I want you to read first.</p>' +
+        '<blockquote>Original message.</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).not.toBe(-1);
+      // The genuine paragraph stays outside <details>, before it.
+      expect(body.indexOf('Here is some context')).toBeLessThan(detailsStart);
+    });
+
+    it('folds a trailing signature-only tail with the quote (compose.svelte.ts shape)', () => {
+      // Exact shape emitted by compose.svelte.ts's appendSignature: two
+      // empty <p> separators, then <p>-- </p>, then the signature paragraphs.
+      const html =
+        '<p>My reply.</p>' +
+        '<blockquote>Original.</blockquote>' +
+        '<p></p><p></p><p>-- </p><p>Alice</p><p>Vorstand VzEkC e.V.</p>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      const sigPos = body.indexOf('Vorstand VzEkC e.V.');
+      expect(sigPos).toBeGreaterThan(detailsStart);
+      expect(sigPos).toBeLessThan(detailsEnd);
+      expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+    });
+
+    it('folds both the introducer and the trailing signature together (full Thunderbird-reply shape)', () => {
+      const html =
+        '<p>Super, bis dann!</p>' +
+        '<p>On Mo., 13. Juli 2026, 16:55, Florian Stassen &lt;florian@classic-computing.de&gt; wrote:</p>' +
+        '<blockquote>Original quoted text.</blockquote>' +
+        '<p></p><p>-- </p><p>Alice</p>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('wrote:')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('wrote:')).toBeLessThan(detailsEnd);
+      const sigPos = body.indexOf('>Alice<');
+      expect(sigPos).toBeGreaterThan(detailsStart);
+      expect(sigPos).toBeLessThan(detailsEnd);
+      expect(body.indexOf('Super, bis dann!')).toBeLessThan(detailsStart);
+    });
+
+    it('does not collapse when real content follows the signature delimiter paragraph area unexpectedly', () => {
+      // Guard regression: real fresh content (not a signature, not
+      // quote-or-empty) after the blockquote still blocks the collapse
+      // entirely, exactly as before re #234.
+      const html =
+        '<blockquote>Original.</blockquote>' +
+        '<p>One more thing I forgot to mention.</p>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      expect(body).not.toContain('<details');
+      expect(body).toContain('One more thing I forgot to mention.');
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {

@@ -30,6 +30,7 @@ import {
   INTERNALIZE_PLACEHOLDER_PREFIX,
   isInternalizePlaceholder,
 } from './internalize-placeholder';
+import { isAttributionLine, SIG_DELIM_RE } from './quoted';
 
 export interface SanitizeOptions {
   /** When true, http(s) <img src> rewrites through the image proxy. */
@@ -801,26 +802,43 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
  *
  * A quoted region is collapsed ONLY when it is trailing: no fresh
  * (non-quoted, non-whitespace) content may follow it (or follow the
- * quote/empty siblings that would be absorbed with it). Bottom-posted
- * and interleaved replies leave fresh content after the quote — in those
- * cases the quote is left expanded so the context remains readable
- * (issue #49).
+ * quote/empty siblings that would be absorbed with it) — UNLESS that
+ * content is a trailing signature block, which folds away with the quote
+ * instead of blocking the collapse (re #234; see the forward-sweep comment
+ * below). Bottom-posted and interleaved replies leave genuine fresh
+ * content after the quote — in those cases the quote is left expanded so
+ * the context remains readable (issue #49).
+ *
+ * A citation-introducer paragraph immediately preceding the quote (e.g.
+ * compose.svelte.ts's own `<p>On {date}, {sender} wrote:</p><blockquote>`)
+ * is folded into the collapsed region too (re #234) — see the backward
+ * sweep below.
  */
 function collapseQuotedRegions(fragment: DocumentFragment): void {
   const root = fragment;
   const candidate = findFirstQuotedRegion(root);
   if (!candidate) return;
 
-  // Guard: only collapse when the quoted region is truly trailing.
-  // Walk past the contiguous block of quote-or-empty siblings that
-  // would be absorbed with the candidate to find the first fresh
-  // sibling. If one exists, the quote is not trailing (bottom-posted
-  // or interleaved reply content follows) and must be left expanded.
+  // Guard: only collapse when the quoted region is truly trailing. Walk
+  // past the contiguous block of quote-or-empty siblings that would be
+  // absorbed with the candidate. Reaching a signature-delimiter node ends
+  // the guard successfully: from there to the end of the message is a
+  // signature block, which folds away with the quote unconditionally (re
+  // #234), mirroring the plain-text contract (quoted.ts splitQuotedText)
+  // that a signature block runs to the end of the message. Reaching
+  // anything else non-quote-or-empty means genuine fresh content follows
+  // and the quote must stay expanded.
   let probe: Node | null = candidate.nextSibling;
-  while (probe !== null && isQuoteOrEmptyNode(probe)) {
+  let foundSignature = false;
+  while (probe !== null) {
+    if (isSignatureDelimiterNode(probe)) {
+      foundSignature = true;
+      break;
+    }
+    if (!isQuoteOrEmptyNode(probe)) break;
     probe = probe.nextSibling;
   }
-  if (probe !== null) {
+  if (!foundSignature && probe !== null) {
     // Fresh content follows the quoted group — leave it expanded.
     return;
   }
@@ -837,17 +855,38 @@ function collapseQuotedRegions(fragment: DocumentFragment): void {
   // and the node text rendered side-by-side).
   summary.setAttribute('aria-label', 'Show trimmed content');
   details.appendChild(summary);
-  candidate.parentNode?.insertBefore(details, candidate);
+
+  // Backward sweep: fold a citation-introducer line immediately preceding
+  // the quote into the collapsed region too (re #234). At most one such
+  // node is absorbed, matching the plain-text contract of at most one
+  // attribution line per citation.
+  const introducer = candidate.previousSibling;
+  const insertionAnchor =
+    introducer !== null && isAttributionNode(introducer) ? introducer : candidate;
+
+  candidate.parentNode?.insertBefore(details, insertionAnchor);
+  if (insertionAnchor !== candidate) {
+    details.appendChild(insertionAnchor);
+  }
   details.appendChild(candidate);
-  // Absorb trailing siblings that are themselves quoted regions or empty
-  // separators into <details> — quoted history sometimes continues outside
-  // the first <blockquote> with an attribution div or a <hr>. The
-  // pre-check above guarantees that every remaining sibling is
-  // quote-or-empty, so the loop will reach the end without hitting the
-  // break condition; the guard is kept as a defensive boundary.
+
+  // Absorb trailing siblings: quote-or-empty nodes as before — quoted
+  // history sometimes continues outside the first <blockquote> with an
+  // attribution div or a <hr>. Once a signature-delimiter node is reached,
+  // absorb it and every remaining sibling unconditionally (re #234): the
+  // signature block runs to the end of the message regardless of its own
+  // content (the addressee's name, postal address, etc. are all real text
+  // that would otherwise fail the quote-or-empty check).
   let next = details.nextSibling;
+  let inSignature = false;
   while (next) {
-    if (!isQuoteOrEmptyNode(next)) break;
+    if (!inSignature) {
+      if (isSignatureDelimiterNode(next)) {
+        inSignature = true;
+      } else if (!isQuoteOrEmptyNode(next)) {
+        break;
+      }
+    }
     const after = next.nextSibling;
     details.appendChild(next);
     next = after;
@@ -881,6 +920,34 @@ function isQuoteOrEmptyNode(node: Node): boolean {
   }
   // An element whose visible text is entirely whitespace is empty.
   return !(el.textContent?.trim());
+}
+
+/**
+ * True when `node`'s full text content, trimmed, is exactly the RFC 3676
+ * signature delimiter ("-- " or "--") — e.g. compose.svelte.ts's own
+ * `<p>-- </p>`. Marks the start of a trailing signature block, which folds
+ * into the collapsed quoted region (re #234).
+ */
+function isSignatureDelimiterNode(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return SIG_DELIM_RE.test((node.nodeValue ?? '').trim());
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  return SIG_DELIM_RE.test(((node as Element).textContent ?? '').trim());
+}
+
+/**
+ * True when `node`'s full text content, trimmed, is an auto-generated
+ * citation-introducer line (re #234) rather than genuine new text. Shared
+ * with the plain-text heuristic in quoted.ts so both render paths fold the
+ * same set of introducer shapes.
+ */
+function isAttributionNode(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return isAttributionLine((node.nodeValue ?? '').trim());
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  return isAttributionLine(((node as Element).textContent ?? '').trim());
 }
 
 function findFirstQuotedRegion(root: ParentNode): Element | null {
