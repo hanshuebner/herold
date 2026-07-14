@@ -126,7 +126,11 @@ type Metadata interface {
 
 	// UpdatePrincipal writes the mutable fields of p back to the store.
 	// The ID must identify an existing row. Returns ErrNotFound if the
-	// principal was deleted between read and write.
+	// principal was deleted between read and write. Returns
+	// ErrInvalidArgument if p.Kind is PrincipalKindSubAccount and p
+	// carries a non-empty PasswordHash or TOTPSecret (REQ-SUBACCT-02: a
+	// sub-principal is not usable for login and no credential may be set
+	// on it), mirroring the guard InsertSubPrincipal applies at creation.
 	UpdatePrincipal(ctx context.Context, p Principal) error
 
 	// InsertSubPrincipal creates a new sub-principal owned by parentID

@@ -361,6 +361,9 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
+	if !s.requireNotSubPrincipal(w, r, pid) {
+		return
+	}
 	var req setPasswordRequest
 	if !decodeJSONBody(w, r, &req) {
 		return

@@ -264,26 +264,7 @@ func (s *Server) handleBeginOIDCLink(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
-	// REQ-SUBACCT-02: "no credential may be set on it" -- refuse to link
-	// an external OIDC identity to a sub-principal id, even for an admin
-	// caller. This is creation-time defence in depth; the auth-time
-	// checks in directoryoidc.RP.CompleteSignIn / VerifyAccessToken are
-	// what actually hold the line if this is ever bypassed by a future
-	// call site.
-	// REQ-SUBACCT-02: "no credential may be set on it" -- refuse to link
-	// an external OIDC identity to a sub-principal id, even for an admin
-	// caller. This is creation-time defence in depth; the auth-time
-	// checks in directoryoidc.RP.CompleteSignIn / VerifyAccessToken are
-	// what actually hold the line if this is ever bypassed by a future
-	// call site.
-	target, terr := s.store.Meta().GetPrincipalByID(r.Context(), pid)
-	if terr != nil {
-		s.writeStoreError(w, r, terr)
-		return
-	}
-	if target.Kind == store.PrincipalKindSubAccount {
-		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"sub-principal cannot hold credentials", "")
+	if !s.requireNotSubPrincipal(w, r, pid) {
 		return
 	}
 	var req beginOIDCLinkRequest

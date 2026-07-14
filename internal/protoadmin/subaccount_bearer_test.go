@@ -24,6 +24,15 @@ package protoadmin_test
 // /api/v1/auth/me, the exact endpoint and exploit shape reported: RED
 // without the auth-time fix (200, authenticated as the sub-principal),
 // GREEN with it (401).
+//
+// TestSubPrincipal_SetPassword_Returns400 and
+// TestSubPrincipal_TOTPEnroll_Returns400 (issue #241) close the
+// remaining write-layer gap: PUT .../password and POST .../totp/enroll
+// now refuse a sub-principal target id (400) via the same
+// requireNotSubPrincipal guard, and store.UpdatePrincipal independently
+// refuses to persist a credential onto a PrincipalKindSubAccount row
+// (see internal/store/storetest/storetest_subaccounts.go
+// testSubPrincipals_UpdateRejectsCredential, run on both backends).
 
 import (
 	"context"
@@ -136,5 +145,62 @@ func TestSubPrincipal_BeginOIDCLink_Returns400(t *testing.T) {
 	})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("begin OIDC link for sub-principal id=%d: status=%d body=%s, want 400", sub.ID, res.StatusCode, buf)
+	}
+}
+
+// TestSubPrincipal_SetPassword_Returns400 asserts PUT
+// /api/v1/principals/{pid}/password refuses a sub-principal id
+// (REQ-SUBACCT-02 "no credential may be set on it"), issue #241 closing
+// the write-layer gap alongside the auth-time floor #227 already holds.
+func TestSubPrincipal_SetPassword_Returns400(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h := newHarnessWithStore(t, fs, clk)
+	_, adminKey := h.bootstrap("subacct-setpw-admin@example.com")
+	parentPid := h.createPrincipal(adminKey, "subacct-setpw-parent@example.com")
+	sub := mustInsertSubPrincipal(t, fs, store.PrincipalID(parentPid), "subacct-setpw-sub@example.com")
+
+	res, buf := h.doRequest("PUT", fmt.Sprintf("/api/v1/principals/%d/password", sub.ID), adminKey, map[string]any{
+		"new_password": "correct-horse-battery-staple",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("set password for sub-principal id=%d: status=%d body=%s, want 400", sub.ID, res.StatusCode, buf)
+	}
+
+	// The row still carries no credential.
+	got, err := fs.Meta().GetPrincipalByID(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub): %v", err)
+	}
+	if got.PasswordHash != "" {
+		t.Fatalf("sub-principal %d carries a password hash after rejected set-password", sub.ID)
+	}
+}
+
+// TestSubPrincipal_TOTPEnroll_Returns400 asserts POST
+// /api/v1/principals/{pid}/totp/enroll refuses a sub-principal id
+// (REQ-SUBACCT-02 "no credential may be set on it"), issue #241.
+func TestSubPrincipal_TOTPEnroll_Returns400(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h := newHarnessWithStore(t, fs, clk)
+	_, adminKey := h.bootstrap("subacct-totp-admin@example.com")
+	parentPid := h.createPrincipal(adminKey, "subacct-totp-parent@example.com")
+	sub := mustInsertSubPrincipal(t, fs, store.PrincipalID(parentPid), "subacct-totp-sub@example.com")
+
+	res, buf := h.doRequest("POST", fmt.Sprintf("/api/v1/principals/%d/totp/enroll", sub.ID), adminKey, nil)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("TOTP enroll for sub-principal id=%d: status=%d body=%s, want 400", sub.ID, res.StatusCode, buf)
+	}
+
+	// The row still carries no TOTP secret.
+	got, err := fs.Meta().GetPrincipalByID(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub): %v", err)
+	}
+	if len(got.TOTPSecret) != 0 {
+		t.Fatalf("sub-principal %d carries a TOTP secret after rejected enroll", sub.ID)
 	}
 }

@@ -130,6 +130,84 @@ func testSubPrincipals_RejectsCredential(t *testing.T, s store.Store) {
 	}
 }
 
+// testSubPrincipals_UpdateRejectsCredential pins the write-layer half of
+// REQ-SUBACCT-02 (issue #241): UpdatePrincipal must refuse a credential
+// write onto a sub-principal row exactly as InsertSubPrincipal already
+// does at creation time. This is defence in depth against a future call
+// site that fetches a sub-principal, sets PasswordHash/TOTPSecret, and
+// writes it back -- the auth-time floor (Directory.Authenticate,
+// Principal.IsAuthenticatable) already makes such a credential inert, but
+// it must never be persisted in the first place.
+func testSubPrincipals_UpdateRejectsCredential(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	parent := mustInsertPrincipal(t, s, "updcredparent@example.com")
+	sub, err := s.Meta().InsertSubPrincipal(ctx, parent.ID, store.Principal{
+		CanonicalEmail: "updcredsub@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertSubPrincipal: %v", err)
+	}
+
+	// Writing a password hash onto the sub-principal row is refused.
+	withPassword := sub
+	withPassword.PasswordHash = "$argon2id$v=19$m=1,t=1,p=1$AAAA$BBBB"
+	if err := s.Meta().UpdatePrincipal(ctx, withPassword); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("UpdatePrincipal(sub, password) = %v, want ErrInvalidArgument", err)
+	}
+
+	// Writing a TOTP secret onto the sub-principal row is refused.
+	withTOTP := sub
+	withTOTP.TOTPSecret = []byte("secret")
+	if err := s.Meta().UpdatePrincipal(ctx, withTOTP); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("UpdatePrincipal(sub, totp) = %v, want ErrInvalidArgument", err)
+	}
+
+	// The row was not mutated by either rejected attempt.
+	got, err := s.Meta().GetPrincipalByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub): %v", err)
+	}
+	if got.PasswordHash != "" || len(got.TOTPSecret) != 0 {
+		t.Fatalf("sub-principal carries a credential after rejected updates: hash=%q totp=%v",
+			got.PasswordHash, got.TOTPSecret)
+	}
+
+	// A non-credential field update on the same sub-principal row still
+	// succeeds -- the guard must not over-broaden to reject legitimate
+	// updates.
+	renamed := sub
+	renamed.DisplayName = "Renamed Sub"
+	if err := s.Meta().UpdatePrincipal(ctx, renamed); err != nil {
+		t.Fatalf("UpdatePrincipal(sub, display name only): %v", err)
+	}
+	got, err = s.Meta().GetPrincipalByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub) after rename: %v", err)
+	}
+	if got.DisplayName != "Renamed Sub" {
+		t.Fatalf("sub.DisplayName = %q, want %q", got.DisplayName, "Renamed Sub")
+	}
+
+	// An ordinary (non-sub) principal's password/TOTP update is
+	// unaffected by the guard.
+	normal := mustInsertPrincipal(t, s, "updcredparent2@example.com")
+	normal.PasswordHash = "$argon2id$v=19$m=1,t=1,p=1$CCCC$DDDD"
+	normal.TOTPSecret = []byte("normal-secret")
+	if err := s.Meta().UpdatePrincipal(ctx, normal); err != nil {
+		t.Fatalf("UpdatePrincipal(normal principal, credential): %v", err)
+	}
+	got, err = s.Meta().GetPrincipalByID(ctx, normal.ID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(normal): %v", err)
+	}
+	if got.PasswordHash != normal.PasswordHash {
+		t.Fatalf("normal.PasswordHash = %q, want %q", got.PasswordHash, normal.PasswordHash)
+	}
+	if string(got.TOTPSecret) != "normal-secret" {
+		t.Fatalf("normal.TOTPSecret = %q, want %q", got.TOTPSecret, "normal-secret")
+	}
+}
+
 func testSubPrincipals_RejectsInvalidParent(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 

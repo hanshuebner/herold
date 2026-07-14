@@ -423,6 +423,30 @@ func requireSelfOnly(w http.ResponseWriter, r *http.Request, caller store.Princi
 	return false
 }
 
+// requireNotSubPrincipal loads the principal identified by pid and refuses
+// with 400 when it is a sub-principal (REQ-SUBACCT-02: "no credential may
+// be set on it"). Apply at every endpoint that would set or link a
+// credential -- password, TOTP, API key, OIDC link -- on an arbitrary
+// target id, even for an admin caller. This is creation-time defence in
+// depth; the auth-time check (store.Principal.IsAuthenticatable, checked
+// by every Bearer/cookie/OIDC resolution seam) is what actually holds the
+// line if this guard is ever bypassed by a future call site. Returns true
+// when it is safe to proceed; otherwise it has already written the HTTP
+// response.
+func (s *Server) requireNotSubPrincipal(w http.ResponseWriter, r *http.Request, pid store.PrincipalID) bool {
+	target, err := s.store.Meta().GetPrincipalByID(r.Context(), pid)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return false
+	}
+	if target.Kind == store.PrincipalKindSubAccount {
+		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
+			"sub-principal cannot hold credentials", "")
+		return false
+	}
+	return true
+}
+
 // requireAdmin returns 403 when the caller does not have the
 // PrincipalFlagAdmin DB flag. Permission denials are logged
 // activity=audit at warn (REQ-OPS-86).

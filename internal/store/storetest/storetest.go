@@ -73,6 +73,7 @@ func Run(t *testing.T, f Factory) {
 		// Sub-account substrate (issue #227, REQ-SUBACCT-01..06).
 		{"SubPrincipals_InsertListResolve", testSubPrincipals_InsertListResolve},
 		{"SubPrincipals_RejectsCredential", testSubPrincipals_RejectsCredential},
+		{"SubPrincipals_UpdateRejectsCredential", testSubPrincipals_UpdateRejectsCredential},
 		{"SubPrincipals_RejectsInvalidParent", testSubPrincipals_RejectsInvalidParent},
 		{"SubPrincipals_ExcludedFromAdminLists", testSubPrincipals_ExcludedFromAdminLists},
 		{"SubPrincipals_QuotaCountsAgainstParent", testSubPrincipals_QuotaCountsAgainstParent},

@@ -191,6 +191,10 @@ func quotaPrincipalID(ctx context.Context, tx pgx.Tx, pid int64) (int64, error) 
 }
 
 func (m *metadata) UpdatePrincipal(ctx context.Context, p store.Principal) error {
+	if p.Kind == store.PrincipalKindSubAccount && (p.PasswordHash != "" || len(p.TOTPSecret) > 0) {
+		return fmt.Errorf(
+			"storepg: sub-principal cannot carry a credential: %w", store.ErrInvalidArgument)
+	}
 	now := m.s.clock.Now().UTC()
 	var avatarHash any
 	if p.AvatarBlobHash != "" {

@@ -95,26 +95,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
-	// REQ-SUBACCT-02: "no credential may be set on it" -- refuse to mint
-	// a Bearer API key for a sub-principal id, even for an admin caller.
-	// This is creation-time defence in depth; the auth-time check
-	// (store.Principal.IsAuthenticatable, checked by every Bearer
-	// resolution seam) is what actually holds the line if this is ever
-	// bypassed by a future call site.
-	// REQ-SUBACCT-02: "no credential may be set on it" -- refuse to mint
-	// a Bearer API key for a sub-principal id, even for an admin caller.
-	// This is creation-time defence in depth; the auth-time check
-	// (store.Principal.IsAuthenticatable, checked by every Bearer
-	// resolution seam) is what actually holds the line if this is ever
-	// bypassed by a future call site.
-	target, err := s.store.Meta().GetPrincipalByID(r.Context(), pid)
-	if err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
-	if target.Kind == store.PrincipalKindSubAccount {
-		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"sub-principal cannot hold credentials", "")
+	if !s.requireNotSubPrincipal(w, r, pid) {
 		return
 	}
 	// Self-service path: gate on TOTP step-up when the caller is creating

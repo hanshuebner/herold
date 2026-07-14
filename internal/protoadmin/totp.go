@@ -22,6 +22,11 @@ func (s *Server) handleTOTPEnroll(w http.ResponseWriter, r *http.Request) {
 	if !requireSelfOrAdmin(w, r, caller, pid) {
 		return
 	}
+	// REQ-SUBACCT-02: "no credential may be set on it" -- refuse to enroll
+	// TOTP for a sub-principal id, even for an admin caller.
+	if !s.requireNotSubPrincipal(w, r, pid) {
+		return
+	}
 	secret, uri, err := s.dir.EnrollTOTP(r.Context(), pid)
 	if err != nil {
 		s.writeDirectoryError(w, r, err)
