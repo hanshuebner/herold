@@ -18,7 +18,7 @@
   import AddIdentityWizard from './settings/AddIdentityWizard.svelte';
   import SecurityForm from './settings/SecurityForm.svelte';
   import ApiKeysForm from './settings/ApiKeysForm.svelte';
-  import SessionsForm from './settings/SessionsForm.svelte';
+  import CredentialsForm from './settings/CredentialsForm.svelte';
   import VacationForm from './settings/VacationForm.svelte';
   import SieveForm from './settings/SieveForm.svelte';
   import CategoriesForm from './settings/CategoriesForm.svelte';
@@ -104,7 +104,7 @@
     const result: { id: Section; label: string }[] = [
       { id: 'account', label: t('settings.account') },
       { id: 'security', label: t('settings.security') },
-      { id: 'sessions', label: t('settings.sessions') },
+      { id: 'sessions', label: t('settings.credentials') },
       { id: 'appearance', label: t('settings.appearance') },
       { id: 'mail', label: t('settings.mail') },
     ];
@@ -694,8 +694,8 @@
       <ApiKeysForm />
 
     {:else if activeSection === 'sessions'}
-      <h2>{t('settings.sessions.heading')}</h2>
-      <SessionsForm />
+      <h2>{t('settings.credentials.heading')}</h2>
+      <CredentialsForm />
 
     {:else if activeSection === 'privacy'}
       <h2>{t('settings.privacy.heading')}</h2>

@@ -884,7 +884,7 @@ export const de = {
   'settings.about': 'Über',
   'settings.notifications': 'Benachrichtigungen',
   'settings.apiKeys': 'API-Schlüssel',
-  'settings.sessions': 'Aktive Sitzungen',
+  'settings.credentials': 'Aktive Anmeldedaten',
   'settings.privacy.heading': 'Datenschutz',
   'settings.categories.heading': 'Kategorien',
   'settings.filters.heading': 'Filter',
@@ -1108,26 +1108,37 @@ export const de = {
   'settings.apiKeys.scope.contactsRead': 'Kontakte: lesen',
   'settings.apiKeys.scope.contactsWrite': 'Kontakte: schreiben',
 
-  // ── Einstellungen: aktive Sitzungen (REQ-AS-30..34, re #80) ─────────
-  'settings.sessions.heading': 'Aktive Sitzungen',
-  'settings.sessions.empty': 'Keine aktiven Sitzungen gefunden.',
-  'settings.sessions.loadingAria': 'Sitzungen werden geladen',
-  'settings.sessions.thisSession': 'Diese Sitzung',
-  'settings.sessions.device': 'Gerät',
-  'settings.sessions.lastSeen': 'Zuletzt aktiv',
-  'settings.sessions.createdAt': 'Angemeldet',
-  'settings.sessions.ip': 'IP-Adresse',
-  'settings.sessions.revoke': 'Abmelden',
-  'settings.sessions.signOut': 'Abmelden',
-  'settings.sessions.revokeAll': 'Alle anderen Sitzungen abmelden',
-  'settings.sessions.revokeConfirm': 'Diese Sitzung abmelden? Sie wird sofort abgemeldet.',
-  'settings.sessions.revokeAllConfirm':
+  // ── Einstellungen: aktive Anmeldedaten (REQ-AS-30..34, issue #224) ──
+  // Vereint Sitzungen, Gerätetoken und OAuth2-Berechtigungen für
+  // Drittanwendungen in einer Ansicht, basierend auf
+  // GET/DELETE /api/v1/auth/credentials.
+  'settings.credentials.heading': 'Aktive Anmeldedaten',
+  'settings.credentials.empty': 'Keine aktiven Anmeldedaten gefunden.',
+  'settings.credentials.loadingAria': 'Anmeldedaten werden geladen',
+  'settings.credentials.unknownDevice': 'Unbekanntes Gerät',
+  'settings.credentials.group.sessions': 'Browser-Sitzungen',
+  'settings.credentials.group.deviceTokens': 'Gerätetoken',
+  'settings.credentials.group.oauthGrants': 'Verbundene Anwendungen',
+  'settings.credentials.kind.session': 'Sitzung',
+  'settings.credentials.kind.deviceToken': 'Gerätetoken',
+  'settings.credentials.kind.oauth2Grant': 'Verbundene Anwendung',
+  'settings.credentials.thisSession': 'Diese Sitzung',
+  'settings.credentials.ip': 'IP-Adresse',
+  'settings.credentials.createdAt': 'Erstellt',
+  'settings.credentials.lastUsed': 'Zuletzt verwendet',
+  'settings.credentials.expiresAt': 'Läuft ab',
+  'settings.credentials.revoke': 'Widerrufen',
+  'settings.credentials.signOut': 'Abmelden',
+  'settings.credentials.revokeAllSessions': 'Alle anderen Sitzungen abmelden',
+  'settings.credentials.revokeConfirm':
+    '„{name}“ widerrufen? Anwendungen, die sie verwenden, funktionieren danach sofort nicht mehr.',
+  'settings.credentials.revokeAllSessionsConfirm':
     'Alle anderen Sitzungen abmelden? Diese werden sofort beendet.',
-  'settings.sessions.signOutConfirm': 'Diese Sitzung abmelden? Sie werden sofort abgemeldet.',
-  'settings.sessions.revoked': 'Sitzung abgemeldet.',
-  'settings.sessions.allRevoked': 'Alle anderen Sitzungen wurden abgemeldet.',
-  'settings.sessions.error': 'Sitzungen konnten nicht geladen werden.',
-  'settings.sessions.revokeError': 'Sitzung konnte nicht abgemeldet werden.',
+  'settings.credentials.signOutConfirm': 'Diese Sitzung abmelden? Sie werden sofort abgemeldet.',
+  'settings.credentials.revoked': 'Anmeldedaten widerrufen.',
+  'settings.credentials.allSessionsRevoked': 'Alle anderen Sitzungen wurden abgemeldet.',
+  'settings.credentials.error': 'Anmeldedaten konnten nicht geladen werden.',
+  'settings.credentials.revokeError': 'Anmeldedaten konnten nicht widerrufen werden.',
 
   // ── Diagnose-Formular (re #97) ───────────────────────────────────────
   'settings.diagnostics.saveError': 'Einstellung konnte nicht gespeichert werden.',
