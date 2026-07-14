@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
@@ -28,12 +30,13 @@ import (
 )
 
 type fixture struct {
-	srv     *testharness.Server
-	pid     store.PrincipalID
-	inbox   store.Mailbox
-	client  *http.Client
-	baseURL string
-	apiKey  string
+	srv      *testharness.Server
+	pid      store.PrincipalID
+	inbox    store.Mailbox
+	client   *http.Client
+	baseURL  string
+	apiKey   string
+	registry *protojmap.CapabilityRegistry
 }
 
 func setupFixture(t *testing.T) *fixture {
@@ -134,7 +137,7 @@ func setupFixtureWithStore(t *testing.T, st store.Store, clk clock.Clock, canoni
 		t.Fatalf("AttachJMAP: %v", err)
 	}
 	client, base := srv.DialJMAPByName(ctx, "jmap")
-	return &fixture{srv: srv, pid: p.ID, inbox: inbox, client: client, baseURL: base, apiKey: plaintext}
+	return &fixture{srv: srv, pid: p.ID, inbox: inbox, client: client, baseURL: base, apiKey: plaintext, registry: jmapServ.Registry()}
 }
 
 func (f *fixture) invoke(t *testing.T, method string, args any, using ...protojmap.CapabilityID) (string, json.RawMessage) {
@@ -1596,6 +1599,121 @@ func TestEmailSet_Create_FromBodyValues_WithReplyHeaders(t *testing.T) {
 	}
 	if got.Subject != "Re: Original" {
 		t.Errorf("subject = %q, want Re: Original", got.Subject)
+	}
+}
+
+// TestEmailSet_Create_OversizedBody_EnvelopeAndPlaceholderBody pins the re
+// #244 fix: a message whose assembled RFC 5322 body exceeds mailparse's
+// MaxSize must still persist a non-empty envelope (From/Subject/MessageID)
+// at create time, and Email/get must render a defined, non-empty
+// placeholder body instead of silently returning empty sender/body.
+//
+// The parser is swapped for one with a tiny MaxSize (200 bytes) via
+// email.SetParser so the test does not need to synthesize a real 50 MiB
+// message; the code path exercised is identical because the parser
+// injection point is shared by createEmail and Email/get's render path.
+func TestEmailSet_Create_OversizedBody_EnvelopeAndPlaceholderBody(t *testing.T) {
+	f := setupFixture(t)
+
+	const tinyMaxSize = 200
+	email.SetParser(f.registry, func(r io.Reader) (mailparse.Message, error) {
+		opts := mailparse.NewParseOptions()
+		opts.MaxSize = tinyMaxSize
+		return mailparse.Parse(r, opts)
+	})
+
+	// The assembled message (headers + this body) comfortably exceeds
+	// tinyMaxSize.
+	bigBody := strings.Repeat("padding padding padding padding padding\n", 20)
+
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$seen": true},
+		"from":       []map[string]any{{"name": "Alice", "email": "alice@example.test"}},
+		"to":         []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"subject":    "An oversized reply",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": bigBody, "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+	})
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	emailID, _ := created["draft"]["id"].(string)
+	if emailID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// The store's persisted Envelope must not be empty: this is the
+	// env_message_id-empty defect from #244's root cause.
+	midU, err := strconv.ParseUint(emailID, 10, 64)
+	if err != nil {
+		t.Fatalf("parse email id %q: %v", emailID, err)
+	}
+	stored, err := f.srv.Store.Meta().GetMessage(context.Background(), store.MessageID(midU))
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if stored.Envelope.MessageID == "" {
+		t.Errorf("OBSERVED BUG: stored Envelope.MessageID is empty for an oversized message")
+	}
+	if stored.Envelope.From == "" {
+		t.Errorf("OBSERVED BUG: stored Envelope.From is empty for an oversized message")
+	}
+	if stored.Envelope.Subject != "An oversized reply" {
+		t.Errorf("stored Envelope.Subject = %q, want %q", stored.Envelope.Subject, "An oversized reply")
+	}
+
+	// Email/get must render sender/subject from the (now correct) envelope
+	// and a non-empty placeholder body rather than "(no sender)"/"(no body)".
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":           protojmap.AccountIDForPrincipal(f.pid),
+		"ids":                 []string{emailID},
+		"fetchTextBodyValues": true,
+	})
+	var getResp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("got %d entries, want 1: %s", len(getResp.List), raw)
+	}
+	got := getResp.List[0]
+	if got["subject"] != "An oversized reply" {
+		t.Errorf("subject = %v, want %q", got["subject"], "An oversized reply")
+	}
+	fromList, _ := got["from"].([]any)
+	if len(fromList) == 0 {
+		t.Errorf("OBSERVED BUG: from is empty in Email/get response: %v", got)
+	}
+	bv, _ := got["bodyValues"].(map[string]any)
+	if len(bv) == 0 {
+		t.Fatalf("OBSERVED BUG: bodyValues empty in Email/get response: %v", got)
+	}
+	foundPlaceholder := false
+	for _, v := range bv {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		s, _ := m["value"].(string)
+		if strings.Contains(s, "exceeds the") && strings.Contains(s, "size limit") {
+			foundPlaceholder = true
+		}
+		if s == "" {
+			t.Errorf("OBSERVED BUG: empty body value placeholder: %v", m)
+		}
+	}
+	if !foundPlaceholder {
+		t.Errorf("expected a size-limit placeholder body value, got bodyValues=%v", bv)
 	}
 }
 

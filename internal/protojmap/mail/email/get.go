@@ -343,6 +343,12 @@ func renderFullWithProperties(
 
 	parsed, err := parser(bytes.NewReader(rawBody))
 	if err != nil {
+		if errors.Is(err, mailparse.ErrTooLarge) {
+			// See renderFull's identical branch in render.go: the envelope
+			// in out is already correct (mailparse.Parse recovers headers
+			// even on this path, re #244); only the body degrades.
+			return tooLargeBodyPlaceholder(out, m), nil
+		}
 		return out, nil
 	}
 

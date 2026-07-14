@@ -257,8 +257,18 @@ func renderFull(
 	body = mailparse.InjectXHeroldRecipient(body, m.ReceivedTo)
 	parsed, err := parser(bytes.NewReader(body))
 	if err != nil {
-		// Treat parse errors as "metadata-only render"; clients still
-		// see size, blobId, mailboxIds, keywords, and envelope fields.
+		if errors.Is(err, mailparse.ErrTooLarge) {
+			// The blob exceeds mailparse.DefaultMaxSize: the envelope in
+			// out (from renderEmailMetadata/m.Envelope) is already correct
+			// -- mailparse.Parse recovers headers even on this path (re
+			// #244) -- but the body cannot be walked. Render a defined,
+			// non-empty placeholder rather than silently leaving every
+			// body field empty.
+			return tooLargeBodyPlaceholder(out, m), nil
+		}
+		// Treat other parse errors as "metadata-only render"; clients
+		// still see size, blobId, mailboxIds, keywords, and envelope
+		// fields.
 		return out, nil
 	}
 	dims := loadPartDims(ctx, meta, m.Blob.Hash)
@@ -293,6 +303,40 @@ func renderFull(
 	out.HasAttachment = hasRealAttachment(attParts)
 	out.Preview = previewFromValues(values, textParts, 256)
 	return out, nil
+}
+
+// tooLargeBodyPlaceholder degrades out's body-shaped fields to a defined,
+// non-empty placeholder for a message whose blob exceeds
+// mailparse.DefaultMaxSize. out already carries the correct envelope
+// (subject/from/messageId/...) from renderEmailMetadata; only
+// bodyStructure/bodyValues/textBody/preview/hasAttachment are touched
+// here, replacing what would otherwise silently stay at their zero value
+// (re #244). The raw message remains downloadable via BlobID/"Show
+// original" regardless of this placeholder.
+func tooLargeBodyPlaceholder(out jmapEmail, m store.Message) jmapEmail {
+	const partID = "too-large"
+	text := fmt.Sprintf(
+		"This message (%s) exceeds the %s size limit and cannot be displayed. Use \"Show original\" to download the raw message.",
+		formatMiB(m.Size), formatMiB(mailparse.DefaultMaxSize),
+	)
+	part := bodyPart{
+		PartID: func() *string { s := partID; return &s }(),
+		Type:   "text/plain",
+		Size:   m.Size,
+	}
+	out.Preview = text
+	out.BodyStructure = &part
+	out.TextBody = []bodyPart{part}
+	out.HTMLBody = nil
+	out.Attachments = nil
+	out.BodyValues = map[string]bodyValue{partID: {Value: text, IsTruncated: true}}
+	out.HasAttachment = false
+	return out
+}
+
+// formatMiB renders n bytes as a human-readable MiB figure, e.g. "78.5 MiB".
+func formatMiB(n int64) string {
+	return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 }
 
 // hasRealAttachment reports whether any part in attParts is a downloadable

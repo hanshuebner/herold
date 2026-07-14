@@ -23,6 +23,65 @@ func TestMaxSize(t *testing.T) {
 	}
 }
 
+// TestMaxSize_HeadersRecovered pins the re #244 fix: a message whose body
+// exceeds MaxSize must still surface From/Subject/Message-ID via the
+// returned Message's Envelope, even though Parse also reports ErrTooLarge.
+// Before the fix, Parse returned a fully zero-valued Message on this path,
+// which is what made a too-large sent message render as "(no sender)" and
+// persisted an empty env_message_id at create time.
+func TestMaxSize_HeadersRecovered(t *testing.T) {
+	opts := NewParseOptions()
+	opts.MaxSize = 1024
+
+	var body strings.Builder
+	body.WriteString("From: Alice Example <alice@example.test>\r\n")
+	body.WriteString("To: bob@example.test\r\n")
+	body.WriteString("Subject: A message that will exceed the cap\r\n")
+	body.WriteString("Message-ID: <big-message-1@example.test>\r\n")
+	body.WriteString("\r\n")
+	for int64(body.Len()) <= opts.MaxSize {
+		body.WriteString("padding padding padding padding padding\r\n")
+	}
+
+	msg, err := Parse(strings.NewReader(body.String()), opts)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("expected ErrTooLarge, got %v", err)
+	}
+	if msg.Envelope.MessageID != "<big-message-1@example.test>" {
+		t.Errorf("Envelope.MessageID = %q, want <big-message-1@example.test>", msg.Envelope.MessageID)
+	}
+	if len(msg.Envelope.From) != 1 || msg.Envelope.From[0].Address != "alice@example.test" {
+		t.Errorf("Envelope.From = %+v, want [alice@example.test]", msg.Envelope.From)
+	}
+	if msg.Envelope.Subject != "A message that will exceed the cap" {
+		t.Errorf("Envelope.Subject = %q, want %q", msg.Envelope.Subject, "A message that will exceed the cap")
+	}
+	// The body itself must not have been walked: Body is the zero Part.
+	if msg.Body.ContentType != "" || len(msg.Body.Children) != 0 {
+		t.Errorf("Body should be the zero Part on the too-large path, got %+v", msg.Body)
+	}
+}
+
+// TestMaxSize_UnparseableHeaders_StillReportsTooLarge covers the fallback
+// when even the recoverable header block is malformed: Parse must still
+// report ErrTooLarge (not silently swallow it) and never panic.
+func TestMaxSize_UnparseableHeaders_StillReportsTooLarge(t *testing.T) {
+	opts := NewParseOptions()
+	opts.MaxSize = 128
+	// No header/body separator at all within reach of the cap.
+	big := make([]byte, 1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	msg, err := Parse(bytes.NewReader(big), opts)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("expected ErrTooLarge, got %v", err)
+	}
+	if msg.Envelope.MessageID != "" || len(msg.Envelope.From) != 0 {
+		t.Errorf("expected zero-value Envelope when headers are unparseable, got %+v", msg.Envelope)
+	}
+}
+
 func TestMaxDepth(t *testing.T) {
 	// Build a pathologically nested multipart message with 12 levels.
 	// Keep below the parser's own tolerance but above our MaxDepth cap.

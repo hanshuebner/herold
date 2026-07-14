@@ -99,9 +99,27 @@ func (o *ParseOptions) applyDefaults() {
 func Parse(r io.Reader, opts ParseOptions) (Message, error) {
 	opts.applyDefaults()
 
-	raw, err := readCapped(r, opts.MaxSize)
+	raw, tooLarge, err := readCapped(r, opts.MaxSize)
 	if err != nil {
 		return Message{}, err
+	}
+	if tooLarge {
+		tooLargeErr := &ParseError{
+			Reason:    ReasonTooLarge,
+			Message:   fmt.Sprintf("input exceeds MaxSize=%d bytes", opts.MaxSize),
+			PartIndex: -1,
+		}
+		// raw holds MaxSize+1 bytes -- far more than any realistic header
+		// block -- so the headers (and the Envelope built from them) can
+		// still be recovered even though the body is too large to walk.
+		// Callers that only check for a nil error today already discard
+		// this Message; callers that inspect it via errors.Is(err,
+		// ErrTooLarge) get a non-empty From/Subject/MessageID instead of
+		// a fully zero-valued Message (re #244).
+		if msg, herr := parseHeadersOnly(raw); herr == nil {
+			return msg, tooLargeErr
+		}
+		return Message{}, tooLargeErr
 	}
 
 	if bad := findOverlongHeaderLine(raw, opts.MaxHeaderLine); bad > 0 {
@@ -880,24 +898,50 @@ func splitMessageIDs(s string) []string {
 	return out
 }
 
-// readCapped reads at most limit+1 bytes so we can distinguish exactly-at-limit from over.
-func readCapped(r io.Reader, limit int64) ([]byte, error) {
+// readCapped reads at most limit+1 bytes so we can distinguish exactly-at-limit
+// from over. When the input exceeds limit, tooLarge is true and buf still
+// holds the limit+1 bytes read (the caller uses them to recover the header
+// block rather than discarding the input outright).
+func readCapped(r io.Reader, limit int64) (buf []byte, tooLarge bool, err error) {
 	if limit <= 0 {
 		limit = DefaultMaxSize
 	}
 	lr := io.LimitReader(r, limit+1)
-	buf, err := io.ReadAll(lr)
+	buf, err = io.ReadAll(lr)
 	if err != nil {
-		return nil, &ParseError{Reason: ReasonReaderError, Message: "read input", PartIndex: -1, Cause: err}
+		return nil, false, &ParseError{Reason: ReasonReaderError, Message: "read input", PartIndex: -1, Cause: err}
 	}
 	if int64(len(buf)) > limit {
-		return nil, &ParseError{
-			Reason:    ReasonTooLarge,
-			Message:   fmt.Sprintf("input exceeds MaxSize=%d bytes", limit),
-			PartIndex: -1,
-		}
+		return buf, true, nil
 	}
-	return buf, nil
+	return buf, false, nil
+}
+
+// parseHeadersOnly extracts the RFC 5322 headers and the Envelope built
+// from them, without walking the MIME body tree. Used by Parse when the
+// full message exceeds ParseOptions.MaxSize: the header block is always
+// far smaller than the cap, so From/Subject/Message-ID survive even
+// though the body itself cannot be parsed. The returned Message's Body is
+// the zero Part and its Size is not set -- callers must key off the
+// caller-visible ErrTooLarge, not Body/Size, to detect the degraded case.
+func parseHeadersOnly(raw []byte) (Message, error) {
+	nmsg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return Message{}, err
+	}
+	hdrs := mimeHeaderToHeaders(textproto.MIMEHeader(nmsg.Header))
+
+	var wd mime.WordDecoder
+	rawSubject := hdrs.Get("Subject")
+	subject, _ := wd.DecodeHeader(rawSubject)
+
+	arVals := hdrs.GetAll("Authentication-Results")
+
+	return Message{
+		Headers:        hdrs,
+		AuthResultsRaw: strings.Join(arVals, ", "),
+		Envelope:       buildEnvelopeFromHeaders(hdrs, subject, &wd),
+	}, nil
 }
 
 // findOverlongHeaderLine scans the header section and returns the 1-based line
