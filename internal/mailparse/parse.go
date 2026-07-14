@@ -561,26 +561,52 @@ func (w *mimeWalker) decodeTextPart(raw []byte, cteLower, charset, contentType s
 	}
 	size = int64(len(cteDecoded))
 
-	// For text/html parts: reconcile MIME-declared charset with the in-document
-	// HTML meta charset. A common real-world pattern is a sender that misdeclares
-	// charset=ISO-8859-1 in the MIME header while the document bytes are actually
-	// valid UTF-8 and a <meta charset> inside the document correctly says UTF-8.
-	// The Windows-1252 decoder (htmlindex's canonical ISO-8859-1) would then
-	// produce mojibake that happens to be valid UTF-8 (e.g. 0xC3 0xBC -> "Ã¼"),
-	// silently bypassing the isUTF8OrASCII guard below.
-	//
-	// When the MIME charset is a single-byte Latin encoding, the CTE-decoded bytes
-	// are valid UTF-8, AND an HTML meta in the document declares UTF-8, we trust
-	// the meta and skip the charset conversion — the bytes are used as-is.
-	//
-	// The check is conservative: if the bytes are NOT valid UTF-8 (a genuinely
-	// ISO-8859-1 document with high-range bytes like 0xFC for ü) the condition
-	// is false and the original conversion path runs unchanged.
+	// For text/html parts: reconcile the MIME-declared charset with the
+	// in-document HTML meta charset. Two real-world mislabelling patterns are
+	// handled here (see #130 and #250).
 	effectiveCharset := charset
-	if contentType == "text/html" && isLatinSingleByteCharset(charset) && isUTF8OrASCII(string(cteDecoded)) {
+	switch {
+	case contentType == "text/html" && isLatinSingleByteCharset(charset) && isUTF8OrASCII(string(cteDecoded)):
+		// #130: a common pattern is a sender that misdeclares
+		// charset=ISO-8859-1 in the MIME header while the document bytes are
+		// actually valid UTF-8 and a <meta charset> inside the document
+		// correctly says UTF-8. The Windows-1252 decoder (htmlindex's
+		// canonical ISO-8859-1) would then produce mojibake that happens to
+		// be valid UTF-8 (e.g. 0xC3 0xBC -> "Ã¼"), silently bypassing the
+		// isUTF8OrASCII guard.
+		//
+		// When the MIME charset is a single-byte Latin encoding, the
+		// CTE-decoded bytes are valid UTF-8, AND an HTML meta in the
+		// document declares UTF-8, we trust the meta and skip the charset
+		// conversion — the bytes are used as-is.
+		//
+		// The check is conservative: if the bytes are NOT valid UTF-8 (a
+		// genuinely ISO-8859-1 document with high-range bytes like 0xFC for
+		// ü) the condition is false and the original conversion path runs
+		// unchanged.
 		if metaCS := extractHTMLMetaCharset(cteDecoded); isUTF8Charset(metaCS) {
 			effectiveCharset = "utf-8" // charsetDecoder returns nil for utf-8; conversion is skipped
 		}
+
+	case contentType == "text/html" && charset == "":
+		// #250: no charset parameter on the MIME Content-Type at all (RFC
+		// 2045 would default this to us-ascii, which convertCharset treats
+		// as a no-op pass-through). Real-world unlabelled HTML mail is
+		// virtually never pure ASCII with 8-bit bytes that are meant to be
+		// interpreted literally, so: first trust an in-document meta
+		// charset if the document declares one and the bytes decode
+		// cleanly under it; otherwise, for 8-bit bytes, fall back to
+		// Windows-1252 (ISO-8859-1 superset) rather than leaving the raw
+		// bytes as invalid UTF-8.
+		if metaCS := extractHTMLMetaCharset(cteDecoded); metaCS != "" && !isUTF8Charset(metaCS) {
+			if _, err := convertCharset(cteDecoded, metaCS); err == nil {
+				effectiveCharset = metaCS
+			}
+		} else if metaCS == "" && !isUTF8OrASCII(string(cteDecoded)) {
+			effectiveCharset = "windows-1252"
+		}
+		// metaCS == "utf-8", or the bytes are already valid UTF-8/ASCII:
+		// leave effectiveCharset == "" so convertCharset is a no-op.
 	}
 
 	// Charset-convert to UTF-8.

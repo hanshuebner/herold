@@ -232,3 +232,121 @@ func TestDecodeTextPart_MismatchedMIMECharsetNonHTMLUnchanged(t *testing.T) {
 		t.Errorf("text/plain should not benefit from HTML meta reconciliation, got %q", text)
 	}
 }
+
+// TestDecodeTextPart_NoMIMECharset_HTMLMetaLatin1 is the primary regression
+// test for #250: a text/html part with NO charset parameter on the MIME
+// Content-Type header at all, quoted-printable ISO-8859-1 body bytes, and an
+// in-document <meta http-equiv="Content-Type" content="text/html;
+// charset=iso-8859-1"> declaration.
+//
+// Pre-fix: decodeTextPart left effectiveCharset == "", convertCharset("") is
+// a no-op, and the raw Latin-1 bytes (e.g. 0xFC for "ü") pass through
+// unconverted as invalid UTF-8 — mojibake (U+FFFD once JSON-marshalled).
+// Post-fix: the meta charset is honoured and the bytes are correctly
+// converted to UTF-8.
+func TestDecodeTextPart_NoMIMECharset_HTMLMetaLatin1(t *testing.T) {
+	// "Hübner" in ISO-8859-1 QP: H=FCbner
+	// "für" in ISO-8859-1 QP:    f=FCr
+	// "Räumlichkeiten" in ISO-8859-1 QP: R=E4umlichkeiten
+	// "Grüßen" in ISO-8859-1 QP: Gr=FC=DFen
+	qpBody := []byte(
+		"<html><head>" +
+			`<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">` +
+			"</head><body>" +
+			"Sehr geehrter Herr H=FCbner, vielen Dank f=FCr Ihre Anfrage zu den " +
+			"R=E4umlichkeiten. Mit herzlichen Gr=FC=DFen" +
+			"</body></html>",
+	)
+	// No charset parameter on the Content-Type header at all.
+	raw := buildMimeMsg("text/html", "quoted-printable", qpBody)
+	opts := NewParseOptions()
+	opts.StrictCharset = false
+	msg, err := Parse(bytes.NewReader(raw), opts)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	text := msg.Body.Text
+	wantContains := []string{"Hübner", "für", "Räumlichkeiten", "Grüßen"}
+	for _, w := range wantContains {
+		if !strings.Contains(text, w) {
+			t.Errorf("decoded text missing %q\nfull text: %q", w, text)
+		}
+	}
+	if !isUTF8OrASCII(text) {
+		t.Errorf("decoded text is not valid UTF-8: %q", text)
+	}
+	if strings.ContainsRune(text, '�') {
+		t.Errorf("decoded text contains U+FFFD replacement character: %q", text)
+	}
+}
+
+// TestDecodeTextPart_NoCharsetAnywhere_FallsBackWindows1252 covers the case
+// where neither the MIME header nor the document declares any charset, and
+// the body carries genuine 8-bit bytes. RFC 2045 would default this to
+// us-ascii (a no-op pass-through), which leaves the high bytes as invalid
+// UTF-8. Real-world unlabelled HTML mail with high bytes is virtually always
+// Latin-1/Windows-1252, so that is the fallback.
+func TestDecodeTextPart_NoCharsetAnywhere_FallsBackWindows1252(t *testing.T) {
+	// Same Latin-1 QP body as above, but with no <meta charset> at all.
+	qpBody := []byte("<html><head></head><body>H=FCbner, f=FCr</body></html>")
+	raw := buildMimeMsg("text/html", "quoted-printable", qpBody)
+	opts := NewParseOptions()
+	opts.StrictCharset = false
+	msg, err := Parse(bytes.NewReader(raw), opts)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	text := msg.Body.Text
+	wantContains := []string{"Hübner", "für"}
+	for _, w := range wantContains {
+		if !strings.Contains(text, w) {
+			t.Errorf("decoded text missing %q\nfull text: %q", w, text)
+		}
+	}
+	if !isUTF8OrASCII(text) {
+		t.Errorf("decoded text is not valid UTF-8: %q", text)
+	}
+}
+
+// TestDecodeTextPart_NoCharsetAnywhere_PureASCIIUnchanged verifies that a
+// pure-ASCII text/html body with no charset parameter and no meta charset is
+// left completely unchanged: the Windows-1252 fallback added for #250 only
+// applies when the CTE-decoded bytes are not already valid UTF-8/ASCII.
+func TestDecodeTextPart_NoCharsetAnywhere_PureASCIIUnchanged(t *testing.T) {
+	body := []byte("<html><head></head><body>Hello, plain ASCII body.</body></html>")
+	raw := buildMimeMsg("text/html", "", body)
+	opts := NewParseOptions()
+	opts.StrictCharset = false
+	msg, err := Parse(bytes.NewReader(raw), opts)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if msg.Body.Text != string(body) {
+		t.Errorf("pure-ASCII body was altered: got %q, want %q", msg.Body.Text, string(body))
+	}
+}
+
+// TestDecodeTextPart_NoMIMECharset_HTMLMetaUTF8Unchanged verifies that when
+// there is no MIME charset but the document meta declares UTF-8 and the
+// bytes are already valid UTF-8, no conversion is applied (effectiveCharset
+// stays "").
+func TestDecodeTextPart_NoMIMECharset_HTMLMetaUTF8Unchanged(t *testing.T) {
+	qpBody := []byte(
+		"<html><head>" +
+			`<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">` +
+			"</head><body>" +
+			"B=C3=BCcher" + // "Bücher" already UTF-8-encoded
+			"</body></html>",
+	)
+	raw := buildMimeMsg("text/html", "quoted-printable", qpBody)
+	opts := NewParseOptions()
+	opts.StrictCharset = false
+	msg, err := Parse(bytes.NewReader(raw), opts)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	text := msg.Body.Text
+	if !strings.Contains(text, "Bücher") {
+		t.Errorf("decoded text missing %q\nfull text: %q", "Bücher", text)
+	}
+}
