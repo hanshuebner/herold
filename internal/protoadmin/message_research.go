@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -24,7 +25,14 @@ import (
 //     returned.
 //   - "smtp_event": SMTP-time accept/reject/defer entries from system_events.
 //     These cover messages that were rejected before storage.
-//   - "send_outcome": outbound queue entries from the queue table.
+//   - "send_outcome": outbound queue entries from the queue table. Beyond
+//     the sender/recipient/domain-scope filters applied directly to the
+//     queue table, a "send_outcome" entry also surfaces when its
+//     message_id column (re #235) matches a "received" entry this same
+//     search found: an alias-forward relay row's mail_from/rcpt_to are
+//     SRS-rewritten and no longer contain the original sender/recipient
+//     address as a substring, so this Message-ID join is what lets a
+//     sender/recipient search reach a relayed message's outbound leg.
 //
 // Operator scope (REQ-ADM-307): super-admins see everything; domain-scoped
 // operators see only messages whose local participant's domain is in their
@@ -182,6 +190,60 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Correlate relay/forward queue rows back to the received message(s)
+	// this search matched, by Message-ID (REQ-ADM-306, re #235). An
+	// alias-forward relay row's mail_from/rcpt_to are SRS-rewritten and
+	// no longer contain the original sender/recipient address as a
+	// substring, so the address-filtered query above can miss it even
+	// though the row carries the same Message-ID as the received message
+	// it originated from. Collect every distinct Message-ID this search
+	// touched -- the message_id query param itself, plus every matched
+	// received message's envelope Message-ID -- and run a second,
+	// message-id-only queue query to pick up rows the address filter
+	// alone would drop, then merge (deduped by queue row id) with the
+	// address-filtered result above. The query param is normalised
+	// (mailparse.NormalizeMessageID) before comparison: the queue's
+	// message_id column and the messages table's env_message_id column
+	// both store the normalised form, but an operator may type the
+	// Message-ID with angle brackets or mixed case.
+	correlationIDs := make(map[string]struct{})
+	if messageID != "" {
+		correlationIDs[mailparse.NormalizeMessageID(messageID)] = struct{}{}
+	}
+	for _, m := range msgs {
+		if m.Envelope.MessageID != "" {
+			correlationIDs[m.Envelope.MessageID] = struct{}{}
+		}
+	}
+	if len(correlationIDs) > 0 {
+		ids := make([]string, 0, len(correlationIDs))
+		for id := range correlationIDs {
+			ids = append(ids, id)
+		}
+		corrFilter := store.QueueFilter{
+			SenderDomains: senderDomains,
+			MessageIDs:    ids,
+			Limit:         fetchLimit,
+			Newest:        true,
+		}
+		corrItems, err := s.store.Meta().ListQueueItems(r.Context(), corrFilter)
+		if err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
+		seen := make(map[store.QueueItemID]struct{}, len(qItems))
+		for _, qi := range qItems {
+			seen[qi.ID] = struct{}{}
+		}
+		for _, qi := range corrItems {
+			if _, dup := seen[qi.ID]; dup {
+				continue
+			}
+			seen[qi.ID] = struct{}{}
+			qItems = append(qItems, qi)
+		}
+	}
+
 	// --- Build unified timeline ---
 	type entry struct {
 		at   time.Time
@@ -306,6 +368,9 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 			"envelope_id": string(qi.EnvelopeID),
 			"state":       qi.State.String(),
 			"attempts":    qi.Attempts,
+		}
+		if qi.MessageID != "" {
+			e["message_id"] = qi.MessageID
 		}
 		if qi.LastError != "" {
 			e["last_error"] = qi.LastError

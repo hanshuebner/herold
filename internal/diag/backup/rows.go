@@ -420,6 +420,10 @@ type QueueRow struct {
 	// wire-delivery time. Empty for every row with no per-recipient
 	// header variation.
 	HeaderOverlay string `json:"header_overlay"`
+	// MessageID is the RFC 5322 Message-ID header value captured from
+	// the submitted body at enqueue time (migration 0096, issue #235).
+	// Empty when the body had no parseable Message-ID header.
+	MessageID string `json:"message_id"`
 }
 
 type DKIMKeyRow struct {

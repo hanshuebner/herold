@@ -2,6 +2,7 @@ package mailparse
 
 import (
 	"bytes"
+	"net/mail"
 	"strings"
 )
 
@@ -70,6 +71,25 @@ func StripXHeroldRecipient(raw []byte) []byte {
 	}
 	out = append(out, body...)
 	return out
+}
+
+// ExtractMessageID returns the trimmed RFC 5322 Message-ID header value
+// found in raw's header block (raw may be header-only or a full message;
+// net/mail.ReadMessage stops at the first blank line, so any body bytes
+// beyond it are ignored). Returns "" when raw has no parseable header
+// section or no Message-ID header.
+//
+// The returned value keeps its original angle brackets and case -- the
+// same trimmed-but-unnormalised form buildEnvelopeFromHeaders stores for
+// a received message's envelope -- so an exact-match correlation (e.g. a
+// relay/forward queue row's message_id column against a received
+// message's env_message_id, re #235) compares like with like.
+func ExtractMessageID(raw []byte) string {
+	nmsg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(nmsg.Header.Get("Message-Id"))
 }
 
 // headerBlockEnd reports the offset of the first byte after the header

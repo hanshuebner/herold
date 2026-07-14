@@ -38,11 +38,12 @@ func scanQueueItem(row rowLike) (store.QueueItem, error) {
 		headersHash, lastErr, dsnEnvID, orcpt string
 		idemp                                 sql.NullString
 		headerOverlay                         string
+		messageID                             string
 	)
 	err := row.Scan(&id, &principalID, &mailFrom, &rcptTo, &envID,
 		&bodyHash, &headersHash, &state, &attempts, &lastAttemptUs,
 		&nextAttemptUs, &lastErr, &dsnFlags, &dsnRet, &dsnEnvID, &orcpt,
-		&idemp, &createdUs, &headerOverlay)
+		&idemp, &createdUs, &headerOverlay, &messageID)
 	if err != nil {
 		return store.QueueItem{}, mapErr(err)
 	}
@@ -64,6 +65,7 @@ func scanQueueItem(row rowLike) (store.QueueItem, error) {
 		DSNOrcpt:        orcpt,
 		CreatedAt:       fromMicros(createdUs),
 		HeaderOverlay:   headerOverlay,
+		MessageID:       messageID,
 	}
 	if principalID.Valid {
 		q.PrincipalID = store.PrincipalID(principalID.Int64)
@@ -78,7 +80,7 @@ const queueSelectColumns = `
 	id, principal_id, mail_from, rcpt_to, envelope_id,
 	body_blob_hash, headers_blob_hash, state, attempts, last_attempt_at_us,
 	next_attempt_at_us, last_error, dsn_notify_flags, dsn_ret, dsn_envid,
-	dsn_orcpt, idempotency_key, created_at_us, header_overlay`
+	dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id`
 
 func (m *metadata) EnqueueMessage(ctx context.Context, item store.QueueItem) (store.QueueItemID, error) {
 	now := m.s.clock.Now().UTC()
@@ -120,14 +122,14 @@ func (m *metadata) EnqueueMessage(ctx context.Context, item store.QueueItem) (st
 			INSERT INTO queue (principal_id, mail_from, rcpt_to, envelope_id,
 			  body_blob_hash, headers_blob_hash, state, attempts, last_attempt_at_us,
 			  next_attempt_at_us, last_error, dsn_notify_flags, dsn_ret, dsn_envid,
-			  dsn_orcpt, idempotency_key, created_at_us, header_overlay)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  dsn_orcpt, idempotency_key, created_at_us, header_overlay, message_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			pid, strings.ToLower(item.MailFrom), strings.ToLower(item.RcptTo),
 			string(item.EnvelopeID), item.BodyBlobHash, item.HeadersBlobHash,
 			int64(item.State), int64(item.Attempts), usMicros(item.LastAttemptAt),
 			usMicros(item.NextAttemptAt), item.LastError,
 			int64(item.DSNNotify), int64(item.DSNRet), item.DSNEnvID, item.DSNOrcpt,
-			idemp, usMicros(item.CreatedAt), item.HeaderOverlay)
+			idemp, usMicros(item.CreatedAt), item.HeaderOverlay, item.MessageID)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -386,6 +388,15 @@ func (m *metadata) ListQueueItems(ctx context.Context, filter store.QueueFilter)
 	if filter.RcptToContains != "" {
 		where = append(where, "lower(rcpt_to) LIKE lower('%'||?||'%')")
 		args = append(args, filter.RcptToContains)
+	}
+	if len(filter.MessageIDs) > 0 {
+		placeholders := make([]string, len(filter.MessageIDs))
+		for i, id := range filter.MessageIDs {
+			placeholders[i] = "lower(?)"
+			args = append(args, id)
+		}
+		where = append(where,
+			"lower(message_id) IN ("+strings.Join(placeholders, ",")+")")
 	}
 	q := `SELECT ` + queueSelectColumns + ` FROM queue`
 	if len(where) > 0 {

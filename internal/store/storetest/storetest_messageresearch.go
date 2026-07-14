@@ -623,6 +623,86 @@ func testQueueFilter_SenderDomainsAndContains(t *testing.T, s store.Store) {
 	}
 }
 
+// testQueueFilter_MessageIDs verifies QueueFilter.MessageIDs (re #235): a
+// disjunctive, case-insensitive exact match on the message_id column,
+// independent of MailFrom/RcptTo -- the join message research uses to
+// correlate a relay/forward queue row back to the received message it
+// originated from when the row's addresses have been SRS-rewritten and no
+// longer contain the original sender/recipient as a substring.
+func testQueueFilter_MessageIDs(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	relayed, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		MailFrom:      "srs0=aaaa=bb=relay.test=sender@alpha.test",
+		RcptTo:        "external@elsewhere.example",
+		EnvelopeID:    "env-msgid-relay",
+		BodyBlobHash:  putBlob(t, s, "relayed body").Hash,
+		State:         store.QueueStateQueued,
+		CreatedAt:     time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+		NextAttemptAt: time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+		MessageID:     "<Orig-ABC@Sender.Example>",
+	})
+	if err != nil {
+		t.Fatalf("EnqueueMessage relayed: %v", err)
+	}
+	unrelated, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		MailFrom:      "someone@alpha.test",
+		RcptTo:        "other@remote.example",
+		EnvelopeID:    "env-msgid-unrelated",
+		BodyBlobHash:  putBlob(t, s, "unrelated body").Hash,
+		State:         store.QueueStateQueued,
+		CreatedAt:     time.Date(2026, 7, 1, 9, 1, 0, 0, time.UTC),
+		NextAttemptAt: time.Date(2026, 7, 1, 9, 1, 0, 0, time.UTC),
+		MessageID:     "<other-msg@elsewhere.example>",
+	})
+	if err != nil {
+		t.Fatalf("EnqueueMessage unrelated: %v", err)
+	}
+
+	// Exact match, case-insensitive: the received message's stored
+	// env_message_id and the relay row's message_id are byte-identical
+	// in production (the header is forwarded verbatim), but the filter
+	// tolerates case differences too.
+	got, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{
+		MessageIDs: []string{"<orig-abc@sender.example>"},
+	})
+	if err != nil {
+		t.Fatalf("ListQueueItems(MessageIDs): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != relayed {
+		t.Fatalf("MessageIDs filter: got ids=%v, want [%v]", idsOf(got), relayed)
+	}
+	if got[0].MailFrom != "srs0=aaaa=bb=relay.test=sender@alpha.test" {
+		t.Errorf("MessageIDs filter returned wrong row: %+v", got[0])
+	}
+
+	// Disjunctive: a slice with both a matching and a non-matching id
+	// returns only the matching row.
+	got2, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{
+		MessageIDs: []string{"<orig-abc@sender.example>", "<no-such-id@nowhere.example>"},
+	})
+	if err != nil {
+		t.Fatalf("ListQueueItems(MessageIDs disjunctive): %v", err)
+	}
+	if len(got2) != 1 || got2[0].ID != relayed {
+		t.Fatalf("MessageIDs disjunctive filter: got ids=%v, want [%v]", idsOf(got2), relayed)
+	}
+
+	// A non-matching id set returns nothing -- the unrelated row must
+	// never leak in.
+	got3, err := s.Meta().ListQueueItems(ctx, store.QueueFilter{
+		MessageIDs: []string{"<no-such-id@nowhere.example>"},
+	})
+	if err != nil {
+		t.Fatalf("ListQueueItems(MessageIDs no match): %v", err)
+	}
+	if len(got3) != 0 {
+		t.Fatalf("MessageIDs no-match filter: got ids=%v, want none", idsOf(got3))
+	}
+	_ = unrelated
+}
+
 // testQueueFilter_Newest verifies that QueueFilter.Newest orders the result
 // set by id DESC instead of the default id ASC (re #143). Message research
 // queries the full queue history with no State restriction; without this

@@ -486,6 +486,7 @@ func Run(t *testing.T, f Factory) {
 		{"SearchAdminMessages_DispositionUnknownForUnsetRows", testSearchAdminMessages_DispositionUnknownForUnsetRows},
 		{"QueueFilter_SenderDomainsAndContains", testQueueFilter_SenderDomainsAndContains},
 		{"QueueFilter_Newest", testQueueFilter_Newest},
+		{"QueueFilter_MessageIDs", testQueueFilter_MessageIDs},
 		// -- body-meta precompute (preview + has_attachment, migration 0059) --
 		// The three scenarios run as subtests of a single case so they share
 		// one freshly-migrated store: each top-level case re-applies the full

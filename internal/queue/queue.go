@@ -288,6 +288,18 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 		return "", fmt.Errorf("queue: strip header: %w", err)
 	}
 
+	// Extract the original Message-ID from the header block we already
+	// buffered above (no extra I/O), normalised (angle brackets
+	// stripped, lowercased) via mailparse.NormalizeMessageID -- the same
+	// normalisation store.Metadata.InsertMessage applies to
+	// messages.env_message_id, so the two columns compare equal by
+	// plain string match with no bracket/case massaging needed at query
+	// time. Persisted on every row so message research can correlate a
+	// relay/forward queue row back to the received message it
+	// originated from, independent of SRS address rewriting or fan-out
+	// (REQ-ADM-306, re #235).
+	messageID := mailparse.NormalizeMessageID(mailparse.ExtractMessageID(stripped))
+
 	// Persist body + (optional) headers blobs first; refcounts move
 	// to the queue rows below.
 	bodyRef, err := q.opts.Store.Blobs().Put(ctx, io.MultiReader(bytes.NewReader(stripped), tail))
@@ -370,6 +382,7 @@ func (q *Queue) Submit(ctx context.Context, msg Submission) (EnvelopeID, error) 
 			IdempotencyKey:  idemKey,
 			CreatedAt:       now,
 			HeaderOverlay:   string(msg.HeaderOverlay),
+			MessageID:       messageID,
 		}
 		// Stash signing intent + REQUIRETLS in DSNOrcpt and Headers
 		// blob? No — both fields are typed and load-bearing. Use a

@@ -291,6 +291,47 @@ func TestSubmitSuccess(t *testing.T) {
 	}
 }
 
+// TestSubmit_MessageIDCaptured verifies that Submit extracts the
+// submitted body's RFC 5322 Message-ID header, normalises it (angle
+// brackets stripped, lowercased -- the same normalisation InsertMessage
+// applies to messages.env_message_id), and persists it on the enqueued
+// row's MessageID column (REQ-ADM-306, re #235), so message research can
+// later correlate a relay/forward queue row back to the received message
+// it originated from by exact string match against env_message_id.
+func TestSubmit_MessageIDCaptured(t *testing.T) {
+	f := newFixture(t, fixtureOpts{skipRun: true})
+	envID := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Message-ID: <Orig-123@Sender.Example>\r\nSubject: hi\r\n\r\nbody\r\n"),
+	})
+	rows, err := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
+	if err != nil {
+		t.Fatalf("ListQueueItems: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row; got %d", len(rows))
+	}
+	if want := "orig-123@sender.example"; rows[0].MessageID != want {
+		t.Fatalf("MessageID = %q, want %q", rows[0].MessageID, want)
+	}
+
+	// A row with no Message-ID header (e.g. a hand-built synthetic body)
+	// persists an empty column rather than erroring.
+	envID2 := f.submit(t, queue.Submission{
+		MailFrom:   "alice@local.test",
+		Recipients: []string{"bob@dest.test"},
+		Body:       strings.NewReader("Subject: no message id\r\n\r\nbody\r\n"),
+	})
+	rows2, err := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID2})
+	if err != nil {
+		t.Fatalf("ListQueueItems (no message-id): %v", err)
+	}
+	if len(rows2) != 1 || rows2[0].MessageID != "" {
+		t.Fatalf("expected empty MessageID; got %+v", rows2)
+	}
+}
+
 func TestSubmitTransientThenSuccess(t *testing.T) {
 	f := newFixture(t, fixtureOpts{
 		concurrency: 4,

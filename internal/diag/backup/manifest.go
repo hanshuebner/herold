@@ -702,7 +702,20 @@ const CurrentBackupVersion = 1
 //	approvers to both pass the pre-fanout read and both mail every
 //	member). No new table; MailingListHeldPostRow.Status simply accepts
 //	one more string value.
-const CurrentSchemaVersion = 95
+//
+// 96 — 0096_queue_message_id.sql (issue #235, split from #143's
+//
+//	2026-07-12 alias-forward triage comment). Adds queue.message_id: the
+//	RFC 5322 Message-ID header captured from the submitted body at
+//	Queue.Submit time, normalised the same way InsertMessage already
+//	normalises messages.env_message_id. Lets message research join a
+//	relay/forward queue row back to the received message it originated
+//	from by exact Message-ID match -- an alias-forward relay row's
+//	mail_from/rcpt_to are SRS-rewritten and no longer contain the
+//	original sender/recipient address as a substring, so the existing
+//	address-contains search cannot find it. No new table; QueueRow
+//	gains the one field.
+const CurrentSchemaVersion = 96
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

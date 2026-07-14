@@ -829,3 +829,140 @@ func TestMessageResearch_NonMessageSystemEventsExcluded(t *testing.T) {
 		}
 	}
 }
+
+// TestMessageResearch_AliasForwardCorrelatesByMessageID reproduces the
+// scenario from issue #235: an alias with an external forwarding target
+// relays inbound mail onward with SRS return-path rewriting, so the
+// relay's outbound queue row carries an SRS-rewritten mail_from and an
+// external rcpt_to -- neither contains the original sender/recipient
+// address as a substring. Before the message_id join, an operator
+// searching by the original sender or recipient saw only the inbound
+// "received" entry; the relay/forward "send_outcome" entry was invisible.
+func TestMessageResearch_AliasForwardCorrelatesByMessageID(t *testing.T) {
+	h := newHarness(t)
+	adminKey, aliceID, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	// A received message: the external sender's mail lands on alice's
+	// alias, with a distinct Message-ID this test correlates on.
+	alice, err := s.Meta().GetPrincipalByID(ctx, store.PrincipalID(aliceID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID alice: %v", err)
+	}
+	allMbs, err := s.Meta().ListMailboxes(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes alice: %v", err)
+	}
+	var inbox store.Mailbox
+	for _, mb := range allMbs {
+		if mb.Name == "INBOX" {
+			inbox = mb
+			break
+		}
+	}
+	if inbox.ID == 0 {
+		t.Fatalf("INBOX not provisioned for alice; mailboxes=%v", allMbs)
+	}
+	blobRef, err := s.Blobs().Put(ctx, strings.NewReader("alias-forward body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	rcv := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  alice.ID,
+		Blob:         blobRef,
+		Size:         blobRef.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Forward me",
+			From:      "external-sender@sender.example",
+			To:        "alias@alpha.test",
+			MessageID: "<alias-fwd-235@sender.example>",
+		},
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage alias-forward: %v", err)
+	}
+
+	// The relay leg: SRS-rewritten mail_from, external rcpt_to -- neither
+	// contains "external-sender@sender.example" nor "alias@alpha.test" --
+	// but the same (normalised) Message-ID as the received message above.
+	relayRef, err := s.Blobs().Put(ctx, strings.NewReader("relayed body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put relay: %v", err)
+	}
+	relayCreated := time.Date(2026, 6, 1, 13, 1, 0, 0, time.UTC)
+	if _, err := s.Meta().EnqueueMessage(ctx, store.QueueItem{
+		MailFrom:      "srs0=wxyz=dd=alpha.test=external-sender=sender.example@alpha.test",
+		RcptTo:        "forward-target@offsite.example",
+		EnvelopeID:    "env-alias-forward-relay",
+		BodyBlobHash:  relayRef.Hash,
+		State:         store.QueueStateDone,
+		CreatedAt:     relayCreated,
+		NextAttemptAt: relayCreated,
+		MessageID:     "alias-fwd-235@sender.example", // normalised form
+	}); err != nil {
+		t.Fatalf("EnqueueMessage relay: %v", err)
+	}
+
+	// A search by the ORIGINAL sender address must surface both the
+	// "received" entry and the "send_outcome" relay entry.
+	res, buf := h.doRequest("GET",
+		"/api/v1/admin/message-research?sender=external-sender%40sender.example",
+		adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET (sender search): %d: %s", res.StatusCode, buf)
+	}
+	var bySender struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &bySender); err != nil {
+		t.Fatalf("decode (sender search): %v: %s", err, buf)
+	}
+	assertHasReceivedAndRelay(t, bySender.Items, "sender search")
+
+	// A search by the ORIGINAL recipient address (the alias) must also
+	// surface both entries.
+	res2, buf2 := h.doRequest("GET",
+		"/api/v1/admin/message-research?recipient=alias%40alpha.test",
+		adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("GET (recipient search): %d: %s", res2.StatusCode, buf2)
+	}
+	var byRecipient struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf2, &byRecipient); err != nil {
+		t.Fatalf("decode (recipient search): %v: %s", err, buf2)
+	}
+	assertHasReceivedAndRelay(t, byRecipient.Items, "recipient search")
+}
+
+// assertHasReceivedAndRelay fails t unless items contains both a
+// "received" entry and a "send_outcome" entry whose mail_from is the
+// SRS-rewritten relay row from
+// TestMessageResearch_AliasForwardCorrelatesByMessageID.
+func assertHasReceivedAndRelay(t *testing.T, items []map[string]any, label string) {
+	t.Helper()
+	var gotReceived, gotRelay bool
+	for _, item := range items {
+		switch item["source"] {
+		case "received":
+			gotReceived = true
+		case "send_outcome":
+			if item["mail_from"] == "srs0=wxyz=dd=alpha.test=external-sender=sender.example@alpha.test" {
+				gotRelay = true
+				if item["message_id"] != "alias-fwd-235@sender.example" {
+					t.Errorf("%s: relay entry message_id = %v, want alias-fwd-235@sender.example", label, item["message_id"])
+				}
+			}
+		}
+	}
+	if !gotReceived {
+		t.Errorf("%s: no received entry found; items=%+v", label, items)
+	}
+	if !gotRelay {
+		t.Errorf("%s: no send_outcome relay entry found (message-id correlation failed); items=%+v", label, items)
+	}
+}

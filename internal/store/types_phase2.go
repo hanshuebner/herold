@@ -221,6 +221,19 @@ type QueueItem struct {
 	// (REQ-MLIST-11, issue #184). Empty when the submission carries no
 	// per-recipient header variation, the overwhelming majority of rows.
 	HeaderOverlay string
+	// MessageID is the RFC 5322 Message-ID header value read from the
+	// submitted body's header block at enqueue time (Queue.Submit calls
+	// mailparse.ExtractMessageID on the same bytes it already buffers
+	// for REQ-FLOW-35 header stripping, so this costs no extra I/O),
+	// normalised via mailparse.NormalizeMessageID -- the same
+	// normalisation InsertMessage applies to messages.env_message_id --
+	// so message research can join a relay/forward queue row back to
+	// the received message it originated from by exact string match,
+	// independent of SRS return-path rewriting or alias/list fan-out
+	// changing MailFrom/RcptTo (REQ-ADM-306, re #235). Empty when the
+	// submitted body has no parseable Message-ID header (e.g. a
+	// synthetic DSN).
+	MessageID string
 }
 
 // QueueFilter narrows a ListQueueItems read. Zero values mean "no
@@ -253,6 +266,17 @@ type QueueFilter struct {
 	// RcptToContains, when non-empty, restricts to rows where rcpt_to
 	// contains this substring (case-insensitive). Used by message research.
 	RcptToContains string
+	// MessageIDs, when non-nil and non-empty, restricts to rows whose
+	// message_id column matches (case-insensitive) any entry in the
+	// slice. Disjunctive within the slice, like SenderDomains. Used by
+	// message research (REQ-ADM-306) to correlate a relay/forward queue
+	// row back to a received message by exact Message-ID match,
+	// independent of address rewriting (SRS) or fan-out (re #235). A
+	// nil slice means "no constraint"; an explicitly empty non-nil
+	// slice is never passed by callers (unlike SenderDomains this field
+	// has no fail-closed contract -- callers only set it with a
+	// non-empty slice).
+	MessageIDs []string
 	// Newest, when true, orders the result set by id DESC instead of the
 	// default id ASC before applying Limit — i.e. the newest matching
 	// rows rather than the oldest. The scheduler poll and Cancel rely on
