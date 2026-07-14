@@ -85,6 +85,24 @@ func grantDomainOwner(t *testing.T, h *harness, subject store.PrincipalID, domai
 	}
 }
 
+// grantDomainOperator writes a local domain:operator grant directly through
+// the store, the same shape handleAssignManagedDomain writes via the REST
+// endpoint (REQ-ADM-307, re #237). Test seeding helper for operator-scope
+// tests that need a managed domain in place without going through HTTP.
+func grantDomainOperator(t *testing.T, h *harness, subject store.PrincipalID, domain string) {
+	t.Helper()
+	if _, err := h.h.Store.Meta().InsertGrant(context.Background(), store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(subject),
+		ResourceKind: store.GrantResourceDomain,
+		ResourceID:   domain,
+		Level:        store.GrantLevelOperator,
+		Provenance:   store.GrantProvenanceLocal,
+	}); err != nil {
+		t.Fatalf("InsertGrant domain:operator: %v", err)
+	}
+}
+
 // TestClaimMapping_AuthzTrusted_SuperAdminOnly is REQ-AC-66: a domain
 // operator (admin-flagged, not super-admin) may not flip authz_trusted;
 // a super-admin can, and the change is reflected on the provider and

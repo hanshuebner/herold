@@ -1,130 +1,19 @@
 package storetest
 
 import (
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// testManagedDomains_AssignRevoke verifies the full assign / list / revoke
-// lifecycle for principal_managed_domains (REQ-ADM-307, re #145).
-func testManagedDomains_AssignRevoke(t *testing.T, s store.Store) {
-	t.Helper()
-	ctx := ctxT(t)
-	p := mustInsertPrincipal(t, s, "op-assignrevoke@example.test")
-
-	// Start empty.
-	domains, err := s.Meta().ListManagedDomains(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("ListManagedDomains empty: %v", err)
-	}
-	if len(domains) != 0 {
-		t.Errorf("initial domains = %v; want empty", domains)
-	}
-
-	// Assign two domains.
-	if err := s.Meta().AssignManagedDomain(ctx, p.ID, "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain alpha: %v", err)
-	}
-	if err := s.Meta().AssignManagedDomain(ctx, p.ID, "beta.example"); err != nil {
-		t.Fatalf("AssignManagedDomain beta: %v", err)
-	}
-
-	// List returns both in ascending order.
-	domains, err = s.Meta().ListManagedDomains(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("ListManagedDomains after assign: %v", err)
-	}
-	if len(domains) != 2 || domains[0] != "alpha.example" || domains[1] != "beta.example" {
-		t.Errorf("domains = %v; want [alpha.example beta.example]", domains)
-	}
-
-	// Revoke one.
-	if err := s.Meta().RevokeManagedDomain(ctx, p.ID, "alpha.example"); err != nil {
-		t.Fatalf("RevokeManagedDomain: %v", err)
-	}
-	domains, err = s.Meta().ListManagedDomains(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("ListManagedDomains after revoke: %v", err)
-	}
-	if len(domains) != 1 || domains[0] != "beta.example" {
-		t.Errorf("domains after revoke = %v; want [beta.example]", domains)
-	}
-
-	// Revoke the second.
-	if err := s.Meta().RevokeManagedDomain(ctx, p.ID, "beta.example"); err != nil {
-		t.Fatalf("RevokeManagedDomain beta: %v", err)
-	}
-	domains, err = s.Meta().ListManagedDomains(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("ListManagedDomains after all revoked: %v", err)
-	}
-	if len(domains) != 0 {
-		t.Errorf("domains after all revoked = %v; want empty", domains)
-	}
-}
-
-// testManagedDomains_AssignIdempotent verifies that assigning a domain that
-// is already present is a no-op and does not return an error.
-func testManagedDomains_AssignIdempotent(t *testing.T, s store.Store) {
-	t.Helper()
-	ctx := ctxT(t)
-	p := mustInsertPrincipal(t, s, "op-idem@example.test")
-
-	if err := s.Meta().AssignManagedDomain(ctx, p.ID, "dup.example"); err != nil {
-		t.Fatalf("AssignManagedDomain first: %v", err)
-	}
-	// Second call must not error.
-	if err := s.Meta().AssignManagedDomain(ctx, p.ID, "dup.example"); err != nil {
-		t.Errorf("AssignManagedDomain duplicate: got %v; want nil", err)
-	}
-	// Exactly one row must exist.
-	domains, err := s.Meta().ListManagedDomains(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("ListManagedDomains: %v", err)
-	}
-	if len(domains) != 1 || domains[0] != "dup.example" {
-		t.Errorf("domains = %v; want [dup.example]", domains)
-	}
-}
-
-// testManagedDomains_RevokeNotFound verifies that RevokeManagedDomain returns
-// ErrNotFound when the row is absent.
-func testManagedDomains_RevokeNotFound(t *testing.T, s store.Store) {
-	t.Helper()
-	ctx := ctxT(t)
-	p := mustInsertPrincipal(t, s, "op-revoke-nf@example.test")
-
-	err := s.Meta().RevokeManagedDomain(ctx, p.ID, "nobody.example")
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("RevokeManagedDomain absent: got %v; want ErrNotFound", err)
-	}
-}
-
-// testManagedDomains_CascadeOnDeletePrincipal verifies that deleting a
-// principal cascades to its principal_managed_domains rows.
-func testManagedDomains_CascadeOnDeletePrincipal(t *testing.T, s store.Store) {
-	t.Helper()
-	ctx := ctxT(t)
-	p := mustInsertPrincipal(t, s, "op-cascade@example.test")
-
-	if err := s.Meta().AssignManagedDomain(ctx, p.ID, "cascade.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
-	if err := s.Meta().DeletePrincipal(ctx, p.ID); err != nil {
-		t.Fatalf("DeletePrincipal: %v", err)
-	}
-	// After the principal is deleted, listing its domains should return nothing
-	// (the FK CASCADE removed the rows). We cannot call ListManagedDomains on a
-	// deleted principal in all backends without an error; the empty-slice
-	// result or a store-specific non-fatal response are both acceptable.
-	domains, err := s.Meta().ListManagedDomains(ctx, p.ID)
-	if err == nil && len(domains) != 0 {
-		t.Errorf("ListManagedDomains after cascade delete: got %v; want empty", domains)
-	}
-}
+// A principal's managed-domain set is a domain:operator (or higher) grant on
+// the domain resource (epic #182, REQ-ADM-307, re #237); the assign / list /
+// revoke / idempotency / not-found lifecycle is covered generically by the
+// Grants_* tests in storetest_grants.go, exercised against
+// store.GrantResourceDomain the same way the operator REST endpoints exercise
+// it. This file covers only the operator-principal-listing surface that
+// remains specific to delegated operators.
 
 // testListDomainOperators verifies that ListDomainOperators returns only
 // principals with PrincipalFlagAdmin but NOT PrincipalFlagSuperAdmin.

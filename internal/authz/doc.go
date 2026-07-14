@@ -6,9 +6,8 @@
 // REQ-AC-01..05).
 //
 // Resolve computes a principal's effective level on one resource as the max
-// over the superadmin short-circuit, explicit grant rows, and (Phase A) the
-// domain-operator compatibility leg over principal_managed_domains. Resolution
-// is default-deny and fail-closed: a store error yields a deny, never an allow
+// over the superadmin short-circuit and explicit grant rows. Resolution is
+// default-deny and fail-closed: a store error yields a deny, never an allow
 // (REQ-AC-12). Callers compare the returned level against the level the
 // operation requires with AtLeast.
 //

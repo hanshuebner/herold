@@ -53,14 +53,6 @@ type PrincipalRow struct {
 	ParentPrincipalID *int64 `json:"parent_principal_id,omitempty" nullable:"true"`
 }
 
-// PrincipalManagedDomainRow mirrors the principal_managed_domains table
-// introduced in migration 0072 (REQ-ADM-307, re #145). FK to principals(id)
-// ON DELETE CASCADE; restored after principals are in place.
-type PrincipalManagedDomainRow struct {
-	PrincipalID int64  `json:"principal_id"`
-	Domain      string `json:"domain"`
-}
-
 // GrantRow mirrors the grants table introduced in migration 0079 (epic #182,
 // REQ-AC-01..05). subject_id is polymorphic (no FK) and granted_by FKs
 // principals(id) ON DELETE SET NULL, so it is restored after principals.

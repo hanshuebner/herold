@@ -45,9 +45,8 @@ var emptyDomains = []string{}
 
 // ResolveOperatorScope resolves the effective authorization scope for caller
 // against the metadata store, through the unified grant model (internal/authz,
-// epic #182). It is the proof call site for the Phase A grant substrate: the
-// domain set is derived from the caller's domain grants unioned with the #145
-// managed-domains compatibility leg, and superadmin is the top server level.
+// epic #182). The domain set is the caller's domain:operator (or higher)
+// grants (REQ-ADM-307, re #237); superadmin is the top server level.
 //
 // Returns:
 //   - {SuperAdmin: true, Domains: nil}  when caller holds server:superadmin
@@ -57,11 +56,6 @@ var emptyDomains = []string{}
 //   - {Domains: []string{}}  (non-nil empty) when caller has no domain
 //     authority, or when resolution fails. Fail-closed: the store filter
 //     semantics treat a non-nil empty slice as "no access".
-//
-// Behaviour is equivalent to the pre-grant flag+managed-domains check: the
-// migration back-filled a domain:operator grant per managed-domain row, so the
-// resolved domain set matches ListManagedDomains at upgrade time and can only
-// grow through the new grant path thereafter.
 //
 // The resolution is a small number of indexed SELECTs; it is safe to call on
 // every request in the admin hot path.

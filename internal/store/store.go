@@ -611,24 +611,15 @@ type Metadata interface {
 	// deployment.
 	DeleteDomain(ctx context.Context, name string) error
 
-	// -- Delegated-operator managed domains (REQ-ADM-307, re #145) -------
-
-	// AssignManagedDomain adds domain to the set of domains managed by
-	// principalID. Idempotent: assigning a domain that is already present
-	// is not an error. Returns ErrNotFound when principalID does not
-	// exist. Returns ErrConflict when domain is already in the set (some
-	// backends may return nil on idempotent insert instead of ErrConflict;
-	// callers must not rely on the distinction).
-	AssignManagedDomain(ctx context.Context, principalID PrincipalID, domain string) error
-
-	// RevokeManagedDomain removes domain from the set of domains managed by
-	// principalID. Returns ErrNotFound when the row is absent.
-	RevokeManagedDomain(ctx context.Context, principalID PrincipalID, domain string) error
-
-	// ListManagedDomains returns the domain names managed by principalID in
-	// ascending alphabetical order. Returns an empty slice (nil) and nil
-	// error when no rows are present.
-	ListManagedDomains(ctx context.Context, principalID PrincipalID) ([]string, error)
+	// -- Delegated-operator domains (REQ-ADM-307, re #145, re #237) ------
+	//
+	// A principal's managed-domain set is a domain:operator (or higher)
+	// grant on the domain resource (epic #182). InsertGrant / DeleteGrant /
+	// ListGrantsForPrincipal are the read/write surface; internal/authz's
+	// OperatorDomains computes the set. There is no dedicated
+	// managed-domain repository method: migration 0099 dropped the legacy
+	// principal_managed_domains association table that predated the grants
+	// substrate.
 
 	// ListDomainOperators returns every principal that has PrincipalFlagAdmin
 	// set but NOT PrincipalFlagSuperAdmin — i.e., domain-scoped operators

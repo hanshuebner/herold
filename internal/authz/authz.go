@@ -18,7 +18,6 @@ type Resource struct {
 // interface keeps Resolve testable without a full store.
 type grantReader interface {
 	ListGrantsForPrincipal(ctx context.Context, principalID store.PrincipalID) ([]store.Grant, error)
-	ListManagedDomains(ctx context.Context, principalID store.PrincipalID) ([]string, error)
 }
 
 // rank is the total order of levels within a resource kind (REQ-AC-03). A
@@ -120,10 +119,9 @@ func flagSuperAdmin(p store.Principal) bool {
 }
 
 // Resolve returns the acting principal's effective level on res, computed as
-// the max over the superadmin short-circuit, explicit grant rows on the
-// resource, and the Phase A domain-operator compatibility leg. The returned
-// level is "" (no access) when the principal holds nothing on res. Callers
-// gate with AtLeast.
+// the max over the superadmin short-circuit and explicit grant rows on the
+// resource. The returned level is "" (no access) when the principal holds
+// nothing on res. Callers gate with AtLeast.
 //
 // Resolution is fail-closed: a store error is returned to the caller, which
 // MUST treat it as a deny (REQ-AC-12) — it never yields access.
@@ -151,32 +149,15 @@ func Resolve(ctx context.Context, meta grantReader, p store.Principal, res Resou
 			best = higher(res.Kind, best, g.Level)
 		}
 	}
-	// Domain-operator compatibility leg: until the operator-assignment write
-	// path is migrated onto grants, principal_managed_domains (#145) remains a
-	// source of domain:operator authority. Migration 0079 back-filled it into
-	// grants, so this leg only re-adds domains assigned after the upgrade; it
-	// can never lower the resolved level.
-	if res.Kind == store.GrantResourceDomain && p.Flags.Has(store.PrincipalFlagAdmin) {
-		managed, err := meta.ListManagedDomains(ctx, p.ID)
-		if err != nil {
-			return "", err
-		}
-		for _, d := range managed {
-			if d == res.ID {
-				best = higher(res.Kind, best, store.GrantLevelOperator)
-			}
-		}
-	}
 	return best, nil
 }
 
 // OperatorDomains returns, sorted and de-duplicated, every domain on which p
-// holds at least domain:operator — the union of p's domain grant rows and its
-// principal_managed_domains (#145). It is the set form of Resolve used by the
-// domain-scoped observability filter; callers that need to know whether p is a
-// superadmin (and therefore unrestricted) check that separately with Resolve
-// on the server resource. Fail-closed: a store error is returned and MUST be
-// treated as the empty set.
+// holds at least domain:operator, from p's domain grant rows. It is the set
+// form of Resolve used by the domain-scoped observability filter; callers
+// that need to know whether p is a superadmin (and therefore unrestricted)
+// check that separately with Resolve on the server resource. Fail-closed: a
+// store error is returned and MUST be treated as the empty set.
 func OperatorDomains(ctx context.Context, meta grantReader, p store.Principal) ([]string, error) {
 	grants, err := meta.ListGrantsForPrincipal(ctx, p.ID)
 	if err != nil {
@@ -187,15 +168,6 @@ func OperatorDomains(ctx context.Context, meta grantReader, p store.Principal) (
 		if g.ResourceKind == store.GrantResourceDomain &&
 			rank(store.GrantResourceDomain, g.Level) >= rank(store.GrantResourceDomain, store.GrantLevelOperator) {
 			set[g.ResourceID] = struct{}{}
-		}
-	}
-	if p.Flags.Has(store.PrincipalFlagAdmin) {
-		managed, err := meta.ListManagedDomains(ctx, p.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range managed {
-			set[d] = struct{}{}
 		}
 	}
 	out := make([]string, 0, len(set))

@@ -434,9 +434,7 @@ func TestMessageResearch_OperatorScope(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal op: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.test"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.test")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	// Operator query: should see alpha.test messages, not beta.test messages.

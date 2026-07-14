@@ -85,9 +85,7 @@ func TestSystemEvents_OperatorScope(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	// Insert events for alpha.example and beta.example.

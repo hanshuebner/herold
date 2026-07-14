@@ -5,13 +5,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/authz"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
 // handleListOperators lists every domain-scoped operator (admin but not
-// super-admin) together with each operator's managed-domain set.
-// Super-admin only (REQ-ADM-307).
+// super-admin) together with each operator's managed-domain set, sourced
+// from grants (REQ-ADM-307, re #237). Super-admin only.
 func (s *Server) handleListOperators(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireSuperAdmin(w, r, caller) {
@@ -24,7 +25,7 @@ func (s *Server) handleListOperators(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]operatorDTO, 0, len(principals))
 	for _, p := range principals {
-		domains, err := s.store.Meta().ListManagedDomains(r.Context(), p.ID)
+		domains, err := authz.OperatorDomains(r.Context(), s.store.Meta(), p)
 		if err != nil {
 			s.writeStoreError(w, r, err)
 			return
@@ -45,8 +46,9 @@ type assignManagedDomainRequest struct {
 	Domain string `json:"domain"`
 }
 
-// handleListManagedDomains returns the managed-domain set for a principal.
-// Super-admin only (REQ-ADM-307).
+// handleListManagedDomains returns the managed-domain set for a principal,
+// sourced from its domain:operator (or higher) grants (REQ-ADM-307, re #237).
+// Super-admin only.
 func (s *Server) handleListManagedDomains(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireSuperAdmin(w, r, caller) {
@@ -56,7 +58,12 @@ func (s *Server) handleListManagedDomains(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	domains, err := s.store.Meta().ListManagedDomains(r.Context(), pid)
+	target, err := s.store.Meta().GetPrincipalByID(r.Context(), pid)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	domains, err := authz.OperatorDomains(r.Context(), s.store.Meta(), target)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -67,8 +74,10 @@ func (s *Server) handleListManagedDomains(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"domains": domains})
 }
 
-// handleAssignManagedDomain assigns a domain to a principal's managed-domain
-// set. Super-admin only (REQ-ADM-307).
+// handleAssignManagedDomain grants a principal domain:operator authority on a
+// domain (REQ-ADM-307, re #237). The grant is provenance "local", writeable
+// only by a super-admin. Idempotent: assigning a domain the principal already
+// holds domain:operator or higher on is a no-op.
 func (s *Server) handleAssignManagedDomain(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireSuperAdmin(w, r, caller) {
@@ -94,7 +103,16 @@ func (s *Server) handleAssignManagedDomain(w http.ResponseWriter, r *http.Reques
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if err := s.store.Meta().AssignManagedDomain(r.Context(), pid, domain); err != nil {
+	granter := caller.ID
+	if _, err := s.store.Meta().InsertGrant(r.Context(), store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(pid),
+		ResourceKind: store.GrantResourceDomain,
+		ResourceID:   domain,
+		Level:        store.GrantLevelOperator,
+		Provenance:   store.GrantProvenanceLocal,
+		GrantedBy:    &granter,
+	}); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
@@ -110,8 +128,8 @@ func (s *Server) handleAssignManagedDomain(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRevokeManagedDomain removes a domain from a principal's managed-domain
-// set. Super-admin only (REQ-ADM-307).
+// handleRevokeManagedDomain deletes a principal's local domain:operator grant
+// on a domain (REQ-ADM-307, re #237). Super-admin only.
 func (s *Server) handleRevokeManagedDomain(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFrom(r.Context())
 	if !requireSuperAdmin(w, r, caller) {
@@ -133,7 +151,13 @@ func (s *Server) handleRevokeManagedDomain(w http.ResponseWriter, r *http.Reques
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if err := s.store.Meta().RevokeManagedDomain(r.Context(), pid, domain); err != nil {
+	if err := s.store.Meta().DeleteGrant(r.Context(), store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(pid),
+		ResourceKind: store.GrantResourceDomain,
+		ResourceID:   domain,
+		Provenance:   store.GrantProvenanceLocal,
+	}); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}

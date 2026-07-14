@@ -120,9 +120,9 @@ const (
 	// administration. It is always set alongside PrincipalFlagAdmin; a
 	// principal that has PrincipalFlagAdmin but NOT PrincipalFlagSuperAdmin
 	// is a domain-scoped operator whose visibility is restricted to the
-	// domains listed in principal_managed_domains. Existing
-	// PrincipalFlagAdmin principals are auto-promoted to super-admin by
-	// migration 0072 so no operator is locked out on upgrade.
+	// domains it holds a domain:operator (or higher) grant on (epic #182,
+	// re #237). Existing PrincipalFlagAdmin principals are auto-promoted to
+	// super-admin by migration 0072 so no operator is locked out on upgrade.
 	PrincipalFlagSuperAdmin
 )
 

@@ -701,8 +701,11 @@ func TestMigration0070RethreadSameMsgid(t *testing.T) {
 //
 // The migration back-fill runs against rows present when 0079 applies. Open
 // runs every migration on a fresh (empty) DB, so the back-fill sees nothing
-// there. This test reproduces the upgrade path: seed a super-admin and a
-// domain operator (with a managed domain) after migration, drop the empty
+// there, and migration 0099 (re #237) subsequently drops
+// principal_managed_domains during that same fresh run. This test reproduces
+// the historical upgrade path: seed a super-admin and a domain operator,
+// recreate principal_managed_domains by hand (matching migration 0072's
+// schema) and seed the operator's managed domain into it, drop the empty
 // grants table, and re-run the verbatim 0079 body so its INSERT...SELECT
 // back-fill executes against the seeded rows.
 func TestMigration0079GrantBackfill(t *testing.T) {
@@ -730,20 +733,33 @@ func TestMigration0079GrantBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert operator: %v", err)
 	}
-	if err := s.Meta().AssignManagedDomain(ctx, op.ID, "d.example"); err != nil {
-		t.Fatalf("assign managed domain: %v", err)
-	}
 	// No grants exist yet: the migration ran on an empty DB.
 	if g, _ := s.Meta().ListGrantsForPrincipal(ctx, sa.ID); len(g) != 0 {
 		t.Fatalf("expected no grants before back-fill, got %d", len(g))
 	}
 	_ = s.Close()
 
-	// Simulate the upgrade back-fill: drop the empty grants table and re-run
-	// the verbatim 0079 body against the seeded principals + managed domains.
+	// Simulate the upgrade back-fill: recreate the legacy
+	// principal_managed_domains table (dropped by the fresh Open's own run
+	// of migration 0099) matching migration 0072's schema, seed the
+	// operator's managed domain, drop the empty grants table, then re-run
+	// the verbatim 0079 body.
 	raw, err := storesqlite.OpenRaw(path)
 	if err != nil {
 		t.Fatalf("OpenRaw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE principal_managed_domains (
+		  principal_id INTEGER NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+		  domain       TEXT NOT NULL,
+		  PRIMARY KEY (principal_id, domain)
+		) STRICT`); err != nil {
+		t.Fatalf("recreate principal_managed_domains: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx,
+		`INSERT INTO principal_managed_domains (principal_id, domain) VALUES (?, ?)`,
+		int64(op.ID), "d.example"); err != nil {
+		t.Fatalf("seed principal_managed_domains: %v", err)
 	}
 	if _, err := raw.ExecContext(ctx, `DROP TABLE grants`); err != nil {
 		t.Fatalf("drop grants: %v", err)
@@ -781,6 +797,117 @@ func TestMigration0079GrantBackfill(t *testing.T) {
 		if g.ResourceKind == store.GrantResourceServer {
 			t.Errorf("operator wrongly received a server grant: %+v", g)
 		}
+	}
+}
+
+// TestMigration0099DropBackfillsUngrantedDomains is the migration-fidelity
+// test for issue #237's drop migration. It reproduces the scenario the
+// defensive back-fill exists for: a principal_managed_domains row assigned
+// through handleAssignManagedDomain AFTER migration 0079 already ran (so it
+// has no corresponding grant), alongside a row that migration 0079 already
+// covered. Re-running the verbatim 0099 body must back-fill only the
+// ungranted row (the already-granted row is a no-op, not a duplicate) and
+// then drop principal_managed_domains entirely.
+func TestMigration0099DropBackfillsUngrantedDomains(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.db")
+
+	s, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	opGranted, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "op-granted@x.test",
+		Flags:          store.PrincipalFlagAdmin,
+	})
+	if err != nil {
+		t.Fatalf("insert opGranted: %v", err)
+	}
+	opUngranted, err := s.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "op-ungranted@x.test",
+		Flags:          store.PrincipalFlagAdmin,
+	})
+	if err != nil {
+		t.Fatalf("insert opUngranted: %v", err)
+	}
+	// opGranted already has the domain:operator grant migration 0079 would
+	// have produced -- simulating a row 0079's own back-fill already covered.
+	granter := opGranted.ID
+	if _, err := s.Meta().InsertGrant(ctx, store.Grant{
+		SubjectKind:  store.GrantSubjectPrincipal,
+		SubjectID:    uint64(opGranted.ID),
+		ResourceKind: store.GrantResourceDomain,
+		ResourceID:   "already-granted.example",
+		Level:        store.GrantLevelOperator,
+		Provenance:   store.GrantProvenanceLocal,
+		GrantedBy:    &granter,
+	}); err != nil {
+		t.Fatalf("seed pre-existing grant: %v", err)
+	}
+	_ = s.Close()
+
+	// Recreate the legacy table (dropped by the fresh Open's own run of
+	// migration 0099) and seed both rows: one whose grant already exists,
+	// one that (per handleAssignManagedDomain's pre-#237 write path) never
+	// got a grant at all.
+	raw, err := storesqlite.OpenRaw(path)
+	if err != nil {
+		t.Fatalf("OpenRaw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE principal_managed_domains (
+		  principal_id INTEGER NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+		  domain       TEXT NOT NULL,
+		  PRIMARY KEY (principal_id, domain)
+		) STRICT`); err != nil {
+		t.Fatalf("recreate principal_managed_domains: %v", err)
+	}
+	for _, row := range []struct {
+		pid    store.PrincipalID
+		domain string
+	}{
+		{opGranted.ID, "already-granted.example"},
+		{opUngranted.ID, "missing-grant.example"},
+	} {
+		if _, err := raw.ExecContext(ctx,
+			`INSERT INTO principal_managed_domains (principal_id, domain) VALUES (?, ?)`,
+			int64(row.pid), row.domain); err != nil {
+			t.Fatalf("seed principal_managed_domains %+v: %v", row, err)
+		}
+	}
+	if _, err := raw.ExecContext(ctx, storesqlite.Migration0099SQL); err != nil {
+		t.Fatalf("re-run 0099 body: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `SELECT 1 FROM principal_managed_domains LIMIT 1`); err == nil {
+		t.Fatalf("principal_managed_domains still queryable after 0099 re-run; want it dropped")
+	}
+	_ = raw.Close()
+
+	s2, err := storesqlite.Open(ctx, path, nil, clock.NewReal())
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	defer s2.Close()
+
+	grantedGrants, err := s2.Meta().ListGrantsForPrincipal(ctx, opGranted.ID)
+	if err != nil {
+		t.Fatalf("list opGranted grants: %v", err)
+	}
+	if len(grantedGrants) != 1 || grantedGrants[0].ResourceID != "already-granted.example" {
+		t.Errorf("opGranted grants = %+v; want exactly one on already-granted.example (no duplicate)", grantedGrants)
+	}
+
+	ungrantedGrants, err := s2.Meta().ListGrantsForPrincipal(ctx, opUngranted.ID)
+	if err != nil {
+		t.Fatalf("list opUngranted grants: %v", err)
+	}
+	if len(ungrantedGrants) != 1 || ungrantedGrants[0].ResourceKind != store.GrantResourceDomain ||
+		ungrantedGrants[0].ResourceID != "missing-grant.example" || ungrantedGrants[0].Level != store.GrantLevelOperator ||
+		ungrantedGrants[0].Provenance != store.GrantProvenanceLocal {
+		t.Errorf("opUngranted back-fill = %+v; want one local domain:operator grant on missing-grant.example", ungrantedGrants)
 	}
 }
 
@@ -907,12 +1034,26 @@ func TestMigration0084MailboxACLGrantMigration(t *testing.T) {
 	// Drop the empty grants table this Open's own 0084 run already created
 	// (with the widened CHECK) so the migration body's ALTER TABLE ... DROP
 	// CONSTRAINT step re-runs against a table shaped like migration 0079
-	// left it -- reproducing the exact upgrade path.
+	// left it -- reproducing the exact upgrade path. 0079's body reads
+	// principal_managed_domains (dropped by this Open's own run of
+	// migration 0099, re #237); recreate it empty so the back-fill SELECT
+	// has a table to query.
 	if _, err := raw.ExecContext(ctx, `DROP TABLE grants`); err != nil {
 		t.Fatalf("drop grants: %v", err)
 	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE principal_managed_domains (
+		  principal_id INTEGER NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+		  domain       TEXT NOT NULL,
+		  PRIMARY KEY (principal_id, domain)
+		) STRICT`); err != nil {
+		t.Fatalf("recreate principal_managed_domains: %v", err)
+	}
 	if _, err := raw.ExecContext(ctx, storesqlite.Migration0079SQL); err != nil {
 		t.Fatalf("re-run 0079 body: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `DROP TABLE principal_managed_domains`); err != nil {
+		t.Fatalf("drop principal_managed_domains: %v", err)
 	}
 	if _, err := raw.ExecContext(ctx, storesqlite.Migration0084SQL); err != nil {
 		t.Fatalf("re-run 0084 body: %v", err)

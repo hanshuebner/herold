@@ -102,7 +102,6 @@ type tableDesc struct {
 var tableReg = map[string]tableDesc{
 	"domains":                    {&DomainRow{}, "name"},
 	"principals":                 {&PrincipalRow{}, "id"},
-	"principal_managed_domains":  {&PrincipalManagedDomainRow{}, "principal_id, domain"},
 	"grants":                     {&GrantRow{}, "id"},
 	"push_subscription":          {&PushSubscriptionRow{}, "id"},
 	"oidc_providers":             {&OIDCProviderRow{}, "name"},

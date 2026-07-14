@@ -9,12 +9,10 @@ import (
 )
 
 // fakeReader is a minimal grantReader for resolution tests: it returns
-// canned grants and managed domains, or a canned error to exercise the
-// fail-closed path.
+// canned grants, or a canned error to exercise the fail-closed path.
 type fakeReader struct {
-	grants  map[store.PrincipalID][]store.Grant
-	managed map[store.PrincipalID][]string
-	err     error
+	grants map[store.PrincipalID][]store.Grant
+	err    error
 }
 
 func (f *fakeReader) ListGrantsForPrincipal(_ context.Context, id store.PrincipalID) ([]store.Grant, error) {
@@ -22,13 +20,6 @@ func (f *fakeReader) ListGrantsForPrincipal(_ context.Context, id store.Principa
 		return nil, f.err
 	}
 	return f.grants[id], nil
-}
-
-func (f *fakeReader) ListManagedDomains(_ context.Context, id store.PrincipalID) ([]string, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.managed[id], nil
 }
 
 func principal(id store.PrincipalID, flags store.PrincipalFlags) store.Principal {
@@ -145,32 +136,6 @@ func TestResolve_DomainOwnerImpliesOperator(t *testing.T) {
 	}
 }
 
-func TestResolve_ManagedDomainCompatLeg(t *testing.T) {
-	ctx := context.Background()
-	// No grant rows; authority comes only from principal_managed_domains.
-	r := &fakeReader{managed: map[store.PrincipalID][]string{
-		5: {"legacy.example"},
-	}}
-	p := principal(5, store.PrincipalFlagAdmin)
-
-	got, err := Resolve(ctx, r, p, domainRes("legacy.example"))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got != store.GrantLevelOperator {
-		t.Errorf("Resolve via managed-domain leg = %q; want operator", got)
-	}
-	// The compat leg only applies to principals carrying the admin flag.
-	pNoFlag := principal(5, 0)
-	got, err = Resolve(ctx, r, pNoFlag, domainRes("legacy.example"))
-	if err != nil {
-		t.Fatalf("Resolve no-flag: %v", err)
-	}
-	if got != "" {
-		t.Errorf("Resolve via managed leg without admin flag = %q; want empty", got)
-	}
-}
-
 func TestResolve_NoAuthority(t *testing.T) {
 	ctx := context.Background()
 	r := &fakeReader{}
@@ -222,12 +187,12 @@ func TestOperatorDomains_UnionSortedDeduped(t *testing.T) {
 			8: {
 				{ResourceKind: store.GrantResourceDomain, ResourceID: "b.example", Level: store.GrantLevelOperator},
 				{ResourceKind: store.GrantResourceDomain, ResourceID: "a.example", Level: store.GrantLevelOwner},
+				// A duplicate resource under a different provenance must not
+				// produce a duplicate entry in the result.
+				{ResourceKind: store.GrantResourceDomain, ResourceID: "a.example", Level: store.GrantLevelOperator, Provenance: "idp:acme"},
 				// A non-domain grant must be ignored.
 				{ResourceKind: store.GrantResourceMailbox, ResourceID: "m1", Level: store.GrantLevelRead},
 			},
-		},
-		managed: map[store.PrincipalID][]string{
-			8: {"a.example", "c.example"}, // a.example overlaps the grant set
 		},
 	}
 	p := principal(8, store.PrincipalFlagAdmin)
@@ -236,7 +201,7 @@ func TestOperatorDomains_UnionSortedDeduped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OperatorDomains: %v", err)
 	}
-	want := []string{"a.example", "b.example", "c.example"}
+	want := []string{"a.example", "b.example"}
 	if len(got) != len(want) {
 		t.Fatalf("OperatorDomains = %v; want %v", got, want)
 	}

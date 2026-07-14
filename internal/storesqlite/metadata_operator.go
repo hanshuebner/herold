@@ -2,65 +2,16 @@ package storesqlite
 
 import (
 	"context"
-	"database/sql"
-	"strings"
 
 	"github.com/hanshuebner/herold/internal/store"
 )
 
 // This file implements the store.Metadata delegated-operator methods
-// (REQ-ADM-307, re #145). Schema commentary lives in
-// migrations/0072_principal_managed_domains.sql.
-
-func (m *metadata) AssignManagedDomain(ctx context.Context, principalID store.PrincipalID, domain string) error {
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	return m.runTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO principal_managed_domains (principal_id, domain)
-			 VALUES (?, ?)
-			 ON CONFLICT (principal_id, domain) DO NOTHING`,
-			int64(principalID), domain)
-		return mapErr(err)
-	})
-}
-
-func (m *metadata) RevokeManagedDomain(ctx context.Context, principalID store.PrincipalID, domain string) error {
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	return m.runTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`DELETE FROM principal_managed_domains WHERE principal_id = ? AND domain = ?`,
-			int64(principalID), domain)
-		if err != nil {
-			return mapErr(err)
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			return store.ErrNotFound
-		}
-		return nil
-	})
-}
-
-func (m *metadata) ListManagedDomains(ctx context.Context, principalID store.PrincipalID) ([]string, error) {
-	rows, err := m.s.db.QueryContext(ctx,
-		`SELECT domain FROM principal_managed_domains
-		 WHERE principal_id = ?
-		 ORDER BY domain`,
-		int64(principalID))
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer rows.Close()
-	var domains []string
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, mapErr(err)
-		}
-		domains = append(domains, d)
-	}
-	return domains, mapErr(rows.Err())
-}
+// (REQ-ADM-307, re #145, re #237). A principal's managed-domain set is a
+// domain:operator (or higher) grant on the domain resource (epic #182,
+// metadata_grants.go); this file only lists the operator principals
+// themselves. Migration 0099 dropped the legacy principal_managed_domains
+// association table.
 
 // flagAdmin and flagSuperAdmin are the decimal values of PrincipalFlagAdmin
 // and PrincipalFlagSuperAdmin stored in the flags column. Using literals here

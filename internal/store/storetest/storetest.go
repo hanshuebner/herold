@@ -451,11 +451,11 @@ func Run(t *testing.T, f Factory) {
 		{"PreTrash_SnapshotClearedAfterRestore", testPreTrashSnapshotClearedAfterRestore},
 		{"PreTrash_FreshSnapshotOnRetrash", testPreTrashFreshSnapshotOnRetrash},
 		{"PreTrash_PermanentDeleteClearsSnapshot", testPreTrashPermanentDeleteClearsSnapshot},
-		// -- Delegated-operator managed domains (REQ-ADM-307, migration 0072, re #145) --
-		{"ManagedDomains_AssignRevoke", testManagedDomains_AssignRevoke},
-		{"ManagedDomains_AssignIdempotent", testManagedDomains_AssignIdempotent},
-		{"ManagedDomains_RevokeNotFound", testManagedDomains_RevokeNotFound},
-		{"ManagedDomains_CascadeOnDeletePrincipal", testManagedDomains_CascadeOnDeletePrincipal},
+		// -- Delegated-operator domains (REQ-ADM-307, re #145, re #237) ------
+		// A principal's managed-domain set is a domain:operator grant
+		// (epic #182); the Grants_* tests below cover assign/list/revoke/
+		// idempotency/not-found on the domain resource kind. This entry only
+		// covers the operator-principal-listing half.
 		{"ListDomainOperators", testListDomainOperators},
 		{"MigrationAutoPromotion_SuperAdminFlagRoundtrip", testMigrationAutoPromotion},
 		// -- Resource grants (epic #182, REQ-AC-01..05, migration 0079) --

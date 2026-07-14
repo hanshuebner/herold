@@ -741,7 +741,19 @@ const CurrentBackupVersion = 1
 //	crash-resumed or stale-lease-reclaimed approval never files a
 //	second archive copy of the same held post. No new table;
 //	MailingListHeldPostRow gains the one field.
-const CurrentSchemaVersion = 98
+//
+// 99 — 0099_drop_principal_managed_domains.sql (issue #237, REQ-ADM-307,
+//
+//	REQ-AC-30/31). Retires the principal_managed_domains association
+//	table that predated the #182 grants substrate: a defensive
+//	back-fill (NOT EXISTS against the grants natural key) covers any row
+//	assigned between migration 0079's own back-fill and this migration,
+//	then the table is dropped. grants is now the sole
+//	source of domain:operator authority; internal/authz's OperatorDomains
+//	and Resolve no longer consult a second table. PrincipalManagedDomainRow
+//	and its TableNames/tableReg entries are removed from herold diag
+//	backup along with the table.
+const CurrentSchemaVersion = 99
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -785,10 +797,6 @@ type BlobSummary struct {
 var TableNames = []string{
 	"domains",
 	"principals",
-	// Delegated-operator managed-domain association (REQ-ADM-307, migration 0072,
-	// re #145). FK to principals(id) ON DELETE CASCADE; restored after principals
-	// so the parent rows are in place before the association rows arrive.
-	"principal_managed_domains",
 	// Unified resource-grant authorization substrate (epic #182,
 	// REQ-AC-01..05, migration 0079). subject_id is polymorphic (no FK);
 	// granted_by FKs principals(id) ON DELETE SET NULL, so grants is

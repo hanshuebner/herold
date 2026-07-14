@@ -11,8 +11,8 @@ import (
 )
 
 // fakeIdPStore is a minimal idpStore for ReconcileIdP unit tests. It layers
-// on fakeReader for grant/managed-domain reads and adds the OIDC provider,
-// claim-allowlist, mapping-rule, reconcile, and audit surfaces.
+// on fakeReader for grant reads and adds the OIDC provider, claim-allowlist,
+// mapping-rule, reconcile, and audit surfaces.
 type fakeIdPStore struct {
 	fakeReader
 
@@ -93,8 +93,7 @@ func (f *fakeIdPStore) AppendAuditLog(_ context.Context, entry store.AuditLogEnt
 func newTestFakeIdPStore() *fakeIdPStore {
 	return &fakeIdPStore{
 		fakeReader: fakeReader{
-			grants:  map[store.PrincipalID][]store.Grant{},
-			managed: map[store.PrincipalID][]string{},
+			grants: map[store.PrincipalID][]store.Grant{},
 		},
 		principals: map[store.PrincipalID]store.Principal{},
 	}

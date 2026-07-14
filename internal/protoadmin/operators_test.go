@@ -11,7 +11,11 @@ import (
 )
 
 // TestOperators_AssignAndRevoke exercises the full managed-domain lifecycle
-// via REST: assign, list, revoke (REQ-ADM-307, re #145).
+// via REST: assign, list, revoke (REQ-ADM-307, re #145, re #237). Assign and
+// revoke are asserted against the store's grants directly (not just the REST
+// response) to demonstrate that the REST endpoint writes and deletes a
+// domain:operator grant rather than the retired principal_managed_domains
+// row.
 func TestOperators_AssignAndRevoke(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -47,6 +51,18 @@ func TestOperators_AssignAndRevoke(t *testing.T) {
 		adminKey, map[string]string{"domain": "alpha.example"})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("assign domain: status=%d; want 204", res.StatusCode)
+	}
+
+	// The assign endpoint must have created a domain:operator grant, not a
+	// principal_managed_domains row (re #237).
+	grants, err := h.h.Store.Meta().ListGrantsForPrincipal(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("ListGrantsForPrincipal after assign: %v", err)
+	}
+	if len(grants) != 1 || grants[0].ResourceKind != store.GrantResourceDomain ||
+		grants[0].ResourceID != "alpha.example" || grants[0].Level != store.GrantLevelOperator ||
+		grants[0].Provenance != store.GrantProvenanceLocal {
+		t.Fatalf("grants after assign = %+v; want one local domain:operator grant on alpha.example", grants)
 	}
 
 	// List managed domains.
@@ -90,6 +106,15 @@ func TestOperators_AssignAndRevoke(t *testing.T) {
 		adminKey, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke domain: status=%d; want 204", res.StatusCode)
+	}
+
+	// The grant must be gone.
+	grants, err = h.h.Store.Meta().ListGrantsForPrincipal(ctx, store.PrincipalID(opID))
+	if err != nil {
+		t.Fatalf("ListGrantsForPrincipal after revoke: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("grants after revoke = %+v; want none", grants)
 	}
 
 	// List should now be empty.

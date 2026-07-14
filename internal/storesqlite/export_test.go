@@ -69,3 +69,15 @@ var Migration0084SQL = func() string {
 	}
 	return string(body)
 }()
+
+// Migration0099SQL is the verbatim 0099_drop_principal_managed_domains.sql
+// body, re-exported for the migration-fidelity test in storesqlite_test.go
+// (issue #237) so the test exercises the production migration text
+// (including the defensive back-fill) and never drifts from it.
+var Migration0099SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0099_drop_principal_managed_domains.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()

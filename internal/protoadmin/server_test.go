@@ -1137,9 +1137,7 @@ func TestListQueue_OperatorScope(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	// Enqueue items from two sender domains.
@@ -1339,9 +1337,7 @@ func TestAuditLog_OperatorScope(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	// Seed audit entries: one for alpha.example, one for beta.example, one global.
@@ -1498,9 +1494,7 @@ func TestAuditLog_DomainMutations_TaggedAndOperatorScoped(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	type entry struct {
@@ -1629,9 +1623,7 @@ func TestAuditLog_OperatorScope_DefeatAttempts(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	type entry struct {
@@ -1749,9 +1741,7 @@ func TestAuditLog_QueueMutationsTaggedWithSenderDomain(t *testing.T) {
 	if err := h.h.Store.Meta().UpdatePrincipal(ctx, op); err != nil {
 		t.Fatalf("UpdatePrincipal operator: %v", err)
 	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, store.PrincipalID(opID), "alpha.example"); err != nil {
-		t.Fatalf("AssignManagedDomain: %v", err)
-	}
+	grantDomainOperator(t, h, store.PrincipalID(opID), "alpha.example")
 	_, opKey := h.createAPIKey(adminKey, opID)
 
 	var alphaID, betaID store.QueueItemID

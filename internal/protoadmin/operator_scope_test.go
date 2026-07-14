@@ -47,12 +47,8 @@ func TestResolveOperatorScope_DomainOperator(t *testing.T) {
 		t.Fatalf("InsertPrincipal: %v", err)
 	}
 
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, p.ID, "x.example"); err != nil {
-		t.Fatalf("AssignManagedDomain x: %v", err)
-	}
-	if err := h.h.Store.Meta().AssignManagedDomain(ctx, p.ID, "y.example"); err != nil {
-		t.Fatalf("AssignManagedDomain y: %v", err)
-	}
+	grantDomainOperator(t, h, p.ID, "x.example")
+	grantDomainOperator(t, h, p.ID, "y.example")
 
 	scope := protoadmin.ResolveOperatorScope(ctx, h.h.Store.Meta(), p)
 	if scope.SuperAdmin {
