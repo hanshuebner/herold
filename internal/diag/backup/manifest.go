@@ -690,7 +690,19 @@ const CurrentBackupVersion = 1
 //	blob_hash/blob_size reference the held message's raw bytes in the
 //	normal content-addressed blob store, kept alive by a caller-managed
 //	blob_refs reference for as long as status stays 'pending'.
-const CurrentSchemaVersion = 94
+//
+// 95 — 0095_mailing_list_held_post_approving.sql (issue #189
+//
+//	verification fix, REQ-MLIST-80). Widens
+//	mailing_list_held_post.status to accept 'approving': the transient
+//	claimed state ApproveHeldPost's two-phase claim/fanOut/finalize
+//	protocol puts a row in BEFORE running fan-out, so at most one
+//	concurrent caller can ever fan a held post out (a direct
+//	pending->approved CAS-after-the-fact allowed two concurrent
+//	approvers to both pass the pre-fanout read and both mail every
+//	member). No new table; MailingListHeldPostRow.Status simply accepts
+//	one more string value.
+const CurrentSchemaVersion = 95
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

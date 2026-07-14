@@ -726,6 +726,11 @@ func (m *metadata) ListMailingListHeldPosts(ctx context.Context, filter store.Ma
 // and the blob_refs DecRef happens in the same transaction as the
 // transition so the two can never observably diverge.
 func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.MailingListHeldPostID, status store.MailingListHeldPostStatus, decidedBy store.PrincipalID, note string, now time.Time) (store.MailingListHeldPost, error) {
+	if status != store.MailingListHeldPostRejected && status != store.MailingListHeldPostDiscarded {
+		return store.MailingListHeldPost{}, fmt.Errorf(
+			"%w: DecideMailingListHeldPost only accepts rejected/discarded; approval goes through ClaimMailingListHeldPostForApproval/FinalizeMailingListHeldPostApproval",
+			store.ErrInvalidArgument)
+	}
 	now = now.UTC()
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		var blobHash string
@@ -738,6 +743,77 @@ func (m *metadata) DecideMailingListHeldPost(ctx context.Context, id store.Maili
 			   SET status = ?, decided_at_us = ?, decided_by = ?, decision_note = ?
 			 WHERE id = ? AND status = 'pending'`,
 			string(status), usMicros(now), int64(decidedBy), note, int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrConflict
+		}
+		return decRef(ctx, tx, blobHash, now)
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, id)
+}
+
+// ClaimMailingListHeldPostForApproval implements the store.Metadata
+// method of the same name (issue #189 verification fix): the CAS that
+// makes "a held post is fanned out at most once" hold under concurrent
+// ApproveHeldPost calls. Does NOT touch blob_refs -- the blob is still
+// needed to read the raw bytes for fan-out after this call returns.
+func (m *metadata) ClaimMailingListHeldPostForApproval(ctx context.Context, id store.MailingListHeldPostID, decidedBy store.PrincipalID, now time.Time) (store.MailingListHeldPost, error) {
+	now = now.UTC()
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var exists int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM mailing_list_held_post WHERE id = ?`, int64(id)).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE mailing_list_held_post
+			   SET status = 'approving', decided_at_us = ?, decided_by = ?
+			 WHERE id = ? AND status = 'pending'`,
+			usMicros(now), int64(decidedBy), int64(id))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrConflict
+		}
+		return nil
+	})
+	if err != nil {
+		return store.MailingListHeldPost{}, err
+	}
+	return m.GetMailingListHeldPost(ctx, id)
+}
+
+// FinalizeMailingListHeldPostApproval implements the store.Metadata
+// method of the same name (issue #189 verification fix): the CAS
+// approving -> approved, with the blob_refs release in the same
+// transaction.
+func (m *metadata) FinalizeMailingListHeldPostApproval(ctx context.Context, id store.MailingListHeldPostID, now time.Time) (store.MailingListHeldPost, error) {
+	now = now.UTC()
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var blobHash string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT blob_hash FROM mailing_list_held_post WHERE id = ?`, int64(id)).Scan(&blobHash); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE mailing_list_held_post
+			   SET status = 'approved'
+			 WHERE id = ? AND status = 'approving'`,
+			int64(id))
 		if err != nil {
 			return mapErr(err)
 		}

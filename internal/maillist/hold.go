@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -89,20 +90,76 @@ func (e *Expander) readHeldBlob(ctx context.Context, held store.MailingListHeldP
 	return raw, nil
 }
 
-// ApproveHeldPost fans out held post id through the normal S1 path
-// (REQ-MLIST-80: "an approved held post fans out normally"), then
-// transitions the row to approved and releases the held post's own blob
-// reference -- safe because fanOut's own queue submissions (and any
-// archive filing) have already taken their own references by the time
-// this call runs, so the blob never drops to zero refs in between.
-// Returns store.ErrConflict if the post is not currently pending
-// (already decided by a prior or concurrent call).
+// heldPostIdempotencyPrefix computes the ExpandInput.IdempotencyKeyPrefix
+// used for every fan-out this held post ever triggers (its first
+// approval attempt and any later resume of a stuck
+// MailingListHeldPostApproving row), so a retried or concurrently
+// racing fan-out of the SAME held post can never mail a member twice
+// (issue #189 verification fix).
+func heldPostIdempotencyPrefix(id store.MailingListHeldPostID) string {
+	return fmt.Sprintf("mlist-held-%d", id)
+}
+
+// ApproveHeldPost approves held post id (REQ-MLIST-80: "an approved
+// held post fans out normally"), fanning it out through the normal S1
+// path exactly once no matter how many concurrent callers invoke this
+// method for the same id (issue #189 verification fix). This is a
+// two-phase, claim-then-act protocol, not a single CAS after the fact:
+//
+//  1. Claim: ClaimMailingListHeldPostForApproval atomically transitions
+//     the row pending -> approving. This is the ONLY place concurrency
+//     is arbitrated -- the UPDATE ... WHERE status = 'pending' in that
+//     store call is a single atomic statement, so of any number of
+//     concurrent callers racing this method for the same id, AT MOST
+//     ONE wins the claim; every other caller's claim affects zero rows,
+//     returns store.ErrConflict here, and NEVER reaches step 2 --
+//     mail is only ever sent by the caller that won the claim.
+//  2. fanOut: the winning caller (or a later caller resuming an
+//     already-'approving' row, see below) reads the blob, reparses it,
+//     and runs the SAME shape/ARC-seal/archive/enqueue tail Expand uses
+//     for a never-held post, with a per-(held post, member) idempotency
+//     key so re-running this step is itself safe.
+//  3. Finalize: FinalizeMailingListHeldPostApproval atomically
+//     transitions approving -> approved and releases the held post's
+//     own blob_refs reference (fan-out's own queue/archive references
+//     already keep the blob alive by this point).
+//
+// Crash recovery: if the process dies between steps 1 and 3, the row is
+// left durably, visibly in MailingListHeldPostApproving -- never
+// silently reverted to "undecided" and never silently reported as
+// fanned out when it was not. Calling ApproveHeldPost AGAIN on such a
+// row does not re-claim it (step 1 is skipped for an already-approving
+// row) but resumes at step 2: fanOut's per-member idempotency keys mean
+// any member already mailed by the earlier, interrupted attempt is
+// skipped rather than mailed again, so resuming (including two
+// concurrent resume calls racing each other) is itself safe. There is
+// no automatic background sweep for a stuck 'approving' row in this
+// version; an operator (or the moderation UI) re-issuing the approve
+// action is the recovery path, and the held-post list surfaces
+// 'approving' as a status distinct from both 'pending' and 'approved'
+// so a stuck row is visible rather than silently lost.
 func (e *Expander) ApproveHeldPost(ctx context.Context, id store.MailingListHeldPostID, approver store.PrincipalID) (ExpandResult, error) {
 	held, err := e.Meta.GetMailingListHeldPost(ctx, id)
 	if err != nil {
 		return ExpandResult{}, err
 	}
-	if held.Status != store.MailingListHeldPostPending {
+	switch held.Status {
+	case store.MailingListHeldPostPending:
+		claimed, cerr := e.Meta.ClaimMailingListHeldPostForApproval(ctx, id, approver, e.Clock.Now())
+		if cerr != nil {
+			// ErrConflict here means we lost the race: some other
+			// concurrent caller's claim won and (or will) fan this post
+			// out; we must not proceed to fanOut at all.
+			return ExpandResult{}, cerr
+		}
+		held = claimed
+	case store.MailingListHeldPostApproving:
+		// Resuming a claim left in-flight by an earlier call (this
+		// process or a prior one) that died, or whose fanOut/finalize
+		// step failed, before completing. No new claim is taken -- the
+		// row is already ours (or shared with a concurrent resumer,
+		// which fanOut's idempotency keys make safe).
+	default:
 		return ExpandResult{}, store.ErrConflict
 	}
 	ml, err := e.Meta.GetMailingList(ctx, held.ListID)
@@ -127,17 +184,40 @@ func (e *Expander) ApproveHeldPost(ctx context.Context, id store.MailingListHeld
 		// ARC-sealing rather than blocking the approval.
 		_ = json.Unmarshal([]byte(held.AuthResultsJSON), &auth)
 	}
-	res, err := e.fanOut(ctx, ml, ExpandInput{List: ml, Parsed: parsed, Raw: raw, Auth: auth})
+	res, err := e.fanOut(ctx, ml, ExpandInput{
+		List:                 ml,
+		Parsed:               parsed,
+		Raw:                  raw,
+		Auth:                 auth,
+		IdempotencyKeyPrefix: heldPostIdempotencyPrefix(id),
+	})
 	if err != nil {
+		// fanOut itself failed outright (not a per-member skip, which
+		// fanOut never surfaces as an error): the row stays 'approving'
+		// for a later resume; nothing here has released its blob ref.
 		return ExpandResult{}, err
 	}
-	if _, derr := e.Meta.DecideMailingListHeldPost(ctx, id, store.MailingListHeldPostApproved, approver, "", e.Clock.Now()); derr != nil {
-		e.Logger.ErrorContext(ctx, "maillist: held post fanned out but the approve transition failed; its blob reference is not yet released",
+	if _, ferr := e.Meta.FinalizeMailingListHeldPostApproval(ctx, id, e.Clock.Now()); ferr != nil {
+		if errors.Is(ferr, store.ErrConflict) {
+			// A concurrent resume already finalized this row (fan-out
+			// ran twice, harmlessly, thanks to the idempotency keys, but
+			// only one finalize could win the CAS). Re-read: if the row
+			// is now Approved, the desired end state was reached by
+			// someone else and this call reports success too, rather
+			// than surfacing a spurious error for an outcome that is
+			// actually correct.
+			final, gerr := e.Meta.GetMailingListHeldPost(ctx, id)
+			if gerr == nil && final.Status == store.MailingListHeldPostApproved {
+				e.audit(ctx, ml, "maillist.held.approved", fmt.Sprintf("held_post_id=%d approver=%d", id, approver))
+				return res, nil
+			}
+		}
+		e.Logger.ErrorContext(ctx, "maillist: held post fanned out but the finalize transition failed; the row remains 'approving' for a later resume",
 			slog.String("activity", observe.ActivitySystem),
 			slog.String("list", ml.PostingAddress),
 			slog.Uint64("held_post_id", uint64(id)),
-			slog.String("err", derr.Error()))
-		return res, derr
+			slog.String("err", ferr.Error()))
+		return res, ferr
 	}
 	e.audit(ctx, ml, "maillist.held.approved", fmt.Sprintf("held_post_id=%d approver=%d", id, approver))
 	return res, nil

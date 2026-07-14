@@ -3,6 +3,7 @@ package maillist
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -120,6 +121,32 @@ type ExpandInput struct {
 	// itself has no MaxMessageSizeBytes override. Zero means "no
 	// deployment-wide limit".
 	DeploymentMaxMessageSize int64
+	// SubmissionPrincipalID is the SASL/submission-authenticated local
+	// principal that posted this message over an authenticated SMTP
+	// session, or nil for an anonymous/inbound session. When set, this
+	// is the AUTHORITATIVE poster identity for the members-only /
+	// announce-only posting policy (REQ-MLIST-80, issue #189 security
+	// fix): the poster proved control of their own herold credentials
+	// for this session, so their own CanonicalEmail is trusted outright,
+	// regardless of what the RFC 5322 From: header claims. Nil does NOT
+	// mean "unauthenticated and therefore always denied" -- it means
+	// "no SASL signal; fall back to the DMARC/DKIM-backed From: check"
+	// (see policy.go's posterAuthenticated).
+	SubmissionPrincipalID *store.PrincipalID
+	// IdempotencyKeyPrefix, when non-empty, makes every per-member
+	// queue.Submission this call's fanOut issues idempotent: each
+	// Submission's IdempotencyKey is derived from this prefix plus the
+	// member id, so calling fanOut twice for the SAME logical post
+	// (e.g. resuming an approval left in the MailingListHeldPostApproving
+	// state after a crash, or two goroutines racing to resume it) never
+	// mails a member twice -- the queue's own idempotency-key uniqueness
+	// constraint collapses the duplicate Submit to a no-op for any
+	// member already enqueued by an earlier attempt (issue #189
+	// verification fix). Empty for the normal (never-held) Expand path,
+	// which calls fanOut exactly once per accepted message and has no
+	// retry/resume concept, so Submissions there carry no idempotency
+	// key at all (unchanged S1/S2 behaviour).
+	IdempotencyKeyPrefix string
 }
 
 // DropReason enumerates why Expand declined to fan out a post.
@@ -213,7 +240,7 @@ func (e *Expander) Expand(ctx context.Context, in ExpandInput) (ExpandResult, er
 	// posts" contract) and BEFORE fanOut (so a rejected or held post
 	// never reaches the queue or the archive -- fanOut is the only place
 	// either happens).
-	decision, holdReason, derr := decidePosting(ctx, e.Meta, ml, in.Parsed)
+	decision, holdReason, derr := decidePosting(ctx, e.Meta, ml, in)
 	if derr != nil {
 		return ExpandResult{}, fmt.Errorf("maillist: posting policy check: %w", derr)
 	}
@@ -351,15 +378,32 @@ func (e *Expander) fanOut(ctx context.Context, ml store.MailingList, in ExpandIn
 		// instead of being spliced into Body, so the queue's
 		// content-addressed blob store dedups every Submit call below
 		// down to one stored blob regardless of roster size.
-		if _, serr := e.Submitter.Submit(ctx, queue.Submission{
-			MailFrom:      mailFrom,
-			Recipients:    []string{addr},
-			Body:          bytes.NewReader(shaped),
-			HeaderOverlay: headerOverlay,
-			Sign:          true,
-			SigningDomain: ml.Domain,
-			DSNNotify:     store.DSNNotifyFailure,
-		}); serr != nil {
+		var idempKey string
+		if in.IdempotencyKeyPrefix != "" {
+			idempKey = fmt.Sprintf("%s-member-%d", in.IdempotencyKeyPrefix, m.ID)
+		}
+		_, serr := e.Submitter.Submit(ctx, queue.Submission{
+			MailFrom:       mailFrom,
+			Recipients:     []string{addr},
+			Body:           bytes.NewReader(shaped),
+			HeaderOverlay:  headerOverlay,
+			Sign:           true,
+			SigningDomain:  ml.Domain,
+			DSNNotify:      store.DSNNotifyFailure,
+			IdempotencyKey: idempKey,
+		})
+		if errors.Is(serr, queue.ErrConflict) {
+			// This member was already enqueued by an earlier attempt at
+			// fanning out the SAME logical post (a resumed
+			// MailingListHeldPostApproving approval, or a concurrent
+			// resume racing this one, issue #189 verification fix): the
+			// idempotency key collapsed this Submit to a no-op rather
+			// than mailing them twice. That is success, not failure --
+			// count the member and move on without a warning log.
+			memberCount++
+			return nil
+		}
+		if serr != nil {
 			e.Logger.WarnContext(ctx, "maillist: submit failed for member",
 				slog.String("activity", observe.ActivitySystem),
 				slog.String("list", listLabel),

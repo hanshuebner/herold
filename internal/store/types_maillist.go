@@ -372,6 +372,18 @@ const (
 	// MailingListHeldPostPending awaits an owner/moderator decision. The
 	// only state a post is ever created in.
 	MailingListHeldPostPending MailingListHeldPostStatus = "pending"
+	// MailingListHeldPostApproving is the transient claimed state a
+	// pending post moves to (via ClaimMailingListHeldPostForApproval's
+	// atomic CAS) BEFORE fan-out runs, so at most one caller can ever be
+	// fanning it out: a concurrent second claim attempt sees the row is
+	// no longer pending and fails closed (issue #189 verification fix).
+	// It is a durable, operator-visible state, not an in-memory flag: if
+	// the process dies after the claim but before
+	// FinalizeMailingListHeldPostApproval runs, the row stays visibly
+	// 'approving' (never silently reverts to looking undecided, and
+	// never silently reports success without having mailed anyone) until
+	// a later ApproveHeldPost call resumes it.
+	MailingListHeldPostApproving MailingListHeldPostStatus = "approving"
 	// MailingListHeldPostApproved was fanned out through the normal S1
 	// path after an owner/moderator decision.
 	MailingListHeldPostApproved MailingListHeldPostStatus = "approved"

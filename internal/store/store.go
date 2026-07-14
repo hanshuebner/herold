@@ -816,19 +816,52 @@ type Metadata interface {
 	ListMailingListHeldPosts(ctx context.Context, filter MailingListHeldPostFilter) ([]MailingListHeldPost, error)
 
 	// DecideMailingListHeldPost atomically transitions held post id from
-	// MailingListHeldPostPending to status (approved/rejected/discarded),
-	// recording decidedBy/now/note, and releases the held-post's own
-	// blob_refs reference (DecRefBlob) in the same transaction — safe
-	// for "approved" because the caller MUST have already completed
-	// fan-out (which takes its own queue/archive references) before
-	// calling this; for "rejected"/"discarded", releasing here is what
-	// lets the blob become GC-eligible when nothing else references it.
-	// The UPDATE's own WHERE status='pending' clause is the compare-and-
-	// swap: returns ErrConflict if the row is not currently pending
-	// (already decided by a prior or concurrent call), ErrNotFound if id
-	// does not exist at all. Returns the row as it stands after the
-	// transition on success.
+	// MailingListHeldPostPending directly to status, recording
+	// decidedBy/now/note, and releases the held-post's own blob_refs
+	// reference (DecRefBlob) in the same transaction. status MUST be
+	// MailingListHeldPostRejected or MailingListHeldPostDiscarded — a
+	// direct pending-to-approved transition is refused with
+	// ErrInvalidArgument, because approval's fan-out is a slow,
+	// externally-visible side effect that must never run inside (or be
+	// gated only by) a single opaque store call: callers approve via
+	// ClaimMailingListHeldPostForApproval, then fanOut, then
+	// FinalizeMailingListHeldPostApproval instead, so at most one
+	// concurrent caller ever fans a post out (issue #189 verification
+	// fix — REQ-MLIST-80's "held post is fanned out at most once"
+	// invariant). Reject/discard have no side effect between the CAS
+	// and completion, so a direct one-step transition is safe and
+	// correct for them. The UPDATE's own WHERE status='pending' clause
+	// is the compare-and-swap: returns ErrConflict if the row is not
+	// currently pending (already decided or claimed by a prior or
+	// concurrent call), ErrNotFound if id does not exist at all.
+	// Returns the row as it stands after the transition on success.
 	DecideMailingListHeldPost(ctx context.Context, id MailingListHeldPostID, status MailingListHeldPostStatus, decidedBy PrincipalID, note string, now time.Time) (MailingListHeldPost, error)
+
+	// ClaimMailingListHeldPostForApproval atomically transitions held
+	// post id from MailingListHeldPostPending to
+	// MailingListHeldPostApproving, recording decidedBy/now as the
+	// approval's initiator, WITHOUT releasing the blob_refs reference
+	// (fan-out still needs to read the raw bytes after this call
+	// returns). The UPDATE's own WHERE status='pending' clause is the
+	// compare-and-swap that makes "at most one caller ever fans this
+	// post out" hold under concurrent ApproveHeldPost calls: only the
+	// caller whose CAS actually flips the row can proceed to fan out;
+	// every other concurrent caller gets ErrConflict here, before ever
+	// touching the queue. Returns ErrNotFound if id does not exist.
+	ClaimMailingListHeldPostForApproval(ctx context.Context, id MailingListHeldPostID, decidedBy PrincipalID, now time.Time) (MailingListHeldPost, error)
+
+	// FinalizeMailingListHeldPostApproval atomically transitions held
+	// post id from MailingListHeldPostApproving to
+	// MailingListHeldPostApproved and releases the held-post's own
+	// blob_refs reference (DecRefBlob) in the same transaction — safe
+	// because the caller MUST have already completed fan-out (which
+	// takes its own queue/archive blob references) before calling this.
+	// The UPDATE's own WHERE status='approving' clause is again a
+	// compare-and-swap: returns ErrConflict if the row is not currently
+	// approving (e.g. a concurrent resume already finalized it — the
+	// caller should treat a resulting already-Approved row as success,
+	// not as a real failure), ErrNotFound if id does not exist.
+	FinalizeMailingListHeldPostApproval(ctx context.Context, id MailingListHeldPostID, now time.Time) (MailingListHeldPost, error)
 
 	// -- External IdP claim-to-grant mapping (epic #188, REQ-AC-60..70) -
 

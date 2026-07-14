@@ -146,7 +146,7 @@ func (s *Server) handleListMailingListHeldPosts(w http.ResponseWriter, r *http.R
 	status := r.URL.Query().Get("status")
 	if status != "" && !validHeldPostStatus(status) {
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed",
-			"status must be one of pending, approved, rejected, discarded", status)
+			"status must be one of pending, approving, approved, rejected, discarded", status)
 		return
 	}
 	after, limit, ok := parseAfterLimit(w, r, 0, 100, 1000)
@@ -177,8 +177,9 @@ func (s *Server) handleListMailingListHeldPosts(w http.ResponseWriter, r *http.R
 
 func validHeldPostStatus(s string) bool {
 	switch store.MailingListHeldPostStatus(s) {
-	case store.MailingListHeldPostPending, store.MailingListHeldPostApproved,
-		store.MailingListHeldPostRejected, store.MailingListHeldPostDiscarded:
+	case store.MailingListHeldPostPending, store.MailingListHeldPostApproving,
+		store.MailingListHeldPostApproved, store.MailingListHeldPostRejected,
+		store.MailingListHeldPostDiscarded:
 		return true
 	default:
 		return false

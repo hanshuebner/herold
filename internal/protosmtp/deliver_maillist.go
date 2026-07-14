@@ -45,12 +45,26 @@ func (sess *session) expandMailingList(
 		})
 		return
 	}
+	// REQ-MLIST-80 issue #189 security fix: thread the SASL/submission-
+	// authenticated identity of THIS session (if any) through to the
+	// posting-policy gate, so members-only/announce-only can trust it
+	// outright instead of the forgeable RFC 5322 From: header. Zero
+	// means "no AUTH on this session" (an anonymous/inbound MX
+	// delivery), for which the policy gate falls back to the
+	// DMARC/DKIM-backed From: check instead — see
+	// internal/maillist/policy.go's authoritativePosterAddress.
+	var submissionPrincipalID *store.PrincipalID
+	if sess.authPrincipal != 0 {
+		pid := sess.authPrincipal
+		submissionPrincipalID = &pid
+	}
 	result, err := sess.srv.mlistExpander.Expand(ctx, maillist.ExpandInput{
 		List:                     ml,
 		Parsed:                   msg,
 		Raw:                      finalBytes,
 		Auth:                     authResults,
 		DeploymentMaxMessageSize: sess.srv.opts.MaxMessageSize,
+		SubmissionPrincipalID:    submissionPrincipalID,
 	})
 	if err != nil {
 		sess.log.ErrorContext(ctx, "maillist: expand failed",
