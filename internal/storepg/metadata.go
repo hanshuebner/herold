@@ -2896,6 +2896,37 @@ func cleanupOwnedMailData(ctx context.Context, tx pgx.Tx, pid int64, now time.Ti
 	return nil
 }
 
+// checkNoOwnedMailingLists returns a store.ErrConflict-wrapping error
+// naming every mailing list pid still owns, or nil when pid owns none.
+// mailing_lists.owner_id is ON DELETE RESTRICT (issue #247): a list
+// without an owner is not obviously valid, so DeletePrincipal refuses
+// deterministically rather than either cascading the list away or
+// surfacing the backend's raw constraint-violation error.
+func checkNoOwnedMailingLists(ctx context.Context, tx pgx.Tx, pid int64) error {
+	rows, err := tx.Query(ctx,
+		`SELECT posting_address FROM mailing_list WHERE owner_id = $1 ORDER BY posting_address`, pid)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer rows.Close()
+	var addrs []string
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err != nil {
+			return mapErr(err)
+		}
+		addrs = append(addrs, addr)
+	}
+	if err := rows.Err(); err != nil {
+		return mapErr(err)
+	}
+	if len(addrs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("principal %d owns mailing list(s) %s; reassign or delete them first: %w",
+		pid, strings.Join(addrs, ", "), store.ErrConflict)
+}
+
 func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) error {
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
@@ -2926,6 +2957,14 @@ func (m *metadata) DeletePrincipal(ctx context.Context, pid store.PrincipalID) e
 			subIDs = append(subIDs, sid)
 		}
 		subRows.Close()
+		// mailing_lists.owner_id has no cascade (ON DELETE RESTRICT, so
+		// an unowned list is never left silently orphaned, issue #247):
+		// pre-check for lists this principal still owns and refuse with
+		// a named ErrConflict before the DELETE below would otherwise
+		// hit the raw, backend-specific constraint violation.
+		if err := checkNoOwnedMailingLists(ctx, tx, int64(pid)); err != nil {
+			return err
+		}
 		for _, sid := range subIDs {
 			if err := cleanupOwnedMailData(ctx, tx, sid, now); err != nil {
 				return err

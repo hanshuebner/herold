@@ -3,6 +3,7 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,6 +171,44 @@ func testMailingList_GetByPostingAddress(t *testing.T, s store.Store) {
 	})
 	if !errors.Is(err, store.ErrConflict) {
 		t.Errorf("InsertMailingList duplicate posting_address: got %v; want ErrConflict", err)
+	}
+}
+
+// testMailingList_DeleteOwnerRefused exercises issue #247:
+// mailing_lists.owner_id has no cascade (ON DELETE RESTRICT), so
+// DeletePrincipal on a principal that still owns a list must refuse
+// deterministically with ErrConflict naming the blocking list rather
+// than surface a raw, backend-specific FK violation. A principal that
+// owns no list still deletes cleanly.
+func testMailingList_DeleteOwnerRefused(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	owner := mustInsertPrincipal(t, s, "mlist-del-owner@example.com")
+	l1 := mustInsertMailingList(t, s, "del-guard-1@example.com", owner.ID)
+	l2 := mustInsertMailingList(t, s, "del-guard-2@example.com", owner.ID)
+
+	err := s.Meta().DeletePrincipal(ctx, owner.ID)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("DeletePrincipal(owner of %d lists) = %v; want ErrConflict", 2, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, l1.PostingAddress) || !strings.Contains(msg, l2.PostingAddress) {
+		t.Errorf("DeletePrincipal error %q does not name both blocking lists (%q, %q)",
+			msg, l1.PostingAddress, l2.PostingAddress)
+	}
+
+	// The principal and both lists must still exist -- the refusal must
+	// not have partially applied.
+	if _, err := s.Meta().GetPrincipalByID(ctx, owner.ID); err != nil {
+		t.Errorf("GetPrincipalByID after refused delete: %v", err)
+	}
+	if _, err := s.Meta().GetMailingList(ctx, l1.ID); err != nil {
+		t.Errorf("GetMailingList(l1) after refused delete: %v", err)
+	}
+
+	// A principal that owns no mailing list still deletes cleanly.
+	plain := mustInsertPrincipal(t, s, "mlist-del-plain@example.com")
+	if err := s.Meta().DeletePrincipal(ctx, plain.ID); err != nil {
+		t.Fatalf("DeletePrincipal(no lists owned): %v", err)
 	}
 }
 

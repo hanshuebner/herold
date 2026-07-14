@@ -522,6 +522,7 @@ func Run(t *testing.T, f Factory) {
 		// REQ-MLIST-01..12, migration 0085) --
 		{"MailingList_CreateGetUpdateDelete", testMailingList_CreateGetUpdateDelete},
 		{"MailingList_GetByPostingAddress", testMailingList_GetByPostingAddress},
+		{"MailingList_DeleteOwnerRefused", testMailingList_DeleteOwnerRefused},
 		{"MailingList_ListByDomain", testMailingList_ListByDomain},
 		{"MailingListMember_XORConstraint", testMailingListMember_XORConstraint},
 		{"MailingListMember_UniquePerList", testMailingListMember_UniquePerList},

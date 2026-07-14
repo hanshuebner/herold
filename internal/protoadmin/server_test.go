@@ -314,6 +314,63 @@ func TestPrincipals_CRUD(t *testing.T) {
 	}
 }
 
+// TestPrincipals_DeleteRefusedWhenOwnsMailingList asserts issue #247:
+// DELETE on a principal that still owns a mailing list is refused with
+// a 409 naming the blocking list, never a 500, and the principal
+// survives the refused attempt.
+func TestPrincipals_DeleteRefusedWhenOwnsMailingList(t *testing.T) {
+	h := newHarness(t)
+	_, key := h.bootstrap("admin@example.com")
+
+	res, buf := h.doRequest("POST", "/api/v1/principals", key, map[string]any{
+		"email":    "listowner@example.com",
+		"password": "correct-horse-battery-staple",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d: %s", res.StatusCode, buf)
+	}
+	var owner struct {
+		ID uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &owner); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	group, err := h.h.Store.Meta().InsertPrincipal(context.Background(), store.Principal{
+		Kind:           store.PrincipalKindGroup,
+		CanonicalEmail: "team@example.com",
+		DisplayName:    "team@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal(group): %v", err)
+	}
+	list, err := h.h.Store.Meta().InsertMailingList(context.Background(), store.MailingList{
+		PrincipalID:    group.ID,
+		PostingAddress: "team@example.com",
+		DisplayName:    "Team",
+		OwnerID:        store.PrincipalID(owner.ID),
+		ARCSeal:        true,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailingList: %v", err)
+	}
+
+	res, buf = h.doRequest("DELETE", fmt.Sprintf("/api/v1/principals/%d", owner.ID), key, nil)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("delete owner of mailing list = %d: %s", res.StatusCode, buf)
+	}
+	if !strings.Contains(string(buf), list.PostingAddress) {
+		t.Fatalf("409 body does not name the blocking list %q: %s", list.PostingAddress, buf)
+	}
+
+	// The principal must still exist -- the refusal must not have
+	// partially applied.
+	res, _ = h.doRequest("GET", fmt.Sprintf("/api/v1/principals/%d", owner.ID), key, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get after refused delete = %d", res.StatusCode)
+	}
+}
+
 // TestCreatePrincipal_RandomPassword asserts the random_password
 // field on POST /api/v1/principals: the server mints a password,
 // embeds it in the response as generated_password, and rejects
