@@ -28,6 +28,7 @@ import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
 import { localeTag } from '../i18n/i18n.svelte';
 import { applyImage } from './editor';
+import { generateImageProxy } from './image-proxy';
 import {
   showExternalSubmissionFailure,
   parseExternalSubmissionFailure,
@@ -145,11 +146,17 @@ export interface ComposeAttachment {
   inline?: boolean;
   cid?: string | null;
   /**
-   * `URL.createObjectURL(file)` value for inline images: lets the
-   * editor display the image while the message is being composed.
-   * On send/persist the body is rewritten to replace this URL with
-   * `cid:<cid>` so the receiving client resolves it against the
-   * inline part. Revoked when the attachment is removed.
+   * The blob: URL currently rendered as this inline image's `<img src>`
+   * while the message is being composed. `startInlineImage` sets this to
+   * `URL.createObjectURL(file)` — the full-resolution original — so the
+   * editor shows a thumbnail immediately (issue #74). When the image
+   * exceeds the downscale threshold (issue #243), a generated proxy blob
+   * URL replaces it here shortly after and the full-resolution URL is
+   * revoked; the outbound upload (`uploadInlineImage`) always uploads the
+   * original `File` and is unaffected by this swap. On send/persist the
+   * body is rewritten to replace whichever URL is current with
+   * `cid:<cid>` so the receiving client resolves it against the inline
+   * part. Revoked when the attachment is removed.
    */
   objectURL?: string | null;
 }
@@ -261,6 +268,22 @@ class ComposeStore {
   ): void {
     this.#insertShareLinkFn = insert;
     this.#removeShareLinkFn = remove;
+  }
+
+  /**
+   * Editor-backed callback that swaps an inline image node's `src` in the
+   * live ProseMirror document (issue #243). Registered by ComposeWindow /
+   * ThreadInlineComposer alongside `setShareEditorFns`, driven off the same
+   * mounted EditorView. Used by `#applyImageProxy` to replace the
+   * full-resolution blob: URL with a downscaled proxy once it's ready.
+   * When null (editor not mounted, or a unit test) the proxy is generated
+   * but never swapped in, which is harmless — the attachment record's
+   * `objectURL` also does not update, so callers relying on it fall back
+   * to the original.
+   */
+  #swapInlineImageSrcFn: ((oldSrc: string, newSrc: string) => void) | null = null;
+  setSwapInlineImageSrcFn(fn: ((oldSrc: string, newSrc: string) => void) | null): void {
+    this.#swapInlineImageSrcFn = fn;
   }
 
   /**
@@ -743,7 +766,44 @@ class ComposeStore {
       objectURL,
     };
     this.attachments = [...this.attachments, att];
+    // Fire-and-forget: swap in a downscaled proxy once ready (issue #243).
+    // Does not block the synchronous return -- the caller inserts the
+    // full-resolution objectURL immediately, same as before.
+    void this.#applyImageProxy(key, file);
     return { key, cid, objectURL };
+  }
+
+  /**
+   * Generate a downscaled proxy for a just-started inline image (issue
+   * #243) and, once ready, swap it in as the attachment's display URL via
+   * `#swapInlineImageSrcFn`. No-ops when the source image is small enough
+   * that `generateImageProxy` declines to produce one, or when the
+   * attachment has already been removed (upload failed and the editor
+   * placeholder was retracted, or the user deleted the image) by the time
+   * the proxy finishes generating.
+   */
+  async #applyImageProxy(key: string, file: File): Promise<void> {
+    const proxy = await generateImageProxy(file);
+    if (!proxy) return;
+    const current = this.attachments.find((a) => a.key === key);
+    if (!current || !current.objectURL) {
+      // Attachment gone or already lost its display URL -- drop the
+      // generated proxy without ever creating a blob: URL for it.
+      return;
+    }
+    const oldSrc = current.objectURL;
+    const proxyURL = URL.createObjectURL(proxy.blob);
+    // Patch the record BEFORE dispatching the DOM swap. The swap fires a
+    // live ProseMirror transaction; editor.ts's onImageRemoved wiring
+    // diffs image srcs across that transaction and reports oldSrc as
+    // "removed" (it renamed to proxyURL, not literally gone). If the
+    // attachment record still carried the stale oldSrc at that moment,
+    // ComposeWindow's onImageRemoved handler would match it and delete
+    // the whole attachment, mistaking the src-only rename for the user
+    // deleting the image.
+    this.#patchAttachment(key, { objectURL: proxyURL });
+    this.#swapInlineImageSrcFn?.(oldSrc, proxyURL);
+    URL.revokeObjectURL(oldSrc);
   }
 
   /**

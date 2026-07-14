@@ -36,6 +36,7 @@
     type ActiveState,
     applyImage,
     removeImageBySrc,
+    replaceImageSrc,
     insertHtmlBlockAtEnd,
     removeHtmlBlockByShareUrl,
   } from '../compose/editor';
@@ -266,6 +267,21 @@
     return () => compose.setShareEditorFns(null, null);
   });
 
+  // Swap an inline image's full-resolution blob: src for a downscaled
+  // proxy once one is generated, driven off the same mounted view
+  // (issue #243).
+  $effect(() => {
+    const view = editorView;
+    if (!view) {
+      compose.setSwapInlineImageSrcFn(null);
+      return;
+    }
+    compose.setSwapInlineImageSrcFn((oldSrc, newSrc) => {
+      replaceImageSrc(view, oldSrc, newSrc);
+    });
+    return () => compose.setSwapInlineImageSrcFn(null);
+  });
+
   // File attachment picker.
   let fileInput = $state<HTMLInputElement | null>(null);
   function onFilePick(e: Event): void {
@@ -400,7 +416,11 @@
       pending.map(async ({ key, objectURL, file }) => {
         const errMsg = await compose.uploadInlineImage(key, file);
         if (errMsg) {
-          removeImageBySrc(editorView, objectURL);
+          // Re-read the current src rather than the captured `objectURL`
+          // -- a downscaled proxy (issue #243) may have swapped it in
+          // while the upload was in flight.
+          const current = compose.attachments.find((a) => a.key === key);
+          removeImageBySrc(editorView, current?.objectURL ?? objectURL);
         }
       }),
     );

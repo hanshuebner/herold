@@ -124,6 +124,7 @@ vi.mock('../compose/compose.svelte', () => ({
     shares: [],
     setOffloadOfferFn: vi.fn(),
     setShareEditorFns: vi.fn(),
+    setSwapInlineImageSrcFn: vi.fn(),
   },
   bodyHasContent: vi.fn(() => false),
   bodyTextWithoutSignature: vi.fn(() => ''),

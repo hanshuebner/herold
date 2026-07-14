@@ -16,6 +16,7 @@
     type ActiveState,
     applyImage,
     removeImageBySrc,
+    replaceImageSrc,
     insertHtmlBlockAtEnd,
     removeHtmlBlockByShareUrl,
   } from './editor';
@@ -367,6 +368,23 @@
     };
   });
 
+  // Swap an inline image's full-resolution blob: src for a downscaled
+  // proxy once one is generated, driven off the same mounted view
+  // (issue #243).
+  $effect(() => {
+    const view = editorView;
+    if (!view) {
+      compose.setSwapInlineImageSrcFn(null);
+      return;
+    }
+    compose.setSwapInlineImageSrcFn((oldSrc, newSrc) => {
+      replaceImageSrc(view, oldSrc, newSrc);
+    });
+    return () => {
+      compose.setSwapInlineImageSrcFn(null);
+    };
+  });
+
   /** Format expiry for the shared links strip. */
   function formatExpiry(expiresAt: string): string {
     const now = Date.now();
@@ -640,7 +658,11 @@
           // Upload failed: retract the in-editor placeholder so the user
           // does not see a stale blob: image. The chip in the attachment
           // strip already shows the error text via its 'failed' status.
-          removeImageBySrc(editorView, objectURL);
+          // Re-read the attachment's current src rather than the captured
+          // `objectURL` -- a downscaled proxy (issue #243) may have swapped
+          // it in while the upload was in flight.
+          const current = compose.attachments.find((a) => a.key === key);
+          removeImageBySrc(editorView, current?.objectURL ?? objectURL);
         }
       }),
     );

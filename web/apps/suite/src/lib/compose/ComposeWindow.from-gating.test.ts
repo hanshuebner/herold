@@ -80,6 +80,7 @@ vi.mock('./compose.svelte', () => {
     flipToAttachment: vi.fn(),
     setOffloadOfferFn: vi.fn(),
     setShareEditorFns: vi.fn(),
+    setSwapInlineImageSrcFn: vi.fn(),
   };
   return {
     compose,

@@ -71,6 +71,7 @@ vi.mock('../compose/compose.svelte', () => {
     removeAttachment: vi.fn(),
     removeShare: vi.fn(),
     setShareEditorFns: vi.fn(),
+    setSwapInlineImageSrcFn: vi.fn(),
   };
   return { compose };
 });

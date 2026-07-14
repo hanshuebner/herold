@@ -416,6 +416,31 @@ export function removeImageBySrc(view: EditorView | null, src: string): void {
 }
 
 /**
+ * Replace the `src` attribute of every image node matching `oldSrc` with
+ * `newSrc`, in place (issue #243). Used to swap a large inline image's
+ * full-resolution blob: URL for a downscaled proxy once one has been
+ * generated, without disturbing the node's position, alt text, or the
+ * surrounding document.
+ */
+export function replaceImageSrc(
+  view: EditorView | null,
+  oldSrc: string,
+  newSrc: string,
+): void {
+  if (!view) return;
+  const { doc, tr } = view.state;
+  let transaction = tr;
+  let changed = false;
+  doc.descendants((node, pos) => {
+    if (node.type.name === 'image' && node.attrs.src === oldSrc) {
+      transaction = transaction.setNodeAttribute(pos, 'src', newSrc);
+      changed = true;
+    }
+  });
+  if (changed) view.dispatch(transaction);
+}
+
+/**
  * Insert an HTML fragment at the end of the document (before the
  * signature delimiter when present). Used by the share-link offload path
  * to inject the download-link block directly into the live ProseMirror

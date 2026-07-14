@@ -94,8 +94,12 @@
             timeoutMs: 4000,
           });
           // Remove the in-editor placeholder so the body stays consistent.
+          // Re-read the current src rather than the captured `objectURL`
+          // -- a downscaled proxy (issue #243) may have swapped it in
+          // while the upload was in flight.
           const { removeImageBySrc } = await import('./editor');
-          removeImageBySrc(view, objectURL);
+          const current = compose.attachments.find((a) => a.key === key);
+          removeImageBySrc(view, current?.objectURL ?? objectURL);
         }
       }),
     );
