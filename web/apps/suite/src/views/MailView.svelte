@@ -1236,7 +1236,14 @@
          a selection is active. -->
     <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
       {#if effectiveListEmails.length > 0}
-        <SelectChooser />
+        <!-- Explicit visibleEmails/visibleIds (re #202 follow-up): SelectChooser's
+             own defaults fall back to mail.listEmails, which is tab-unaware. When
+             a category tab (REQ-CAT-10..14) is active, effectiveListEmails is the
+             tab-filtered set that actually renders; without this, "select all"
+             from the chooser would select ids for rows other tabs render, not
+             this one -- the toolbar's selection count would exceed the checked
+             rows on screen, reachable through an ordinary "select all" click. -->
+        <SelectChooser visibleEmails={effectiveListEmails} visibleIds={effectiveListEmailIds} />
       {/if}
       {#if mail.listSelectedIds.size > 0}
         <span class="bulk-count">
@@ -1354,7 +1361,7 @@
           <button
             type="button"
             class="banner-btn banner-btn--secondary"
-            onclick={() => mail.selectAllVisible()}
+            onclick={() => mail.selectAllVisible(effectiveListEmailIds)}
           >
             {t('select.clearWholeMailbox')}
           </button>
