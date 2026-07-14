@@ -1,478 +1,323 @@
-# ADR-0002: Generated spam filter -- the LLM as compiler, not as classifier
+# ADR-0002: Spam and category are one plugin call, and the plugin owns the rules
 
-- Status: Accepted (maintainer, 2026-07-13)
-- Date: 2026-07-13
-- Area: server -- spam filtering, plugins, suite settings
-- Related requirements: REQ-FILT-01..02 (verdict shape), REQ-FILT-13 (classifier
-  is a replaceable plugin), REQ-FILT-22 / REQ-FILT-65..68 (prompt transparency),
-  REQ-FILT-30..32 (what reaches the LLM), REQ-FILT-70..72 (feedback, no
-  retraining), REQ-FILT-100..102 (Sieve seam), REQ-PLUG-30..34 (JSON-RPC wire),
-  REQ-PLUG-40..44 (plugin isolation), REQ-PLUG-70..72 (ABI is a hard contract),
+- Status: Accepted (maintainer, 2026-07-13; decision reversed on measurement 2026-07-14)
+- Date: 2026-07-14
+- Area: server -- spam filtering, categorisation, plugins, suite settings
+- Related requirements: REQ-FILT-01..02 (verdict shape), REQ-FILT-10..13 (endpoint,
+  model, plugin), REQ-FILT-20..22 (prompt), REQ-FILT-30..32 (what reaches the LLM),
+  REQ-FILT-40..43 (failure modes), REQ-FILT-60..63 (endpoint trust),
+  REQ-FILT-65..68 (prompt transparency), REQ-FILT-70..72 (feedback),
+  REQ-FILT-100..102 (Sieve seam), REQ-FILT-200..230 (categories),
   REQ-PROTO-65 (spamtest)
-- Scope statements in tension: G5 (LLM-first spam), NG4 (traditional spam
-  filtering)
-- Depends on: ADR-0003 (plugins as first-class extensions). This filter is a
-  plugin, and it needs all three capabilities that ADR proposes -- lifecycle,
-  per-principal state, and a UI surface. Without them it cannot be one.
+- Depends on: ADR-0003 (plugins as first-class extensions) for the settings surface,
+  plugin state, and data grants. This ADR extends its state API from one scope to
+  three (principal, domain, server).
+- Depended on by: ADR-0004 (unified categories). Categories are produced by the
+  classifier plugin specified here, in the same call as the spam verdict. Everything
+  ADR-0004 says about what a category *is* -- stored vocabulary, user-owned, tab strip,
+  dispositions, corrections that stick -- stands. What it says about compiling a
+  `definition` into a server-side rule language does not: rules live in the plugin now.
 
-## Context
+## Reversal
 
-Today every inbound message costs one LLM call (REQ-FILT-10, `herold-spam-llm`).
-That buys good judgement at a price that is paid per message, forever: a 5s
-timeout budget (REQ-PLUG-32) on the delivery path, a nondeterministic verdict, an
-endpoint the operator must trust with mail content (REQ-FILT-60), and a reason
-string that is a plausible narrative rather than an auditable decision.
+An earlier version of this ADR proposed taking the LLM off the delivery path: a
+filter compiled from the user's policy, plus a linear model trained on their
+feedback, scoring every message in pure Go. It was accepted on 2026-07-13 and
+measured on 2026-07-14 against human ground truth.
 
-This ADR proposes moving the LLM off the delivery path and into a **compile
-step**: it authors the filter once, from a natural-language policy the user
-writes, and the filter it emits is then evaluated in pure Go, per message, in
-microseconds, with no network call and no mail content leaving the process.
+It lost. The numbers are below, and they are kept rather than deleted because the
+proposal is an attractive one and it will be made again.
 
-### Evidence
+## Evidence
 
-Measured on the `imap-cleaner` evaluation corpus (1,000 real messages from a
-production mailbox; see that repo's `eval/`):
+Ground truth: 3,631 messages from a production mailbox, every label human-placed or
+derived from the reply graph -- 1,689 spam, 1,942 ham, of which **560 are
+representative**: a random INBOX draw a human judged. (Reply-graph ham -- mail the
+owner answered -- is free and certain and useless for setting a threshold, being
+threaded mail from real correspondents and therefore the mail least likely to be a
+false positive.)
 
-- A logistic regression over 44 hand-written header features -- SPF/DKIM/DMARC
-  results, From/Reply-To/Return-Path/Message-ID consistency, Received chain
-  shape, List-* headers, subject typography -- reaches **AUC 0.992** in
-  cross-validation and **0.998** on a temporal holdout (train on the past,
-  classify the future). Hashed character n-grams over From and Subject add about
-  four points.
-- The features are pure string handling over the header block. No model file, no
-  DNS lookup, no network, no CGO.
+The metric is **spam recall at a false-positive rate at or below 0.5%**, on the
+**hard subset** -- the spam the upstream filter did not already catch. Easy spam is
+easy for everyone. A false positive silently files a member's mail in a folder
+nobody reads; a false negative is one more spam in an inbox that already gets
+fifteen a day. Accuracy is not the metric, and neither is AUC.
 
-Two caveats that bound the claim, and they are about the corpus rather than the
-method:
+| Classifier | recall @ FPR <= 0.5% | false positives / 560 |
+|---|---|---|
+| **Claude Haiku 4.5** | **65.7%** | **0** |
+| Learned filter: 44 header features + hashed n-grams | 52% temporal, 60% cross-validated | -- |
+| GLM-4.7-flash (EU-hosted; ~19 GB to self-host) | 43.0% | 0 |
+| Nova Lite | 25.0% | 2 |
+| **`llama3.2:3b` -- herold's current default (REQ-FILT-11)** | **4.4%** | **29.8% FPR at threshold 80** |
 
-- **The false-positive side is not yet certified.** The metric that matters is
-  spam recall at a false-positive rate at or below 0.5%, and by the rule of three
-  that needs roughly 600 confirmed ham. The temporal holdout had 24. Zero false
-  positives out of 24 bounds the FPR at 12%, which is not the claim we need.
-  Human ground truth is being collected.
-- **Corpora leak.** The mailbox's own SpamAssassin had written its verdict into
-  the headers of the very mail the classifier was asked to judge, and a
-  `DKIM-Filter` header dated each message finely enough to stand in for the
-  folder it ended up in. Both had to be stripped before any number above meant
-  anything. Any future evaluation harness must assume this class of leak exists
-  and hunt for it.
+**The LLM wins the metric.** 65.7% against the learned filter's 52%, with zero false
+positives across 560 representative ham -- which by the rule of three bounds its true
+false-positive rate below 0.54%.
 
-### Why a compiled filter and not simply a cheaper model
+**And it wins the argument that the metric does not capture.** An LLM arrives knowing
+what a pharmacy scam, a forged postmaster bounce and a German invoice fraud look
+like. A learned filter knows nothing, and everything it knows must be taught to it --
+per mailbox, from labelled examples, forever, while spam evolves underneath it. The
+corpus above cost two hours of human labelling and produced training data for exactly
+one mailbox. None of it transfers: the model's strongest spam feature was `List-Id`,
+which is true of a chairman's published address and precisely backwards for a private
+inbox full of legitimate mailing lists.
 
-The per-message spend is not the problem; at this volume it is noise. The
-problems the compile step actually solves:
+**The LLM is the fallback, not the preference.** This is worth stating plainly,
+because the decision reads otherwise. A mechanism that classified and categorised
+mail without a model call would be better on every axis herold cares about -- cost,
+latency, determinism, and not sending anyone's mail to a third party -- and we would
+take it. The measurement says no such mechanism is available at acceptable quality:
+the best non-LLM filter built here reaches 52% against the LLM's 65.7%, and needs
+per-mailbox training data forever to hold even that. So herold uses an LLM because
+the alternative does not work yet, and the design must say so, because the day a
+usable non-LLM mechanism exists is the day this decision should be revisited without
+a rewrite.
 
-- **Privacy.** At compile time the model sees the user's own policy prose and a
-  schema. No correspondent's address, subject or body is in the payload -- ever.
-  REQ-FILT-60's warning ("your inbound mail content is sent to this endpoint")
-  stops applying, and with it the whole jurisdiction question.
-- **Determinism.** The same message gets the same verdict twice. Today it does
-  not: a classifier sampling at a nonzero temperature can file the same mail two
-  ways on two runs.
-- **Latency.** Microseconds against a 5s timeout budget, with no
-  accept-on-failure degradation path (REQ-FILT-40) because there is nothing to
-  fail.
-- **Auditability.** REQ-FILT-66 promises the user an explanation. An LLM's
-  `reason` string is a post-hoc rationalisation that cannot be checked against
-  what the model actually did. A rule trace -- these rules fired, they
-  contributed these scores, the total crossed the threshold -- is the decision
-  itself.
+Which is why **classification is pluggable, and spam and category are one plugin
+call.** Both are the same question -- *what kind of mail is this?* -- and the server
+asks it once, of one plugin, which answers however it likes. Neither the LLM nor any
+particular model is load-bearing; the *contract* is.
+
+**herold's default does not work, and that is the urgent finding.** `llama3.2:3b`
+catches 4.4% of the spam that matters, and at the threshold the incumbent runs today
+it misfiles **29.8% of real mail**. An operator who installs herold, accepts the
+defaults and enables spam filtering has roughly one real message in three filed into
+Junk. REQ-FILT-11 recommends this model. It must not.
+
+Nor does a bigger local model rescue it: GLM-4.7-flash needs ~19 GB and reaches 43%,
+*below* the learned filter. **A small local LLM is not a working spam filter, and a
+good one needs hardware a typical self-hoster does not have.**
+
+**The local model is therefore out of scope for now.** Nothing measured runs on a
+CPU-only mail server and works. Rather than ship a recommendation nobody can act on,
+herold ships none, and the configuration with evidence behind it -- Claude Haiku 4.5,
+via the Anthropic API, operator-configured -- is documented as the one that was
+measured. This is a decision to stop looking, not a conclusion that nothing exists:
+the 8-14B band is untested, and the question is worth reopening when there is a
+reason to. It is not worth holding up the build for.
+
+### Traps in the measurement, recorded because every one of them flattered
+
+Each was found only by looking, and each produced a *better* number:
+
+- **The corpus leaks.** The mailbox's own SpamAssassin had written its verdict into
+  the headers of the mail being judged, and a `DKIM-Filter` header dated each message
+  finely enough to stand in for the folder it ended up in. Both had to be stripped
+  before any number meant anything. REQ-FILT-226..229 already blind the in-tree
+  backtest to herold's own prior output for exactly this reason -- the same leak,
+  arriving from inside the house.
+- **The folder is not the label.** 422 of the sampled INBOX messages were spam; INBOX
+  was 63% spam. An evaluation scored against folder priors is scored against a 30%
+  error rate.
+- **Cheap ham is biased ham.** Measured against reply-graph ham, the learned filter
+  reported 93% where the honest number was 56%.
+- **Forgeable signals are not signals.** A `Re:` prefix appears in 1% of spam and 37%
+  of real ham, and costs a spammer three characters to fake. Anything -- model or rule
+  -- that leans on `Re:`, `User-Agent` or `In-Reply-To` as evidence of ham is
+  borrowing recall against an attack nobody has bothered to run yet.
 
 ## Decision
 
-Three artefacts, one of which the LLM writes.
+**The LLM remains the classifier**, behind a plugin contract, because nothing else
+measured works.
 
-```
-  policy.md  --[ LLM, on demand, no mail content ]-->  rules.json
-  feedback   --[ logistic regression, no LLM      ]-->  weights.json
-  message    --[ pure Go, no network              ]-->  score -> verdict
-```
+### One plugin, one call, both answers
 
-    score(msg) = SUM { r.score : r.when(msg) }  +  w . phi(msg)
-    verdict    = spam if score >= threshold else ham
+Spam and category are one question -- *what kind of mail is this?* -- and herold asks
+it once, of one plugin:
 
-`phi` is the compiled feature extractor (in-tree Go, fixed at release).
-`rules.json` is generated from the user's natural-language policy. `weights.json`
-is trained from the feedback records REQ-FILT-70 already collects. The threshold
-is recalibrated after any change to either, against the user's own labelled mail,
-so the false-positive budget survives a policy edit.
+    mail.classify(message, context) -> { verdict, confidence, reason, category }
 
-The verdict feeds `${spam.verdict}` / `${spam.confidence}` and the `spamtest`
-mapping exactly as today (REQ-FILT-100, REQ-PROTO-65). **Sieve is untouched.**
-This DSL scores; Sieve routes. They do not overlap: Sieve has tests and actions
-and no notion of accumulating a weight, and this language has weights and no
-notion of an action.
+One plugin type (`classifier`), one method. It is invoked at the two points where a
+message enters a mailbox and nowhere else:
 
-### Where the work runs
+- after the **SMTP DATA** phase, before Sieve;
+- when a message is **pulled in over IMAP** from a remote account.
 
-**All of it is one plugin**, `herold-spam-filter`: feature extraction, rule
-evaluation, scoring, weight training, and the settings panel. Core gains no spam
-logic at all.
+**How the plugin produces the two answers is the plugin's business** -- one model call
+returning both, two calls, rules, no model at all. The server does not know and must not
+care. That indifference is the point: it is what lets a non-LLM implementation replace
+this one without touching the delivery path, on the day one exists.
 
-| Concern | Mechanism |
-|---|---|
-| Scoring a message | `spam.classify`, with a payload that carries the full header block |
-| Policy -> rules compilation | `spam.compile` -- a new method; the only one that talks to an LLM, and it sees no mail |
-| Weight training | inside the plugin, from feedback the server forwards |
-| Policy, rules, weights | ADR-0003 per-principal plugin state (`state.get` / `state.put`) |
-| Settings UI, rule table, preview diff | ADR-0003 `settings.panel` view tree |
-| Feedback (Junk moves) | `spam.feedback`, a new server-to-plugin notification over the records REQ-FILT-70 already collects |
+This replaces `spam.classify` (REQ-FILT-13) and the categoriser both. There is no second
+classification mechanism anywhere in the server.
 
-A plugin is the right home for all of it, on three counts:
+### The plugin owns the rules; the server owns the rule *store*
 
-- **Scope.** NG4 already says operators wanting a rule engine or a Bayesian
-  classifier "can write a plugin". This is the sanctioned home for exactly this.
-- **Cost.** herold targets 10,000 inbound messages per day -- about 0.12 per
-  second. An NDJSON round trip over stdio carrying a few kilobytes of headers is
-  not measurable against a 5s classification budget (REQ-PLUG-32). A process hop
-  that keeps spam logic out of core is bought cheaply.
-- **Blast radius.** A scorer that evaluates model-generated expressions over
-  hostile input belongs behind the process boundary REQ-PLUG-40..44 already built,
-  not inside the mail server.
+Users have opinions that no classifier should be guessing at -- "a one-time code from my
+bank is never spam", "mail from the club's members is never spam". Those opinions are
+rules, and **the plugin defines what a rule is**: its format, its semantics, how it is
+edited, how it is compiled from natural language, and how it is evaluated. The server
+does not parse a rule, does not evaluate one, and ships no rule engine.
 
-The one thing the plugin boundary does not currently supply is the message itself.
-`spam.classify` carries `from`, `to`, `cc`, `subject`, `received_date`, three auth
-booleans, `from_domain` and `body_excerpt` -- and the features this design rests on
-are not in it: no Received chain, no Message-ID, no Return-Path, no Reply-To, no
-`List-*`, no Content-Type, no User-Agent. The payload has to carry the raw header
-block, which ADR-0003's data grants provide (see "What this contradicts", item 3).
+What the server provides is **storage, scoping, and authorisation** -- the things a
+plugin cannot do for itself because they are properties of the mail system, not of the
+classifier:
 
-The LLM stays out-of-process, which is what invariant 2 is protecting, and it is
-called once per *policy edit* rather than once per message.
-
-## The rule language
-
-A rule is a score, a condition, and a sentence explaining which line of the user's
-policy produced it. The condition is **CEL** -- the Common Expression Language:
-
-```toml
-[[rule]]
-id      = "member-domain-authenticated"
-score   = -6.0
-because = "policy line 3: mail from member domains is ham"
-when    = 'from.registrable in lists.members && auth.dmarc == "pass"'
-```
-
-### Why CEL
-
-This is the one place where a wrong choice is expensive, because the language is
-simultaneously written by a model, read by a user, and evaluated on untrusted
-input. CEL is the only candidate that is good at all three:
-
-- **It is the industry's answer to exactly this problem.** Kubernetes admission
-  policy, Envoy RBAC, and Firebase security rules all embed CEL for the same
-  reason: a user-supplied predicate over a structured object, evaluated in a
-  server that must not hang. Nothing here is novel, which is the point.
-- **Non-Turing-complete, by design.** There are no unbounded loops and no
-  recursion, so **evaluation terminates as a property of the language** rather
-  than because we wrapped it in a CPU cap and hoped. That is a materially stronger
-  guarantee than a hand-rolled interpreter can offer, and it is why CEL exists.
-- **It has a real type checker.** The environment declares the fields and their
-  types; a ruleset referencing `from.registerable` (sic), or comparing a string to
-  a number, fails to compile and is rejected before it can ever run. This is the
-  primary defence against a model that invents a field, and it is enforced by a
-  checker we did not write.
-- **Models emit it reliably**, because their training data is saturated with it --
-  every Kubernetes `ValidatingAdmissionPolicy` in the world is a worked example.
-- **Users can read and hand-edit it.** `from.registrable in lists.members` needs no
-  explanation, and a filter the user is asked to trust is one they must be able to
-  read. Legibility is a safety property here, not a courtesy: the whole
-  accountability story rests on a person being able to look at a generated rule and
-  see what it does.
-
-Dependency justification, per STANDARDS section 3: `github.com/google/cel-go`,
-Apache-2.0, Google, actively maintained, pure Go and CGO-free. It pulls in
-`antlr4-go/antlr` (BSD-3) for its parser; `protobuf` is already in the tree, so
-that side costs nothing. Two direct dependencies against a budget of fifty, in
-exchange for not writing -- and not fuzzing, and not maintaining -- a lexer, a
-parser, a type checker, and a terminating evaluator.
-
-### The environment
-
-CEL evaluates against a typed object. This is the whole surface a rule can touch;
-there is nothing else in scope, and the type checker enforces it.
-
-| Field | Type | Meaning |
+| Scope | Owned by | Read by the plugin when classifying |
 |---|---|---|
-| `header("Subject")` | `string` | First occurrence, unfolded; `""` when absent |
-| `headers("Received")` | `list<string>` | All occurrences |
-| `has_header("List-Id")` | `bool` | Present at all |
-| `from`, `to`, `reply_to`, `return_path` | `Address` | `.addr`, `.domain`, `.registrable`, `.tld`, `.local` |
-| `auth.spf`, `auth.dkim`, `auth.dmarc` | `string` | `pass` / `fail` / `softfail` / `none` |
-| `lists.<name>` | `list<string>` | A named list defined alongside the rules |
-| `feature.<name>` | `double` | The learned model's feature vector, by name |
-| `subject`, `body_excerpt` | `string` | Subject to hand; body only if granted (see below) |
+| `principal` | the user | always, for that user's mail |
+| `domain` | the domain's administrator | always, for mail to that domain |
+| `server` | the operator | always |
 
-CEL supplies the operators -- `&&`, `||`, `!`, `==`, `in`, `.matches()`,
-`.startsWith()`, `.contains()`, `.size()`, arithmetic, comparison -- so none of
-them have to be specified, implemented, or fuzzed here.
+The plugin reads all three on every classification and decides for itself how they
+combine. That is classifier semantics and it belongs on the classifier side of the
+boundary. (The first-party plugin evaluates enforced operator rules, then the user's own,
+then advisory operator rules -- so an operator can blocklist a known-bad sender outright,
+and a user can still rescue a correspondent the operator has never heard of.)
 
-`feature` is the hinge of the design. It lets a generated rule reach the same
-vector the learned model consumes, so "be harsher on subject lines that shout"
-compiles to `feature.subj_upper_ratio > 0.6` rather than to a regex somebody has to
-maintain forever. The registry is compiled into the plugin and versioned; a ruleset
-naming a feature this build does not have fails the type check, which is what stops
-a stale ruleset surviving a plugin upgrade.
+The server enforces the one thing it must: **who may write which scope.** A principal
+cannot edit domain or server rules. A domain administrator cannot edit another domain's.
+This is authorisation, and it is not delegable to a plugin.
 
-`.matches()` is RE2 -- linear time, no backtracking, no catastrophic blowup. That
-is a property of Go's `regexp`, not a limit we impose.
+Rules are **opaque bytes to herold** -- stored, versioned, backed up, and handed over.
+This is ADR-0003's plugin state, extended from one scope to three; no new mechanism.
 
-### The document
+Editing is the plugin's too. It supplies the settings surface as an ADR-0003 tier-1 view
+tree, so a rule editor can look like whatever the rule format actually is, and the
+suite renders it without executing plugin code.
 
-TOML, because it is what herold already speaks (`system.toml`,
-`pelletier/go-toml/v2`) and because a user who opens this file should recognise it.
-It is JSON on the wire and in the plugin state store; TOML is the face it presents
-for reading, export, and hand-editing.
+### What this costs and what it buys
 
-```toml
-schema    = 1
-threshold = 4.0
+It costs herold the ability to say anything about a rule: no server-side validation, no
+server-side backtest of a ruleset it cannot read, no cross-plugin rule portability.
+Switching classifier plugins means the rules do not come along.
 
-[generated]
-policy_sha256 = "9f2c..."
-model         = "claude-haiku-4.5"
-temperature   = 0
-at            = "2026-07-13T09:14:22Z"
+It buys the thing that made the whole exercise worth doing -- **the classifier is a
+single, replaceable component.** Spam filtering is a moving target with a hostile
+opponent, and every mechanism worth trying (a model, a rule engine, a trained filter,
+some combination) has a different idea of what a rule is. Fixing a rule language in the
+server would freeze the design around today's best guess, which the measurement above
+says is already the second-best answer to a question that keeps changing.
 
-[lists]
-members    = ["classic-computing.de", "vzekc.org"]
-cheap_tlds = ["top", "beauty", "shop", "homes", "icu", "xyz"]
+### Ordering
 
-[[rule]]
-id      = "member-domain-authenticated"
-score   = -6.0
-because = "policy line 3: mail from member domains is ham"
-when    = 'from.registrable in lists.members && auth.dmarc == "pass"'
+**The call is synchronous, inside the SMTP transaction, before `250 OK`.** The verdict is
+known before the message is stored, so Sieve can test it and no message ever appears in
+the inbox and then moves under the user's cursor. The cost is that a slow or rate-limited
+model holds the transaction open, which is bounded rather than avoided: **a hard timeout,
+after which the verdict is `unknown` and the mail is delivered unjudged** (REQ-FILT-40,
+degrade-open). A classifier must never be able to lose mail, and it must never be able to
+stall a queue.
 
-[[rule]]
-id      = "forged-member-domain"
-score   = 8.0
-because = "policy line 3: a forged From: using a member domain is spam"
-when    = 'from.registrable in lists.members && auth.dmarc != "pass"'
+Both answers come back in that one call. `\Junk` is exempt from categorisation
+(ADR-0004): a `spam` verdict drops the category even if the plugin returned one.
+Otherwise ADR-0004's routing rule is untouched -- Sieve routes, categories classify, an
+explicit `fileinto` beats an inferred disposition. Sieve gains the category as a test it
+could not see before, alongside `${spam.verdict}`.
 
-[[rule]]
-id      = "cheap-tld-unauthenticated"
-score   = 3.5
-because = "policy line 5: throwaway domains that cannot authenticate"
-when    = 'from.tld in lists.cheap_tlds && auth.dkim != "pass"'
+### The one thing the server still categorises by itself
 
-[[rule]]
-id      = "two-factor-code"
-effect  = "force_ham"
-because = "policy line 7: one-time codes are never spam"
-when    = '''auth.dkim == "pass" &&
-             subject.matches("(?i)\\b(one[- ]time|verification|2fa)\\b")'''
-```
+A plugin may return an empty `category`, and a deployment may have no classifier plugin
+at all. In both cases herold falls back to a **small structural categoriser built into
+the server** -- `List-Id` and `List-Unsubscribe` to `forums`, `Precedence: bulk` to
+`promotions`, `Auto-Submitted` to `updates`, and nothing else. This is REQ-FILT-214,
+retained: **the tab strip works on a herold with no model configured and no plugin
+installed.**
 
-`effect` defaults to `score`. `force_ham` and `force_spam` short-circuit the sum,
-because some policy statements are absolute -- "a one-time code from my bank is
-never spam" is not a large negative weight, it is a floor -- and expressing an
-absolute as a big number is exactly the thing that quietly stops holding once the
-other weights move. They are the escape hatch, and a ruleset that leans on them is
-a ruleset whose policy needs rewriting.
+It is a fallback, not a competitor. **The plugin's category wins whenever it gives one**,
+and the fallback fills silence. It is deliberately dumb -- a handful of structural
+headers, no user-editable rules, no LLM, nothing to configure -- because the moment it
+grows a rule language it becomes the second classification mechanism this ADR exists to
+remove.
 
-Weights ship separately, because they change on a different clock -- feedback,
-continuously -- than the rules do, which is policy edits, rarely:
+It works at all only because categorisation is not adversarial: nobody forges a `List-Id`
+to look more like a mailing list. Spam is the opposite, the sender is *trying* to defeat
+the rule, which is why there is no equivalent fallback for the spam verdict. **With no
+classifier plugin, mail is delivered unjudged** -- categorised, but with no opinion about
+spam, which is the honest outcome and better than a 3B model destroying the mailbox.
 
-```toml
-schema     = 1
-bias       = -1.2
-trained_at = "2026-07-13T09:14:22Z"
-n_examples = 1432
+### What plugin authors need to know, from the measurement
 
-[weight]
-"auth.spf.pass"     = -1.83
-"tld.cheap"         =  1.11
-"subj.upper_ratio"  =  0.94
-```
+Not requirements the server enforces -- it cannot, having given up the rule language --
+but findings that cost real effort to obtain, and that the first-party plugin obeys:
 
-### Safety limits
+- **Forgeable headers may not be evidence of ham.** `User-Agent`, `In-Reply-To`,
+  `References` and a `Re:` subject are strings the *sender* types. A `Re:` prefix appears
+  in 1% of spam and 37% of real ham and costs three characters to fake. A rule that
+  accepts them as evidence of ham sells a `ham` verdict for one header line. SPF, DKIM
+  and DMARC are different in kind -- they are the receiving server's own verdict and
+  cannot be typed by the sender.
+- **Authentication does not fix that, and it was tried.** Spam authenticates perfectly:
+  the spammer owns the domain and signs it, while a genuine correspondent on a small
+  server may not authenticate at all.
+- **A rule that fired is an explanation; a model's `reason` string is a narrative.**
+  REQ-FILT-66 promises the user an explanation, so a plugin should say which of the two
+  it is giving them.
+- **Evaluate on representative ham.** Reply-graph ham -- mail the owner answered -- is
+  free, certain, and useless for setting a threshold. It reported 93% where the honest
+  number was 56%.
 
-The evaluator takes a model's output as input, so it is bounded rather than
-trusted. CEL discharges most of this for us -- termination, the type check, RE2 --
-and what remains is arithmetic:
+### Model requirements
 
-- Rule count capped (256); compiled CEL programs are cached per ruleset, so
-  evaluation is O(rules) of pre-compiled programs, with no parsing on the hot path.
-- CEL's own cost estimator bounds each expression at compile time; a rule whose
-  estimated cost exceeds the budget is rejected at compile time rather than
-  interrupted at evaluation time.
-- No I/O, no clock read, no DNS. A rule is a pure function of the message and the
-  lists.
-- Per STANDARDS section 8, the ruleset decoder gets a fuzz target with a seed
-  corpus under `testdata/fuzz/`. The *expression* parser does not need one: it is
-  cel-go's, and fuzzing someone else's maintained parser is not our job.
+REQ-FILT-11's default model is withdrawn. In its place:
 
-## Regeneration is a runtime, user-level operation
-
-The generated ruleset is **not** a build artefact and is **not** committed. The
-user edits their policy in the suite and recompiles; nothing rebuilds, nothing
-redeploys. That forces two consequences:
-
-- **Rules are interpreted data, not generated Go.** There is no compiler on the
-  user's machine. This is why the DSL exists at all.
-- **The regression gate cannot be CI.** It is a backtest instead, and herold is
-  in the rare position of having the corpus that matters already on disk: the
-  user's own mail. A candidate ruleset is scored against a sample of their INBOX
-  and Junk before it is ever activated, and the user is shown what would change.
-
-The compile flow, all of it inside the plugin, brokered by `ui.action`:
-
-1. User edits the policy and hits Apply. This is the slot REQ-FILT-22 and
-   REQ-FILT-67 already define as the user-visible, user-mutable prompt.
-2. Plugin calls its LLM endpoint with the policy text, the DSL schema, and the
-   feature registry. **No message data is in the payload.**
-3. Plugin validates what comes back: JSON schema, operator arity, types, feature
-   names, limits. Invalid -> rejected, nothing changes, the user is told why.
-4. Plugin backtests the candidate against its retained corpus (below) and
-   recalibrates the threshold to hold the false-positive budget.
-5. Plugin returns a `diff` node: "3 messages would change verdict", listed.
-6. User accepts. The ruleset is written to per-principal plugin state and
-   activated. The previous one is retained, so rolling back is a click.
-
-Step 5 is the load-bearing one. It is what makes natural-language configuration a
-repeatable engineering operation rather than a wish: the user sees the consequence
-before it is real, against their own mail.
-
-### Where the backtest corpus comes from
-
-A backtest needs the user's mail, and a plugin has no mailbox access -- nor should
-it acquire any. Granting plugins a "read the mailbox" RPC to serve this one flow
-would be a far larger concession than the feature is worth.
-
-It does not need one. **The plugin already sees every inbound message**, via
-`spam.classify`. It can retain its own bounded corpus in plugin state:
-
-- **Headers, last N messages** (N a few hundred) -- needed in full, because a rule
-  may reference any header via `["header", "X"]`, so feature vectors alone cannot
-  backtest a *new* rule. This is the backtest corpus and the reason it is bounded.
-- **Feature vectors plus labels, full history** -- roughly 350 bytes a message, so
-  years of it is cheap. This is what trains the weights.
-
-Labels come from `spam.feedback`: the user moving mail into or out of Junk is the
-correction signal, and REQ-FILT-70 already records it.
-
-This keeps mail inside the two processes that already handle it and adds no new
-data path -- but it does mean the plugin state store holds message headers, which
-is a fact an operator deserves to know and a retention policy has to name.
-
-## Suite integration
-
-A `settings.panel` view tree (ADR-0003 tier 1), rendered into the suite's settings
-surface. The whole panel fits the v1 component vocabulary, which is not a
-coincidence -- this filter is the plugin the vocabulary was sized against:
-
-- **Policy** -- a `textarea`. This is REQ-FILT-65's "user-visible prompt currently
-  in effect", made editable. Operator guardrails (REQ-FILT-67) stay invisible and
-  are not part of what gets compiled.
-- **Apply** -- a `button` dispatching the compile action, whose response is a
-  `diff` node: the preview. Accept or discard; nothing changes until accept.
-- **Active rules** -- a `table`: rule, score, and the `because` sentence pointing
-  back at the policy line that produced it. The user sees the filter, not just the
-  prompt that made it. Individual rules can be disabled without editing the policy.
-- **Lists** -- the named lists (`members`, and whatever the policy introduced) as
-  `chips`. This is where most day-to-day tuning will actually happen, and it needs
-  no LLM call at all.
-- **Why was this filed?** -- a `keyvalue` on the `message.detail` surface: which
-  rules fired, what each contributed, what the learned model contributed, and where
-  that landed relative to the threshold. This discharges REQ-FILT-66's promise with
-  a decision instead of a narrative. It is also the only part of this panel that
-  needs a second ADR-0003 surface, and ADR-0003 flags `message.detail` as the one
-  extension point with a single known caller -- which is this. If it is cut from
-  ADR-0003 v1, the trace lives in the settings panel keyed by Message-ID until a
-  second consumer appears.
-
-State -- policy text, ruleset, weights -- lives in ADR-0003's per-principal plugin
-store, not in a bespoke table. That is the point of ADR-0003: core does not learn
-this plugin's schema.
-
-## What this contradicts, and what has to change
-
-Stated plainly, because none of it can be quietly assumed:
-
-1. **G5 ("LLM-first spam. No rule engine, no Bayesian... One classifier call per
-   message") and NG4 ("No bundled rule engine. No Bayesian.").** This filter ships
-   **first-party**, in `plugins/herold-spam-filter/` and in REQ-PLUG-61's bundle,
-   so both statements need amending. Decided 2026-07-13.
-
-   G5 bought simplicity, and the bill it left is a network call, a 5s timeout, a
-   nondeterministic verdict, and mail content leaving the machine on every single
-   message. A filter that avoids all four should be what a new install gets, not
-   something users have to go and find. NG4's escape clause ("operators who want
-   these can write a plugin") was written to keep herold out of the rule-engine
-   business; it reads oddly once herold is the one shipping the plugin, and the
-   honest move is to amend it rather than to shelter behind it.
-
-   The amendment is narrower than it first looks. G5's real content -- "the LLM
-   decides what spam means, and the operator picks the endpoint" -- survives
-   intact. What changes is *when* the model is asked: once per policy edit rather
-   than once per message. The scope statements should say that, because it is a
-   better statement of the intent than the one they currently carry.
-
-2. **REQ-FILT-72 ("No automatic re-training of the model. That's outside our
-   scope; we're a mail server, not a training pipeline.").** Fitting a logistic
-   regression over feedback records is not a training pipeline in the sense that
-   REQ was refusing -- no GPU, no model file, no fine-tune; a few hundred
-   multiply-adds over records REQ-FILT-70 already stores. And it happens inside a
-   plugin, so herold core is not the thing doing it. But that reading is a lawyer's
-   reading, and the REQ should be amended to say what is actually meant: herold
-   does not train models; plugins may fit their own.
-
-3. **The `spam.classify` payload.** It must carry the raw header block: the
-   Received chain, Message-ID, Return-Path, Reply-To and `List-*` headers are where
-   most of the measured signal lives, and REQ-FILT-30..32 curate all of them away.
-   This is handled by ADR-0003's **data grants** rather than by a bespoke exemption
-   -- the plugin declares `headers.all` as required, and the operator confirms it at
-   install. The rationale REQ-FILT-31 gives for the ban ("LLM prompts are data
-   leakage surfaces") is a statement about an *egress*, and grants put the control
-   at the egress: this filter never opens a socket, and the operator can see that
-   in the same screen where they grant it the headers. Without ADR-0003, this is a
-   hard blocker and nothing else here is buildable.
-
-4. **A new plugin method, `spam.compile`,** and a new server-to-plugin
-   notification, `spam.feedback`. Both additive. `herold-spam-llm` is the natural
-   home for `spam.compile` to grow into.
+- **No default cloud endpoint.** REQ-FILT-61 stands: an operator opts in to a cloud
+  provider consciously, and is told what leaves the machine when they do.
+- **No default model either.** An operator with no configured, validated classifier
+  gets spam filtering **off**, and is told so -- rather than a 3B model quietly
+  destroying their mail. A spam filter that does nothing is a nuisance; one that
+  misfiles a third of real mail is a catastrophe, and the current default is the
+  second kind.
+- **One documented, measured configuration: Claude Haiku 4.5 via the Anthropic API.**
+  It is the only thing tested that meets the target (65.7% recall, zero false
+  positives in 560). It is not a default and cannot be one; it is what the operator
+  docs recommend, with the table above and the cost next to it, so the choice is made
+  on evidence instead of on a guess.
+- **`temperature = 0`, pinned.** A classifier's verdict must be reproducible. The
+  incumbent samples at the provider default and can file the same message two ways on
+  two runs.
+- **herold ships the harness to check.** An operator can point the evaluator at their
+  own mailbox and get the table above for their own model, before trusting it. The
+  in-tree backtest (REQ-FILT-226..229) is most of this machinery already.
 
 ## Consequences
 
-The LLM path does not go away. It becomes the **abstain band**: messages whose
-score lands close to the threshold can still be escalated to `herold-spam-llm`,
-which keeps the quality of a reasoning model on the genuinely hard mail while
-deciding the other ~95% locally, deterministically, and for free. An operator who
-wants today's behaviour sets the band to cover everything and has it.
+The per-message cost and the third-country transfer are real and remain. A plugin can
+reduce them -- its own rules can settle a message without a model call -- but that is
+now the plugin's design problem, not the server's. REQ-FILT-60's disclosure obligation
+stands.
 
-A user with no LLM endpoint configured at all still gets a working filter: default
-rules ship compiled into the binary, and the weights train from their own Junk
-moves. LLM configuration becomes an enhancement rather than a dependency, which
-is a strictly better default posture than a spam filter that does nothing until an
-endpoint is reachable.
+**A deployment with no classifier plugin has no spam filtering.** It still has
+categories, from the structural fallback above. Herold ships a first-party classifier
+plugin, and installing it is a documented step.
 
-The cost is a feature registry that is now a compatibility surface: `phi` is
-referenced by name from stored rulesets and stored weights, so removing or
-renaming a feature breaks both. It gets versioned and it gets the same
-forward-only discipline as a DB migration.
+**The operator with no GPU and no willingness to use a cloud API has no working spam
+filter on this evidence.** That gap is left open deliberately rather than filled with a
+3B model that does harm. The learned filter's 52% is the only thing measured that beats
+nothing for them, and it is not built -- if that operator becomes the one we care about,
+this ADR is where the argument restarts, and the corpus and harness in
+`imap-cleaner/eval/` are what it restarts from. The plugin contract is what makes
+restarting cheap: the substitution is a plugin, not a redesign.
+
+G5 ("LLM-first spam") is **preserved**: the LLM decides what spam means and the operator
+picks the endpoint. NG4 ("no bundled rule engine, no Bayesian") is now satisfied
+literally rather than in spirit -- the server has no rule engine at all.
 
 ## Open questions
 
-- **Ground truth comes first.** None of the numbers above are final until the
-  evaluation corpus has human labels: the deciding metric needs roughly 600
-  *confirmed* ham and the corpus does not yet have them. No filter code is written
-  before that is done.
-- ~~Backtest corpus: how many messages, retained how long?~~ **Resolved
-  2026-07-13** (maintainer, via ADR-0004): **there is no backtest corpus.** The
-  scorer runs in core, so the backtest runs in core too, against the live mailbox
-  in the store -- nothing is copied, nothing is retained, and the retention
-  obligation this question was worried about never arises. The backtest is **full,
-  bounded by a configurable limit** (default 200 000 messages, most recent first);
-  when the limit binds, the preview states its coverage. Sampling was the answer
-  from the era when scoring meant an LLM call per message; a compiled ruleset
-  scores in microseconds, so the cost that justified sampling is gone, and with it
-  the recency and class-imbalance biases that would have made the preview diff a
-  confident lie. See REQ-FILT-226..229, which also blind the evaluator to its own
-  prior output (`$category-*`, `$Junk`, `X-Spam-*`) during a backtest -- the same
-  leakage this ADR found in the imap-cleaner corpus, arriving from inside the house.
-- Cold start: a new principal has no feedback and no retained mail. Ship default
-  weights trained on an aggregate corpus, or run rules-only until enough feedback
-  accumulates?
-- Where does the abstain band's width get configured, and by whom -- operator or
-  user?
+- **Calibration needs labels, and nobody has them.** The threshold is calibrated per
+  mailbox (below), which requires ham the *user judged* -- roughly 600 of it before a
+  0.5% false-positive budget means anything, by the rule of three. No mailbox arrives with
+  that. Where does it come from: the user's Junk corrections accumulating over months, an
+  onboarding pass where they judge a sample, or their reply graph (free, certain, and
+  biased 37 points optimistic)? Until it exists the threshold is the constant 80, so this
+  is a question about the second year, not the first.
+- May the plugin name a category outside the principal's stored set (REQ-FILT-210)?
+  Restricting it keeps the vocabulary user-owned, which is ADR-0004's central fix --
+  `derivedCategories` died for exactly this reason. So the call payload should carry the
+  category set and a plugin answering outside it should be ignored. This is the one way
+  the merged call could quietly resurrect the defect ADR-0004 removed.
+- Backup and migration of an opaque rule store: herold can back the bytes up, but cannot
+  tell an operator whether a restored ruleset is still valid, or convert one plugin's
+  rules to another's. Accepted for now; it is the visible cost of the boundary.
+
+## Deferred
+
+- **The minimum viable local model.** `llama3.2:3b` fails at 4.4%; GLM-4.7-flash
+  reaches 43% at ~19 GB; the 8-14B band is untested. Not being pursued. If it is ever
+  picked up, the argument is that at a small mailbox's volume even slow CPU inference
+  is acceptable -- 17 messages a day tolerates 30 seconds a message -- so an 8B model
+  clearing ~55% would put a free, private, GPU-free option back on the table.

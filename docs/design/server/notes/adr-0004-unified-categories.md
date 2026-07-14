@@ -8,7 +8,9 @@
   REQ-FILT-100..102 (Sieve seam)
 - Scope statements in tension: G5 (LLM-first spam), G14 (LLM transparency),
   NG4 (traditional spam filtering)
-- Depends on: ADR-0002 (generated spam filter -- the LLM as compiler), ADR-0003
+- Depends on: ADR-0002 (spam filtering -- the LLM classifies, policy decides;
+  revised on measurement 2026-07-14, but its rule language, which a category's
+  `definition` compiles to, is unchanged by that revision), ADR-0003
   (plugins as first-class extensions). Both accepted 2026-07-13; the three ship as
   one project. See "Dependencies and build order".
 - Prior-art survey backing this ADR: 17 products, 53 sources. Cited inline.
@@ -274,9 +276,21 @@ Consequences that matter here:
 - **`derivedCategories` dies.** The vocabulary is stored data the user owns, not an
   artefact of the last LLM response.
 
-Categorisation gets `categorise.compile` alongside ADR-0002's `spam.compile`, on
-the same plugin, sharing the feature registry. One rule language, one evaluator,
-one backtest, one trace.
+**Revised by ADR-0002 (2026-07-14).** One plugin answers `mail.classify` and returns
+the spam verdict and the category in one call, made after SMTP DATA and on IMAP pull.
+The rule format is the plugin's -- it compiles a category's `definition` and evaluates
+the result itself, and the server ships no rule engine to do that with.
+
+Everything above about what a category *is* stands: stored vocabulary the user owns,
+per-category dispositions, the tab strip, corrections that write a rule rather than
+feed a prompt, `derivedCategories` dead. What changes is where the rules live.
+
+REQ-FILT-214 survives in reduced form. The server keeps a **small structural
+categoriser** -- `List-Id` to `forums`, `Precedence: bulk` to `promotions`,
+`Auto-Submitted` to `updates` -- with no rule language, nothing to configure, and no LLM.
+The plugin's category wins whenever it gives one; the fallback fills silence. So the tab
+strip works on a herold with no model and no plugin, which is the property this
+requirement was written to protect.
 
 ## Where categorisation runs
 
