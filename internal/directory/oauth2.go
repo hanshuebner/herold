@@ -185,7 +185,48 @@ func (d *Directory) IssueAuthorizationCode(ctx context.Context, email, password,
 	if err != nil {
 		return "", err
 	}
+	return d.mintAuthorizationCode(ctx, pid, client, req)
+}
 
+// IssueAuthorizationCodeForFederatedPrincipal mints a single-use
+// authorization code for a principal that has already been authenticated
+// by an external OIDC provider (issue #238: the federated leg of the
+// /oauth2/authorize login page). It shares every code-minting property
+// IssueAuthorizationCode has (live client re-resolution, scope, single-
+// use, TTL) but has no password/TOTP step of its own -- the caller has
+// already run internal/directoryoidc.RP.CompleteSignIn, whose provider
+// assertion is the credential for this leg. This matches the security
+// posture every other OIDC sign-in path in this codebase already has
+// (the admin/Suite JSON callback at POST /api/v1/oidc/callback does not
+// ask for a local TOTP code either, re #228) -- the federated leg is not
+// a weaker path than password+TOTP, it is a differently-shaped one whose
+// second factor is the external IdP's own assertion rather than a local
+// TOTP code.
+func (d *Directory) IssueAuthorizationCodeForFederatedPrincipal(ctx context.Context, pid PrincipalID, req AuthorizeRequest) (code string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	client, err := d.LookupOAuthClient(ctx, req.ClientID)
+	if err != nil {
+		return "", err
+	}
+	p, err := d.meta.GetPrincipalByID(ctx, pid)
+	if err != nil {
+		return "", fmt.Errorf("directory: load principal: %w", err)
+	}
+	if p.Flags.Has(store.PrincipalFlagDisabled) {
+		return "", ErrUnauthorized
+	}
+	return d.mintAuthorizationCode(ctx, pid, client, req)
+}
+
+// mintAuthorizationCode is the code-minting core shared by
+// IssueAuthorizationCode (password+TOTP leg) and
+// IssueAuthorizationCodeForFederatedPrincipal (external-OIDC leg,
+// issue #238): given an already-authenticated pid and the resolved
+// client, it mints and persists a single-use authorization code bound to
+// req's redirect_uri and PKCE code_challenge.
+func (d *Directory) mintAuthorizationCode(ctx context.Context, pid PrincipalID, client OAuthClient, req AuthorizeRequest) (code string, err error) {
 	scopeJSON, err := json.Marshal(client.grantedScopes())
 	if err != nil {
 		return "", fmt.Errorf("directory: encode oauth2 code scope: %w", err)

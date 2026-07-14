@@ -272,6 +272,97 @@ func TestOAuth2_Exchange_ExpiredCode(t *testing.T) {
 	}
 }
 
+// TestIssueAuthorizationCodeForFederatedPrincipal_MintsUsableCode covers
+// the external-OIDC leg of the /oauth2/authorize grant (issue #238): a
+// principal already authenticated by an external IdP (the caller has
+// already run directoryoidc.RP.CompleteSignIn) reaches the same
+// code-minting/exchange path IssueAuthorizationCode reaches for
+// password+TOTP, with no password/TOTP step of its own.
+func TestIssueAuthorizationCodeForFederatedPrincipal_MintsUsableCode(t *testing.T) {
+	ctx := context.Background()
+	dir, fs, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
+	pid, err := dir.CreatePrincipal(ctx, "federated-flow@example.test", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	verifier, challenge := newPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	req := baseAuthorizeRequest(dir, clk.Now(), redirectURI, challenge)
+
+	code, err := dir.IssueAuthorizationCodeForFederatedPrincipal(ctx, pid, req)
+	if err != nil {
+		t.Fatalf("IssueAuthorizationCodeForFederatedPrincipal: %v", err)
+	}
+	if code == "" {
+		t.Fatalf("empty code")
+	}
+
+	result, err := dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode: %v", err)
+	}
+	if result.AccessToken == "" || result.RefreshToken == "" {
+		t.Fatalf("empty token in result: %+v", result)
+	}
+	atKey, err := fs.Meta().GetAPIKeyByHash(ctx, directory.HashDeviceToken(result.AccessToken))
+	if err != nil {
+		t.Fatalf("GetAPIKeyByHash(access token): %v", err)
+	}
+	if atKey.PrincipalID != pid {
+		t.Fatalf("access token principal = %d, want %d", atKey.PrincipalID, pid)
+	}
+}
+
+// TestIssueAuthorizationCodeForFederatedPrincipal_UnknownClient asserts
+// the federated leg re-resolves the client from the live registry, the
+// same way the password+TOTP leg does (a req token naming a client that
+// has since been deleted must fail, not mint a code for it).
+func TestIssueAuthorizationCodeForFederatedPrincipal_UnknownClient(t *testing.T) {
+	ctx := context.Background()
+	dir, _, clk := newDir(t)
+	pid, err := dir.CreatePrincipal(ctx, "federated-unknownclient@example.test", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, challenge := newPKCE(t)
+	req := baseAuthorizeRequest(dir, clk.Now(), "net.netzhansa.herold:/oauth2redirect", challenge)
+	if _, err := dir.IssueAuthorizationCodeForFederatedPrincipal(ctx, pid, req); !errors.Is(err, directory.ErrUnknownOAuthClient) {
+		t.Fatalf("IssueAuthorizationCodeForFederatedPrincipal with unknown client = %v, want ErrUnknownOAuthClient", err)
+	}
+}
+
+// TestIssueAuthorizationCodeForFederatedPrincipal_DisabledPrincipal
+// asserts a disabled principal cannot obtain an authorization code
+// through the federated leg either -- the external IdP's assertion is
+// not enough to bypass a local account-disable, matching the
+// password+TOTP leg's ErrUnauthorized-on-disabled behaviour
+// (authenticateWithOptionalTOTP).
+func TestIssueAuthorizationCodeForFederatedPrincipal_DisabledPrincipal(t *testing.T) {
+	ctx := context.Background()
+	dir, fs, clk := newDir(t)
+	mustRegisterAndroidClient(t, dir)
+	pid, err := dir.CreatePrincipal(ctx, "federated-disabled@example.test", "correct-horse-staple")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	p, err := fs.Meta().GetPrincipalByID(ctx, pid)
+	if err != nil {
+		t.Fatalf("load principal: %v", err)
+	}
+	p.Flags |= store.PrincipalFlagDisabled
+	if err := fs.Meta().UpdatePrincipal(ctx, p); err != nil {
+		t.Fatalf("disable principal: %v", err)
+	}
+
+	_, challenge := newPKCE(t)
+	req := baseAuthorizeRequest(dir, clk.Now(), "net.netzhansa.herold:/oauth2redirect", challenge)
+	if _, err := dir.IssueAuthorizationCodeForFederatedPrincipal(ctx, pid, req); !errors.Is(err, directory.ErrUnauthorized) {
+		t.Fatalf("IssueAuthorizationCodeForFederatedPrincipal for disabled principal = %v, want ErrUnauthorized", err)
+	}
+}
+
 func TestOAuth2_IssueAuthorizationCode_TOTPRequired(t *testing.T) {
 	ctx := context.Background()
 	dir, _, clk := newDir(t)

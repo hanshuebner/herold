@@ -44,6 +44,11 @@ type oidcStub struct {
 	// nonce echoed back verbatim. The caller sets this before
 	// driving the flow so Verify succeeds.
 	nonce string
+	// gotTokenRedirectURI records the redirect_uri form value the most
+	// recent /token exchange presented, so a test can assert it matches
+	// the redirect_uri sent to /authorize (issue #238's BeginSignInAt:
+	// a real provider enforces this consistency and rejects a mismatch).
+	gotTokenRedirectURI string
 }
 
 func newOIDCStub(t *testing.T, clientID string) *oidcStub {
@@ -114,6 +119,7 @@ func (s *oidcStub) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", 400)
 		return
 	}
+	s.gotTokenRedirectURI = r.Form.Get("redirect_uri")
 	if r.Form.Get("code") != "test-code" {
 		http.Error(w, "bad code", 400)
 		return
@@ -270,6 +276,86 @@ func TestLinkAndSignInRoundTrip(t *testing.T) {
 	if !errors.Is(err, directoryoidc.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
+}
+
+// TestBeginSignInAt_OverridesRedirectURL covers issue #238's
+// /oauth2/authorize federated leg: BeginSignInAt must send its override
+// redirect_uri (not the provider's configured RedirectURL) at both the
+// /authorize step and the /token exchange step, since a real provider
+// enforces exact-match consistency between the two and would otherwise
+// reject the exchange.
+func TestBeginSignInAt_OverridesRedirectURL(t *testing.T) {
+	stub := newOIDCStub(t, "herold-client")
+	fs := newFakeStore(t)
+	p, err := fs.Meta().InsertPrincipal(context.Background(), store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "override@example.test",
+	})
+	if err != nil {
+		t.Fatalf("insert principal: %v", err)
+	}
+
+	rp := directoryoidc.New(fs.Meta(), slog.New(slog.NewTextHandler(io.Discard, nil)), &http.Client{Timeout: 5 * time.Second}, clock.NewReal())
+	if _, err := rp.AddProvider(context.Background(), directoryoidc.ProviderConfig{
+		Name:         "test",
+		IssuerURL:    stub.issuer,
+		ClientID:     "herold-client",
+		ClientSecret: "secret",
+		RedirectURL:  "http://localhost/cb-default",
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	stub.subject = "ext-sub-override"
+	linkAuthURL, linkState, err := rp.BeginLink(context.Background(), p.ID, "test")
+	if err != nil {
+		t.Fatalf("begin link: %v", err)
+	}
+	linkCode, gotLinkState := followAuth(t, linkAuthURL)
+	if gotLinkState != linkState {
+		t.Fatalf("state mismatch: %q vs %q", gotLinkState, linkState)
+	}
+	if _, err := rp.CompleteLink(context.Background(), linkState, linkCode); err != nil {
+		t.Fatalf("complete link: %v", err)
+	}
+
+	const override = "http://localhost/cb-federated-override"
+	authURL, state, err := rp.BeginSignInAt(context.Background(), "test", override)
+	if err != nil {
+		t.Fatalf("BeginSignInAt: %v", err)
+	}
+	if got := mustParseRedirectURI(t, authURL); got != override {
+		t.Fatalf("authorize redirect_uri = %q, want %q", got, override)
+	}
+	code, gotState := followAuth(t, authURL)
+	if gotState != state {
+		t.Fatalf("state mismatch: %q vs %q", gotState, state)
+	}
+	gotPID, err := rp.CompleteSignIn(context.Background(), state, code)
+	if err != nil {
+		t.Fatalf("CompleteSignIn: %v", err)
+	}
+	if gotPID != p.ID {
+		t.Fatalf("signin pid: %d want %d", gotPID, p.ID)
+	}
+	if stub.gotTokenRedirectURI != override {
+		t.Fatalf("token exchange redirect_uri = %q, want %q (must match /authorize, not the provider default)", stub.gotTokenRedirectURI, override)
+	}
+
+	// BeginSignInAt requires a non-empty override.
+	if _, _, err := rp.BeginSignInAt(context.Background(), "test", ""); !errors.Is(err, directoryoidc.ErrInvalidState) {
+		t.Fatalf("BeginSignInAt with empty override = %v, want ErrInvalidState", err)
+	}
+}
+
+// mustParseRedirectURI extracts the redirect_uri query parameter from an
+// authorize URL BeginSignIn/BeginSignInAt returned.
+func mustParseRedirectURI(t *testing.T, authURL string) string {
+	t.Helper()
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse authURL: %v", err)
+	}
+	return u.Query().Get("redirect_uri")
 }
 
 func TestInvalidState(t *testing.T) {

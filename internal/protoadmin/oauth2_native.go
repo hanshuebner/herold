@@ -32,6 +32,7 @@ package protoadmin
 //	                         code_verifier) or grant_type=refresh_token.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
@@ -139,13 +140,17 @@ func (s *Server) handleOAuthAuthorizeGet(w http.ResponseWriter, r *http.Request)
 		MaxAge:   int(directory.AuthorizeRequestTTL.Seconds()),
 	})
 
-	s.renderOAuthLoginForm(w, encoded, csrfTok, "", false)
+	s.renderOAuthLoginForm(r.Context(), w, encoded, csrfTok, "", false)
 }
 
 // oauthLoginFormTemplate renders herold's native-client sign-in page.
 // autocomplete attributes are set so platform password managers /
 // passkey autofill can act on the fields from a system browser / Custom
-// Tab context (REQ-AND-AUTH-01, REQ-AND-AUTH-12).
+// Tab context (REQ-AND-AUTH-01, REQ-AND-AUTH-12). The Providers list
+// (issue #238) offers every configured external OIDC provider as an
+// alternative to password+TOTP; each button posts the same signed "req"
+// token and CSRF cookie value the password form posts, to
+// POST /oauth2/authorize/federated (oauth2_federated.go).
 var oauthLoginFormTemplate = template.Must(template.New("oauth2-login").Parse(`<!DOCTYPE html>
 <html>
 <head>
@@ -175,19 +180,39 @@ var oauthLoginFormTemplate = template.Must(template.New("oauth2-login").Parse(`<
   {{end}}
   <p><button type="submit">Sign in</button></p>
 </form>
+{{if .Providers}}
+<hr>
+<p>Or sign in with:</p>
+{{range .Providers}}
+<form method="POST" action="/oauth2/authorize/federated">
+  <input type="hidden" name="req" value="{{$.Req}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="provider" value="{{.ID}}">
+  <button type="submit">Sign in with {{.Name}}</button>
+</form>
+{{end}}
+{{end}}
 </body>
 </html>`))
 
-func (s *Server) renderOAuthLoginForm(w http.ResponseWriter, encodedReq, csrf, errMsg string, showTOTP bool) {
+// oauthLoginProviderOption is the login-form-template shape for one
+// configured external OIDC provider (issue #238).
+type oauthLoginProviderOption struct {
+	ID   string
+	Name string
+}
+
+func (s *Server) renderOAuthLoginForm(ctx context.Context, w http.ResponseWriter, encodedReq, csrf, errMsg string, showTOTP bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = oauthLoginFormTemplate.Execute(w, struct {
-		Req      string
-		CSRF     string
-		Error    string
-		ShowTOTP bool
-	}{encodedReq, csrf, errMsg, showTOTP})
+		Req       string
+		CSRF      string
+		Error     string
+		ShowTOTP  bool
+		Providers []oauthLoginProviderOption
+	}{encodedReq, csrf, errMsg, showTOTP, s.oauthLoginProviders(ctx)})
 }
 
 // handleOAuthAuthorizePost processes the submitted login form.
@@ -229,7 +254,7 @@ func (s *Server) handleOAuthAuthorizePost(w http.ResponseWriter, r *http.Request
 		switch {
 		case errors.Is(err, directory.ErrTOTPRequired):
 			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, "totp step-up required")
-			s.renderOAuthLoginForm(w, encodedReq, formCSRF, "Enter your 6-digit authentication code.", true)
+			s.renderOAuthLoginForm(ctx, w, encodedReq, formCSRF, "Enter your 6-digit authentication code.", true)
 			return
 		case errors.Is(err, directory.ErrRateLimited):
 			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, "rate limited")
@@ -237,7 +262,7 @@ func (s *Server) handleOAuthAuthorizePost(w http.ResponseWriter, r *http.Request
 			return
 		default:
 			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, humanLoginError(err))
-			s.renderOAuthLoginForm(w, encodedReq, formCSRF, humanLoginError(err), false)
+			s.renderOAuthLoginForm(ctx, w, encodedReq, formCSRF, humanLoginError(err), false)
 			return
 		}
 	}

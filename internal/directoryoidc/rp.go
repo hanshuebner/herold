@@ -133,6 +133,13 @@ type pendingAuth struct {
 	principalID PrincipalID
 	nonce       string
 	createdAt   time.Time
+	// redirectOverride, when non-empty, is the redirect_uri BeginSignInAt
+	// used for this flow instead of the provider's configured
+	// RedirectURL (issue #238). exchangeAndVerify must send the same
+	// redirect_uri at the token endpoint that was used at the authorize
+	// endpoint -- providers that enforce exact-match redirect_uri
+	// consistency (most do) reject the exchange otherwise.
+	redirectOverride string
 }
 
 // FlowKind reports whether a pending state was opened by BeginLink or
@@ -353,14 +360,38 @@ func (r *RP) BeginLink(ctx context.Context, pid PrincipalID, providerID Provider
 }
 
 // BeginSignIn starts a sign-in flow (no prior principal). The caller
-// hands state back on CompleteSignIn.
+// hands state back on CompleteSignIn. The provider's configured
+// RedirectURL is used; callers that need a different callback path for
+// this one flow (issue #238) use BeginSignInAt instead.
 func (r *RP) BeginSignIn(ctx context.Context, providerID ProviderID) (authURL, state string, err error) {
+	return r.beginSignIn(ctx, providerID, "")
+}
+
+// BeginSignInAt is BeginSignIn with the provider's configured
+// RedirectURL overridden for this one flow. Issue #238: the
+// /oauth2/authorize native-client login page's federated leg returns to
+// its own callback (GET /oauth2/authorize/federated/callback), not the
+// provider's default self-service-link callback -- both are valid
+// completions of the same registered provider, so the IdP-side client
+// registration must allow both redirect URIs (an operational note for
+// the provider registration, not something this package enforces).
+func (r *RP) BeginSignInAt(ctx context.Context, providerID ProviderID, redirectURL string) (authURL, state string, err error) {
+	if redirectURL == "" {
+		return "", "", fmt.Errorf("%w: redirectURL required", ErrInvalidState)
+	}
+	return r.beginSignIn(ctx, providerID, redirectURL)
+}
+
+func (r *RP) beginSignIn(ctx context.Context, providerID ProviderID, redirectOverride string) (authURL, state string, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
 	prov, cfg, secret, ok := r.lookupProvider(providerID)
 	if !ok {
 		return "", "", fmt.Errorf("%w: provider %s", ErrNotFound, providerID)
+	}
+	if redirectOverride != "" {
+		cfg.RedirectURL = redirectOverride
 	}
 	st, nonce, err := r.newStateAndNonce()
 	if err != nil {
@@ -369,9 +400,10 @@ func (r *RP) BeginSignIn(ctx context.Context, providerID ProviderID) (authURL, s
 	r.mu.Lock()
 	r.gcExpiredLocked()
 	r.pending[st] = pendingAuth{
-		providerID: providerID,
-		nonce:      nonce,
-		createdAt:  r.clk.Now(),
+		providerID:       providerID,
+		nonce:            nonce,
+		createdAt:        r.clk.Now(),
+		redirectOverride: redirectOverride,
 	}
 	r.mu.Unlock()
 	oauthCfg := oauth2Config(prov, cfg, secret)
@@ -893,6 +925,9 @@ func (r *RP) exchangeAndVerify(ctx context.Context, p pendingAuth, code string) 
 	prov, cfg, secret, ok := r.lookupProvider(p.providerID)
 	if !ok {
 		return "", nil, fmt.Errorf("%w: provider %s", ErrNotFound, p.providerID)
+	}
+	if p.redirectOverride != "" {
+		cfg.RedirectURL = p.redirectOverride
 	}
 	exCtx, cancel := context.WithTimeout(oidc.ClientContext(ctx, r.http), defaultTimeout)
 	defer cancel()

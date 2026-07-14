@@ -60,6 +60,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// unauthenticated -- they are the auth boundary, like /auth/login.
 	mux.HandleFunc("/oauth2/authorize", s.handleOAuthAuthorize)
 	mux.HandleFunc("POST /oauth2/token", s.handleOAuthToken)
+	// External-OIDC sign-in leg of the login page above (issue #238):
+	// the "Sign in with <provider>" buttons post here to start the
+	// federated flow, and the provider redirects back to the callback.
+	// Both unauthenticated, like the rest of this grant.
+	mux.HandleFunc("POST /oauth2/authorize/federated", s.handleOAuthAuthorizeFederatedBegin)
+	mux.HandleFunc("GET /oauth2/authorize/federated/callback", s.handleOAuthAuthorizeFederatedCallback)
 	// Step-up: TOTP verification that creates a server-side elevation record
 	// gating admin endpoints (REQ-AUTH-74, issue #79). Requires a cookie session
 	// and CSRF check (auth1 enforces the CSRF gate on POST).
