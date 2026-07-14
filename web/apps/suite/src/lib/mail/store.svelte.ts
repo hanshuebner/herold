@@ -34,6 +34,12 @@ import { appendEvent } from '../debug-ring/debug-ring';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 import { resolveDefault } from '../identities/identity-status';
 import { computeShiftClickRange } from '../list-selection/range-select';
+import { appendPage, canLoadMore } from '../list-selection/paging';
+import {
+  allVisibleSelected,
+  selectAllVisible as sharedSelectAllVisible,
+  toggleSelectAllVisible as sharedToggleSelectAllVisible,
+} from '../list-selection/whole-set-selection';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -2024,8 +2030,15 @@ class MailStore {
    * again, so the list can never show a duplicate or skipped row.
    */
   async loadMoreFolder(): Promise<void> {
-    if (this.listLoadStatus !== 'ready') return;
-    if (!this.listHasMore || this.listLoadingMore) return;
+    if (
+      !canLoadMore({
+        isReady: this.listLoadStatus === 'ready',
+        hasMore: this.listHasMore,
+        loadingMore: this.listLoadingMore,
+      })
+    ) {
+      return;
+    }
     const accountId = this.mailAccountId;
     if (!accountId) return;
     const folder = this.listFolder;
@@ -2094,10 +2107,12 @@ class MailStore {
       for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
 
-      const existing = new Set(this.listEmailIds);
-      const appended = queryResult.ids.filter((id) => !existing.has(id));
-      this.listEmailIds = [...this.listEmailIds, ...appended];
-      this.listHasMore = queryResult.ids.length === FOLDER_PAGE_SIZE;
+      const { items, hasMore } = appendPage(this.listEmailIds, queryResult.ids, {
+        pageSize: FOLDER_PAGE_SIZE,
+        idOf: (id) => id,
+      });
+      this.listEmailIds = items;
+      this.listHasMore = hasMore;
       if (typeof getResult.state === 'string') this.emailState = getResult.state;
 
       const nextThreads = new Map(this.threads);
@@ -2132,8 +2147,15 @@ class MailStore {
    * does not change as more of the same result set loads locally.
    */
   async loadMoreSearch(): Promise<void> {
-    if (this.searchLoadStatus !== 'ready') return;
-    if (!this.searchHasMore || this.searchLoadingMore) return;
+    if (
+      !canLoadMore({
+        isReady: this.searchLoadStatus === 'ready',
+        hasMore: this.searchHasMore,
+        loadingMore: this.searchLoadingMore,
+      })
+    ) {
+      return;
+    }
     const accountId = this.mailAccountId;
     if (!accountId) return;
     const query = this.searchQuery;
@@ -2199,10 +2221,12 @@ class MailStore {
       for (const e of memberGetResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
       this.emails = next;
 
-      const existing = new Set(this.searchEmailIds);
-      const appended = queryResult.ids.filter((id) => !existing.has(id));
-      this.searchEmailIds = [...this.searchEmailIds, ...appended];
-      this.searchHasMore = queryResult.ids.length === SEARCH_PAGE_SIZE;
+      const { items, hasMore } = appendPage(this.searchEmailIds, queryResult.ids, {
+        pageSize: SEARCH_PAGE_SIZE,
+        idOf: (id) => id,
+      });
+      this.searchEmailIds = items;
+      this.searchHasMore = hasMore;
 
       const nextThreads = new Map(this.threads);
       for (const t of threadResult.list) nextThreads.set(t.id, t);
@@ -2980,7 +3004,7 @@ class MailStore {
   selectAllVisible(visibleIds: string[] = this.listEmails.map((e) => e.id)): void {
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
-    this.listSelectedIds = new Set(visibleIds);
+    this.listSelectedIds = sharedSelectAllVisible(visibleIds);
   }
 
   /**
@@ -2991,11 +3015,7 @@ class MailStore {
   toggleSelectAllVisible(visibleIds: string[]): void {
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
-    if (allVisibleSelected(visibleIds, this.listSelectedIds)) {
-      this.listSelectedIds = new Set();
-    } else {
-      this.listSelectedIds = new Set(visibleIds);
-    }
+    this.listSelectedIds = sharedToggleSelectAllVisible(visibleIds, this.listSelectedIds);
   }
 
   /** Clear the bulk selection set, the shift-click anchor, and the whole-mailbox selection flag. */
@@ -4822,15 +4842,10 @@ export function dedupeArrivalsByMessageId(
   return out;
 }
 
-/**
- * Returns true when every id in `visibleIds` is present in `selected`
- * AND `visibleIds` is non-empty. Used by toggleSelectAllVisible to
- * decide whether to clear or set the selection.
- */
-export function allVisibleSelected(visibleIds: string[], selected: Set<string>): boolean {
-  if (visibleIds.length === 0) return false;
-  return visibleIds.every((id) => selected.has(id));
-}
+// `allVisibleSelected` is re-exported from the shared list-selection helper
+// (re #221) so existing imports of `./store.svelte` keep working; the
+// definition itself lives in ../list-selection/whole-set-selection.
+export { allVisibleSelected };
 
 /**
  * Pure helper for `markUnreadFromHere` (REQ-MAIL-133a). Given the list of

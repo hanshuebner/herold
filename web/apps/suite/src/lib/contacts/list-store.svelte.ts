@@ -14,6 +14,11 @@ import { Capability } from '../jmap/types';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 import { computeShiftClickRange } from '../list-selection/range-select';
+import { appendPage, canLoadMore } from '../list-selection/paging';
+import {
+  selectAllVisible as sharedSelectAllVisible,
+  toggleSelectAllVisible as sharedToggleSelectAllVisible,
+} from '../list-selection/whole-set-selection';
 
 export type SortProp = 'displayName' | 'created' | 'updated';
 
@@ -37,6 +42,24 @@ export interface AddressBook {
 }
 
 const PAGE_SIZE = 30;
+
+/**
+ * Max ids in the `destroy` array of a single `Contact/set` call, mirroring
+ * the server's default `maxObjectsInSet` (internal/protojmap/server.go).
+ * A whole-set delete (`bulkDelete` given a filter-scoped id enumeration,
+ * re #221) can exceed that in one shot, so ids are destroyed in chunks of
+ * this size, issued as separate `Contact/set` calls within a single JMAP
+ * batch (one HTTP round-trip regardless of chunk count).
+ */
+const MAX_OBJECTS_IN_SET = 500;
+
+/**
+ * Page size used by `#enumerateAllMatchingIds` (re #221) to walk the full
+ * filter-scoped id set for a "select all N matching" bulk action. Kept
+ * separate from `PAGE_SIZE` -- this call fetches ids only (no `Contact/get`
+ * row hydration), so a larger page is cheap.
+ */
+const ENUMERATE_PAGE_SIZE = 500;
 
 /** Narrow property list fetched for each list row. Full Card fetched separately for detail. */
 const LIST_ROW_PROPERTIES = ['id', 'name', 'emails', 'phones', 'organizations', 'media'];
@@ -188,6 +211,16 @@ class ContactsListStore {
    * `selectedIds` whenever the visible row set changes wholesale.
    */
   selectAnchorId = $state<string | null>(null);
+  /**
+   * True while the user has accepted the "select all N matching" offer
+   * (re #221 -- the contacts counterpart of the mail store's
+   * `listWholeMailboxSelected`, issue #149). While true, `resolveSelectionIds`
+   * resolves bulk actions against the full filter-scoped id set (fetched via
+   * `#enumerateAllMatchingIds`) instead of just `selectedIds`, the currently
+   * loaded window. Reset by `clearSelection`, `selectAllVisible`, and
+   * `toggleSelectAllVisible`.
+   */
+  wholeSetSelected = $state(false);
 
   /** True when there are more pages to load. */
   get hasMore(): boolean {
@@ -271,8 +304,15 @@ class ContactsListStore {
 
   /** Load the next page of results. No-op if no more pages or already loading. */
   async loadMore(): Promise<void> {
-    if (this.status !== 'ready') return;
-    if (!this.hasMore) return;
+    if (
+      !canLoadMore({
+        isReady: this.status === 'ready',
+        hasMore: this.hasMore,
+        loadingMore: this.status === 'loading-more',
+      })
+    ) {
+      return;
+    }
     await this.#loadPage(this.rows.length, true);
   }
 
@@ -298,6 +338,7 @@ class ContactsListStore {
    */
   selectRowClick(id: string, shiftKey: boolean, visibleIds: string[]): void {
     if (shiftKey && this.selectAnchorId !== null) {
+      this.wholeSetSelected = false;
       this.selectedIds = computeShiftClickRange(visibleIds, this.selectAnchorId, id);
       return;
     }
@@ -306,21 +347,113 @@ class ContactsListStore {
 
   /** Select every id currently in `ids` (typically the visible rows). */
   selectAllVisible(ids: string[]): void {
-    this.selectedIds = new Set(ids);
+    this.wholeSetSelected = false;
+    this.selectedIds = sharedSelectAllVisible(ids);
   }
 
-  /** Clear the selection set and the shift-click anchor. */
+  /**
+   * Toggle select-all for the visible rows (re #221, mirrors the mail
+   * store's `toggleSelectAllVisible`, issue #36). If every id in
+   * `visibleIds` is already selected, clears the selection; otherwise
+   * selects all of them.
+   */
+  toggleSelectAllVisible(visibleIds: string[]): void {
+    this.wholeSetSelected = false;
+    this.selectedIds = sharedToggleSelectAllVisible(visibleIds, this.selectedIds);
+  }
+
+  /**
+   * Activate whole-set selection mode (re #221, mirrors the mail store's
+   * `selectWholeMailbox`, issue #149): every contact matching the current
+   * search/address-book scope, not just the loaded window. `selectedIds`
+   * keeps showing the loaded window as checked; `resolveSelectionIds`
+   * expands to the full filter-scoped id set when a bulk action runs.
+   */
+  selectAllMatching(): void {
+    this.wholeSetSelected = true;
+  }
+
+  /** Clear the selection set, the shift-click anchor, and whole-set mode. */
   clearSelection(): void {
     this.selectAnchorId = null;
+    this.wholeSetSelected = false;
     if (this.selectedIds.size === 0) return;
     this.selectedIds = new Set();
   }
 
   /**
-   * Destroy the given contacts via a single Contact/set call. Removes
-   * destroyed rows from the list and the selection set immediately rather
-   * than waiting for the Contact/changes sync round-trip. Returns the ids
-   * that could not be destroyed (empty on full success).
+   * Resolve the ids a bulk action should target (re #221): the loaded
+   * selection normally, or -- while `wholeSetSelected` is true -- every id
+   * matching the current filter scope, freshly enumerated via
+   * `#enumerateAllMatchingIds`. Group scope is already the complete
+   * matching set (its member list has no further pages), so whole-set mode
+   * resolves to the plain selection there too.
+   */
+  async resolveSelectionIds(): Promise<string[]> {
+    if (!this.wholeSetSelected || this.activeGroupId !== null) {
+      return [...this.selectedIds];
+    }
+    return this.#enumerateAllMatchingIds();
+  }
+
+  /**
+   * Enumerate every contact id matching the current search/address-book
+   * filter, independent of what has loaded into `rows` (re #221). JMAP
+   * Contacts has no bulk-by-query primitive, so a whole-set bulk action
+   * resolves to this filter-scoped id enumeration and then acts on the
+   * full list directly (`bulkDelete` chunks it into `Contact/set` calls
+   * within `MAX_OBJECTS_IN_SET`).
+   */
+  async #enumerateAllMatchingIds(): Promise<string[]> {
+    const accountId = this.#accountId();
+    if (!accountId) return [];
+
+    const filter = this.#buildFilter();
+    const ids: string[] = [];
+    let position = 0;
+    for (;;) {
+      const { responses } = await jmap.batch((b) => {
+        b.call(
+          'Contact/query',
+          {
+            accountId,
+            filter,
+            sort: [{ property: this.sort, isAscending: this.sort === 'displayName' }],
+            position,
+            limit: ENUMERATE_PAGE_SIZE,
+          },
+          [Capability.Contacts],
+        );
+      });
+      const resp = responses[0];
+      if (!resp || resp[0] === 'error') break;
+      const args = resp[1] as { ids?: string[] };
+      const page = args.ids ?? [];
+      ids.push(...page);
+      position += page.length;
+      if (page.length < ENUMERATE_PAGE_SIZE) break;
+    }
+    return ids;
+  }
+
+  /** Build the `Contact/query` filter for the current search/address-book scope. */
+  #buildFilter(): Record<string, unknown> | undefined {
+    const text = this.searchText.trim();
+    const bookId = this.activeBookId;
+    const filter: Record<string, unknown> = {};
+    if (text) filter['text'] = text;
+    if (bookId) filter['addressBookId'] = bookId;
+    return Object.keys(filter).length > 0 ? filter : undefined;
+  }
+
+  /**
+   * Destroy the given contacts via `Contact/set`, chunked into groups of
+   * at most `MAX_OBJECTS_IN_SET` (re #221 -- a whole-set selection can
+   * enumerate far more ids than the server accepts in one `destroy` array),
+   * issued as separate calls within a single JMAP batch. Removes destroyed
+   * rows from the list and the selection set immediately rather than
+   * waiting for the Contact/changes sync round-trip. Returns the ids that
+   * could not be destroyed (empty on full success).
    *
    * If the destroy empties the visible window, re-runs the list query
    * (re #222) rather than leaving the view on a spliced-to-empty `rows`
@@ -333,15 +466,23 @@ class ContactsListStore {
     const accountId = this.#accountId();
     if (!accountId) return ids;
 
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += MAX_OBJECTS_IN_SET) {
+      chunks.push(ids.slice(i, i + MAX_OBJECTS_IN_SET));
+    }
+
     const { responses } = await jmap.batch((b) => {
-      b.call('Contact/set', { accountId, destroy: ids }, [Capability.Contacts]);
+      for (const chunk of chunks) {
+        b.call('Contact/set', { accountId, destroy: chunk }, [Capability.Contacts]);
+      }
     });
 
-    const resp = responses[0];
-    if (!resp || resp[0] === 'error') return ids;
-
-    const args = resp[1] as { destroyed?: string[]; notDestroyed?: Record<string, unknown> };
-    const destroyed = new Set(args.destroyed ?? []);
+    const destroyed = new Set<string>();
+    for (const resp of responses) {
+      if (!resp || resp[0] === 'error') continue;
+      const args = resp[1] as { destroyed?: string[] };
+      for (const id of args.destroyed ?? []) destroyed.add(id);
+    }
     const failed = ids.filter((id) => !destroyed.has(id));
 
     if (destroyed.size > 0) {
@@ -424,13 +565,8 @@ class ContactsListStore {
 
     this.status = append ? 'loading-more' : 'loading';
 
-    const text = this.searchText.trim();
     const sort = this.sort;
-    const bookId = this.activeBookId;
-
-    const filter: Record<string, unknown> = {};
-    if (text) filter['text'] = text;
-    if (bookId) filter['addressBookId'] = bookId;
+    const filter = this.#buildFilter();
 
     try {
       const { responses } = await jmap.batch((b) => {
@@ -438,7 +574,7 @@ class ContactsListStore {
           'Contact/query',
           {
             accountId,
-            filter: Object.keys(filter).length > 0 ? filter : undefined,
+            filter,
             sort: [{ property: sort, isAscending: sort === 'displayName' }],
             position,
             limit: PAGE_SIZE,
@@ -478,7 +614,9 @@ class ContactsListStore {
         return row.id ? [row] : [];
       });
 
-      this.rows = append ? [...this.rows, ...newRows] : newRows;
+      this.rows = append
+        ? appendPage(this.rows, newRows, { pageSize: PAGE_SIZE, idOf: (r) => r.id }).items
+        : newRows;
       this.status = 'ready';
     } catch {
       this.status = 'error';

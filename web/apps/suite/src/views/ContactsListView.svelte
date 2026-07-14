@@ -34,6 +34,7 @@
     type ExportResponse,
     type UnrepresentableProperty,
   } from '../lib/contacts/vcard-import';
+  import { shouldOfferWholeSet } from '../lib/list-selection/whole-set-selection';
 
   // ── URL sort param sync ───────────────────────────────────────────────────
 
@@ -356,19 +357,31 @@
   // ── Bulk selection & actions (re #191) ───────────────────────────────────
 
   let selectedCount = $derived(contactsListStore.selectedIds.size);
+  let visibleRowIds = $derived(visibleRows.map((r) => r.id));
   let allVisibleSelected = $derived(
     visibleRows.length > 0 && selectedCount === visibleRows.length,
   );
   let someVisibleSelected = $derived(selectedCount > 0 && !allVisibleSelected);
   let bulkDeleting = $state(false);
 
+  /**
+   * Offer "select all N matching" once every loaded row is checked and the
+   * true total exceeds the loaded count (re #221, mirrors the mail store's
+   * whole-mailbox banner, issue #149). Group scope has no further pages
+   * beyond its member list, so `contactsListStore.total` there already
+   * equals `visibleRows.length` and the banner naturally never offers.
+   */
+  let offerSelectAllMatching = $derived(
+    !contactsListStore.wholeSetSelected &&
+      shouldOfferWholeSet(visibleRowIds, contactsListStore.selectedIds, contactsListStore.total),
+  );
+
   function toggleSelectAllVisible(): void {
-    if (selectedCount > 0) contactsListStore.clearSelection();
-    else contactsListStore.selectAllVisible(visibleRows.map((r) => r.id));
+    contactsListStore.toggleSelectAllVisible(visibleRowIds);
   }
 
   async function bulkDeleteSelected(): Promise<void> {
-    const ids = [...contactsListStore.selectedIds];
+    const ids = await contactsListStore.resolveSelectionIds();
     if (ids.length === 0) return;
     const n = ids.length;
     const ok = await confirm.ask({
@@ -395,10 +408,10 @@
     }
   }
 
-  function bulkExportSelected(): void {
-    const ids = [...contactsListStore.selectedIds];
+  async function bulkExportSelected(): Promise<void> {
+    const ids = await contactsListStore.resolveSelectionIds();
     if (ids.length === 0) return;
-    void exportContacts(ids);
+    await exportContacts(ids);
   }
 </script>
 
@@ -723,7 +736,7 @@
             class="icon-btn"
             aria-label={t('contacts.list.export')}
             title={t('contacts.list.export')}
-            onclick={bulkExportSelected}
+            onclick={() => void bulkExportSelected()}
             disabled={exporting}
           >
             {t('contacts.list.export')}
@@ -741,6 +754,43 @@
           </button>
         {/if}
       </div>
+
+      <!-- Select-all-N-matching banner (re #221, mirrors the mail store's
+           whole-mailbox banner, issue #149). Offer state: every loaded row
+           is selected and more contacts match the current scope than are
+           loaded. Active state: whole-set mode is engaged; bulk delete /
+           export resolve to the full filter-scoped id set via
+           `resolveSelectionIds`, not just the loaded window. -->
+      {#if selectedCount > 0 && contactsListStore.total !== null && visibleRows.length > 0}
+        {@const total = contactsListStore.total}
+        {#if offerSelectAllMatching}
+          <div class="whole-set-banner" role="status" aria-live="polite">
+            <span class="banner-text">
+              {t('contacts.select.allPageSelected', { count: String(visibleRows.length) })}
+            </span>
+            <button
+              type="button"
+              class="banner-btn"
+              onclick={() => contactsListStore.selectAllMatching()}
+            >
+              {t('contacts.select.selectAllMatching', { total: String(total) })}
+            </button>
+          </div>
+        {:else if contactsListStore.wholeSetSelected}
+          <div class="whole-set-banner whole-set-banner--active" role="status" aria-live="polite">
+            <span class="banner-text">
+              {t('contacts.select.wholeSetActive', { total: String(total) })}
+            </span>
+            <button
+              type="button"
+              class="banner-btn banner-btn--secondary"
+              onclick={() => contactsListStore.selectAllVisible(visibleRowIds)}
+            >
+              {t('contacts.select.clearWholeSet')}
+            </button>
+          </div>
+        {/if}
+      {/if}
 
       <!-- Contact rows -->
       <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
@@ -1277,6 +1327,54 @@
 
   .bulk-toolbar .icon-btn.danger:hover:not(:disabled) {
     background: var(--support-error-bg, rgba(218, 30, 40, 0.1));
+  }
+
+  /* ── Select-all-N-matching banner (re #221) ─────────────────────────── */
+
+  .whole-set-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-04);
+    background: var(--layer-01);
+    border-bottom: 1px solid var(--border-subtle-02);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+    flex-shrink: 0;
+  }
+
+  .whole-set-banner--active {
+    background: var(--layer-03);
+  }
+
+  .whole-set-banner .banner-text {
+    flex: 1;
+  }
+
+  .whole-set-banner .banner-btn {
+    white-space: nowrap;
+    color: var(--interactive);
+    background: transparent;
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 500;
+    padding: var(--spacing-01) var(--spacing-02);
+    border-radius: var(--radius-sm);
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+
+  .whole-set-banner .banner-btn:hover {
+    background: var(--layer-02);
+    color: var(--interactive-hover);
+    text-decoration: underline;
+  }
+
+  .whole-set-banner .banner-btn--secondary {
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+
+  .whole-set-banner .banner-btn--secondary:hover {
+    color: var(--text-primary);
   }
 
   .row-text {

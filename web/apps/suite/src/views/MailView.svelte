@@ -14,6 +14,7 @@
   import ThreadReader from '../lib/mail/ThreadReader.svelte';
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
+  import { shouldOfferWholeSet } from '../lib/list-selection/whole-set-selection';
   import { labelPicker } from '../lib/mail/label-picker.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
@@ -1082,7 +1083,7 @@
            filter (`#wholeSelectionFilterOverride` in the store). -->
       {#if mail.listSelectedIds.size > 0 && mail.searchTotal !== null && mail.searchEmails.length > 0}
         {@const searchTotal = mail.searchTotal}
-        {#if !mail.listWholeMailboxSelected && searchTotal > mail.searchEmails.length && mail.listSelectedIds.size === mail.searchEmails.length}
+        {#if !mail.listWholeMailboxSelected && shouldOfferWholeSet(renderedSearchEmailIds, mail.listSelectedIds, searchTotal)}
           <div class="whole-mailbox-banner" role="status" aria-live="polite">
             <span class="banner-text">
               {t('select.allPageSelected', { count: String(mail.searchEmails.length) })}
@@ -1340,7 +1341,8 @@
          question -- see wholeMailboxActionUnavailable in store.svelte.ts. -->
     {#if mail.listSelectedIds.size > 0 && mail.listFolderTotal !== null && mail.listEmails.length > 0}
       {@const folderTotal = mail.listFolderTotal}
-      {#if !mail.listWholeMailboxSelected && folderTotal > mail.listEmails.length && mail.listSelectedIds.size === mail.listEmails.length}
+      {@const folderVisibleIds = mail.listEmails.map((e) => e.id)}
+      {#if !mail.listWholeMailboxSelected && shouldOfferWholeSet(folderVisibleIds, mail.listSelectedIds, folderTotal)}
         <div class="whole-mailbox-banner" role="status" aria-live="polite">
           <span class="banner-text">
             {t('select.allPageSelected', { count: String(mail.listEmails.length) })}

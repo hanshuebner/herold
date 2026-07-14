@@ -1451,6 +1451,12 @@ export const en = {
   'contacts.bulk.deleteError': 'Could not delete {n} of the selected contacts.',
   'contacts.bulk.exportError': 'Could not export the selected contacts.',
 
+  // ── Contacts: select all matching (re #221) ──────────────────────────
+  'contacts.select.allPageSelected': 'All {count} loaded contacts are selected.',
+  'contacts.select.selectAllMatching': 'Select all {total} matching contacts',
+  'contacts.select.wholeSetActive': 'All {total} matching contacts are selected.',
+  'contacts.select.clearWholeSet': 'Select loaded contacts only',
+
   // ── Settings → Tagged addresses (re #30, REQ-SET-TAG-01..21) ────────
   'settings.taggedAddresses': 'Tagged addresses',
   'settings.taggedAddresses.heading': 'Tagged addresses',
