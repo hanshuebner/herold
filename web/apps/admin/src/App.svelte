@@ -20,6 +20,8 @@
   import DomainDetailView from './views/DomainDetailView.svelte';
   import MailingListsView from './views/MailingListsView.svelte';
   import MailingListDetailView from './views/MailingListDetailView.svelte';
+  import OIDCProvidersView from './views/OIDCProvidersView.svelte';
+  import OIDCProviderDetailView from './views/OIDCProviderDetailView.svelte';
   import QueueView from './views/QueueView.svelte';
   import QueueItemView from './views/QueueItemView.svelte';
   import AuditView from './views/AuditView.svelte';
@@ -51,6 +53,11 @@
     key: 'g m',
     description: t('shortcuts.goLists'),
     action: () => router.navigate('/lists'),
+  });
+  keyboard.registerGlobal({
+    key: 'g v',
+    description: t('shortcuts.goOidcProviders'),
+    action: () => router.navigate('/oidc-providers'),
   });
   keyboard.registerGlobal({
     key: 'g q',
@@ -216,6 +223,13 @@
       ? (router.parts[1] ?? null)
       : null,
   );
+
+  /** The provider id segment for /oidc-providers/:id routes. */
+  const oidcProviderId = $derived(
+    router.matches('oidc-providers') && router.parts.length >= 2
+      ? (router.parts[1] ?? null)
+      : null,
+  );
 </script>
 
 <style>
@@ -304,6 +318,10 @@
       <MailingListDetailView id={mlistId} />
     {:else if router.matches('lists')}
       <MailingListsView />
+    {:else if router.matches('oidc-providers') && oidcProviderId !== null}
+      <OIDCProviderDetailView id={oidcProviderId} />
+    {:else if router.matches('oidc-providers')}
+      <OIDCProvidersView />
     {:else if router.matches('queue') && queueId !== null}
       <QueueItemView id={queueId} />
     {:else if router.matches('queue')}

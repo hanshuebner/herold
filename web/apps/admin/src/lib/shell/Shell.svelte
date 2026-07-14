@@ -16,6 +16,7 @@
     { labelKey: 'shell.nav.principals', path: '/principals', segment: 'principals' },
     { labelKey: 'shell.nav.domains', path: '/domains', segment: 'domains' },
     { labelKey: 'shell.nav.lists', path: '/lists', segment: 'lists' },
+    { labelKey: 'shell.nav.oidcProviders', path: '/oidc-providers', segment: 'oidc-providers' },
     { labelKey: 'shell.nav.queue', path: '/queue', segment: 'queue' },
     { labelKey: 'shell.nav.audit', path: '/audit', segment: 'audit' },
     { labelKey: 'shell.nav.events', path: '/events', segment: 'events' },
