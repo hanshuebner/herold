@@ -115,17 +115,12 @@ func takeFederatedLoginState(oidcState string, now time.Time) (federatedLoginEnt
 // federatedCallbackURL builds the absolute callback URI this flow
 // registers with directoryoidc.RP.BeginSignInAt for the current request,
 // mirroring oauth_init.go's buildCallbackURL for the external-SMTP-
-// submission OAuth flow.
-func federatedCallbackURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	return fmt.Sprintf("%s://%s/oauth2/authorize/federated/callback", scheme, host)
+// submission OAuth flow. Uses the same s.ownOrigin origin resolution --
+// the operator-configured Options.BaseURL over request Host /
+// X-Forwarded-Host headers -- so this leg cannot diverge from that one on
+// which origin an attacker-controlled header can steer (re #240).
+func (s *Server) federatedCallbackURL(r *http.Request) string {
+	return s.ownOrigin(r) + "/oauth2/authorize/federated/callback"
 }
 
 // oauthLoginProviders returns the login-form-template option list for
@@ -184,7 +179,7 @@ func (s *Server) handleOAuthAuthorizeFederatedBegin(w http.ResponseWriter, r *ht
 		return
 	}
 
-	authURL, oidcState, err := s.rp.BeginSignInAt(r.Context(), directoryoidc.ProviderID(providerID), federatedCallbackURL(r))
+	authURL, oidcState, err := s.rp.BeginSignInAt(r.Context(), directoryoidc.ProviderID(providerID), s.federatedCallbackURL(r))
 	if err != nil {
 		s.auditAuthFailure(r, "auth.oauth2.authorize.federated", "provider:"+providerID, 0, humanOIDCError(err))
 		s.renderOAuthLoginForm(r.Context(), w, encodedReq, formCSRF, "That sign-in provider is not available.", false)

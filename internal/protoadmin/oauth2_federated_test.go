@@ -19,11 +19,134 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
+	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/testfakes/fakeoidc"
+	"github.com/hanshuebner/herold/internal/testharness"
 )
+
+// newHarnessWithBaseURL is newHarness with the server's Options.BaseURL
+// explicitly configured to a canonical origin, used to assert that a
+// configured canonical origin -- not a request's Host / X-Forwarded-Host
+// header -- determines the OIDC callback URL this leg registers with the
+// external provider (re #240).
+func newHarnessWithBaseURL(t *testing.T, baseURL string) *harness {
+	t.Helper()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+		BootstrapPerWindow:      1,
+		BootstrapWindow:         5 * time.Minute,
+		RequestsPerMinutePerKey: 100,
+		BaseURL:                 baseURL,
+	})
+	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client, base := h.DialAdminByName(context.Background(), "admin")
+	return &harness{
+		t: t, h: h, srv: srv, client: client, baseURL: base,
+		clk: clk, dir: dir, rp: rp,
+	}
+}
+
+// TestOAuth2AuthorizeFederated_IgnoresForeignHostAndXForwardedHost asserts
+// that once Options.BaseURL is configured, a request carrying a foreign
+// Host header or a foreign X-Forwarded-Host header does not steer the
+// redirect_uri this leg registers with the external OIDC provider via
+// RP.BeginSignInAt (re #240). Before the fix, federatedCallbackURL built
+// the redirect_uri directly from these headers.
+func TestOAuth2AuthorizeFederated_IgnoresForeignHostAndXForwardedHost(t *testing.T) {
+	const canonicalOrigin = "https://mail.example.com"
+	h := newHarnessWithBaseURL(t, canonicalOrigin)
+	mustRegisterHTTPAndroidClient(t, h)
+	ctx := context.Background()
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	client := oauthNoRedirectClient(h)
+
+	stub := fakeoidc.New(t, fakeoidc.Options{ClientID: "fed-client-3", ClientSecret: "fed-secret-3"})
+	stub.SetIdentity(fakeoidc.Identity{
+		Subject:       "fed-sub-foreign-host",
+		Email:         "fed-foreign-host@idp.test",
+		EmailVerified: true,
+	})
+	if _, err := h.rp.AddProvider(ctx, directoryoidc.ProviderConfig{
+		Name:         "fedprov3",
+		IssuerURL:    stub.IssuerURL(),
+		ClientID:     "fed-client-3",
+		ClientSecret: "fed-secret-3",
+		RedirectURL:  "http://placeholder.invalid/unused",
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		state  string
+		setHdr func(*http.Request)
+	}{
+		{"foreign Host header", "state-fh", func(r *http.Request) { r.Host = "evil.example" }},
+		{"foreign X-Forwarded-Host header", "state-xfh", func(r *http.Request) {
+			r.Header.Set("X-Forwarded-Host", "evil.example")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, challenge := oauthPKCE(t)
+			_, csrfCookie, reqField := oauthAuthorizeGet(t, client, h.baseURL, redirectURI, tc.state, challenge)
+			if reqField == "" {
+				t.Fatal("expected a non-empty hidden req field")
+			}
+
+			beginForm := url.Values{"req": {reqField}, "csrf": {csrfCookie}, "provider": {"fedprov3"}}
+			beginReq, err := http.NewRequest("POST", h.baseURL+"/oauth2/authorize/federated", strings.NewReader(beginForm.Encode()))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			beginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			beginReq.AddCookie(&http.Cookie{Name: "herold_oauth2_csrf", Value: csrfCookie})
+			tc.setHdr(beginReq)
+
+			beginRes, err := client.Do(beginReq)
+			if err != nil {
+				t.Fatalf("POST /oauth2/authorize/federated: %v", err)
+			}
+			beginRes.Body.Close()
+			if beginRes.StatusCode != http.StatusFound {
+				t.Fatalf("POST /oauth2/authorize/federated: status=%d, want 302", beginRes.StatusCode)
+			}
+			idpAuthURL := beginRes.Header.Get("Location")
+			u, err := url.Parse(idpAuthURL)
+			if err != nil {
+				t.Fatalf("parse Location: %v", err)
+			}
+			redirectURIParam := u.Query().Get("redirect_uri")
+			if !strings.HasPrefix(redirectURIParam, canonicalOrigin) {
+				t.Errorf("redirect_uri = %q; want prefix %q (the configured BaseURL, not the request header)",
+					redirectURIParam, canonicalOrigin)
+			}
+			if strings.Contains(redirectURIParam, "evil.example") {
+				t.Errorf("redirect_uri = %q; must not reflect the attacker-supplied host", redirectURIParam)
+			}
+		})
+	}
+}
 
 // TestOAuth2Authorize_Federated_FullFlow_ViaHTTP drives, on one shared
 // harness: (1) a password login for a regular principal, to pin the

@@ -407,7 +407,11 @@ func postPublicClientlog(t *testing.T, publicAddr string, payload []byte) int {
 		t.Fatalf("new public clientlog request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "http://"+publicAddr)
+	// The server's own origin (s.ownOrigin) is now the configured canonical
+	// origin ("https://" + [server] hostname, re #240) rather than the
+	// request's own Host, so same-origin CORS validation must match that,
+	// not the raw dial address.
+	req.Header.Set("Origin", "https://test.local")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post public clientlog: %v", err)
@@ -938,7 +942,10 @@ func TestPublicListener_ClientlogIngest(t *testing.T) {
 		}
 		return res
 	}
-	res = preflight(publicAddr, "/api/v1/clientlog/public", "http://"+publicAddr)
+	// The server's own origin (s.ownOrigin) is the configured canonical
+	// origin ("https://" + [server] hostname, re #240), not the raw dial
+	// address, so the preflight's Origin must match that to be honoured.
+	res = preflight(publicAddr, "/api/v1/clientlog/public", "https://test.local")
 	res.Body.Close()
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("OPTIONS preflight on public listener: want 204, got %d", res.StatusCode)

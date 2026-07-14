@@ -875,6 +875,13 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	adminServerOpts := protoadmin.Options{
 		ServerVersion: "0.1.0",
 		Health:        health,
+		// BaseURL pins the canonical public origin (defaults to
+		// "https://<hostname>" when [server] public_base_url is unset) that
+		// Location headers, Origin validation, and the OIDC/OAuth callback
+		// URLs (buildCallbackURL, federatedCallbackURL) are built from,
+		// rather than the request's Host / X-Forwarded-Host headers
+		// (re #240).
+		BaseURL: publicBaseURL,
 		// The admin REST surface is served on the public listener (re #58).
 		// All web sessions (Suite and admin UI) share the public session cookie
 		// (herold_public_session) and are governed by the unified idle-only

@@ -183,8 +183,12 @@ type Options struct {
 	// when any listener uses ListenerModeImplicit.
 	TLSStore *heroldtls.Store
 	// BaseURL is the externally-reachable origin of this server; used
-	// when building Location headers. Defaults to an empty string
-	// (handlers fall back to the request's Host header).
+	// when building Location headers, Origin validation (ownOrigin), and
+	// the OIDC/OAuth callback URLs registered with external identity
+	// providers (buildCallbackURL, federatedCallbackURL; re #240). Defaults
+	// to an empty string (handlers fall back to the request's Host header),
+	// which production wiring avoids by always setting this from the
+	// configured [server] public_base_url.
 	BaseURL string
 	// APIKeyLookup overrides the default store-backed lookup. Optional.
 	APIKeyLookup APIKeyLookup

@@ -230,7 +230,7 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	// The redirect_uri is the fixed callback endpoint. The identity id is
 	// carried in the state token, not in the URL, so operators only register
 	// one redirect URI with their OAuth provider.
-	callbackURL := buildCallbackURL(r)
+	callbackURL := s.buildCallbackURL(r)
 	q.Set("redirect_uri", callbackURL)
 	authURL.RawQuery = q.Encode()
 
@@ -256,23 +256,21 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
 
-// buildCallbackURL constructs the absolute callback URI for the OAuth flow
-// from the inbound request. Uses X-Forwarded-Host / Host fallback.
+// buildCallbackURL constructs the absolute callback URI for the OAuth flow.
+// The origin comes from s.ownOrigin, which prefers the operator-configured
+// Options.BaseURL (sourced from the deployment's canonical
+// [server] public_base_url, re #240) over the inbound request's Host /
+// X-Forwarded-Host headers, so a caller cannot steer the redirect_uri
+// registered with the external IdP by spoofing either header. The
+// header-derived fallback in ownOrigin only applies when BaseURL is left
+// unset, e.g. in test harnesses.
 //
 // The returned URL is the FIXED path /api/v1/oauth/external-submission/callback
 // — no identity id appears in the URL. The identity id travels in the opaque
 // state token so that operators can register a single redirect URI with OAuth
 // providers (Google, Microsoft) that performs exact-match validation.
-func buildCallbackURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	return fmt.Sprintf("%s://%s/api/v1/oauth/external-submission/callback", scheme, host)
+func (s *Server) buildCallbackURL(r *http.Request) string {
+	return s.ownOrigin(r) + "/api/v1/oauth/external-submission/callback"
 }
 
 // tokenResponse is the subset of the OAuth 2.0 token response we care about.
@@ -424,7 +422,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURI := buildCallbackURL(r)
+	redirectURI := s.buildCallbackURL(r)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	tr, err := exchangeCode(r.Context(), httpClient, prov.TokenURL,
 		prov.ClientID, prov.ClientSecret, code, entry.CodeVerifier, redirectURI)

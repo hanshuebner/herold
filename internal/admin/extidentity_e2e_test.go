@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -526,9 +527,23 @@ func reauthenticateViaOAuthProvider(t *testing.T, adminAddr, apiKey, identityID,
 		t.Fatalf("authorize redirect carried no Location")
 	}
 
+	// The redirect_uri the fake IdP echoed back is the server's configured
+	// canonical origin (re #240: buildCallbackURL no longer trusts the
+	// request's Host), which is not a dialable address in this in-process
+	// test -- a real deployment reaches it via DNS + a reverse proxy that
+	// forwards to this exact backend. Rewrite the origin to the actual
+	// bound admin listener address, keeping the path and query (code+state)
+	// the fake IdP produced, mirroring what that proxy would do.
+	cbu, err := url.Parse(callbackURL)
+	if err != nil {
+		t.Fatalf("parse callback URL %q: %v", callbackURL, err)
+	}
+	cbu.Scheme = "http"
+	cbu.Host = adminAddr
+
 	// The callback runs the token exchange, the probe, persistence, and the
 	// held-submission retry synchronously before returning.
-	cb, err := http.Get(callbackURL)
+	cb, err := http.Get(cbu.String())
 	if err != nil {
 		t.Fatalf("GET callback: %v", err)
 	}

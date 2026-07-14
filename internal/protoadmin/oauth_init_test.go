@@ -113,6 +113,140 @@ func newOAuthHarness(t *testing.T) *oauthHarness {
 	}
 }
 
+// newOAuthHarnessWithBaseURL is newOAuthHarness with the server's
+// Options.BaseURL explicitly configured to a canonical origin, used to
+// assert that a configured canonical origin -- not a request's Host /
+// X-Forwarded-Host header -- determines the OIDC/OAuth callback URL
+// (re #240).
+func newOAuthHarnessWithBaseURL(t *testing.T, baseURL string) *oauthHarness {
+	t.Helper()
+
+	fakeSv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "fake-access-token",
+			"refresh_token": "fake-refresh-token",
+			"expires_in":    3600,
+			"token_type":    "Bearer",
+		})
+	}))
+	t.Cleanup(fakeSv.Close)
+
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fs := sqlitetest.Open(t, clk)
+	h, _ := testharness.Start(t, testharness.Options{
+		Store: fs,
+		Clock: clk,
+		Listeners: []testharness.ListenerSpec{
+			{Name: "admin", Protocol: "http"},
+		},
+	})
+	dir := directory.New(fs.Meta(), nil, clk, nil)
+	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
+
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+		BootstrapPerWindow:        1,
+		BootstrapWindow:           5 * time.Minute,
+		RequestsPerMinutePerKey:   100,
+		ExternalSubmissionDataKey: testDataKey,
+		ExternalProbe:             alwaysOKProbe,
+		BaseURL:                   baseURL,
+		OAuthProviders: map[string]protoadmin.OAuthProviderOptions{
+			"gmail": {
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL:     fakeSv.URL + "/token",
+				Scopes:       []string{"https://mail.google.com/"},
+			},
+		},
+	})
+	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
+		t.Fatalf("AttachAdmin: %v", err)
+	}
+	client, base := h.DialAdminByName(context.Background(), "admin")
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	return &oauthHarness{
+		t:           t,
+		fs:          fs,
+		clk:         clk,
+		srv:         srv,
+		client:      client,
+		baseURL:     base,
+		fakeTokenSv: fakeSv,
+	}
+}
+
+// TestOAuthStart_IgnoresForeignHostAndXForwardedHost asserts that once
+// Options.BaseURL is configured (the deployment's canonical
+// [server] public_base_url), a request carrying a foreign Host header or
+// a foreign X-Forwarded-Host header does not steer the redirect_uri
+// registered with the OAuth provider (re #240). Before the fix,
+// buildCallbackURL built the redirect_uri directly from these headers.
+func TestOAuthStart_IgnoresForeignHostAndXForwardedHost(t *testing.T) {
+	const canonicalOrigin = "https://mail.example.com"
+	oh := newOAuthHarnessWithBaseURL(t, canonicalOrigin)
+	apiKey, identityID, _ := oh.bootstrapAndIdentity("oauth-foreign-host@example.com")
+
+	cases := []struct {
+		name    string
+		setForm func(*http.Request)
+	}{
+		{
+			name: "foreign Host header",
+			setForm: func(r *http.Request) {
+				r.Host = "evil.example"
+			},
+		},
+		{
+			name: "foreign X-Forwarded-Host header",
+			setForm: func(r *http.Request) {
+				r.Header.Set("X-Forwarded-Host", "evil.example")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest("POST",
+				oh.baseURL+"/api/v1/identities/"+identityID+"/submission/oauth/start?provider=gmail",
+				nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			tc.setForm(req)
+
+			res, err := oh.client.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusFound {
+				body, _ := io.ReadAll(res.Body)
+				t.Fatalf("expected 302, got %d: %s", res.StatusCode, body)
+			}
+			loc := res.Header.Get("Location")
+			u, err := url.Parse(loc)
+			if err != nil {
+				t.Fatalf("parse Location: %v", err)
+			}
+			redirectURI := u.Query().Get("redirect_uri")
+			if !strings.HasPrefix(redirectURI, canonicalOrigin) {
+				t.Errorf("redirect_uri = %q; want prefix %q (the configured BaseURL, not the request header)",
+					redirectURI, canonicalOrigin)
+			}
+			if strings.Contains(redirectURI, "evil.example") {
+				t.Errorf("redirect_uri = %q; must not reflect the attacker-supplied host", redirectURI)
+			}
+		})
+	}
+}
+
 // doRequest sends an authenticated HTTP request to the harness.
 func (oh *oauthHarness) doRequest(method, path, key string, body any) (*http.Response, []byte) {
 	oh.t.Helper()
