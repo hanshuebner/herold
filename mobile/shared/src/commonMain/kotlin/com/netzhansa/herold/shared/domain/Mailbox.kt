@@ -9,4 +9,5 @@ data class Mailbox(
     val id: String,
     val name: String,
     val unreadEmails: Int,
+    val totalEmails: Int = 0,
 )

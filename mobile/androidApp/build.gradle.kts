@@ -53,11 +53,18 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.kotlinx.coroutines.core)
+    // Needed on this module's own compile classpath because MainActivity
+    // wires shared's HttpClient-typed factory directly into JmapClient
+    // (shared's ktor-client-core dependency is `implementation`, so it is
+    // not otherwise visible transitively to androidApp).
+    implementation(libs.ktor.client.core)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.foundation)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
