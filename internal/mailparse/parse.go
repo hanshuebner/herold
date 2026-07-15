@@ -821,14 +821,17 @@ func extractFilename(ctParams, dispParams map[string]string) string {
 	return ""
 }
 
-// decodeHeaderWord applies RFC 2047 encoded-word decoding to a MIME parameter value.
+// decodeHeaderWord applies RFC 2047 encoded-word decoding to a MIME parameter
+// value. The decoded output is stripped of any NUL byte the decoding may
+// have synthesized (base64/quoted-printable content the wire-form encoded
+// word does not itself contain a literal NUL for) -- see stripNUL.
 func decodeHeaderWord(v string) string {
 	var wd mime.WordDecoder
 	decoded, err := wd.DecodeHeader(v)
 	if err != nil {
-		return v
+		return stripNUL(v)
 	}
-	return decoded
+	return stripNUL(decoded)
 }
 
 // mimeHeaderToHeaders converts a textproto.MIMEHeader to our Headers type.
@@ -845,15 +848,24 @@ func mimeHeaderToHeaders(src textproto.MIMEHeader) Headers {
 // buildEnvelopeFromHeaders constructs an Envelope from parsed message headers.
 func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDecoder) Envelope {
 	out := Envelope{
-		Subject:    decodedSubject,
+		Subject:    stripNUL(decodedSubject),
 		MessageID:  strings.TrimSpace(h.Get("Message-ID")),
 		Date:       h.Get("Date"),
 		InReplyTo:  splitMessageIDs(decodeHeaderWord(h.Get("In-Reply-To"))),
 		References: splitMessageIDs(decodeHeaderWord(h.Get("References"))),
 	}
 
+	// parseAddrField decodes RFC 2047 encoded words in the phrase (display
+	// name) portion of an address list before handing the result to
+	// mail.ParseAddressList. Decoding untrusted base64/quoted-printable
+	// content can synthesize a NUL byte that was never present as a literal
+	// byte on the wire (and so was not caught by Headers.add's sanitizer),
+	// which then lands in the resulting Address.Name. stripNUL here, and
+	// again defensively in derefAddrs, closes that (re #244,
+	// FuzzParseHeadersOnly: Envelope.From[].Name contains a NUL byte).
 	parseAddrField := func(raw string) []mail.Address {
 		decoded, _ := wd.DecodeHeader(raw)
+		decoded = stripNUL(decoded)
 		if addrs, err := mail.ParseAddressList(decoded); err == nil {
 			return derefAddrs(addrs)
 		}
@@ -869,8 +881,11 @@ func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDec
 
 	if raw := h.Get("Sender"); raw != "" {
 		decoded, _ := wd.DecodeHeader(raw)
+		decoded = stripNUL(decoded)
 		if addrs, err := mail.ParseAddressList(decoded); err == nil && len(addrs) > 0 {
 			a := *addrs[0]
+			a.Name = stripNUL(a.Name)
+			a.Address = stripNUL(a.Address)
 			out.Sender = &a
 		}
 	}
@@ -878,15 +893,22 @@ func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDec
 	return out
 }
 
+// derefAddrs dereferences mail.ParseAddressList's []*mail.Address into a
+// plain slice. Name and Address are stripped of any NUL byte as a second
+// line of defense: callers are expected to have already sanitized the
+// decoded string handed to mail.ParseAddressList, but every address-list
+// call site funnels through here, so this is the one place that guarantees
+// the invariant holds regardless of what future callers do.
 func derefAddrs(in []*mail.Address) []mail.Address {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]mail.Address, 0, len(in))
 	for _, a := range in {
-		if a != nil {
-			out = append(out, *a)
+		if a == nil {
+			continue
 		}
+		out = append(out, mail.Address{Name: stripNUL(a.Name), Address: stripNUL(a.Address)})
 	}
 	return out
 }

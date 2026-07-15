@@ -82,10 +82,13 @@ func (h Headers) Keys() []string {
 // hazard of a "silently truncated at the NUL" read despite Go strings being
 // otherwise 8-bit clean. Found by FuzzParseHeadersOnly (re #244); the
 // defect is general to any header line, not specific to that path.
+//
+// This strips NULs literally present on the wire. It does not cover NULs
+// synthesized by decoding a header value further (RFC 2047 encoded-word or
+// address-list decoding) -- those bytes do not exist yet at add time. See
+// stripNUL's other call sites in parse.go for that half of the policy.
 func (h *Headers) add(name, value string) {
-	if strings.IndexByte(value, 0) >= 0 {
-		value = strings.ReplaceAll(value, "\x00", "")
-	}
+	value = stripNUL(value)
 	if h.values == nil {
 		h.values = map[string][]string{}
 	}
@@ -94,6 +97,17 @@ func (h *Headers) add(name, value string) {
 		h.order = append(h.order, key)
 	}
 	h.values[key] = append(h.values[key], value)
+}
+
+// stripNUL removes any embedded NUL byte from s. A NUL never belongs in a
+// mail header's textual content (RFC 5322 restricts header bodies to
+// printable characters); the shared policy is to drop it rather than
+// reject the whole message, matching the Headers.add behavior above.
+func stripNUL(s string) string {
+	if strings.IndexByte(s, 0) < 0 {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "")
 }
 
 func canonicalHeaderKey(name string) string {
