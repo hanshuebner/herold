@@ -4,7 +4,8 @@
  * Three helpers:
  *   gravatarUrl(email)        — builds a Gravatar URL using SHA-256 hash.
  *   decodeFaceHeader(b64)     — decodes a Face: header value to a blob: URL.
- *   tryFetchGravatar(url)     — HEAD-fetches a Gravatar URL; true on 200.
+ *   tryFetchGravatar(url)     — probes a Gravatar URL for existence; true
+ *                                when the image loads.
  *
  * These helpers are intentionally side-effect-free (except
  * tryFetchGravatar which issues a network request and
@@ -57,22 +58,29 @@ export function decodeFaceHeader(b64: string): string | null {
 }
 
 /**
- * Issue a HEAD request to the Gravatar URL.
+ * Probe whether a Gravatar picture exists at the given URL.
  *
- * Returns true when the server responds with HTTP 200 (the address
- * has a custom picture). Returns false on HTTP 404 (unknown address)
- * or any network / CORS error.
+ * Loads the URL as an `<img>` rather than issuing a `fetch()`: image
+ * loads are governed by the `img-src` CSP directive (already `https:`
+ * for every same-origin deployment) and are not subject to CORS —
+ * `www.gravatar.com` sends no `Access-Control-Allow-Origin` header, so
+ * a cross-origin `fetch()` HEAD/GET is blocked by the browser's CORS
+ * check before any response is observed, regardless of what
+ * `connect-src` allows. An `<img>` load has no such restriction: the
+ * browser reports success/failure via `onload`/`onerror` without
+ * requiring the response to opt in to being read cross-origin.
  *
- * Gravatar supports HEAD requests; the response is small and carries
- * no body, so this is cheap even for cold cache misses.
+ * Resolves true when the image loads (the address has a custom
+ * picture, i.e. Gravatar answered 200 for `?d=404`). Resolves false on
+ * HTTP 404 (unknown address) or any network error.
  */
 export async function tryFetchGravatar(url: string): Promise<boolean> {
-  try {
-    const resp = await fetch(url, { method: 'HEAD' });
-    return resp.ok;
-  } catch {
-    return false;
-  }
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
 }
 
 // ---------------------------------------------------------------------------
