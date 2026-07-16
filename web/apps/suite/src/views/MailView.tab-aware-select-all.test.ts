@@ -85,6 +85,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     refreshFolder: vi.fn().mockResolvedValue(undefined),
     toggleSelected: vi.fn(),
     selectAllVisible,
+    pruneSelectionToRendered: vi.fn(),
     selectWholeMailbox: vi.fn(),
     bulkArchive: vi.fn().mockResolvedValue(undefined),
     bulkDelete: vi.fn().mockResolvedValue(undefined),

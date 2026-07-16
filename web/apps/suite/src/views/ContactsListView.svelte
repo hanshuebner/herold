@@ -13,7 +13,7 @@
    *   - Live updates from sync channel (Contact/changes).
    */
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { contactsListStore, type SortProp } from '../lib/contacts/list-store.svelte';
   import { deriveFallbackInitial } from '../lib/contacts/list-store.svelte';
   import { groupsStore } from '../lib/contacts/groups.svelte';
@@ -35,6 +35,7 @@
     type UnrepresentableProperty,
   } from '../lib/contacts/vcard-import';
   import { shouldOfferWholeSet } from '../lib/list-selection/whole-set-selection';
+  import { handleRowCheckboxClick } from '../lib/list-selection/range-select';
 
   // ── URL sort param sync ───────────────────────────────────────────────────
 
@@ -363,6 +364,23 @@
   );
   let someVisibleSelected = $derived(selectedCount > 0 && !allVisibleSelected);
   let bulkDeleting = $state(false);
+
+  /**
+   * Prune `contactsListStore.selectedIds` back to what's actually on screen
+   * whenever the rendered set changes for a reason other than a fresh load
+   * or an explicit clear -- a scope switch (address book, group) or a
+   * background refresh dropping a row are both plain field writes that
+   * never touch the selection Set on their own. Left unreconciled, the Set
+   * can hold ids with no rendered checkbox, so the toolbar count exceeds
+   * what's checked and a bulk action reading the raw Set would silently act
+   * on hidden rows too (re #202). Skipped while `wholeSetSelected` is true:
+   * that mode's Set is a stand-in for a server-side "every matching
+   * contact" scope (see `selectAllMatching`), not the literal selection.
+   */
+  $effect(() => {
+    const rendered = visibleRowIds;
+    untrack(() => contactsListStore.pruneSelectionToRendered(rendered));
+  });
 
   /**
    * Offer "select all N matching" once every loaded row is checked and the
@@ -808,21 +826,17 @@
               aria-label={t('contacts.list.selectRowAria')}
               checked={contactsListStore.selectedIds.has(row.id)}
               onclick={(e) => {
-                e.stopPropagation();
-                if (e.shiftKey) {
-                  // Shift-click replaces native single-row toggling with a
-                  // range select (re #202); suppress the native toggle (and
-                  // the `change` event it would fire) so the plain-click
-                  // path below stays untouched.
-                  e.preventDefault();
-                  contactsListStore.selectRowClick(
-                    row.id,
-                    true,
-                    visibleRows.map((r) => r.id),
-                  );
-                }
+                handleRowCheckboxClick(
+                  e,
+                  () =>
+                    contactsListStore.selectRowClick(
+                      row.id,
+                      e.shiftKey,
+                      visibleRows.map((r) => r.id),
+                    ),
+                  () => contactsListStore.selectedIds.has(row.id),
+                );
               }}
-              onchange={() => contactsListStore.toggleSelected(row.id)}
             />
             <button
               type="button"

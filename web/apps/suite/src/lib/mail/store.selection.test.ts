@@ -120,3 +120,36 @@ describe('mail list selection: anchor + shift-click range (re #202)', () => {
     expect(mail.listSelectedIds).toEqual(new Set(['d']));
   });
 });
+
+describe('mail list selection: pruneSelectionToRendered (re #202)', () => {
+  it('drops ids that are no longer rendered', () => {
+    mail.selectRowClick('b', true, mail.listEmailIds);
+    mail.selectRowClick('d', true, mail.listEmailIds); // range b..d
+    expect(mail.listSelectedIds).toEqual(new Set(['b', 'c', 'd']));
+
+    // A category-tab switch or background refresh narrows the rendered set
+    // to just 'c' without going through clearSelection.
+    mail.pruneSelectionToRendered(['a', 'c']);
+    expect(mail.listSelectedIds).toEqual(new Set(['c']));
+  });
+
+  it('is a no-op when everything selected is still rendered', () => {
+    mail.toggleSelected('b');
+    const before = mail.listSelectedIds;
+    mail.pruneSelectionToRendered(['a', 'b', 'c']);
+    expect(mail.listSelectedIds).toBe(before); // same Set reference: no reactive write
+  });
+
+  it('does not prune while listWholeMailboxSelected is true', () => {
+    mail.toggleSelected('b');
+    mail.listWholeMailboxSelected = true;
+    mail.pruneSelectionToRendered(['z']);
+    expect(mail.listSelectedIds).toEqual(new Set(['b']));
+  });
+
+  it('is a no-op on an empty selection', () => {
+    const before = mail.listSelectedIds;
+    mail.pruneSelectionToRendered(['a']);
+    expect(mail.listSelectedIds).toBe(before);
+  });
+});

@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import type { Email } from '../lib/mail/types';
 
-const { makeEmail, selectRowClick, selectAllVisible, toggleSelectAllVisible } = vi.hoisted(() => {
+const { makeEmail, selectRowClick, selectAllVisible, toggleSelectAllVisible, pruneSelectionToRendered } = vi.hoisted(() => {
   const makeEmail = (id: string) =>
     ({
       id,
@@ -34,6 +34,7 @@ const { makeEmail, selectRowClick, selectAllVisible, toggleSelectAllVisible } = 
     makeEmail,
     selectRowClick: vi.fn(),
     selectAllVisible: vi.fn(),
+    pruneSelectionToRendered: vi.fn(),
     toggleSelectAllVisible: vi.fn(),
   };
 });
@@ -71,6 +72,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     toggleSelected: vi.fn(),
     toggleSelectAllVisible,
     selectAllVisible,
+    pruneSelectionToRendered,
     selectRowClick,
     selectWholeSearchResults: vi.fn(),
     clearSelection: vi.fn(),

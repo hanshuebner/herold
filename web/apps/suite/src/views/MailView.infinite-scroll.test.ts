@@ -86,6 +86,7 @@ const { mailMock, routerState, observerInstances } = vi.hoisted(() => {
     wholeMailboxActionUnavailable: vi.fn(),
     toggleSelected: vi.fn(),
     selectAllVisible: vi.fn(),
+    pruneSelectionToRendered: vi.fn(),
     toggleSelectAllVisible: vi.fn(),
     bulkArchive: vi.fn().mockResolvedValue(undefined),
     bulkDelete: vi.fn().mockResolvedValue(undefined),

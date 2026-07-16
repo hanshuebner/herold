@@ -85,6 +85,7 @@ const { mailMock, routerParts, navigate, TRASH_MAILBOX_ID, INBOX_MAILBOX_ID } = 
     refreshFolder: vi.fn().mockResolvedValue(undefined),
     toggleSelected: vi.fn(),
     selectAllVisible: vi.fn(),
+    pruneSelectionToRendered: vi.fn(),
     toggleSelectAllVisible: vi.fn(),
     bulkArchive: vi.fn().mockResolvedValue(undefined),
     bulkDelete: vi.fn().mockResolvedValue(undefined),

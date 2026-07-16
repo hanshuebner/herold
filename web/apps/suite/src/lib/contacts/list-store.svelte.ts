@@ -13,7 +13,7 @@ import { jmap } from '../jmap/client';
 import { Capability } from '../jmap/types';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
-import { computeShiftClickRange } from '../list-selection/range-select';
+import { computeShiftClickRange, reconcileSelection } from '../list-selection/range-select';
 import { appendPage, canLoadMore } from '../list-selection/paging';
 import {
   selectAllVisible as sharedSelectAllVisible,
@@ -371,6 +371,22 @@ class ContactsListStore {
    */
   selectAllMatching(): void {
     this.wholeSetSelected = true;
+  }
+
+  /**
+   * Prune `selectedIds` to ids present in `renderedIds` (re #202). A no-op
+   * while `wholeSetSelected` is true -- that mode's Set is a stand-in for
+   * a server-side "every matching contact" scope (see `selectAllMatching`
+   * above), not the literal selection. Call whenever the rendered rows
+   * change for a reason that doesn't already reset the selection outright
+   * (a scope switch, a background refresh) -- see `ContactsListView.svelte`'s
+   * reconciliation effect.
+   */
+  pruneSelectionToRendered(renderedIds: readonly string[]): void {
+    if (this.wholeSetSelected) return;
+    if (this.selectedIds.size === 0) return;
+    const next = reconcileSelection(this.selectedIds, renderedIds);
+    if (next !== this.selectedIds) this.selectedIds = next;
   }
 
   /** Clear the selection set, the shift-click anchor, and whole-set mode. */

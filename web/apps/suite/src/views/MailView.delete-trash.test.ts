@@ -39,6 +39,7 @@ const { mailMock, confirmMock, routerState } = vi.hoisted(() => {
     refreshFolder: vi.fn().mockResolvedValue(undefined),
     toggleSelected: vi.fn(),
     selectAllVisible: vi.fn(),
+    pruneSelectionToRendered: vi.fn(),
     toggleSelectAllVisible: vi.fn(),
     bulkArchive: vi.fn().mockResolvedValue(undefined),
     bulkDelete: vi.fn().mockResolvedValue(undefined),

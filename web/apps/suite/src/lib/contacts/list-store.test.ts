@@ -266,3 +266,42 @@ describe('contacts list selection: anchor + shift-click range', () => {
     expect(contactsListStore.selectedIds).toEqual(new Set(['c4']));
   });
 });
+
+describe('contacts list selection: pruneSelectionToRendered (re #202)', () => {
+  const ids = ['c1', 'c2', 'c3', 'c4', 'c5'];
+
+  beforeEach(() => {
+    contactsListStore.clearSelection();
+  });
+
+  it('drops ids that are no longer rendered', () => {
+    contactsListStore.selectRowClick('c2', true, ids);
+    contactsListStore.selectRowClick('c4', true, ids); // range c2..c4
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2', 'c3', 'c4']));
+
+    // A scope switch or background refresh narrows the rendered set to
+    // just 'c3' without going through clearSelection.
+    contactsListStore.pruneSelectionToRendered(['c1', 'c3']);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c3']));
+  });
+
+  it('is a no-op when everything selected is still rendered', () => {
+    contactsListStore.toggleSelected('c2');
+    const before = contactsListStore.selectedIds;
+    contactsListStore.pruneSelectionToRendered(ids);
+    expect(contactsListStore.selectedIds).toBe(before);
+  });
+
+  it('does not prune while wholeSetSelected is true', () => {
+    contactsListStore.toggleSelected('c2');
+    contactsListStore.wholeSetSelected = true;
+    contactsListStore.pruneSelectionToRendered(['zzz']);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2']));
+  });
+
+  it('is a no-op on an empty selection', () => {
+    const before = contactsListStore.selectedIds;
+    contactsListStore.pruneSelectionToRendered(['c1']);
+    expect(contactsListStore.selectedIds).toBe(before);
+  });
+});

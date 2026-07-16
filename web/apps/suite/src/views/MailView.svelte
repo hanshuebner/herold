@@ -15,6 +15,7 @@
   import CategoryPicker from '../lib/mail/CategoryPicker.svelte';
   import SelectChooser from '../lib/mail/SelectChooser.svelte';
   import { shouldOfferWholeSet } from '../lib/list-selection/whole-set-selection';
+  import { handleRowCheckboxClick } from '../lib/list-selection/range-select';
   import { labelPicker } from '../lib/mail/label-picker.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import type { Email } from '../lib/mail/types';
@@ -152,6 +153,29 @@
    * reason as `effectiveListEmailIds` above (re #202).
    */
   let renderedSearchEmailIds = $derived(mail.searchEmails.map((email) => email.id));
+
+  /**
+   * Prune `mail.listSelectedIds` back to what's actually on screen whenever
+   * the rendered set changes for a reason other than a fresh folder load or
+   * an explicit clear -- a category-tab switch (`showTabs`, REQ-CAT-10..14)
+   * or a background refresh dropping an id are both just `router.setParam`
+   * / a store field write and neither one touches the selection Set on its
+   * own. Left unreconciled, the Set can hold ids with no rendered checkbox:
+   * the toolbar count (`listSelectedIds.size`) then exceeds what's checked,
+   * and a bulk action reading the raw Set would silently act on hidden rows
+   * too (re #202). Skipped while `listWholeMailboxSelected` is true: that
+   * mode's Set is deliberately a stand-in for a server-side filter query
+   * (see `selectAllVisible`'s docstring), not the literal selection.
+   */
+  $effect(() => {
+    const rendered = isSearchRoute
+      ? renderedSearchEmailIds
+      : isListRoute
+        ? effectiveListEmailIds
+        : null;
+    if (rendered === null) return;
+    untrack(() => mail.pruneSelectionToRendered(rendered));
+  });
 
   // Kick off the list load when a folder route is shown. The load call is
   // wrapped in untrack() so the synchronous loadFolder/loadStatus read-
@@ -1158,17 +1182,12 @@
               aria-label={t('mail.row.selectAria')}
               checked={mail.listSelectedIds.has(email.id)}
               onclick={(e) => {
-                e.stopPropagation();
-                if (e.shiftKey) {
-                  // Shift-click replaces native single-row toggling with a
-                  // range select (re #202); suppress the native toggle (and
-                  // the `change` event it would fire) so the plain-click
-                  // path below stays untouched.
-                  e.preventDefault();
-                  mail.selectRowClick(email.id, true, renderedSearchEmailIds);
-                }
+                handleRowCheckboxClick(
+                  e,
+                  () => mail.selectRowClick(email.id, e.shiftKey, renderedSearchEmailIds),
+                  () => mail.listSelectedIds.has(email.id),
+                );
               }}
-              onchange={() => mail.toggleSelected(email.id)}
             />
             <button
               type="button"
@@ -1510,17 +1529,12 @@
               aria-label={t('mail.row.selectAria')}
               checked={mail.listSelectedIds.has(email.id)}
               onclick={(e) => {
-                e.stopPropagation();
-                if (e.shiftKey) {
-                  // Shift-click replaces native single-row toggling with a
-                  // range select (re #202); suppress the native toggle (and
-                  // the `change` event it would fire) so the plain-click
-                  // path below stays untouched.
-                  e.preventDefault();
-                  mail.selectRowClick(email.id, true, effectiveListEmailIds);
-                }
+                handleRowCheckboxClick(
+                  e,
+                  () => mail.selectRowClick(email.id, e.shiftKey, effectiveListEmailIds),
+                  () => mail.listSelectedIds.has(email.id),
+                );
               }}
-              onchange={() => mail.toggleSelected(email.id)}
             />
             <button
               type="button"

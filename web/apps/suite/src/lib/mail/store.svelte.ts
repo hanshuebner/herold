@@ -33,7 +33,7 @@ import { router } from '../router/router.svelte';
 import { appendEvent } from '../debug-ring/debug-ring';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 import { resolveDefault } from '../identities/identity-status';
-import { computeShiftClickRange } from '../list-selection/range-select';
+import { computeShiftClickRange, reconcileSelection } from '../list-selection/range-select';
 import { appendPage, canLoadMore } from '../list-selection/paging';
 import {
   allVisibleSelected,
@@ -3056,6 +3056,23 @@ class MailStore {
     this.listWholeMailboxSelected = false;
     this.#wholeSelectionFilterOverride = undefined;
     this.listSelectedIds = sharedToggleSelectAllVisible(visibleIds, this.listSelectedIds);
+  }
+
+  /**
+   * Prune `listSelectedIds` to ids present in `renderedIds` (re #202). A
+   * no-op while `listWholeMailboxSelected` is true -- that mode's Set is a
+   * stand-in for a server-side filter query (see `selectAllVisible`'s
+   * docstring above), not the literal selection, so pruning it against
+   * whatever page happens to be rendered would be wrong. Call whenever the
+   * rendered list changes for a reason that doesn't already reset the
+   * selection outright (a category-tab switch, a background refresh) --
+   * see `MailView.svelte`'s reconciliation effect.
+   */
+  pruneSelectionToRendered(renderedIds: readonly string[]): void {
+    if (this.listWholeMailboxSelected) return;
+    if (this.listSelectedIds.size === 0) return;
+    const next = reconcileSelection(this.listSelectedIds, renderedIds);
+    if (next !== this.listSelectedIds) this.listSelectedIds = next;
   }
 
   /** Clear the bulk selection set, the shift-click anchor, and the whole-mailbox selection flag. */

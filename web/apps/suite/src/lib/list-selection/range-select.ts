@@ -39,3 +39,81 @@ export function computeShiftClickRange(
   const [start, end] = anchorIdx <= clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
   return new Set(visibleIds.slice(start, end + 1));
 }
+
+/**
+ * Handle a row-checkbox click (plain or shift) for every selectable list
+ * in one place (re #202).
+ *
+ * The checkbox's `checked` DOM property is a one-way `checked={...}`
+ * binding sourced from the selection store. The browser's own checkbox
+ * activation behaviour runs in two steps around the click event: a
+ * "pre-click" step flips the element's internal checkedness before any
+ * listener sees the event, and -- because this handler always calls
+ * `preventDefault()` -- a "canceled activation" step reverts it again once
+ * the click event has finished dispatching. Both steps mutate the
+ * checkbox's internal checkedness directly (not through the exposed
+ * `HTMLInputElement.prototype.checked` accessor), so neither one is
+ * visible to, or preventable by, application code, and the revert step
+ * measurably runs *after* the current task's microtask queue has already
+ * drained (confirmed by instrumenting the accessor and racing a
+ * microtask against a macrotask around a real click: the microtask still
+ * observes the pre-click `true`, the macrotask observes the reverted
+ * `false`). A framework-driven write made synchronously inside this
+ * handler, or scheduled via `queueMicrotask`, therefore always lands
+ * before the revert and gets silently clobbered by it -- the checkbox
+ * then shows the wrong state even though the store's selection set is
+ * correct, and no later store-driven re-render corrects it because the
+ * framework's own reactivity cache already agrees with the (silently
+ * reverted) target value. Re-asserting the DOM property one macrotask
+ * later, once the revert has already happened, is what actually sticks.
+ *
+ * `applySelection` performs the store mutation (a plain click toggle or a
+ * shift-click range); `isSelected` reads the resulting membership for this
+ * row after that mutation.
+ */
+export function handleRowCheckboxClick(
+  e: MouseEvent,
+  applySelection: () => void,
+  isSelected: () => boolean,
+): void {
+  e.preventDefault();
+  e.stopPropagation();
+  const el = e.currentTarget as HTMLInputElement;
+  applySelection();
+  setTimeout(() => {
+    el.checked = isSelected();
+  }, 0);
+}
+
+/**
+ * Prune a selection Set back to ids present in `renderedIds` (re #202).
+ *
+ * The toolbar's selected-count display and every bulk action read the
+ * selection Set directly. Nothing about a category-tab switch, a search
+ * scope change, or a background folder/list refresh touches that Set on
+ * its own -- they only change what's rendered -- so a dropped id can
+ * silently linger in the Set with no on-screen checkbox: the toolbar count
+ * then exceeds what's checked, and a bulk action would act on a row the
+ * user can no longer see. Returns the same Set instance when nothing is
+ * stale, so callers can skip a reactive write (and the checkbox re-render
+ * churn that would cause) when there's nothing to reconcile.
+ */
+export function reconcileSelection(
+  selected: ReadonlySet<string>,
+  renderedIds: readonly string[],
+): Set<string> {
+  const rendered = new Set(renderedIds);
+  let stale = false;
+  for (const id of selected) {
+    if (!rendered.has(id)) {
+      stale = true;
+      break;
+    }
+  }
+  if (!stale) return selected as Set<string>;
+  const next = new Set<string>();
+  for (const id of selected) {
+    if (rendered.has(id)) next.add(id);
+  }
+  return next;
+}

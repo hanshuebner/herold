@@ -68,6 +68,7 @@ vi.mock('../lib/mail/store.svelte', () => ({
     toggleSelected: vi.fn(),
     toggleSelectAllVisible: vi.fn(),
     selectAllVisible: vi.fn(),
+    pruneSelectionToRendered: vi.fn(),
     selectWholeSearchResults: vi.fn(),
     clearSelection: vi.fn(),
     selectVisibleWhere: vi.fn(),
