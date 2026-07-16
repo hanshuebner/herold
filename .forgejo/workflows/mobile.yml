@@ -1,0 +1,109 @@
+name: mobile
+
+# Path-filtered lane for the KMP Android client (docs/design/android/
+# implementation-plan.md, "Monorepo integration"). Triggered only when
+# mobile/ or its design tree change, so a Go/web-only push never spawns
+# this job. Deliberately its own workflow (not a job inside ci.yml) and
+# NOT referenced by ci.yml's deploy job needs: chain, so a mobile build
+# failure never blocks the server auto-deploy.
+#
+# Builds shared + androidApp and runs their host-JVM unit tests
+# (shared's androidUnitTest source set, including JmapClientLiveTest --
+# see that file for why it needs no emulator: it drives the real
+# device-token + Mailbox/get path over plain HTTP from the host JVM,
+# skipping gracefully when HEROLD_DEV_INSTANCE_URL is unset). No
+# Android emulator or KVM is used or required by this workflow; the
+# emulator-driven instrumented harness (androidApp's androidTest source
+# set) is a separate, not-yet-landed increment pending KVM-capable
+# runner infra (docs/design/android/implementation-plan.md Phase 0,
+# "Remaining work").
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "docs/design/android/**"
+      - ".forgejo/workflows/mobile.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "docs/design/android/**"
+      - ".forgejo/workflows/mobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build (shared + androidApp) + unit tests
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The amd64 runner-bakery snapshot (netzhansa-infra
+      # roles/runner-bakery/files/provision.sh) bakes the Android SDK
+      # (platform-tools, platforms;android-36, build-tools;36.0.0) at
+      # /opt/android-sdk for exactly this kind of Gradle-only build, so
+      # normally no download happens here. Falls back to a fresh
+      # cmdline-tools install (same packages) if the runner image
+      # predates the bake -- matches the proven wetteronline
+      # (.forgejo/workflows/deploy.yml "android" job) pattern.
+      - name: set up Android SDK
+        run: |
+          set -euo pipefail
+          command -v unzip >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y unzip; }
+          if [ -x /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager ]; then
+            SDK=/opt/android-sdk
+          else
+            SDK="$HOME/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/clt.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip
+            unzip -q /tmp/clt.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" \
+              "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+      - name: cache Gradle caches + wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('mobile/gradle/libs.versions.toml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # shared:build runs the shared module's commonTest + androidUnitTest
+      # suites on the host JVM (MailboxTest, JmapClientLiveTest -- the
+      # latter skips its live assertion here since no dev-instance is
+      # running in this job) as part of the `check` task, then packages
+      # shared-debug.aar / shared-release.aar.
+      - name: shared build + unit tests
+        run: ./gradlew --no-daemon :shared:build
+
+      # androidApp has no unit tests yet (only the androidTest
+      # instrumented source set, which needs a device/emulator);
+      # assembleDebug is the same command the "Delivered" acceptance in
+      # #251 verified from a clean checkout.
+      - name: androidApp assembleDebug
+        run: ./gradlew --no-daemon :androidApp:assembleDebug
