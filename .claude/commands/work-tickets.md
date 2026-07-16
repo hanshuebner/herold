@@ -31,11 +31,21 @@ If you catch yourself writing a sentence whose subject is an agent, delete it.
 
 ## 1. Build the work-list
 
-List all open issues with `mcp__forgejo__issue_list` (`state: "open"`, raise
-`limit` as needed). Drop any issue carrying `waiting-for-feedback`,
-`decisions-required`, `deferred`, or `superseded` — the ball is not in your
-court on those. Sort the survivors ascending by number (oldest first; they have
-waited longest).
+List all open issues with `mcp__forgejo__issue_list` (`state: "open"`). **The
+tool paginates at ~30 issues per page regardless of the `limit` you pass** — a
+single call silently returns only the newest page and drops every older issue.
+You MUST page through the whole set: call it with `page: 1`, `page: 2`, ...
+(keep `limit: 50`) until a page comes back empty, and union the results. Verify
+you reached the end (last page shorter than a full page, or an empty page
+follows) before you trust the list — an under-fetched work-list makes the drain
+skip the oldest tickets, which are exactly the ones that have waited longest.
+
+Drop any issue carrying `waiting-for-feedback`, `decisions-required`,
+`deferred`, or `superseded` — the ball is not in your court on those. Also set
+aside any pure **tracking epic** (an umbrella issue with no buildable Work
+section of its own, whose real work lives in child tickets) — surface it in the
+report but do not dispatch an implementor to "build the epic." Sort the
+survivors ascending by number (oldest first; they have waited longest).
 
 Report the resulting work-list to me before processing: issue number, title,
 labels, and the class you assigned it in step 2. If the list is empty, say so
