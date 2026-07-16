@@ -429,6 +429,87 @@ describe('selectReplyIdentity — REQ-MAIL-12a algorithm', () => {
     const got = selectReplyIdentity(parent, [defaultId, decoy], defaultId);
     expect(got.email).toBe('hans@huebner.org');
   });
+
+  it('prefers the Delivered-To identity over the account default on a cross-domain alias forward (re #254)', () => {
+    // #254 repro: the message was delivered via a cross-domain alias
+    // forward (info@classic-computing.org -> vorsitz@classic-computing.de).
+    // X-Herold-Recipient carries the literal RCPT TO herold accepted
+    // (info@classic-computing.org) -- a domain no identity owns, so
+    // steps 3/3a cannot resolve it. Delivered-To, an upstream-MTA header
+    // untouched by herold, names the registered identity the mail was
+    // actually delivered to and must win over the account default.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const vorsitz = makeIdentity('vorsitz@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: 't.orth', email: 't.orth@gmx.de' }],
+      to: [{ name: null, email: 'info@classic-computing.org' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+      'header:X-Original-To:asText': 'info@classic-computing.org',
+      'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, vorsitz], defaultId);
+    expect(got.email).toBe('vorsitz@classic-computing.de');
+  });
+
+  it('falls back to Delivered-To domain match when neither Delivered-To nor X-Herold-Recipient exactly match a registered identity', () => {
+    // Delivered-To names an unregistered role alias on a domain the
+    // account holds a different identity for (mirrors #166's step-3a
+    // role-alias shape, but reached via step 3b since X-Herold-Recipient
+    // is on an unrelated domain).
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const presse = makeIdentity('presse@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.org' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+      'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, presse], defaultId);
+    expect(got.email).toBe('presse@classic-computing.de');
+  });
+
+  it('falls back to X-Original-To when Delivered-To is absent (step 3b, second source)', () => {
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const vorsitz = makeIdentity('vorsitz@classic-computing.de');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.org' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+      'header:X-Original-To:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, vorsitz], defaultId);
+    expect(got.email).toBe('vorsitz@classic-computing.de');
+  });
+
+  it('does not consult Delivered-To when X-Herold-Recipient already resolved via the domain fallback (step 3a still wins)', () => {
+    // X-Herold-Recipient's domain matches presse@classic-computing.de
+    // via step 3a; Delivered-To names a different, decoy identity that
+    // must not override the already-resolved step-3a match.
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const presse = makeIdentity('presse@classic-computing.de');
+    const decoy = makeIdentity('decoy@other.example');
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'dreams@the-retro-heaven.de' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+      'header:Delivered-To:asText': 'decoy@other.example',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, presse, decoy], defaultId);
+    expect(got.email).toBe('presse@classic-computing.de');
+  });
+
+  it('skips an unverified identity on the Delivered-To exact match (step 3b verification gate)', () => {
+    const defaultId = makeIdentity('hans@huebner.org', { isDefault: true });
+    const unverified = makeIdentity('vorsitz@classic-computing.de', { verifiedAt: null });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'someone@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.org' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+      'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [defaultId, unverified], defaultId);
+    expect(got.email).toBe('hans@huebner.org');
+  });
 });
 
 // ── REQ-MAIL-12a acceptance / contract test ─────────────────────────────
@@ -451,6 +532,7 @@ describe('selectReplyIdentity — REQ-MAIL-12a acceptance/contract test (pins th
   const HANS_NETZHANSA = makeIdentity('hans@netzhansa.com');
   const HANS_GMAIL = makeIdentity('hans.huebner@gmail.com');
   const CLASSIC_PRESSE = makeIdentity('presse@classic-computing.de');
+  const CLASSIC_VORSITZ = makeIdentity('vorsitz@classic-computing.de');
   const RETRO_DECOY = makeIdentity('someone@the-retro-heaven.de');
 
   type Case = {
@@ -562,6 +644,32 @@ describe('selectReplyIdentity — REQ-MAIL-12a acceptance/contract test (pins th
       identities: [HANS_HUEBNER, RETRO_DECOY],
       defaultIdentity: HANS_HUEBNER,
       expectedEmail: 'hans@huebner.org',
+    },
+    {
+      name: 'step 3b — Delivered-To wins when X-Herold-Recipient names a domain no identity owns (re #254)',
+      parent: {
+        from: [{ name: 't.orth', email: 't.orth@gmx.de' }],
+        to: [{ name: null, email: 'info@classic-computing.org' }],
+        'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+        'header:X-Original-To:asText': 'info@classic-computing.org',
+        'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+      },
+      identities: [HANS_HUEBNER, CLASSIC_VORSITZ],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'vorsitz@classic-computing.de',
+    },
+    {
+      name: 'repro: issue #254 — cross-domain alias forward (info@classic-computing.org -> vorsitz@classic-computing.de) resolves via step 3b, not the unrelated global default',
+      parent: {
+        from: [{ name: 'Walter Bühler Erben', email: 'walter-buehler-erben@posteo.de' }],
+        to: [{ name: null, email: 'info@classic-computing.org' }],
+        'header:X-Herold-Recipient:asText': 'info@classic-computing.org',
+        'header:X-Original-To:asText': 'info@classic-computing.org',
+        'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+      },
+      identities: [HANS_HUEBNER, CLASSIC_VORSITZ],
+      defaultIdentity: HANS_HUEBNER,
+      expectedEmail: 'vorsitz@classic-computing.de',
     },
   ];
 

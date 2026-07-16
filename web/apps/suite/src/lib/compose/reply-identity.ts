@@ -43,6 +43,21 @@
  *       to an identity the message was never delivered to. Only when
  *       `X-Herold-Recipient` is absent entirely (older messages) does
  *       the domain fallback consult To then Cc.
+ *   3b. Upstream-alias fallback: a cross-domain alias forward (an
+ *       upstream MTA locally alias-expands the envelope recipient
+ *       before relaying to herold, e.g. Postfix virtual alias delivery)
+ *       makes `X-Herold-Recipient` carry the literal RCPT TO herold
+ *       itself accepted (REQ-FLOW-33) -- which, for a cross-domain
+ *       alias, names neither an identity nor a domain any identity
+ *       owns, so neither step 3 nor step 3a can resolve it. The
+ *       upstream MTA's own `Delivered-To` (and, failing that,
+ *       `X-Original-To`) header is an ordinary RFC 822 header that
+ *       passes through untouched and may still name the identity the
+ *       mail was actually delivered to. Tried, in order, only when
+ *       steps 3 and 3a produced no match: `Delivered-To` exact address,
+ *       `Delivered-To` domain, `X-Original-To` exact address,
+ *       `X-Original-To` domain. Each match is gated by the same
+ *       verification requirement as steps 2/3.
  *   4. Final fallback: the supplied default identity (REQ-MAIL-12).
  *
  * Verification gate: Unverified Identities NEVER win the To/Cc scan
@@ -120,6 +135,32 @@ function identitiesByEmail(identities: readonly Identity[]): Map<string, Identit
  */
 function readHeraldRecipient(parent: Email): string | null {
   const raw = parent['header:X-Herold-Recipient:asText'];
+  if (raw == null) return null;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Read the parent message's `Delivered-To` header (step 3b). Unlike
+ * `X-Herold-Recipient`, this is an ordinary RFC 822 header herold never
+ * generates, strips, or rewrites -- it survives verbatim from whatever
+ * upstream MTA added it before relaying to herold. Returns the trimmed
+ * lower-cased address, or null when absent or empty.
+ */
+function readDeliveredTo(parent: Email): string | null {
+  const raw = parent['header:Delivered-To:asText'];
+  if (raw == null) return null;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Read the parent message's `X-Original-To` header (step 3b, second
+ * source). Same characteristics as `readDeliveredTo` -- an ordinary
+ * pass-through header, not herold-generated.
+ */
+function readXOriginalTo(parent: Email): string | null {
+  const raw = parent['header:X-Original-To:asText'];
   if (raw == null) return null;
   const trimmed = raw.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : null;
@@ -212,6 +253,10 @@ function firstDomainMatch(
  *       authoritative and must not fall through to a coincidental
  *       To/Cc domain hit). When X-Herold-Recipient is absent entirely,
  *       parent.to then parent.cc are matched by domain instead.
+ *   3b. Upstream-alias fallback (only when 3 and 3a produced no
+ *       match): Delivered-To exact match, then Delivered-To domain
+ *       match, then X-Original-To exact match, then X-Original-To
+ *       domain match — each gated by the verification requirement.
  *   4. Fallback to `defaultIdentity`.
  *
  * Callers (compose's openReply / openReplyAll / openForward) pass the
@@ -293,6 +338,30 @@ export function selectReplyIdentity(
       if (toDomainHit) return toDomainHit;
       const ccDomainHit = firstDomainMatch(parent.cc ?? null, byDomain);
       if (ccDomainHit) return ccDomainHit;
+    }
+  }
+
+  // Step 3b — upstream-alias fallback. A cross-domain alias forward (an
+  // upstream MTA locally alias-expands the envelope recipient before
+  // relaying to herold, e.g. Postfix virtual alias delivery) makes
+  // X-Herold-Recipient carry the literal RCPT TO herold itself accepted
+  // (REQ-FLOW-33) — for a cross-domain alias that names neither an
+  // identity nor a domain any identity owns, so steps 3/3a above cannot
+  // resolve it. Delivered-To / X-Original-To are ordinary RFC 822
+  // headers herold never generates, strips, or rewrites; they survive
+  // verbatim from whatever upstream MTA added them and may still name
+  // the identity the mail was actually delivered to. Only consulted
+  // when steps 3/3a produced no match — this must not override the
+  // authoritative X-Herold-Recipient-based precedence above.
+  for (const reader of [readDeliveredTo, readXOriginalTo]) {
+    const addr = reader(parent);
+    if (!addr) continue;
+    const exact = byEmail.get(addr);
+    if (exact && isVerified(exact)) return exact;
+    if (byDomain.size > 0) {
+      const domain = domainOf(addr);
+      const domainHit = domain ? byDomain.get(domain) : undefined;
+      if (domainHit) return domainHit;
     }
   }
 
@@ -419,6 +488,8 @@ export const _internals_forTest = {
   isVerified,
   identitiesByEmail,
   readHeraldRecipient,
+  readDeliveredTo,
+  readXOriginalTo,
   firstVerifiedMatch,
   firstVerifiedIdentityByDomain,
   firstDomainMatch,

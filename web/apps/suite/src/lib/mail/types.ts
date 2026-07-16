@@ -243,6 +243,22 @@ export interface Email {
    */
   'header:X-Herold-Recipient:asText'?: string | null;
   /**
+   * `Delivered-To` / `X-Original-To` -- ordinary RFC 822 headers an
+   * upstream MTA adds when it locally alias-expands the envelope
+   * recipient before relaying to herold (e.g. Postfix virtual alias
+   * delivery). Herold never strips, rewrites, or synthesises these; they
+   * pass through verbatim from the stored raw message. The compose-side
+   * reply-identity match consumes them as a fallback signal (REQ-MAIL-12a
+   * step 3b) for cross-domain alias forwards where `X-Herold-Recipient`
+   * (the literal envelope RCPT TO herold itself accepted, REQ-FLOW-33)
+   * names a domain none of the account's identities own, but the
+   * upstream MTA's `Delivered-To` names the identity the mail was
+   * actually meant for. Absent on the common case (no upstream alias
+   * hop) and on outbound/self-composed mail.
+   */
+  'header:Delivered-To:asText'?: string | null;
+  'header:X-Original-To:asText'?: string | null;
+  /**
    * Herold extension (REQ-EXTIMG-BG-20): true while the message body is
    * waiting for the background-internalize worker to rewrite its external
    * image references. Email/get serves placeholder data URIs in place of
@@ -324,6 +340,8 @@ export const EMAIL_BODY_PROPERTIES = [
   'header:Face:asText',
   'header:X-Face:asText',
   'header:X-Herold-Recipient:asText',
+  'header:Delivered-To:asText',
+  'header:X-Original-To:asText',
   'internalizePending',
   'failedImageCount',
 ] as const;
