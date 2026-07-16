@@ -82,4 +82,63 @@ test.describe('shift-click range selection (contacts list)', () => {
     await expect(bulkCountText(page)).toHaveText('4 selected');
     await expect(page.locator('.contact-list .row-check:checked')).toHaveCount(4);
   });
+
+  test('shift-click applies the direction of the last plain click: select-range then deselect-range (re #202 handback, comment 3131)', async ({
+    page,
+    request,
+  }) => {
+    await login(page);
+    await page.goto('/#/contacts');
+    await clearContacts(page, request);
+
+    // Contacts sort alphabetically by displayName, so the array order
+    // below is the top-to-bottom render order.
+    const names = [
+      'Direction Alpha',
+      'Direction Bravo',
+      'Direction Charlie',
+      'Direction Delta',
+      'Direction Echo',
+    ];
+    await seedContacts(page, request, names);
+    await page.reload();
+    await page.locator('button.compose').first().waitFor({ timeout: 15_000 });
+    await expect(page.locator('.contact-list li')).toHaveCount(names.length, { timeout: 15_000 });
+
+    const [row1, row2, , , rowN] = names;
+
+    // Plain click row 1 -- a selecting click -- sets the anchor with a
+    // select operation.
+    await rowCheckbox(page, row1!).click();
+    await expect(rowCheckbox(page, row1!)).toBeChecked();
+
+    // Shift-click row N: the anchor's last operation was select, so the
+    // whole anchor..target range gets selected.
+    await rowCheckbox(page, rowN!).click({ modifiers: ['Shift'] });
+    for (const name of names) {
+      await expect(rowCheckbox(page, name), `row "${name}" after select-range`).toBeChecked();
+    }
+    await expect(bulkCountText(page)).toHaveText(`${names.length} selected`);
+    await expect(page.locator('.contact-list .row-check:checked')).toHaveCount(names.length);
+
+    // Plain click row 2, which is currently checked -- a deselecting
+    // click -- moves the anchor to row 2 with a deselect operation.
+    await rowCheckbox(page, row2!).click();
+    await expect(rowCheckbox(page, row2!)).not.toBeChecked();
+
+    // Shift-click row N again: the anchor's last operation was now
+    // deselect, so the whole row2..rowN range gets deselected, leaving
+    // row 1 (outside that range) checked.
+    await rowCheckbox(page, rowN!).click({ modifiers: ['Shift'] });
+
+    await expect(
+      rowCheckbox(page, row1!),
+      'row 1 (outside the deselect range) stays checked',
+    ).toBeChecked();
+    for (const name of names.slice(1)) {
+      await expect(rowCheckbox(page, name), `row "${name}" after deselect-range`).not.toBeChecked();
+    }
+    await expect(bulkCountText(page)).toHaveText('1 selected');
+    await expect(page.locator('.contact-list .row-check:checked')).toHaveCount(1);
+  });
 });

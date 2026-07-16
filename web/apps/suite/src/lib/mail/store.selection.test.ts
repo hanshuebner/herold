@@ -109,6 +109,28 @@ describe('mail list selection: anchor + shift-click range (re #202)', () => {
     expect(mail.listSelectAnchorId).toBe('c');
   });
 
+  it('a deselecting plain click sets the anchor operation to deselect', () => {
+    mail.toggleSelected('b'); // select -> anchor=b, op=select
+    mail.toggleSelected('b'); // deselect -> anchor=b, op=deselect
+    expect(mail.listSelectedIds).toEqual(new Set());
+    expect(mail.listSelectAnchorId).toBe('b');
+    expect(mail.listSelectAnchorOp).toBe('deselect');
+  });
+
+  it('shift-click after a selecting plain click selects the whole range (re #202 handback, comment 3131)', () => {
+    mail.toggleSelected('a'); // select a
+    mail.selectRowClick('e', true, mail.listEmailIds);
+    expect(mail.listSelectedIds).toEqual(new Set(['a', 'b', 'c', 'd', 'e']));
+  });
+
+  it('shift-click after a deselecting plain click deselects the whole range, leaving ids outside it untouched', () => {
+    mail.toggleSelected('a'); // select a -> anchor=a, op=select
+    mail.selectRowClick('e', true, mail.listEmailIds); // select a..e -> {a,b,c,d,e}
+    mail.toggleSelected('b'); // plain-deselect b -> {a,c,d,e}, anchor=b, op=deselect
+    mail.selectRowClick('e', true, mail.listEmailIds); // deselect b..e
+    expect(mail.listSelectedIds).toEqual(new Set(['a']));
+  });
+
   it('clearSelection resets the anchor as well as the selection set', () => {
     mail.toggleSelected('b');
     mail.clearSelection();

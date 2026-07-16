@@ -256,6 +256,28 @@ describe('contacts list selection: anchor + shift-click range', () => {
     expect(contactsListStore.selectAnchorId).toBe('c3');
   });
 
+  it('a deselecting plain click sets the anchor operation to deselect', () => {
+    contactsListStore.toggleSelected('c2'); // select -> anchor=c2, op=select
+    contactsListStore.toggleSelected('c2'); // deselect -> anchor=c2, op=deselect
+    expect(contactsListStore.selectedIds).toEqual(new Set());
+    expect(contactsListStore.selectAnchorId).toBe('c2');
+    expect(contactsListStore.selectAnchorOp).toBe('deselect');
+  });
+
+  it('shift-click after a selecting plain click selects the whole range (re #202 handback, comment 3131)', () => {
+    contactsListStore.toggleSelected('c1');
+    contactsListStore.selectRowClick('c5', true, ids);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c1', 'c2', 'c3', 'c4', 'c5']));
+  });
+
+  it('shift-click after a deselecting plain click deselects the whole range, leaving ids outside it untouched', () => {
+    contactsListStore.toggleSelected('c1'); // select c1 -> anchor=c1, op=select
+    contactsListStore.selectRowClick('c5', true, ids); // select c1..c5
+    contactsListStore.toggleSelected('c2'); // plain-deselect c2 -> anchor=c2, op=deselect
+    contactsListStore.selectRowClick('c5', true, ids); // deselect c2..c5
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c1']));
+  });
+
   it('clearSelection resets the anchor as well as the selection set', () => {
     contactsListStore.toggleSelected('c2');
     contactsListStore.clearSelection();

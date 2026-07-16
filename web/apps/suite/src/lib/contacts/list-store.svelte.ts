@@ -13,7 +13,11 @@ import { jmap } from '../jmap/client';
 import { Capability } from '../jmap/types';
 import { auth } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
-import { computeShiftClickRange, reconcileSelection } from '../list-selection/range-select';
+import {
+  applyShiftClickSelection,
+  reconcileSelection,
+  type SelectionOp,
+} from '../list-selection/range-select';
 import { appendPage, canLoadMore } from '../list-selection/paging';
 import {
   selectAllVisible as sharedSelectAllVisible,
@@ -212,6 +216,21 @@ class ContactsListStore {
    */
   selectAnchorId = $state<string | null>(null);
   /**
+   * Whether the anchor's plain click selected or deselected the row (re
+   * #202 handback, comment 3131): shift-click applies this same operation
+   * across the whole anchor-to-click range instead of unconditionally
+   * selecting. Set alongside `selectAnchorId` by `toggleSelected`.
+   */
+  selectAnchorOp = $state<SelectionOp>('select');
+  /**
+   * Snapshot of `selectedIds` taken the moment the anchor was set (re #202
+   * handback, comment 3131). `selectRowClick`'s shift branch applies the
+   * range on top of this snapshot, not the live selection, so repeated
+   * shift-clicks from the same anchor keep replacing the range's extent
+   * instead of accumulating every range ever visited in the shift session.
+   */
+  #selectAnchorBaseSelection: ReadonlySet<string> = new Set();
+  /**
    * True while the user has accepted the "select all N matching" offer
    * (re #221 -- the contacts counterpart of the mail store's
    * `listWholeMailboxSelected`, issue #149). While true, `resolveSelectionIds`
@@ -321,25 +340,39 @@ class ContactsListStore {
   /** Toggle whether `id` is in the selection set. */
   toggleSelected(id: string): void {
     const next = new Set(this.selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      this.selectAnchorOp = 'deselect';
+    } else {
+      next.add(id);
+      this.selectAnchorOp = 'select';
+    }
     this.selectedIds = next;
     this.selectAnchorId = id;
+    this.#selectAnchorBaseSelection = next;
   }
 
   /**
-   * Handle a row-selection click on the bulk-select checkbox (re #202).
-   * Shift-click, with a prior anchor still present in `visibleIds`,
-   * replaces the selection with the contiguous range between the anchor
-   * and `id`, inclusive, and leaves the anchor unchanged so repeated
-   * shift-clicks keep extending from the same starting point. A plain
-   * click falls back to the existing per-row toggle and moves the anchor
-   * to `id`.
+   * Handle a row-selection click on the bulk-select checkbox (re #202,
+   * directional behaviour added per comment 3131). Shift-click, with a
+   * prior anchor still present in `visibleIds`, applies the anchor's last
+   * plain-click operation (select or deselect) across the contiguous range
+   * between the anchor and `id`, inclusive, leaving ids outside that range
+   * untouched -- and leaves the anchor unchanged so repeated shift-clicks
+   * keep re-extending (or re-shrinking) from the same starting point and
+   * the same operation. A plain click falls back to the existing per-row
+   * toggle and moves the anchor to `id`.
    */
   selectRowClick(id: string, shiftKey: boolean, visibleIds: string[]): void {
     if (shiftKey && this.selectAnchorId !== null) {
       this.wholeSetSelected = false;
-      this.selectedIds = computeShiftClickRange(visibleIds, this.selectAnchorId, id);
+      this.selectedIds = applyShiftClickSelection(
+        visibleIds,
+        this.selectAnchorId,
+        this.selectAnchorOp,
+        this.#selectAnchorBaseSelection,
+        id,
+      );
       return;
     }
     this.toggleSelected(id);
@@ -392,6 +425,8 @@ class ContactsListStore {
   /** Clear the selection set, the shift-click anchor, and whole-set mode. */
   clearSelection(): void {
     this.selectAnchorId = null;
+    this.selectAnchorOp = 'select';
+    this.#selectAnchorBaseSelection = new Set();
     this.wholeSetSelected = false;
     if (this.selectedIds.size === 0) return;
     this.selectedIds = new Set();

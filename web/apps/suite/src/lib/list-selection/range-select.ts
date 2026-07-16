@@ -41,6 +41,55 @@ export function computeShiftClickRange(
 }
 
 /**
+ * The bulk-selection mutation a plain (non-shift) checkbox click just
+ * performed on the anchor row: `'select'` if the click added the row to
+ * the selection, `'deselect'` if it removed it (re #202 handback,
+ * comment 3131). Shift-click extends this same operation across the
+ * range instead of unconditionally selecting.
+ */
+export type SelectionOp = 'select' | 'deselect';
+
+/**
+ * Compute the selection produced by a shift-click, applying the anchor's
+ * last plain-click operation (`anchorOp`) across the whole anchor-to-click
+ * range instead of always selecting (re #202 handback, comment 3131): this
+ * is the conventional desktop-list behaviour where the anchor carries both
+ * a position and an operation, and shift extends that operation.
+ *
+ * `baseSelection` is the selection as it stood at the moment the anchor was
+ * set by its plain click -- not the live selection -- so that repeated
+ * shift-clicks from the same anchor keep replacing the range's extent
+ * (shrinking it back down when the target moves closer to the anchor)
+ * rather than accumulating every range ever visited in this shift session.
+ * Ids outside the anchor-to-click range, which were already part of
+ * `baseSelection`, are left untouched either way: a `'select'` operation
+ * adds the range on top of them, a `'deselect'` operation removes only the
+ * range's ids from them.
+ *
+ * Falls back to selecting only `clickedId` when there is no anchor (or the
+ * anchor is no longer visible), matching `computeShiftClickRange`.
+ */
+export function applyShiftClickSelection(
+  visibleIds: readonly string[],
+  anchorId: string | null,
+  anchorOp: SelectionOp,
+  baseSelection: ReadonlySet<string>,
+  clickedId: string,
+): Set<string> {
+  const range = computeShiftClickRange(visibleIds, anchorId, clickedId);
+  if (anchorId === null || !visibleIds.includes(anchorId)) {
+    return range;
+  }
+  const next = new Set(baseSelection);
+  if (anchorOp === 'deselect') {
+    for (const id of range) next.delete(id);
+  } else {
+    for (const id of range) next.add(id);
+  }
+  return next;
+}
+
+/**
  * Handle a row-checkbox click (plain or shift) for every selectable list
  * in one place (re #202).
  *

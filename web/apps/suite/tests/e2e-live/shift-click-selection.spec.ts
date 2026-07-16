@@ -200,6 +200,53 @@ test.describe('shift-click range selection (mail list)', () => {
     await expect(page.locator('.thread-list .row-check:checked')).toHaveCount(4);
   });
 
+  test('shift-click applies the direction of the last plain click: select-range then deselect-range (re #202 handback, comment 3131)', async ({
+    page,
+    request,
+  }) => {
+    // Seeded in send order; the last-sent message renders at the top
+    // (newest-first), so seed in reverse of the desired top-to-bottom
+    // render order.
+    const rendered = ['Row1', 'Row2', 'Row3', 'Row4', 'Row5'];
+    await loginWithFreshInbox(page, request, [...rendered].reverse());
+
+    const [row1, row2, , , rowN] = rendered;
+
+    // Plain click row 1 -- a selecting click -- sets the anchor with a
+    // select operation.
+    await rowCheckbox(page, row1!).click();
+    await expect(rowCheckbox(page, row1!)).toBeChecked();
+
+    // Shift-click row N: the anchor's last operation was select, so the
+    // whole anchor..target range gets selected.
+    await rowCheckbox(page, rowN!).click({ modifiers: ['Shift'] });
+    for (const name of rendered) {
+      await expect(rowCheckbox(page, name), `row "${name}" after select-range`).toBeChecked();
+    }
+    await expect(bulkCountText(page)).toHaveText(`${rendered.length} selected`);
+    await expect(page.locator('.thread-list .row-check:checked')).toHaveCount(rendered.length);
+
+    // Plain click row 2, which is currently checked -- a deselecting
+    // click -- moves the anchor to row 2 with a deselect operation.
+    await rowCheckbox(page, row2!).click();
+    await expect(rowCheckbox(page, row2!)).not.toBeChecked();
+
+    // Shift-click row N again: the anchor's last operation was now
+    // deselect, so the whole row2..rowN range gets deselected, leaving
+    // row 1 (outside that range) checked.
+    await rowCheckbox(page, rowN!).click({ modifiers: ['Shift'] });
+
+    await expect(
+      rowCheckbox(page, row1!),
+      'row 1 (outside the deselect range) stays checked',
+    ).toBeChecked();
+    for (const name of rendered.slice(1)) {
+      await expect(rowCheckbox(page, name), `row "${name}" after deselect-range`).not.toBeChecked();
+    }
+    await expect(bulkCountText(page)).toHaveText('1 selected');
+    await expect(page.locator('.thread-list .row-check:checked')).toHaveCount(1);
+  });
+
   test('a background refresh that drops a selected id reconciles the toolbar count', async ({
     page,
     request,

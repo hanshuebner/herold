@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { computeShiftClickRange, reconcileSelection, handleRowCheckboxClick } from './range-select';
+import {
+  computeShiftClickRange,
+  applyShiftClickSelection,
+  reconcileSelection,
+  handleRowCheckboxClick,
+} from './range-select';
 
 describe('computeShiftClickRange', () => {
   const ids = ['a', 'b', 'c', 'd', 'e'];
@@ -26,6 +31,61 @@ describe('computeShiftClickRange', () => {
 
   it('selects the full range when anchor and clicked id are the first and last rows', () => {
     expect(computeShiftClickRange(ids, 'a', 'e')).toEqual(new Set(ids));
+  });
+});
+
+describe('applyShiftClickSelection (re #202 handback, comment 3131)', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+
+  it('select op adds the range on top of the base selection', () => {
+    const result = applyShiftClickSelection(ids, 'a', 'select', new Set(['a']), 'c');
+    expect(result).toEqual(new Set(['a', 'b', 'c']));
+  });
+
+  it('select op leaves ids outside the range, already in the base selection, untouched', () => {
+    // A prior plain click had already selected 'e' independently of the
+    // anchor; a select-op shift-click over a..c must not drop it.
+    const result = applyShiftClickSelection(ids, 'a', 'select', new Set(['a', 'e']), 'c');
+    expect(result).toEqual(new Set(['a', 'b', 'c', 'e']));
+  });
+
+  it('deselect op removes the range from the base selection', () => {
+    const result = applyShiftClickSelection(
+      ids,
+      'b',
+      'deselect',
+      new Set(['a', 'c', 'd', 'e']),
+      'e',
+    );
+    // Range b..e removed; 'a' (outside the range) stays selected. 'b' was
+    // never in the base selection (it's the just-deselected anchor row)
+    // but removing an absent id from a Set is a no-op either way.
+    expect(result).toEqual(new Set(['a']));
+  });
+
+  it('deselect op leaves ids outside the range untouched even when they are mid-selection', () => {
+    const result = applyShiftClickSelection(ids, 'c', 'deselect', new Set(['a', 'b', 'c', 'd', 'e']), 'd');
+    expect(result).toEqual(new Set(['a', 'b', 'e']));
+  });
+
+  it('a second shift-click from the same anchor re-applies against the base snapshot, not the live result', () => {
+    const base = new Set(['a']);
+    const first = applyShiftClickSelection(ids, 'a', 'select', base, 'd'); // a..d
+    expect(first).toEqual(new Set(['a', 'b', 'c', 'd']));
+    // Same anchor, same base snapshot (as selectRowClick keeps it fixed
+    // across a shift-click session), shrink the target back to 'b'.
+    const second = applyShiftClickSelection(ids, 'a', 'select', base, 'b');
+    expect(second).toEqual(new Set(['a', 'b']));
+  });
+
+  it('falls back to the plain range when there is no anchor', () => {
+    const result = applyShiftClickSelection(ids, null, 'select', new Set(['x']), 'c');
+    expect(result).toEqual(new Set(['c']));
+  });
+
+  it('falls back to the plain range when the anchor has scrolled out of view', () => {
+    const result = applyShiftClickSelection(ids, 'zzz', 'deselect', new Set(['a', 'c']), 'c');
+    expect(result).toEqual(new Set(['c']));
   });
 });
 
