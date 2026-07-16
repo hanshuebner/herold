@@ -97,8 +97,68 @@ export function htmlHasExternalImages(html: string): boolean {
   return /<img\b[^>]*\bsrc\s*=\s*["']?https?:/i.test(html);
 }
 
+// Matches an <a ...> opening tag or an </a> closing tag, tolerating '>'
+// inside quoted attribute values (e.g. an href with an encoded query
+// string) so the tag boundary is found correctly.
+const ANCHOR_TAG_RE = /<(\/?)a\b((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+
+/**
+ * Demote every <a> nested inside another <a> to a <span> in the raw HTML
+ * string, before it reaches DOMPurify's own parse (issue #252, "bulletproof
+ * button" markup: LinkedIn nests a hidden `<a aria-hidden="true">` inside a
+ * visible `<a aria-label="...">`).
+ *
+ * Nested anchors are invalid per the HTML5 content model. Left alone, the
+ * browser's own HTML parser -- which DOMPurify's `RETURN_DOM_FRAGMENT` mode
+ * runs on internally, and which the iframe's `srcdoc` load runs on again for
+ * the final sanitized output -- implicitly closes the OUTER `<a>` the moment
+ * the inner one opens. That relocates the inner `<a>` (and everything inside
+ * it) out from under any ancestor `<td>`/`<table>` cell that was carrying a
+ * `background-color`/`color` pair, turning it into a sibling instead of a
+ * descendant. `sanitizeInlineColorPairs` then sees the caption's own lone
+ * `color` declaration with no local `background-color` and strips it as an
+ * apparent lone half, even though it was authored to pair against the
+ * now-detached ancestor's background -- the caption ends up with no color
+ * at all, sitting next to the still-filled, now-empty pill.
+ *
+ * Renaming the nested tag to `<span>` before the browser ever parses the
+ * string sidesteps the implicit close entirely: the DOM keeps its authored
+ * nesting, so the caption's `color` naturally inherits down through any
+ * intermediate elements from the ancestor `<td>`'s pair via ordinary CSS
+ * inheritance -- independent of whatever `sanitizeInlineColorPairs` decides
+ * to do with each element's own (now often redundant) inline declaration.
+ * `href`/`target`/`rel` are dropped from the demoted tag since a `<span>`
+ * cannot act as a navigation target and a dangling `href` would be
+ * misleading; every other attribute (style, aria-hidden, class, ...) is
+ * kept verbatim.
+ *
+ * Only literal `<a>`/`</a>` tag boundaries are tracked (a lightweight
+ * stack of "was this occurrence renamed"), not general HTML well-
+ * formedness -- this only needs to catch the nested-anchor case; any other
+ * malformed markup is left to DOMPurify's own parser as before. An
+ * unmatched stray `</a>` (stack empty) falls back to emitting `</a>`
+ * unchanged, which is exactly what the input already was.
+ */
+function neutralizeNestedAnchors(raw: string): string {
+  const anchorStack: boolean[] = [];
+  return raw.replace(ANCHOR_TAG_RE, (match: string, slash: string, attrs: string) => {
+    if (slash) {
+      const wasRenamed = anchorStack.pop();
+      return wasRenamed ? '</span>' : '</a>';
+    }
+    const nested = anchorStack.length > 0;
+    anchorStack.push(nested);
+    if (!nested) return match;
+    const cleanedAttrs = attrs.replace(
+      /\s+(?:href|target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+      '',
+    );
+    return `<span data-herold-nested-anchor="1"${cleanedAttrs}>`;
+  });
+}
+
 export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
-  const fragment = DOMPurify.sanitize(raw, {
+  const fragment = DOMPurify.sanitize(neutralizeNestedAnchors(raw), {
     ALLOWED_TAGS,
     FORBID_TAGS,
     FORBID_ATTR,
