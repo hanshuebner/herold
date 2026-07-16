@@ -4,7 +4,7 @@
  * See playwright.live.config.ts for how to run these.
  */
 
-import type { Page, APIRequestContext } from '@playwright/test';
+import { expect, type Page, type APIRequestContext } from '@playwright/test';
 
 export const ALICE = 'alice@example.local';
 export const ALICE_PASSWORD = 'testpass123...';
@@ -131,4 +131,41 @@ export async function seedContacts(
 
 export function bulkCountText(page: Page) {
   return page.locator('.bulk-count');
+}
+
+/**
+ * Find Email ids by an `Email/query` `subject` filter, retrying until at
+ * least one match shows up. `subject` (like every other text-bearing
+ * predicate) is routed through the server's FTS index
+ * (`internal/protojmap/mail/email/query.go`'s `gatherCandidatesRaw`),
+ * which indexes asynchronously after a message lands via SMTP -- a message
+ * already rendered in the SPA's own (non-filtered, non-FTS) folder list can
+ * still miss a `subject:` query issued moments later. Poll instead of
+ * querying once so a live spec doesn't flake on that indexing race.
+ */
+export async function findEmailIdsBySubject(
+  request: APIRequestContext,
+  apiUrl: string,
+  cookieHeader: string,
+  mailAccountId: string,
+  subject: string,
+): Promise<string[]> {
+  let ids: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        const body = await jmapCall(
+          request,
+          apiUrl,
+          cookieHeader,
+          ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+          [['Email/query', { accountId: mailAccountId, filter: { subject } }, 'q']],
+        );
+        ids = (body.methodResponses as [string, { ids: string[] }, string][])[0]![1].ids;
+        return ids.length;
+      },
+      { timeout: 10_000, message: `Email/query subject:"${subject}" never returned a match` },
+    )
+    .toBeGreaterThan(0);
+  return ids;
 }

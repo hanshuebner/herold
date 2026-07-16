@@ -326,4 +326,22 @@ describe('contacts list selection: pruneSelectionToRendered (re #202)', () => {
     contactsListStore.pruneSelectionToRendered(['c1']);
     expect(contactsListStore.selectedIds).toBe(before);
   });
+
+  it('a pruned id is not resurrected by a later shift-click from a still-valid anchor', () => {
+    // Two sequential plain selects: anchor=c2, snapshot={c1,c2}.
+    contactsListStore.toggleSelected('c1');
+    contactsListStore.toggleSelected('c2');
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c1', 'c2']));
+
+    // 'c1' is deleted out-of-band; a background refresh narrows the
+    // rendered set without touching the anchor ('c2' is still visible).
+    contactsListStore.pruneSelectionToRendered(['c2', 'c3', 'c4', 'c5']);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2']));
+
+    // An ordinary shift-click from the still-valid anchor ('c2') must not
+    // resurrect 'c1' via a stale anchor snapshot.
+    contactsListStore.selectRowClick('c4', true, ['c2', 'c3', 'c4', 'c5']);
+    expect(contactsListStore.selectedIds).toEqual(new Set(['c2', 'c3', 'c4']));
+    expect(contactsListStore.selectedIds.has('c1')).toBe(false);
+  });
 });

@@ -3109,9 +3109,33 @@ class MailStore {
    * rendered list changes for a reason that doesn't already reset the
    * selection outright (a category-tab switch, a background refresh) --
    * see `MailView.svelte`'s reconciliation effect.
+   *
+   * Also reconciles the shift-click anchor's base-selection snapshot (re
+   * #202 follow-up, independent-verification handback): the directional
+   * shift-click primitive applies a range on top of that snapshot, so a
+   * stale entry left in it would get resurrected into `listSelectedIds`
+   * by an ordinary later shift-click from an anchor that is itself still
+   * visible -- reproducing exactly the count-vs-rendered divergence this
+   * method exists to prevent. If the anchor id itself no longer renders,
+   * its operation and snapshot are dropped outright rather than pruned,
+   * since neither applies to anything still on screen.
    */
   pruneSelectionToRendered(renderedIds: readonly string[]): void {
     if (this.listWholeMailboxSelected) return;
+
+    if (this.listSelectAnchorId !== null) {
+      if (!renderedIds.includes(this.listSelectAnchorId)) {
+        this.listSelectAnchorId = null;
+        this.listSelectAnchorOp = 'select';
+        this.#listSelectAnchorBaseSelection = new Set();
+      } else {
+        this.#listSelectAnchorBaseSelection = reconcileSelection(
+          this.#listSelectAnchorBaseSelection,
+          renderedIds,
+        );
+      }
+    }
+
     if (this.listSelectedIds.size === 0) return;
     const next = reconcileSelection(this.listSelectedIds, renderedIds);
     if (next !== this.listSelectedIds) this.listSelectedIds = next;

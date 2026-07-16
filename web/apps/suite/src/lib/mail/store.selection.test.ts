@@ -174,4 +174,22 @@ describe('mail list selection: pruneSelectionToRendered (re #202)', () => {
     mail.pruneSelectionToRendered(['a']);
     expect(mail.listSelectedIds).toBe(before);
   });
+
+  it('a pruned id is not resurrected by a later shift-click from a still-valid anchor', () => {
+    // Two sequential plain selects: anchor=b, snapshot={a,b}.
+    mail.toggleSelected('a');
+    mail.toggleSelected('b');
+    expect(mail.listSelectedIds).toEqual(new Set(['a', 'b']));
+
+    // 'a' is deleted out-of-band; a background refresh narrows the
+    // rendered set without touching the anchor ('b' is still visible).
+    mail.pruneSelectionToRendered(['b', 'c', 'd', 'e']);
+    expect(mail.listSelectedIds).toEqual(new Set(['b']));
+
+    // An ordinary shift-click from the still-valid anchor ('b') must not
+    // resurrect 'a' via a stale anchor snapshot.
+    mail.selectRowClick('d', true, ['b', 'c', 'd', 'e']);
+    expect(mail.listSelectedIds).toEqual(new Set(['b', 'c', 'd']));
+    expect(mail.listSelectedIds.has('a')).toBe(false);
+  });
 });

@@ -28,7 +28,15 @@
 
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import net from 'node:net';
-import { login, clearMailbox, jmapSession, jmapCall, bulkCountText, ALICE } from './live-helpers';
+import {
+  login,
+  clearMailbox,
+  jmapSession,
+  jmapCall,
+  findEmailIdsBySubject,
+  bulkCountText,
+  ALICE,
+} from './live-helpers';
 
 const SMTP_ADDR = process.env.SMTP_ADDR;
 
@@ -264,17 +272,13 @@ test.describe('shift-click range selection (mail list)', () => {
     // never learns about this until the next refresh.
     const { cookieHeader, mailAccountId, apiUrl } = await jmapSession(page, request);
 
-    const queryBody = await jmapCall(
+    const idsToDelete = await findEmailIdsBySubject(
       request,
       apiUrl,
       cookieHeader,
-      ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
-      [['Email/query', { accountId: mailAccountId, filter: { subject: 'Tres' } }, 'q']],
+      mailAccountId,
+      'Tres',
     );
-    const idsToDelete: string[] = (
-      queryBody.methodResponses as [string, { ids: string[] }, string][]
-    )[0]![1].ids;
-    expect(idsToDelete.length).toBeGreaterThan(0);
 
     await jmapCall(
       request,
@@ -301,5 +305,66 @@ test.describe('shift-click range selection (mail list)', () => {
 
     expect(countNum, 'toolbar count after background refresh').toBe(renderedChecked);
     expect(countNum).toBeLessThanOrEqual(names.length - 1);
+  });
+
+  test('a pruned selection id is not resurrected by a shift-click from a still-valid anchor (re #202 follow-up)', async ({
+    page,
+    request,
+  }) => {
+    const rendered = ['Row1', 'Row2', 'Row3', 'Row4', 'Row5'];
+    await loginWithFreshInbox(page, request, [...rendered].reverse());
+    const [row1, row2, row3, row4] = rendered;
+
+    // Two sequential plain selects: anchor=row2, base snapshot={row1,row2}.
+    await rowCheckbox(page, row1!).click();
+    await rowCheckbox(page, row2!).click();
+    await expect(bulkCountText(page)).toHaveText('2 selected');
+
+    // Delete row1 (one of the two selected rows, NOT the anchor)
+    // out-of-band, simulating another client/device, without going
+    // through the SPA's own bulk-action path.
+    const { cookieHeader, mailAccountId, apiUrl } = await jmapSession(page, request);
+    const idsToDelete = await findEmailIdsBySubject(
+      request,
+      apiUrl,
+      cookieHeader,
+      mailAccountId,
+      row1!,
+    );
+    await jmapCall(
+      request,
+      apiUrl,
+      cookieHeader,
+      ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      [['Email/set', { accountId: mailAccountId, destroy: idsToDelete }, 'd']],
+    );
+
+    // Trigger the SPA's own refresh button. row1 drops out of the
+    // rendered list and out of `listSelectedIds` (the existing
+    // reconciliation), but the fix under test also has to prune it out
+    // of the shift-click anchor's base-selection snapshot -- otherwise
+    // the shift-click below resurrects it.
+    await page.locator('button.refresh').click();
+    await expect(page.locator('.thread-list .thread-row')).toHaveCount(rendered.length - 1, {
+      timeout: 15_000,
+    });
+    await expect(bulkCountText(page)).toHaveText('1 selected');
+
+    // Ordinary shift-click from the still-valid anchor (row2, still
+    // rendered and still the anchor) onto row4. row1 must not reappear
+    // in the selection even though it was in the anchor's snapshot at
+    // the time the anchor was set.
+    await rowCheckbox(page, row4!).click({ modifiers: ['Shift'] });
+
+    await expect(page.locator('.thread-list .thread-row', { hasText: row1! })).toHaveCount(0);
+    for (const name of [row2, row3, row4]) {
+      await expect(rowCheckbox(page, name!), `row "${name}" checked after shift-click`).toBeChecked();
+    }
+
+    const renderedChecked = await page.locator('.thread-list .row-check:checked').count();
+    const countText = await bulkCountText(page).textContent();
+    const countNum = Number((countText ?? '').match(/\d+/)?.[0] ?? '-1');
+    expect(countNum, 'toolbar count after the shift-click').toBe(renderedChecked);
+    expect(countNum).toBe(3);
   });
 });

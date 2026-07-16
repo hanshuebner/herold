@@ -414,9 +414,33 @@ class ContactsListStore {
    * change for a reason that doesn't already reset the selection outright
    * (a scope switch, a background refresh) -- see `ContactsListView.svelte`'s
    * reconciliation effect.
+   *
+   * Also reconciles the shift-click anchor's base-selection snapshot (re
+   * #202 follow-up, independent-verification handback): the directional
+   * shift-click primitive applies a range on top of that snapshot, so a
+   * stale entry left in it would get resurrected into `selectedIds` by an
+   * ordinary later shift-click from an anchor that is itself still
+   * visible -- reproducing exactly the count-vs-rendered divergence this
+   * method exists to prevent. If the anchor id itself no longer renders,
+   * its operation and snapshot are dropped outright rather than pruned,
+   * since neither applies to anything still on screen.
    */
   pruneSelectionToRendered(renderedIds: readonly string[]): void {
     if (this.wholeSetSelected) return;
+
+    if (this.selectAnchorId !== null) {
+      if (!renderedIds.includes(this.selectAnchorId)) {
+        this.selectAnchorId = null;
+        this.selectAnchorOp = 'select';
+        this.#selectAnchorBaseSelection = new Set();
+      } else {
+        this.#selectAnchorBaseSelection = reconcileSelection(
+          this.#selectAnchorBaseSelection,
+          renderedIds,
+        );
+      }
+    }
+
     if (this.selectedIds.size === 0) return;
     const next = reconcileSelection(this.selectedIds, renderedIds);
     if (next !== this.selectedIds) this.selectedIds = next;

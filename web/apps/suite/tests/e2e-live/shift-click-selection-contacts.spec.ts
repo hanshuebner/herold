@@ -15,7 +15,7 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
-import { login, clearContacts, seedContacts, bulkCountText } from './live-helpers';
+import { login, clearContacts, seedContacts, bulkCountText, jmapSession, jmapCall } from './live-helpers';
 
 function rowCheckbox(page: Page, name: string) {
   return page.locator('.contact-list li', { hasText: name }).locator('.row-check');
@@ -138,6 +138,49 @@ test.describe('shift-click range selection (contacts list)', () => {
     for (const name of names.slice(1)) {
       await expect(rowCheckbox(page, name), `row "${name}" after deselect-range`).not.toBeChecked();
     }
+    await expect(bulkCountText(page)).toHaveText('1 selected');
+    await expect(page.locator('.contact-list .row-check:checked')).toHaveCount(1);
+  });
+
+  test('a pruned anchor stops applying its stale snapshot after the anchor row itself is deleted (re #202 follow-up)', async ({
+    page,
+    request,
+  }) => {
+    await login(page);
+    await page.goto('/#/contacts');
+    await clearContacts(page, request);
+
+    const names = ['Prune Alpha', 'Prune Bravo', 'Prune Charlie', 'Prune Delta', 'Prune Echo'];
+    await seedContacts(page, request, names);
+    await page.reload();
+    await page.locator('button.compose').first().waitFor({ timeout: 15_000 });
+    await expect(page.locator('.contact-list li')).toHaveCount(names.length, { timeout: 15_000 });
+    const [row1, row2, row3] = names;
+
+    // Two sequential plain selects: anchor=row2, base snapshot={row1,row2}.
+    await rowCheckbox(page, row1!).click();
+    await rowCheckbox(page, row2!).click();
+    await expect(bulkCountText(page)).toHaveText('2 selected');
+
+    // Bulk-delete the current selection via the SPA's own Delete button --
+    // an ordinary user action that removes the anchor (row2) itself, not
+    // just a bystander id in its snapshot. The fix under test has to drop
+    // the anchor's operation and base-selection snapshot outright when the
+    // anchor no longer renders, since neither applies to anything on
+    // screen any more.
+    await page.locator('.bulk-toolbar button.icon-btn.danger').click();
+    await page.locator('[data-testid="confirm-dialog-confirm"]').click();
+    await expect(page.locator('.contact-list li')).toHaveCount(names.length - 2, {
+      timeout: 15_000,
+    });
+    await expect(bulkCountText(page)).toHaveCount(0);
+
+    // An ordinary shift-click now has no valid anchor to extend from -- it
+    // must fall back to selecting only the clicked row, not resurrect row1
+    // or row2 from the anchor's now-stale snapshot.
+    await rowCheckbox(page, row3!).click({ modifiers: ['Shift'] });
+
+    await expect(rowCheckbox(page, row3!)).toBeChecked();
     await expect(bulkCountText(page)).toHaveText('1 selected');
     await expect(page.locator('.contact-list .row-check:checked')).toHaveCount(1);
   });
