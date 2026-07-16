@@ -207,10 +207,13 @@ export const de = {
   'select.clearSelection': 'Auswahl löschen',
   'select.selectAll': 'Alle auswählen',
   'select.options': 'Auswahloptionen',
-  // Whole-mailbox selection banner (issue #149)
-  'select.allPageSelected': 'Alle {count} Nachrichten auf dieser Seite sind ausgewählt.',
-  'select.selectAllInFolder': 'Alle {total} Nachrichten in diesem Ordner auswählen',
-  'select.wholeMailboxActive': 'Alle {total} Nachrichten in diesem Ordner sind ausgewählt.',
+  // Whole-mailbox selection banner (issue #149). The page-side count is a
+  // collapsed-thread row count (Konversationen); the mailbox-side count is
+  // the raw stored-message total (Nachrichten) -- keep the two nouns
+  // distinct so the numbers are never implicitly compared (re #255).
+  'select.allPageSelected': 'Alle {count} Konversationen auf dieser Seite sind ausgewählt.',
+  'select.selectAllInFolder': 'Alle {total} Nachrichten im Postfach auswählen',
+  'select.wholeMailboxActive': 'Alle {total} Nachrichten im Postfach sind ausgewählt. Aktionen wirken auch auf zusätzliche Nachrichten in bereits angezeigten Konversationen.',
   'select.clearWholeMailbox': 'Nur diese Seite auswählen',
   // Whole-search-result-set selection banner (issue #207)
   'select.selectAllInSearch': 'Alle {total} passenden Nachrichten auswählen',
