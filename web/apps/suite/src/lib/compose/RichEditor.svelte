@@ -26,6 +26,12 @@
      * user knows the upload is still in progress.
      */
     uploadingSrcs?: ReadonlySet<string>;
+    /**
+     * Fold the auto-inserted reply/forward quote behind a toggle on mount
+     * (issue #253). Only meaningful at the initial mount of a fresh
+     * reply/forward — see the `collapseQuote` doc on `createComposeEditor`.
+     */
+    collapseQuote?: boolean;
   }
 
   let {
@@ -37,6 +43,7 @@
     onImagePaste,
     autofocus = false,
     uploadingSrcs = new Set<string>(),
+    collapseQuote = false,
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
@@ -46,12 +53,20 @@
     if (!host) return;
     const view = createComposeEditor(host, {
       initialHtml,
-      onChange: (state) => {
-        onUpdate?.(docToHtml(state.doc), docToText(state.doc));
+      onChange: (state, docChanged) => {
+        // Only re-serialize the document into the body string when it
+        // actually changed. Selection-only transactions (clicking to
+        // position the cursor) and the quote-fold toggle's metadata-only
+        // transaction (issue #253) must not reassign compose.body -- see
+        // the onChange doc comment on createComposeEditor.
+        if (docChanged) {
+          onUpdate?.(docToHtml(state.doc), docToText(state.doc));
+        }
         onActiveChange?.(computeActive(state));
       },
       onImageRemoved,
       onImagePaste,
+      collapseQuote,
     });
     currentView = view;
     onView?.(view);
@@ -129,6 +144,33 @@
     margin: 0 0 var(--spacing-03);
     padding: 0 var(--spacing-04);
     color: var(--text-secondary);
+  }
+  /* Reply/forward quote fold (issue #253). blockquote.cq-folded is a
+     view-level decoration applied by quoteFoldPlugin -- it never touches
+     the ProseMirror document, so the quoted content stays fully present
+     in docToHtml()/docToText() output regardless of this display:none. */
+  .rich-editor :global(.ProseMirror blockquote.cq-folded) {
+    display: none;
+  }
+  .rich-editor :global(.cq-fold-toggle) {
+    display: inline-flex;
+    align-items: center;
+    margin: 0 0 var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-03);
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-01-size);
+    cursor: pointer;
+  }
+  .rich-editor :global(.cq-fold-toggle:hover) {
+    background: var(--layer-hover-01);
+  }
+  .rich-editor :global(.cq-fold-toggle:focus-visible) {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   .rich-editor :global(.ProseMirror code) {
     font-family: var(--font-mono);

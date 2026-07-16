@@ -2292,6 +2292,15 @@ function plainTextToHtml(text: string): string {
     .join('');
 }
 
+/**
+ * Build the HTML body for a reply: two empty leading paragraphs (cursor
+ * lands here), the attribution line, then the quoted original in a
+ * `<blockquote>`. The blockquote is what the compose editor's quote-fold
+ * plugin (`quoteFoldPlugin` / `findReplyQuoteBlockquote` in editor.ts)
+ * collapses behind a toggle on open (issue #253) -- folding is a view-only
+ * decoration, so the full quoted HTML always round-trips through
+ * `docToHtml` / the text/plain projection regardless of fold state.
+ */
 function formatReplyQuote(parent: Email): string {
   const senderLabel = addressToString(parent.from?.[0]) || '(unknown sender)';
   const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
@@ -2404,7 +2413,13 @@ function formatForwardQuote(parent: Email): string {
     .map((l) => `<p>${escapeHtml(l)}</p>`)
     .join('');
   const quotedHtml = body ? plainTextToHtml(body) : '<p>(no quoted body)</p>';
-  return `<p></p><p></p>${headerLines}<p></p>${quotedHtml}<p></p>`;
+  // The forwarded body is wrapped in a blockquote (issue #253) so the
+  // compose editor's quote-fold plugin (findReplyQuoteBlockquote in
+  // editor.ts) can collapse it behind a toggle on open. The header lines
+  // above stay outside the blockquote and always visible, mirroring how
+  // formatReplyQuote keeps the "On {date}, {sender} wrote:" attribution
+  // outside the fold.
+  return `<p></p><p></p>${headerLines}<p></p><blockquote>${quotedHtml}</blockquote><p></p>`;
 }
 
 export const compose = new ComposeStore();
@@ -2442,4 +2457,6 @@ export const _internals_forTest = {
   insertShareLinkIntoBody,
   removeShareLinkFromBody,
   buildShareLinkHtml,
+  formatReplyQuote,
+  formatForwardQuote,
 };

@@ -14,10 +14,12 @@
 
 import {
   EditorState,
+  Plugin,
+  PluginKey,
   type Transaction,
   type EditorState as EditorStateType,
 } from 'prosemirror-state';
-import { EditorView } from 'prosemirror-view';
+import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
 import {
   DOMParser as PMDOMParser,
   DOMSerializer,
@@ -268,11 +270,146 @@ export function extractPastedImageFiles(dataTransfer: DataTransfer | null): File
   return files;
 }
 
+// ── Quote fold (issue #253) ──────────────────────────────────────────────
+//
+// Reply/forward opens with the quoted original collapsed behind a toggle
+// so the writer's own (empty) compose area is what they see first. This is
+// implemented purely as a view-level decoration, never a document edit:
+// `quoteFoldPlugin`'s state only tracks a `collapsed` boolean and its
+// `decorations` prop recomputes from `state.doc` on every state change.
+// `state.doc` itself is never touched by fold/unfold, so `docToHtml` /
+// `docToText` (both of which serialize `doc`, never the view) always
+// produce the full quoted content whether or not the writer ever expands
+// it — the outbound text/plain and text/html parts are unaffected by the
+// fold either way.
+
+const TOGGLE_QUOTE_FOLD = 'herold-toggle-quote-fold';
+
+export const quoteFoldPluginKey = new PluginKey<{ collapsed: boolean }>(
+  'quoteFold',
+);
+
+/**
+ * Locate the first top-level blockquote node in the current document.
+ * `formatReplyQuote` / `formatForwardQuote` (compose.svelte.ts) always
+ * place the auto-inserted quote as the first blockquote in the initial
+ * doc, so this is an unambiguous target. A blockquote the writer adds
+ * later via the toolbar (`applyBlockquote`) is never first and is
+ * therefore never folded.
+ */
+function findReplyQuoteBlockquote(
+  doc: Node,
+): { node: Node; pos: number } | null {
+  let found: { node: Node; pos: number } | null = null;
+  doc.forEach((node, offset) => {
+    if (!found && node.type.name === 'blockquote') {
+      found = { node, pos: offset };
+    }
+  });
+  return found;
+}
+
+/**
+ * Build the toggle button shown immediately above the (possibly folded)
+ * quote. Clicking it dispatches a metadata-only transaction that flips
+ * the plugin's `collapsed` flag; `docChanged` stays false on that
+ * transaction since no document content is touched.
+ */
+function buildQuoteFoldToggle(view: EditorView, collapsed: boolean): HTMLElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'cq-fold-toggle';
+  button.setAttribute('data-testid', 'quote-fold-toggle');
+  button.setAttribute('aria-expanded', String(!collapsed));
+  button.textContent = collapsed ? '··· Show quoted text' : 'Hide quoted text';
+  // contentEditable=false keeps ProseMirror from treating the widget's own
+  // DOM as editable document content.
+  button.contentEditable = 'false';
+  button.addEventListener('mousedown', (event) => event.preventDefault());
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    view.dispatch(view.state.tr.setMeta(TOGGLE_QUOTE_FOLD, true));
+  });
+  return button;
+}
+
+/**
+ * Fold the auto-inserted reply/forward quote behind a toggle (issue #253).
+ * `initialCollapsed` seeds the plugin's starting state — `createComposeEditor`
+ * passes `true` for a fresh reply/forward open and `false` otherwise (e.g.
+ * reopening a saved draft, where the body is exactly as the writer left it).
+ */
+export function quoteFoldPlugin(initialCollapsed: boolean): Plugin {
+  return new Plugin({
+    key: quoteFoldPluginKey,
+    state: {
+      init: () => ({ collapsed: initialCollapsed }),
+      apply(tr, value) {
+        if (!tr.getMeta(TOGGLE_QUOTE_FOLD)) return value;
+        return { collapsed: !value.collapsed };
+      },
+    },
+    props: {
+      decorations(state) {
+        const target = findReplyQuoteBlockquote(state.doc);
+        if (!target) return null;
+        const pluginState = quoteFoldPluginKey.getState(state);
+        const collapsed = pluginState?.collapsed ?? false;
+        const { node, pos } = target;
+        const decorations: Decoration[] = [
+          // The key encodes `collapsed` so ProseMirror's decoration-set
+          // diffing treats a flip as a genuinely new widget (forcing
+          // buildQuoteFoldToggle to run again and refresh the button's
+          // label/aria-expanded) while reusing the DOM node across
+          // unrelated state changes elsewhere in the document (typing
+          // outside the quote does not touch this key, so the button is
+          // left alone rather than being torn down and rebuilt every
+          // keystroke).
+          Decoration.widget(pos, (view) => buildQuoteFoldToggle(view, collapsed), {
+            key: `quote-fold-toggle-${collapsed}`,
+            side: -1,
+            ignoreSelection: true,
+          }),
+        ];
+        if (collapsed) {
+          decorations.push(
+            Decoration.node(pos, pos + node.nodeSize, { class: 'cq-folded' }),
+          );
+        }
+        return DecorationSet.create(state.doc, decorations);
+      },
+    },
+  });
+}
+
+/** Toggle the reply-quote fold from outside a widget click (e.g. tests). */
+export function toggleQuoteFold(view: EditorView): void {
+  view.dispatch(view.state.tr.setMeta(TOGGLE_QUOTE_FOLD, true));
+}
+
+/** True when the reply quote (if any) is currently folded. */
+export function isQuoteFolded(state: EditorStateType): boolean {
+  return quoteFoldPluginKey.getState(state)?.collapsed ?? false;
+}
+
 export function createComposeEditor(
   target: HTMLElement,
   options: {
     initialHtml: string;
-    onChange: (state: EditorStateType) => void;
+    /**
+     * Called on every dispatched transaction. `docChanged` is `tr.docChanged`
+     * from the transaction that produced `state` -- false for selection-only
+     * moves and for the quote-fold toggle's metadata-only transaction (issue
+     * #253). Callers that serialize `state.doc` back into a body string
+     * (RichEditor.svelte does, via docToHtml/docToText) must gate that
+     * serialization on `docChanged`: re-serializing on every transaction,
+     * including non-doc-changing ones, can reassign the body to a value
+     * that is not byte-identical to what was last stored (ProseMirror's
+     * HTML round-trip is not guaranteed lossless down to whitespace), which
+     * would spuriously mark the compose dirty and trigger an unwanted
+     * draft autosave from something as inert as a fold toggle click.
+     */
+    onChange: (state: EditorStateType, docChanged: boolean) => void;
     /** Called with the src of each image node removed from the doc (issue #83). */
     onImageRemoved?: (src: string) => void;
     /**
@@ -283,6 +420,13 @@ export function createComposeEditor(
      * foreign clipboard URL never wins over the raw bytes.
      */
     onImagePaste?: (files: File[]) => void;
+    /**
+     * Seed the quote-fold plugin's initial state (issue #253). True on a
+     * fresh reply/forward open so the quoted original starts collapsed;
+     * false (the default) leaves any blockquote in the initial doc
+     * expanded, still with a toggle to fold it.
+     */
+    collapseQuote?: boolean;
   },
 ): EditorView {
   const doc = htmlToDoc(options.initialHtml);
@@ -292,7 +436,12 @@ export function createComposeEditor(
   const state = EditorState.create({
     schema: composeSchema,
     doc,
-    plugins: [history(), composeKeymap(settings.composerEnterMode), keymap(baseKeymap)],
+    plugins: [
+      history(),
+      composeKeymap(settings.composerEnterMode),
+      keymap(baseKeymap),
+      quoteFoldPlugin(Boolean(options.collapseQuote)),
+    ],
   });
   const view = new EditorView(target, {
     state,
@@ -300,7 +449,7 @@ export function createComposeEditor(
       const prev = view.state;
       const next = prev.apply(tr);
       view.updateState(next);
-      options.onChange(next);
+      options.onChange(next, tr.docChanged);
       // Detect image removals when doc changed and a removal callback exists.
       if (options.onImageRemoved && tr.docChanged) {
         const prevSrcs = collectImageSrcs(prev.doc);

@@ -891,6 +891,7 @@
               <RichEditor
                 {initialHtml}
                 autofocus={Boolean(compose.replyContext.parentId)}
+                collapseQuote={Boolean(compose.replyContext.parentId)}
                 onUpdate={onEditorUpdate}
                 onActiveChange={(a) => (active = a)}
                 onView={(v) => (editorView = v)}
