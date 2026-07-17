@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -973,8 +973,8 @@ func hasExternalHTMLImage(body []byte) bool {
 // Three-tier strategy:
 //
 //  1. net/mail.ReadMessage — the standard library RFC 5322 reader.
-//     Handles continuation lines, RFC 2047 encoded words via the
-//     mime.WordDecoder, and the bulk of well-formed mail.
+//     Handles continuation lines, RFC 2047 encoded words via
+//     mailparse.DecodeHeader, and the bulk of well-formed mail.
 //  2. Manual line-by-line header parse — used when stdlib rejects the
 //     header block (e.g. invalid bytes in a header value, missing
 //     blank line). Last-resort: extract whatever Message-ID + Subject
@@ -999,16 +999,16 @@ func envelopeFromStdlib(body []byte) (store.Envelope, bool) {
 		return store.Envelope{}, false
 	}
 	h := msg.Header
-	dec := mime.WordDecoder{}
+	// mailparse.DecodeHeader resolves RFC 2047 encoded-word charsets via
+	// the same htmlindex-backed registry the body decoder uses (re #257,
+	// re #259), degrading to a best-effort decode rather than a bare
+	// mime.WordDecoder blanking the value on a charset like ISO-8859-15 it
+	// does not special-case inline.
 	decode := func(s string) string {
 		if s == "" {
 			return ""
 		}
-		out, err := dec.DecodeHeader(s)
-		if err != nil {
-			return s
-		}
-		return out
+		return mailparse.DecodeHeader(s)
 	}
 	return store.Envelope{
 		Subject:    decode(h.Get("Subject")),
@@ -1067,16 +1067,16 @@ func envelopeFromManualScan(body []byte) store.Envelope {
 	}
 	emit()
 
-	dec := mime.WordDecoder{}
+	// mailparse.DecodeHeader resolves RFC 2047 encoded-word charsets via
+	// the same htmlindex-backed registry the body decoder uses (re #257,
+	// re #259), degrading to a best-effort decode rather than a bare
+	// mime.WordDecoder blanking the value on a charset like ISO-8859-15 it
+	// does not special-case inline.
 	decode := func(s string) string {
 		if s == "" {
 			return ""
 		}
-		out, err := dec.DecodeHeader(s)
-		if err != nil {
-			return s
-		}
-		return out
+		return mailparse.DecodeHeader(s)
 	}
 	return store.Envelope{
 		Subject:    decode(headers["subject"]),

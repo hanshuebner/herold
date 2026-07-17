@@ -1,6 +1,9 @@
 package emailsubmission
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestParseDisplayNames_DecodesEncodedWord guards the issue #16 fix:
 // when the outbound To/Cc/Bcc header carries an RFC 2047 Q-encoded
@@ -63,6 +66,50 @@ func TestParseDisplayNames_DecodesEncodedWord(t *testing.T) {
 				t.Errorf("name = %q, want %q", got, tc.wantName)
 			}
 		})
+	}
+}
+
+// TestParseDisplayNames_DecodesHtmlindexOnlyCharset guards re #259: the
+// package's own zero-value mime.WordDecoder (dnDecoder) had no
+// CharsetReader, so an encoded-word display name in a charset htmlindex
+// knows but the stdlib does not special-case inline (ISO-8859-15,
+// windows-1252, ...) made mime.WordDecoder.DecodeHeader return an error
+// for the whole header, and decodeDisplayName's error path returned the
+// still-encoded raw name instead of the decoded text.
+func TestParseDisplayNames_DecodesHtmlindexOnlyCharset(t *testing.T) {
+	// "Grüße" in ISO-8859-15 bytes: 47 72 fc df 65 -> base64 R3L832U=
+	header := `=?ISO-8859-15?B?R3L832U=?= <gretchen@example.com>`
+	out := parseDisplayNames(header)
+	const wantAddr = "gretchen@example.com"
+	const wantName = "Grüße"
+	got, ok := out[wantAddr]
+	if !ok {
+		t.Fatalf("no entry for %q in %v", wantAddr, out)
+	}
+	if got != wantName {
+		t.Errorf("name = %q, want %q", got, wantName)
+	}
+}
+
+// TestParseDisplayNames_UnsupportedCharsetDegradesGracefully guards that a
+// charset unknown even to htmlindex still produces a best-effort non-empty,
+// non-encoded-word name rather than the raw "=?charset?...?=" text.
+func TestParseDisplayNames_UnsupportedCharsetDegradesGracefully(t *testing.T) {
+	// "totally-bogus-charset" is not a real IANA charset name.
+	header := `=?totally-bogus-charset?Q?Hi=FC?= <d@example.com>`
+	out := parseDisplayNames(header)
+	got, ok := out["d@example.com"]
+	if !ok {
+		t.Fatalf("no entry for d@example.com in %v", out)
+	}
+	if got == "" {
+		t.Fatalf("name blanked entirely for an unsupported charset (raw header %q)", header)
+	}
+	if strings.Contains(got, "=?") {
+		t.Errorf("name still contains an encoded-word marker: got %q", got)
+	}
+	if !strings.Contains(got, "Hi") {
+		t.Errorf("name missing best-effort decoded content: got %q", got)
 	}
 }
 

@@ -2,17 +2,11 @@ package emailsubmission
 
 import (
 	"context"
-	"mime"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/store"
 )
-
-// dnDecoder is a package-level RFC 2047 word decoder used by
-// parseDisplayNames. mime.WordDecoder is goroutine-safe by virtue of
-// being effectively stateless once constructed; sharing one instance
-// avoids per-call allocation.
-var dnDecoder = new(mime.WordDecoder)
 
 // seedRecipientsOnSend upserts a SeenAddress row for every unique
 // recipient in the recipients slice, subject to the exclusions defined
@@ -168,17 +162,18 @@ func parseDisplayNames(header string) map[string]string {
 	return out
 }
 
-// decodeDisplayName runs name through mime.WordDecoder so an RFC 2047
-// Q-encoded or B-encoded display name like `=?utf-8?q?Hans_H=C3=BCbner?=`
-// is normalised to its UTF-8 form ("Hans Hübner") before being stored
-// as a SeenAddress / contact name. Returns name unchanged when no
-// encoded-word is present or when decoding fails.
+// decodeDisplayName runs name through the shared mailparse.DecodeHeader so
+// an RFC 2047 Q-encoded or B-encoded display name like
+// `=?utf-8?q?Hans_H=C3=BCbner?=` is normalised to its UTF-8 form ("Hans
+// Hübner") before being stored as a SeenAddress / contact name, using the
+// same htmlindex-backed charset registry the body decoder uses (re #257,
+// re #259) rather than a bare mime.WordDecoder that only special-cases
+// utf-8/iso-8859-1/us-ascii. Returns name unchanged when no encoded-word is
+// present; degrades to a best-effort decode (never blank, never the raw
+// encoded-word marker) for a charset unknown even to htmlindex.
 func decodeDisplayName(name string) string {
 	if name == "" || !strings.Contains(name, "=?") {
 		return name
 	}
-	if decoded, err := dnDecoder.DecodeHeader(name); err == nil {
-		return decoded
-	}
-	return name
+	return mailparse.DecodeHeader(name)
 }

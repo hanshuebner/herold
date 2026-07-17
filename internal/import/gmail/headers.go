@@ -1,8 +1,9 @@
 package gmail
 
 import (
-	"mime"
 	"strings"
+
+	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
 // ParseGmailLabels splits an X-Gmail-Labels header value into the set
@@ -25,14 +26,11 @@ func ParseGmailLabels(value string) []string {
 	}
 	// Decode any RFC 2047 encoded-words. The header may contain a single
 	// encoded-word covering the whole value (Gmail's common form) or be
-	// pure ASCII; the WordDecoder handles both safely.
-	dec := mime.WordDecoder{}
-	decoded, err := dec.DecodeHeader(value)
-	if err != nil {
-		// Fall back to the raw value; we'd rather match what we can than
-		// drop the entire header on a malformed encoded-word.
-		decoded = value
-	}
+	// pure ASCII. mailparse.DecodeHeader resolves charsets via the same
+	// htmlindex-backed registry the body decoder uses (re #257, re #259)
+	// and never blanks the value, unlike a bare mime.WordDecoder on a
+	// charset like ISO-8859-15 it does not special-case inline.
+	decoded := mailparse.DecodeHeader(value)
 	return splitLabels(decoded)
 }
 

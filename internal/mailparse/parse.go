@@ -831,6 +831,18 @@ func newHeaderWordDecoder() *mime.WordDecoder {
 	return &mime.WordDecoder{CharsetReader: headerCharsetReader}
 }
 
+// DecodeHeader decodes an RFC 2047 encoded-word header value (Subject, a
+// display name, an X-header, ...) via the same htmlindex-backed charset
+// registry the body decoder uses, falling back to the raw header text
+// instead of blanking it when decoding cannot proceed. Every header-decode
+// call site in the tree should route through this rather than constructing
+// its own zero-value mime.WordDecoder, whose nil CharsetReader blanks the
+// whole header on the first htmlindex-unknown-to-stdlib charset such as
+// ISO-8859-15 or windows-1252 (re #257, re #259).
+func DecodeHeader(header string) string {
+	return decodeHeaderOrRaw(newHeaderWordDecoder(), header)
+}
+
 // decodeHeaderOrRaw decodes header via wd.DecodeHeader, falling back to the
 // raw header text (rather than "") on the rare residual error -- headerCharsetReader
 // itself never errors, but a future CharsetReader change or an internal

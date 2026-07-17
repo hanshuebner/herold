@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/mail"
 	"sort"
 	"strconv"
@@ -543,11 +542,11 @@ func resolveHeaderProperty(parsed mailparse.Message, prop string) json.RawMessag
 		return json.RawMessage(encoded)
 	case "astext":
 		// Decoded text; for Subject this is the RFC 2047-decoded value.
-		dec := new(mime.WordDecoder)
-		decoded, err := dec.DecodeHeader(strings.TrimSpace(raw))
-		if err != nil {
-			decoded = strings.TrimSpace(raw)
-		}
+		// mailparse.DecodeHeader resolves charsets via the same
+		// htmlindex-backed registry the body decoder uses (re #257, re
+		// #259) rather than a bare mime.WordDecoder that blanks the whole
+		// header on a charset like ISO-8859-15 it does not special-case.
+		decoded := mailparse.DecodeHeader(strings.TrimSpace(raw))
 		if decoded == "" {
 			return jsonNull()
 		}
