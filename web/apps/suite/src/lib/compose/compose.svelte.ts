@@ -2295,11 +2295,12 @@ function plainTextToHtml(text: string): string {
 /**
  * Build the HTML body for a reply: two empty leading paragraphs (cursor
  * lands here), the attribution line, then the quoted original in a
- * `<blockquote>`. The blockquote is what the compose editor's quote-fold
- * plugin (`quoteFoldPlugin` / `findReplyQuoteBlockquote` in editor.ts)
- * collapses behind a toggle on open (issue #253) -- folding is a view-only
- * decoration, so the full quoted HTML always round-trips through
- * `docToHtml` / the text/plain projection regardless of fold state.
+ * `<blockquote>`. The attribution paragraph and the blockquote are what
+ * the compose editor's quote-fold plugin (`quoteFoldPlugin` /
+ * `findReplyQuoteFold` in editor.ts) collapses behind a single toggle on
+ * open (issue #253) -- folding is a view-only decoration, so the full
+ * quoted HTML always round-trips through `docToHtml` / the text/plain
+ * projection regardless of fold state.
  */
 function formatReplyQuote(parent: Email): string {
   const senderLabel = addressToString(parent.from?.[0]) || '(unknown sender)';
@@ -2403,23 +2404,29 @@ function formatForwardQuote(parent: Email): string {
   const dateStr = formatDateForQuote(parent.sentAt ?? parent.receivedAt);
   const subject = parent.subject ?? '';
   const body = parentBodyText(parent);
-  const headerLines = [
+  // The five header lines share a single paragraph (joined with <br>)
+  // rather than one <p> each, so this paragraph is the sole node
+  // directly preceding the blockquote -- the same shape formatReplyQuote
+  // uses for its one-line attribution. quoteFoldPlugin's fold-range
+  // widening (editor.ts) folds exactly the paragraph immediately before
+  // the blockquote, so a single combined header paragraph is what lets
+  // the whole "Forwarded message" block fold away together with the
+  // quoted body (issue #253 follow-up).
+  const headerBlock = [
     '---------- Forwarded message ----------',
     `From: ${fromStr}`,
     `Date: ${dateStr}`,
     `Subject: ${subject}`,
     `To: ${toStr}`,
   ]
-    .map((l) => `<p>${escapeHtml(l)}</p>`)
-    .join('');
+    .map((l) => escapeHtml(l))
+    .join('<br>');
   const quotedHtml = body ? plainTextToHtml(body) : '<p>(no quoted body)</p>';
   // The forwarded body is wrapped in a blockquote (issue #253) so the
-  // compose editor's quote-fold plugin (findReplyQuoteBlockquote in
-  // editor.ts) can collapse it behind a toggle on open. The header lines
-  // above stay outside the blockquote and always visible, mirroring how
-  // formatReplyQuote keeps the "On {date}, {sender} wrote:" attribution
-  // outside the fold.
-  return `<p></p><p></p>${headerLines}<p></p><blockquote>${quotedHtml}</blockquote><p></p>`;
+  // compose editor's quote-fold plugin (findReplyQuoteFold in editor.ts)
+  // can collapse it, together with the header paragraph above it, behind
+  // a toggle on open.
+  return `<p></p><p></p><p>${headerBlock}</p><blockquote>${quotedHtml}</blockquote><p></p>`;
 }
 
 export const compose = new ComposeStore();

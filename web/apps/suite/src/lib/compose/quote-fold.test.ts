@@ -179,6 +179,48 @@ describe('quoteFoldPlugin: view rendering', () => {
     expect(blockquote?.classList.contains('cq-folded')).toBe(true);
   });
 
+  // Regression test for the follow-up defect reported after the initial
+  // #253 fold shipped: the "On {date}, {sender} wrote:" introducer
+  // paragraph sits outside the blockquote (formatReplyQuote emits it as
+  // a preceding <p> sibling), so folding only the blockquote's own range
+  // left the attribution line visible above the collapsed toggle.
+  it('also hides the "On {date}, {sender} wrote:" introducer paragraph when folded', () => {
+    const html = formatReplyQuote(parentEmail());
+    const v = mountEditor(html, true);
+
+    const paragraphs = Array.from(v.dom.querySelectorAll('p'));
+    const introParagraph = paragraphs.find((p) => p.textContent?.includes('wrote:'));
+    expect(introParagraph).toBeTruthy();
+    expect(introParagraph?.classList.contains('cq-folded')).toBe(true);
+
+    const blockquote = v.dom.querySelector('blockquote');
+    expect(blockquote?.classList.contains('cq-folded')).toBe(true);
+
+    // Expanding the fold reveals both the introducer and the blockquote.
+    const toggle = v.dom.querySelector<HTMLButtonElement>(
+      '[data-testid="quote-fold-toggle"]',
+    );
+    toggle!.click();
+    expect(introParagraph?.classList.contains('cq-folded')).toBe(false);
+    expect(blockquote?.classList.contains('cq-folded')).toBe(false);
+  });
+
+  it('also hides the "Forwarded message" header paragraph when folded', () => {
+    const html = formatForwardQuote(parentEmail());
+    const v = mountEditor(html, true);
+
+    const paragraphs = Array.from(v.dom.querySelectorAll('p'));
+    const introParagraph = paragraphs.find((p) =>
+      p.textContent?.includes('Forwarded message'),
+    );
+    expect(introParagraph).toBeTruthy();
+    expect(introParagraph?.classList.contains('cq-folded')).toBe(true);
+    expect(introParagraph?.textContent).toContain('From:');
+
+    const blockquote = v.dom.querySelector('blockquote');
+    expect(blockquote?.classList.contains('cq-folded')).toBe(true);
+  });
+
   it('clicking the toggle expands the blockquote and flips aria-expanded', () => {
     const html = formatReplyQuote(parentEmail());
     const v = mountEditor(html, true);

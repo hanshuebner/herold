@@ -145,11 +145,14 @@
     padding: 0 var(--spacing-04);
     color: var(--text-secondary);
   }
-  /* Reply/forward quote fold (issue #253). blockquote.cq-folded is a
-     view-level decoration applied by quoteFoldPlugin -- it never touches
-     the ProseMirror document, so the quoted content stays fully present
-     in docToHtml()/docToText() output regardless of this display:none. */
-  .rich-editor :global(.ProseMirror blockquote.cq-folded) {
+  /* Reply/forward quote fold (issue #253). `.cq-folded` is a view-level
+     decoration applied by quoteFoldPlugin to the blockquote AND, when one
+     immediately precedes it, the "On {date}, {sender} wrote:" / "Forwarded
+     message" introducer paragraph -- both fold away together. It never
+     touches the ProseMirror document, so the quoted content stays fully
+     present in docToHtml()/docToText() output regardless of this
+     display:none. */
+  .rich-editor :global(.ProseMirror :is(p, blockquote).cq-folded) {
     display: none;
   }
   .rich-editor :global(.cq-fold-toggle) {

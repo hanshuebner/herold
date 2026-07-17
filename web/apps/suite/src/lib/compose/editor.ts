@@ -289,24 +289,42 @@ export const quoteFoldPluginKey = new PluginKey<{ collapsed: boolean }>(
   'quoteFold',
 );
 
+interface ReplyQuoteFold {
+  /** The blockquote node itself. */
+  quote: { node: Node; pos: number };
+  /**
+   * The introducer paragraph immediately preceding the blockquote --
+   * `formatReplyQuote`'s "On {date}, {sender} wrote:" line or
+   * `formatForwardQuote`'s "Forwarded message" header block -- when one
+   * is present as the blockquote's direct preceding sibling. `null` for
+   * a blockquote the writer added later via the toolbar
+   * (`applyBlockquote`), which has no such header.
+   */
+  intro: { node: Node; pos: number } | null;
+}
+
 /**
- * Locate the first top-level blockquote node in the current document.
+ * Locate the first top-level blockquote node in the current document,
+ * plus the paragraph directly preceding it, if any (issue #253 follow-up).
  * `formatReplyQuote` / `formatForwardQuote` (compose.svelte.ts) always
  * place the auto-inserted quote as the first blockquote in the initial
- * doc, so this is an unambiguous target. A blockquote the writer adds
- * later via the toolbar (`applyBlockquote`) is never first and is
- * therefore never folded.
+ * doc, immediately preceded by a single header paragraph -- so both are
+ * unambiguous targets. A blockquote the writer adds later via the
+ * toolbar (`applyBlockquote`) is never first and is therefore never
+ * folded.
  */
-function findReplyQuoteBlockquote(
-  doc: Node,
-): { node: Node; pos: number } | null {
-  let found: { node: Node; pos: number } | null = null;
-  doc.forEach((node, offset) => {
-    if (!found && node.type.name === 'blockquote') {
-      found = { node, pos: offset };
-    }
-  });
-  return found;
+function findReplyQuoteFold(doc: Node): ReplyQuoteFold | null {
+  const children: Array<{ node: Node; pos: number }> = [];
+  doc.forEach((node, offset) => children.push({ node, pos: offset }));
+  const quoteIndex = children.findIndex((c) => c.node.type.name === 'blockquote');
+  if (quoteIndex === -1) return null;
+  const quote = children[quoteIndex]!;
+  const prev = quoteIndex > 0 ? children[quoteIndex - 1]! : null;
+  const intro =
+    prev && prev.node.type.name === 'paragraph' && prev.pos + prev.node.nodeSize === quote.pos
+      ? prev
+      : null;
+  return { quote, intro };
 }
 
 /**
@@ -351,11 +369,18 @@ export function quoteFoldPlugin(initialCollapsed: boolean): Plugin {
     },
     props: {
       decorations(state) {
-        const target = findReplyQuoteBlockquote(state.doc);
+        const target = findReplyQuoteFold(state.doc);
         if (!target) return null;
         const pluginState = quoteFoldPluginKey.getState(state);
         const collapsed = pluginState?.collapsed ?? false;
-        const { node, pos } = target;
+        const { quote, intro } = target;
+        // Expanded: the toggle sits directly above the blockquote, below
+        // the still-visible introducer paragraph (unchanged from before).
+        // Collapsed: the toggle takes the introducer's place, so hiding
+        // the quote also visually removes the "On {date}, {sender}
+        // wrote:" / "Forwarded message" line above it -- the header and
+        // the blockquote fold away as one unit.
+        const togglePos = collapsed && intro ? intro.pos : quote.pos;
         const decorations: Decoration[] = [
           // The key encodes `collapsed` so ProseMirror's decoration-set
           // diffing treats a flip as a genuinely new widget (forcing
@@ -365,15 +390,24 @@ export function quoteFoldPlugin(initialCollapsed: boolean): Plugin {
           // outside the quote does not touch this key, so the button is
           // left alone rather than being torn down and rebuilt every
           // keystroke).
-          Decoration.widget(pos, (view) => buildQuoteFoldToggle(view, collapsed), {
+          Decoration.widget(togglePos, (view) => buildQuoteFoldToggle(view, collapsed), {
             key: `quote-fold-toggle-${collapsed}`,
             side: -1,
             ignoreSelection: true,
           }),
         ];
         if (collapsed) {
+          if (intro) {
+            decorations.push(
+              Decoration.node(intro.pos, intro.pos + intro.node.nodeSize, {
+                class: 'cq-folded',
+              }),
+            );
+          }
           decorations.push(
-            Decoration.node(pos, pos + node.nodeSize, { class: 'cq-folded' }),
+            Decoration.node(quote.pos, quote.pos + quote.node.nodeSize, {
+              class: 'cq-folded',
+            }),
           );
         }
         return DecorationSet.create(state.doc, decorations);
