@@ -98,6 +98,13 @@ func FuzzParseHeadersOnly(f *testing.F) {
 		"From: =?utf-8?B?w6TDtsO8?= <a@b>\r\nSubject: =?utf-8?Q?Hi=21?=\r\n"+
 			"Message-ID: <m2@x>\r\nIn-Reply-To: <parent@x>\r\nReferences: <r1@x> <r2@x>\r\n",
 		2048))
+	// ISO-8859-15 encoded-word Subject (re #257): mime.WordDecoder's default
+	// CharsetReader only knows utf-8/iso-8859-1/us-ascii inline, so this
+	// charset used to blank the whole header instead of decoding "ü".
+	f.Add(seed(
+		"From: a@b\r\nSubject: =?ISO-8859-15?Q?Angebot_IT-Museumsst=FCcke_=28fwd=29?=\r\n"+
+			"Message-ID: <m3@x>\r\n",
+		2048))
 	// No header/body separator at all: parseHeadersOnly's mail.ReadMessage
 	// call fails outright, exercising the "even headers unparseable"
 	// fallback to a fully zero-value Message.

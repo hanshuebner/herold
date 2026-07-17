@@ -177,9 +177,9 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 	// Locate the body start offset within w.raw.
 	bodyStart := findBodyStart(w.raw)
 
-	var wd mime.WordDecoder
+	wd := newHeaderWordDecoder()
 	rawSubject := hdrs.Get("Subject")
-	subject, _ := wd.DecodeHeader(rawSubject)
+	subject := decodeHeaderOrRaw(wd, rawSubject)
 
 	// Collect Authentication-Results values.
 	arVals := hdrs.GetAll("Authentication-Results")
@@ -209,7 +209,7 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 		return Message{}, perr
 	}
 	msg.Body = body
-	msg.Envelope = buildEnvelopeFromHeaders(hdrs, subject, &wd)
+	msg.Envelope = buildEnvelopeFromHeaders(hdrs, subject, wd)
 
 	return msg, nil
 }
@@ -821,17 +821,36 @@ func extractFilename(ctParams, dispParams map[string]string) string {
 	return ""
 }
 
+// newHeaderWordDecoder returns a mime.WordDecoder configured to resolve RFC
+// 2047 encoded-word charsets via the shared htmlindex-backed registry (see
+// headerCharsetReader, re #257). Every header-decoding call site in this
+// package uses this constructor so Subject, From/To/Cc/Bcc/Reply-To/Sender
+// display names, and In-Reply-To/References all recognize the same charsets
+// the body decoder does.
+func newHeaderWordDecoder() *mime.WordDecoder {
+	return &mime.WordDecoder{CharsetReader: headerCharsetReader}
+}
+
+// decodeHeaderOrRaw decodes header via wd.DecodeHeader, falling back to the
+// raw header text (rather than "") on the rare residual error -- headerCharsetReader
+// itself never errors, but a future CharsetReader change or an internal
+// mime.WordDecoder ordering error should still degrade gracefully instead of
+// blanking the header (re #257).
+func decodeHeaderOrRaw(wd *mime.WordDecoder, header string) string {
+	decoded, err := wd.DecodeHeader(header)
+	if err != nil {
+		return header
+	}
+	return decoded
+}
+
 // decodeHeaderWord applies RFC 2047 encoded-word decoding to a MIME parameter
 // value. The decoded output is stripped of any NUL byte the decoding may
 // have synthesized (base64/quoted-printable content the wire-form encoded
 // word does not itself contain a literal NUL for) -- see stripNUL.
 func decodeHeaderWord(v string) string {
-	var wd mime.WordDecoder
-	decoded, err := wd.DecodeHeader(v)
-	if err != nil {
-		return stripNUL(v)
-	}
-	return stripNUL(decoded)
+	wd := newHeaderWordDecoder()
+	return stripNUL(decodeHeaderOrRaw(wd, v))
 }
 
 // mimeHeaderToHeaders converts a textproto.MIMEHeader to our Headers type.
@@ -864,8 +883,7 @@ func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDec
 	// again defensively in derefAddrs, closes that (re #244,
 	// FuzzParseHeadersOnly: Envelope.From[].Name contains a NUL byte).
 	parseAddrField := func(raw string) []mail.Address {
-		decoded, _ := wd.DecodeHeader(raw)
-		decoded = stripNUL(decoded)
+		decoded := stripNUL(decodeHeaderOrRaw(wd, raw))
 		if addrs, err := mail.ParseAddressList(decoded); err == nil {
 			return derefAddrs(addrs)
 		}
@@ -880,8 +898,7 @@ func buildEnvelopeFromHeaders(h Headers, decodedSubject string, wd *mime.WordDec
 	out.ReplyTo = parseAddrField(h.Get("Reply-To"))
 
 	if raw := h.Get("Sender"); raw != "" {
-		decoded, _ := wd.DecodeHeader(raw)
-		decoded = stripNUL(decoded)
+		decoded := stripNUL(decodeHeaderOrRaw(wd, raw))
 		if addrs, err := mail.ParseAddressList(decoded); err == nil && len(addrs) > 0 {
 			a := *addrs[0]
 			a.Name = stripNUL(a.Name)
@@ -979,16 +996,16 @@ func parseHeadersOnly(raw []byte) (Message, error) {
 	}
 	hdrs := mimeHeaderToHeaders(textproto.MIMEHeader(nmsg.Header))
 
-	var wd mime.WordDecoder
+	wd := newHeaderWordDecoder()
 	rawSubject := hdrs.Get("Subject")
-	subject, _ := wd.DecodeHeader(rawSubject)
+	subject := decodeHeaderOrRaw(wd, rawSubject)
 
 	arVals := hdrs.GetAll("Authentication-Results")
 
 	return Message{
 		Headers:        hdrs,
 		AuthResultsRaw: strings.Join(arVals, ", "),
-		Envelope:       buildEnvelopeFromHeaders(hdrs, subject, &wd),
+		Envelope:       buildEnvelopeFromHeaders(hdrs, subject, wd),
 	}, nil
 }
 
