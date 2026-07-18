@@ -151,7 +151,7 @@ describe('whole-mailbox bulk actions refuse to execute (issue #149)', () => {
     const { mail } = mailMod;
 
     mail.mailboxes = new Map([
-      [INBOX_ID, makeMailbox({ id: INBOX_ID, name: 'Inbox', role: 'inbox', totalThreads: 5 })],
+      [INBOX_ID, makeMailbox({ id: INBOX_ID, name: 'Inbox', role: 'inbox', totalEmails: 5 })],
       [ARCHIVE_ID, makeMailbox({ id: ARCHIVE_ID, name: 'Archive', role: 'archive' })],
       [TRASH_ID, makeMailbox({ id: TRASH_ID, name: 'Trash', role: 'trash' })],
     ]);

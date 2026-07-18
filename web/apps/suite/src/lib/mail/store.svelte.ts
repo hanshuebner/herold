@@ -912,11 +912,17 @@ class MailStore {
   }
 
   /**
-   * Total thread count for the folder currently held in the list slice, drawn
-   * from the already-cached `Mailbox.totalThreads` value. Returns null for
-   * virtual folders (`all`, `important`, `snoozed`) whose message set spans
-   * multiple mailboxes — those would need a separate `calculateTotal` round-trip
-   * that is not performed here to keep the folder-load fast.
+   * Total raw message count for the folder currently held in the list slice,
+   * drawn from the already-cached `Mailbox.totalEmails` value. Returns null
+   * for virtual folders (`all`, `important`, `snoozed`) whose message set
+   * spans multiple mailboxes — those would need a separate `calculateTotal`
+   * round-trip that is not performed here to keep the folder-load fast.
+   *
+   * This is a raw message count, not a thread count: the whole-mailbox bulk
+   * actions it drives (`Email/setByQuery { inMailbox }`) and the empty-trash
+   * confirmation operate on every stored message in the mailbox, including
+   * messages folded inside an already-visible collapsed thread row, so the
+   * number shown must match what those actions actually touch (re #255).
    *
    * Used by the SelectChooser whole-mailbox-selection banner (issue #149).
    */
@@ -5054,9 +5060,13 @@ export const mail = new MailStore();
 registerAccountResetCallback(() => mail.reset());
 
 /**
- * Derive the total thread count for a given folder from the already-cached
- * mailboxes map. Returns null for virtual folders (`all`, `important`,
- * `snoozed`) or when the mailbox is not found.
+ * Derive the total raw message count for a given folder from the already-
+ * cached mailboxes map. Returns null for virtual folders (`all`,
+ * `important`, `snoozed`) or when the mailbox is not found.
+ *
+ * Reads `totalEmails`, not `totalThreads`: the whole-mailbox banner and bulk
+ * actions this feeds operate on every raw message in the mailbox, not on
+ * collapsed thread rows (re #255).
  *
  * Exported for unit testing (issue #149).
  */
@@ -5068,11 +5078,11 @@ export function folderTotalFromMailboxes(
   if (ROLED_FOLDERS.has(folder)) {
     const role = FOLDER_ROLE[folder] ?? folder;
     for (const m of mailboxes.values()) {
-      if (m.role === role) return m.totalThreads;
+      if (m.role === role) return m.totalEmails;
     }
     return null;
   }
-  return mailboxes.get(folder)?.totalThreads ?? null;
+  return mailboxes.get(folder)?.totalEmails ?? null;
 }
 
 /** Exported purely for unit tests; not part of the public surface. */

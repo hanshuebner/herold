@@ -162,17 +162,20 @@
     document.documentElement.lang = settings.locale;
   });
 
-  // Keep the browser-tab favicon badge in sync with the inbox unread count.
-  // setMailFavicon only touches document.head (no tracked $state writes) so a
-  // plain $effect is correct here -- no untrack wrapper needed.
+  // Keep the browser-tab favicon badge in sync with the count of inbox
+  // threads holding an unread message (re #255 comment 3223) -- a thread
+  // with 2 unread messages contributes 1, matching the one-row-per-thread
+  // list rendering. setMailFavicon only touches document.head (no tracked
+  // $state writes) so a plain $effect is correct here -- no untrack
+  // wrapper needed.
   $effect(() => {
-    void setMailFavicon(mail.inbox?.unreadEmails ?? 0);
+    void setMailFavicon(mail.inbox?.unreadThreads ?? 0);
   });
 
-  // Reflect the inbox unread count in the document title so the tab's
-  // hover tooltip (and the tab label) shows it, e.g. "(5) Herold".
+  // Reflect the inbox unread-thread count in the document title so the
+  // tab's hover tooltip (and the tab label) shows it, e.g. "(5) Herold".
   $effect(() => {
-    const unread = mail.inbox?.unreadEmails ?? 0;
+    const unread = mail.inbox?.unreadThreads ?? 0;
     document.title = unread > 0 ? `(${unread}) Herold` : 'Herold';
   });
 
@@ -532,8 +535,8 @@
         >
           <button type="button" onclick={() => router.navigate('/mail')}>
             <span>{t('sidebar.inbox')}</span>
-            {#if (mail.inbox?.unreadEmails ?? 0) > 0}
-              <span class="count">{mail.inbox?.unreadEmails ?? 0}</span>
+            {#if (mail.inbox?.unreadThreads ?? 0) > 0}
+              <span class="count">{mail.inbox?.unreadThreads ?? 0}</span>
             {/if}
           </button>
         </li>
@@ -621,8 +624,8 @@
                   ></span>
                 {/if}
                 <span class="name">{m.name}</span>
-                {#if m.unreadEmails > 0}
-                  <span class="count">{m.unreadEmails}</span>
+                {#if m.unreadThreads > 0}
+                  <span class="count">{m.unreadThreads}</span>
                 {/if}
               </button>
               <div class="row-actions">

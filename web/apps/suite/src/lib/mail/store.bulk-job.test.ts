@@ -156,7 +156,7 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
     const { mail } = mailMod;
 
     mail.mailboxes = new Map([
-      [INBOX_ID, makeMailbox({ id: INBOX_ID, name: 'Inbox', role: 'inbox', totalThreads: 200 })],
+      [INBOX_ID, makeMailbox({ id: INBOX_ID, name: 'Inbox', role: 'inbox', totalEmails: 200 })],
       [ARCHIVE_ID, makeMailbox({ id: ARCHIVE_ID, name: 'Archive', role: 'archive' })],
       [TRASH_ID, makeMailbox({ id: TRASH_ID, name: 'Trash', role: 'trash' })],
     ]);

@@ -42,9 +42,9 @@ describe('folderTotalFromMailboxes: banner trigger conditions', () => {
     expect(folderTotalFromMailboxes('snoozed', new Map())).toBeNull();
   });
 
-  it('returns totalThreads > visible count — banner shown for large inbox', () => {
+  it('returns totalEmails > visible count — banner shown for large inbox', () => {
     const mailboxes = new Map([
-      ['m1', makeMailbox({ id: 'm1', name: 'Inbox', role: 'inbox', totalThreads: 200 })],
+      ['m1', makeMailbox({ id: 'm1', name: 'Inbox', role: 'inbox', totalEmails: 200 })],
     ]);
     const total = folderTotalFromMailboxes('inbox', mailboxes);
     // With 50 loaded rows, 200 > 50 → banner should be shown.
@@ -52,9 +52,9 @@ describe('folderTotalFromMailboxes: banner trigger conditions', () => {
     expect(total! > 50).toBe(true);
   });
 
-  it('returns totalThreads equal to visible count — banner suppressed (all loaded)', () => {
+  it('returns totalEmails equal to visible count — banner suppressed (all loaded)', () => {
     const mailboxes = new Map([
-      ['m1', makeMailbox({ id: 'm1', name: 'Inbox', role: 'inbox', totalThreads: 30 })],
+      ['m1', makeMailbox({ id: 'm1', name: 'Inbox', role: 'inbox', totalEmails: 30 })],
     ]);
     const total = folderTotalFromMailboxes('inbox', mailboxes);
     // With 30 loaded rows and total 30, no more messages → banner suppressed.
@@ -62,15 +62,35 @@ describe('folderTotalFromMailboxes: banner trigger conditions', () => {
     expect(total! > 30).toBe(false);
   });
 
-  it('returns totalThreads for a custom mailbox by id', () => {
+  it('returns totalEmails for a custom mailbox by id', () => {
     const mailboxes = new Map([
-      ['custom', makeMailbox({ id: 'custom', name: 'Newsletter', role: null, totalThreads: 500 })],
+      ['custom', makeMailbox({ id: 'custom', name: 'Newsletter', role: null, totalEmails: 500 })],
     ]);
     expect(folderTotalFromMailboxes('custom', mailboxes)).toBe(500);
   });
 
   it('returns null for custom mailbox when id is absent', () => {
     expect(folderTotalFromMailboxes('unknown', new Map())).toBeNull();
+  });
+
+  // re #255 comment 3223: totalThreads is now a genuine distinct-thread
+  // count (server commit aa22f377), so the whole-mailbox banner -- which
+  // drives an Email/setByQuery over every raw message in the mailbox --
+  // must keep reading totalEmails even when it disagrees with totalThreads.
+  it('reads totalEmails, not totalThreads, when a thread holds multiple messages', () => {
+    const mailboxes = new Map([
+      [
+        'm1',
+        makeMailbox({
+          id: 'm1',
+          name: 'Inbox',
+          role: 'inbox',
+          totalEmails: 7,
+          totalThreads: 5,
+        }),
+      ],
+    ]);
+    expect(folderTotalFromMailboxes('inbox', mailboxes)).toBe(7);
   });
 });
 

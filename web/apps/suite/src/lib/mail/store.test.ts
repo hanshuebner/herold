@@ -390,23 +390,23 @@ describe('folderTotalFromMailboxes (issue #149)', () => {
     expect(folderTotalFromMailboxes('snoozed', new Map())).toBeNull();
   });
 
-  it('returns totalThreads for a role-based folder', () => {
+  it('returns totalEmails for a role-based folder', () => {
     const mailboxes = new Map([
-      ['mb1', makeMailbox({ id: 'mb1', name: 'Inbox', role: 'inbox', totalThreads: 47 })],
+      ['mb1', makeMailbox({ id: 'mb1', name: 'Inbox', role: 'inbox', totalEmails: 47 })],
     ]);
     expect(folderTotalFromMailboxes('inbox', mailboxes)).toBe(47);
   });
 
-  it('returns totalThreads for the trash folder', () => {
+  it('returns totalEmails for the trash folder', () => {
     const mailboxes = new Map([
-      ['mb2', makeMailbox({ id: 'mb2', name: 'Papierkorb', role: 'trash', totalThreads: 3 })],
+      ['mb2', makeMailbox({ id: 'mb2', name: 'Papierkorb', role: 'trash', totalEmails: 3 })],
     ]);
     expect(folderTotalFromMailboxes('trash', mailboxes)).toBe(3);
   });
 
-  it('returns totalThreads for a custom mailbox looked up by id', () => {
+  it('returns totalEmails for a custom mailbox looked up by id', () => {
     const mailboxes = new Map([
-      ['custom-id', makeMailbox({ id: 'custom-id', name: 'Work', role: null, totalThreads: 12 })],
+      ['custom-id', makeMailbox({ id: 'custom-id', name: 'Work', role: null, totalEmails: 12 })],
     ]);
     expect(folderTotalFromMailboxes('custom-id', mailboxes)).toBe(12);
   });
@@ -417,8 +417,28 @@ describe('folderTotalFromMailboxes (issue #149)', () => {
 
   it('returns null for an unknown custom mailbox id', () => {
     const mailboxes = new Map([
-      ['other-id', makeMailbox({ id: 'other-id', name: 'Other', role: null, totalThreads: 5 })],
+      ['other-id', makeMailbox({ id: 'other-id', name: 'Other', role: null, totalEmails: 5 })],
     ]);
     expect(folderTotalFromMailboxes('unknown-id', mailboxes)).toBeNull();
+  });
+
+  // re #255 comment 3223: totalThreads is now a genuine distinct-thread
+  // count, distinct from totalEmails whenever a mailbox holds a
+  // multi-message thread. The whole-mailbox banner must keep reading the
+  // raw message total.
+  it('reads totalEmails, not totalThreads, when they diverge', () => {
+    const mailboxes = new Map([
+      [
+        'mb1',
+        makeMailbox({
+          id: 'mb1',
+          name: 'Inbox',
+          role: 'inbox',
+          totalEmails: 7,
+          totalThreads: 5,
+        }),
+      ],
+    ]);
+    expect(folderTotalFromMailboxes('inbox', mailboxes)).toBe(7);
   });
 });
