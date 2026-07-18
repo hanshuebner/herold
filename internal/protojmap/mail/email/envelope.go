@@ -9,6 +9,21 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
+// BuildStoreEnvelope converts a parsed mailparse.Message into the
+// store.Envelope column set. It is the exported form of
+// buildEnvelopeFromParsed below, for callers outside this package that
+// need the identical raw-blob-to-envelope conversion this package's own
+// protocol handlers use. The `herold diag reparse-envelopes` maintenance
+// command (internal/reparseenvelopes) is the only such caller today: it
+// reparses raw blobs to repair envelopes persisted empty by the pre-fix
+// mailparse header-charset defect (re #257) and the pre-fix
+// oversized-message defect (re #244). Protocol handlers in this package
+// keep calling the unexported buildEnvelopeFromParsed directly so this
+// export does not change any existing ingest path.
+func BuildStoreEnvelope(m mailparse.Message) store.Envelope {
+	return buildEnvelopeFromParsed(m)
+}
+
 // buildEnvelopeFromParsed extracts the cached envelope columns from a
 // successfully parsed mailparse.Message. On parse failure or missing
 // fields the returned Envelope has zero values for the absent slots —

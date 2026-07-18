@@ -39,6 +39,7 @@ func newDiagCmd() *cobra.Command {
 	// `diag` cobra parent.
 	c.AddCommand(newDiagDNSCheckCmd())
 	c.AddCommand(newDiagCollectCmd())
+	c.AddCommand(newDiagReparseEnvelopesCmd())
 	return c
 }
 

@@ -68,6 +68,7 @@ func Run(t *testing.T, f Factory) {
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
 		{"MessageFailedImages_Lifecycle", testMessageFailedImagesLifecycle},
 		{"InternalizePending_ListAndCount", testInternalizePendingListAndCount},
+		{"ListMessageIDsBefore", testListMessageIDsBefore},
 		{"ListMessagesWithInternalizePendingByReceivedAt_OrdersByReceivedAt", testListMessagesWithInternalizePendingByReceivedAtOrdersByReceivedAt},
 		{"QuotaEnforcement", testQuotaEnforcement},
 		// Sub-account substrate (issue #227, REQ-SUBACCT-01..06).
@@ -11092,6 +11093,106 @@ func testBodyMetaListNeedingBodyMetaPagination(t *testing.T, s store.Store) {
 		if id == targetID {
 			t.Fatalf("targetID %d still in pending list after SetMessageBodyMeta", targetID)
 		}
+	}
+}
+
+// testListMessageIDsBefore verifies that ListMessageIDsBefore pages the
+// full messages table (no filter predicate) in DESCENDING id order via
+// beforeID, and that limit=0 returns no rows and no error. Used by the
+// `herold diag reparse-envelopes` maintenance command (re #257, re #244).
+func testListMessageIDsBefore(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "reparse-page@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+
+	for i := 0; i < 5; i++ {
+		ref := putBlob(t, s, fmt.Sprintf("reparse-page-%d", i))
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+		}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+			t.Fatalf("InsertMessage[%d]: %v", i, err)
+		}
+	}
+	inserted, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(inserted) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(inserted))
+	}
+	var ids []store.MessageID
+	for _, m := range inserted {
+		ids = append(ids, m.ID)
+	}
+
+	all, err := s.Meta().ListMessageIDsBefore(ctx, 0, 1000000)
+	if err != nil {
+		t.Fatalf("ListMessageIDsBefore all: %v", err)
+	}
+	if len(all) < 5 {
+		t.Fatalf("want at least 5, got %d: %v", len(all), all)
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i] >= all[i-1] {
+			t.Fatalf("not descending at index %d: %v", i, all)
+		}
+	}
+	seen := map[store.MessageID]bool{}
+	for _, id := range all {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		if !seen[id] {
+			t.Fatalf("message %d missing from ListMessageIDsBefore(0, 1000): %v", id, all)
+		}
+	}
+
+	// Paginate: take 2 rows, then continue with beforeID as the cursor.
+	page1, err := s.Meta().ListMessageIDsBefore(ctx, 0, 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page1: want 2, got %d: %v", len(page1), page1)
+	}
+	if page1[1] >= page1[0] {
+		t.Fatalf("page1 not descending: %v", page1)
+	}
+	lastOfPage1 := page1[len(page1)-1]
+
+	page2, err := s.Meta().ListMessageIDsBefore(ctx, lastOfPage1, 1000000)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	for _, id := range page2 {
+		if id >= lastOfPage1 {
+			t.Fatalf("page2 contains id %d >= cursor %d; cursor not advanced", id, lastOfPage1)
+		}
+	}
+	// The union of page1 and page2 recovers every id from the full scan
+	// (up to the size of "all"), confirming no row is skipped or
+	// duplicated across the page boundary.
+	combined := map[store.MessageID]bool{}
+	for _, id := range page1 {
+		combined[id] = true
+	}
+	for _, id := range page2 {
+		combined[id] = true
+	}
+	for _, id := range all {
+		if !combined[id] {
+			t.Fatalf("id %d present in full scan but missing from page1+page2 union", id)
+		}
+	}
+
+	none, err := s.Meta().ListMessageIDsBefore(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("limit=0: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("limit=0: got %v, want empty", none)
 	}
 }
 

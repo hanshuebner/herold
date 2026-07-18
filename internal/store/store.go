@@ -417,6 +417,19 @@ type Metadata interface {
 	// Preview + HasAttachment without touching protocol handlers.
 	ListMessagesNeedingBodyMeta(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
 
+	// ListMessageIDsBefore returns up to limit MessageIDs in DESCENDING
+	// order (newest first, highest ID first) with id < beforeID, scanning
+	// every row in the messages table -- unlike ListMessagesNeedingBodyMeta
+	// or ListMessagesWithInternalizePending, there is no filter predicate.
+	// Pass beforeID = 0 to start from the newest message (the
+	// implementation treats 0 as a sentinel for "no upper bound",
+	// effectively MAX_INT64). Used by the `herold diag reparse-envelopes`
+	// maintenance command (re #257, re #244) to walk the full table
+	// independent of mailbox membership, since a message's cached
+	// envelope is a property of the message row, not of any one
+	// (message, mailbox) pairing.
+	ListMessageIDsBefore(ctx context.Context, beforeID MessageID, limit int) ([]MessageID, error)
+
 	// -- Blob part index (re #46) -----------------------------------------
 
 	// PutBlobPartIndex upserts the serialised MIME part index for a blob.

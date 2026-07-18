@@ -1886,6 +1886,32 @@ func (m *metadata) ListMessagesNeedingBodyMeta(ctx context.Context, beforeID sto
 	return out, rows.Err()
 }
 
+func (m *metadata) ListMessageIDsBefore(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	upper := int64(beforeID)
+	if upper == 0 {
+		upper = math.MaxInt64
+	}
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT id FROM messages WHERE id < $1 ORDER BY id DESC LIMIT $2`,
+		upper, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.MessageID, 0, limit)
+	for rows.Next() {
+		var mid int64
+		if err := rows.Scan(&mid); err != nil {
+			return nil, fmt.Errorf("storepg: list message ids: scan: %w", err)
+		}
+		out = append(out, store.MessageID(mid))
+	}
+	return out, rows.Err()
+}
+
 func (m *metadata) ListMessagesWithInternalizePending(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
 	if limit <= 0 {
 		return nil, nil

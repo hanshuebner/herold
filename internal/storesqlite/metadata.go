@@ -1929,6 +1929,35 @@ func (m *metadata) ListMessagesNeedingBodyMeta(ctx context.Context, beforeID sto
 	return out, rows.Err()
 }
 
+func (m *metadata) ListMessageIDsBefore(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	// beforeID = 0 means "no upper bound" — start from the newest
+	// message. SQLite's id column is INTEGER (64-bit), so
+	// math.MaxInt64 covers every plausible row count.
+	upper := int64(beforeID)
+	if upper == 0 {
+		upper = math.MaxInt64
+	}
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT id FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?`,
+		upper, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]store.MessageID, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("storesqlite: list message ids: scan: %w", err)
+		}
+		out = append(out, store.MessageID(id))
+	}
+	return out, rows.Err()
+}
+
 func (m *metadata) ListMessagesWithInternalizePending(ctx context.Context, beforeID store.MessageID, limit int) ([]store.MessageID, error) {
 	if limit <= 0 {
 		return nil, nil
