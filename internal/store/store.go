@@ -1238,6 +1238,19 @@ type Metadata interface {
 	// path turns Mailbox/get into a multi-second CPU hog.
 	CountMessages(ctx context.Context, mailboxID MailboxID) (total, unread int64, err error)
 
+	// CountThreads returns the total and unread distinct-thread counts
+	// for mailboxID, computed by a single SQL aggregate joining
+	// message_mailboxes to messages. A thread is identified by the
+	// effective_thread key (messages.thread_id, or the message's own id
+	// when thread_id is 0 — see migration 0070); unreadThreads counts
+	// only threads with at least one message whose mailbox membership
+	// lacks \Seen, using the same predicate as CountMessages. Used by
+	// JMAP Mailbox/get to populate totalThreads / unreadThreads
+	// consistent with the collapsed-thread row count the mail list
+	// renders (REQ-PROTO's Mailbox datatype), without per-message
+	// decoding at the 100k+-row scale CountMessages was written for.
+	CountThreads(ctx context.Context, mailboxID MailboxID) (totalThreads, unreadThreads int64, err error)
+
 	// SetMailboxSubscribed toggles the MailboxAttrSubscribed bit on the
 	// mailbox and bumps UpdatedAt. Returns ErrNotFound if the mailbox
 	// has been deleted.

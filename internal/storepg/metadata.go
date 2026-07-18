@@ -3256,6 +3256,28 @@ func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID)
 	return total, unread, nil
 }
 
+// CountThreads computes (totalThreads, unreadThreads) for a mailbox in
+// one SQL aggregate, joining message_mailboxes to messages for the
+// effective_thread key (thread_id, or the message's own id when
+// thread_id is 0, per migration 0070). See store.Metadata for the
+// contract.
+func (m *metadata) CountThreads(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
+	const q = `
+		SELECT
+			COUNT(DISTINCT (CASE WHEN m.thread_id = 0 THEN m.id ELSE m.thread_id END)) AS total_threads,
+			COUNT(DISTINCT (CASE WHEN (mm.flags & 1) = 0
+			                THEN (CASE WHEN m.thread_id = 0 THEN m.id ELSE m.thread_id END)
+			                END)) AS unread_threads
+		FROM message_mailboxes mm
+		JOIN messages m ON m.id = mm.message_id
+		WHERE mm.mailbox_id = $1`
+	var total, unread int64
+	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID)).Scan(&total, &unread); err != nil {
+		return 0, 0, fmt.Errorf("storepg: count threads: %w", err)
+	}
+	return total, unread, nil
+}
+
 func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, filter store.MessageFilter) ([]store.Message, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {

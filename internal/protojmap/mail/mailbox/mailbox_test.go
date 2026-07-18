@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/directory"
@@ -191,6 +192,83 @@ func TestMailbox_Get_ByIds(t *testing.T) {
 	}
 	if len(resp.NotFound) != 1 || resp.NotFound[0] != "9999" {
 		t.Fatalf("notFound = %v, want [9999]", resp.NotFound)
+	}
+}
+
+// TestMailbox_Get_ThreadCounts asserts that totalThreads / unreadThreads
+// report genuine distinct-thread counts (re #255), not the raw message
+// counts totalEmails / unreadEmails carry. The mailbox holds one
+// two-message thread (both messages unread) and one standalone
+// single-message thread (read): 3 raw messages, 2 distinct threads, 1
+// thread with an unread message, 2 raw unread messages.
+func TestMailbox_Get_ThreadCounts(t *testing.T) {
+	f := setupFixture(t)
+	mb := mustInsertMailbox(t, f, "INBOX", store.MailboxAttrInbox)
+	ctx := context.Background()
+
+	ref, err := f.srv.Store.Blobs().Put(ctx, strings.NewReader("thread-count-body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	insert := func(msgID, inReplyTo, references string, seen bool) {
+		t.Helper()
+		var flags store.MessageFlags
+		if seen {
+			flags = store.MessageFlagSeen
+		}
+		_, _, err := f.srv.Store.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: f.pid,
+			Blob:        ref,
+			Size:        ref.Size,
+			Envelope: store.Envelope{
+				MessageID:  msgID,
+				InReplyTo:  inReplyTo,
+				References: references,
+			},
+		}, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+	}
+	// Thread A: 2 messages, both unread.
+	insert("tc-a1@test", "", "", false)
+	insert("tc-a2@test", "<tc-a1@test>", "<tc-a1@test>", false)
+	// Thread B: 1 standalone message, read.
+	insert("tc-b1@test", "", "", true)
+
+	_, raw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", mb.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d mailboxes, want 1: %s", len(resp.List), raw)
+	}
+	m := resp.List[0]
+	totalEmails := int64(m["totalEmails"].(float64))
+	unreadEmails := int64(m["unreadEmails"].(float64))
+	totalThreads := int64(m["totalThreads"].(float64))
+	unreadThreads := int64(m["unreadThreads"].(float64))
+
+	if totalEmails != 3 {
+		t.Errorf("totalEmails = %d, want 3 (raw message count)", totalEmails)
+	}
+	if unreadEmails != 2 {
+		t.Errorf("unreadEmails = %d, want 2 (raw unread message count)", unreadEmails)
+	}
+	if totalThreads != 2 {
+		t.Errorf("totalThreads = %d, want 2 (distinct threads, not %d raw messages)", totalThreads, totalEmails)
+	}
+	if unreadThreads != 1 {
+		t.Errorf("unreadThreads = %d, want 1 (threads with >=1 unread message, not %d raw unread messages)", unreadThreads, unreadEmails)
+	}
+	if totalThreads >= totalEmails {
+		t.Errorf("totalThreads (%d) should be < totalEmails (%d) when a thread has multiple messages in the mailbox", totalThreads, totalEmails)
 	}
 }
 

@@ -43,6 +43,7 @@ func Run(t *testing.T, f Factory) {
 		{"InsertMessage_ThreadResolutionViaReferences", testInsertMessageThreadResolutionViaReferences},
 		{"InsertMessages_Batch", testInsertMessagesBatch},
 		{"CountMessages", testCountMessages},
+		{"CountThreads", testCountThreads},
 		{"InsertMessages_SkipThreading", testInsertMessagesSkipThreading},
 		{"RethreadPrincipal", testRethreadPrincipal},
 		// re #88, REQ-STORE-40: duplicate message-id copies share one thread.
@@ -1628,6 +1629,70 @@ func testCountMessages(t *testing.T, s store.Store) {
 	}
 	if unread != 2 {
 		t.Errorf("unread = %d, want 2 (two messages without \\Seen)", unread)
+	}
+}
+
+// testCountThreads seeds a mailbox with 3 distinct threads across 5
+// messages: threadA has 2 messages linked via In-Reply-To (both
+// unread), threadB has 2 messages linked via In-Reply-To (both read),
+// and threadC is a single standalone message (thread_id == 0, the
+// "self-thread" case) that is unread. This asserts CountThreads
+// returns the DISTINCT-thread counts (3 total, 2 unread — threadA and
+// threadC), not the raw message counts CountMessages would return (5
+// total, 3 unread).
+func testCountThreads(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "count-threads@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "count-threads-body")
+
+	insert := func(msgID, inReplyTo, references string, seen bool) {
+		t.Helper()
+		var flags store.MessageFlags
+		if seen {
+			flags = store.MessageFlagSeen
+		}
+		_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID,
+			Blob:        ref,
+			Size:        ref.Size,
+			Envelope: store.Envelope{
+				MessageID:  msgID,
+				InReplyTo:  inReplyTo,
+				References: references,
+			},
+		}, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags}})
+		if err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+	}
+
+	// threadA: 2 messages, both unread.
+	insert("ct-a1@test", "", "", false)
+	insert("ct-a2@test", "<ct-a1@test>", "<ct-a1@test>", false)
+	// threadB: 2 messages, both read.
+	insert("ct-b1@test", "", "", true)
+	insert("ct-b2@test", "<ct-b1@test>", "<ct-b1@test>", true)
+	// threadC: 1 standalone message, unread (thread_id == 0 case).
+	insert("ct-c1@test", "", "", false)
+
+	total, unread, err := s.Meta().CountMessages(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("CountMessages: %v", err)
+	}
+	if total != 5 || unread != 3 {
+		t.Fatalf("CountMessages sanity check: got total=%d unread=%d, want 5/3", total, unread)
+	}
+
+	totalThreads, unreadThreads, err := s.Meta().CountThreads(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("CountThreads: %v", err)
+	}
+	if totalThreads != 3 {
+		t.Errorf("totalThreads = %d, want 3 (distinct threads, not %d raw messages)", totalThreads, total)
+	}
+	if unreadThreads != 2 {
+		t.Errorf("unreadThreads = %d, want 2 (threadA + threadC, not %d raw unread messages)", unreadThreads, unread)
 	}
 }
 

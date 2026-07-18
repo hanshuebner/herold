@@ -9,14 +9,16 @@ import (
 )
 
 // renderMailbox converts a store.Mailbox into the JMAP wire form,
-// computing totalEmails / unreadEmails by paginating through the
-// mailbox's messages, and deriving myRights from ACL when the caller
-// is not the mailbox owner.
+// computing totalEmails / unreadEmails and totalThreads / unreadThreads
+// via single-aggregate store queries, and deriving myRights from ACL
+// when the caller is not the mailbox owner.
 //
-// totalThreads / unreadThreads collapse to totalEmails / unreadEmails
-// for v1 because we have not yet wired the JMAP Thread datatype (the
-// parallel agent's surface). RFC 8621 permits this — Thread/get returns
-// "unknownDataType" and clients fall back to per-Email rendering.
+// totalThreads / unreadThreads are genuine distinct-thread counts
+// (store.Metadata.CountThreads), consistent with the mail list's
+// collapsed-thread row rendering — a thread with N messages in the
+// mailbox counts once, not N times. totalEmails / unreadEmails remain
+// raw message counts (store.Metadata.CountMessages) for callers that
+// need the uncollapsed total.
 func renderMailbox(
 	ctx context.Context,
 	meta store.Metadata,
@@ -24,6 +26,10 @@ func renderMailbox(
 	mb store.Mailbox,
 ) (jmapMailbox, error) {
 	totalEmails, unreadEmails, err := countMessages(ctx, meta, mb.ID)
+	if err != nil {
+		return jmapMailbox{}, err
+	}
+	totalThreads, unreadThreads, err := countThreads(ctx, meta, mb.ID)
 	if err != nil {
 		return jmapMailbox{}, err
 	}
@@ -52,8 +58,8 @@ func renderMailbox(
 		SortOrder:     mb.SortOrder,
 		TotalEmails:   totalEmails,
 		UnreadEmails:  unreadEmails,
-		TotalThreads:  totalEmails,
-		UnreadThreads: unreadEmails,
+		TotalThreads:  totalThreads,
+		UnreadThreads: unreadThreads,
 		MyRights:      rights,
 		IsSubscribed:  mb.Attributes&store.MailboxAttrSubscribed != 0,
 		Color:         color,
@@ -74,6 +80,21 @@ func countMessages(
 	t, u, cerr := meta.CountMessages(ctx, mailboxID)
 	if cerr != nil {
 		return 0, 0, fmt.Errorf("mailbox: count messages: %w", cerr)
+	}
+	return t, u, nil
+}
+
+// countThreads returns (totalThreads, unreadThreads) for mailboxID via
+// a single SQL aggregate (Metadata.CountThreads), the thread-count
+// counterpart of countMessages above.
+func countThreads(
+	ctx context.Context,
+	meta store.Metadata,
+	mailboxID store.MailboxID,
+) (total, unread int64, err error) {
+	t, u, cerr := meta.CountThreads(ctx, mailboxID)
+	if cerr != nil {
+		return 0, 0, fmt.Errorf("mailbox: count threads: %w", cerr)
 	}
 	return t, u, nil
 }
