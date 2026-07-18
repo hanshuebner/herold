@@ -327,6 +327,12 @@ export const de = {
   // Zugängliche Bezeichnung für den Ladespinner, während der iframe
   // rendert und die Höhe noch nicht gemessen wurde (Forgejo #47 follow-up).
   'msg.body.renderingAria': 'Nachricht wird geladen...',
+  // Beschriftung der Trennlinie zwischen aneinandergehängten
+  // htmlBody-/textBody-Teilen (re #258 follow-up) -- z. B. die Notiz eines
+  // Weiterleiters vor der weitergeleiteten Original-Nachricht. Bewusst
+  // neutral formuliert: der Client kann nicht immer erkennen, ob ein
+  // angehängter Teil tatsächlich eine Weiterleitung ist.
+  'msg.body.includedMessage': 'Eingeschlossene Nachricht',
   'msg.noBody': '(kein Inhalt)',
   'msg.noSender': '(kein Absender)',
   'msg.recipientsTo': 'an {first}',

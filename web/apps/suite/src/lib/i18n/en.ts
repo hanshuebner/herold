@@ -328,6 +328,11 @@ export const en = {
   // Accessible label for the spinner shown while the iframe is rendering
   // and its height has not been measured yet (Forgejo #47 follow-up).
   'msg.body.renderingAria': 'Loading message...',
+  // Label on the divider between concatenated top-level htmlBody/textBody
+  // parts (re #258 follow-up) -- e.g. a forwarder's own note ahead of the
+  // forwarded original. Neutral wording: the client cannot always tell a
+  // concatenated sibling is specifically a *forwarded* message.
+  'msg.body.includedMessage': 'Included message',
   'msg.noBody': '(no body)',
   'msg.noSender': '(no sender)',
   'msg.recipientsTo': 'to {first}',

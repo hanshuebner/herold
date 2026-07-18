@@ -1141,5 +1141,33 @@ function wrapInIframeDocument(body: string, internalizePending: boolean): string
     details.herold-quoted > summary { background: #393939; color: #c6c6c6; }
     details.herold-quoted[open] > summary { background: #525252; }
   }
+  /* Divider between concatenated top-level htmlBody parts (re #258
+     follow-up): a labeled rule so a forwarder's note and the forwarded
+     original no longer read as one continuous message. Injected as
+     trusted markup by emailHtmlBody (types.ts), never derived from
+     message content. */
+  .herold-part-separator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 20px 0;
+    color: #525252;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .herold-part-separator::before,
+  .herold-part-separator::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: #c6c6c6;
+  }
+  @media (prefers-color-scheme: dark) {
+    .herold-part-separator { color: #c6c6c6; }
+    .herold-part-separator::before,
+    .herold-part-separator::after { background: #525252; }
+  }
 </style></head><body>${body}</body></html>`;
 }

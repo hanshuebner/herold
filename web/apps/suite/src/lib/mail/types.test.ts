@@ -13,10 +13,15 @@
  *   - text/plain entries appearing in htmlBody are HTML-escaped and
  *     wrapped in <pre> so they render as literal text, never as markup.
  *
+ * When more than one entry is actually rendered, the entries are joined
+ * by a labeled "Included message" divider (re #258 follow-up) so the
+ * boundary between e.g. a forwarder's note and the forwarded original is
+ * marked instead of the two reading as one continuous message.
+ *
  * Single-part messages (the overwhelmingly common case) must render
- * byte-identical to the pre-#258 behaviour — covered by the "single
- * part" describe block below and by the pre-existing re #44 coverage in
- * store.test.ts.
+ * byte-identical to the pre-#258 behaviour, with NO separator — covered
+ * by the "single part" describe block below and by the pre-existing
+ * re #44 coverage in store.test.ts.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -103,13 +108,22 @@ describe('emailHtmlBody: issue #258 shape (leading text/plain note + html origin
     });
     const result = emailHtmlBody(email);
     expect(result).not.toBeNull();
-    // Note comes first, wrapped in <pre> so it renders as literal text.
+    // Note comes first, wrapped in <pre> so it renders as literal text,
+    // with a labeled divider marking the boundary before the original.
     expect(result).toBe(
       '<pre>Hallo zusammen, ich leite euch mal die Mail weiter.</pre>' +
+        '<div class="herold-part-separator">Included message</div>' +
         '<p>Sehr geehrte Damen und Herren</p>',
     );
     // The note text appears before the original's text in the concatenation.
     expect(result!.indexOf('Hallo zusammen')).toBeLessThan(
+      result!.indexOf('Sehr geehrte'),
+    );
+    // The divider sits strictly between the two parts.
+    expect(result!.indexOf('Hallo zusammen')).toBeLessThan(
+      result!.indexOf('Included message'),
+    );
+    expect(result!.indexOf('Included message')).toBeLessThan(
       result!.indexOf('Sehr geehrte'),
     );
   });
@@ -198,7 +212,11 @@ describe('emailHtmlBody: null when htmlBody has no genuine text/html part (re #2
         orig: { value: '<p>the original</p>', isEncodingProblem: false, isTruncated: false },
       },
     });
-    expect(emailHtmlBody(email)).toBe('<pre>the note</pre><p>the original</p>');
+    expect(emailHtmlBody(email)).toBe(
+      '<pre>the note</pre>' +
+        '<div class="herold-part-separator">Included message</div>' +
+        '<p>the original</p>',
+    );
   });
 
   it('a genuine single text/html part still renders (no regression)', () => {
@@ -223,7 +241,11 @@ describe('emailHtmlBody: overrides parameter (truncation-recovery splice, re #25
       },
     });
     const result = emailHtmlBody(email, { orig: '<p>the full recovered body</p>' });
-    expect(result).toBe('<pre>the note</pre><p>the full recovered body</p>');
+    expect(result).toBe(
+      '<pre>the note</pre>' +
+        '<div class="herold-part-separator">Included message</div>' +
+        '<p>the full recovered body</p>',
+    );
   });
 
   it('overriding a partId not present in htmlBody has no effect', () => {
@@ -250,7 +272,7 @@ describe('emailTextBody: single part (no regression)', () => {
 });
 
 describe('emailTextBody: issue #258 shape (note + forwarded text, in order)', () => {
-  it('concatenates both parts in order, separated by a blank line', () => {
+  it('concatenates both parts in order, joined by a labeled divider', () => {
     const email = makeEmail({
       textBody: [
         makePart({ partId: 'note', type: 'text/plain' }),
@@ -263,7 +285,64 @@ describe('emailTextBody: issue #258 shape (note + forwarded text, in order)', ()
     });
     const result = emailTextBody(email);
     expect(result).toBe(
-      'Hallo zusammen, ich leite weiter.\n\nSehr geehrte Damen und Herren',
+      'Hallo zusammen, ich leite weiter.\n\n' +
+        '----- Included message -----\n\n' +
+        'Sehr geehrte Damen und Herren',
     );
+  });
+});
+
+describe('emailHtmlBody / emailTextBody: separator only between multiple entries (re #258 follow-up)', () => {
+  it('emailHtmlBody inserts no separator for a single rendered part', () => {
+    const email = makeEmail({
+      htmlBody: [makePart({ partId: 'p1', type: 'text/html' })],
+      bodyValues: { p1: { value: '<p>hello</p>', isEncodingProblem: false, isTruncated: false } },
+    });
+    const result = emailHtmlBody(email);
+    expect(result).toBe('<p>hello</p>');
+    expect(result).not.toContain('herold-part-separator');
+    expect(result).not.toContain('Included message');
+  });
+
+  it('emailHtmlBody inserts exactly one separator between two rendered parts', () => {
+    const email = makeEmail({
+      htmlBody: [
+        makePart({ partId: 'note', type: 'text/plain' }),
+        makePart({ partId: 'orig', type: 'text/html' }),
+      ],
+      bodyValues: {
+        note: { value: 'note text', isEncodingProblem: false, isTruncated: false },
+        orig: { value: '<p>original</p>', isEncodingProblem: false, isTruncated: false },
+      },
+    });
+    const result = emailHtmlBody(email) ?? '';
+    const occurrences = result.split('herold-part-separator').length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('emailTextBody inserts no separator for a single rendered part', () => {
+    const email = makeEmail({
+      textBody: [makePart({ partId: 'p1', type: 'text/plain' })],
+      bodyValues: { p1: { value: 'plain text body', isEncodingProblem: false, isTruncated: false } },
+    });
+    const result = emailTextBody(email);
+    expect(result).toBe('plain text body');
+    expect(result).not.toContain('Included message');
+  });
+
+  it('emailTextBody inserts exactly one separator between two rendered parts', () => {
+    const email = makeEmail({
+      textBody: [
+        makePart({ partId: 'a', type: 'text/plain' }),
+        makePart({ partId: 'b', type: 'text/plain' }),
+      ],
+      bodyValues: {
+        a: { value: 'first', isEncodingProblem: false, isTruncated: false },
+        b: { value: 'second', isEncodingProblem: false, isTruncated: false },
+      },
+    });
+    const result = emailTextBody(email) ?? '';
+    const occurrences = result.split('Included message').length - 1;
+    expect(occurrences).toBe(1);
   });
 });

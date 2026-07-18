@@ -5,6 +5,8 @@
  * Cross-reference: docs/requirements/01-data-model.md.
  */
 
+import { t } from '../i18n/i18n.svelte';
+
 /**
  * RFC 8621 §6 — Identity. The set of From / Reply-To / Bcc / signatures
  * the user may legitimately send as.
@@ -347,14 +349,30 @@ export const EMAIL_BODY_PROPERTIES = [
 ] as const;
 
 /**
+ * Plain-text divider inserted between two concatenated top-level
+ * `textBody` parts (re #258 follow-up). The label is always accurate
+ * because the client cannot tell whether a concatenated sibling is
+ * specifically a *forwarded* message, just that it is a distinct part
+ * spliced in after the first — "Included message" reads correctly either
+ * way. Computed at call time (not module load) so it tracks the active
+ * locale.
+ */
+function textPartSeparator(): string {
+  return `\n\n----- ${t('msg.body.includedMessage')} -----\n\n`;
+}
+
+/**
  * The plain-text body of an email, if any. RFC 8621 4.1.4 defines
  * `textBody` as the ORDERED LIST of parts to display for the plain-text
  * rendering; for the common case that list has exactly one entry, so this
  * returns that entry's value unchanged. When a multipart/mixed message
  * contributes more than one leaf to `textBody` (e.g. a forwarder's own
  * note ahead of the forwarded original, re #258), every part's value is
- * concatenated in order, separated by a blank line so the parts read as
- * distinct paragraphs rather than running together.
+ * concatenated in order, joined by a labeled divider (`textPartSeparator`)
+ * so the boundary between the parts is marked rather than the two messages
+ * reading as one continuous body. `Array.prototype.join` only inserts the
+ * separator between elements, so a single resolved value (the overwhelming
+ * common case) is returned unchanged with no separator.
  *
  * Returns null when no text part is present (rare; HTML-only emails happen
  * but are usually accompanied by a plain-text alternative) or when none of
@@ -371,7 +389,7 @@ export function emailTextBody(email: Email): string | null {
     values.push(value);
   }
   if (values.length === 0) return null;
-  return values.join('\n\n');
+  return values.join(textPartSeparator());
 }
 
 /**
@@ -392,6 +410,24 @@ function escapeHtmlText(value: string): string {
 }
 
 /**
+ * HTML divider inserted between two concatenated top-level `htmlBody`
+ * parts (re #258 follow-up: without it, a forwarder's note and the
+ * forwarded original read as one continuous message). Built as trusted
+ * markup injected between the already-sanitized/escaped part outputs in
+ * `emailHtmlBody` — never derived from message content — so it cannot be
+ * spoofed by a crafted message body, and it still passes through
+ * `sanitizeHtml`'s DOMPurify pass unchanged (`div` and its default
+ * attributes are on the allowlist). The label text itself is escaped
+ * like any other rendered text even though it is not attacker-controlled,
+ * for defence in depth. Styled by the `.herold-part-separator` rule in
+ * `sanitize.ts`'s iframe stylesheet. Computed at call time so it tracks
+ * the active locale.
+ */
+function htmlPartSeparator(): string {
+  return `<div class="herold-part-separator">${escapeHtmlText(t('msg.body.includedMessage'))}</div>`;
+}
+
+/**
  * The HTML body of an email, if any. The suite prefers HTML when both are
  * present (`docs/requirements/02-mail-basics.md` REQ-MAIL-02).
  *
@@ -402,8 +438,11 @@ function escapeHtmlText(value: string): string {
  * sibling at its level) is HTML-escaped and wrapped in `<pre>` so it
  * renders as literal, whitespace-preserving text rather than markup
  * (re #258 — the forwarder's own note ahead of the forwarded original).
- * The rendered parts are concatenated in document order; for the common
- * single-part case this returns that part's value unchanged.
+ * The rendered parts are concatenated in document order, joined by a
+ * labeled divider (`htmlPartSeparator`) that marks the boundary between
+ * them. `Array.prototype.join` only inserts the separator between
+ * elements, so the common single-part case returns that part's value
+ * unchanged with no separator.
  *
  * Returns null — "no HTML rendering" — when `htmlBody` contains no
  * GENUINE `text/html` entry, even though the list is non-empty. RFC
@@ -446,5 +485,5 @@ export function emailHtmlBody(
     }
   }
   if (rendered.length === 0) return null;
-  return rendered.join('');
+  return rendered.join(htmlPartSeparator());
 }
