@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   htmlBodyIsTruncated,
   htmlBodyFullDownloadUrl,
+  truncatedHtmlBodyPartId,
   fetchFullHtmlBody,
 } from './html-body-full';
 import type { Email } from './types';
@@ -199,6 +200,82 @@ describe('htmlBodyFullDownloadUrl', () => {
     };
     htmlBodyFullDownloadUrl(email, 'acct-xyz', factory);
     expect(captured[0]?.accountId).toBe('acct-xyz');
+  });
+});
+
+// ── multi-part htmlBody (re #258) ────────────────────────────────────────────
+//
+// RFC 8621 4.1.4 makes htmlBody an ordered list; a multipart/mixed message
+// can contribute more than one leaf (e.g. a small forwarder's note ahead of
+// a large forwarded original). Truncation detection must scan every entry,
+// not just index 0, and the recovery fetch must target the specific
+// truncated entry's partId so the other entries keep their own inline
+// values undisturbed.
+
+describe('htmlBodyIsTruncated / truncatedHtmlBodyPartId: multi-part htmlBody', () => {
+  function makeMultiPartEmail(): Email {
+    return {
+      id: 'e1',
+      threadId: 't1',
+      mailboxIds: {},
+      keywords: {},
+      from: null,
+      to: null,
+      subject: null,
+      preview: '',
+      receivedAt: '2026-01-01T00:00:00Z',
+      hasAttachment: false,
+      blobId: 'root-blob',
+      htmlBody: [
+        {
+          partId: 'note',
+          blobId: 'note-blob',
+          size: 64,
+          type: 'text/plain',
+          charset: 'utf-8',
+          disposition: null,
+          name: null,
+          cid: null,
+        },
+        {
+          partId: 'orig',
+          blobId: 'orig-blob',
+          size: 1_048_577,
+          type: 'text/html',
+          charset: 'utf-8',
+          disposition: null,
+          name: null,
+          cid: null,
+        },
+      ],
+      bodyValues: {
+        note: { value: 'the note', isEncodingProblem: false, isTruncated: false },
+        orig: { value: '<p>truncated...</p>', isEncodingProblem: false, isTruncated: false },
+      },
+    } as Email;
+  }
+
+  it('detects truncation on a non-first htmlBody entry', () => {
+    const email = makeMultiPartEmail();
+    expect(htmlBodyIsTruncated(email)).toBe(true);
+  });
+
+  it('identifies the truncated part by partId, not index 0', () => {
+    const email = makeMultiPartEmail();
+    expect(truncatedHtmlBodyPartId(email)).toBe('orig');
+  });
+
+  it('returns null truncatedHtmlBodyPartId when no entry is truncated', () => {
+    const email = makeMultiPartEmail();
+    email.htmlBody![1]!.size = 512;
+    expect(truncatedHtmlBodyPartId(email)).toBeNull();
+    expect(htmlBodyIsTruncated(email)).toBe(false);
+  });
+
+  it('builds the download URL for the truncated entry specifically', () => {
+    const email = makeMultiPartEmail();
+    const url = htmlBodyFullDownloadUrl(email, 'acct1', makeDownloadUrl());
+    expect(url).toBe('/jmap/download/acct1/orig-blob/text/html/body.html');
   });
 });
 

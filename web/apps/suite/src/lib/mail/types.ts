@@ -347,22 +347,90 @@ export const EMAIL_BODY_PROPERTIES = [
 ] as const;
 
 /**
- * The plain-text body of an email, if any. Returns null when no text part
- * is present (rare; HTML-only emails happen but are usually accompanied
- * by a plain-text alternative).
+ * The plain-text body of an email, if any. RFC 8621 4.1.4 defines
+ * `textBody` as the ORDERED LIST of parts to display for the plain-text
+ * rendering; for the common case that list has exactly one entry, so this
+ * returns that entry's value unchanged. When a multipart/mixed message
+ * contributes more than one leaf to `textBody` (e.g. a forwarder's own
+ * note ahead of the forwarded original, re #258), every part's value is
+ * concatenated in order, separated by a blank line so the parts read as
+ * distinct paragraphs rather than running together.
+ *
+ * Returns null when no text part is present (rare; HTML-only emails happen
+ * but are usually accompanied by a plain-text alternative) or when none of
+ * the listed parts have a resolved bodyValue.
  */
 export function emailTextBody(email: Email): string | null {
-  const part = email.textBody?.[0];
-  if (!part?.partId) return null;
-  return email.bodyValues?.[part.partId]?.value ?? null;
+  const parts = email.textBody;
+  if (!parts || parts.length === 0) return null;
+  const values: string[] = [];
+  for (const part of parts) {
+    if (!part.partId) continue;
+    const value = email.bodyValues?.[part.partId]?.value;
+    if (value === undefined) continue;
+    values.push(value);
+  }
+  if (values.length === 0) return null;
+  return values.join('\n\n');
+}
+
+/**
+ * HTML-escapes a plain-text string for safe injection into an HTML
+ * fragment. Used to render a `text/plain` part that RFC 8621 4.1.4 has
+ * promoted into `htmlBody` (a leaf with no HTML alternative "at its
+ * level", e.g. a forwarder's own note directly under multipart/mixed,
+ * re #258) — the value is untrusted message content and must never be
+ * interpreted as markup.
+ */
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
  * The HTML body of an email, if any. The suite prefers HTML when both are
  * present (`docs/requirements/02-mail-basics.md` REQ-MAIL-02).
+ *
+ * RFC 8621 4.1.4 defines `htmlBody` as the ORDERED LIST of parts to
+ * display as the HTML rendering, each rendered according to its own
+ * type: a `text/html` part is injected as sanitized HTML; a `text/plain`
+ * part that RFC 8621 has promoted into the list (a leaf with no HTML
+ * sibling at its level) is HTML-escaped and wrapped in `<pre>` so it
+ * renders as literal, whitespace-preserving text rather than markup
+ * (re #258 — the forwarder's own note ahead of the forwarded original).
+ * The rendered parts are concatenated in document order; for the common
+ * single-part case this returns that part's value unchanged.
+ *
+ * `overrides` lets a caller substitute the value for one or more partIds
+ * — used by `MessageAccordion` to splice in the full (un-truncated) text
+ * fetched via the blob-download recovery path (`html-body-full.ts`,
+ * Forgejo #48) for whichever htmlBody part the server capped, without
+ * disturbing the other parts' inline bodyValues.
+ *
+ * Returns null when no html part is present or when none of the listed
+ * parts have a resolved value (inline or overridden).
  */
-export function emailHtmlBody(email: Email): string | null {
-  const part = email.htmlBody?.[0];
-  if (!part?.partId) return null;
-  return email.bodyValues?.[part.partId]?.value ?? null;
+export function emailHtmlBody(
+  email: Email,
+  overrides?: Record<string, string>,
+): string | null {
+  const parts = email.htmlBody;
+  if (!parts || parts.length === 0) return null;
+  const rendered: string[] = [];
+  for (const part of parts) {
+    if (!part.partId) continue;
+    const value = overrides?.[part.partId] ?? email.bodyValues?.[part.partId]?.value;
+    if (value === undefined) continue;
+    if (part.type.toLowerCase() === 'text/html') {
+      rendered.push(value);
+    } else {
+      rendered.push(`<pre>${escapeHtmlText(value)}</pre>`);
+    }
+  }
+  if (rendered.length === 0) return null;
+  return rendered.join('');
 }

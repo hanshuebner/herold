@@ -22,8 +22,15 @@ import type { Email } from './types';
 const DEFAULT_SERVER_CAP = 1_048_576; // 1 MiB
 
 /**
- * Returns true when the email's first html body part value is present
- * and was truncated by the server.
+ * Finds the htmlBody part (RFC 8621 4.1.4's ordered list) whose inline
+ * bodyValue was truncated by the server, if any. `htmlBody` usually
+ * carries a single entry; when a multipart/mixed message contributes
+ * more than one leaf to `htmlBody` (e.g. a forwarder's own note ahead of
+ * the forwarded original, re #258), the note is small and never the one
+ * that hits the 1 MiB parser cap, so scanning every entry rather than
+ * assuming index 0 is what keeps this detection correct for both shapes.
+ * At most one part is expected to be truncated in practice; the first
+ * match wins.
  *
  * Two signals are checked in order:
  *  1. bodyValue.isTruncated — the RFC 8621 standard flag, set when the
@@ -33,20 +40,40 @@ const DEFAULT_SERVER_CAP = 1_048_576; // 1 MiB
  *     full decoded part size exceeds the cap the inline value is
  *     incomplete.
  */
+function findTruncatedHtmlPart(email: Email) {
+  for (const part of email.htmlBody ?? []) {
+    if (!part.partId) continue;
+    const bodyValue = email.bodyValues?.[part.partId];
+    if (!bodyValue) continue;
+    if (bodyValue.isTruncated || part.size > DEFAULT_SERVER_CAP) return part;
+  }
+  return null;
+}
+
+/**
+ * Returns true when any of the email's htmlBody parts has an inline
+ * value that was truncated by the server. See `findTruncatedHtmlPart`
+ * for the detection rule.
+ */
 export function htmlBodyIsTruncated(email: Email): boolean {
-  const part = email.htmlBody?.[0];
-  if (!part?.partId) return false;
-  const bodyValue = email.bodyValues?.[part.partId];
-  if (!bodyValue) return false;
-  if (bodyValue.isTruncated) return true;
-  if (part.size > DEFAULT_SERVER_CAP) return true;
-  return false;
+  return findTruncatedHtmlPart(email) !== null;
+}
+
+/**
+ * The partId of the truncated htmlBody part, if any. Used by
+ * `MessageAccordion` to target the full-body fetch's override at the
+ * correct entry in `emailHtmlBody`'s multi-part rendering (re #258),
+ * leaving every other htmlBody part's inline value untouched.
+ */
+export function truncatedHtmlBodyPartId(email: Email): string | null {
+  return findTruncatedHtmlPart(email)?.partId ?? null;
 }
 
 /**
  * Builds the JMAP download URL for the truncated html body part.
- * Returns null when the body is not truncated, the part has no blobId,
- * or the download URL factory returns null (session not yet bootstrapped).
+ * Returns null when no part is truncated, the truncated part has no
+ * blobId, or the download URL factory returns null (session not yet
+ * bootstrapped).
  *
  * The `downloadUrl` parameter accepts the JmapClient.downloadUrl
  * signature so callers can pass `(args) => jmap.downloadUrl(args)` and
@@ -62,8 +89,7 @@ export function htmlBodyFullDownloadUrl(
     name: string;
   }) => string | null,
 ): string | null {
-  if (!htmlBodyIsTruncated(email)) return null;
-  const part = email.htmlBody?.[0];
+  const part = findTruncatedHtmlPart(email);
   if (!part?.blobId) return null;
   return downloadUrl({
     accountId,

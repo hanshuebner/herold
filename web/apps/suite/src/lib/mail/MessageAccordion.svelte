@@ -17,6 +17,7 @@
   import {
     htmlBodyIsTruncated,
     htmlBodyFullDownloadUrl,
+    truncatedHtmlBodyPartId,
     fetchFullHtmlBody,
   } from './html-body-full';
   import { mail } from './store.svelte';
@@ -69,6 +70,12 @@
   // does not re-fetch within the same browser session.
 
   let _isTruncated = $derived(htmlBodyIsTruncated(email));
+  // Which htmlBody entry (RFC 8621 4.1.4's ordered list, re #258) the
+  // truncation applies to. `emailHtmlBody` renders every entry in order;
+  // only this one partId's value is swapped for the fetched full text —
+  // the other entries (e.g. a forwarder's own note) keep their normal
+  // inline bodyValues untouched.
+  let _truncatedPartId = $derived(truncatedHtmlBodyPartId(email));
 
   // Rendered html: starts as the inline (possibly truncated) value and
   // swaps to the fetched full text once the download completes. A null
@@ -116,7 +123,15 @@
     });
   });
 
-  let html = $derived(_htmlFull ?? emailHtmlBody(email));
+  // When the full body has been recovered, override just the truncated
+  // part's value; every other htmlBody entry renders from its normal
+  // inline bodyValue (re #258 — a multi-part htmlBody must not collapse
+  // to the single fetched part).
+  let _htmlOverrides = $derived.by<Record<string, string> | undefined>(() => {
+    if (_htmlFull === null || !_truncatedPartId) return undefined;
+    return { [_truncatedPartId]: _htmlFull };
+  });
+  let html = $derived(emailHtmlBody(email, _htmlOverrides));
   let text = $derived(emailTextBody(email));
   let textSplit = $derived(text ? splitQuotedText(text) : null);
 
