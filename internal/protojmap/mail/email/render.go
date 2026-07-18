@@ -275,12 +275,21 @@ func renderFull(
 	bs, values, textParts, htmlParts, attParts := walkParts(parsed.Body, truncateAt, m.Blob.Hash, dims)
 	if m.InternalizePending {
 		// REQ-EXTIMG-BG-10: replace external image references in every
-		// HTML body part with a placeholder data URI until the
+		// genuine HTML body part with a placeholder data URI until the
 		// background internalize-worker rewrites the blob. Failures
 		// fall through silently — the user sees the original HTML
 		// rather than a refused render.
+		//
+		// htmlParts may contain a part promoted by resolveBodyLists's
+		// symmetric-fill (RFC 8621 §4.1.4; re #258) whose real content
+		// type is text/plain, not text/html (a leaf with no html
+		// alternative at its level). That promoted part shares its
+		// bodyValue with textBody by partId, so running it through the
+		// html.Parse/Render round-trip below would corrupt the plain
+		// text in both textBody and htmlBody. Only rewrite parts whose
+		// actual type is text/html.
 		for _, p := range htmlParts {
-			if p.PartID == nil {
+			if p.PartID == nil || !strings.EqualFold(p.Type, "text/html") {
 				continue
 			}
 			bv, ok := values[*p.PartID]
