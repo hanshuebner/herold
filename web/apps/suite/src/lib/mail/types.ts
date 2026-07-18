@@ -435,9 +435,16 @@ function htmlPartSeparator(): string {
  * display as the HTML rendering, each rendered according to its own
  * type: a `text/html` part is injected as sanitized HTML; a `text/plain`
  * part that RFC 8621 has promoted into the list (a leaf with no HTML
- * sibling at its level) is HTML-escaped and wrapped in `<pre>` so it
- * renders as literal, whitespace-preserving text rather than markup
- * (re #258 — the forwarder's own note ahead of the forwarded original).
+ * sibling at its level) is HTML-escaped and wrapped in
+ * `<pre class="herold-plain-part">` so it renders as literal,
+ * whitespace-preserving text rather than markup (re #258 — the
+ * forwarder's own note ahead of the forwarded original). The
+ * `herold-plain-part` class is styled proportional (the same body sans
+ * font) by `sanitize.ts`'s iframe stylesheet, distinct from a bare
+ * `<pre>`/`<code>` genuinely authored in HTML content — e.g. a code
+ * sample — which stays monospace (re #258 review follow-up: the two
+ * parts of a forwarded message must not render in different fonts
+ * unless one is an explicit fixed-width code block).
  * The rendered parts are concatenated in document order, joined by a
  * labeled divider (`htmlPartSeparator`) that marks the boundary between
  * them. `Array.prototype.join` only inserts the separator between
@@ -481,7 +488,7 @@ export function emailHtmlBody(
     if (part.type.toLowerCase() === 'text/html') {
       rendered.push(value);
     } else {
-      rendered.push(`<pre>${escapeHtmlText(value)}</pre>`);
+      rendered.push(`<pre class="herold-plain-part">${escapeHtmlText(value)}</pre>`);
     }
   }
   if (rendered.length === 0) return null;

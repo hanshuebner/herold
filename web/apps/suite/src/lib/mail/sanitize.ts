@@ -1120,6 +1120,19 @@ function wrapInIframeDocument(body: string, internalizePending: boolean): string
     color: #525252;
   }
   pre { white-space: pre-wrap; word-break: break-word; }
+  /* A concatenated text/plain part promoted into htmlBody (re #258 —
+     e.g. a forwarder's own note ahead of a forwarded HTML original) is
+     wrapped in this class by emailHtmlBody so it reads in the same
+     proportional font as the rest of the message body. A bare <pre>
+     (or <code>) genuinely authored in real HTML content — an actual
+     code sample — is intentionally left out of this rule and stays
+     monospace via the browser/UA default, per the maintainer's rule
+     that fixed-width only applies where explicitly requested. */
+  pre.herold-plain-part {
+    font-family: inherit;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   table { border-collapse: collapse; max-width: 100%; }
   details.herold-quoted { margin-top: 8px; }
   details.herold-quoted > summary {

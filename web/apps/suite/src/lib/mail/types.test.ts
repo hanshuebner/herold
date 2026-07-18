@@ -11,7 +11,11 @@
  * according to its own type:
  *   - text/html entries render as sanitized HTML (unchanged from before).
  *   - text/plain entries appearing in htmlBody are HTML-escaped and
- *     wrapped in <pre> so they render as literal text, never as markup.
+ *     wrapped in <pre class="herold-plain-part"> so they render as
+ *     literal text, never as markup, in the same proportional font as
+ *     the rest of the message (re #258 font-consistency follow-up —
+ *     the class distinguishes this wrapper from a genuine authored
+ *     <pre>/<code> code block, which stays monospace).
  *
  * When more than one entry is actually rendered, the entries are joined
  * by a labeled "Included message" divider (re #258 follow-up) so the
@@ -108,10 +112,11 @@ describe('emailHtmlBody: issue #258 shape (leading text/plain note + html origin
     });
     const result = emailHtmlBody(email);
     expect(result).not.toBeNull();
-    // Note comes first, wrapped in <pre> so it renders as literal text,
-    // with a labeled divider marking the boundary before the original.
+    // Note comes first, wrapped in <pre class="herold-plain-part"> so it
+    // renders as literal text in the proportional body font, with a
+    // labeled divider marking the boundary before the original.
     expect(result).toBe(
-      '<pre>Hallo zusammen, ich leite euch mal die Mail weiter.</pre>' +
+      '<pre class="herold-plain-part">Hallo zusammen, ich leite euch mal die Mail weiter.</pre>' +
         '<div class="herold-part-separator">Included message</div>' +
         '<p>Sehr geehrte Damen und Herren</p>',
     );
@@ -213,7 +218,7 @@ describe('emailHtmlBody: null when htmlBody has no genuine text/html part (re #2
       },
     });
     expect(emailHtmlBody(email)).toBe(
-      '<pre>the note</pre>' +
+      '<pre class="herold-plain-part">the note</pre>' +
         '<div class="herold-part-separator">Included message</div>' +
         '<p>the original</p>',
     );
@@ -242,7 +247,7 @@ describe('emailHtmlBody: overrides parameter (truncation-recovery splice, re #25
     });
     const result = emailHtmlBody(email, { orig: '<p>the full recovered body</p>' });
     expect(result).toBe(
-      '<pre>the note</pre>' +
+      '<pre class="herold-plain-part">the note</pre>' +
         '<div class="herold-part-separator">Included message</div>' +
         '<p>the full recovered body</p>',
     );
