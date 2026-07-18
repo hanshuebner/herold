@@ -509,10 +509,12 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string, dims map
 		switch {
 		case p.Disposition == mailparse.DispositionAttachment:
 			attParts = append(attParts, out)
-		case strings.EqualFold(out.Type, "text/plain"):
-			textParts = append(textParts, out)
-		case strings.EqualFold(out.Type, "text/html"):
-			htmlParts = append(htmlParts, out)
+		case strings.EqualFold(out.Type, "text/plain"), strings.EqualFold(out.Type, "text/html"):
+			// textBody/htmlBody membership is computed after the full tree is
+			// built, by resolveBodyLists (RFC 8621 §4.1.4; re #258): a leaf's
+			// contribution depends on the semantics of its enclosing
+			// multipart (alternative vs mixed/related), not on its own type
+			// alone.
 		default:
 			// Treat as inline non-text -- RFC 8621 puts it in attachments.
 			attParts = append(attParts, out)
@@ -520,7 +522,134 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string, dims map
 		return out
 	}
 	bs := walk(root)
+	textParts, htmlParts = resolveBodyLists(&bs)
 	return &bs, values, textParts, htmlParts, attParts
+}
+
+// resolveBodyLists computes Email.textBody and Email.htmlBody (RFC 8621
+// §4.1.4) from the already-built bodyPart tree bs. Each multipart's
+// contribution is the ordered concatenation of its children's own
+// contributions; multipart/alternative instead selects the single best
+// text/plain candidate and the single best text/html candidate among its
+// children. A leaf (or an alternative) that has no counterpart of the other
+// type contributes its one representative to BOTH lists, so a client that
+// prefers HTML still sees text-only content and vice versa (re #258).
+func resolveBodyLists(bs *bodyPart) (text []bodyPart, html []bodyPart) {
+	return contribute(bs)
+}
+
+// contribute resolves a single position in the RFC 8621 §4.1.4 traversal --
+// a leaf, a multipart/alternative, or any other multipart container -- to
+// its complete (text, html) contribution. "Complete" means the symmetric
+// fill rule has already been applied: if this position has no
+// representative of one type, its representative of the other type is used
+// for both lists. This is the function to call for anything that is itself
+// a self-contained slot in the body sequence: the message root and every
+// child of a concatenating (mixed/related-like) container.
+func contribute(p *bodyPart) (text []bodyPart, html []bodyPart) {
+	if p.Disposition != nil && *p.Disposition == "attachment" {
+		return nil, nil
+	}
+	if len(p.SubParts) == 0 {
+		t, h := leafContribution(p)
+		return fillMissing(t, h)
+	}
+	if strings.EqualFold(p.Type, "multipart/alternative") {
+		return contributeAlternative(p.SubParts)
+	}
+	// multipart/mixed, multipart/related, or any other multipart subtype:
+	// transparent concatenation of each child's own (already-filled)
+	// contribution, in order.
+	for i := range p.SubParts {
+		ct, ch := contribute(&p.SubParts[i])
+		text = append(text, ct...)
+		html = append(html, ch...)
+	}
+	return text, html
+}
+
+// contributeRaw is like contribute, but for a candidate considered inside a
+// multipart/alternative: it reports only the GENUINE text/html
+// representation reachable from p, without applying the symmetric fill
+// contribute() uses for a self-contained slot. This lets contributeAlternative
+// tell a genuinely plain-only candidate apart from a genuinely html-only one
+// even though, once contribute() is applied on its own, either would be
+// filled into both lists. Recursion into a nested multipart/alternative
+// still calls the full contribute() (via contributeAlternative), since a
+// nested alternative is itself a resolved, self-contained slot.
+func contributeRaw(p *bodyPart) (text []bodyPart, html []bodyPart) {
+	if p.Disposition != nil && *p.Disposition == "attachment" {
+		return nil, nil
+	}
+	if len(p.SubParts) == 0 {
+		return leafContribution(p)
+	}
+	if strings.EqualFold(p.Type, "multipart/alternative") {
+		return contributeAlternative(p.SubParts)
+	}
+	for i := range p.SubParts {
+		ct, ch := contributeRaw(&p.SubParts[i])
+		text = append(text, ct...)
+		html = append(html, ch...)
+	}
+	return text, html
+}
+
+// leafContribution reports a non-multipart part's own (unfilled) type
+// contribution: a text/plain leaf contributes only to text, a text/html
+// leaf only to html, and anything else (image/audio/video, inline non-text,
+// etc.) contributes to neither -- such parts are already routed to
+// attachments by walkParts's leaf switch.
+func leafContribution(p *bodyPart) (text []bodyPart, html []bodyPart) {
+	switch {
+	case strings.EqualFold(p.Type, "text/plain"):
+		return []bodyPart{*p}, nil
+	case strings.EqualFold(p.Type, "text/html"):
+		return nil, []bodyPart{*p}
+	default:
+		return nil, nil
+	}
+}
+
+// contributeAlternative implements RFC 8621's multipart/alternative
+// selection: the LAST genuine text/plain candidate among children becomes
+// the text track's contribution and the LAST genuine text/html candidate
+// becomes the html track's (later alternatives are conventionally the more
+// preferred/capable rendering). A child that is itself a container (e.g. a
+// multipart/related wrapping the HTML representation, per RFC 8621 EXAMPLE
+// 5) is resolved recursively via contributeRaw. When only one of the two
+// types is present among the alternatives, that single representative is
+// is used for BOTH tracks.
+func contributeAlternative(children []bodyPart) (text []bodyPart, html []bodyPart) {
+	var bestText, bestHTML []bodyPart
+	for i := range children {
+		c := &children[i]
+		if c.Disposition != nil && *c.Disposition == "attachment" {
+			continue
+		}
+		ct, ch := contributeRaw(c)
+		if len(ct) > 0 {
+			bestText = ct
+		}
+		if len(ch) > 0 {
+			bestHTML = ch
+		}
+	}
+	return fillMissing(bestText, bestHTML)
+}
+
+// fillMissing applies RFC 8621 §4.1.4's symmetric fallback: when a position
+// has a representative for only one of text/html, that same representative
+// is used for the other list too, so a client is never left with an empty
+// track just because the message happened to supply only one alternative.
+func fillMissing(t []bodyPart, h []bodyPart) ([]bodyPart, []bodyPart) {
+	if len(t) == 0 {
+		t = h
+	}
+	if len(h) == 0 {
+		h = t
+	}
+	return t, h
 }
 
 // previewFromValues returns the first n runes of the leftmost text body
