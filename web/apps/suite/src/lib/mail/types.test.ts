@@ -137,20 +137,6 @@ describe('emailHtmlBody: issue #258 shape (leading text/plain note + html origin
     );
   });
 
-  it('renders two bare text/plain notes (no html anywhere) both wrapped as text', () => {
-    const email = makeEmail({
-      htmlBody: [
-        makePart({ partId: 'a', type: 'text/plain' }),
-        makePart({ partId: 'b', type: 'text/plain' }),
-      ],
-      bodyValues: {
-        a: { value: 'first note', isEncodingProblem: false, isTruncated: false },
-        b: { value: 'second note', isEncodingProblem: false, isTruncated: false },
-      },
-    });
-    expect(emailHtmlBody(email)).toBe('<pre>first note</pre><pre>second note</pre>');
-  });
-
   it('skips a part with no resolved bodyValue and renders the rest', () => {
     const email = makeEmail({
       htmlBody: [
@@ -162,6 +148,65 @@ describe('emailHtmlBody: issue #258 shape (leading text/plain note + html origin
       },
     });
     expect(emailHtmlBody(email)).toBe('<p>original</p>');
+  });
+});
+
+describe('emailHtmlBody: null when htmlBody has no genuine text/html part (re #258 follow-up, issue #233)', () => {
+  // RFC 8621's symmetric-fill rule promotes a bare text/plain leaf with no
+  // HTML sibling into BOTH textBody and htmlBody, so a plain-text-only
+  // message now has a non-empty htmlBody too. MessageAccordion picks the
+  // HTML iframe branch whenever emailHtmlBody is non-null, which would
+  // silently disable the plain-text quote-collapse / "Show trimmed
+  // content" toggle (issue #233) for every plain-text-only message.
+  // emailHtmlBody must return null unless at least one htmlBody entry is
+  // a genuine text/html part, so these messages fall through to the
+  // plain-text rendering branch instead.
+
+  it('returns null for a single symmetric-fill text/plain entry', () => {
+    const email = makeEmail({
+      htmlBody: [makePart({ partId: 'p1', type: 'text/plain' })],
+      textBody: [makePart({ partId: 'p1', type: 'text/plain' })],
+      bodyValues: {
+        p1: { value: 'Just a plain text reply.', isEncodingProblem: false, isTruncated: false },
+      },
+    });
+    expect(emailHtmlBody(email)).toBeNull();
+  });
+
+  it('returns null for two bare text/plain entries with no html anywhere', () => {
+    const email = makeEmail({
+      htmlBody: [
+        makePart({ partId: 'a', type: 'text/plain' }),
+        makePart({ partId: 'b', type: 'text/plain' }),
+      ],
+      bodyValues: {
+        a: { value: 'first note', isEncodingProblem: false, isTruncated: false },
+        b: { value: 'second note', isEncodingProblem: false, isTruncated: false },
+      },
+    });
+    expect(emailHtmlBody(email)).toBeNull();
+  });
+
+  it('still renders when at least one entry is a genuine text/html part (re #258)', () => {
+    const email = makeEmail({
+      htmlBody: [
+        makePart({ partId: 'note', type: 'text/plain' }),
+        makePart({ partId: 'orig', type: 'text/html' }),
+      ],
+      bodyValues: {
+        note: { value: 'the note', isEncodingProblem: false, isTruncated: false },
+        orig: { value: '<p>the original</p>', isEncodingProblem: false, isTruncated: false },
+      },
+    });
+    expect(emailHtmlBody(email)).toBe('<pre>the note</pre><p>the original</p>');
+  });
+
+  it('a genuine single text/html part still renders (no regression)', () => {
+    const email = makeEmail({
+      htmlBody: [makePart({ partId: 'p1', type: 'text/html' })],
+      bodyValues: { p1: { value: '<p>hello</p>', isEncodingProblem: false, isTruncated: false } },
+    });
+    expect(emailHtmlBody(email)).toBe('<p>hello</p>');
   });
 });
 

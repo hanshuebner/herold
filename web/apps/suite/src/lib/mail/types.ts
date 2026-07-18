@@ -405,14 +405,26 @@ function escapeHtmlText(value: string): string {
  * The rendered parts are concatenated in document order; for the common
  * single-part case this returns that part's value unchanged.
  *
+ * Returns null — "no HTML rendering" — when `htmlBody` contains no
+ * GENUINE `text/html` entry, even though the list is non-empty. RFC
+ * 8621's symmetric-fill rule means a bare plain-text message (no HTML
+ * part anywhere) gets its sole part promoted into `htmlBody` too, so a
+ * naive "non-empty htmlBody means HTML exists" check would route every
+ * plain-text-only message through this HTML rendering path and starve
+ * `MessageAccordion`'s plain-text quote-collapse branch (re #258
+ * follow-up: this silently disabled the "Show trimmed content" toggle,
+ * issue #233, for every plain-text-only message). A message with at
+ * least one real `text/html` entry (e.g. #258's [note, forwarded-html])
+ * still renders every htmlBody entry as documented above.
+ *
  * `overrides` lets a caller substitute the value for one or more partIds
  * — used by `MessageAccordion` to splice in the full (un-truncated) text
  * fetched via the blob-download recovery path (`html-body-full.ts`,
  * Forgejo #48) for whichever htmlBody part the server capped, without
  * disturbing the other parts' inline bodyValues.
  *
- * Returns null when no html part is present or when none of the listed
- * parts have a resolved value (inline or overridden).
+ * Also returns null when no html part is present or when none of the
+ * listed parts have a resolved value (inline or overridden).
  */
 export function emailHtmlBody(
   email: Email,
@@ -420,6 +432,8 @@ export function emailHtmlBody(
 ): string | null {
   const parts = email.htmlBody;
   if (!parts || parts.length === 0) return null;
+  const hasGenuineHtmlPart = parts.some((part) => part.type.toLowerCase() === 'text/html');
+  if (!hasGenuineHtmlPart) return null;
   const rendered: string[] = [];
   for (const part of parts) {
     if (!part.partId) continue;
