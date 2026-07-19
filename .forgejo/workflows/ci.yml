@@ -261,15 +261,41 @@ jobs:
       # apt units stops fresh apt-get processes from being launched mid-job
       # (a stop+wait alone is racy -- a timer relaunches apt-get right after
       # the lock clears).
+      #
+      # `systemctl stop` gives unattended-upgrades a chance to finish its
+      # current dpkg transaction before exiting; `kill --kill-who=all` is
+      # the fallback for a unit that ignores the stop signal, but killing a
+      # unit mid-dpkg-transaction can leave dpkg itself in the interrupted
+      # state ("dpkg was interrupted, run 'sudo dpkg --configure -a'"),
+      # which then aborts Playwright's own apt-get (run #917, commit
+      # 94ca5896). `dpkg --configure -a` unconditionally repairs any such
+      # interrupted state; it is a no-op when dpkg is already consistent.
       - name: make apt wait for the dpkg lock
         run: |
           echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99lock-timeout >/dev/null
-          sudo systemctl mask --now \
+          sudo systemctl mask \
             unattended-upgrades.service apt-daily.service apt-daily-upgrade.service \
             apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl stop unattended-upgrades.service 2>/dev/null || true
           sudo systemctl kill --kill-who=all unattended-upgrades.service 2>/dev/null || true
+          sudo dpkg --configure -a
+          sudo apt-get -f install -y
       - name: install Playwright browsers (chromium only)
-        run: pnpm --filter @herold/admin test:e2e:install
+        # A residual apt hiccup (e.g. a lock briefly held by a process that
+        # slipped past the mask right at boot) can still fail a single
+        # attempt without indicating a real problem; retry a bounded number
+        # of times with a short backoff rather than failing the whole job
+        # (and blocking deploy) on a transient install error.
+        run: |
+          for i in 1 2 3; do
+            if pnpm --filter @herold/admin test:e2e:install; then
+              exit 0
+            fi
+            echo ">>> attempt $i of Playwright browser install failed; retrying in 10s..."
+            sleep 10
+          done
+          echo ">>> Playwright browser install failed on all attempts."
+          exit 1
       - name: run admin e2e tests (chromium)
         run: pnpm --filter @herold/admin test:e2e
 
