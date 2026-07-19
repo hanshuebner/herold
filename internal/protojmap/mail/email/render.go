@@ -506,6 +506,14 @@ func walkParts(root mailparse.Part, truncateAt int, msgBlobHash string, dims map
 		// when the client asked for a smaller maxBodyValueBytes.
 		text := p.Text
 		truncated := p.TextTruncated
+		// RFC 3676 reception-side reflow (re #261): a text/plain part
+		// carrying format=flowed is served as already-reflowed prose so
+		// the client needs no flowed/not-flowed distinction. This runs
+		// on the decoded text only -- the raw blob served via BlobID
+		// ("Show original") is untouched.
+		if strings.EqualFold(p.ContentType, "text/plain") && p.IsFlowed() {
+			text = mailparse.ReflowFormatFlowed(text, p.DelSp)
+		}
 		if truncateAt > 0 && len(text) > truncateAt {
 			text = text[:truncateAt]
 			truncated = true

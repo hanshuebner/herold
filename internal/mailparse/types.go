@@ -199,7 +199,15 @@ type Part struct {
 	Headers                 Headers
 	Disposition             Disposition
 	Filename                string
-	Children                []Part
+	// Format is the Content-Type "format" parameter, lowercased and
+	// trimmed (RFC 3676; e.g. "flowed" for format=flowed text/plain).
+	// Empty when the parameter is absent.
+	Format string
+	// DelSp reports whether the Content-Type "delsp" parameter is
+	// "yes" (case-insensitive), per RFC 3676 sec 4.5. Only meaningful
+	// when Format == "flowed".
+	DelSp    bool
+	Children []Part
 	// Text is the decoded, charset-converted body of a text/* leaf, capped at
 	// ParseOptions.MaxTextPartBytes. Empty for non-text leaves and containers.
 	Text string
@@ -230,6 +238,12 @@ func (p Part) IsText() bool {
 // IsMultipart reports whether the part's media type is a multipart container.
 func (p Part) IsMultipart() bool {
 	return strings.HasPrefix(strings.ToLower(p.ContentType), "multipart/")
+}
+
+// IsFlowed reports whether this part carries Content-Type parameter
+// format=flowed (RFC 3676), case-insensitively.
+func (p Part) IsFlowed() bool {
+	return strings.EqualFold(p.Format, "flowed")
 }
 
 // OpenBody returns a streaming reader that CTE-decodes and (for text parts)

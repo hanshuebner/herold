@@ -234,6 +234,10 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 	charset := strings.TrimSpace(ctParams["charset"])
 	cteHeader := strings.TrimSpace(hdrs.Get("Content-Transfer-Encoding"))
 	cteLower := strings.ToLower(cteHeader)
+	// RFC 3676: the "format" and "delsp" Content-Type parameters flag
+	// text/plain bodies that need reception-side reflow (re #261).
+	format := strings.ToLower(strings.TrimSpace(ctParams["format"]))
+	delSp := strings.EqualFold(strings.TrimSpace(ctParams["delsp"]), "yes")
 
 	dispHeader := hdrs.Get("Content-Disposition")
 	dispType, dispParams, _ := parseContentType(dispHeader)
@@ -245,6 +249,8 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 		Headers:                 hdrs,
 		Disposition:             parseDisposition(dispType),
 		Filename:                extractFilename(ctParams, dispParams),
+		Format:                  format,
+		DelSp:                   delSp,
 		rawOffset:               rawBodyOff,
 		rawLen:                  rawBodyLen,
 	}
