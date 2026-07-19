@@ -1070,10 +1070,14 @@
   /* Per re #233: plain-text and HTML messages must read as one coherent
    * conversation, so the plain-text branch shares the HTML branch's
    * proportional font and un-tinted background instead of presenting its
-   * own shaded monospace panel. `white-space: pre-wrap` is kept so the
-   * sender's line breaks and indentation (format=flowed bodies, ASCII art
-   * signatures) still render as authored; only the mono face and grey
-   * panel are dropped. */
+   * own shaded monospace panel. `white-space: pre-wrap` is kept so
+   * authored hard line breaks and indentation (ASCII art, signature
+   * blocks, ordinary non-flowed text/plain) still render as authored;
+   * only the mono face and grey panel are dropped. `format=flowed`
+   * (RFC 3676) bodies arrive from the server already reflowed -- soft
+   * breaks joined, quote structure preserved as `> ` prefixes -- so
+   * `pre-wrap` on those simply lets the resulting prose rewrap to the
+   * pane width like ordinary flowing text (re #261). */
   .text-body {
     margin: 0;
     white-space: pre-wrap;
