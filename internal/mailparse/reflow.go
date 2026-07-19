@@ -63,8 +63,22 @@ func ReflowFormatFlowed(body string, delSp bool) string {
 			i++
 			break
 		}
+		content := para.String()
 		out.WriteString(strings.Repeat(">", depth))
-		out.WriteString(para.String())
+		// The quote prefix's display separator is our choice, not part of
+		// the RFC 3676 wire protocol: unstuffing above removed the
+		// transport stuff-space, which leaves a single leading space on
+		// content when the sender double-stuffed for readability (sec
+		// 4.4), and none at all otherwise. Normalize to exactly one
+		// space after the markers so quoted output always reads as
+		// "> text" / ">> text" and matches the Suite's quote-collapse
+		// detector (`/^>+(\s|$)/` in quoted.ts's isQuotedLine), instead
+		// of gluing the markers directly to the text when the sender
+		// didn't double-stuff.
+		if depth > 0 && content != "" && !strings.HasPrefix(content, " ") {
+			out.WriteByte(' ')
+		}
+		out.WriteString(content)
 		if i < len(lines) {
 			out.WriteByte('\n')
 		}
