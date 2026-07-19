@@ -365,24 +365,17 @@ func TestSubmitTransientThenSuccess(t *testing.T) {
 		t.Fatalf("never observed deferred state")
 	}
 
-	// Wait for the scheduler to register its clk.After poll-timer waiter
-	// before advancing the clock (re #260). FakeClock.After registers a
-	// waiter as a side effect of evaluating the select case, regardless
-	// of which case the select ultimately takes; a waiter whose select
-	// loses is never removed, so it lingers in FakeClock's waiter list
-	// indistinguishable from one a goroutine is still blocked on. The
-	// scheduler's pre-Submit idle-poll iteration registers exactly such a
-	// waiter, then abandons it the instant Submit's wake() fires. So
-	// NumWaiters() >= 1 can be satisfied by that stale, already-abandoned
-	// waiter alone, before the scheduler's second iteration -- the one
-	// that claimed this row and is the select currently blocking the
-	// loop -- has registered the waiter this Advance actually needs to
-	// cross. Gate on >= 2: the fixture starts Run before Submit and
-	// nothing else in this path calls clk.After, so exactly two
-	// registrations (idle poll, then post-claim poll) precede this
-	// Advance; requiring both proves the live one is armed, so
-	// Advance(45s) is guaranteed to fire it (50ms << 45s).
-	waitForSchedulerTimer(t, f.clk, 2)
+	// Wait for the scheduler to register its poll timer before advancing
+	// the clock (re #260). The scheduler's Run loop now waits on a
+	// clock.ChanTimer (q.clk.NewTimer), not a bare clk.After: it Stops the
+	// timer on every select exit other than the timer's own firing, so at
+	// most one live, not-yet-fired registration is ever outstanding --
+	// NumWaiters() >= 1 means the scheduler is blocked on exactly the
+	// timer this Advance needs to cross, never a stale one abandoned by
+	// an earlier loop iteration (see clock.FakeClock.NewTimer). Since
+	// pollInterval (50ms) always bounds the computed wait, Advance(45s)
+	// is guaranteed to fire it.
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(45 * time.Second)
 	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
@@ -1649,22 +1642,27 @@ func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
 }
 
 // waitForSchedulerTimer blocks until the scheduler goroutine has registered
-// at least n After-style waiters on clk. In the steady state the Run loop
-// registers exactly one (the poll-timer in the main select). Tests that do
-// a single clk.Advance must call this before the Advance: if the advance
-// fires before clk.After(wait) is called, the subsequent registration lands
-// at now+advance+wait — a future deadline that nothing will ever cross again.
-// AfterFunc timers are not counted; the queue scheduler uses After, not
-// AfterFunc, for its poll timer.
+// at least n live waiters on clk. In the steady state the Run loop
+// registers exactly one (the poll ChanTimer in the main select). Tests that
+// do a single clk.Advance must call this before the Advance: if the advance
+// fires before the timer is registered, the subsequent registration lands
+// at now+advance+wait — a future deadline that nothing will ever cross
+// again. AfterFunc timers are not counted; the queue scheduler uses
+// NewTimer, not AfterFunc, for its poll timer.
 //
-// FakeClock.After registers a waiter as a side effect of the select
-// statement evaluating that case, whether or not the case is the one the
-// select ends up taking; a waiter whose case loses is never removed (re
-// #260). A caller choosing n must therefore count every clk.After
-// registration that is guaranteed to happen before its Advance -- not
-// just "at least one" -- or NumWaiters() >= n can be satisfied by a
-// stale, already-abandoned waiter from an earlier loop iteration instead
-// of the live one the select is currently blocked on.
+// The scheduler's Run loop registers its poll wait via q.clk.NewTimer and
+// Stops the returned ChanTimer on every select exit path other than the
+// timer's own firing (re #260), so FakeClock removes an abandoned
+// registration immediately instead of leaving it to linger indistinguishably
+// from a live one -- unlike a bare clk.After call, which (mirroring
+// time.After) can never be cancelled once registered. That makes
+// NumWaiters() >= n precise here: at most one live, not-yet-fired
+// registration is ever outstanding, so n=1 always means "the scheduler is
+// blocked on exactly the timer this Advance needs to cross." A caller
+// gating on a raw clk.After registration elsewhere would not get this
+// guarantee and would need to count every registration proven to happen
+// before its Advance, not just "at least one" (see clock.FakeClock.After
+// and clock.FakeClock.NewTimer's doc comments).
 func waitForSchedulerTimer(t *testing.T, clk *clock.FakeClock, n int) {
 	t.Helper()
 	if !waitFor(t, 5*time.Second, func() bool {
@@ -1811,15 +1809,11 @@ func TestRetry_ReopensBodyReader(t *testing.T) {
 	}) {
 		t.Fatalf("never observed deferred state after first attempt")
 	}
-	// Same race as TestSubmitTransientThenSuccess (see its comment and
-	// re #260): the scheduler's pre-Submit idle-poll waiter is abandoned,
-	// not removed, when Submit's wake() fires, so NumWaiters() >= 1 can
-	// be satisfied by that stale waiter alone before the post-claim
-	// iteration -- the one actually blocking the loop -- has registered
-	// its own. Gate on >= 2 (idle poll + post-claim poll, the only two
-	// registrations before this Advance) so the Advance is guaranteed to
-	// cross the waiter the scheduler is actually blocked on.
-	waitForSchedulerTimer(t, f.clk, 2)
+	// Same synchronisation as TestSubmitTransientThenSuccess (see its
+	// comment and re #260): the scheduler Stops its poll ChanTimer on
+	// every losing select case, so NumWaiters() >= 1 means it is blocked
+	// on exactly the live timer this Advance needs to cross.
+	waitForSchedulerTimer(t, f.clk, 1)
 	f.clk.Advance(retryDelay + time.Second)
 	// Wait for the second delivery attempt to complete.
 	if !waitFor(t, 5*time.Second, func() bool {

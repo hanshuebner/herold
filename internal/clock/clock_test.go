@@ -163,6 +163,143 @@ func TestRealClockAfter_SmokeTest(t *testing.T) {
 	}
 }
 
+func TestFakeClockNewTimer_FiresOnAdvance(t *testing.T) {
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	f := clock.NewFake(start)
+	timer := f.NewTimer(500 * time.Millisecond)
+	select {
+	case <-timer.C():
+		t.Fatal("ChanTimer fired before Advance")
+	default:
+	}
+	f.Advance(500 * time.Millisecond)
+	select {
+	case got := <-timer.C():
+		want := start.Add(500 * time.Millisecond)
+		if !got.Equal(want) {
+			t.Fatalf("ChanTimer delivered %v, want %v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ChanTimer did not fire after Advance crossed deadline")
+	}
+	// Stopping an already-fired timer is a no-op that reports false,
+	// matching time.Timer.Stop.
+	if timer.Stop() {
+		t.Fatal("Stop on an already-fired ChanTimer returned true")
+	}
+}
+
+func TestFakeClockNewTimer_StopBeforeFireRemovesWaiter(t *testing.T) {
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	f := clock.NewFake(start)
+	timer := f.NewTimer(time.Second)
+	if got := f.NumWaiters(); got != 1 {
+		t.Fatalf("NumWaiters before Stop = %d, want 1", got)
+	}
+	if !timer.Stop() {
+		t.Fatal("Stop before firing returned false, want true")
+	}
+	// The waiter must be gone immediately (re #260): NumWaiters must not
+	// count a Stopped timer, unlike an abandoned After registration.
+	if got := f.NumWaiters(); got != 0 {
+		t.Fatalf("NumWaiters after Stop = %d, want 0", got)
+	}
+	// A second Stop is a no-op.
+	if timer.Stop() {
+		t.Fatal("second Stop returned true, want false")
+	}
+	// Advancing past the original deadline must not deliver anything.
+	f.Advance(2 * time.Second)
+	select {
+	case <-timer.C():
+		t.Fatal("Stopped ChanTimer fired after Advance")
+	default:
+	}
+}
+
+func TestFakeClockNewTimer_StopDoesNotDisturbOtherWaiters(t *testing.T) {
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	f := clock.NewFake(start)
+	afterCh := f.After(time.Second)
+	timer := f.NewTimer(time.Second)
+	if got := f.NumWaiters(); got != 2 {
+		t.Fatalf("NumWaiters with one After and one NewTimer = %d, want 2", got)
+	}
+	if !timer.Stop() {
+		t.Fatal("Stop before firing returned false, want true")
+	}
+	if got := f.NumWaiters(); got != 1 {
+		t.Fatalf("NumWaiters after stopping the ChanTimer = %d, want 1 (the After waiter)", got)
+	}
+	f.Advance(time.Second)
+	select {
+	case <-afterCh:
+	case <-time.After(time.Second):
+		t.Fatal("unrelated After waiter did not fire after Advance")
+	}
+}
+
+func TestFakeClockNewTimer_ZeroDelayFiresImmediatelyAndStopReturnsFalse(t *testing.T) {
+	f := clock.NewFake(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	timer := f.NewTimer(0)
+	select {
+	case <-timer.C():
+	default:
+		t.Fatal("zero-delay ChanTimer did not fire immediately")
+	}
+	if timer.Stop() {
+		t.Fatal("Stop on an already-fired zero-delay ChanTimer returned true")
+	}
+	// A zero-delay timer is never added to the live waiter set.
+	if got := f.NumWaiters(); got != 0 {
+		t.Fatalf("NumWaiters after a zero-delay NewTimer = %d, want 0", got)
+	}
+}
+
+func TestRealClockNewTimer_SmokeTest(t *testing.T) {
+	c := clock.NewReal()
+	timer := c.NewTimer(10 * time.Millisecond)
+	select {
+	case <-timer.C():
+	case <-time.After(time.Second):
+		t.Fatal("Real.NewTimer never fired within 1s for a 10ms deadline")
+	}
+}
+
+func TestRealClockNewTimer_StopBeforeFire(t *testing.T) {
+	c := clock.NewReal()
+	timer := c.NewTimer(time.Hour)
+	if !timer.Stop() {
+		t.Fatal("Stop on an unfired Real ChanTimer returned false")
+	}
+	if timer.Stop() {
+		t.Fatal("second Stop on an already-stopped Real ChanTimer returned true")
+	}
+}
+
+// TestFakeClockNewTimer_ConcurrentStopAdvanceRace exercises the fired-flag
+// guard (mirroring FakeClock.AfterFunc's fakeTimer) that keeps a racing
+// Stop and a racing Advance from double-processing the same waiter. Run
+// under -race.
+func TestFakeClockNewTimer_ConcurrentStopAdvanceRace(t *testing.T) {
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i := 0; i < 200; i++ {
+		f := clock.NewFake(start)
+		timer := f.NewTimer(time.Millisecond)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			timer.Stop()
+		}()
+		go func() {
+			defer wg.Done()
+			f.Advance(time.Millisecond)
+		}()
+		wg.Wait()
+	}
+}
+
 func TestFakeNextWaiterDeadline(t *testing.T) {
 	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	f := clock.NewFake(start)

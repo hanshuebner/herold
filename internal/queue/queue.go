@@ -641,21 +641,33 @@ func (q *Queue) Run(ctx context.Context) error {
 		// and sleep until that instant rather than a fixed pollInterval.
 		// This closes a lost-wakeup race with FakeClock: when a test
 		// Advance fires between the scheduler's select-exit and the next
-		// clk.After registration, the newly registered waiter would be
-		// armed for (post-advance now)+pollInterval — a future deadline
-		// that nothing wakes. With next-due arming, the deferred row is
+		// timer registration, the newly registered timer would be armed
+		// for (post-advance now)+pollInterval — a future deadline that
+		// nothing wakes. With next-due arming, the deferred row is
 		// already due at that point (earliestNextAttempt <= now), so wait
-		// <= 0 and FakeClock.After fires immediately. pollInterval is the
-		// upper bound so an idle or empty queue still ticks for
-		// crash-recovery and stale-inflight detection.
+		// <= 0 and the timer fires immediately. pollInterval is the upper
+		// bound so an idle or empty queue still ticks for crash-recovery
+		// and stale-inflight detection.
 		wait := q.pollInterval
 		if earliest, ok, err := q.opts.Store.Meta().EarliestNextAttempt(ctx); err == nil && ok {
 			if d := earliest.Sub(q.clk.Now()); d < wait {
 				wait = d
 			}
 		}
+		// A stoppable ChanTimer, not a bare clk.After(wait): After
+		// mirrors time.After's fire-and-forget behaviour, so a select's
+		// losing case leaves its registration to fire into the void --
+		// harmless in production (an unread channel is simply GC'd) but
+		// on FakeClock it lingers as a phantom entry in NumWaiters(),
+		// indistinguishable from the timer a test's Advance is actually
+		// meant to cross (re #260). Stopping the timer on every exit path
+		// other than its own firing keeps at most one live, not-yet-fired
+		// registration outstanding at a time -- exactly the single select
+		// this loop is ever blocked in.
+		timer := q.clk.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			// Drain in-flight workers within ShutdownGrace.
 			done := make(chan struct{})
 			go func() {
@@ -674,8 +686,9 @@ func (q *Queue) Run(ctx context.Context) error {
 			queueShutdownDrainTotal.Inc()
 			return nil
 		case <-q.wakeCh:
+			timer.Stop()
 			// New work or reschedule; loop immediately.
-		case <-q.clk.After(wait):
+		case <-timer.C():
 			q.opts.Logger.DebugContext(ctx, "queue: poll tick",
 				slog.String("activity", observe.ActivityPoll))
 		}
