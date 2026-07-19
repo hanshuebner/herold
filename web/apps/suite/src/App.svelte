@@ -566,8 +566,8 @@
         >
           <button type="button" onclick={() => router.navigate('/mail/folder/drafts')}>
             <span>{t('sidebar.drafts')}</span>
-            {#if (mail.drafts?.totalEmails ?? 0) > 0}
-              <span class="count">{mail.drafts?.totalEmails ?? 0}</span>
+            {#if (mail.drafts?.totalThreads ?? 0) > 0}
+              <span class="count">{mail.drafts?.totalThreads ?? 0}</span>
             {/if}
           </button>
         </li>
