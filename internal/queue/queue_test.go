@@ -366,16 +366,23 @@ func TestSubmitTransientThenSuccess(t *testing.T) {
 	}
 
 	// Wait for the scheduler to register its clk.After poll-timer waiter
-	// before advancing the clock. The gap that causes the flake: after
-	// claiming the item (row→Inflight) the scheduler calls
-	// EarliestNextAttempt, which only looks at queued/deferred rows.
-	// While the row is Inflight that query returns nothing, so
-	// wait=pollInterval. If the advance fires between that call and the
-	// subsequent clk.After(pollInterval) registration, the waiter lands
-	// at now+advance+pollInterval — a deadline nothing ever crosses again.
-	// NumWaiters() >= 1 proves the scheduler is blocked on its timer, so
+	// before advancing the clock (re #260). FakeClock.After registers a
+	// waiter as a side effect of evaluating the select case, regardless
+	// of which case the select ultimately takes; a waiter whose select
+	// loses is never removed, so it lingers in FakeClock's waiter list
+	// indistinguishable from one a goroutine is still blocked on. The
+	// scheduler's pre-Submit idle-poll iteration registers exactly such a
+	// waiter, then abandons it the instant Submit's wake() fires. So
+	// NumWaiters() >= 1 can be satisfied by that stale, already-abandoned
+	// waiter alone, before the scheduler's second iteration -- the one
+	// that claimed this row and is the select currently blocking the
+	// loop -- has registered the waiter this Advance actually needs to
+	// cross. Gate on >= 2: the fixture starts Run before Submit and
+	// nothing else in this path calls clk.After, so exactly two
+	// registrations (idle poll, then post-claim poll) precede this
+	// Advance; requiring both proves the live one is armed, so
 	// Advance(45s) is guaranteed to fire it (50ms << 45s).
-	waitForSchedulerTimer(t, f.clk, 1)
+	waitForSchedulerTimer(t, f.clk, 2)
 	f.clk.Advance(45 * time.Second)
 	if !waitFor(t, 5*time.Second, func() bool {
 		rows, _ := f.store.Meta().ListQueueItems(f.ctx, store.QueueFilter{EnvelopeID: envID})
@@ -1649,6 +1656,15 @@ func waitFor(t *testing.T, timeout time.Duration, pred func() bool) bool {
 // at now+advance+wait — a future deadline that nothing will ever cross again.
 // AfterFunc timers are not counted; the queue scheduler uses After, not
 // AfterFunc, for its poll timer.
+//
+// FakeClock.After registers a waiter as a side effect of the select
+// statement evaluating that case, whether or not the case is the one the
+// select ends up taking; a waiter whose case loses is never removed (re
+// #260). A caller choosing n must therefore count every clk.After
+// registration that is guaranteed to happen before its Advance -- not
+// just "at least one" -- or NumWaiters() >= n can be satisfied by a
+// stale, already-abandoned waiter from an earlier loop iteration instead
+// of the live one the select is currently blocked on.
 func waitForSchedulerTimer(t *testing.T, clk *clock.FakeClock, n int) {
 	t.Helper()
 	if !waitFor(t, 5*time.Second, func() bool {
@@ -1795,13 +1811,15 @@ func TestRetry_ReopensBodyReader(t *testing.T) {
 	}) {
 		t.Fatalf("never observed deferred state after first attempt")
 	}
-	// Same race as TestSubmitTransientThenSuccess: EarliestNextAttempt
-	// sees no queued/deferred rows while the row is Inflight, so
-	// wait=pollInterval. An Advance that races the subsequent
-	// clk.After(pollInterval) call arms the waiter at
-	// now+advance+pollInterval — stuck. NumWaiters() >= 1 proves the
-	// scheduler is blocked on its timer before we fire the advance.
-	waitForSchedulerTimer(t, f.clk, 1)
+	// Same race as TestSubmitTransientThenSuccess (see its comment and
+	// re #260): the scheduler's pre-Submit idle-poll waiter is abandoned,
+	// not removed, when Submit's wake() fires, so NumWaiters() >= 1 can
+	// be satisfied by that stale waiter alone before the post-claim
+	// iteration -- the one actually blocking the loop -- has registered
+	// its own. Gate on >= 2 (idle poll + post-claim poll, the only two
+	// registrations before this Advance) so the Advance is guaranteed to
+	// cross the waiter the scheduler is actually blocked on.
+	waitForSchedulerTimer(t, f.clk, 2)
 	f.clk.Advance(retryDelay + time.Second)
 	// Wait for the second delivery attempt to complete.
 	if !waitFor(t, 5*time.Second, func() bool {
