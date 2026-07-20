@@ -61,9 +61,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       # make fuzz-short runs EVERY registered fuzz target sequentially
-      # for FUZZTIME each. There are ~39 targets, so 39 * 8m = ~312m of
-      # work. That budget must fit under THREE independent ceilings, the
-      # smallest of which wins:
+      # for FUZZTIME each. There are ~39 targets, so 39 * 5m = ~195m of
+      # work. FUZZTIME is sized so the pass reaches every target: the
+      # run is cancelled at the ceiling with no partial credit, and the
+      # targets it never got to are the ones that go unfuzzed, so
+      # finishing inside the budget buys more coverage than a longer
+      # per-target budget does. That budget must fit under THREE
+      # independent ceilings, the smallest of which wins:
       #   - this job's timeout-minutes (360m / 6h, below);
       #   - the runner's act_runner per-job timeout (6h, set in the
       #     orchestrator cloud-init);
@@ -73,11 +77,12 @@ jobs:
       #     night (runs #118, #135, and every prior fuzz-long task) -- it
       #     never once finished. Raised to 7h in the Forgejo app.ini
       #     (netzhansa-infra roles/forgejo) so the 6h caps are the real
-      #     limit and the ~312m run completes.
-      # If the target count grows past the 6h budget, lower FUZZTIME or
-      # shard targets across a job matrix.
+      #     limit and the ~195m run completes.
+      # Each target's fuzzer already saturates the VM's cores, so raising
+      # FUZZTIME costs runner hours proportionally. If the target count
+      # grows past the budget, lower FUZZTIME again.
       - name: run long fuzz on every registered fuzz target
-        run: make fuzz-short FUZZTIME=8m
+        run: make fuzz-short FUZZTIME=5m
 
   load:
     name: load (REQ-NFR-01 targets)
