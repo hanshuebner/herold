@@ -4,17 +4,27 @@ import (
 	"strings"
 )
 
-// BodyPreview returns the first n runes of the leftmost text/plain body part's
-// decoded text. This is the canonical computation for the RFC 8621 Email.preview
-// field so that ingest, the background body-meta backfill worker, and the
-// metadata-only render path all produce identical values.
+// BodyPreview returns the first n runes of the leftmost text/plain body
+// part's decoded text, or -- when the message has no text/plain part at all
+// -- the first n runes of text extracted from the leftmost text/html body
+// part (tags stripped, entities decoded, comments/script/style removed; see
+// ExtractTextFromHTML). This is the canonical computation for the RFC 8621
+// Email.preview field so that ingest, the background body-meta backfill
+// worker, and the metadata-only render path (previewFromValues in
+// internal/protojmap/mail/email/render.go) all produce identical values,
+// for both the genuine-text/plain case and the HTML-only case (re #263).
 //
-// The result is TrimSpace-d before truncation, matching the behaviour of
-// previewFromValues in internal/protojmap/mail/email/render.go. If n <= 0 the
-// entire text is returned (TrimSpace-d). If no text/plain part exists the
-// function returns "".
+// The result is TrimSpace-d (or, for the HTML fallback, whitespace-collapsed
+// by ExtractTextFromHTML) before truncation. If n <= 0 the entire text is
+// returned. If the message has neither a text/plain nor a text/html part,
+// the function returns "".
 func BodyPreview(m Message, n int) string {
 	s := strings.TrimSpace(firstNonAttachmentTextPlain(m.Body))
+	if s == "" {
+		if h := firstNonAttachmentTextHTML(m.Body); h != "" {
+			s = ExtractTextFromHTML(h)
+		}
+	}
 	if s == "" {
 		return ""
 	}
@@ -44,6 +54,28 @@ func firstNonAttachmentTextPlain(p Part) string {
 	}
 	for _, c := range p.Children {
 		if t := firstNonAttachmentTextPlain(c); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// firstNonAttachmentTextHTML returns the Text of the leftmost text/html leaf
+// that is not a Content-Disposition: attachment. Returns "" when no such
+// part exists. Mirrors firstNonAttachmentTextPlain for the text/html
+// fallback BodyPreview uses when a message has no text/plain part.
+func firstNonAttachmentTextHTML(p Part) string {
+	if len(p.Children) == 0 {
+		if p.Disposition == DispositionAttachment {
+			return ""
+		}
+		if strings.EqualFold(p.ContentType, "text/html") {
+			return p.Text
+		}
+		return ""
+	}
+	for _, c := range p.Children {
+		if t := firstNonAttachmentTextHTML(c); t != "" {
 			return t
 		}
 	}

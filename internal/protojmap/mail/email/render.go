@@ -670,12 +670,18 @@ func fillMissing(t []bodyPart, h []bodyPart) ([]bodyPart, []bodyPart) {
 }
 
 // previewFromValues returns the first n runes of the leftmost text body
-// value, used as the JMAP "preview" property.
+// value, used as the JMAP "preview" property. When the leftmost textParts
+// entry's actual type is text/html -- either a genuine text/html leaf, or a
+// text/html leaf promoted into textParts by resolveBodyLists's RFC 8621
+// §4.1.4 symmetric fill (re #258) for a message with no text/plain part --
+// the value is run through mailparse.ExtractTextFromHTML instead of being
+// used verbatim, matching mailparse.BodyPreview's fallback (re #263).
 func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int) string {
 	if len(textParts) == 0 {
 		return ""
 	}
-	partID := textParts[0].PartID
+	part := textParts[0]
+	partID := part.PartID
 	if partID == nil {
 		return ""
 	}
@@ -683,7 +689,12 @@ func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int)
 	if !ok {
 		return ""
 	}
-	s := strings.TrimSpace(v.Value)
+	var s string
+	if strings.EqualFold(part.Type, "text/html") {
+		s = mailparse.ExtractTextFromHTML(v.Value)
+	} else {
+		s = strings.TrimSpace(v.Value)
+	}
 	if len(s) <= n {
 		return s
 	}

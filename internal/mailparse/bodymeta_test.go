@@ -67,7 +67,8 @@ func TestBodyPreview_TrimSpace(t *testing.T) {
 }
 
 // TestBodyPreview_NoTextPart verifies that a message with no text/plain body
-// returns "".
+// falls back to extracted text from the text/html part rather than raw
+// markup or an empty string (re #263).
 func TestBodyPreview_NoTextPart(t *testing.T) {
 	raw := joinLines(
 		"From: sender@example.test",
@@ -80,8 +81,42 @@ func TestBodyPreview_NoTextPart(t *testing.T) {
 	)
 	msg := parseTestMsg(t, raw)
 	got := mailparse.BodyPreview(msg, 256)
-	if got != "" {
-		t.Errorf("got %q, want empty (no text/plain part)", got)
+	if got != "hello" {
+		t.Errorf("got %q, want %q", got, "hello")
+	}
+}
+
+// TestBodyPreview_HTMLOnly_StripsTagsAndComments verifies that an HTML-only
+// message previews as extracted text -- tags stripped, entities decoded,
+// comments/script/style removed, whitespace collapsed -- not raw markup
+// (re #263). It also reproduces the ticket's leading `<!-- FILE: undefined
+// -->` template-artifact comment and confirms it does not leak into the
+// preview.
+func TestBodyPreview_HTMLOnly_StripsTagsAndComments(t *testing.T) {
+	raw := joinLines(
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: HTML only",
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<!-- FILE: undefined -->"+
+			"<!DOCTYPE html><html><head><style>body{color:red}</style>"+
+			"<script>alert('x')</script></head><body>"+
+			"<p>Hello&nbsp;&amp;&nbsp;welcome</p><p>to the newsletter</p>"+
+			"</body></html>",
+	)
+	msg := parseTestMsg(t, raw)
+	got := mailparse.BodyPreview(msg, 256)
+	want := "Hello & welcome to the newsletter"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "<") || strings.Contains(got, "DOCTYPE") {
+		t.Errorf("preview leaked raw markup: %q", got)
+	}
+	if strings.Contains(got, "FILE:") || strings.Contains(got, "alert") || strings.Contains(got, "color:red") {
+		t.Errorf("preview leaked comment/script/style content: %q", got)
 	}
 }
 
