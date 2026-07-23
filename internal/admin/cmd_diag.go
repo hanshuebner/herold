@@ -40,6 +40,7 @@ func newDiagCmd() *cobra.Command {
 	c.AddCommand(newDiagDNSCheckCmd())
 	c.AddCommand(newDiagCollectCmd())
 	c.AddCommand(newDiagReparseEnvelopesCmd())
+	c.AddCommand(newDiagRecomputeBodyMetaCmd())
 	return c
 }
 
