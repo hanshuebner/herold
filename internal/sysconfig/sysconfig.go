@@ -247,7 +247,7 @@ type ExternalImagesLimits struct {
 	// ConcurrentFetches bounds in-flight fetches per message.
 	// Default 8. (REQ-EXTIMG-20)
 	ConcurrentFetches int `toml:"concurrent_fetches,omitempty"`
-	// RequireHTTPS refuses http:// references. Default true.
+	// RequireHTTPS refuses http:// references. Default false.
 	// (REQ-EXTIMG-25)
 	RequireHTTPS *bool `toml:"require_https,omitempty"`
 	// FollowRedirectsMax bounds redirect chain length, validated at
@@ -2444,8 +2444,8 @@ func applyDefaults(c *Config) {
 		el.ConcurrentFetches = 8
 	}
 	if el.RequireHTTPS == nil {
-		t := true
-		el.RequireHTTPS = &t
+		f := false
+		el.RequireHTTPS = &f
 	}
 	if el.FollowRedirectsMax == 0 {
 		el.FollowRedirectsMax = 3

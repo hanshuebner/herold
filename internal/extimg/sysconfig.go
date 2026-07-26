@@ -32,7 +32,7 @@ func FromSysConfig(c sysconfig.ExternalImagesConfig, hostname string) Config {
 	if c.Limits.RequireHTTPS != nil {
 		out.RequireHTTPS = *c.Limits.RequireHTTPS
 	} else {
-		out.RequireHTTPS = true
+		out.RequireHTTPS = false
 	}
 	out.resolveOptional()
 	return out

@@ -129,7 +129,8 @@ func (c *Config) resolveOptional() {
 	if c.DKIM == "" {
 		c.DKIM = DKIMStrip
 	}
-	// RequireHTTPS defaults to true; tests set false explicitly.
+	// RequireHTTPS defaults to false; operators opt into https-only
+	// internalization via Limits.RequireHTTPS=true.
 }
 
 // MustParseCIDRs is a small helper used by FromSysConfig to convert
