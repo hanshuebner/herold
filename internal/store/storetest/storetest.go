@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -3020,13 +3021,18 @@ func testInternalizePendingLifecycle(t *testing.T, s store.Store) {
 }
 
 // testMessageFailedImagesLifecycle covers the server-side retry badge
-// state (17-external-images.md REQ-EXTIMG-71/73, issue #162):
+// state (17-external-images.md REQ-EXTIMG-71/73, issue #162) and its
+// issue #271 extension (retryableFailedImageCount / failedImageReason):
 //
-//   - InsertMessage carrying FailedImageCount/FailedImageState persists
-//     both; GetMessage returns them unchanged.
-//   - SetMessageFailedImages updates an already-stored message's count
-//     and opaque state blob.
-//   - ReplaceMessageBody resets both to zero/empty (the body just
+//   - InsertMessage carrying FailedImageCount/FailedImageState plus
+//     RetryableFailedImageCount/FailedImageReason persists all four;
+//     GetMessage returns them unchanged.
+//   - SetMessageFailedImages updates all four fields on an already-
+//     stored message, computed from a mixed transient+permanent
+//     FailureCounts tally via extimg.DeriveFailureSignal.
+//   - A retry (a further SetMessageFailedImages call with a smaller,
+//     all-permanent tally) updates the two derived fields again.
+//   - ReplaceMessageBody resets all four to zero/empty (the body just
 //     changed; stale retained state no longer applies).
 //   - SetMessageFailedImages on a missing id returns ErrNotFound.
 func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
@@ -3034,13 +3040,27 @@ func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
 	p := mustInsertPrincipal(t, s, "failedimages@example.com")
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 
+	// Mixed tally: one transient (timeout) + one permanent (http_4xx)
+	// failure. DeriveFailureSignal must report 1 retryable and the
+	// not_found category.
+	mixed := map[extimg.FetchOutcome]int{
+		extimg.FetchTimeout: 1,
+		extimg.FetchHTTP4xx: 1,
+	}
+	retryable, reason := extimg.DeriveFailureSignal(mixed)
+	if retryable != 1 || reason != extimg.FailedImageReasonNotFound {
+		t.Fatalf("DeriveFailureSignal(mixed) = (%d, %q), want (1, %q)", retryable, reason, extimg.FailedImageReasonNotFound)
+	}
+
 	ref := putBlob(t, s, "message-with-failed-images")
 	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
-		PrincipalID:      p.ID,
-		Blob:             ref,
-		Size:             ref.Size,
-		FailedImageCount: 2,
-		FailedImageState: `{"urls":["http://example.test/a.png","http://example.test/b.png"]}`,
+		PrincipalID:               p.ID,
+		Blob:                      ref,
+		Size:                      ref.Size,
+		FailedImageCount:          2,
+		FailedImageState:          `{"urls":["http://example.test/a.png","http://example.test/b.png"]}`,
+		RetryableFailedImageCount: retryable,
+		FailedImageReason:         string(reason),
 	}, []store.MessageMailbox{{MailboxID: mb.ID}})
 	if err != nil {
 		t.Fatalf("InsertMessage: %v", err)
@@ -3064,9 +3084,18 @@ func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
 	if got.FailedImageState == "" {
 		t.Fatalf("FailedImageState must round-trip non-empty")
 	}
+	if got.RetryableFailedImageCount != 1 {
+		t.Fatalf("RetryableFailedImageCount = %d, want 1", got.RetryableFailedImageCount)
+	}
+	if got.FailedImageReason != string(extimg.FailedImageReasonNotFound) {
+		t.Fatalf("FailedImageReason = %q, want %q", got.FailedImageReason, extimg.FailedImageReasonNotFound)
+	}
 
-	// SetMessageFailedImages updates both fields on an existing row.
-	if err := s.Meta().SetMessageFailedImages(ctx, id, 1, `{"urls":["http://example.test/b.png"]}`); err != nil {
+	// SetMessageFailedImages updates all four fields on an existing
+	// row: a retry resolved the transient failure, leaving one
+	// permanent (not_image -> unsupported) failure behind.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 1, `{"urls":["http://example.test/b.png"]}`,
+		0, string(extimg.FailedImageReasonUnsupported)); err != nil {
 		t.Fatalf("SetMessageFailedImages: %v", err)
 	}
 	got, err = s.Meta().GetMessage(ctx, id)
@@ -3079,18 +3108,29 @@ func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
 	if got.FailedImageState != `{"urls":["http://example.test/b.png"]}` {
 		t.Fatalf("FailedImageState after Set = %q", got.FailedImageState)
 	}
+	if got.RetryableFailedImageCount != 0 {
+		t.Fatalf("RetryableFailedImageCount after Set = %d, want 0 (all-permanent remainder)", got.RetryableFailedImageCount)
+	}
+	if got.FailedImageReason != string(extimg.FailedImageReasonUnsupported) {
+		t.Fatalf("FailedImageReason after Set = %q, want %q", got.FailedImageReason, extimg.FailedImageReasonUnsupported)
+	}
 
-	// SetMessageFailedImages(0, "") clears both -- the full-resolution case.
-	if err := s.Meta().SetMessageFailedImages(ctx, id, 0, ""); err != nil {
+	// SetMessageFailedImages(0, "", 0, "") clears all four -- the
+	// full-resolution case.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 0, "", 0, ""); err != nil {
 		t.Fatalf("SetMessageFailedImages clear: %v", err)
 	}
 	got, _ = s.Meta().GetMessage(ctx, id)
-	if got.FailedImageCount != 0 || got.FailedImageState != "" {
-		t.Fatalf("expected cleared state, got count=%d state=%q", got.FailedImageCount, got.FailedImageState)
+	if got.FailedImageCount != 0 || got.FailedImageState != "" ||
+		got.RetryableFailedImageCount != 0 || got.FailedImageReason != "" {
+		t.Fatalf("expected cleared state, got count=%d state=%q retryable=%d reason=%q",
+			got.FailedImageCount, got.FailedImageState, got.RetryableFailedImageCount, got.FailedImageReason)
 	}
 
-	// ReplaceMessageBody resets any retained state that was present.
-	if err := s.Meta().SetMessageFailedImages(ctx, id, 3, `{"urls":["x","y","z"]}`); err != nil {
+	// ReplaceMessageBody resets any retained state that was present,
+	// including the two issue #271 fields.
+	if err := s.Meta().SetMessageFailedImages(ctx, id, 3, `{"urls":["x","y","z"]}`,
+		2, string(extimg.FailedImageReasonBlocked)); err != nil {
 		t.Fatalf("SetMessageFailedImages reseed: %v", err)
 	}
 	newRef := putBlob(t, s, "rewritten-body-after-retry")
@@ -3098,13 +3138,14 @@ func testMessageFailedImagesLifecycle(t *testing.T, s store.Store) {
 		t.Fatalf("ReplaceMessageBody: %v", err)
 	}
 	got, _ = s.Meta().GetMessage(ctx, id)
-	if got.FailedImageCount != 0 || got.FailedImageState != "" {
-		t.Fatalf("ReplaceMessageBody must reset failed-image state, got count=%d state=%q",
-			got.FailedImageCount, got.FailedImageState)
+	if got.FailedImageCount != 0 || got.FailedImageState != "" ||
+		got.RetryableFailedImageCount != 0 || got.FailedImageReason != "" {
+		t.Fatalf("ReplaceMessageBody must reset failed-image state, got count=%d state=%q retryable=%d reason=%q",
+			got.FailedImageCount, got.FailedImageState, got.RetryableFailedImageCount, got.FailedImageReason)
 	}
 
 	// SetMessageFailedImages on an unknown id surfaces ErrNotFound.
-	if err := s.Meta().SetMessageFailedImages(ctx, 99999999, 1, "x"); !errors.Is(err, store.ErrNotFound) {
+	if err := s.Meta().SetMessageFailedImages(ctx, 99999999, 1, "x", 1, ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Set on missing id: err=%v, want ErrNotFound", err)
 	}
 }

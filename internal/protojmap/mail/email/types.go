@@ -126,6 +126,22 @@ type jmapEmail struct {
 	// by Email/retryImages.
 	FailedImageCount int `json:"failedImageCount,omitempty"`
 
+	// RetryableFailedImageCount is the subset of FailedImageCount whose
+	// extimg.FetchOutcome is retryable (issue #271): the number of
+	// failed images a retry may still resolve. The client shows the
+	// "retry images" affordance iff this is > 0; when it is 0 while
+	// FailedImageCount is > 0, every failure is permanent and
+	// FailedImageReason explains why.
+	RetryableFailedImageCount int `json:"retryableFailedImageCount,omitempty"`
+
+	// FailedImageReason is the stable category derived from the
+	// permanent (non-retryable) subset of FailedImageCount (issue
+	// #271): one of "blocked_by_policy", "not_found", "unsupported",
+	// "too_large", "other", or nil when there are no permanent
+	// failures. Lets the client explain a failure it cannot retry
+	// without decoding server-only state.
+	FailedImageReason *string `json:"failedImageReason"`
+
 	// HeaderProperties holds the decoded values for dynamic header
 	// property accessors (RFC 8621 §4.1.2.4) — keys like
 	// "header:Subject:asText". Serialised directly into the JSON object
@@ -137,35 +153,37 @@ type jmapEmail struct {
 // fields so that MarshalJSON can merge in HeaderProperties without
 // reflection.
 type jmapEmailWire struct {
-	ID                 jmapID               `json:"id"`
-	BlobID             string               `json:"blobId"`
-	ThreadID           jmapID               `json:"threadId"`
-	MailboxIDs         map[jmapID]bool      `json:"mailboxIds"`
-	Keywords           map[string]bool      `json:"keywords"`
-	Size               int64                `json:"size"`
-	ReceivedAt         string               `json:"receivedAt"`
-	SnoozedUntil       *string              `json:"snoozedUntil"`
-	Reactions          map[string][]string  `json:"reactions,omitempty"`
-	From               []jmapAddress        `json:"from,omitempty"`
-	To                 []jmapAddress        `json:"to,omitempty"`
-	Cc                 []jmapAddress        `json:"cc,omitempty"`
-	Bcc                []jmapAddress        `json:"bcc,omitempty"`
-	ReplyTo            []jmapAddress        `json:"replyTo,omitempty"`
-	Sender             []jmapAddress        `json:"sender,omitempty"`
-	Subject            string               `json:"subject"`
-	MessageID          []string             `json:"messageId,omitempty"`
-	InReplyTo          []string             `json:"inReplyTo,omitempty"`
-	References         []string             `json:"references,omitempty"`
-	SentAt             string               `json:"sentAt,omitempty"`
-	BodyStructure      *bodyPart            `json:"bodyStructure,omitempty"`
-	BodyValues         map[string]bodyValue `json:"bodyValues,omitempty"`
-	TextBody           []bodyPart           `json:"textBody,omitempty"`
-	HTMLBody           []bodyPart           `json:"htmlBody,omitempty"`
-	Attachments        []bodyPart           `json:"attachments,omitempty"`
-	HasAttachment      bool                 `json:"hasAttachment"`
-	Preview            string               `json:"preview,omitempty"`
-	InternalizePending bool                 `json:"internalizePending,omitempty"`
-	FailedImageCount   int                  `json:"failedImageCount,omitempty"`
+	ID                        jmapID               `json:"id"`
+	BlobID                    string               `json:"blobId"`
+	ThreadID                  jmapID               `json:"threadId"`
+	MailboxIDs                map[jmapID]bool      `json:"mailboxIds"`
+	Keywords                  map[string]bool      `json:"keywords"`
+	Size                      int64                `json:"size"`
+	ReceivedAt                string               `json:"receivedAt"`
+	SnoozedUntil              *string              `json:"snoozedUntil"`
+	Reactions                 map[string][]string  `json:"reactions,omitempty"`
+	From                      []jmapAddress        `json:"from,omitempty"`
+	To                        []jmapAddress        `json:"to,omitempty"`
+	Cc                        []jmapAddress        `json:"cc,omitempty"`
+	Bcc                       []jmapAddress        `json:"bcc,omitempty"`
+	ReplyTo                   []jmapAddress        `json:"replyTo,omitempty"`
+	Sender                    []jmapAddress        `json:"sender,omitempty"`
+	Subject                   string               `json:"subject"`
+	MessageID                 []string             `json:"messageId,omitempty"`
+	InReplyTo                 []string             `json:"inReplyTo,omitempty"`
+	References                []string             `json:"references,omitempty"`
+	SentAt                    string               `json:"sentAt,omitempty"`
+	BodyStructure             *bodyPart            `json:"bodyStructure,omitempty"`
+	BodyValues                map[string]bodyValue `json:"bodyValues,omitempty"`
+	TextBody                  []bodyPart           `json:"textBody,omitempty"`
+	HTMLBody                  []bodyPart           `json:"htmlBody,omitempty"`
+	Attachments               []bodyPart           `json:"attachments,omitempty"`
+	HasAttachment             bool                 `json:"hasAttachment"`
+	Preview                   string               `json:"preview,omitempty"`
+	InternalizePending        bool                 `json:"internalizePending,omitempty"`
+	FailedImageCount          int                  `json:"failedImageCount,omitempty"`
+	RetryableFailedImageCount int                  `json:"retryableFailedImageCount,omitempty"`
+	FailedImageReason         *string              `json:"failedImageReason"`
 }
 
 // MarshalJSON serialises jmapEmail, merging HeaderProperties keys
@@ -173,35 +191,37 @@ type jmapEmailWire struct {
 // (e.g. `"header:Subject:asText": "..."`) per RFC 8621 §4.1.2.4.
 func (e jmapEmail) MarshalJSON() ([]byte, error) {
 	wire := jmapEmailWire{
-		ID:                 e.ID,
-		BlobID:             e.BlobID,
-		ThreadID:           e.ThreadID,
-		MailboxIDs:         e.MailboxIDs,
-		Keywords:           e.Keywords,
-		Size:               e.Size,
-		ReceivedAt:         e.ReceivedAt,
-		SnoozedUntil:       e.SnoozedUntil,
-		Reactions:          e.Reactions,
-		From:               e.From,
-		To:                 e.To,
-		Cc:                 e.Cc,
-		Bcc:                e.Bcc,
-		ReplyTo:            e.ReplyTo,
-		Sender:             e.Sender,
-		Subject:            e.Subject,
-		MessageID:          e.MessageID,
-		InReplyTo:          e.InReplyTo,
-		References:         e.References,
-		SentAt:             e.SentAt,
-		BodyStructure:      e.BodyStructure,
-		BodyValues:         e.BodyValues,
-		TextBody:           e.TextBody,
-		HTMLBody:           e.HTMLBody,
-		Attachments:        e.Attachments,
-		HasAttachment:      e.HasAttachment,
-		Preview:            e.Preview,
-		InternalizePending: e.InternalizePending,
-		FailedImageCount:   e.FailedImageCount,
+		ID:                        e.ID,
+		BlobID:                    e.BlobID,
+		ThreadID:                  e.ThreadID,
+		MailboxIDs:                e.MailboxIDs,
+		Keywords:                  e.Keywords,
+		Size:                      e.Size,
+		ReceivedAt:                e.ReceivedAt,
+		SnoozedUntil:              e.SnoozedUntil,
+		Reactions:                 e.Reactions,
+		From:                      e.From,
+		To:                        e.To,
+		Cc:                        e.Cc,
+		Bcc:                       e.Bcc,
+		ReplyTo:                   e.ReplyTo,
+		Sender:                    e.Sender,
+		Subject:                   e.Subject,
+		MessageID:                 e.MessageID,
+		InReplyTo:                 e.InReplyTo,
+		References:                e.References,
+		SentAt:                    e.SentAt,
+		BodyStructure:             e.BodyStructure,
+		BodyValues:                e.BodyValues,
+		TextBody:                  e.TextBody,
+		HTMLBody:                  e.HTMLBody,
+		Attachments:               e.Attachments,
+		HasAttachment:             e.HasAttachment,
+		Preview:                   e.Preview,
+		InternalizePending:        e.InternalizePending,
+		FailedImageCount:          e.FailedImageCount,
+		RetryableFailedImageCount: e.RetryableFailedImageCount,
+		FailedImageReason:         e.FailedImageReason,
 	}
 	if len(e.HeaderProperties) == 0 {
 		return json.Marshal(wire)

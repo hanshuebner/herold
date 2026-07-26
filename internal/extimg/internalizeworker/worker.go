@@ -513,11 +513,12 @@ func (w *Worker) internalize(ctx context.Context, m store.Message) (processResul
 			URLs:     sum.FailedURLs,
 			Template: sum.FailedImageTemplate,
 		})
+		retryable, reason := extimg.DeriveFailureSignal(sum.FailureCounts)
 		if eerr != nil {
 			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: encode retained failed-image state failed",
 				slog.Uint64("message_id", uint64(m.ID)),
 				slog.String("err", eerr.Error()))
-		} else if err := w.store.Meta().SetMessageFailedImages(ctx, m.ID, len(sum.FailedURLs), encoded); err != nil {
+		} else if err := w.store.Meta().SetMessageFailedImages(ctx, m.ID, len(sum.FailedURLs), encoded, retryable, string(reason)); err != nil {
 			w.logger.LogAttrs(ctx, slog.LevelWarn, "extimg-worker: persist retained failed-image state failed",
 				slog.Uint64("message_id", uint64(m.ID)),
 				slog.String("err", err.Error()))

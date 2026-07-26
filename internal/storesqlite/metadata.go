@@ -1089,13 +1089,16 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	var bodyMetaComputed int64
 	var failedImageCount int64
 	var failedImageState string
+	var retryableFailedImageCount int64
+	var failedImageReason string
 	err := row.Scan(&id, &pid, &msg.Blob.Hash, &blobSize, &idUs, &rcvUs,
 		&msg.Size, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		&pending, &msg.Preview, &hasAttachment, &bodyMetaComputed,
-		&failedImageCount, &failedImageState)
+		&failedImageCount, &failedImageState,
+		&retryableFailedImageCount, &failedImageReason)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -1111,6 +1114,8 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	msg.BodyMetaComputed = bodyMetaComputed != 0
 	msg.FailedImageCount = int(failedImageCount)
 	msg.FailedImageState = failedImageState
+	msg.RetryableFailedImageCount = int(retryableFailedImageCount)
+	msg.FailedImageReason = failedImageReason
 	return msg, nil
 }
 
@@ -1505,8 +1510,9 @@ func (m *metadata) insertMessageTx(
 			  env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 			  env_message_id, env_in_reply_to, env_references, env_date_us,
 			  internalize_pending, preview, has_attachment, body_meta_computed,
-			  failed_image_count, failed_image_state, delivery_disposition)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  failed_image_count, failed_image_state, delivery_disposition,
+			  retryable_failed_image_count, failed_image_reason)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			pid, msg.Blob.Hash, msg.Blob.Size,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size, int64(msg.ThreadID),
 			msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.To,
@@ -1514,7 +1520,8 @@ func (m *metadata) insertMessageTx(
 			msg.Envelope.MessageID, msg.Envelope.InReplyTo, msg.Envelope.References, usMicros(msg.Envelope.Date),
 			boolToInt64(msg.InternalizePending), msg.Preview,
 			boolToInt64(msg.HasAttachment), boolToInt64(msg.BodyMetaComputed),
-			msg.FailedImageCount, msg.FailedImageState, string(msg.DeliveryDisposition))
+			msg.FailedImageCount, msg.FailedImageState, string(msg.DeliveryDisposition),
+			msg.RetryableFailedImageCount, msg.FailedImageReason)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -1630,13 +1637,16 @@ func (m *metadata) ReplaceMessageBody(
 		// (issue #162) is stale. The worker and the JMAP retry handler
 		// re-populate them via SetMessageFailedImages immediately after
 		// this call when the rewrite still leaves images unresolved.
+		// retryable_failed_image_count / failed_image_reason (issue
+		// #271) are reset alongside them for the same reason.
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE messages
 			   SET blob_hash = ?, blob_size = ?, size = ?,
 			       env_subject = ?, env_from = ?, env_to = ?, env_cc = ?, env_bcc = ?, env_reply_to = ?,
 			       env_message_id = ?, env_in_reply_to = ?, env_references = ?, env_date_us = ?,
 			       internalize_pending = 0, preview = '', has_attachment = 0, body_meta_computed = 0,
-			       failed_image_count = 0, failed_image_state = ''
+			       failed_image_count = 0, failed_image_state = '',
+			       retryable_failed_image_count = 0, failed_image_reason = ''
 			 WHERE id = ?`,
 			ref.Hash, ref.Size, size,
 			env.Subject, env.From, env.To, env.Cc, env.Bcc, env.ReplyTo,
@@ -1720,7 +1730,8 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		       env_subject, env_from, env_to, env_cc, env_bcc, env_reply_to,
 		       env_message_id, env_in_reply_to, env_references, env_date_us,
 		       internalize_pending, preview, has_attachment, body_meta_computed,
-		       failed_image_count, failed_image_state
+		       failed_image_count, failed_image_state,
+		       retryable_failed_image_count, failed_image_reason
 		  FROM messages WHERE id = ?`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1841,10 +1852,11 @@ func (m *metadata) ClearMessageInternalizePending(ctx context.Context, msgID sto
 	return nil
 }
 
-func (m *metadata) SetMessageFailedImages(ctx context.Context, msgID store.MessageID, count int, stateJSON string) error {
+func (m *metadata) SetMessageFailedImages(ctx context.Context, msgID store.MessageID, count int, stateJSON string, retryableCount int, reason string) error {
 	res, err := m.s.db.ExecContext(ctx,
-		`UPDATE messages SET failed_image_count = ?, failed_image_state = ? WHERE id = ?`,
-		count, stateJSON, int64(msgID))
+		`UPDATE messages SET failed_image_count = ?, failed_image_state = ?,
+		   retryable_failed_image_count = ?, failed_image_reason = ? WHERE id = ?`,
+		count, stateJSON, retryableCount, reason, int64(msgID))
 	if err != nil {
 		return mapErr(err)
 	}

@@ -174,6 +174,8 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	extimgRewritten := false
 	var failedImageCount int
 	var failedImageState string
+	var retryableFailedImageCount int
+	var failedImageReason string
 
 	// REQ-EXTIMG-02: external-image internalization. Same hook as the
 	// SMTP DATA path; ingest is always inbound so no mode check.
@@ -202,6 +204,9 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			}); eerr == nil {
 				failedImageCount = len(sum.FailedURLs)
 				failedImageState = encoded
+				retryable, reason := extimg.DeriveFailureSignal(sum.FailureCounts)
+				retryableFailedImageCount = retryable
+				failedImageReason = string(reason)
 			} else {
 				s.log.WarnContext(ctx, "ingest: encode retained failed-image state failed",
 					slog.String("activity", observe.ActivitySystem),
@@ -268,9 +273,11 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 				slog.String("remote_addr", req.SourceIP),
 			),
 			envelope: envelope{
-				mailFrom:         req.MailFrom,
-				failedImageCount: failedImageCount,
-				failedImageState: failedImageState,
+				mailFrom:                  req.MailFrom,
+				failedImageCount:          failedImageCount,
+				failedImageState:          failedImageState,
+				retryableFailedImageCount: retryableFailedImageCount,
+				failedImageReason:         failedImageReason,
 			},
 		}
 		rcEntry := rcptEntry{

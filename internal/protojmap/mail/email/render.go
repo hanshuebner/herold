@@ -46,15 +46,20 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		mailboxIDs[jmapIDFromMailbox(m.MailboxID)] = true
 	}
 	out := jmapEmail{
-		ID:                 jmapIDFromMessage(m.ID),
-		BlobID:             m.Blob.Hash,
-		ThreadID:           threadIDForMessage(m),
-		MailboxIDs:         mailboxIDs,
-		Keywords:           keywordsFromMessage(m),
-		Size:               m.Size,
-		ReceivedAt:         rfc3339UTC(m.ReceivedAt),
-		InternalizePending: m.InternalizePending,
-		FailedImageCount:   m.FailedImageCount,
+		ID:                        jmapIDFromMessage(m.ID),
+		BlobID:                    m.Blob.Hash,
+		ThreadID:                  threadIDForMessage(m),
+		MailboxIDs:                mailboxIDs,
+		Keywords:                  keywordsFromMessage(m),
+		Size:                      m.Size,
+		ReceivedAt:                rfc3339UTC(m.ReceivedAt),
+		InternalizePending:        m.InternalizePending,
+		FailedImageCount:          m.FailedImageCount,
+		RetryableFailedImageCount: m.RetryableFailedImageCount,
+	}
+	if m.FailedImageReason != "" {
+		reason := m.FailedImageReason
+		out.FailedImageReason = &reason
 	}
 	if m.SnoozedUntil != nil {
 		s := rfc3339UTC(*m.SnoozedUntil)

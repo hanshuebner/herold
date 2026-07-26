@@ -678,6 +678,25 @@ type Message struct {
 	// nothing is retained.
 	FailedImageState string
 
+	// RetryableFailedImageCount is the subset of FailedImageCount whose
+	// extimg.FetchOutcome.Retryable() is true (issue #271): the number
+	// of failed images a retry may still resolve. Computed by
+	// extimg.DeriveFailureSignal from the same per-outcome
+	// FailureCounts tally that produces FailedImageState, and persisted
+	// alongside it. Exposed to JMAP Email/get as
+	// retryableFailedImageCount; the client shows the "retry images"
+	// affordance iff this is > 0.
+	RetryableFailedImageCount int
+
+	// FailedImageReason is the stable category derived from the
+	// permanent (non-retryable) subset of FailedImageCount, computed by
+	// extimg.DeriveFailureSignal: one of "blocked_by_policy",
+	// "not_found", "unsupported", "too_large", "other", or "" when
+	// there are no permanent failures (every failure is retryable, or
+	// there are no failures at all). Exposed to JMAP Email/get as
+	// failedImageReason (null when empty).
+	FailedImageReason string
+
 	// Preview is the precomputed RFC 8621 Email.preview value: the first
 	// 256 characters of the plain-text body. Empty string when
 	// BodyMetaComputed is false (not yet computed by the background

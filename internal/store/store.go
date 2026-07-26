@@ -327,12 +327,19 @@ type Metadata interface {
 	// issue #162). stateJSON is an opaque blob produced by
 	// extimg.EncodeRetainedState; the store never interprets it. count
 	// is denormalised alongside it so Email/get's failedImageCount
-	// badge property is a plain column read, no JSON decode. Callers:
-	// the extimg internalize-worker after a partial-success rewrite,
-	// and the JMAP Email/retryImages handler after a retry attempt
-	// (whether it fully resolved, partially resolved, or made no
-	// progress). Returns ErrNotFound when msgID is absent.
-	SetMessageFailedImages(ctx context.Context, msgID MessageID, count int, stateJSON string) error
+	// badge property is a plain column read, no JSON decode.
+	// retryableCount and reason are the two values issue #271 adds,
+	// computed by the caller via extimg.DeriveFailureSignal from the
+	// same per-outcome FailureCounts tally that produced count/
+	// stateJSON: retryableCount is the subset of count whose outcome is
+	// retryable (Email.retryableFailedImageCount); reason is the
+	// highest-count permanent-failure category, or "" when every
+	// failure is retryable (Email.failedImageReason, null when empty).
+	// Callers: the extimg internalize-worker after a partial-success
+	// rewrite, and the JMAP Email/retryImages handler after a retry
+	// attempt (whether it fully resolved, partially resolved, or made
+	// no progress). Returns ErrNotFound when msgID is absent.
+	SetMessageFailedImages(ctx context.Context, msgID MessageID, count int, stateJSON string, retryableCount int, reason string) error
 
 	// ListMessagesWithInternalizePending returns up to limit MessageIDs
 	// in DESCENDING order (newest first) with id < beforeID, scanning

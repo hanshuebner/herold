@@ -102,4 +102,7 @@ func (sess *session) stashRetainedFailedImages(ctx context.Context, sum extimg.A
 	}
 	sess.envelope.failedImageCount = len(sum.FailedURLs)
 	sess.envelope.failedImageState = encoded
+	retryable, reason := extimg.DeriveFailureSignal(sum.FailureCounts)
+	sess.envelope.retryableFailedImageCount = retryable
+	sess.envelope.failedImageReason = string(reason)
 }

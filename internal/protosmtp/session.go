@@ -106,6 +106,13 @@ type envelope struct {
 	// had no failed images (the common case) or extimg did not run.
 	failedImageCount int
 	failedImageState string
+
+	// retryableFailedImageCount / failedImageReason (issue #271) are
+	// derived from the same fetch attempt's per-outcome FailureCounts
+	// tally via extimg.DeriveFailureSignal, and copied onto every
+	// recipient's store.Message alongside failedImageCount/State.
+	retryableFailedImageCount int
+	failedImageReason         string
 }
 
 // mailFromParams records the typed parameters attached to MAIL FROM.

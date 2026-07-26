@@ -29,7 +29,28 @@ const (
 	FetchRedirectLoop  FetchOutcome = "redirect_loop"
 	FetchTransport     FetchOutcome = "transport_error"
 	FetchMessageBudget FetchOutcome = "message_budget"
+	// FetchBlockedScheme is a scheme-policy rejection (a non-http(s)
+	// scheme, or RequireHTTPS refusing a plain http:// URL) -- distinct
+	// from FetchBlockedSSRF, which is a genuine internal-destination
+	// block (issue #271). Separating the two lets the audit, the log,
+	// and the JMAP failedImageReason category tell "we don't fetch this
+	// protocol" apart from "this host resolves inside the network".
+	FetchBlockedScheme FetchOutcome = "blocked_scheme"
 )
+
+// Retryable reports whether a fetch that failed with this outcome
+// might succeed if retried (issue #271): the JMAP Email object's
+// retryableFailedImageCount tallies the subset of a message's failed
+// images whose outcome satisfies this. FetchOK is not a failure
+// category and never appears in a failure tally.
+func (o FetchOutcome) Retryable() bool {
+	switch o {
+	case FetchTimeout, FetchHTTP5xx, FetchMessageBudget, FetchTransport:
+		return true
+	default:
+		return false
+	}
+}
 
 // FetchResult is the per-URL output of a single Fetcher.Fetch call.
 // Bytes is non-empty only when Outcome == FetchOK.
@@ -106,7 +127,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 		return r
 	}
 	if err := f.guard.ValidateURL(u); err != nil {
-		r.Outcome = FetchBlockedSSRF
+		r.Outcome = classifySSRFBlock(err)
 		r.Reason = err.Error()
 		r.Duration = time.Since(start)
 		return r
@@ -135,7 +156,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 		var blocked *ErrSSRFBlocked
 		switch {
 		case errors.As(err, &blocked):
-			r.Outcome = FetchBlockedSSRF
+			r.Outcome = classifySSRFBlock(err)
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 			r.Outcome = FetchTimeout
 		case errors.Is(err, errTooManyRedirects):
@@ -146,7 +167,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 			// belt-and-suspenders for go versions where errors.As
 			// does not unwrap through *url.Error consistently.
 			if strings.Contains(err.Error(), "ssrf:") {
-				r.Outcome = FetchBlockedSSRF
+				r.Outcome = classifySSRFBlock(err)
 			} else {
 				r.Outcome = FetchTransport
 			}
@@ -206,6 +227,25 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 	r.Bytes = body
 	r.Outcome = FetchOK
 	return r
+}
+
+// classifySSRFBlock maps an SSRF-guard refusal to the specific
+// FetchOutcome the caller records (issue #271): a scheme-policy
+// rejection (ssrfBadScheme -- a disallowed scheme, or RequireHTTPS
+// refusing plain http://) is a distinct, operator-policy outcome from
+// a destination block (the host resolves inside the network). Falls
+// back to a textual check because the redirect path (http.Client.
+// CheckRedirect) can hand back the error wrapped inside a *url.Error
+// that does not always survive errors.As on every Go version.
+func classifySSRFBlock(err error) FetchOutcome {
+	var blocked *ErrSSRFBlocked
+	if errors.As(err, &blocked) && blocked.Reason == ssrfBadScheme {
+		return FetchBlockedScheme
+	}
+	if strings.Contains(err.Error(), "scheme not allowed") {
+		return FetchBlockedScheme
+	}
+	return FetchBlockedSSRF
 }
 
 var errOverCap = errors.New("extimg: response exceeded byte cap")

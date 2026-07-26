@@ -623,9 +623,11 @@ func (sess *session) deliverOne(
 			// same blob content, so the same retained failed-image
 			// state (computed once in finishMessage) applies to each
 			// recipient's message row.
-			FailedImageCount:    sess.envelope.failedImageCount,
-			FailedImageState:    sess.envelope.failedImageState,
-			DeliveryDisposition: disposition,
+			FailedImageCount:          sess.envelope.failedImageCount,
+			FailedImageState:          sess.envelope.failedImageState,
+			RetryableFailedImageCount: sess.envelope.retryableFailedImageCount,
+			FailedImageReason:         sess.envelope.failedImageReason,
+			DeliveryDisposition:       disposition,
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)

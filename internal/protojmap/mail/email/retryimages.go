@@ -117,7 +117,7 @@ func (r retryImagesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	if derr != nil {
 		// Corrupt/unreadable retained state: clear it defensively so
 		// the badge does not wedge forever; report nothing retried.
-		_ = r.h.store.Meta().SetMessageFailedImages(ctx, mid, 0, "")
+		_ = r.h.store.Meta().SetMessageFailedImages(ctx, mid, 0, "", 0, "")
 		state, serr := currentState(ctx, r.h.store.Meta(), ownerPID)
 		if serr != nil {
 			return nil, serverFail(serr)
@@ -176,7 +176,8 @@ func (r retryImagesHandler) Execute(ctx context.Context, args json.RawMessage) (
 			DKIM:     retained.DKIM,
 		})
 		if eerr == nil {
-			_ = r.h.store.Meta().SetMessageFailedImages(ctx, mid, len(result.StillFailedURLs), encoded)
+			retryable, reason := extimg.DeriveFailureSignal(result.FailureCounts)
+			_ = r.h.store.Meta().SetMessageFailedImages(ctx, mid, len(result.StillFailedURLs), encoded, retryable, string(reason))
 		}
 	}
 

@@ -753,7 +753,22 @@ const CurrentBackupVersion = 1
 //	and Resolve no longer consult a second table. PrincipalManagedDomainRow
 //	and its TableNames/tableReg entries are removed from herold diag
 //	backup along with the table.
-const CurrentSchemaVersion = 99
+//
+// 100 — 0100_messages_failed_image_signal.sql (issue #271). Adds
+//
+//	messages.retryable_failed_image_count INTEGER NOT NULL DEFAULT 0 and
+//	messages.failed_image_reason TEXT NOT NULL DEFAULT ''. Column-only
+//	migration on an existing table, mirroring migration 77's
+//	failed_image_count/failed_image_state pair (no new adapter/backup
+//	row type needed). retryable_failed_image_count is the subset of
+//	failed_image_count whose extimg.FetchOutcome.Retryable() is true,
+//	surfaced as Email.retryableFailedImageCount; failed_image_reason is
+//	the highest-count permanent-failure category, surfaced as
+//	Email.failedImageReason (null when empty). Both are computed by
+//	extimg.DeriveFailureSignal and reset to 0/'' whenever
+//	ReplaceMessageBody swaps the blob, alongside failed_image_count/
+//	failed_image_state.
+const CurrentSchemaVersion = 100
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
