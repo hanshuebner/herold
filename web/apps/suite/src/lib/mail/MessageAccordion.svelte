@@ -3,6 +3,24 @@
   // Persists across accordion re-mounts within the same browser session so
   // navigating away and back to the same thread does not re-fetch.
   const _fullBodyCache = new Map<string, string>();
+
+  // Maps the server's `Email.failedImageReason` category (issue #271) to
+  // the i18n key for its user-facing explanation. `other` also serves as
+  // the fallback for any value the client does not recognize yet, so an
+  // older client against a newer server degrades to a generic message
+  // instead of rendering a raw wire string.
+  const OTHER_FAILED_IMAGE_REASON_KEY = 'msg.imagesFailedReason.other';
+  const FAILED_IMAGE_REASON_KEYS: Record<string, string> = {
+    blocked_by_policy: 'msg.imagesFailedReason.blockedByPolicy',
+    not_found: 'msg.imagesFailedReason.notFound',
+    unsupported: 'msg.imagesFailedReason.unsupported',
+    too_large: 'msg.imagesFailedReason.tooLarge',
+    other: OTHER_FAILED_IMAGE_REASON_KEY,
+  };
+
+  function failedImageReasonKey(reason: string): string {
+    return FAILED_IMAGE_REASON_KEYS[reason] ?? OTHER_FAILED_IMAGE_REASON_KEY;
+  }
 </script>
 
 <script lang="ts">
@@ -156,7 +174,7 @@
   );
   let hasExternalImages = $derived(html ? htmlHasExternalImages(html) : false);
 
-  // ── Failed-image retry (issue #162, REQ-EXTIMG-71/73) ─────────────────
+  // ── Failed-image retry (issue #162, REQ-EXTIMG-71/73; refined #271) ────
   //
   // `failedImageCount` is the server-side badge for images that could not
   // be internalized and were permanently placeholdered in the stored body
@@ -164,7 +182,17 @@
   // failed URLs entirely server-side -- the origin URL never reaches this
   // component or the DOM at any point, only the resulting counts and (on
   // success) the rewritten body's already-proxied `cid:` image sources.
+  //
+  // Not every failure is worth retrying: `retryableFailedImageCount` is
+  // the subset whose fetch outcome was TRANSIENT, and the retry button is
+  // gated on that being > 0 rather than on the raw `failedImageCount` --
+  // showing "retry" for a message whose failures are all permanent (e.g.
+  // blocked by the SSRF policy) invites a click that can only fail
+  // identically. `failedImageReason` is the stable category for the
+  // permanent remainder, shown as a short explanation instead.
   let failedImageCount = $derived(email.failedImageCount ?? 0);
+  let retryableFailedImageCount = $derived(email.retryableFailedImageCount ?? 0);
+  let failedImageReason = $derived(email.failedImageReason ?? null);
   let retryingImages = $state(false);
   // Reset the "still unavailable" note whenever the accordion switches to
   // a different message, so it never survives across messages.
@@ -883,9 +911,14 @@
         {#if failedImageCount > 0}
           <div class="image-banner image-banner--failed" role="status">
             <span>{t('msg.imagesFailed', { count: String(failedImageCount) })}</span>
-            <button type="button" disabled={retryingImages} onclick={retryFailedImages}>
-              {retryingImages ? t('msg.retryingImages') : t('msg.retryImages')}
-            </button>
+            {#if retryableFailedImageCount > 0}
+              <button type="button" disabled={retryingImages} onclick={retryFailedImages}>
+                {retryingImages ? t('msg.retryingImages') : t('msg.retryImages')}
+              </button>
+            {/if}
+            {#if failedImageReason}
+              <span class="failed-reason">{t(failedImageReasonKey(failedImageReason))}</span>
+            {/if}
             {#if showStillFailed}
               <span class="still-failed">{t('msg.imagesStillFailed')}</span>
             {/if}
@@ -1132,6 +1165,7 @@
 
   .image-banner {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--spacing-04);
@@ -1160,6 +1194,9 @@
   .image-banner .still-failed {
     color: var(--text-helper);
     font-style: italic;
+  }
+  .image-banner .failed-reason {
+    color: var(--text-helper);
   }
 
   /* Per re #233: plain-text and HTML messages must read as one coherent

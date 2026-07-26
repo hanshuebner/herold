@@ -322,6 +322,14 @@ export const de = {
   'msg.retryImages': 'Bilder erneut laden',
   'msg.retryingImages': 'Lade erneut...',
   'msg.imagesStillFailed': 'Bilder weiterhin nicht verfügbar.',
+  // Permanent-failure reason categories (issue #271, REQ-EXTIMG-71/73
+  // refinement) -- shown alongside/instead of the retry button when
+  // Email.failedImageReason is non-null.
+  'msg.imagesFailedReason.blockedByPolicy': 'Bilder durch Sicherheitsrichtlinie blockiert.',
+  'msg.imagesFailedReason.notFound': 'Bilder nicht mehr verfügbar.',
+  'msg.imagesFailedReason.unsupported': 'Bildformat nicht unterstützt.',
+  'msg.imagesFailedReason.tooLarge': 'Bilder zu groß.',
+  'msg.imagesFailedReason.other': 'Bilder konnten nicht geladen werden.',
   // Abgeschnittene Nachricht wird vollständig geladen (Forgejo #48).
   'msg.body.loadingFull': 'Vollständige Nachricht wird geladen...',
   // Zugängliche Bezeichnung für den Ladespinner, während der iframe

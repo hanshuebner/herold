@@ -323,6 +323,14 @@ export const en = {
   'msg.retryImages': 'Retry images',
   'msg.retryingImages': 'Retrying...',
   'msg.imagesStillFailed': 'Images still unavailable.',
+  // Permanent-failure reason categories (issue #271, REQ-EXTIMG-71/73
+  // refinement) -- shown alongside/instead of the retry button when
+  // Email.failedImageReason is non-null.
+  'msg.imagesFailedReason.blockedByPolicy': 'Images blocked by policy.',
+  'msg.imagesFailedReason.notFound': 'Images no longer available.',
+  'msg.imagesFailedReason.unsupported': 'Unsupported image format.',
+  'msg.imagesFailedReason.tooLarge': 'Images too large.',
+  'msg.imagesFailedReason.other': 'Images could not be loaded.',
   // Truncated body recovery banner (Forgejo #48).
   'msg.body.loadingFull': 'Loading complete message...',
   // Accessible label for the spinner shown while the iframe is rendering

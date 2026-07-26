@@ -284,6 +284,28 @@ export interface Email {
    * requested properties projection.
    */
   failedImageCount?: number;
+  /**
+   * Herold extension (issue #271, REQ-EXTIMG-71/73 refinement): the
+   * subset of `failedImageCount` whose fetch outcome is TRANSIENT (a
+   * retry may succeed). The "Bilder erneut laden" affordance is gated
+   * on this being > 0, not on `failedImageCount` -- a message whose
+   * failures are all permanent must not offer a retry that can only
+   * fail identically. Optional for the same reason as
+   * `failedImageCount`: only populated when requested.
+   */
+  retryableFailedImageCount?: number;
+  /**
+   * Herold extension (issue #271): the stable category derived from
+   * the message's PERMANENT image-fetch failures, or null when there
+   * are none (every failure -- if any -- is transient). One of
+   * "blocked_by_policy", "not_found", "unsupported", "too_large",
+   * "other". When several permanent categories are present, the
+   * server picks the highest-count one. Optional/absent has the same
+   * "not requested" meaning as the other extension properties here;
+   * explicit null means "requested, and there are no permanent
+   * failures".
+   */
+  failedImageReason?: string | null;
 }
 
 /** The properties projection the suite requests for list rendering. */
@@ -301,6 +323,8 @@ export const EMAIL_LIST_PROPERTIES = [
   'snoozedUntil',
   'internalizePending',
   'failedImageCount',
+  'retryableFailedImageCount',
+  'failedImageReason',
 ] as const;
 
 /** The properties projection the suite requests for thread / reading-pane rendering. */
@@ -346,6 +370,8 @@ export const EMAIL_BODY_PROPERTIES = [
   'header:X-Original-To:asText',
   'internalizePending',
   'failedImageCount',
+  'retryableFailedImageCount',
+  'failedImageReason',
 ] as const;
 
 /**

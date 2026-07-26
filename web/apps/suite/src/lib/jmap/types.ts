@@ -200,6 +200,11 @@ export const Capability = {
    * client at any point -- only the retried count and the resulting
    * badge value come back.
    *
+   * Issue #271 refinement: `Email` also carries
+   * `retryableFailedImageCount` (the subset of `failedImageCount`
+   * worth retrying) and `failedImageReason` (the stable category for
+   * the permanent remainder). See `web/apps/suite/src/lib/mail/types.ts`.
+   *
    * Joined wire surface: the Go-side constant lives at
    * internal/protojmap/registry.go CapabilityEmailImageRetry.
    * Both sides MUST be updated together if the URI changes.
