@@ -16,8 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/extimg"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -138,6 +140,7 @@ func (r retryImagesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	if rerr2 != nil {
 		return nil, serverFail(fmt.Errorf("email: retryImages: retry: %w", rerr2))
 	}
+	r.logRetryOutcome(ctx, mid, len(retained.URLs), result)
 	resp.RetriedCount = result.RetriedOK
 	resp.FailedImageCount = len(result.StillFailedURLs)
 
@@ -204,4 +207,27 @@ func (r retryImagesHandler) Execute(ctx context.Context, args json.RawMessage) (
 	}
 	resp.NewState = state
 	return resp, nil
+}
+
+// logRetryOutcome emits one INFO log line per Email/retryImages call,
+// aggregating the re-fetch outcome the same way logExtImgOutcome does
+// for the original ingest-time Internalize call (internal/protosmtp/
+// extimg.go). Before this, a retry attempt left no server-side signal
+// at all beyond the still-failing badge count the client already saw
+// (issue #267).
+func (r retryImagesHandler) logRetryOutcome(ctx context.Context, mid store.MessageID, attempted int, result extimg.RetryResult) {
+	attrs := []slog.Attr{
+		slog.String("activity", observe.ActivityUser),
+		slog.String("subsystem", "protojmap"),
+		slog.Uint64("message_id", uint64(mid)),
+		slog.Int("attempted", attempted),
+		slog.Int("retried_ok", result.RetriedOK),
+		slog.Int("still_failed", len(result.StillFailedURLs)),
+	}
+	for outcome, n := range result.FailureCounts {
+		if n > 0 {
+			attrs = append(attrs, slog.Int("fail_"+string(outcome), n))
+		}
+	}
+	r.h.logger.LogAttrs(ctx, slog.LevelInfo, "email: retryImages outcome", attrs...)
 }

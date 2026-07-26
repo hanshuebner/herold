@@ -172,6 +172,16 @@ func TestRetryFailedImages_StillFailing(t *testing.T) {
 	if strings.Contains(string(out2), url) {
 		t.Fatalf("origin URL leaked into unchanged body: %q", url)
 	}
+	// A retry that still fails must aggregate the per-outcome tally
+	// (issue #267) so the caller can log something other than a bare
+	// still-failed count.
+	total := 0
+	for _, n := range result.FailureCounts {
+		total += n
+	}
+	if total != 1 {
+		t.Fatalf("FailureCounts total = %d, want 1 (got %v)", total, result.FailureCounts)
+	}
 }
 
 // TestRetainedState_EncodeDecodeRoundtrip proves the opaque

@@ -120,6 +120,14 @@ type RetryResult struct {
 	// out (RetryFailedImages's first return value) differs from the
 	// input raw bytes.
 	Modified bool
+	// FailureCounts tallies the FetchOutcome for every URL that did not
+	// succeed this attempt, keyed the same way as
+	// AuditSummary.FailureCounts. Nil when no fetch was attempted (a
+	// config-validation or envelope-parse failure short-circuited
+	// before any URL was fetched). Callers use this to log a retry
+	// outcome analogous to the ingest-time logExtImgOutcome line --
+	// today's retry path was otherwise unobservable (issue #267).
+	FailureCounts map[FetchOutcome]int
 }
 
 // RetryFailedImages re-fetches urls (the retained failed-fetch list
@@ -172,6 +180,7 @@ func RetryFailedImages(
 	for _, r := range results {
 		if r.Outcome != FetchOK {
 			stillFailed = append(stillFailed, r.URL)
+			sum.FailureCounts[r.Outcome]++
 			continue
 		}
 		cid := newContentID()
@@ -180,12 +189,12 @@ func RetryFailedImages(
 	}
 	if len(inlines) == 0 {
 		// Nothing improved; no rebuild needed.
-		return currentRaw, RetryResult{StillFailedURLs: urls}, nil
+		return currentRaw, RetryResult{StillFailedURLs: urls, FailureCounts: sum.FailureCounts}, nil
 	}
 
 	rewrittenHTML, err := rewriteHTML(template, cidMap)
 	if err != nil {
-		return currentRaw, RetryResult{StillFailedURLs: urls}, nil
+		return currentRaw, RetryResult{StillFailedURLs: urls, FailureCounts: sum.FailureCounts}, nil
 	}
 	// newTemplate captures the state BEFORE the remaining failures are
 	// placeholdered, so a further retry still has raw URLs to work
@@ -199,12 +208,13 @@ func RetryFailedImages(
 
 	out, err := rebuildMessage(env, rewrittenHTML, inlines, cfg, verdict)
 	if err != nil {
-		return currentRaw, RetryResult{StillFailedURLs: urls}, nil
+		return currentRaw, RetryResult{StillFailedURLs: urls, FailureCounts: sum.FailureCounts}, nil
 	}
 	return out, RetryResult{
 		RetriedOK:       len(inlines),
 		StillFailedURLs: stillFailed,
 		NewTemplate:     newTemplate,
 		Modified:        true,
+		FailureCounts:   sum.FailureCounts,
 	}, nil
 }
