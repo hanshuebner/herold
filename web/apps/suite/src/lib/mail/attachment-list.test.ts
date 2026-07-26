@@ -113,7 +113,7 @@ describe('AttachmentList: inline images stay out of the card strip (REQ-MAIL-21)
 });
 
 describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-ATT-26)', () => {
-  it('does not chip an inline image absent from undecodableInlineUrls (regression: REQ-MAIL-21)', () => {
+  it('does not chip an inline image absent from undecodableInlineCids (regression: REQ-MAIL-21)', () => {
     const email = makeEmail([
       {
         disposition: 'inline',
@@ -125,13 +125,13 @@ describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-
     ]);
     const { container } = render(AttachmentList, {
       email,
-      undecodableInlineUrls: new Set<string>(),
+      undecodableInlineCids: new Set<string>(),
     });
     expect(container.querySelector('section')).toBeNull();
     expect(screen.queryByText('logo.png')).toBeNull();
   });
 
-  it('chips an inline image whose resolved URL is in undecodableInlineUrls', () => {
+  it('chips an inline image whose part.cid is in undecodableInlineCids', () => {
     const email = makeEmail([
       {
         disposition: 'inline',
@@ -141,10 +141,9 @@ describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-
         blobId: 'b0',
       },
     ]);
-    const url = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
     const { container } = render(AttachmentList, {
       email,
-      undecodableInlineUrls: new Set([url]),
+      undecodableInlineCids: new Set(['sig@h.test']),
     });
     expect(container.querySelector('section')).toBeInTheDocument();
     expect(screen.getByText('PastedGraphic-2.tiff')).toBeInTheDocument();
@@ -162,11 +161,12 @@ describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-
         blobId: 'b0',
       },
     ]);
-    const url = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
-    render(AttachmentList, { email, undecodableInlineUrls: new Set([url]) });
+    render(AttachmentList, { email, undecodableInlineCids: new Set(['sig@h.test']) });
     const downloadIcon = document.querySelector('.download-icon') as HTMLAnchorElement | null;
     expect(downloadIcon).toBeInTheDocument();
-    expect(downloadIcon?.getAttribute('href')).toBe(url);
+    expect(downloadIcon?.getAttribute('href')).toBe(
+      '/jmap/download/acct1/b0/PastedGraphic-2.tiff',
+    );
   });
 
   it('mixes a chipped undecodable inline image with a normal (unchipped) inline image', () => {
@@ -186,10 +186,30 @@ describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-
         blobId: 'b1',
       },
     ]);
-    const tiffUrl = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
-    render(AttachmentList, { email, undecodableInlineUrls: new Set([tiffUrl]) });
+    render(AttachmentList, { email, undecodableInlineCids: new Set(['sig@h.test']) });
     expect(screen.getByText('PastedGraphic-2.tiff')).toBeInTheDocument();
     expect(screen.queryByText('ok.png')).toBeNull();
+  });
+
+  it('chips an undecodable inline image with NO filename via its cid, despite the AttachmentList/cidMap default-name divergence (issue #270)', () => {
+    // No `name` set: AttachmentList's own urlFor() would build a URL ending
+    // in ".../attachment" while MessageAccordion's cidMap builds one ending
+    // in ".../inline" for the same part. Matching on part.cid sidesteps
+    // that divergence entirely.
+    const email = makeEmail([
+      {
+        disposition: 'inline',
+        name: null,
+        cid: 'unnamed@h.test',
+        type: 'image/tiff',
+        blobId: 'b0',
+      },
+    ]);
+    render(AttachmentList, { email, undecodableInlineCids: new Set(['unnamed@h.test']) });
+    expect(screen.getByText('(unnamed)')).toBeInTheDocument();
+    const downloadIcon = document.querySelector('.download-icon') as HTMLAnchorElement | null;
+    expect(downloadIcon).toBeInTheDocument();
+    expect(downloadIcon?.getAttribute('href')).toBe('/jmap/download/acct1/b0/attachment');
   });
 });
 

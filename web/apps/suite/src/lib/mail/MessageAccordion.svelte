@@ -312,34 +312,50 @@
     return out;
   });
 
-  // ── Undecodable inline images (issue #269) ─────────────────────────────
+  // ── Undecodable inline images (issue #269, re-keyed for #270) ──────────
   //
   // REQ-MAIL-21 / REQ-ATT-26 reconciliation: an inline image that renders
   // normally stays out of the attachment chip strip; one the browser cannot
-  // decode gets a download chip so its bytes are still reachable. Two
-  // signals feed `undecodableInlineUrls`, both keyed by the resolved cidMap
-  // URL (see lib/mail/image-decode.ts for the detection strategy):
+  // decode gets a download chip so its bytes are still reachable.
   //
-  //   - `staticUndecodableUrls`: a content-type hint computed synchronously
+  // `undecodableInlineCids` is keyed by `part.cid` — a stable part identity
+  // — rather than the reconstructed cidMap download URL. cidMap and
+  // AttachmentList's own `urlFor` each pick their own default display name
+  // for a part with no filename ('inline' vs 'attachment'), so the two
+  // computed URLs diverge for unnamed parts even though they describe the
+  // same part; matching on `part.cid` makes that divergence irrelevant
+  // (issue #270). Two signals feed the set (see lib/mail/image-decode.ts
+  // for the detection strategy):
+  //
+  //   - `staticUndecodableCids`: a content-type hint computed synchronously
   //     from the attachment part's MIME type (e.g. image/tiff).
-  //   - `runtimeUndecodableUrls` / `runtimeDecodedUrls`: the actual <img>
+  //   - `runtimeUndecodableCids` / `runtimeDecodedCids`: the actual <img>
   //     decode outcome reported by HtmlBody once the browser has tried to
   //     render it. This is authoritative and can override the static hint
-  //     in either direction.
-  let staticUndecodableUrls = $derived.by<Set<string>>(() => {
+  //     in either direction. HtmlBody observes the rendered <img>'s `src`
+  //     (a resolved cidMap URL), so `urlToCid` below maps that URL back to
+  //     the cid before touching the runtime sets.
+  let staticUndecodableCids = $derived.by<Set<string>>(() => {
     const out = new Set<string>();
     for (const part of email.attachments ?? []) {
       if (part.disposition !== 'inline') continue;
       if (!part.cid || !part.blobId) continue;
-      const url = cidMap[part.cid];
-      if (!url) continue;
-      if (isKnownNonRenderableImageType(part.type)) out.add(url);
+      if (isKnownNonRenderableImageType(part.type)) out.add(part.cid);
     }
     return out;
   });
 
-  let runtimeUndecodableUrls = $state<Set<string>>(new Set());
-  let runtimeDecodedUrls = $state<Set<string>>(new Set());
+  // Reverse lookup from the resolved cidMap URL back to the cid that
+  // produced it, so the URL-only decode signal from HtmlBody can be
+  // re-keyed to the stable part identity.
+  let urlToCid = $derived.by<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const [cid, url] of Object.entries(cidMap)) out[url] = cid;
+    return out;
+  });
+
+  let runtimeUndecodableCids = $state<Set<string>>(new Set());
+  let runtimeDecodedCids = $state<Set<string>>(new Set());
 
   // Reset the runtime signals whenever the accordion switches to a
   // different message so a previous message's decode outcomes never leak
@@ -347,41 +363,45 @@
   $effect(() => {
     const id = email.id;
     untrack(() => {
-      runtimeUndecodableUrls = new Set();
-      runtimeDecodedUrls = new Set();
+      runtimeUndecodableCids = new Set();
+      runtimeDecodedCids = new Set();
     });
   });
 
-  let undecodableInlineUrls = $derived.by<Set<string>>(() => {
-    const out = new Set(staticUndecodableUrls);
-    for (const url of runtimeUndecodableUrls) out.add(url);
-    for (const url of runtimeDecodedUrls) out.delete(url);
+  let undecodableInlineCids = $derived.by<Set<string>>(() => {
+    const out = new Set(staticUndecodableCids);
+    for (const cid of runtimeUndecodableCids) out.add(cid);
+    for (const cid of runtimeDecodedCids) out.delete(cid);
     return out;
   });
 
   function handleImageDecodeFailed(url: string): void {
-    if (runtimeUndecodableUrls.has(url)) return;
-    const next = new Set(runtimeUndecodableUrls);
-    next.add(url);
-    runtimeUndecodableUrls = next;
-    if (runtimeDecodedUrls.has(url)) {
-      const decoded = new Set(runtimeDecodedUrls);
-      decoded.delete(url);
-      runtimeDecodedUrls = decoded;
+    const cid = urlToCid[url];
+    if (!cid) return;
+    if (runtimeUndecodableCids.has(cid)) return;
+    const next = new Set(runtimeUndecodableCids);
+    next.add(cid);
+    runtimeUndecodableCids = next;
+    if (runtimeDecodedCids.has(cid)) {
+      const decoded = new Set(runtimeDecodedCids);
+      decoded.delete(cid);
+      runtimeDecodedCids = decoded;
     }
   }
 
   function handleImageDecodeSucceeded(url: string): void {
-    if (runtimeUndecodableUrls.has(url)) {
-      const next = new Set(runtimeUndecodableUrls);
-      next.delete(url);
-      runtimeUndecodableUrls = next;
+    const cid = urlToCid[url];
+    if (!cid) return;
+    if (runtimeUndecodableCids.has(cid)) {
+      const next = new Set(runtimeUndecodableCids);
+      next.delete(cid);
+      runtimeUndecodableCids = next;
     }
-    if (!staticUndecodableUrls.has(url)) return;
-    if (runtimeDecodedUrls.has(url)) return;
-    const decoded = new Set(runtimeDecodedUrls);
-    decoded.add(url);
-    runtimeDecodedUrls = decoded;
+    if (!staticUndecodableCids.has(cid)) return;
+    if (runtimeDecodedCids.has(cid)) return;
+    const decoded = new Set(runtimeDecodedCids);
+    decoded.add(cid);
+    runtimeDecodedCids = decoded;
   }
 
   // ── Reactions (Gmail-style: anchored to the message header) ────────────
@@ -913,7 +933,7 @@
         <p class="empty">(no body)</p>
       {/if}
 
-      <AttachmentList {email} {undecodableInlineUrls} />
+      <AttachmentList {email} {undecodableInlineCids} />
     </div>
   {/if}
 </article>

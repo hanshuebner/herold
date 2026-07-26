@@ -18,9 +18,13 @@
    * belongs to the rendered body and a duplicate card is the wrong UX. An
    * inline image the browser could not decode (e.g. a TIFF signature
    * graphic; see lib/mail/image-decode.ts) gets exactly the same card as a
-   * regular attachment, via the `undecodableInlineUrls` prop computed by
+   * regular attachment, via the `undecodableInlineCids` prop computed by
    * MessageAccordion.svelte, so its original bytes are still reachable when
-   * it never displays.
+   * it never displays. The set is keyed by `part.cid` (issue #270) rather
+   * than a reconstructed download URL — this component's own `urlFor`
+   * picks a different default filename than MessageAccordion's cidMap for a
+   * part with no name, so URL-keyed matching missed exactly the unnamed
+   * case.
    *
    * Architecture note: inline-image overlay buttons on the rendered iframe
    * body live in HtmlBody.svelte. This component handles the card strip and
@@ -37,15 +41,14 @@
   interface Props {
     email: Email;
     /**
-     * Resolved cid URLs (the same values used as `inlineImageMeta` keys in
-     * MessageAccordion.svelte) of inline images the browser could not
-     * decode (issue #269). Those parts get a chip in the card strip below,
-     * exactly like a regular attachment; every other inline part stays
-     * excluded per REQ-MAIL-21.
+     * `part.cid` values (a stable part identity, issue #270) of inline
+     * images the browser could not decode (issue #269). Those parts get a
+     * chip in the card strip below, exactly like a regular attachment;
+     * every other inline part stays excluded per REQ-MAIL-21.
      */
-    undecodableInlineUrls?: Set<string>;
+    undecodableInlineCids?: Set<string>;
   }
-  let { email, undecodableInlineUrls = new Set() }: Props = $props();
+  let { email, undecodableInlineCids = new Set() }: Props = $props();
 
   let accountId = $derived<string | null>(
     auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null,
@@ -71,8 +74,7 @@
   let attachParts = $derived(
     allParts.filter((p) => {
       if (p.disposition !== 'inline') return true;
-      const url = urlFor(p);
-      return url !== null && undecodableInlineUrls.has(url);
+      return p.cid !== null && undecodableInlineCids.has(p.cid);
     }),
   );
 
