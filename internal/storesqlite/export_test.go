@@ -70,6 +70,27 @@ var Migration0084SQL = func() string {
 	return string(body)
 }()
 
+// Migration0100SQL is the verbatim 0100_messages_failed_image_signal.sql
+// body, re-exported so TestMigration0100RetryableBackfill can assert
+// Migration0100BackfillSQL below is not a hand-copied statement that
+// has drifted from the real migration file.
+var Migration0100SQL = func() string {
+	body, err := migrationsFS.ReadFile("migrations/0100_messages_failed_image_signal.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}()
+
+// Migration0100BackfillSQL is the verbatim back-fill UPDATE statement
+// from 0100_messages_failed_image_signal.sql (issue #271), re-exported
+// for TestMigration0100RetryableBackfill in storesqlite_test.go. Only
+// the UPDATE is exported (not the whole file): the ALTER TABLE
+// statements that precede it cannot be re-run against a DB that
+// already has the columns, which every test DB does once
+// storesqlite.Open has run all migrations once.
+const Migration0100BackfillSQL = `UPDATE messages SET retryable_failed_image_count = failed_image_count WHERE failed_image_count > 0`
+
 // Migration0099SQL is the verbatim 0099_drop_principal_managed_domains.sql
 // body, re-exported for the migration-fidelity test in storesqlite_test.go
 // (issue #237) so the test exercises the production migration text
