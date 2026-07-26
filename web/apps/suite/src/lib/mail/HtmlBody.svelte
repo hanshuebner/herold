@@ -32,10 +32,21 @@
    *
    *   This approach avoids injecting DOM into the sandboxed document while
    *   still giving the user a single-action download per inline image.
+   *
+   * Undecodable inline images (issue #269, REQ-ATT-26 / REQ-MAIL-21):
+   *   Resolved cid: images the browser cannot actually decode (a TIFF pasted
+   *   into an Apple Mail signature is the reproduction case; browsers do not
+   *   render TIFF in <img>) fire an `error` event or settle with zero
+   *   natural dimensions. `wireInlineImageDecodeChecks()` reports that
+   *   outcome to the parent (`onImageDecodeFailed`/`onImageDecodeSucceeded`),
+   *   which folds it into the attachment chip strip (AttachmentList.svelte)
+   *   so the original bytes stay reachable via a download chip even though
+   *   the image itself never displays.
    */
   import { sanitizeHtml } from './sanitize';
   import { findScrollParent } from './scroll-parent';
   import { t } from '../i18n/i18n.svelte';
+  import { inlineImageDecodeStatus } from './image-decode';
 
   interface Props {
     html: string;
@@ -65,6 +76,25 @@
      * forced into an oversized gray block (issue #160).
      */
     internalizePending?: boolean;
+    /**
+     * Called (issue #269) when an inline image resolved via `inlineImageMeta`
+     * fires an `error` event, or finishes loading with zero natural
+     * dimensions -- i.e. the browser could not decode it. Keyed by the same
+     * resolved URL used as `inlineImageMeta`'s key. The caller
+     * (MessageAccordion.svelte) folds this into the set of inline images
+     * surfaced as download chips (REQ-ATT-26 / REQ-MAIL-21).
+     */
+    onImageDecodeFailed?: (url: string) => void;
+    /**
+     * Called (issue #269) when an inline image resolved via `inlineImageMeta`
+     * finishes loading with non-zero natural dimensions -- i.e. the browser
+     * decoded it successfully. This overrides any earlier decode-failed
+     * signal (including the static content-type hint computed by the
+     * caller), so an image type that is statically flagged but actually
+     * renders in this browser (e.g. Safari's native TIFF support) does not
+     * keep a stale chip.
+     */
+    onImageDecodeSucceeded?: (url: string) => void;
   }
   let {
     html,
@@ -73,6 +103,8 @@
     cidDimensions,
     inlineImageMeta,
     internalizePending = false,
+    onImageDecodeFailed,
+    onImageDecodeSucceeded,
   }: Props = $props();
 
   let frameEl = $state<HTMLIFrameElement | null>(null);
@@ -178,6 +210,50 @@
     overlayButtons = buttons;
   }
 
+  /**
+   * Inline images already checked this srcdoc load, so the load/error
+   * listeners attached below are not re-attached on every recomputeHeight()
+   * call (the body ResizeObserver can fire many times per load).
+   */
+  let decodeCheckedImages = new WeakSet<HTMLImageElement>();
+
+  /**
+   * Wire the runtime undecodable-image signal (issue #269): for every
+   * resolved inline `<img>` the overlay also tracks (via `inlineImageMeta`),
+   * report its decode outcome once it settles. Called once per iframe load
+   * from onLoad() — the images themselves are fresh elements on every
+   * srcdoc replacement, so there is nothing to unwire.
+   */
+  function wireInlineImageDecodeChecks(): void {
+    const doc = frameEl?.contentDocument;
+    if (!doc?.body) return;
+    if (!inlineImageMeta || Object.keys(inlineImageMeta).length === 0) return;
+    for (const img of doc.querySelectorAll<HTMLImageElement>('img[src]')) {
+      const src = img.getAttribute('src');
+      if (!src || !inlineImageMeta[src]) continue;
+      if (decodeCheckedImages.has(img)) continue;
+      decodeCheckedImages.add(img);
+
+      const report = (): void => {
+        const status = inlineImageDecodeStatus(img);
+        if (status === 'success') onImageDecodeSucceeded?.(src);
+        else if (status === 'failure') onImageDecodeFailed?.(src);
+        // 'pending' — a later load/error event will report the real outcome.
+      };
+      if (img.complete) {
+        report();
+      } else {
+        img.addEventListener('load', report, { once: true });
+      }
+      // A decode failure that the browser surfaces as a load error (rather
+      // than a "loaded but zero-dimension" image) still needs an explicit
+      // failure report — `complete` can be true with naturalWidth 0 in that
+      // case too, but not every browser guarantees it, so the event is the
+      // authoritative failure signal on top of the naturalWidth check.
+      img.addEventListener('error', () => onImageDecodeFailed?.(src), { once: true });
+    }
+  }
+
   function recomputeHeight(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
@@ -211,6 +287,10 @@
   function onLoad(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
+    // Fresh document -> fresh <img> elements; nothing from the previous
+    // srcdoc load can still be tracked.
+    decodeCheckedImages = new WeakSet<HTMLImageElement>();
+    wireInlineImageDecodeChecks();
     requestAnimationFrame(() => {
       recomputeHeight();
     });

@@ -20,6 +20,7 @@
     truncatedHtmlBodyPartId,
     fetchFullHtmlBody,
   } from './html-body-full';
+  import { isKnownNonRenderableImageType } from './image-decode';
   import { mail } from './store.svelte';
   import { settings } from '../settings/settings.svelte';
   import { jmap } from '../jmap/client';
@@ -310,6 +311,78 @@
     }
     return out;
   });
+
+  // ── Undecodable inline images (issue #269) ─────────────────────────────
+  //
+  // REQ-MAIL-21 / REQ-ATT-26 reconciliation: an inline image that renders
+  // normally stays out of the attachment chip strip; one the browser cannot
+  // decode gets a download chip so its bytes are still reachable. Two
+  // signals feed `undecodableInlineUrls`, both keyed by the resolved cidMap
+  // URL (see lib/mail/image-decode.ts for the detection strategy):
+  //
+  //   - `staticUndecodableUrls`: a content-type hint computed synchronously
+  //     from the attachment part's MIME type (e.g. image/tiff).
+  //   - `runtimeUndecodableUrls` / `runtimeDecodedUrls`: the actual <img>
+  //     decode outcome reported by HtmlBody once the browser has tried to
+  //     render it. This is authoritative and can override the static hint
+  //     in either direction.
+  let staticUndecodableUrls = $derived.by<Set<string>>(() => {
+    const out = new Set<string>();
+    for (const part of email.attachments ?? []) {
+      if (part.disposition !== 'inline') continue;
+      if (!part.cid || !part.blobId) continue;
+      const url = cidMap[part.cid];
+      if (!url) continue;
+      if (isKnownNonRenderableImageType(part.type)) out.add(url);
+    }
+    return out;
+  });
+
+  let runtimeUndecodableUrls = $state<Set<string>>(new Set());
+  let runtimeDecodedUrls = $state<Set<string>>(new Set());
+
+  // Reset the runtime signals whenever the accordion switches to a
+  // different message so a previous message's decode outcomes never leak
+  // into the next one's chip strip.
+  $effect(() => {
+    const id = email.id;
+    untrack(() => {
+      runtimeUndecodableUrls = new Set();
+      runtimeDecodedUrls = new Set();
+    });
+  });
+
+  let undecodableInlineUrls = $derived.by<Set<string>>(() => {
+    const out = new Set(staticUndecodableUrls);
+    for (const url of runtimeUndecodableUrls) out.add(url);
+    for (const url of runtimeDecodedUrls) out.delete(url);
+    return out;
+  });
+
+  function handleImageDecodeFailed(url: string): void {
+    if (runtimeUndecodableUrls.has(url)) return;
+    const next = new Set(runtimeUndecodableUrls);
+    next.add(url);
+    runtimeUndecodableUrls = next;
+    if (runtimeDecodedUrls.has(url)) {
+      const decoded = new Set(runtimeDecodedUrls);
+      decoded.delete(url);
+      runtimeDecodedUrls = decoded;
+    }
+  }
+
+  function handleImageDecodeSucceeded(url: string): void {
+    if (runtimeUndecodableUrls.has(url)) {
+      const next = new Set(runtimeUndecodableUrls);
+      next.delete(url);
+      runtimeUndecodableUrls = next;
+    }
+    if (!staticUndecodableUrls.has(url)) return;
+    if (runtimeDecodedUrls.has(url)) return;
+    const decoded = new Set(runtimeDecodedUrls);
+    decoded.add(url);
+    runtimeDecodedUrls = decoded;
+  }
 
   // ── Reactions (Gmail-style: anchored to the message header) ────────────
   //
@@ -805,6 +878,8 @@
           {cidDimensions}
           {inlineImageMeta}
           internalizePending={email.internalizePending === true}
+          onImageDecodeFailed={handleImageDecodeFailed}
+          onImageDecodeSucceeded={handleImageDecodeSucceeded}
         />
       {:else if text && textSplit}
         {#if textSplit.head}
@@ -838,7 +913,7 @@
         <p class="empty">(no body)</p>
       {/if}
 
-      <AttachmentList {email} />
+      <AttachmentList {email} {undecodableInlineUrls} />
     </div>
   {/if}
 </article>

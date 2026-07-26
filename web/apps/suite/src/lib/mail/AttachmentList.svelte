@@ -13,9 +13,14 @@
    *     inline images are placed under an `inline/` prefix in the zip.
    *   - "Attachments only" secondary action excludes inline images.
    *
-   * REQ-MAIL-21: inline images (disposition=inline) are excluded from the
-   * card strip entirely. They belong to the rendered body. The inlineParts
-   * channel is kept only for the "Download all" bulk action.
+   * REQ-MAIL-21 / REQ-ATT-26 (issue #269): an inline image (disposition=
+   * inline) that renders normally is excluded from the card strip — it
+   * belongs to the rendered body and a duplicate card is the wrong UX. An
+   * inline image the browser could not decode (e.g. a TIFF signature
+   * graphic; see lib/mail/image-decode.ts) gets exactly the same card as a
+   * regular attachment, via the `undecodableInlineUrls` prop computed by
+   * MessageAccordion.svelte, so its original bytes are still reachable when
+   * it never displays.
    *
    * Architecture note: inline-image overlay buttons on the rendered iframe
    * body live in HtmlBody.svelte. This component handles the card strip and
@@ -31,21 +36,22 @@
 
   interface Props {
     email: Email;
+    /**
+     * Resolved cid URLs (the same values used as `inlineImageMeta` keys in
+     * MessageAccordion.svelte) of inline images the browser could not
+     * decode (issue #269). Those parts get a chip in the card strip below,
+     * exactly like a regular attachment; every other inline part stays
+     * excluded per REQ-MAIL-21.
+     */
+    undecodableInlineUrls?: Set<string>;
   }
-  let { email }: Props = $props();
+  let { email, undecodableInlineUrls = new Set() }: Props = $props();
 
   let accountId = $derived<string | null>(
     auth.session?.primaryAccounts['urn:ietf:params:jmap:mail'] ?? null,
   );
 
   let allParts = $derived<EmailBodyPart[]>(email.attachments ?? []);
-
-  /** Regular attachments: disposition=attachment or no disposition set but not inline. */
-  let attachParts = $derived(
-    allParts.filter((p) => p.disposition !== 'inline'),
-  );
-
-  let downloading = $state(false);
 
   function urlFor(part: EmailBodyPart): string | null {
     if (!accountId || !part.blobId) return null;
@@ -56,6 +62,21 @@
       name: part.name ?? 'attachment',
     });
   }
+
+  /**
+   * Regular (non-inline) attachments, plus the subset of inline images this
+   * browser could not decode (issue #269, REQ-ATT-26). A normally-rendering
+   * inline image is excluded per REQ-MAIL-21.
+   */
+  let attachParts = $derived(
+    allParts.filter((p) => {
+      if (p.disposition !== 'inline') return true;
+      const url = urlFor(p);
+      return url !== null && undecodableInlineUrls.has(url);
+    }),
+  );
+
+  let downloading = $state(false);
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -112,8 +133,10 @@
 
   /**
    * Zip and download every visible attachment (attachParts only).
-   * REQ-MAIL-21: inline body parts are excluded — they render in the HTML
-   * body and are not user-visible as discrete attachments.
+   * REQ-MAIL-21: normally-rendering inline body parts are excluded — they
+   * render in the HTML body and are not user-visible as discrete
+   * attachments. An undecodable inline image is part of attachParts (issue
+   * #269) and is therefore included here too.
    */
   async function downloadAll(): Promise<void> {
     if (!accountId || downloading) return;

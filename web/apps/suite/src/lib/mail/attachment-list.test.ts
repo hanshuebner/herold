@@ -112,6 +112,87 @@ describe('AttachmentList: inline images stay out of the card strip (REQ-MAIL-21)
   });
 });
 
+describe('AttachmentList: undecodable inline images get a chip (issue #269, REQ-ATT-26)', () => {
+  it('does not chip an inline image absent from undecodableInlineUrls (regression: REQ-MAIL-21)', () => {
+    const email = makeEmail([
+      {
+        disposition: 'inline',
+        name: 'logo.png',
+        cid: 'logo@h.test',
+        type: 'image/png',
+        blobId: 'b0',
+      },
+    ]);
+    const { container } = render(AttachmentList, {
+      email,
+      undecodableInlineUrls: new Set<string>(),
+    });
+    expect(container.querySelector('section')).toBeNull();
+    expect(screen.queryByText('logo.png')).toBeNull();
+  });
+
+  it('chips an inline image whose resolved URL is in undecodableInlineUrls', () => {
+    const email = makeEmail([
+      {
+        disposition: 'inline',
+        name: 'PastedGraphic-2.tiff',
+        cid: 'sig@h.test',
+        type: 'image/tiff',
+        blobId: 'b0',
+      },
+    ]);
+    const url = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
+    const { container } = render(AttachmentList, {
+      email,
+      undecodableInlineUrls: new Set([url]),
+    });
+    expect(container.querySelector('section')).toBeInTheDocument();
+    expect(screen.getByText('PastedGraphic-2.tiff')).toBeInTheDocument();
+  });
+
+  it('a message with only one undecodable inline image still gets a discoverable download chip', () => {
+    // The exact issue #269 reproduction shape: one inline TIFF part, no
+    // regular attachments — the chip strip must still render.
+    const email = makeEmail([
+      {
+        disposition: 'inline',
+        name: 'PastedGraphic-2.tiff',
+        cid: 'sig@h.test',
+        type: 'image/tiff',
+        blobId: 'b0',
+      },
+    ]);
+    const url = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
+    render(AttachmentList, { email, undecodableInlineUrls: new Set([url]) });
+    const downloadIcon = document.querySelector('.download-icon') as HTMLAnchorElement | null;
+    expect(downloadIcon).toBeInTheDocument();
+    expect(downloadIcon?.getAttribute('href')).toBe(url);
+  });
+
+  it('mixes a chipped undecodable inline image with a normal (unchipped) inline image', () => {
+    const email = makeEmail([
+      {
+        disposition: 'inline',
+        name: 'PastedGraphic-2.tiff',
+        cid: 'sig@h.test',
+        type: 'image/tiff',
+        blobId: 'b0',
+      },
+      {
+        disposition: 'inline',
+        name: 'ok.png',
+        cid: 'ok@h.test',
+        type: 'image/png',
+        blobId: 'b1',
+      },
+    ]);
+    const tiffUrl = '/jmap/download/acct1/b0/PastedGraphic-2.tiff';
+    render(AttachmentList, { email, undecodableInlineUrls: new Set([tiffUrl]) });
+    expect(screen.getByText('PastedGraphic-2.tiff')).toBeInTheDocument();
+    expect(screen.queryByText('ok.png')).toBeNull();
+  });
+});
+
 describe('AttachmentList: Gmail-style card type badges', () => {
   it('renders a red PDF badge with label "PDF" for application/pdf', () => {
     const email = makeEmail([
