@@ -370,6 +370,85 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	// behaviour and is unused by herold's other signal handlers
 	// (SIGHUP=reload, SIGINT/SIGTERM=shutdown).
 	observe.StartHeapDumpOnSignal(ctx, logger.With("subsystem", "memstats"), "", syscall.SIGUSR1)
+
+	// Lifecycle errgroup: every long-running goroutine (FTS worker,
+	// metrics serve, every protocol listener serve) is registered here
+	// so the StartServer ctx-cancel path waits for them on shutdown.
+	// STANDARDS §5: no fire-and-forget goroutines on the lifecycle
+	// surface. The group's ctx is derived from the StartServer ctx so
+	// any goroutine returning a non-nil error cancels its peers.
+	//
+	// Declared here, before the ACME block below, so the metrics HTTP
+	// server can bind immediately rather than after the synchronous
+	// initial cert-provisioning call.
+	g, gctx := errgroup.WithContext(ctx)
+
+	// Metrics HTTP server. Bound before the ACME initial-provisioning
+	// block below so the operator health/metrics surface
+	// (cfg.Observability.MetricsBind, typically 127.0.0.1:9090) is
+	// reachable immediately at boot. Deploy tooling health-checks this
+	// port; if it only bound after EnsureCert returned, a cold or
+	// renewing ACME cache (dns-01 propagation can take a minute or more)
+	// would leave the port unreachable for longer than the deploy's
+	// health-check window, causing a rollback of an otherwise-healthy
+	// binary (re #268). REQ-OPS-111's cert-availability gate still
+	// applies to overall readiness (health.MarkReady/Ready below) and to
+	// the mail/TLS listeners (bound further down, after EnsureCert
+	// returns) — only this metrics endpoint is decoupled from cert
+	// issuance. Bind failures degrade to a warn log (not fatal —
+	// operators can run without a metrics endpoint) but a post-bind
+	// serve error propagates and triggers shutdown.
+	var metricsShutdown func() error
+	if cfg.Observability.MetricsBind != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", observe.MetricsHandler())
+		srv := &http.Server{
+			Addr:    cfg.Observability.MetricsBind,
+			Handler: mux,
+		}
+		ln, lerr := net.Listen("tcp", cfg.Observability.MetricsBind)
+		if lerr != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "metrics listen failed",
+				slog.String("bind", cfg.Observability.MetricsBind),
+				slog.String("err", lerr.Error()))
+		} else {
+			if opts.ListenerAddrs != nil {
+				if opts.ListenerAddrsMu != nil {
+					opts.ListenerAddrsMu.Lock()
+					opts.ListenerAddrs["metrics"] = ln.Addr().String()
+					opts.ListenerAddrsMu.Unlock()
+				} else {
+					opts.ListenerAddrs["metrics"] = ln.Addr().String()
+				}
+			}
+			g.Go(func() error {
+				if err := srv.Serve(ln); err != nil &&
+					!errors.Is(err, http.ErrServerClosed) &&
+					!errors.Is(err, net.ErrClosed) {
+					logger.LogAttrs(context.Background(), slog.LevelWarn,
+						"metrics listener exited",
+						slog.String("err", err.Error()))
+					return err
+				}
+				return nil
+			})
+			metricsShutdown = func() error {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				return srv.Shutdown(shutdownCtx)
+			}
+			// Guarantee the listener is released even if StartServer
+			// returns early below (e.g. a later subsystem fails to
+			// construct), so a retry in the same process does not hit
+			// "address already in use".
+			defer func() {
+				if metricsShutdown != nil {
+					_ = metricsShutdown()
+				}
+			}()
+		}
+	}
+
 	if cfg.Acme != nil {
 		health.MarkACMERequired()
 		acmeHTTPChallenger = acme.NewHTTPChallenger()
@@ -1004,13 +1083,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	}
 	defer boundListeners.Close()
 
-	// Lifecycle errgroup: every long-running goroutine (FTS worker,
-	// metrics serve, every protocol listener serve) is registered here
-	// so the StartServer ctx-cancel path waits for them on shutdown.
-	// STANDARDS §5: no fire-and-forget goroutines on the lifecycle
-	// surface. The group's ctx is derived from the StartServer ctx so
-	// any goroutine returning a non-nil error cancels its peers.
-	g, gctx := errgroup.WithContext(ctx)
+	// g / gctx (the lifecycle errgroup) were declared earlier, before the
+	// ACME block, so the metrics HTTP server could be registered on it
+	// ahead of the synchronous initial cert-provisioning call.
 
 	// TLS cert file watcher shutdown: stop when the server context cancels.
 	// tlsCertWatcher is nil when no file-source certs are configured.
@@ -1541,42 +1616,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return nil
 	})
 
-	// Metrics HTTP server. Bound here under the same errgroup so
-	// shutdown drains it; bind failures degrade to a warn log (not
-	// fatal — operators can run without a metrics endpoint) but a
-	// post-bind serve error propagates and triggers shutdown.
-	var metricsShutdown func() error
-	if cfg.Observability.MetricsBind != "" {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", observe.MetricsHandler())
-		srv := &http.Server{
-			Addr:    cfg.Observability.MetricsBind,
-			Handler: mux,
-		}
-		ln, lerr := net.Listen("tcp", cfg.Observability.MetricsBind)
-		if lerr != nil {
-			logger.LogAttrs(ctx, slog.LevelWarn, "metrics listen failed",
-				slog.String("bind", cfg.Observability.MetricsBind),
-				slog.String("err", lerr.Error()))
-		} else {
-			g.Go(func() error {
-				if err := srv.Serve(ln); err != nil &&
-					!errors.Is(err, http.ErrServerClosed) &&
-					!errors.Is(err, net.ErrClosed) {
-					logger.LogAttrs(context.Background(), slog.LevelWarn,
-						"metrics listener exited",
-						slog.String("err", err.Error()))
-					return err
-				}
-				return nil
-			})
-			metricsShutdown = func() error {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				return srv.Shutdown(shutdownCtx)
-			}
-		}
-	}
+	// metricsShutdown was set (if configured) by the metrics HTTP server
+	// block above, ahead of the ACME initial-provisioning call; drain()
+	// below calls it to stop that goroutine on shutdown.
 
 	// Protocol listener serve goroutines, all under the same lifecycle
 	// group. A bind failure on one listener cancels gctx and all peers
