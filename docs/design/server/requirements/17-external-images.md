@@ -65,7 +65,7 @@ that meaningfully decouples delivery from open.
 | REQ-EXTIMG-22 | Per-message image count cap: default 100. Candidates beyond the cap are skipped (left as their original URL); the rewriter records a `truncated_at = N` flag in the per-message audit. |
 | REQ-EXTIMG-23 | Per-message cumulative byte cap: default 50 MiB. When cumulative bytes for the message would exceed this cap, remaining candidates are skipped. |
 | REQ-EXTIMG-24 | Per-image timeouts: 5 s connect, 30 s total. Per-message wall-clock budget: 60 s. The wall-clock cap is enforced even if per-image timeouts are loose. |
-| REQ-EXTIMG-25 | HTTPS is the default; `http://` URLs are refused by default (`require_https = true`). Operators who serve users with legitimate http-image needs flip the toggle. |
+| REQ-EXTIMG-25 | `http://` image origins are internalized by default (`require_https` defaults to `false`). Operators who want to restrict internalization to HTTPS origins set `require_https = true`. This governs the URL *scheme* only; the SSRF guard's destination checks (REQ-EXTIMG-30..37) apply to every fetch regardless of scheme and are not affected by this toggle. |
 | REQ-EXTIMG-26 | Redirects (3xx) are followed up to a configurable depth (default 3). Every redirect is re-validated against the SSRF guard; a redirect to a blocked address aborts the fetch. The final fetched URL is recorded. |
 | REQ-EXTIMG-27 | Response `Content-Type` is captured and stored on the inline part. When the response declares a non-image MIME type (`text/html`, `application/javascript`, etc.) the fetch is recorded as `failed: not_image` and the bytes are discarded. |
 | REQ-EXTIMG-28 | Empty / zero-byte responses are recorded as `failed: empty` and the original URL is preserved. |
@@ -177,7 +177,7 @@ per_image_connect_timeout = "5s"
 per_image_total_timeout  = "30s"
 per_message_timeout      = "60s"
 concurrent_fetches       = 8
-require_https            = true
+require_https            = false   # default; set true to restrict internalization to https:// origins
 follow_redirects_max     = 3
 
 [external_images.network]
