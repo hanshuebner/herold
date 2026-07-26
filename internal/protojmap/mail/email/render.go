@@ -674,8 +674,13 @@ func fillMissing(t []bodyPart, h []bodyPart) ([]bodyPart, []bodyPart) {
 // entry's actual type is text/html -- either a genuine text/html leaf, or a
 // text/html leaf promoted into textParts by resolveBodyLists's RFC 8621
 // §4.1.4 symmetric fill (re #258) for a message with no text/plain part --
-// the value is run through mailparse.ExtractTextFromHTML instead of being
-// used verbatim, matching mailparse.BodyPreview's fallback (re #263).
+// the value is run through mailparse.ExtractTextFromHTML, matching
+// mailparse.BodyPreview's fallback (re #263). A genuine text/plain value is
+// run through mailparse.CollapseWhitespace, the same whitespace policy
+// ExtractTextFromHTML applies, so the preview is a clean single-line
+// snippet and agrees byte-for-byte with mailparse.BodyPreview regardless of
+// the value's line endings (CRLF, LF, or RFC 3676 format=flowed reflow
+// output; re #265).
 func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int) string {
 	if len(textParts) == 0 {
 		return ""
@@ -693,7 +698,7 @@ func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int)
 	if strings.EqualFold(part.Type, "text/html") {
 		s = mailparse.ExtractTextFromHTML(v.Value)
 	} else {
-		s = strings.TrimSpace(v.Value)
+		s = mailparse.CollapseWhitespace(v.Value)
 	}
 	if len(s) <= n {
 		return s

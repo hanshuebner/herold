@@ -12,14 +12,15 @@ import (
 // Email.preview field so that ingest, the background body-meta backfill
 // worker, and the metadata-only render path (previewFromValues in
 // internal/protojmap/mail/email/render.go) all produce identical values,
-// for both the genuine-text/plain case and the HTML-only case (re #263).
+// for both the genuine-text/plain case and the HTML-only case (re #263),
+// and regardless of the source text's line endings (re #265).
 //
-// The result is TrimSpace-d (or, for the HTML fallback, whitespace-collapsed
-// by ExtractTextFromHTML) before truncation. If n <= 0 the entire text is
-// returned. If the message has neither a text/plain nor a text/html part,
-// the function returns "".
+// The result is whitespace-collapsed by CollapseWhitespace (or, for the
+// HTML fallback, by ExtractTextFromHTML, which applies the same collapse)
+// before truncation. If n <= 0 the entire text is returned. If the message
+// has neither a text/plain nor a text/html part, the function returns "".
 func BodyPreview(m Message, n int) string {
-	s := strings.TrimSpace(firstNonAttachmentTextPlain(m.Body))
+	s := CollapseWhitespace(firstNonAttachmentTextPlain(m.Body))
 	if s == "" {
 		if h := firstNonAttachmentTextHTML(m.Body); h != "" {
 			s = ExtractTextFromHTML(h)

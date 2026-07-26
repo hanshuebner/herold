@@ -9,6 +9,7 @@ package email
 // render_test.go / render_bodylists_test.go.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/mailparse"
@@ -85,6 +86,50 @@ func TestPreview_HTMLOnly_ExtractsText(t *testing.T) {
 	gotBM := previewViaBodyMeta(t, raw)
 	if gotBM != want {
 		t.Errorf("BodyPreview: got %q, want %q", gotBM, want)
+	}
+
+	if got != gotBM {
+		t.Errorf("previewFromValues and BodyPreview disagree: %q vs %q", got, gotBM)
+	}
+}
+
+// TestPreview_PlainCRLFFlowed_WhitespaceCollapsed verifies that a text/plain
+// message previews identically at both computation sites even when the two
+// sites disagree on how the raw text is decoded before the preview is
+// derived (re #265). A format=flowed body's soft-broken line is reflowed
+// (CRLF/CR normalized to LF, the soft break joined) by walkParts before
+// previewFromValues sees it, but mailparse.BodyPreview reads the same
+// part's raw, unreflowed text (CRLF preserved). Collapsing whitespace at
+// both sites -- the same policy ExtractTextFromHTML already applies for the
+// HTML case -- removes the CRLF/LF divergence and yields a clean,
+// single-line preview from either input shape.
+func TestPreview_PlainCRLFFlowed_WhitespaceCollapsed(t *testing.T) {
+	raw := rawMsg(
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: plain crlf flowed",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=utf-8; format=flowed",
+		"",
+		"Line  one\twith a soft break ",
+		"continues here.",
+	)
+	want := "Line one with a soft break continues here."
+
+	got := previewViaRender(t, raw)
+	if got != want {
+		t.Errorf("previewFromValues: got %q, want %q", got, want)
+	}
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("previewFromValues: preview contains an embedded line break: %q", got)
+	}
+
+	gotBM := previewViaBodyMeta(t, raw)
+	if gotBM != want {
+		t.Errorf("BodyPreview: got %q, want %q", gotBM, want)
+	}
+	if strings.ContainsAny(gotBM, "\r\n") {
+		t.Errorf("BodyPreview: preview contains an embedded line break: %q", gotBM)
 	}
 
 	if got != gotBM {

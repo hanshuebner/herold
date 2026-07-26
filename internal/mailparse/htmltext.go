@@ -51,5 +51,20 @@ func ExtractTextFromHTML(htmlSrc string) string {
 		}
 	}
 	walk(doc)
-	return strings.Join(strings.Fields(b.String()), " ")
+	return CollapseWhitespace(b.String())
+}
+
+// CollapseWhitespace collapses every run of whitespace in s (spaces, tabs,
+// CR, LF) to a single space and trims leading/trailing whitespace, per
+// strings.Fields' definition of whitespace. This is the single whitespace
+// policy behind the JMAP Email.preview field: ExtractTextFromHTML applies
+// it to extracted HTML text, and mailparse.BodyPreview /
+// previewFromValues (internal/protojmap/mail/email/render.go) apply it
+// directly to text/plain body text. Applying it at every site makes the
+// preview a clean single-line snippet regardless of the source's line
+// endings -- CRLF, LF, or the LF-only output of RFC 3676 format=flowed
+// reflow -- so the two Email.preview computation sites agree byte-for-byte
+// (re #265).
+func CollapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
