@@ -45,6 +45,7 @@ import {
   tryCommit,
   recipientToString,
   type Recipient,
+  type RecipientFieldName,
 } from './recipient-parse';
 import { buildSelfEmailSet, isFromSelf, isOwnSentMessage } from '../mail/identity-match';
 import { selectReplyIdentity, localAliasesForCc } from './reply-identity';
@@ -61,7 +62,7 @@ import {
   type FileShareSourceInfo,
 } from '../jmap/file-shares';
 
-export type { Recipient };
+export type { Recipient, RecipientFieldName };
 
 type ComposeStatus = 'idle' | 'editing' | 'sending';
 
@@ -1033,6 +1034,60 @@ class ComposeStore {
     this.attachments = this.attachments.map((a) =>
       a.key === key ? { ...a, ...patch } : a,
     );
+  }
+
+  /**
+   * Move the recipient at `fromIndex` in `fromField` to the end of
+   * `toField` (re #272 — drag-and-drop / keyboard "Move to..." between
+   * To/Cc/Bcc). Removes it from the source array, appends it to the
+   * destination array, and re-derives both fields' comma-joined string
+   * form in the same call so no chip is ever dropped or duplicated.
+   * Dropping onto the recipient's own field is a no-op. Revealing Cc/Bcc
+   * as a move destination also opens that field if it was collapsed.
+   */
+  moveRecipient(
+    fromField: RecipientFieldName,
+    fromIndex: number,
+    toField: RecipientFieldName,
+  ): void {
+    if (fromField === toField) return;
+    const source = this.#recipientsFor(fromField);
+    const recipient = source[fromIndex];
+    if (!recipient) return;
+    const nextSource = source.filter((_, i) => i !== fromIndex);
+    const nextDest = [...this.#recipientsFor(toField), recipient];
+    this.#setRecipients(fromField, nextSource);
+    this.#setRecipients(toField, nextDest);
+    if (toField !== 'to') this.ccBccVisible = true;
+  }
+
+  #recipientsFor(field: RecipientFieldName): Recipient[] {
+    switch (field) {
+      case 'to':
+        return this.toRecipients;
+      case 'cc':
+        return this.ccRecipients;
+      case 'bcc':
+        return this.bccRecipients;
+    }
+  }
+
+  #setRecipients(field: RecipientFieldName, recipients: Recipient[]): void {
+    const joined = recipients.map(recipientToString).join(', ');
+    switch (field) {
+      case 'to':
+        this.toRecipients = recipients;
+        this.to = joined;
+        break;
+      case 'cc':
+        this.ccRecipients = recipients;
+        this.cc = joined;
+        break;
+      case 'bcc':
+        this.bccRecipients = recipients;
+        this.bcc = joined;
+        break;
+    }
   }
 
   /** Close and clear. */

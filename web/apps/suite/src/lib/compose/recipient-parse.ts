@@ -16,6 +16,9 @@ export interface Recipient {
   email: string;
 }
 
+/** Which structured recipient field a chip belongs to (re #272). */
+export type RecipientFieldName = 'to' | 'cc' | 'bcc';
+
 // Basic email address pattern: local@domain where domain has at least one dot.
 // Deliberately liberal — RFC 5321 allows many characters; we validate shape
 // rather than trying to be RFC-exhaustive.

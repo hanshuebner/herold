@@ -368,6 +368,10 @@ export const de = {
   // ── Compose ─────────────────────────────────────────────────────────
   // ── Empfänger-Warnungen (re #37) ────────────────────────────────────
   'compose.recipient.invalid': 'Keine gültige E-Mail-Adresse: {token}',
+  // ── Empfänger zwischen Feldern verschieben, Drag-and-Drop + Tastatur (re #272) ──
+  'compose.recipient.move': 'Verschieben',
+  'compose.recipient.moveAria': '{name} in ein anderes Feld verschieben',
+  'compose.recipient.moveTo': 'Nach {field} verschieben',
 
   'compose.title.new': 'Neue Nachricht',
   'compose.title.reply': 'Antwort',

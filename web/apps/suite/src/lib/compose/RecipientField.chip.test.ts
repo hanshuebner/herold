@@ -56,9 +56,11 @@ vi.mock('../auth/auth.svelte', () => ({
 function renderField(chips: Recipient[]) {
   return render(RecipientField, {
     label: 'To',
+    field: 'to',
     chips,
     onChipsChange: vi.fn(),
     onWarning: vi.fn(),
+    onRecipientMove: vi.fn(),
   });
 }
 
@@ -100,9 +102,11 @@ describe('RecipientField blur commits a complete address (REQ-MAIL-11t)', () => 
     const onWarning = vi.fn();
     const { container } = render(RecipientField, {
       label: 'To',
+      field: 'to',
       chips: [],
       onChipsChange,
       onWarning,
+      onRecipientMove: vi.fn(),
     });
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input).not.toBeNull();
@@ -126,9 +130,11 @@ describe('RecipientField blur commits a complete address (REQ-MAIL-11t)', () => 
     const onWarning = vi.fn();
     const { container } = render(RecipientField, {
       label: 'To',
+      field: 'to',
       chips: [],
       onChipsChange,
       onWarning,
+      onRecipientMove: vi.fn(),
     });
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 

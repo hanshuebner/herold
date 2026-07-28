@@ -811,12 +811,14 @@
       <div class="row recipient-row">
         <RecipientField
           label={t('compose.to')}
+          field="to"
           chips={compose.toRecipients}
           onChipsChange={(chips) => {
             compose.toRecipients = chips;
             compose.to = chips.map(recipientToString).join(', ');
           }}
           onWarning={(w) => (toWarning = w)}
+          onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
           autofocus={!compose.replyContext.parentId && compose.status === 'editing'}
@@ -839,12 +841,14 @@
         <div class="row recipient-row">
           <RecipientField
             label={t('compose.cc')}
+            field="cc"
             chips={compose.ccRecipients}
             onChipsChange={(chips) => {
               compose.ccRecipients = chips;
               compose.cc = chips.map(recipientToString).join(', ');
             }}
             onWarning={(w) => (ccWarning = w)}
+            onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
             disabled={compose.status === 'sending'}
           />
         </div>
@@ -854,12 +858,14 @@
         <div class="row recipient-row">
           <RecipientField
             label={t('compose.bcc')}
+            field="bcc"
             chips={compose.bccRecipients}
             onChipsChange={(chips) => {
               compose.bccRecipients = chips;
               compose.bcc = chips.map(recipientToString).join(', ');
             }}
             onWarning={(w) => (bccWarning = w)}
+            onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
             disabled={compose.status === 'sending'}
           />
         </div>

@@ -100,10 +100,12 @@ async function getToastMock() {
 function renderField() {
   return render(RecipientField, {
     label: 'To',
+    field: 'to',
     // Chip email must match the seenAddresses mock entry above.
     chips: [{ email: 'seen@example.com', name: 'Seen User' }],
     onChipsChange: vi.fn(),
     onWarning: vi.fn(),
+    onRecipientMove: vi.fn(),
   });
 }
 

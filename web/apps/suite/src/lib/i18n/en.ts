@@ -368,6 +368,10 @@ export const en = {
   // ── Compose ─────────────────────────────────────────────────────────
   // ── Recipient field warnings (re #37) ───────────────────────────────
   'compose.recipient.invalid': 'Not a valid email address: {token}',
+  // ── Recipient cross-field move, drag-and-drop + keyboard (re #272) ──
+  'compose.recipient.move': 'Move',
+  'compose.recipient.moveAria': 'Move {name} to another field',
+  'compose.recipient.moveTo': 'Move to {field}',
 
   'compose.title.new': 'New message',
   'compose.title.reply': 'Reply',

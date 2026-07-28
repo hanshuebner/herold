@@ -27,14 +27,36 @@
     isStructurallyComplete,
     recipientToString,
     type Recipient,
+    type RecipientFieldName,
   } from './recipient-parse';
   import { t } from '../i18n/i18n.svelte';
 
+  /** Custom drag MIME type carrying `{ field, index }` for a cross-field move (re #272). */
+  const RECIPIENT_MIME = 'application/x-herold-recipient';
+
+  const ALL_FIELDS: RecipientFieldName[] = ['to', 'cc', 'bcc'];
+
   interface Props {
     label: string;
+    /** Which of To/Cc/Bcc this instance renders — the drag source field for
+     *  chips dragged out of here, and the implicit destination field when a
+     *  drop lands on this instance's row. */
+    field: RecipientFieldName;
     chips: Recipient[];
     onChipsChange: (chips: Recipient[]) => void;
     onWarning: (text: string | null) => void;
+    /**
+     * Called to move a recipient between fields, either from a cross-field
+     * drag-and-drop or from the per-chip "Move to..." menu. Every
+     * RecipientField instance wires this to the same parent handler
+     * (`compose.moveRecipient`) — the explicit `toField` argument makes the
+     * callback identical regardless of which instance triggered it.
+     */
+    onRecipientMove: (
+      fromField: RecipientFieldName,
+      fromIndex: number,
+      toField: RecipientFieldName,
+    ) => void;
     placeholder?: string;
     disabled?: boolean;
     autofocus?: boolean;
@@ -42,13 +64,55 @@
 
   let {
     label,
+    field,
     chips,
     onChipsChange,
     onWarning,
+    onRecipientMove,
     placeholder,
     disabled = false,
     autofocus = false,
   }: Props = $props();
+
+  /** The other two fields a chip in this field can be moved to. */
+  let moveTargets = $derived(ALL_FIELDS.filter((f) => f !== field));
+
+  /** Localized label for a field name, reusing the existing compose.to/cc/bcc keys. */
+  function fieldLabel(f: RecipientFieldName): string {
+    return t(`compose.${f}`);
+  }
+
+  /** Index of the chip whose "Move to..." menu is currently open, if any. */
+  let openMoveIndex = $state<number | null>(null);
+
+  function toggleMoveMenu(idx: number): void {
+    openMoveIndex = openMoveIndex === idx ? null : idx;
+  }
+
+  function chooseMoveTarget(idx: number, target: RecipientFieldName): void {
+    openMoveIndex = null;
+    if (target === field) return;
+    onRecipientMove(field, idx, target);
+  }
+
+  function onMoveMenuKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      openMoveIndex = null;
+    }
+  }
+
+  function onDocumentClickForMoveMenu(e: MouseEvent): void {
+    const target = e.target as HTMLElement;
+    if (target.closest('.chip-move-menu') || target.closest('.chip-move-trigger')) return;
+    openMoveIndex = null;
+  }
+
+  $effect(() => {
+    if (openMoveIndex === null) return;
+    document.addEventListener('click', onDocumentClickForMoveMenu, true);
+    return () => document.removeEventListener('click', onDocumentClickForMoveMenu, true);
+  });
 
   let inputEl = $state<HTMLInputElement | null>(null);
   let buffer = $state('');
@@ -206,6 +270,43 @@
     const next = chips.filter((_, i) => i !== idx);
     onChipsChange(next);
     requestAnimationFrame(() => inputEl?.focus());
+  }
+
+  // ── Cross-field drag-and-drop (re #272) ────────────────────────────────
+  // Mirrors ComposeWindow's attachment disposition-flip pattern: a chip
+  // sets a custom MIME type carrying its origin field + index on dragstart;
+  // the other fields' drop handlers read it and call onRecipientMove. A
+  // drop back onto the origin field is a no-op (checked here, before ever
+  // notifying the parent).
+
+  /** Chip drag-start: encode this field + the chip's index as the payload. */
+  function onChipDragStart(e: DragEvent, index: number): void {
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.setData(RECIPIENT_MIME, JSON.stringify({ field, index }));
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function onFieldDragOver(e: DragEvent): void {
+    if (!e.dataTransfer?.types.includes(RECIPIENT_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  function onFieldDrop(e: DragEvent): void {
+    const raw = e.dataTransfer?.getData(RECIPIENT_MIME);
+    if (!raw) return;
+    e.preventDefault();
+    e.stopPropagation();
+    let payload: { field: RecipientFieldName; index: number };
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (payload.field === field) return; // dropped back onto its own field
+    onRecipientMove(payload.field, payload.index, field);
   }
 
   function onInput(e: Event): void {
@@ -385,11 +486,22 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="recipient-field" onclick={onRowClick}>
+<div
+  class="recipient-field"
+  onclick={onRowClick}
+  ondragover={onFieldDragOver}
+  ondrop={onFieldDrop}
+>
   <span class="label" aria-hidden="true">{label}</span>
   <div class="chip-row" role="group" aria-label="{label} recipients">
     {#each chips as chip, i (recipientToString(chip) + i)}
-      <span class="chip">
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <span
+        class="chip"
+        class:menu-open={openMoveIndex === i}
+        draggable="true"
+        ondragstart={(e) => onChipDragStart(e, i)}
+      >
         <span class="chip-label" title={chip.name ? chip.email : undefined}>
           {chip.name ?? chip.email}
         </span>
@@ -405,6 +517,41 @@
             +
           </button>
         {/if}
+        <span class="chip-move-wrapper">
+          <button
+            type="button"
+            class="chip-move-trigger"
+            aria-haspopup="menu"
+            aria-expanded={openMoveIndex === i}
+            aria-label={t('compose.recipient.moveAria', { name: chip.name ?? chip.email })}
+            title={t('compose.recipient.move')}
+            {disabled}
+            onclick={(e) => { e.stopPropagation(); toggleMoveMenu(i); }}
+          >
+            <span aria-hidden="true">&#8646;</span>
+          </button>
+          {#if openMoveIndex === i}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="chip-move-menu"
+              role="menu"
+              tabindex="-1"
+              onkeydown={onMoveMenuKeydown}
+              onclick={(e) => e.stopPropagation()}
+            >
+              {#each moveTargets as target (target)}
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="chip-move-item"
+                  onclick={() => chooseMoveTarget(i, target)}
+                >
+                  {t('compose.recipient.moveTo', { field: fieldLabel(target) })}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </span>
         <button
           type="button"
           class="chip-remove"
@@ -504,6 +651,11 @@
     max-width: 24em;
     overflow: hidden;
   }
+  /* Let the "Move to..." popup escape the chip's clipping box while open;
+     other chips keep the label-truncating overflow:hidden. */
+  .chip.menu-open {
+    overflow: visible;
+  }
 
   .chip-label {
     overflow: hidden;
@@ -513,7 +665,8 @@
   }
 
   .chip-remove,
-  .chip-save {
+  .chip-save,
+  .chip-move-trigger {
     flex: 0 0 auto;
     width: 16px;
     height: 16px;
@@ -526,14 +679,56 @@
     justify-content: center;
   }
   .chip-remove:hover:not(:disabled),
-  .chip-save:hover:not(:disabled) {
+  .chip-save:hover:not(:disabled),
+  .chip-move-trigger:hover:not(:disabled) {
     background: var(--layer-03);
     color: var(--text-primary);
   }
   .chip-remove:disabled,
-  .chip-save:disabled {
+  .chip-save:disabled,
+  .chip-move-trigger:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+  .chip-move-trigger[aria-expanded='true'] {
+    background: var(--layer-03);
+    color: var(--text-primary);
+  }
+
+  .chip-move-wrapper {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  .chip-move-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 2px);
+    left: 0;
+    min-width: 9em;
+    list-style: none;
+    margin: 0;
+    padding: var(--spacing-01) 0;
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .chip-move-item {
+    display: block;
+    width: 100%;
+    padding: var(--spacing-02) var(--spacing-04);
+    color: var(--text-primary);
+    text-align: left;
+    font-size: var(--type-body-compact-01-size);
+    white-space: nowrap;
+  }
+  .chip-move-item:hover {
+    background: var(--layer-01);
   }
 
   .input-wrap {
