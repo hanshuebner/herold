@@ -2596,6 +2596,202 @@ func TestEmail_Attachment_BlobDownload_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestEmailSet_Create_ForwardAttachment_SyntheticBlobID_RoundTrip is the
+// regression test for re #273: forwarding a message copies the parent's
+// attachment part into the new compose draft by referencing the parent's
+// EmailBodyPart.blobId directly -- and, per TestEmail_Attachment_
+// BlobDownload_RoundTrip above, that blobId is always the synthesized
+// "<msgHash>/p<N>" per-part form, never a canonical upload-assigned blob
+// hash. Email/set create's body assembly must resolve that same form
+// (the way the download endpoint already does) rather than passing it
+// straight to the blob store and silently dropping the part when the
+// lookup fails.
+func TestEmailSet_Create_ForwardAttachment_SyntheticBlobID_RoundTrip(t *testing.T) {
+	f := setupFixture(t)
+
+	attData := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n")
+	attB64 := base64.StdEncoding.EncodeToString(attData)
+
+	// Step 1: a message with a regular (non-inline) attachment arrives, the
+	// same shape a delivered "Einladung" invite has in the reported case.
+	msgBody := strings.Join([]string{
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: Einladung: Follow up",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=\"testboundary\"",
+		"",
+		"--testboundary",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"See the attached calendar invite.",
+		"--testboundary",
+		"Content-Type: text/calendar",
+		"Content-Disposition: attachment; filename=\"invite.ics\"",
+		"Content-Transfer-Encoding: base64",
+		"",
+		attB64,
+		"--testboundary--",
+	}, "\r\n")
+	parent := f.insertMessage(t, msgBody, "Einladung: Follow up",
+		"sender@example.test", "rcpt@example.test", nil, "")
+
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fmt.Sprintf("%d", parent.ID)},
+		"properties": []string{"attachments"},
+	})
+	var parentResp struct {
+		List []struct {
+			Attachments []struct {
+				BlobID string `json:"blobId"`
+				Type   string `json:"type"`
+				Name   string `json:"name"`
+				Size   int64  `json:"size"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &parentResp); err != nil {
+		t.Fatalf("unmarshal parent Email/get: %v: %s", err, raw)
+	}
+	if len(parentResp.List) != 1 || len(parentResp.List[0].Attachments) != 1 {
+		t.Fatalf("expected 1 message with 1 attachment: %s", raw)
+	}
+	parentAtt := parentResp.List[0].Attachments[0]
+	if !strings.Contains(parentAtt.BlobID, "/p") {
+		t.Fatalf("parent attachment blobId %q is not a synthesized part id", parentAtt.BlobID)
+	}
+
+	// Step 2: forward -- create a new draft whose bodyStructure/attachments
+	// reference the parent's synthetic blobId directly (compose.svelte.ts's
+	// forwardAttachmentsFromParent), exactly as the Suite does. No upload,
+	// no Blob/copy.
+	created, notCreated := setCreateFromBodyValues(t, f, map[string]any{
+		"mailboxIds": map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+		"keywords":   map[string]bool{"$draft": true, "$seen": true},
+		"from":       []map[string]any{{"name": "Bob", "email": "bob@example.test"}},
+		"to":         []map[string]any{{"name": "Carol", "email": "carol@example.test"}},
+		"subject":    "Fwd: Einladung: Follow up",
+		"bodyValues": map[string]any{
+			"1": map[string]any{"value": "fwd", "isTruncated": false, "isEncodingProblem": false},
+			"2": map[string]any{"value": "<p>fwd</p>", "isTruncated": false, "isEncodingProblem": false},
+		},
+		"textBody": []map[string]any{
+			{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+		},
+		"htmlBody": []map[string]any{
+			{"partId": "2", "type": "text/html", "charset": "utf-8"},
+		},
+		"bodyStructure": map[string]any{
+			"type": "multipart/mixed",
+			"subParts": []map[string]any{
+				{
+					"type": "multipart/alternative",
+					"subParts": []map[string]any{
+						{"partId": "1", "type": "text/plain", "charset": "utf-8"},
+						{"partId": "2", "type": "text/html", "charset": "utf-8"},
+					},
+				},
+				{
+					"blobId":      parentAtt.BlobID,
+					"type":        parentAtt.Type,
+					"disposition": "attachment",
+					"name":        parentAtt.Name,
+					"size":        parentAtt.Size,
+				},
+			},
+		},
+		"attachments": []map[string]any{
+			{
+				"blobId":      parentAtt.BlobID,
+				"type":        parentAtt.Type,
+				"disposition": "attachment",
+				"name":        parentAtt.Name,
+				"size":        parentAtt.Size,
+			},
+		},
+		"hasAttachment": true,
+	})
+	if len(notCreated) != 0 {
+		t.Fatalf("notCreated = %v", notCreated)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %v", created)
+	}
+	fwdID, _ := created["draft"]["id"].(string)
+	if fwdID == "" {
+		t.Fatalf("no id in created: %v", created)
+	}
+
+	// Step 3: the forwarded draft must actually carry the attachment --
+	// hasAttachment recomputed server-side from the assembled MIME, not
+	// just echoed back from the create request.
+	_, raw = f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{fwdID},
+		"properties": []string{"attachments", "hasAttachment", "blobId"},
+	})
+	var fwdResp struct {
+		List []struct {
+			BlobID        string `json:"blobId"`
+			HasAttachment bool   `json:"hasAttachment"`
+			Attachments   []struct {
+				BlobID string `json:"blobId"`
+				Type   string `json:"type"`
+				Name   string `json:"name"`
+				Size   int64  `json:"size"`
+			} `json:"attachments"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &fwdResp); err != nil {
+		t.Fatalf("unmarshal forward Email/get: %v: %s", err, raw)
+	}
+	if len(fwdResp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(fwdResp.List), raw)
+	}
+	fwd := fwdResp.List[0]
+	if !fwd.HasAttachment {
+		t.Fatalf("forward hasAttachment=false, want true -- the synthetic-blobId attachment was silently dropped (raw=%s)", raw)
+	}
+	if len(fwd.Attachments) != 1 {
+		t.Fatalf("forward attachments = %v, want 1 entry", fwd.Attachments)
+	}
+	fwdAtt := fwd.Attachments[0]
+	if fwdAtt.Name != "invite.ics" {
+		t.Errorf("forward attachment name = %q, want invite.ics", fwdAtt.Name)
+	}
+	if fwdAtt.Size != int64(len(attData)) {
+		t.Errorf("forward attachment size = %d, want %d", fwdAtt.Size, len(attData))
+	}
+
+	// Step 4: download the forwarded attachment and check the bytes
+	// actually made it into the new message -- not just the metadata.
+	encodedBlobID := strings.ReplaceAll(fwdAtt.BlobID, "/", "%2F")
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	dlURL := fmt.Sprintf("%s/jmap/download/%s/%s/text%%2Fcalendar/invite.ics",
+		f.baseURL, accountID, encodedBlobID)
+	req, err := http.NewRequest(http.MethodGet, dlURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+f.apiKey)
+	dlResp, err := f.client.Do(req)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer dlResp.Body.Close()
+	dlBody, err := io.ReadAll(dlResp.Body)
+	if err != nil {
+		t.Fatalf("read download body: %v", err)
+	}
+	if dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d, body = %s", dlResp.StatusCode, dlBody)
+	}
+	if !bytes.Equal(dlBody, attData) {
+		t.Fatalf("downloaded forwarded attachment bytes mismatch:\n  got  %v\n  want %v", dlBody, attData)
+	}
+}
+
 // uploadBlob uploads raw bytes to the JMAP upload endpoint and returns the
 // server-assigned blobId.
 func (f *fixture) uploadBlob(t *testing.T, data []byte, contentType string) string {

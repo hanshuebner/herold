@@ -39,6 +39,7 @@ import {
   emailTextBody,
   type Address,
   type Email,
+  type EmailBodyPart,
   type Identity,
 } from '../mail/types';
 import {
@@ -378,6 +379,15 @@ class ComposeStore {
      * behaviour for fresh composes and draft re-opens.
      */
     identity?: Identity | null;
+    /**
+     * Attachments to seed the compose with as already-ready entries
+     * referencing existing blobIds (e.g. openForward carrying over the
+     * parent message's regular attachments, re #273). Defaults to
+     * empty for every other caller — fresh compose, reply, and draft
+     * re-open (draft attachments are re-derived by the caller from
+     * draft.attachments, not plumbed through here) all start empty.
+     */
+    attachments?: ComposeAttachment[];
   }): void {
     if (!args.skipHook && !this.#runBeforeOpen()) return;
     this.to = args.to;
@@ -402,7 +412,7 @@ class ComposeStore {
     this.errorMessage = null;
     this.ccBccVisible = Boolean(this.cc || this.bcc);
     this.editingDraftId = args.draftId ?? null;
-    this.attachments = [];
+    this.attachments = args.attachments ?? [];
     this.shares = [];
     this.status = 'editing';
     this.#snapshot = {
@@ -545,7 +555,13 @@ class ComposeStore {
     });
   }
 
-  /** Open compose as a forward of the given email. */
+  /**
+   * Open compose as a forward of the given email. Carries over the
+   * parent's regular (non-inline) attachments as ready ComposeAttachment
+   * entries that reference the original blobIds directly -- no re-upload,
+   * no server-side blob copy (re #273). Inline images belonging to the
+   * quoted body are excluded; see forwardAttachmentsFromParent.
+   */
   openForward(parent: Email): void {
     this.openWith({
       to: '',
@@ -558,6 +574,7 @@ class ComposeStore {
         references: mergeReferences(parent),
       },
       identity: this.#matchIdentity(parent),
+      attachments: forwardAttachmentsFromParent(parent),
     });
   }
 
@@ -2453,6 +2470,40 @@ export function removeShareLinkFromBody(body: string, url: string): string {
   return body.replace(re, '');
 }
 
+/**
+ * Copy the parent message's regular attachments into ready
+ * ComposeAttachment entries that reference the original blobIds
+ * directly (re #273). The forward's send/persist path then emits
+ * `{blobId,type,disposition,name,size,cid}` straight from these
+ * entries via buildAttachmentParts -- no re-upload, no server-side
+ * blob copy, since the parent's blobIds live in the same account's
+ * blob store.
+ *
+ * Classification mirrors AttachmentList.svelte / REQ-MAIL-21: a part
+ * with `disposition === 'inline'` belongs to the rendered/quoted body
+ * and is excluded so it doesn't show up as a duplicate chip. Every
+ * other part (disposition 'attachment' or null) is a regular
+ * file/document attachment and is always carried over. Parts without
+ * a blobId cannot be referenced without a re-upload and are skipped.
+ */
+function forwardAttachmentsFromParent(parent: Email): ComposeAttachment[] {
+  const parts: EmailBodyPart[] = parent.attachments ?? [];
+  return parts
+    .filter(
+      (p): p is EmailBodyPart & { blobId: string } =>
+        p.disposition !== 'inline' && p.blobId !== null,
+    )
+    .map((p, i) => ({
+      key: `fwd-${i}-${p.blobId}`,
+      name: p.name ?? 'attachment',
+      size: p.size,
+      type: p.type || 'application/octet-stream',
+      status: 'ready',
+      blobId: p.blobId,
+      error: null,
+    }));
+}
+
 function formatForwardQuote(parent: Email): string {
   const fromStr = addressListToString(parent.from);
   const toStr = addressListToString(parent.to);
@@ -2521,4 +2572,5 @@ export const _internals_forTest = {
   buildShareLinkHtml,
   formatReplyQuote,
   formatForwardQuote,
+  forwardAttachmentsFromParent,
 };

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -26,14 +27,19 @@ import (
 //
 // blobs and ctx are used to fetch the raw bytes for blob-referenced
 // attachment parts (populated from bodyStructure subParts with a blobId).
-// blobs may be nil when no attachment parts are present.
+// blobs may be nil when no attachment parts are present. meta resolves
+// synthetic per-part blobIds (the "<msgHash>/p<N>" form Email/get returns
+// for attachment parts, see protojmap.PartBlobID) -- a client that copies
+// an existing message's attachment blobId into a new create (e.g.
+// forwarding, re #273) sends one of these rather than a canonical
+// upload-assigned blob hash.
 //
 // The returned []byte is a fully-formed RFC 5322 message ready to be
 // stored in the blob store.
 // TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
 // streaming parser instead of assembling into a bytes.Buffer; bounded at
 // 64MiB (via readBlobBytes below) until then.
-func buildEmailFromProperties(ctx context.Context, blobs store.Blobs, in emailCreateInput, now time.Time, hostname string) ([]byte, error) {
+func buildEmailFromProperties(ctx context.Context, meta store.Metadata, blobs store.Blobs, in emailCreateInput, now time.Time, hostname string) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// --- top-level headers ---
@@ -140,7 +146,7 @@ func buildEmailFromProperties(ctx context.Context, blobs store.Blobs, in emailCr
 	switch {
 	case hasInlines && hasAttachments:
 		// multipart/mixed wrapping multipart/related (alt + inlines) + attachments.
-		if err := writeMultipartMixedWithRelated(ctx, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.inlineParts, in.attachmentParts); err != nil {
+		if err := writeMultipartMixedWithRelated(ctx, meta, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.inlineParts, in.attachmentParts); err != nil {
 			return nil, fmt.Errorf("bodybuild: multipart/mixed+related: %w", err)
 		}
 	case hasInlines:
@@ -148,12 +154,12 @@ func buildEmailFromProperties(ctx context.Context, blobs store.Blobs, in emailCr
 		// Per RFC 2387 §3, the root is multipart/related and the first
 		// subpart is the body (multipart/alternative when both text and html
 		// are present; text/html otherwise).
-		if err := writeMultipartRelated(ctx, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.inlineParts); err != nil {
+		if err := writeMultipartRelated(ctx, meta, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.inlineParts); err != nil {
 			return nil, fmt.Errorf("bodybuild: multipart/related: %w", err)
 		}
 	case hasAttachments:
 		// multipart/mixed wraps the body part(s) + attachment(s).
-		if err := writeMultipartMixed(ctx, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.attachmentParts); err != nil {
+		if err := writeMultipartMixed(ctx, meta, blobs, &buf, textVal, htmlVal, hasText, hasHTML, in.attachmentParts); err != nil {
 			return nil, fmt.Errorf("bodybuild: multipart/mixed: %w", err)
 		}
 	default:
@@ -354,7 +360,7 @@ func writeMultipartAlternative(buf *bytes.Buffer, textVal, htmlVal string) error
 // writeMultipartMixed assembles a multipart/mixed body containing the
 // inline text/html body part(s) followed by blob-referenced attachment
 // parts (RFC 8621 §4.6 attachment assembly).
-func writeMultipartMixed(ctx context.Context, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, attachments []emailBodyStructurePart) error {
+func writeMultipartMixed(ctx context.Context, meta store.Metadata, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, attachments []emailBodyStructurePart) error {
 	var bodyBuf bytes.Buffer
 	mw := multipart.NewWriter(&bodyBuf)
 
@@ -398,7 +404,7 @@ func writeMultipartMixed(ctx context.Context, blobs store.Blobs, buf *bytes.Buff
 
 	// Append blob-referenced attachment parts.
 	for _, att := range attachments {
-		if err := writeBlobPartInto(ctx, blobs, mw, att); err != nil {
+		if err := writeBlobPartInto(ctx, meta, blobs, mw, att); err != nil {
 			// Skip unreadable blobs rather than aborting the whole create.
 			continue
 		}
@@ -423,8 +429,8 @@ func writeMultipartMixed(ctx context.Context, blobs store.Blobs, buf *bytes.Buff
 //
 // Returns an error if the blob cannot be fetched; the caller typically
 // skips that part rather than aborting the whole assembly.
-func writeBlobPartInto(ctx context.Context, blobs store.Blobs, mw *multipart.Writer, att emailBodyStructurePart) error {
-	attData, err := readBlobBytes(ctx, blobs, att.BlobID)
+func writeBlobPartInto(ctx context.Context, meta store.Metadata, blobs store.Blobs, mw *multipart.Writer, att emailBodyStructurePart) error {
+	attData, err := readBlobBytes(ctx, meta, blobs, att.BlobID)
 	if err != nil {
 		return err
 	}
@@ -473,7 +479,7 @@ func writeBlobPartInto(ctx context.Context, blobs store.Blobs, mw *multipart.Wri
 // (multipart/alternative when both text and html are present; text/html
 // when only html; text/plain when only text). The remaining subparts are
 // the inline blob parts (images etc.) referenced by cid: in the HTML body.
-func writeMultipartRelated(ctx context.Context, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, inlines []emailBodyStructurePart) error {
+func writeMultipartRelated(ctx context.Context, meta store.Metadata, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, inlines []emailBodyStructurePart) error {
 	var bodyBuf bytes.Buffer
 	mw := multipart.NewWriter(&bodyBuf)
 
@@ -516,7 +522,7 @@ func writeMultipartRelated(ctx context.Context, blobs store.Blobs, buf *bytes.Bu
 
 	// Remaining parts: inline blob parts.
 	for _, il := range inlines {
-		if err := writeBlobPartInto(ctx, blobs, mw, il); err != nil {
+		if err := writeBlobPartInto(ctx, meta, blobs, mw, il); err != nil {
 			// Skip unreadable blobs.
 			continue
 		}
@@ -538,13 +544,13 @@ func writeMultipartRelated(ctx context.Context, blobs store.Blobs, buf *bytes.Bu
 // first child, followed by regular attachment parts. This is the structure
 // required when the message has both inline images (referenced by cid: in
 // the HTML body) and regular file attachments.
-func writeMultipartMixedWithRelated(ctx context.Context, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, inlines, attachments []emailBodyStructurePart) error {
+func writeMultipartMixedWithRelated(ctx context.Context, meta store.Metadata, blobs store.Blobs, buf *bytes.Buffer, textVal, htmlVal string, hasText, hasHTML bool, inlines, attachments []emailBodyStructurePart) error {
 	var outerBuf bytes.Buffer
 	outerMW := multipart.NewWriter(&outerBuf)
 
 	// First outer part: the multipart/related (body + inlines).
 	var relBuf bytes.Buffer
-	if err := writeMultipartRelated(ctx, blobs, &relBuf, textVal, htmlVal, hasText, hasHTML, inlines); err != nil {
+	if err := writeMultipartRelated(ctx, meta, blobs, &relBuf, textVal, htmlVal, hasText, hasHTML, inlines); err != nil {
 		return err
 	}
 	// Extract the Content-Type from the beginning of relBuf so we can set
@@ -569,7 +575,7 @@ func writeMultipartMixedWithRelated(ctx context.Context, blobs store.Blobs, buf 
 
 	// Remaining outer parts: regular attachments.
 	for _, att := range attachments {
-		if err := writeBlobPartInto(ctx, blobs, outerMW, att); err != nil {
+		if err := writeBlobPartInto(ctx, meta, blobs, outerMW, att); err != nil {
 			// Skip unreadable blobs.
 			continue
 		}
@@ -650,10 +656,20 @@ func generateBoundary() string {
 	return hex.EncodeToString(b)
 }
 
-// readBlobBytes fetches a blob by ID and returns its raw bytes.
+// readBlobBytes fetches a blob by ID and returns its raw bytes. blobID may
+// be a canonical upload-assigned blob hash, or a synthetic per-part
+// reference of the form "<msgHash>/p<N>" (protojmap.PartBlobID) -- the
+// form Email/get returns for attachment parts, which a client echoes back
+// when it copies an existing message's attachment into a new create (e.g.
+// forwarding, re #273). meta is required to resolve the latter; it may be
+// nil when the caller knows blobID is always canonical.
 // TODO(REQ-STORE-19, Phase 2): stream via the seekable blob handle /
 // streaming parser; bounded at 64MiB until then.
-func readBlobBytes(ctx context.Context, blobs store.Blobs, blobID string) ([]byte, error) {
+func readBlobBytes(ctx context.Context, meta store.Metadata, blobs store.Blobs, blobID string) ([]byte, error) {
+	if msgHash, partIdx, isPartBlob := protojmap.PartBlobID(blobID); isPartBlob {
+		_, data, err := protojmap.ResolvePartBlob(ctx, meta, blobs, msgHash, partIdx)
+		return data, err
+	}
 	rc, err := blobs.Get(ctx, blobID)
 	if err != nil {
 		return nil, err

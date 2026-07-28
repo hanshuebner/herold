@@ -175,6 +175,26 @@ func isLikelyBlobHash(s string) bool {
 	return true
 }
 
+// PartBlobID is the exported form of partBlobID for callers outside this
+// package. internal/protojmap/mail/email uses it to resolve a synthetic
+// per-part blobId a client echoes back from a prior Email/get -- e.g.
+// forwarding a message copies parent.attachments[*].blobId, which is a
+// "<msgBlobHash>/p<N>" reference, into a new Email/set create (re #273).
+func PartBlobID(blobID string) (msgHash string, partIdx int, ok bool) {
+	return partBlobID(blobID)
+}
+
+// ResolvePartBlob is the exported form of resolvePartBlob for callers
+// outside this package, returning the decoded content type and bytes
+// directly rather than the unexported partBlobResult struct.
+func ResolvePartBlob(ctx context.Context, meta store.Metadata, blobs store.Blobs, msgHash string, partIdx int) (contentType string, data []byte, err error) {
+	res, err := resolvePartBlob(ctx, meta, blobs, msgHash, partIdx)
+	if err != nil {
+		return "", nil, err
+	}
+	return res.contentType, res.data, nil
+}
+
 // partBlobID reports whether blobID is a synthetic per-part blob reference of
 // the form "<msgBlobHash>/p<N>" produced by render.go's walkParts. When true it
 // returns the message blob hash and the 1-based part index.
