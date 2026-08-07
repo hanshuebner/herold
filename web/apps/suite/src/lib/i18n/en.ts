@@ -1716,6 +1716,7 @@ export const en = {
   'mail.snooze.quickOptions': 'Quick options',
   'mail.snooze.close': 'Close',
   'mail.snooze.tomorrow': 'tomorrow',
+  'mail.snooze.wakeIn': 'Wake in',
   'mail.snooze.option.laterToday': 'Later today',
   'mail.snooze.option.tomorrowMorning': 'Tomorrow morning',
   'mail.snooze.option.thisWeekend': 'This weekend',

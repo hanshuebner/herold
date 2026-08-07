@@ -6,11 +6,32 @@
    */
   import { mail } from './store.svelte';
   import { snoozePicker, snoozeQuickOptions } from './snooze-picker.svelte';
+  import { computeMoveCandidates } from './move-picker.svelte';
   import { keyboard } from '../keyboard/engine.svelte';
   import { localeTag, t } from '../i18n/i18n.svelte';
+  import type { Mailbox } from './types';
 
   let options = $derived(snoozeQuickOptions());
   let custom = $state('');
+
+  // Wake-destination affordance (issue #274): defaults to the account's
+  // Inbox and applies to whichever option the user commits (quick pick
+  // or custom datetime) so choosing a destination never becomes a second
+  // required step. Every mailbox is a valid destination -- unlike the
+  // move picker, "wake in place" (the message's current mailbox) is a
+  // legitimate choice, so candidates are not filtered by current
+  // membership.
+  let wakeMailboxId = $state('');
+  let wakeCandidates = $derived.by<Mailbox[]>(() => {
+    if (!snoozePicker.isOpen) return [];
+    return computeMoveCandidates(mail.mailboxes.values(), new Set());
+  });
+
+  $effect(() => {
+    if (snoozePicker.isOpen) {
+      wakeMailboxId = mail.inbox?.id ?? '';
+    }
+  });
 
   $effect(() => {
     if (!snoozePicker.isOpen) return;
@@ -25,9 +46,10 @@
 
   function commit(at: Date): void {
     const eid = snoozePicker.emailId;
+    const wake = wakeMailboxId || undefined;
     snoozePicker.close();
     if (!eid) return;
-    void mail.snoozeEmail(eid, at);
+    void mail.snoozeEmail(eid, at, wake);
   }
 
   function commitCustom(): void {
@@ -91,6 +113,16 @@
         </li>
       {/each}
     </ul>
+    <div class="wake-row">
+      <label>
+        <span>{t('mail.snooze.wakeIn')}</span>
+        <select bind:value={wakeMailboxId} aria-label={t('mail.snooze.wakeIn')}>
+          {#each wakeCandidates as m (m.id)}
+            <option value={m.id}>{m.name}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
     <div class="custom-row">
       <label>
         <span>{t('mail.snooze.custom')}</span>
@@ -178,6 +210,32 @@
   .quick-list .when {
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
+  }
+
+  .wake-row {
+    padding: var(--spacing-02) var(--spacing-05) var(--spacing-03);
+    border-top: 1px solid var(--border-subtle-01);
+  }
+  .wake-row label {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+  }
+  .wake-row label span {
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    white-space: nowrap;
+  }
+  .wake-row select {
+    flex: 1;
+    min-width: 0;
+    background: var(--layer-01);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-02) var(--spacing-03);
+    min-height: var(--touch-min);
+    font-size: var(--type-body-01-size);
   }
 
   .custom-row {

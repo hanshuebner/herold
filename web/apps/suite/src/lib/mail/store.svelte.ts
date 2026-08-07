@@ -570,8 +570,15 @@ class MailStore {
     // handler. The pending count refreshes on the dedicated
     // InternalizeStatus push subscription wired up in App.svelte.
 
-    // After the refresh, find emails that were not in the cache before
-    // and evaluate the mail-cue gate for each. Play at most one cue per
+    // After the refresh, find emails that either were not in the cache
+    // before (a genuine new arrival) or reappeared via a fresh
+    // Email/changes `created` entry for an id we already knew (a snooze
+    // wake or any other server-side action that re-adds a known message
+    // to a mailbox, issue #274: AddMessageToMailbox always records
+    // ChangeOpCreated, so Email/changes cannot distinguish "brand new
+    // message" from "known message gained a mailbox membership" -- the
+    // membership gain itself is the only client-observable wake signal).
+    // Evaluate the mail-cue gate for each and play at most one cue per
     // state-change event to avoid a burst of sounds when the user has
     // been offline.
     if (knownEmailIds.size > 0) {
@@ -579,7 +586,10 @@ class MailStore {
       // where knownEmailIds would be empty).
       let notifEmail: Email | null = null;
       for (const [id, email] of this.emails) {
-        if (knownEmailIds.has(id)) continue;
+        const isNewArrival = !knownEmailIds.has(id);
+        const isWokenReappearance =
+          knownEmailIds.has(id) && delta !== null && delta.created.has(id);
+        if (!isNewArrival && !isWokenReappearance) continue;
         if (this.#shouldMailCue(email)) {
           sounds.play('mail');
           notifEmail = email;
@@ -3908,16 +3918,28 @@ class MailStore {
    * the message; the server pairs that with the $snoozed keyword and
    * removes both when the wake-up timer fires (or when the user
    * unsnooze early).
+   *
+   * `wakeMailboxId`, when given, is sent as `snoozeWakeMailboxId`
+   * (issue #274): the mailbox the message is added to on wake,
+   * retaining its origin membership. Omitting it leaves the server's
+   * default (the account's Inbox) in force.
    */
-  async snoozeEmail(emailId: string, until: Date): Promise<void> {
+  async snoozeEmail(
+    emailId: string,
+    until: Date,
+    wakeMailboxId?: string,
+  ): Promise<void> {
     const email = this.emails.get(emailId);
     if (!email) return;
     const iso = until.toISOString();
     const prevUntil = email.snoozedUntil;
-    this.#patchEmail(emailId, { snoozedUntil: iso });
+    const prevWake = email.snoozeWakeMailboxId;
+    const patch: Partial<Email> = { snoozedUntil: iso };
+    if (wakeMailboxId !== undefined) patch.snoozeWakeMailboxId = wakeMailboxId;
+    this.#patchEmail(emailId, patch);
     if (this.listFolder === 'inbox') this.#removeFromList(emailId);
     try {
-      await this.#emailSetUpdate(emailId, { snoozedUntil: iso });
+      await this.#emailSetUpdate(emailId, patch);
       toast.show({
         message: `Snoozed until ${formatSnoozeTarget(until)}`,
         undo: async () => {
@@ -3934,7 +3956,10 @@ class MailStore {
         },
       });
     } catch (err) {
-      this.#patchEmail(emailId, { snoozedUntil: prevUntil ?? null });
+      this.#patchEmail(emailId, {
+        snoozedUntil: prevUntil ?? null,
+        snoozeWakeMailboxId: prevWake ?? null,
+      });
       toast.show({
         message: errMessage(err, 'Snooze failed'),
         kind: 'error',

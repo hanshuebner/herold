@@ -167,6 +167,14 @@ export interface Email {
    * draft-ietf-jmap-snooze). null when the message is not snoozed.
    */
   snoozedUntil?: string | null;
+  /**
+   * Herold extension (issue #274): the mailbox id the message is added
+   * to when the snooze wakes, chosen when the snooze was set. Null when
+   * the message is not snoozed. Absent/null on the wire while a snooze
+   * is being set resolves to the account's Inbox server-side; `Email/get`
+   * always renders the resolved value once a snooze is in force.
+   */
+  snoozeWakeMailboxId?: string | null;
   // Body properties — populated when the thread reader fetches them.
   bodyValues?: Record<string, EmailBodyValue>;
   htmlBody?: EmailBodyPart[];
@@ -321,6 +329,7 @@ export const EMAIL_LIST_PROPERTIES = [
   'receivedAt',
   'hasAttachment',
   'snoozedUntil',
+  'snoozeWakeMailboxId',
   'internalizePending',
   'failedImageCount',
   'retryableFailedImageCount',
@@ -345,6 +354,7 @@ export const EMAIL_BODY_PROPERTIES = [
   'sentAt',
   'hasAttachment',
   'snoozedUntil',
+  'snoozeWakeMailboxId',
   'bodyValues',
   'htmlBody',
   'textBody',
