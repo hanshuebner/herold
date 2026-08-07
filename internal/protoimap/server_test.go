@@ -936,7 +936,7 @@ func TestSTORE_RemoveSnoozedKeyword_AlsoNullsColumn(t *testing.T) {
 	id := seedMessageID(t, f, "snooze-remove")
 	// Set snooze via the store (canonical JMAP path).
 	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, f.inbox.ID, &t1); err != nil {
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id, f.inbox.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	c := loggedInClient(t, f)
@@ -966,7 +966,7 @@ func TestSEARCH_Keyword_Snoozed_FindsSnoozedMessages(t *testing.T) {
 	id1 := seedMessageID(t, f, "msg-snoozed")
 	seedMessage(t, f, "msg-not-snoozed")
 	t1 := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id1, f.inbox.ID, &t1); err != nil {
+	if _, err := f.ha.Store.Meta().SetSnooze(context.Background(), id1, f.inbox.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	c := loggedInClient(t, f)

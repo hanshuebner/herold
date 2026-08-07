@@ -274,6 +274,11 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_ListDue_OnlyReturnsDue", testSnoozeListDueOnlyReturnsDue},
 		{"Snooze_ListDue_Limit", testSnoozeListDueLimit},
 		{"Snooze_ListDue_RequiresKeyword", testSnoozeListDueRequiresKeyword},
+		// -- issue #274: snooze wake destination -------------------
+		{"Snooze_WakeMailbox_RoundTrip", testSnoozeWakeMailboxRoundTrip},
+		{"Snooze_WakeMailbox_NilAllowed", testSnoozeWakeMailboxNilAllowed},
+		{"Snooze_WakeMailbox_ClearNulls", testSnoozeClearNullsWakeMailbox},
+		{"Snooze_ListDue_ProjectsWakeMailbox", testSnoozeListDueProjectsWakeMailbox},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
@@ -6873,7 +6878,7 @@ func testSnoozeSetGetRoundtrip(t *testing.T, s store.Store) {
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	got, err := s.Meta().GetMessage(ctx, id)
@@ -6898,10 +6903,10 @@ func testSnoozeClear(t *testing.T, s store.Store) {
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze set: %v", err)
 	}
-	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, nil); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, nil, nil); err != nil {
 		t.Fatalf("SetSnooze clear: %v", err)
 	}
 	got, err := s.Meta().GetMessage(ctx, id)
@@ -6937,7 +6942,7 @@ func testSnoozeStateChangeAppended(t *testing.T, s store.Store) {
 		}
 	}
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	tail, err := s.Meta().ReadChangeFeed(ctx, p.ID, cursor, 1000)
@@ -6988,7 +6993,7 @@ func testSnoozeListDueOnlyReturnsDue(t *testing.T, s store.Store) {
 		t.Fatalf("created %d messages, want 3", len(ids))
 	}
 	for i, id := range ids {
-		if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &deadlines[i]); err != nil {
+		if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &deadlines[i], nil); err != nil {
 			t.Fatalf("SetSnooze[%d]: %v", i, err)
 		}
 	}
@@ -7024,7 +7029,7 @@ func testSnoozeListDueLimit(t *testing.T, s store.Store) {
 	}
 	for _, e := range feed {
 		if e.Kind == store.EntityKindEmail && e.Op == store.ChangeOpCreated {
-			if _, err := s.Meta().SetSnooze(ctx, store.MessageID(e.EntityID), mb.ID, &due); err != nil {
+			if _, err := s.Meta().SetSnooze(ctx, store.MessageID(e.EntityID), mb.ID, &due, nil); err != nil {
 				t.Fatalf("SetSnooze: %v", err)
 			}
 		}
@@ -7056,7 +7061,7 @@ func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
 	}
 	id := firstMessageIDFromFeed(t, s, p.ID)
 	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due); err != nil {
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &due, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	// Sanity: due list returns the row right now.
@@ -7078,6 +7083,144 @@ func testSnoozeListDueRequiresKeyword(t *testing.T, s store.Store) {
 	}
 	if len(got2) != 0 {
 		t.Fatalf("ListDue after keyword-only clear: got %d, want 0", len(got2))
+	}
+}
+
+// wakeMailboxIDIn returns the WakeMailboxID of the msg.Mailboxes entry
+// matching mailboxID, or nil if no such entry exists.
+func wakeMailboxIDIn(msg store.Message, mailboxID store.MailboxID) *store.MailboxID {
+	for _, mm := range msg.Mailboxes {
+		if mm.MailboxID == mailboxID {
+			return mm.WakeMailboxID
+		}
+	}
+	return nil
+}
+
+// -- Snooze wake destination (issue #274) ----------------------------
+
+func testSnoozeWakeMailboxRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-rt@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: sent.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &t1, &inbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	wake := wakeMailboxIDIn(got, sent.ID)
+	if wake == nil || *wake != inbox.ID {
+		t.Fatalf("WakeMailboxID = %v, want %d (Inbox)", wake, inbox.ID)
+	}
+	// The origin membership (Sent) is untouched by SetSnooze — no move.
+	if !messageInMailbox(got, sent.ID) {
+		t.Fatalf("origin membership (Sent) lost after SetSnooze: %v", got.Mailboxes)
+	}
+}
+
+// messageInMailbox reports whether msg has a membership in mailboxID.
+func messageInMailbox(msg store.Message, mailboxID store.MailboxID) bool {
+	for _, mm := range msg.Mailboxes {
+		if mm.MailboxID == mailboxID {
+			return true
+		}
+	}
+	return false
+}
+
+func testSnoozeWakeMailboxNilAllowed(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-nil@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-nil-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	// A snooze set with no chosen wake destination (wake == nil) is
+	// valid: the store persists no destination, leaving the caller
+	// (JMAP / wake worker) to resolve the Inbox at wake time.
+	if _, err := s.Meta().SetSnooze(ctx, id, mb.ID, &t1, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.SnoozedUntil == nil {
+		t.Fatalf("SnoozedUntil = nil, want set")
+	}
+	if wake := wakeMailboxIDIn(got, mb.ID); wake != nil {
+		t.Fatalf("WakeMailboxID = %v, want nil", *wake)
+	}
+}
+
+func testSnoozeClearNullsWakeMailbox(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-clear@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-clear-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: sent.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &t1, &inbox.ID); err != nil {
+		t.Fatalf("SetSnooze set: %v", err)
+	}
+	if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, nil, nil); err != nil {
+		t.Fatalf("SetSnooze clear: %v", err)
+	}
+	got, err := s.Meta().GetMessage(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.SnoozedUntil != nil {
+		t.Fatalf("SnoozedUntil = %v, want nil", got.SnoozedUntil)
+	}
+	if wake := wakeMailboxIDIn(got, sent.ID); wake != nil {
+		t.Fatalf("WakeMailboxID after clear = %v, want nil", *wake)
+	}
+}
+
+func testSnoozeListDueProjectsWakeMailbox(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "snooze-wake-due@example.com")
+	sent := mustInsertMailbox(t, s, p.ID, "Sent")
+	inbox := mustInsertMailbox(t, s, p.ID, "INBOX")
+	ref := putBlob(t, s, "snooze-wake-due-body")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{PrincipalID: p.ID, Blob: ref, Size: ref.Size}, []store.MessageMailbox{{MailboxID: sent.ID}}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	id := firstMessageIDFromFeed(t, s, p.ID)
+	due := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := s.Meta().SetSnooze(ctx, id, sent.ID, &due, &inbox.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	got, err := s.Meta().ListDueSnoozedMessages(ctx, due.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListDueSnoozedMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id {
+		t.Fatalf("got %v, want exactly id=%d", got, id)
+	}
+	// The wake destination must be readable directly off the returned
+	// Message.Mailboxes entry -- the worker must not issue a second
+	// query to learn it.
+	wake := wakeMailboxIDIn(got[0], sent.ID)
+	if wake == nil || *wake != inbox.ID {
+		t.Fatalf("ListDueSnoozedMessages WakeMailboxID = %v, want %d (Inbox)", wake, inbox.ID)
 	}
 }
 

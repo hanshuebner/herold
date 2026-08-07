@@ -1015,7 +1015,7 @@ func TestEmailGet_RendersSnoozedUntil(t *testing.T) {
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: snoozed\r\n\r\nbody"
 	m := f.insertMessage(t, body, "snoozed", "a@example.test", "b@example.test", nil, "")
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1); err != nil {
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	_, raw := f.invoke(t, "Email/get", map[string]any{
@@ -1081,7 +1081,7 @@ func TestEmailSet_ClearsSnoozedAtomically(t *testing.T) {
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: clear\r\n\r\nbody"
 	m := f.insertMessage(t, body, "clear", "a@example.test", "b@example.test", nil, "")
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1); err != nil {
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	_, raw := f.invoke(t, "Email/set", map[string]any{
@@ -1147,7 +1147,7 @@ func TestEmailSet_ClearKeywordAlsoClearsDate(t *testing.T) {
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: kc\r\n\r\nbody"
 	m := f.insertMessage(t, body, "kc", "a@example.test", "b@example.test", nil, "")
 	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1); err != nil {
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	_, raw := f.invoke(t, "Email/set", map[string]any{

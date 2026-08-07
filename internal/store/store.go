@@ -1999,12 +1999,16 @@ type Metadata interface {
 
 	// SetSnooze sets or clears the snoozed-until / "$snoozed" keyword
 	// pair on the (msgID, mailboxID) per-mailbox row, atomically inside
-	// one transaction. when==nil clears both; when non-nil sets both.
-	// The mailbox's HighestModSeq is bumped and a (EntityKindEmail,
+	// one transaction. when==nil clears the snooze (both snoozed-until
+	// and "$snoozed" clear, and wake_mailbox_id is also NULLed); when
+	// non-nil sets the snooze and writes wake (the wake-destination
+	// mailbox chosen when the snooze was set; may be nil for "no
+	// destination chosen") to wake_mailbox_id (issue #274). The
+	// mailbox's HighestModSeq is bumped and a (EntityKindEmail,
 	// ChangeOpUpdated) row is appended to the state-change feed in the
 	// same tx. Returns the message's new ModSeq. Returns ErrNotFound when
 	// the (msgID, mailboxID) membership is gone.
-	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time) (ModSeq, error)
+	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time, wake *MailboxID) (ModSeq, error)
 
 	// -- Phase 2 LLM categorisation (REQ-FILT-200..221) ---------------
 

@@ -768,7 +768,20 @@ const CurrentBackupVersion = 1
 //	extimg.DeriveFailureSignal and reset to 0/'' whenever
 //	ReplaceMessageBody swaps the blob, alongside failed_image_count/
 //	failed_image_state.
-const CurrentSchemaVersion = 100
+//
+// 101 — 0101_snooze_wake_destination.sql (issue #274). Adds
+//
+//	message_mailboxes.wake_mailbox_id: a nullable FK to mailboxes(id),
+//	ON DELETE SET NULL, column-only migration on the table added by
+//	migration 0024. Set alongside snoozed_until_us by SetSnooze; NULL
+//	means no destination was chosen and the wake worker resolves the
+//	principal's Inbox (or wakes the message in place when the
+//	principal has no Inbox). Back-fills every existing row with
+//	snoozed_until_us set to the owning principal's Inbox, resolved by
+//	the store.MailboxAttrInbox bit and falling back to a
+//	case-insensitive "INBOX" name match; rows where neither resolves
+//	stay NULL. No new table; MessageMailboxRow gains the one field.
+const CurrentSchemaVersion = 101
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

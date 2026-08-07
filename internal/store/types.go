@@ -578,6 +578,13 @@ type MessageMailbox struct {
 	// Keywords contains "$snoozed". Enforced at the store boundary;
 	// direct callers use SetSnooze.
 	SnoozedUntil *time.Time
+	// WakeMailboxID is the mailbox the message is added to when the
+	// snooze wakes (issue #274). Set alongside SnoozedUntil by
+	// SetSnooze; nil means no destination was chosen (the wake-time
+	// caller resolves the principal's Inbox, or wakes the message in
+	// place when the principal has no Inbox). Cleared together with
+	// SnoozedUntil when the snooze is cleared.
+	WakeMailboxID *MailboxID
 	// ReceivedTo is the envelope RCPT TO that produced this fan-out row
 	// (REQ-FLOW-33). One canonicalised address, post-alias-expansion,
 	// in the form accepted by the local listener. Empty string is the

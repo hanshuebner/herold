@@ -790,14 +790,16 @@ func (h *handlerSet) updateEmail(
 
 	switch snoozeAct.kind {
 	case snoozeSet:
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when); err != nil {
+		// TODO(#274 stage 2): thread the JMAP snoozeWakeMailboxId
+		// property through here instead of always passing nil.
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
 			return nil, fmt.Errorf("email: set snooze: %w", err)
 		}
 	case snoozeClear:
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, nil); err != nil {
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, nil, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}

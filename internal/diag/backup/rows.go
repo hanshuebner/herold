@@ -253,11 +253,13 @@ type MessageRow struct {
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table
-// introduced in migration 0024 (Wave 3.11 M:N membership) and extended
-// by migration 0049 (REQ-FLOW-33 received_to). Each row records the
-// per-(message, mailbox) state: IMAP UID, CONDSTORE modseq, flags,
-// keywords, the optional snooze deadline, and the envelope RCPT TO
-// that produced the fan-out row (empty for non-inbound origins).
+// introduced in migration 0024 (Wave 3.11 M:N membership), extended by
+// migration 0049 (REQ-FLOW-33 received_to) and migration 0101 (issue
+// #274 snooze wake destination). Each row records the per-(message,
+// mailbox) state: IMAP UID, CONDSTORE modseq, flags, keywords, the
+// optional snooze deadline and wake destination, and the envelope
+// RCPT TO that produced the fan-out row (empty for non-inbound
+// origins).
 type MessageMailboxRow struct {
 	MessageID      int64  `json:"message_id"`
 	MailboxID      int64  `json:"mailbox_id"`
@@ -266,6 +268,11 @@ type MessageMailboxRow struct {
 	Flags          int64  `json:"flags"`
 	KeywordsCSV    string `json:"keywords_csv"`
 	SnoozedUntilUs *int64 `json:"snoozed_until_us,omitempty"`
+	// WakeMailboxID is the mailbox the message is added to when the
+	// snooze wakes (migration 0101, issue #274). Nil when no
+	// destination was chosen; the wake worker then resolves the
+	// principal's Inbox.
+	WakeMailboxID *int64 `json:"wake_mailbox_id,omitempty"`
 	// ReceivedTo is the envelope RCPT TO captured by the receiving
 	// listener (REQ-FLOW-33, migration 0049). Empty on rows that pre-
 	// date migration 0049 and on the synthesised default for backfilled

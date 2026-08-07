@@ -88,7 +88,7 @@ func (f *fixture) snoozeMessage(t *testing.T, body string, when time.Time) store
 	if id == 0 {
 		t.Fatalf("no created entry in feed")
 	}
-	if _, err := f.store.Meta().SetSnooze(ctx, id, f.mbID, &when); err != nil {
+	if _, err := f.store.Meta().SetSnooze(ctx, id, f.mbID, &when, nil); err != nil {
 		t.Fatalf("SetSnooze: %v", err)
 	}
 	return id

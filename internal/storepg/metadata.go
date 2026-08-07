@@ -1522,7 +1522,7 @@ func boolToInt16(b bool) int16 {
 // otherwise the first entry is used.
 func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailboxID store.MailboxID) error {
 	rows, err := m.s.pool.Query(ctx, `
-		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to
+		SELECT message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to
 		  FROM message_mailboxes
 		 WHERE message_id = $1
 		 ORDER BY mailbox_id`, int64(msg.ID))
@@ -1534,8 +1534,9 @@ func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailbo
 		var mid, mbox, uid, modseq, flags int64
 		var keywords string
 		var snoozedUs *int64
+		var wakeMailboxID *int64
 		var receivedTo string
-		if err := rows.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo); err != nil {
+		if err := rows.Scan(&mid, &mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &wakeMailboxID, &receivedTo); err != nil {
 			return mapErr(err)
 		}
 		mm := store.MessageMailbox{
@@ -1552,6 +1553,10 @@ func (m *metadata) loadMailboxes(ctx context.Context, msg *store.Message, mailbo
 		if snoozedUs != nil {
 			t := fromMicros(*snoozedUs)
 			mm.SnoozedUntil = &t
+		}
+		if wakeMailboxID != nil {
+			w := store.MailboxID(*wakeMailboxID)
+			mm.WakeMailboxID = &w
 		}
 		msg.Mailboxes = append(msg.Mailboxes, mm)
 	}
@@ -1587,6 +1592,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	var mbox, uid, modseq, flags int64
 	var keywords string
 	var snoozedUs *int64
+	var wakeMailboxID *int64
 	var receivedTo string
 	err := row.Scan(
 		&id, &pid, &idUs, &rcvUs,
@@ -1596,7 +1602,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed,
 		// message_mailboxes columns
-		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &receivedTo,
+		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &wakeMailboxID, &receivedTo,
 	)
 	if err != nil {
 		return store.Message{}, mapErr(err)
@@ -1620,16 +1626,22 @@ func scanMessage(row rowLike) (store.Message, error) {
 		t := fromMicros(*snoozedUs)
 		msg.SnoozedUntil = &t
 	}
+	var wakeMailboxIDPtr *store.MailboxID
+	if wakeMailboxID != nil {
+		w := store.MailboxID(*wakeMailboxID)
+		wakeMailboxIDPtr = &w
+	}
 	msg.ReceivedTo = receivedTo
 	mm := store.MessageMailbox{
-		MessageID:    msg.ID,
-		MailboxID:    msg.MailboxID,
-		UID:          msg.UID,
-		ModSeq:       msg.ModSeq,
-		Flags:        msg.Flags,
-		Keywords:     msg.Keywords,
-		SnoozedUntil: msg.SnoozedUntil,
-		ReceivedTo:   msg.ReceivedTo,
+		MessageID:     msg.ID,
+		MailboxID:     msg.MailboxID,
+		UID:           msg.UID,
+		ModSeq:        msg.ModSeq,
+		Flags:         msg.Flags,
+		Keywords:      msg.Keywords,
+		SnoozedUntil:  msg.SnoozedUntil,
+		WakeMailboxID: wakeMailboxIDPtr,
+		ReceivedTo:    msg.ReceivedTo,
 	}
 	msg.Mailboxes = []store.MessageMailbox{mm}
 	return msg, nil
@@ -3309,7 +3321,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
-			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
 			 WHERE mm.uid > $2 AND m.internal_date_us < $4
@@ -3322,7 +3334,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
-			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
+			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
 			 WHERE mm.uid > $2
@@ -3941,7 +3953,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 		       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
-		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.received_to
+		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 		  FROM messages m
 		  JOIN message_mailboxes mm ON mm.message_id = m.id
 		 WHERE mm.snoozed_until_us IS NOT NULL
@@ -3964,7 +3976,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 	return out, rows.Err()
 }
 
-func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time) (store.ModSeq, error) {
+func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID, when *time.Time, wake *store.MailboxID) (store.ModSeq, error) {
 	now := m.s.clock.Now().UTC()
 	var modseq store.ModSeq
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
@@ -4004,14 +4016,18 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 		modseq = store.ModSeq(highest + 1)
 
 		var snoozedArg any
+		var wakeArg any
 		if when != nil {
 			snoozedArg = usMicros(when.UTC())
+			if wake != nil {
+				wakeArg = int64(*wake)
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE message_mailboxes
-			   SET keywords_csv = $1, modseq = $2, snoozed_until_us = $3
-			 WHERE message_id = $4 AND mailbox_id = $5`,
-			strings.Join(kws, ","), int64(modseq), snoozedArg, int64(msgID), int64(mailboxID)); err != nil {
+			   SET keywords_csv = $1, modseq = $2, snoozed_until_us = $3, wake_mailbox_id = $4
+			 WHERE message_id = $5 AND mailbox_id = $6`,
+			strings.Join(kws, ","), int64(modseq), snoozedArg, wakeArg, int64(msgID), int64(mailboxID)); err != nil {
 			return mapErr(err)
 		}
 		if _, err := tx.Exec(ctx, `

@@ -247,9 +247,9 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		"", int64(1000000))
 
 	// message_mailboxes
-	exec(`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, 1, 1, 1, 0, "", nil, "bob@example.test")
+	exec(`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, 1, 1, 1, 0, "", nil, 2, "bob@example.test")
 
 	// email_pretrash_mailboxes
 	exec(`INSERT INTO email_pretrash_mailboxes (email_id, mailbox_id) VALUES (?, ?)`,

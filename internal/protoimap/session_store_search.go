@@ -100,7 +100,7 @@ func (ses *session) handleSTORE(ctx context.Context, c *Command) error {
 		// drops the keyword) and the message currently has a
 		// SnoozedUntil, route through SetSnooze for the atomic clear.
 		if clearsSnoozed && m.SnoozedUntil != nil {
-			if _, err := ses.s.store.Meta().SetSnooze(ctx, m.ID, ses.sel.id, nil); err != nil {
+			if _, err := ses.s.store.Meta().SetSnooze(ctx, m.ID, ses.sel.id, nil, nil); err != nil {
 				return ses.resp.taggedNO(c.Tag, "", "store failed")
 			}
 			// Drop the keyword from the residual delta; SetSnooze
