@@ -741,8 +741,14 @@ func TestEmailSubmission_Set_StreamsBodyToQueue(t *testing.T) {
 
 // -- thread-id correctness tests (REQ-PROTO-40) ---------------------------
 
-// openPostgresStore opens a Postgres store for testing. It skips the test if
-// HEROLD_PG_DSN is not set or the connection cannot be established.
+// openPostgresStore opens a Postgres store for testing. It skips the test
+// (a silent no-op) if HEROLD_PG_DSN is not set. If HEROLD_PG_DSN IS set but
+// the connection cannot be established (e.g. the checkout's max migration
+// is behind the shared database's schema version, which storepg.Open
+// refuses as a downgrade), it fails the test rather than skipping it: a
+// skip there is indistinguishable from "no server configured" in a
+// non-verbose `go test` run and would report the package as a passing
+// `ok` without the Postgres leg ever having executed.
 func openPostgresStore(t *testing.T) store.Store {
 	t.Helper()
 	dsn := os.Getenv("HEROLD_PG_DSN")
@@ -752,7 +758,20 @@ func openPostgresStore(t *testing.T) store.Store {
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clk)
 	if err != nil {
-		t.Skipf("storepg.Open: %v", err)
+		t.Fatalf("HEROLD_PG_DSN is set but storepg.Open failed (Postgres leg NOT exercised): %v", err)
+	}
+	// HEROLD_PG_DSN is a single shared throwaway database; reset row state
+	// before each test so the fixed example.test domain / alice@example.test
+	// principal that newSetupFromStore inserts do not collide with rows a
+	// prior test in this run — or a prior failed run — left behind. Mirrors
+	// the pattern in internal/admin/loopback_queue_integration_test.go.
+	if tr, ok := st.(interface {
+		TruncateAll(ctx context.Context) error
+	}); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			_ = st.Close()
+			t.Fatalf("TruncateAll: %v", err)
+		}
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
