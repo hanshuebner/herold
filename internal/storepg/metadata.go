@@ -1168,12 +1168,16 @@ func (m *metadata) insertMessageTx(
 			if t.SnoozedUntil != nil {
 				snoozedArg = usMicros(*t.SnoozedUntil)
 			}
+			var wakeArg any
+			if t.SnoozedUntil != nil && t.WakeMailboxID != nil {
+				wakeArg = int64(*t.WakeMailboxID)
+			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO message_mailboxes
-				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, received_to)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				  (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 				mid, int64(t.MailboxID), int64(allocUID), int64(allocModSeq),
-				int64(t.Flags), strings.Join(t.Keywords, ","), snoozedArg, t.ReceivedTo); err != nil {
+				int64(t.Flags), strings.Join(t.Keywords, ","), snoozedArg, wakeArg, t.ReceivedTo); err != nil {
 				return mapErr(err)
 			}
 			if _, err := tx.Exec(ctx, `

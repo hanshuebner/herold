@@ -157,6 +157,18 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 // tick performs one sweep. Returns the number of messages released.
+//
+// For each due message the wake destination is resolved in priority
+// order: the row's stored WakeMailboxID (set by SetSnooze when the
+// snooze was created), else the principal's Inbox, else the message's
+// current mailbox (wake in place — matches pre-#274 behaviour for a
+// principal with no resolvable Inbox). When the destination differs
+// from the message's current mailbox it is ADDED there via
+// AddMessageToMailbox, retaining the origin membership — this is not a
+// move. AddMessageToMailbox is not idempotent; ErrConflict (membership
+// already exists) is tolerated as the no-op case. The add happens
+// before the snooze is cleared so a failed clear retries safely on the
+// next tick without re-adding.
 func (w *Worker) tick(ctx context.Context) (int, error) {
 	start := w.clock.Now()
 	defer func() {
@@ -171,9 +183,30 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 	if len(due) == 0 {
 		return 0, nil
 	}
+	// Cache each principal's resolved Inbox for the duration of this
+	// tick so a batch release of many messages for one principal issues
+	// one ListMailboxes call, not one per message.
+	inboxCache := map[store.PrincipalID]*store.MailboxID{}
 	for _, msg := range due {
 		if err := ctx.Err(); err != nil {
 			return 0, err
+		}
+		dest, err := w.resolveWakeDestination(ctx, msg, inboxCache)
+		if err != nil {
+			return 0, err
+		}
+		if dest != msg.MailboxID {
+			if _, _, err := w.store.Meta().AddMessageToMailbox(ctx, msg.ID, dest); err != nil {
+				switch {
+				case errors.Is(err, store.ErrConflict):
+					// Already a member of the destination — no-op.
+				case errors.Is(err, store.ErrNotFound):
+					// Message was expunged between list and add; skip.
+					continue
+				default:
+					return 0, fmt.Errorf("snooze: add %d to mailbox %d: %w", msg.ID, dest, err)
+				}
+			}
 		}
 		if _, err := w.store.Meta().SetSnooze(ctx, msg.ID, msg.MailboxID, nil, nil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -184,10 +217,45 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 		}
 		w.released.Add(1)
 		observe.SnoozeMessagesWokenTotal.Inc()
+		w.logger.LogAttrs(ctx, slog.LevelInfo, "snooze: woke message",
+			slog.Uint64("message_id", uint64(msg.ID)),
+			slog.Uint64("source_mailbox_id", uint64(msg.MailboxID)),
+			slog.Uint64("destination_mailbox_id", uint64(dest)),
+		)
 	}
 	w.logger.LogAttrs(ctx, slog.LevelInfo, "snooze: released batch",
 		slog.Int("count", len(due)),
 		slog.Time("now", now),
 	)
 	return len(due), nil
+}
+
+// resolveWakeDestination returns the mailbox a due-snoozed message
+// should be added to on wake. inboxCache memoises the per-principal
+// Inbox lookup across one tick.
+func (w *Worker) resolveWakeDestination(
+	ctx context.Context,
+	msg store.Message,
+	inboxCache map[store.PrincipalID]*store.MailboxID,
+) (store.MailboxID, error) {
+	if len(msg.Mailboxes) > 0 && msg.Mailboxes[0].WakeMailboxID != nil {
+		return *msg.Mailboxes[0].WakeMailboxID, nil
+	}
+	inbox, cached := inboxCache[msg.PrincipalID]
+	if !cached {
+		mbs, err := w.store.Meta().ListMailboxes(ctx, msg.PrincipalID)
+		if err != nil {
+			return 0, fmt.Errorf("snooze: list mailboxes for principal %d: %w", msg.PrincipalID, err)
+		}
+		if resolved := store.ResolveInboxMailbox(mbs); resolved != nil {
+			id := resolved.ID
+			inbox = &id
+		}
+		inboxCache[msg.PrincipalID] = inbox
+	}
+	if inbox != nil {
+		return *inbox, nil
+	}
+	// No resolvable Inbox: wake in place.
+	return msg.MailboxID, nil
 }

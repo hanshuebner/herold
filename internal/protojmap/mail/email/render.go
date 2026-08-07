@@ -65,6 +65,10 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		s := rfc3339UTC(*m.SnoozedUntil)
 		out.SnoozedUntil = &s
 	}
+	if wake := wakeMailboxIDForMessage(m); wake != nil {
+		s := jmapIDFromMailbox(*wake)
+		out.SnoozeWakeMailboxID = &s
+	}
 	if m.Envelope.Subject != "" {
 		out.Subject = m.Envelope.Subject
 	}
@@ -101,6 +105,24 @@ func renderEmailMetadata(m store.Message) jmapEmail {
 		out.HasAttachment = m.HasAttachment
 	}
 	return out
+}
+
+// wakeMailboxIDForMessage returns the WakeMailboxID recorded on the
+// message_mailboxes row for m's current mailbox (m.MailboxID), or nil
+// when unset or unresolvable. GetMessage populates m.Mailboxes with
+// every membership, so the entry matching m.MailboxID is looked up
+// directly; a single-membership message (e.g. as returned by
+// ListDueSnoozedMessages's join) falls back to the first entry.
+func wakeMailboxIDForMessage(m store.Message) *store.MailboxID {
+	for _, mm := range m.Mailboxes {
+		if mm.MailboxID == m.MailboxID {
+			return mm.WakeMailboxID
+		}
+	}
+	if len(m.Mailboxes) > 0 {
+		return m.Mailboxes[0].WakeMailboxID
+	}
+	return nil
 }
 
 // threadIDForMessage formats the threadId per RFC 8621 §4.1. v1 lifts

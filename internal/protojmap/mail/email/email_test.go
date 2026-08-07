@@ -1142,6 +1142,385 @@ func TestEmailSet_RejectsKeywordOnlyWithoutDate(t *testing.T) {
 	}
 }
 
+// messageWakeMailboxID returns the WakeMailboxID recorded for m's
+// message_mailboxes row (issue #274).
+func messageWakeMailboxID(t *testing.T, f *fixture, id store.MessageID, mailboxID store.MailboxID) *store.MailboxID {
+	t.Helper()
+	m, err := f.srv.Store.Meta().GetMessage(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	for _, mm := range m.Mailboxes {
+		if mm.MailboxID == mailboxID {
+			return mm.WakeMailboxID
+		}
+	}
+	return nil
+}
+
+func TestEmailGet_RendersSnoozeWakeMailboxID(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: snoozed\r\n\r\nbody"
+	m := f.insertMessage(t, body, "snoozed", "a@example.test", "b@example.test", nil, "")
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, &archive.ID); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	got, ok := resp.List[0]["snoozeWakeMailboxId"].(string)
+	if !ok {
+		t.Fatalf("snoozeWakeMailboxId missing or not a string: %v", resp.List[0]["snoozeWakeMailboxId"])
+	}
+	if got != fmt.Sprintf("%d", archive.ID) {
+		t.Errorf("snoozeWakeMailboxId = %q, want %d", got, archive.ID)
+	}
+}
+
+func TestEmailGet_SnoozeWakeMailboxID_NullWhenNotSnoozed(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: not-snoozed\r\n\r\nbody"
+	m := f.insertMessage(t, body, "not-snoozed", "a@example.test", "b@example.test", nil, "")
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{fmt.Sprintf("%d", m.ID)},
+	})
+	var resp struct {
+		List []map[string]any `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.List) != 1 {
+		t.Fatalf("got %d messages, want 1: %s", len(resp.List), raw)
+	}
+	if got := resp.List[0]["snoozeWakeMailboxId"]; got != nil {
+		t.Errorf("snoozeWakeMailboxId = %v, want null", got)
+	}
+}
+
+func TestEmailSet_SnoozeWithExplicitWakeDestination(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil":        wakeAt,
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", archive.ID),
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	got := messageWakeMailboxID(t, f, m.ID, f.inbox.ID)
+	if got == nil || *got != archive.ID {
+		t.Errorf("WakeMailboxID = %v, want %d", got, archive.ID)
+	}
+}
+
+func TestEmailSet_SnoozeWithoutWakeDestination_DefaultsToInbox(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil": wakeAt,
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.NotUpdated) != 0 {
+		t.Fatalf("notUpdated = %v", resp.NotUpdated)
+	}
+	got := messageWakeMailboxID(t, f, m.ID, f.inbox.ID)
+	if got == nil || *got != f.inbox.ID {
+		t.Errorf("WakeMailboxID = %v, want Inbox (%d)", got, f.inbox.ID)
+	}
+}
+
+func TestEmailSet_SnoozeWakeMailboxID_RejectsForeignMailbox(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	// A mailbox that exists in the same store but belongs to a
+	// different principal: "outside the account" per issue #274's
+	// validation rule.
+	other, err := f.srv.Store.Meta().InsertPrincipal(context.Background(), store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "other-owner@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal(other): %v", err)
+	}
+	foreignMB, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: other.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(foreign): %v", err)
+	}
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozedUntil":        wakeAt,
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", foreignMB.ID),
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	key := fmt.Sprintf("%d", m.ID)
+	serr, ok := resp.NotUpdated[key]
+	if !ok {
+		t.Fatalf("expected NotUpdated entry for %s, got: %s", key, raw)
+	}
+	if got, _ := serr["type"].(string); got != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", got)
+	}
+	if messageHasSnoozeKeyword(t, f, m.ID) {
+		t.Errorf("$snoozed keyword set despite rejection")
+	}
+}
+
+func TestEmailSet_SnoozeWakeMailboxID_RejectsWithoutFreshSnooze(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	t1 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := f.srv.Store.Meta().SetSnooze(context.Background(), m.ID, f.inbox.ID, &t1, nil); err != nil {
+		t.Fatalf("SetSnooze: %v", err)
+	}
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	// snoozeWakeMailboxId supplied while the snooze is already in force
+	// (snoozedUntil is NOT part of this patch): rejected.
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", archive.ID),
+			},
+		},
+	})
+	var resp struct {
+		Updated    map[string]any            `json:"updated"`
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	key := fmt.Sprintf("%d", m.ID)
+	serr, ok := resp.NotUpdated[key]
+	if !ok {
+		t.Fatalf("expected NotUpdated entry for %s, got: %s", key, raw)
+	}
+	if got, _ := serr["type"].(string); got != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", got)
+	}
+	// The pre-existing snooze must be left untouched by the rejection.
+	got := messageWakeMailboxID(t, f, m.ID, f.inbox.ID)
+	if got != nil {
+		t.Errorf("WakeMailboxID = %v, want nil (unchanged)", got)
+	}
+}
+
+func TestEmailSet_SnoozeWakeMailboxID_RejectsWithNoSnoozeAtAll(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hi\r\n\r\nhi"
+	m := f.insertMessage(t, body, "hi", "a@example.test", "b@example.test", nil, "")
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"update": map[string]any{
+			fmt.Sprintf("%d", m.ID): map[string]any{
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", archive.ID),
+			},
+		},
+	})
+	var resp struct {
+		NotUpdated map[string]map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	key := fmt.Sprintf("%d", m.ID)
+	serr, ok := resp.NotUpdated[key]
+	if !ok {
+		t.Fatalf("expected NotUpdated entry for %s, got: %s", key, raw)
+	}
+	if got, _ := serr["type"].(string); got != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", got)
+	}
+}
+
+func TestEmail_Set_Create_SnoozeWithExplicitWakeDestination(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hello\r\n\r\nhello world"
+	ref := f.putBlob(t, body)
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"blobId":              ref.Hash,
+				"mailboxIds":          map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+				"snoozedUntil":        wakeAt,
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", archive.ID),
+			},
+		},
+	})
+	var resp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.Created) != 1 {
+		t.Fatalf("created=%v notCreated=%v", resp.Created, resp.NotCreated)
+	}
+	id := mostRecentMessageID(t, f)
+	got := messageWakeMailboxID(t, f, id, f.inbox.ID)
+	if got == nil || *got != archive.ID {
+		t.Errorf("WakeMailboxID = %v, want %d", got, archive.ID)
+	}
+}
+
+func TestEmail_Set_Create_SnoozeWithoutWakeDestination_DefaultsToInbox(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hello\r\n\r\nhello world"
+	ref := f.putBlob(t, body)
+	wakeAt := "2030-06-01T12:00:00Z"
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"blobId":       ref.Hash,
+				"mailboxIds":   map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+				"snoozedUntil": wakeAt,
+			},
+		},
+	})
+	var resp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]any            `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.Created) != 1 {
+		t.Fatalf("created=%v notCreated=%v", resp.Created, resp.NotCreated)
+	}
+	id := mostRecentMessageID(t, f)
+	got := messageWakeMailboxID(t, f, id, f.inbox.ID)
+	if got == nil || *got != f.inbox.ID {
+		t.Errorf("WakeMailboxID = %v, want Inbox (%d)", got, f.inbox.ID)
+	}
+}
+
+func TestEmail_Set_Create_SnoozeWakeMailboxID_RejectsWithoutSnooze(t *testing.T) {
+	f := setupFixture(t)
+	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: hello\r\n\r\nhello world"
+	ref := f.putBlob(t, body)
+	archive, err := f.srv.Store.Meta().InsertMailbox(context.Background(), store.Mailbox{
+		PrincipalID: f.pid, Name: "Archive",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(Archive): %v", err)
+	}
+	_, raw := f.invoke(t, "Email/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"create": map[string]any{
+			"new1": map[string]any{
+				"blobId":              ref.Hash,
+				"mailboxIds":          map[string]bool{fmt.Sprintf("%d", f.inbox.ID): true},
+				"snoozeWakeMailboxId": fmt.Sprintf("%d", archive.ID),
+			},
+		},
+	})
+	var resp struct {
+		Created    map[string]map[string]any `json:"created"`
+		NotCreated map[string]map[string]any `json:"notCreated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if len(resp.Created) != 0 {
+		t.Fatalf("expected create to be rejected, got created=%v", resp.Created)
+	}
+	serr, ok := resp.NotCreated["new1"]
+	if !ok {
+		t.Fatalf("expected notCreated entry, got: %s", raw)
+	}
+	if got, _ := serr["type"].(string); got != "invalidProperties" {
+		t.Errorf("error type = %q, want invalidProperties", got)
+	}
+}
+
 func TestEmailSet_ClearKeywordAlsoClearsDate(t *testing.T) {
 	f := setupFixture(t)
 	body := "From: a@example.test\r\nTo: b@example.test\r\nSubject: kc\r\n\r\nbody"

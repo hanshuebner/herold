@@ -112,6 +112,13 @@ type emailCreateInput struct {
 	ReceivedAt   *string         `json:"receivedAt"`
 	Subject      *string         `json:"subject"`
 	SnoozedUntil *string         `json:"snoozedUntil"`
+	// SnoozeWakeMailboxID is the create-path counterpart of the update
+	// patch's "snoozeWakeMailboxId" (issue #274): the mailbox the
+	// message is added to when the snooze wakes. Valid only alongside
+	// a non-nil SnoozedUntil; absent (or explicit JSON null, which is
+	// indistinguishable from absent through this pointer field)
+	// resolves to the account's Inbox server-side.
+	SnoozeWakeMailboxID *string `json:"snoozeWakeMailboxId"`
 
 	// Inline-body path (RFC 8621 §4.6 "construct from properties").
 	From       []emailAddress            `json:"from"`
@@ -465,6 +472,54 @@ func (h *handlerSet) createEmail(
 		customKW = append(customKW, "$snoozed")
 	}
 
+	// snoozeWakeMailboxId (issue #274): only meaningful alongside a
+	// snooze created in this same call. An explicit id must resolve to
+	// a mailbox owned by ownerPID; absent (or JSON null) resolves to
+	// the account Inbox server-side.
+	var wakeMailboxID *store.MailboxID
+	if in.SnoozeWakeMailboxID != nil {
+		if snoozedUntil == nil {
+			return 0, jmapEmail{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozeWakeMailboxId"},
+				Description: "snoozeWakeMailboxId requires snoozedUntil to be set in the same create",
+			}, nil
+		}
+		id, ok := mailboxIDFromJMAP(*in.SnoozeWakeMailboxID)
+		if !ok {
+			return 0, jmapEmail{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozeWakeMailboxId"},
+				Description: "snoozeWakeMailboxId carries an unparseable id",
+			}, nil
+		}
+		mb, err := h.store.Meta().GetMailboxByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return 0, jmapEmail{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"snoozeWakeMailboxId"},
+					Description: "snoozeWakeMailboxId does not exist",
+				}, nil
+			}
+			return 0, jmapEmail{}, nil, err
+		}
+		if mb.PrincipalID != ownerPID {
+			return 0, jmapEmail{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozeWakeMailboxId"},
+				Description: "snoozeWakeMailboxId is not owned by the requested account",
+			}, nil
+		}
+		wakeMailboxID = &id
+	} else if snoozedUntil != nil {
+		resolved, rerr := h.resolveInboxMailbox(ctx, ownerPID)
+		if rerr != nil {
+			return 0, jmapEmail{}, nil, rerr
+		}
+		wakeMailboxID = resolved
+	}
+
 	msg := store.Message{
 		PrincipalID:  ownerPID,
 		Flags:        flags,
@@ -478,7 +533,10 @@ func (h *handlerSet) createEmail(
 	}
 	targets := make([]store.MessageMailbox, len(targetMailboxIDs))
 	for i, mbID := range targetMailboxIDs {
-		targets[i] = store.MessageMailbox{MailboxID: mbID, Flags: flags, Keywords: customKW, SnoozedUntil: snoozedUntil}
+		targets[i] = store.MessageMailbox{
+			MailboxID: mbID, Flags: flags, Keywords: customKW,
+			SnoozedUntil: snoozedUntil, WakeMailboxID: wakeMailboxID,
+		}
 	}
 	uid, modseq, err := h.store.Meta().InsertMessage(ctx, msg, targets)
 	if err != nil {
@@ -747,7 +805,10 @@ func (h *handlerSet) updateEmail(
 		}
 	}
 
-	snoozeAct, serr := decodeSnoozeIntent(obj, m)
+	snoozeAct, serr, err := h.decodeSnoozeIntent(ctx, ownerPID, obj, m)
+	if err != nil {
+		return nil, err
+	}
 	if serr != nil {
 		return serr, nil
 	}
@@ -790,9 +851,17 @@ func (h *handlerSet) updateEmail(
 
 	switch snoozeAct.kind {
 	case snoozeSet:
-		// TODO(#274 stage 2): thread the JMAP snoozeWakeMailboxId
-		// property through here instead of always passing nil.
-		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when, nil); err != nil {
+		wake := snoozeAct.wake
+		if wake == nil {
+			// No explicit snoozeWakeMailboxId (or an explicit null):
+			// resolve the destination to the account Inbox server-side.
+			resolved, rerr := h.resolveInboxMailbox(ctx, ownerPID)
+			if rerr != nil {
+				return nil, rerr
+			}
+			wake = resolved
+		}
+		if _, err := h.store.Meta().SetSnooze(ctx, m.ID, m.MailboxID, &snoozeAct.when, wake); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return &setError{Type: "notFound"}, nil
 			}
@@ -967,11 +1036,17 @@ func parseEnvelopeAddressList(raw string) []emailAddress {
 }
 
 // snoozeAction is the resolved snooze intent of a patch. snoozeSet
-// carries the wake-up deadline; snoozeClear has no payload;
-// snoozeUnchanged means the patch did not name snoozedUntil at all.
+// carries the wake-up deadline and, optionally, an explicit wake
+// destination (wake); snoozeClear has no payload; snoozeUnchanged
+// means the patch did not name snoozedUntil at all.
 type snoozeAction struct {
 	kind snoozeKind
 	when time.Time
+	// wake is the explicit snoozeWakeMailboxId destination, validated
+	// and resolved to a store.MailboxID. nil means the patch did not
+	// supply one (or supplied JSON null); the caller resolves the
+	// account Inbox as the default. Only meaningful when kind == snoozeSet.
+	wake *store.MailboxID
 }
 
 type snoozeKind uint8
@@ -982,35 +1057,119 @@ const (
 	snoozeClear
 )
 
-// decodeSnoozeIntent inspects the raw patch object for snoozedUntil.
-// Returns a setError when the supplied value is a malformed date.
-func decodeSnoozeIntent(obj map[string]json.RawMessage, _ store.Message) (snoozeAction, *setError) {
-	raw, ok := obj["snoozedUntil"]
-	if !ok {
-		return snoozeAction{kind: snoozeUnchanged}, nil
-	}
-	// Try null first; json.RawMessage trims whitespace on
-	// Unmarshal, so a literal "null" matches verbatim.
-	if string(raw) == "null" {
-		return snoozeAction{kind: snoozeClear}, nil
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return snoozeAction{}, &setError{
-			Type:        "invalidProperties",
-			Properties:  []string{"snoozedUntil"},
-			Description: "snoozedUntil must be a UTC ISO-8601 date string or null",
-		}
-	}
-	t, err := time.Parse(time.RFC3339, s)
+// resolveInboxMailbox resolves pid's Inbox mailbox as the default
+// snooze-wake destination (issue #274): Email/set writes the resolved
+// mailbox id at snooze-set time rather than leaving resolution to the
+// wake worker. Returns (nil, nil) — not an error — when the principal
+// has no resolvable Inbox; SetSnooze then stores a NULL wake_mailbox_id
+// and the wake worker falls back to waking the message in place.
+func (h *handlerSet) resolveInboxMailbox(ctx context.Context, pid store.PrincipalID) (*store.MailboxID, error) {
+	mbs, err := h.store.Meta().ListMailboxes(ctx, pid)
 	if err != nil {
+		return nil, fmt.Errorf("email: list mailboxes for inbox resolution: %w", err)
+	}
+	resolved := store.ResolveInboxMailbox(mbs)
+	if resolved == nil {
+		return nil, nil
+	}
+	id := resolved.ID
+	return &id, nil
+}
+
+// decodeSnoozeIntent inspects the raw patch object for snoozedUntil and
+// snoozeWakeMailboxId (issue #274). Returns a setError for a malformed
+// date, an unparseable/foreign snoozeWakeMailboxId, or a
+// snoozeWakeMailboxId supplied outside a patch that freshly sets
+// snoozedUntil (clearing, or leaving an already-active snooze
+// untouched, does not accept a wake-destination change). A non-nil
+// error is a genuine store failure, distinct from a setError.
+func (h *handlerSet) decodeSnoozeIntent(
+	ctx context.Context,
+	ownerPID store.PrincipalID,
+	obj map[string]json.RawMessage,
+	_ store.Message,
+) (snoozeAction, *setError, error) {
+	var act snoozeAction
+	raw, ok := obj["snoozedUntil"]
+	switch {
+	case !ok:
+		act = snoozeAction{kind: snoozeUnchanged}
+	case string(raw) == "null":
+		// Try null first; json.RawMessage trims whitespace on
+		// Unmarshal, so a literal "null" matches verbatim.
+		act = snoozeAction{kind: snoozeClear}
+	default:
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return snoozeAction{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozedUntil"},
+				Description: "snoozedUntil must be a UTC ISO-8601 date string or null",
+			}, nil
+		}
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return snoozeAction{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozedUntil"},
+				Description: "snoozedUntil: " + err.Error(),
+			}, nil
+		}
+		act = snoozeAction{kind: snoozeSet, when: t.UTC()}
+	}
+
+	rawWake, hasWake := obj["snoozeWakeMailboxId"]
+	if !hasWake {
+		return act, nil, nil
+	}
+	if act.kind != snoozeSet {
 		return snoozeAction{}, &setError{
 			Type:        "invalidProperties",
-			Properties:  []string{"snoozedUntil"},
-			Description: "snoozedUntil: " + err.Error(),
-		}
+			Properties:  []string{"snoozeWakeMailboxId"},
+			Description: "snoozeWakeMailboxId requires snoozedUntil to be set in the same patch",
+		}, nil
 	}
-	return snoozeAction{kind: snoozeSet, when: t.UTC()}, nil
+	if string(rawWake) == "null" {
+		// Explicit null: leave act.wake nil so the caller resolves the
+		// default (account Inbox), same as when the property is absent.
+		return act, nil, nil
+	}
+	var idStr string
+	if err := json.Unmarshal(rawWake, &idStr); err != nil {
+		return snoozeAction{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"snoozeWakeMailboxId"},
+			Description: "snoozeWakeMailboxId must be a mailbox id string or null",
+		}, nil
+	}
+	id, ok := mailboxIDFromJMAP(idStr)
+	if !ok {
+		return snoozeAction{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"snoozeWakeMailboxId"},
+			Description: "snoozeWakeMailboxId carries an unparseable id",
+		}, nil
+	}
+	mb, err := h.store.Meta().GetMailboxByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return snoozeAction{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{"snoozeWakeMailboxId"},
+				Description: "snoozeWakeMailboxId does not exist",
+			}, nil
+		}
+		return snoozeAction{}, nil, fmt.Errorf("email: resolve snoozeWakeMailboxId: %w", err)
+	}
+	if mb.PrincipalID != ownerPID {
+		return snoozeAction{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"snoozeWakeMailboxId"},
+			Description: "snoozeWakeMailboxId is not owned by the requested account",
+		}, nil
+	}
+	act.wake = &id
+	return act, nil, nil
 }
 
 // removeString returns s with every occurrence of v removed. Used to

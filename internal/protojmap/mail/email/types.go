@@ -71,6 +71,14 @@ type jmapEmail struct {
 	// so the field renders as `null` when the message is not snoozed
 	// and as a UTC ISO-8601 string (RFC 8620 UTCDate) otherwise.
 	SnoozedUntil *string `json:"snoozedUntil"`
+	// SnoozeWakeMailboxID is the mailbox the message is added to when
+	// the snooze wakes (issue #274, capability
+	// https://netzhansa.com/jmap/snooze). Nullable: null when the
+	// message is not snoozed. Setting a snooze without this property
+	// resolves the destination to the account's Inbox server-side; the
+	// property renders the resolved (or explicitly chosen) destination
+	// once a snooze is in force.
+	SnoozeWakeMailboxID *jmapID `json:"snoozeWakeMailboxId"`
 	// Reactions is the email reactions extension property
 	// (REQ-PROTO-100, capability https://netzhansa.com/jmap/email-reactions).
 	// Shape: {"<emoji>": ["<principal-id>", ...], ...}. Sparse — emojis
@@ -161,6 +169,7 @@ type jmapEmailWire struct {
 	Size                      int64                `json:"size"`
 	ReceivedAt                string               `json:"receivedAt"`
 	SnoozedUntil              *string              `json:"snoozedUntil"`
+	SnoozeWakeMailboxID       *jmapID              `json:"snoozeWakeMailboxId"`
 	Reactions                 map[string][]string  `json:"reactions,omitempty"`
 	From                      []jmapAddress        `json:"from,omitempty"`
 	To                        []jmapAddress        `json:"to,omitempty"`
@@ -199,6 +208,7 @@ func (e jmapEmail) MarshalJSON() ([]byte, error) {
 		Size:                      e.Size,
 		ReceivedAt:                e.ReceivedAt,
 		SnoozedUntil:              e.SnoozedUntil,
+		SnoozeWakeMailboxID:       e.SnoozeWakeMailboxID,
 		Reactions:                 e.Reactions,
 		From:                      e.From,
 		To:                        e.To,

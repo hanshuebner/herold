@@ -279,6 +279,9 @@ func Run(t *testing.T, f Factory) {
 		{"Snooze_WakeMailbox_NilAllowed", testSnoozeWakeMailboxNilAllowed},
 		{"Snooze_WakeMailbox_ClearNulls", testSnoozeClearNullsWakeMailbox},
 		{"Snooze_ListDue_ProjectsWakeMailbox", testSnoozeListDueProjectsWakeMailbox},
+		{"Snooze_ResolveInboxMailbox_ByAttribute", testResolveInboxMailboxByAttribute},
+		{"Snooze_ResolveInboxMailbox_ByNameFallback", testResolveInboxMailboxByNameFallback},
+		{"Snooze_ResolveInboxMailbox_None", testResolveInboxMailboxNone},
 		// -- REQ-FILT-200..221 LLM categorisation -----------------
 		{"CategorisationConfig_DefaultsSeededOnFirstRead", testCategorisationConfigDefaults},
 		{"CategorisationConfig_RoundTrip", testCategorisationConfigRoundtrip},
@@ -7221,6 +7224,65 @@ func testSnoozeListDueProjectsWakeMailbox(t *testing.T, s store.Store) {
 	wake := wakeMailboxIDIn(got[0], sent.ID)
 	if wake == nil || *wake != inbox.ID {
 		t.Fatalf("ListDueSnoozedMessages WakeMailboxID = %v, want %d (Inbox)", wake, inbox.ID)
+	}
+}
+
+// testResolveInboxMailboxByAttribute covers the primary resolution
+// path: store.ResolveInboxMailbox picks the mailbox carrying
+// MailboxAttrInbox over any other same/similarly-named mailbox.
+func testResolveInboxMailboxByAttribute(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "resolve-inbox-attr@example.com")
+	_ = mustInsertMailbox(t, s, p.ID, "Archive")
+	inbox, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox(INBOX): %v", err)
+	}
+	list, err := s.Meta().ListMailboxes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	got := store.ResolveInboxMailbox(list)
+	if got == nil || got.ID != inbox.ID {
+		t.Fatalf("ResolveInboxMailbox = %v, want %d (INBOX)", got, inbox.ID)
+	}
+}
+
+// testResolveInboxMailboxByNameFallback covers the migration-0101
+// fallback: a mailbox named "INBOX" with no MailboxAttrInbox bit set
+// (as produced by pre-attribute mailbox rows) still resolves.
+func testResolveInboxMailboxByNameFallback(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "resolve-inbox-name@example.com")
+	_ = mustInsertMailbox(t, s, p.ID, "Archive")
+	inbox := mustInsertMailbox(t, s, p.ID, "inbox") // lower-case, no attribute bit
+	list, err := s.Meta().ListMailboxes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	got := store.ResolveInboxMailbox(list)
+	if got == nil || got.ID != inbox.ID {
+		t.Fatalf("ResolveInboxMailbox = %v, want %d (inbox by name)", got, inbox.ID)
+	}
+}
+
+// testResolveInboxMailboxNone covers the "no Inbox at all" case: the
+// principal has mailboxes but none is named or tagged as the Inbox, so
+// resolution returns nil and the wake-time caller falls back to waking
+// the message in place.
+func testResolveInboxMailboxNone(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "resolve-inbox-none@example.com")
+	_ = mustInsertMailbox(t, s, p.ID, "Archive")
+	_ = mustInsertMailbox(t, s, p.ID, "Sent")
+	list, err := s.Meta().ListMailboxes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	if got := store.ResolveInboxMailbox(list); got != nil {
+		t.Fatalf("ResolveInboxMailbox = %v, want nil", got)
 	}
 }
 
