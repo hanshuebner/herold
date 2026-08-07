@@ -521,10 +521,15 @@
     if (!expanded) return;
     if (autoReadDone) return;
     autoReadDone = true;
-    if (email.keywords.$seen) return;
-    const id = email.id;
+    // A merged (deduplicated) entry's own `keywords.$seen` union already
+    // reads true as soon as ANY same-Message-ID copy is read, so it alone
+    // cannot signal a still-unread twin (re #276). `unseenDedupedCopyIds`
+    // names every raw copy the union hides; mark all of them, falling back
+    // to the accordion's own id when the entry is not a merged one.
+    const idsToMark = email.unseenDedupedCopyIds ?? (email.keywords.$seen ? [] : [email.id]);
+    if (idsToMark.length === 0) return;
     untrack(() => {
-      void mail.setSeen(id, true);
+      for (const id of idsToMark) void mail.setSeen(id, true);
     });
   });
 

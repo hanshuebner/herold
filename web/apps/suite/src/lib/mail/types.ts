@@ -314,6 +314,21 @@ export interface Email {
    * failures".
    */
   failedImageReason?: string | null;
+  /**
+   * Ids of every raw same-Message-ID copy `resolveDeduplicatedThreadEmails`
+   * merged into this synthetic representative that is NOT `$seen` (re #276).
+   * Two independent deliveries of one message (e.g. a direct delivery plus
+   * an alias-forwarded copy) can leave one copy read and the other unread;
+   * the merged `keywords.$seen` union reports read as soon as ANY copy is
+   * read, which hides the outstanding unread copy behind a representative
+   * id that alone cannot reach it. Consumers that mark the representative
+   * read (`pickInitialExpanded`, the auto-read effect, `markThreadSeen`)
+   * fan the mutation out to every id listed here. Present only on a
+   * synthetic Email built from more than one raw copy, and only when at
+   * least one of those copies is unread; absent otherwise, including for a
+   * non-merged Email.
+   */
+  unseenDedupedCopyIds?: string[];
 }
 
 /** The properties projection the suite requests for list rendering. */

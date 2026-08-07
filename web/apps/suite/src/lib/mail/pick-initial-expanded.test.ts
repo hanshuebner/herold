@@ -78,4 +78,21 @@ describe('pickInitialExpanded (re #135)', () => {
     ];
     expect(pickInitialExpanded(emails)).toEqual(['e2', 'e4']);
   });
+
+  it('treats a merged entry with unseenDedupedCopyIds as unread even though its own keywords.$seen union reads true (re #276)', () => {
+    // e1/e2 read normally; e3 is a synthetic merged entry whose own
+    // keywords.$seen is true (truthy-wins union of two same-Message-ID
+    // copies) but one of the raw copies it hides is still unread.
+    const merged: Email = { ...makeEmail('e3', true), unseenDedupedCopyIds: ['e3-shadow'] };
+    const emails = [makeEmail('e1', true), makeEmail('e2', true), merged];
+    expect(pickInitialExpanded(emails)).toEqual(['e3']);
+  });
+
+  it('does not treat a merged entry as unread once unseenDedupedCopyIds is absent/empty', () => {
+    const merged: Email = { ...makeEmail('e3', true), unseenDedupedCopyIds: [] };
+    const emails = [makeEmail('e1', true), merged];
+    // All read (the empty array means nothing left to fan out to) — falls
+    // back to expanding only the last message, same as the all-read case.
+    expect(pickInitialExpanded(emails)).toEqual(['e3']);
+  });
 });

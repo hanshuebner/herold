@@ -15,10 +15,18 @@ import type { Email } from './types';
  *   previous fix (f480a40a) only expanded the first unread, leaving the rest
  *   collapsed.
  * - All messages read: returns the last message id so the thread is not blank.
+ * - A merged (deduplicated) entry whose own `keywords.$seen` union already
+ *   reads true but that still carries a non-empty `unseenDedupedCopyIds`
+ *   (re #276: one of two independent deliveries of the same message is
+ *   still unread) is treated as unread too, so the accordion expands and
+ *   the auto-read effect gets a chance to fan the mark-read out to the
+ *   copy the union hides.
  */
 export function pickInitialExpanded(emails: Email[]): string[] {
   if (emails.length === 0) return [];
-  const unread = emails.filter((e) => e && !e.keywords.$seen).map((e) => e.id);
+  const unread = emails
+    .filter((e) => e && (!e.keywords.$seen || (e.unseenDedupedCopyIds?.length ?? 0) > 0))
+    .map((e) => e.id);
   if (unread.length > 0) return unread;
   return [emails[emails.length - 1]!.id];
 }

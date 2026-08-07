@@ -793,4 +793,27 @@ describe('MessageAccordion auto-read latch', () => {
     await Promise.resolve();
     expect(mailMock.setSeen).not.toHaveBeenCalled();
   });
+
+  it('fans out setSeen to every id in unseenDedupedCopyIds for a merged (deduplicated) message (re #276)', async () => {
+    // The merged entry's own keywords.$seen union already reads true (one
+    // of the two same-Message-ID copies is read) but unseenDedupedCopyIds
+    // names the still-unread raw copy the union hides.
+    const email = makeEmail({});
+    (email as { keywords: Record<string, true> }).keywords = { $seen: true };
+    (email as { unseenDedupedCopyIds?: string[] }).unseenDedupedCopyIds = ['e-shadow'];
+    renderAccordion(email, /* expanded */ true);
+    await Promise.resolve();
+    expect(mailMock.setSeen).toHaveBeenCalledTimes(1);
+    expect(mailMock.setSeen).toHaveBeenCalledWith('e-shadow', true);
+  });
+
+  it('does not call setSeen for a merged message once every raw copy is already seen', async () => {
+    const email = makeEmail({});
+    (email as { keywords: Record<string, true> }).keywords = { $seen: true };
+    // unseenDedupedCopyIds absent: resolveDeduplicatedThreadEmails omits it
+    // once every copy in the group is seen.
+    renderAccordion(email, /* expanded */ true);
+    await Promise.resolve();
+    expect(mailMock.setSeen).not.toHaveBeenCalled();
+  });
 });

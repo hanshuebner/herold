@@ -3679,12 +3679,23 @@ class MailStore {
    * Mark every email in a thread as read or unread. Filters out emails
    * already in the desired state, then defers to the bulk path so a
    * single Email/set covers the whole thread.
+   *
+   * When marking read, also fans out to `unseenDedupedCopyIds` on any
+   * merged (deduplicated) thread entry (re #276): the entry's own
+   * `keywords.$seen` is already true as soon as ANY same-Message-ID copy
+   * is read, so the raw-state comparison above would otherwise never
+   * reach a genuinely-unread copy the truthy-wins union hides.
    */
   async markThreadSeen(threadId: string, seen: boolean): Promise<void> {
     const ids: string[] = [];
     for (const e of this.threadEmails(threadId)) {
       const wasSeen = Boolean(e.keywords.$seen);
       if (wasSeen !== seen) ids.push(e.id);
+      if (seen) {
+        for (const id of e.unseenDedupedCopyIds ?? []) {
+          if (!ids.includes(id)) ids.push(id);
+        }
+      }
     }
     if (ids.length === 0) return;
     return this.bulkSetSeen(ids, seen);
@@ -4830,6 +4841,10 @@ export function resolveThreadEmails(emailIds: string[], emails: Map<string, Emai
  * - The representative's mailboxIds is the UNION of all same-mid copies.
  * - The representative's keywords union uses truthy-wins: a keyword
  *   present (true) in any copy is present in the merged email.
+ * - When any copy in the group is not `$seen`, the synthetic Email also
+ *   carries `unseenDedupedCopyIds` listing every such copy's raw id
+ *   (re #276), so a caller marking the representative read can fan the
+ *   mutation out to every copy the truthy-wins union would otherwise hide.
  * - Other fields of the representative are not modified; the synthetic
  *   Email is not persisted and does not affect the emails cache.
  */
@@ -4895,7 +4910,20 @@ export function resolveDeduplicatedThreadEmails(
           if (val !== undefined) mergedKeywords[kw] = val;
         }
       }
-      out.push({ ...rep, mailboxIds: mergedMailboxIds, keywords: mergedKeywords });
+      // Ids of raw copies still unseen (re #276): the $seen union above
+      // reports read as soon as ANY copy is read, so a genuinely-unread
+      // copy of a twice-delivered message would otherwise have no id a
+      // caller could reach to mark it read. Absent when every copy is
+      // already seen, matching the pre-#276 merged shape exactly.
+      const unseenDedupedCopyIds = group
+        .filter((ge) => !ge.keywords.$seen)
+        .map((ge) => ge.id);
+      out.push({
+        ...rep,
+        mailboxIds: mergedMailboxIds,
+        keywords: mergedKeywords,
+        ...(unseenDedupedCopyIds.length > 0 ? { unseenDedupedCopyIds } : {}),
+      });
     }
   }
 

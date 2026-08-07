@@ -176,6 +176,58 @@ describe('resolveDeduplicatedThreadEmails', () => {
     expect(result[0]!.keywords).toEqual({ $flagged: true, $seen: true });
   });
 
+  it('attaches unseenDedupedCopyIds naming every raw copy that is not $seen (re #276)', () => {
+    // Two independent deliveries of one message (same Message-ID): the
+    // larger copy (2492-equivalent, richer transit headers) is already
+    // read, the smaller copy (2493-equivalent) is not. The truthy-wins
+    // union above makes the merged keywords.$seen read true, which would
+    // otherwise permanently hide the still-unread copy's id.
+    const readCopy = makeEmail('e-2492', {
+      messageId: '<dup@rm1>',
+      mailboxIds: { 'mbx-inbox': true },
+      keywords: { $seen: true },
+    });
+    const unreadCopy = makeEmail('e-2493', {
+      messageId: '<dup@rm1>',
+      mailboxIds: { 'mbx-inbox': true },
+      keywords: {},
+    });
+    (readCopy as Email & { size: number }).size = 2822;
+    (unreadCopy as Email & { size: number }).size = 2797;
+    const emails = new Map([
+      ['e-2492', readCopy],
+      ['e-2493', unreadCopy],
+    ]);
+    const result = resolveDeduplicatedThreadEmails(['e-2492', 'e-2493'], emails);
+    expect(result).toHaveLength(1);
+    // Larger copy wins as representative, and the merged keywords read
+    // seen (both true per the existing truthy-wins rule).
+    expect(result[0]!.id).toBe('e-2492');
+    expect(result[0]!.keywords.$seen).toBe(true);
+    // But the still-unread raw copy's id is retained so a caller can
+    // reach it.
+    expect(result[0]!.unseenDedupedCopyIds).toEqual(['e-2493']);
+  });
+
+  it('omits unseenDedupedCopyIds when every copy in the group is already seen', () => {
+    const sent = makeEmail('e-sent', {
+      messageId: '<msg@host>',
+      mailboxIds: { 'mbx-sent': true },
+      keywords: { $seen: true },
+    });
+    const inbox = makeEmail('e-inbox', {
+      messageId: '<msg@host>',
+      mailboxIds: { 'mbx-inbox': true },
+      keywords: { $seen: true },
+    });
+    const emails = new Map([
+      ['e-sent', sent],
+      ['e-inbox', inbox],
+    ]);
+    const result = resolveDeduplicatedThreadEmails(['e-sent', 'e-inbox'], emails);
+    expect(result[0]!.unseenDedupedCopyIds).toBeUndefined();
+  });
+
   it('handles a thread with 3 logical messages each stored as Sent + Inbox (6 rows total)', () => {
     const SENT = 'mbx-sent';
     const INBOX = 'mbx-inbox';
