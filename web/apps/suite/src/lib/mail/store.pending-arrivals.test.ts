@@ -256,6 +256,58 @@ describe('mail store: pending-arrival surface (issue #118)', () => {
     expect(mail.pendingArrivalsForThread('tid-b')).toEqual([]);
   });
 
+  it('setOpenThread commits pending arrivals of the thread being left instead of discarding them (re #276)', async () => {
+    const { mail } = await import('./store.svelte');
+    mail.emails.set('e-old', makeEmail({ id: 'e-old', threadId: 'tid-1' }));
+    mail.emails.set(
+      'e-new',
+      makeEmail({ id: 'e-new', threadId: 'tid-1', receivedAt: '2026-05-09T11:00:00Z' }),
+    );
+    mail.committedThreadEmailIds = new Map([['tid-1', ['e-old']]]);
+
+    // ThreadReader registers tid-1 as open, then a fresh external reply
+    // arrives and is gated behind the banner.
+    mail.setOpenThread('tid-1');
+    mail.pendingArrivals = new Map([['tid-1', new Set(['e-new'])]]);
+
+    // The user navigates away WITHOUT clicking "Neue Antwort anzeigen" or
+    // "Verstanden" — this must not silently drop e-new. loadThread() is a
+    // no-op for an already-`ready` thread, so an uncommitted arrival would
+    // otherwise stay permanently invisible and never reach the auto-read
+    // path on a later reopen (issue #276).
+    mail.setOpenThread(null);
+
+    expect(mail.committedThreadEmailIds.get('tid-1')).toEqual(['e-old', 'e-new']);
+    expect(mail.pendingArrivalsForThread('tid-1')).toEqual([]);
+    // Gated so a later Email/changes push doesn't re-surface the banner.
+    expect(mail.gatedEmailIds.get('tid-1')?.has('e-new')).toBe(true);
+    // The committed message is now reachable via threadEmails() and, being
+    // unread, would be picked up by pickInitialExpanded() on the next open.
+    const emails = mail.threadEmails('tid-1');
+    expect(emails.map((e) => e.id)).toEqual(['e-old', 'e-new']);
+  });
+
+  it('setOpenThread commits a left thread\'s pending arrival even when switching directly to another thread', async () => {
+    const { mail } = await import('./store.svelte');
+    mail.emails.set('e-old', makeEmail({ id: 'e-old', threadId: 'tid-a' }));
+    mail.emails.set(
+      'e-new',
+      makeEmail({ id: 'e-new', threadId: 'tid-a', receivedAt: '2026-05-09T11:00:00Z' }),
+    );
+    mail.emails.set('e-b', makeEmail({ id: 'e-b', threadId: 'tid-b' }));
+    mail.committedThreadEmailIds = new Map([['tid-a', ['e-old']]]);
+
+    mail.setOpenThread('tid-a');
+    mail.pendingArrivals = new Map([['tid-a', new Set(['e-new'])]]);
+
+    // Navigate directly to a different thread without accepting the banner.
+    mail.setOpenThread('tid-b');
+
+    expect(mail.committedThreadEmailIds.get('tid-a')).toEqual(['e-old', 'e-new']);
+    expect(mail.gatedEmailIds.get('tid-a')?.has('e-new')).toBe(true);
+    expect(mail.pendingArrivalsForThread('tid-a')).toEqual([]);
+  });
+
   it('acceptPendingArrivals advances committed snapshot and returns new emails', async () => {
     const { mail } = await import('./store.svelte');
     mail.emails.set('e-old', makeEmail({ id: 'e-old', threadId: 'tid-1' }));

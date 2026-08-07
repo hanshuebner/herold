@@ -779,10 +779,34 @@ class MailStore {
    * null when leaving the reader. Wipes pending-arrival entries for
    * threads other than the one being opened so a banner from a previous
    * thread doesn't follow the user across navigations.
+   *
+   * Before wiping, any pending arrivals still sitting behind the thread
+   * being LEFT are committed into that thread's rendered snapshot (issue
+   * #276). The "Neue Antwort anzeigen" banner gates a fresh external
+   * reply behind an explicit accept, but navigating away without
+   * accepting or dismissing it must not silently discard the arrival:
+   * `loadThread()` is a no-op for an already-`ready` thread, so an
+   * un-committed arrival would stay permanently invisible to the reader
+   * (and therefore never reach the auto-mark-read path) until some
+   * unrelated `Email/changes` push happened to advance the snapshot via
+   * `#syncCommittedSnapshotToLive` — which is not guaranteed to ever
+   * happen. Committing on leave mirrors that same background-sync
+   * behaviour for the thread the user was actually looking at.
    */
   setOpenThread(threadId: string | null): void {
     if (this.openThreadId === threadId) return;
+    const leaving = this.openThreadId;
     this.openThreadId = threadId;
+    if (leaving !== null) {
+      const pending = this.pendingArrivals.get(leaving);
+      if (pending && pending.size > 0) {
+        this.#advanceCommittedSnapshot(leaving, [...pending]);
+        const nextGated = new Map(this.gatedEmailIds);
+        const existingGated = nextGated.get(leaving) ?? new Set<string>();
+        nextGated.set(leaving, new Set([...existingGated, ...pending]));
+        this.gatedEmailIds = nextGated;
+      }
+    }
     // Clean up pendingArrivals for threads other than the one being opened.
     // gatedEmailIds is intentionally NOT wiped here so that dismissed
     // arrivals stay dismissed even when the user navigates away and back
