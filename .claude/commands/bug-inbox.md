@@ -29,7 +29,30 @@ NEVER be read into a ticket body, a comment, or any Forgejo API call. Only
 ticket-eligible. Do not open `private/` unless the maintainer explicitly asks
 you to reproduce the bug. This applies to review drops exactly as to reports.
 
+"Ticket-eligible" is not "quote verbatim". A sketch is often a paste of the mail
+the maintainer was looking at, so third-party personal data -- names, postal
+addresses, phone numbers, dates of birth, bank details, private email addresses --
+routinely lands in `report.json` itself. Carry over only what the defect needs:
+describe the message by its kind ("a membership-application form mail"), its
+structural properties, and the identifiers a developer can act on (UID, folder,
+Message-ID, account id). Never paste a third party's personal data into a ticket,
+and instruct the ticket-clerk of the same when you dispatch it.
+
 ## 0. Expand downloaded bundles
+
+**Prove the drop directory is readable before concluding it is empty.** macOS TCC
+can deny `readdir` on `~/Downloads` while still allowing reads of an
+explicitly-named file inside it, so an unreadable directory and an empty one look
+identical to a glob. Start with an enumeration whose failure is visible:
+
+```sh
+ls -1 ~/Downloads/herold-bugs/ || echo "ENUMERATION FAILED"
+```
+
+Never enumerate under `2>/dev/null`, and never let a zsh "no matches found" or a
+"Operation not permitted" stand in for "no drops". If the listing errors, STOP and
+report that the inbox could not be read -- do not report "nothing to process". The
+same applies to the `~/herold-bugs/*/` scan in step 1.
 
 For each `~/Downloads/herold-bugs/*.heroldbug.json` (a JSON object with `id`,
 `meta`, `private`, and `screenshots[]` where each screenshot is `{name, dataUrl}`),
@@ -51,7 +74,8 @@ into your reasoning or output.
 
 List `~/herold-bugs/*/` whose `STATUS` file contains `new`, oldest first by
 directory name. If `$ARGUMENTS` names a specific drop id, process only that one.
-If nothing is `new`, say so and stop.
+If nothing is `new`, say so and stop -- but only after step 0's enumeration
+succeeded, so that "nothing is new" is an observation and not a swallowed error.
 
 For each drop, read `report.json` and note `meta.kind`. Report the work-list to
 the maintainer before acting:
