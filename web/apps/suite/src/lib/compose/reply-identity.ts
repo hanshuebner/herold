@@ -406,17 +406,28 @@ export function deliveryAliasForCc(
  * Two sources are checked in encounter order with global deduplication:
  *
  *   1. X-Herold-Recipient (REQ-FLOW-34): when present and not matching a
- *      registered Identity, this address is an alias herold itself saw in
- *      the SMTP envelope. It is included so the reply retains the alias.
+ *      VERIFIED registered Identity, this address is an alias herold itself
+ *      saw in the SMTP envelope. It is included so the reply retains the
+ *      alias.
  *
  *   2. Visible To/Cc addresses: any address in the parent's To or Cc header
  *      whose domain appears in at least one registered Identity email and
- *      which is not itself a registered Identity. This covers the
- *      upstream-expanded-alias case where an external MX resolves a local
- *      alias before herold sees the envelope; X-Herold-Recipient then
- *      carries the resolved mailbox (a registered Identity) and source 1
- *      correctly no-ops, but the original alias survives in the visible
- *      To/Cc header and must be preserved in the reply Cc.
+ *      which does not itself match a VERIFIED registered Identity. This
+ *      covers the upstream-expanded-alias case where an external MX
+ *      resolves a local alias before herold sees the envelope;
+ *      X-Herold-Recipient then carries the resolved mailbox (a verified
+ *      registered Identity) and source 1 correctly no-ops, but the
+ *      original alias survives in the visible To/Cc header and must be
+ *      preserved in the reply Cc.
+ *
+ * Verification gate: an address is only treated as "already covered by a
+ * configured identity" — and thus excluded from the Cc list — when the
+ * matching Identity is verified (`isVerified`, same gate `selectReplyIdentity`
+ * applies to steps 2/3). An unverified Identity row (e.g. a role address the
+ * user started registering as a first-class identity but never completed
+ * verification for) is not one of the account's configured identities; it
+ * must not suppress the alias-Cc pre-population, or the correspondent's
+ * original delivery address silently drops out of the thread (re #280).
  *
  * `ownMessage` must be true when the caller is replying to one of the
  * user's own sent messages. In that case `parent.to` becomes the reply's
@@ -437,9 +448,16 @@ export function localAliasesForCc(
   const result: string[] = [];
   const seen = new Set<string>();
 
+  // An address counts as "already covered" only when it matches a
+  // VERIFIED identity — an unverified one is not yet configured for use.
+  const coveredByVerifiedIdentity = (email: string): boolean => {
+    const id = byEmail.get(email);
+    return !!id && isVerified(id);
+  };
+
   // Source 1 — X-Herold-Recipient. Same logic as deliveryAliasForCc.
   const recipient = readHeraldRecipient(parent);
-  if (recipient && !byEmail.has(recipient)) {
+  if (recipient && !coveredByVerifiedIdentity(recipient)) {
     seen.add(recipient);
     result.push(recipient);
   }
@@ -466,7 +484,7 @@ export function localAliasesForCc(
         const lc = (addr.email ?? '').toLowerCase().trim();
         if (!lc || seen.has(lc)) continue;
         seen.add(lc);
-        if (byEmail.has(lc)) continue; // registered identity — skip
+        if (coveredByVerifiedIdentity(lc)) continue; // verified identity — skip
         const at = lc.indexOf('@');
         if (at < 0) continue;
         if (identityDomains.has(lc.slice(at + 1))) {

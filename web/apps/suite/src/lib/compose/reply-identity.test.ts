@@ -797,6 +797,51 @@ describe('localAliasesForCc', () => {
     // parent.to is skipped (ownMessage); X-Herold-Recipient alias included.
     expect(aliases).toEqual(['alias@example.local']);
   });
+
+  it('includes the delivery address (source 1) even when an UNVERIFIED Identity is registered for it (re #280)', () => {
+    // Regression: a role address (info@classic-computing.de) that the user
+    // started adding as a first-class Identity but never verified must not
+    // be treated as "already covered" -- it is not one of the account's
+    // configured identities (#146's own acceptance-criterion language), so
+    // the delivery address must still be added to the reply Cc.
+    const unverifiedInfo = makeIdentity('info@classic-computing.de', { verifiedAt: null });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'vorsitz@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.de',
+    });
+    const aliases = localAliasesForCc(parent, [VORSITZ, unverifiedInfo]);
+    expect(aliases).toEqual(['info@classic-computing.de']);
+  });
+
+  it('includes the delivery address (source 2, visible To scan) even when an UNVERIFIED Identity is registered for it (re #280)', () => {
+    // Same regression via the visible-To/Cc domain-scan path (no
+    // X-Herold-Recipient at all -- e.g. a message that predates REQ-FLOW-34
+    // stamping). The address is directly visible in To and must still be
+    // added to Cc despite the unverified Identity row.
+    const unverifiedInfo = makeIdentity('info@classic-computing.de', { verifiedAt: null });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.de' }],
+    });
+    const aliases = localAliasesForCc(parent, [VORSITZ, unverifiedInfo]);
+    expect(aliases).toEqual(['info@classic-computing.de']);
+  });
+
+  it('still excludes the delivery address when the matching Identity is verified', () => {
+    // Control: a VERIFIED Identity for the delivery address is genuinely
+    // "configured" and correctly suppresses the Cc addition.
+    const verifiedInfo = makeIdentity('info@classic-computing.de', {
+      verifiedAt: '2026-01-01T00:00:00Z',
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.de' }],
+      'header:X-Herold-Recipient:asText': 'info@classic-computing.de',
+    });
+    const aliases = localAliasesForCc(parent, [VORSITZ, verifiedInfo]);
+    expect(aliases).toEqual([]);
+  });
 });
 
 // ── deliveryAliasForCc ──────────────────────────────────────────────────
