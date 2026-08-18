@@ -697,8 +697,13 @@ jobs:
       - docker
       - jmaptest
       - binaries
-    # Only deploy on pushes to the default branch, never on PRs or tags.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Deploy from the default branch only, never from PRs or tags. Manual
+    # dispatch counts: re-dispatching ci.yml on main is how a deploy is
+    # recovered after a job fails on an external flake, and the dispatched
+    # run validates the same tip through the same gates as a push.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     permissions:
       contents: write
     timeout-minutes: 10
