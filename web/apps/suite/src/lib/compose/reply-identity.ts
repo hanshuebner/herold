@@ -403,7 +403,7 @@ export function deliveryAliasForCc(
 /**
  * Return all "local alias" addresses that should be added to the reply Cc.
  *
- * Two sources are checked in encounter order with global deduplication:
+ * Three sources are checked in encounter order with global deduplication:
  *
  *   1. X-Herold-Recipient (REQ-FLOW-34): when present and not matching a
  *      VERIFIED registered Identity, this address is an alias herold itself
@@ -420,6 +420,23 @@ export function deliveryAliasForCc(
  *      original alias survives in the visible To/Cc header and must be
  *      preserved in the reply Cc.
  *
+ *   3. Delivered-To / X-Original-To (only when X-Herold-Recipient is
+ *      absent): mirrors `selectReplyIdentity`'s step 3b upstream-alias
+ *      fallback. A cross-domain alias forward (an upstream MTA locally
+ *      alias-expands the envelope recipient before relaying to herold, or
+ *      the message was IMAP-imported and never passed through herold's own
+ *      SMTP path at all, so REQ-FLOW-34 never stamped X-Herold-Recipient)
+ *      leaves the ordinary pass-through `Delivered-To` / `X-Original-To`
+ *      headers as the only record of the address the correspondent
+ *      actually used — which may sit on a domain no registered Identity
+ *      owns (source 2's domain scan cannot see it). Each header's address
+ *      is added when present and not covered by a verified Identity, tried
+ *      in order: Delivered-To, then X-Original-To (re #280). Because
+ *      `selectReplyIdentity` also reads these same headers to pick the
+ *      From identity, whichever one of the two exactly matches a verified
+ *      Identity (and so became From) is excluded here by the same
+ *      verification gate — the From address must never also land in Cc.
+ *
  * Verification gate: an address is only treated as "already covered by a
  * configured identity" — and thus excluded from the Cc list — when the
  * matching Identity is verified (`isVerified`, same gate `selectReplyIdentity`
@@ -433,8 +450,9 @@ export function deliveryAliasForCc(
  * user's own sent messages. In that case `parent.to` becomes the reply's
  * To field, so those addresses must not be scanned for Cc additions.
  * `parent.cc` is always scanned regardless of `ownMessage`. Outbound
- * messages carry no X-Herold-Recipient per REQ-FLOW-35, so source 1 is
- * automatically a no-op for own-sent messages.
+ * messages carry no X-Herold-Recipient / Delivered-To / X-Original-To per
+ * REQ-FLOW-35, so sources 1 and 3 are automatically no-ops for own-sent
+ * messages.
  *
  * Returns lower-cased, deduplicated addresses in encounter order.
  * Returns an empty array when there are no qualifying addresses.
@@ -460,6 +478,23 @@ export function localAliasesForCc(
   if (recipient && !coveredByVerifiedIdentity(recipient)) {
     seen.add(recipient);
     result.push(recipient);
+  }
+
+  // Source 3 — Delivered-To / X-Original-To upstream-alias fallback,
+  // mirroring selectReplyIdentity's step 3b. Only consulted when
+  // X-Herold-Recipient is absent: when present, it is the authoritative
+  // delivery signal per REQ-FLOW-34 and these ordinary pass-through
+  // headers must not override it (same precedence selectReplyIdentity
+  // applies). Covers cross-domain alias forwards and IMAP-imported mail,
+  // neither of which ever gets an X-Herold-Recipient header (re #280).
+  if (!recipient) {
+    for (const reader of [readDeliveredTo, readXOriginalTo]) {
+      const addr = reader(parent);
+      if (!addr || seen.has(addr)) continue;
+      seen.add(addr);
+      if (coveredByVerifiedIdentity(addr)) continue; // e.g. the selected From
+      result.push(addr);
+    }
   }
 
   // Source 2 — visible To/Cc scan against identity domains.
