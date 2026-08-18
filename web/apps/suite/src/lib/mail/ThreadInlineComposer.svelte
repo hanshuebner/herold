@@ -798,7 +798,7 @@
   .field-row {
     display: flex;
     align-items: baseline;
-    gap: var(--spacing-03);
+    gap: var(--spacing-04);
     padding: 0 var(--spacing-04);
     border-bottom: 1px solid var(--border-subtle-01);
     min-height: 40px;
@@ -812,7 +812,7 @@
     align-items: center;
   }
   .field-label {
-    width: 3em;
+    width: var(--compose-label-width);
     flex: 0 0 auto;
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);

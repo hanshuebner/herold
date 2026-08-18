@@ -78,6 +78,14 @@
   /* Touch target minimum (mobile / coarse pointer) */
   --touch-min: 44px;
 
+  /* Composer field-row label column. Single source of truth for the
+     label width shared by ComposeWindow's From/Subject/Body rows,
+     ThreadInlineComposer's From row, and RecipientField's internal
+     label -- so the From, To, Cc, and Bcc value columns always start
+     on a common left edge instead of drifting apart via independently
+     maintained copies of the same width. */
+  --compose-label-width: 6em;
+
   /* Motion — productive durations + curves */
   --duration-fast-01: 70ms;
   --duration-fast-02: 110ms;

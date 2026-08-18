@@ -1161,7 +1161,7 @@
     border-bottom: 1px solid var(--border-subtle-01);
   }
   .label {
-    width: 6em;
+    width: var(--compose-label-width);
     flex: 0 0 auto;
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
@@ -1584,7 +1584,7 @@
       padding: var(--spacing-03) var(--spacing-04);
     }
     .row .label {
-      min-width: 6em;
+      min-width: var(--compose-label-width);
     }
   }
 

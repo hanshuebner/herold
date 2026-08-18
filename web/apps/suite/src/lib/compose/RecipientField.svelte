@@ -622,7 +622,7 @@
   }
 
   .label {
-    width: 6em;
+    width: var(--compose-label-width);
     flex: 0 0 auto;
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
