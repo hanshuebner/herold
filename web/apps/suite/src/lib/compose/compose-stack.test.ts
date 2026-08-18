@@ -149,7 +149,7 @@ describe('chipLabel', () => {
       body: '',
       ccBccVisible: false,
       editingDraftId: null,
-      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null },
+      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null, focusRecipient: false },
       attachments: [],
       createdAt: 0,
     };
@@ -165,7 +165,7 @@ describe('chipLabel', () => {
       body: '',
       ccBccVisible: false,
       editingDraftId: null,
-      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null },
+      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null, focusRecipient: false },
       attachments: [],
       createdAt: 0,
     };
@@ -181,7 +181,7 @@ describe('chipLabel', () => {
       body: '',
       ccBccVisible: false,
       editingDraftId: null,
-      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null },
+      replyContext: { parentId: null, parentKeyword: null, inReplyTo: null, references: null, focusRecipient: false },
       attachments: [],
       createdAt: 0,
     };

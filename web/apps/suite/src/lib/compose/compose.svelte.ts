@@ -172,6 +172,15 @@ interface ReplyContext {
   inReplyTo: string[] | null;
   /** RFC 5322 `References` chain (parent's references + parent's messageId). */
   references: string[] | null;
+  /**
+   * True when the compose opened with an empty To field despite having
+   * a parent message (i.e. forward, re #284). Reply / reply-all
+   * pre-populate To from the parent and leave this false, so the
+   * initial-focus logic in ComposeWindow can tell forward's empty-To
+   * case apart from reply's populated-To case without relying on
+   * `parentId` alone.
+   */
+  focusRecipient: boolean;
 }
 
 const EMPTY_REPLY: ReplyContext = {
@@ -179,6 +188,7 @@ const EMPTY_REPLY: ReplyContext = {
   parentKeyword: null,
   inReplyTo: null,
   references: null,
+  focusRecipient: false,
 };
 
 class ComposeStore {
@@ -473,6 +483,7 @@ class ComposeStore {
         parentKeyword: '$answered',
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
+        focusRecipient: false,
       },
       identity: this.#matchIdentity(parent),
     });
@@ -519,6 +530,7 @@ class ComposeStore {
         parentKeyword: '$answered',
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
+        focusRecipient: false,
       },
       identity: this.#matchIdentity(parent),
     });
@@ -547,6 +559,7 @@ class ComposeStore {
         parentKeyword: null,
         inReplyTo: draft.inReplyTo ?? null,
         references: draft.references ?? null,
+        focusRecipient: false,
       },
       // The saved draft already carries whatever signature the user
       // had when it was last persisted; appending again would
@@ -572,6 +585,10 @@ class ComposeStore {
         parentKeyword: '$forwarded',
         inReplyTo: parent.messageId ?? null,
         references: mergeReferences(parent),
+        // Forward leaves To empty (unlike reply / reply-all, which
+        // pre-populate it), so initial focus belongs on the To field
+        // rather than the body (re #284).
+        focusRecipient: true,
       },
       identity: this.#matchIdentity(parent),
       attachments: forwardAttachmentsFromParent(parent),

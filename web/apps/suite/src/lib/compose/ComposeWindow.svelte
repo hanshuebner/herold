@@ -80,10 +80,12 @@
     void compose.discard();
   }
 
-  // Focus the right field when compose opens — for reply / forward, the
-  // ProseMirror editor; otherwise the To field. (The editor's own
-  // autofocus handles cursor placement; replies pre-populate the body
-  // such that the empty leading paragraphs put the caret at the top.)
+  // Focus the right field when compose opens — for reply / reply-all, the
+  // ProseMirror editor; otherwise (fresh compose, forward) the To field,
+  // since those start with an empty To that the user must address first
+  // (re #284). (The editor's own autofocus handles cursor placement;
+  // replies pre-populate the body such that the empty leading paragraphs
+  // put the caret at the top.)
   let modalEl = $state<HTMLElement | null>(null);
 
   // Per-field recipient warnings (REQ-MAIL-11d). Each is set by the
@@ -95,10 +97,17 @@
   let hasRecipientWarnings = $derived(
     toWarning !== null || ccWarning !== null || bccWarning !== null,
   );
+  // True for fresh compose (no parent) and forward (parent, but To
+  // starts empty) — the cases where the user must address the message
+  // before anything else. False for reply / reply-all, whose To is
+  // already populated from the parent (re #284).
+  let focusToField = $derived(
+    !compose.replyContext.parentId || compose.replyContext.focusRecipient,
+  );
   $effect(() => {
     if (compose.status !== 'editing') return;
     requestAnimationFrame(() => {
-      if (!compose.replyContext.parentId && modalEl) {
+      if (focusToField && modalEl) {
         // Focus the To-field input — the RecipientField's <input> is
         // the first text input inside the modal.
         const first = modalEl.querySelector<HTMLInputElement>(
@@ -821,7 +830,7 @@
           onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
           placeholder="recipient@example.com"
           disabled={compose.status === 'sending'}
-          autofocus={!compose.replyContext.parentId && compose.status === 'editing'}
+          autofocus={focusToField && compose.status === 'editing'}
         />
         {#if !compose.ccBccVisible}
           <button
@@ -896,7 +905,7 @@
             {#key compose.replyContext.parentId ?? '__blank__'}
               <RichEditor
                 {initialHtml}
-                autofocus={Boolean(compose.replyContext.parentId)}
+                autofocus={Boolean(compose.replyContext.parentId) && !focusToField}
                 collapseQuote={Boolean(compose.replyContext.parentId)}
                 onUpdate={onEditorUpdate}
                 onActiveChange={(a) => (active = a)}

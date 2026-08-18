@@ -201,6 +201,14 @@
     toWarning !== null || ccWarning !== null || bccWarning !== null,
   );
 
+  // True for fresh compose (no parent) and forward (parent, but To
+  // starts empty) — the cases where the user must address the message
+  // before anything else. False for reply / reply-all, whose To is
+  // already populated from the parent (re #284).
+  let focusToField = $derived(
+    !compose.replyContext.parentId || compose.replyContext.focusRecipient,
+  );
+
   let canSend = $derived(
     compose.status !== 'sending' &&
       !compose.attachmentsBusy &&
@@ -534,7 +542,7 @@
           onWarning={(w) => (toWarning = w)}
           onRecipientMove={(from, idx, to) => compose.moveRecipient(from, idx, to)}
           disabled={compose.status === 'sending'}
-          autofocus={!compose.replyContext.parentId}
+          autofocus={focusToField}
         />
         {#if !compose.ccBccVisible}
           <button
@@ -596,7 +604,7 @@
         {#key compose.replyContext.parentId ?? '__blank__'}
           <RichEditor
             {initialHtml}
-            autofocus={Boolean(compose.replyContext.parentId)}
+            autofocus={Boolean(compose.replyContext.parentId) && !focusToField}
             collapseQuote={Boolean(compose.replyContext.parentId)}
             onUpdate={onEditorUpdate}
             onActiveChange={(a) => (active = a)}
