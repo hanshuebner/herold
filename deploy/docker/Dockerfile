@@ -51,6 +51,14 @@ WORKDIR /src
 ARG TARGETOS
 ARG TARGETARCH
 
+# The default GOPROXY list (proxy.golang.org,direct) only falls through to
+# "direct" on a 404/410 from the proxy; any other error, including a 403,
+# is treated as final. The pipe separator falls through on any error, so a
+# proxy-side block (by IP range, rate limit, or outage) still resolves via
+# a direct VCS fetch instead of failing the build. golang:bookworm ships
+# git and ca-certificates, so the direct fallback can clone over https.
+ENV GOPROXY=https://proxy.golang.org|direct
+
 COPY go.mod go.sum* ./
 # go.mod replaces github.com/emersion/go-imap/v2 with the in-tree vendor at
 # ./third_party/go-imap, so `go mod download` must be able to read that module's

@@ -13,6 +13,11 @@ ARG GO_VERSION=1.26.6
 FROM golang:${GO_VERSION}-bookworm AS build
 WORKDIR /src
 
+# See deploy/docker/Dockerfile for why the proxy list uses "|" rather than
+# ",": a 403 from proxy.golang.org does not trigger comma fallback, only
+# pipe fallback does.
+ENV GOPROXY=https://proxy.golang.org|direct
+
 COPY go.mod go.sum* ./
 # The go.mod replaces github.com/emersion/go-imap/v2 with the in-tree vendor at
 # ./third_party/go-imap, so `go mod download` must be able to read that module's
