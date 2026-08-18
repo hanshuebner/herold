@@ -205,6 +205,17 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	// backfill is already complete) — in which case the remaining count is 0.
 	var inHorizonUIDs []imap.UID
 
+	// highWaterFailedUID is the smallest UID, from the initial-sync or
+	// forward-sync batch, whose ingest failed this pass (0 if none). It
+	// caps the high-water advance below at persistCursor so the failed
+	// message stays strictly above high_water and is refetched on the next
+	// pass rather than being silently skipped past the mark (re #279).
+	// Backfill-extension failures (historical UIDs, always far below any
+	// existing high_water) intentionally do not feed this cap — clamping
+	// high_water to a low historical UID would stall forward sync for
+	// every subsequently-arriving message too.
+	var highWaterFailedUID uint64
+
 	if si.NumMessages == 0 {
 		// Empty mailbox: nothing to do; just advance cursor state.
 		goto persistCursor
@@ -226,7 +237,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 		}
 		inHorizonUIDs = initialUIDs
 		if len(initialUIDs) > 0 {
-			n, minUID, err := w.fetchAndIngest(ctx, conn, initialUIDs, upstreamFolder, heroldMailbox, folderInitialised /* categorise */)
+			n, minUID, minFailed, err := w.fetchAndIngest(ctx, conn, initialUIDs, upstreamFolder, heroldMailbox, folderInitialised /* categorise */)
 			if err != nil {
 				return fmt.Errorf("imapimport: initial fetch: %w", err)
 			}
@@ -234,6 +245,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			if minUID > 0 {
 				cursor.LowWaterUID = minUID
 			}
+			highWaterFailedUID = minFailed
 		}
 	} else {
 		// ── Incremental sync. ────────────────────────────────────────────
@@ -261,7 +273,7 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 				}
 			}
 			if len(belowLow) > 0 {
-				n, newLow, err := w.fetchAndIngest(ctx, conn, belowLow, upstreamFolder, heroldMailbox, false /* categorise */)
+				n, newLow, _, err := w.fetchAndIngest(ctx, conn, belowLow, upstreamFolder, heroldMailbox, false /* categorise */)
 				if err != nil {
 					return fmt.Errorf("imapimport: backfill fetch: %w", err)
 				}
@@ -281,11 +293,12 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 		if len(forwardUIDs) > 0 {
 			// Forward UIDs on an already-initialised folder are genuine live
 			// arrivals: categorise INBOX-mapped new mail (REQ-IMAP-IMP-31).
-			n, _, err := w.fetchAndIngest(ctx, conn, forwardUIDs, upstreamFolder, heroldMailbox, true /* categorise */)
+			n, _, minFailed, err := w.fetchAndIngest(ctx, conn, forwardUIDs, upstreamFolder, heroldMailbox, true /* categorise */)
 			if err != nil {
 				return fmt.Errorf("imapimport: forward fetch: %w", err)
 			}
 			forwardNewCount = n
+			highWaterFailedUID = minFailed
 		}
 	}
 
@@ -313,9 +326,15 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	}
 
 persistCursor:
-	// Advance high-water to UIDNEXT-1 and update cursor metadata.
+	// Advance high-water to UIDNEXT-1 and update cursor metadata. Capped
+	// below any UID that failed to ingest this pass (re #279): advancing
+	// past it unconditionally would make it permanently unreachable, since
+	// forward sync only fetches UIDs strictly above high_water.
 	if si.UIDNext > 1 {
 		newHighWater := uint64(si.UIDNext) - 1
+		if highWaterFailedUID > 0 && highWaterFailedUID-1 < newHighWater {
+			newHighWater = highWaterFailedUID - 1
+		}
 		if newHighWater > cursor.HighWaterUID {
 			cursor.HighWaterUID = newHighWater
 		}
@@ -401,27 +420,33 @@ func uidsAbove(conn Conn, ctx context.Context, aboveUID uint64) ([]imap.UID, err
 // arrivals on an already-initialised folder, and false across the
 // initial/historical backfill and the lowered-horizon re-scan
 // (REQ-IMAP-IMP-31 / D1).
+// minFailedUID is the smallest upstream UID in toFetch whose ingest failed
+// (0 when every message in the batch either ingested or dedup-hit
+// successfully). Callers use it to keep the cursor water marks from
+// advancing past a message that failed to ingest (re #279): a message
+// skipped by an unconditional high-water advance is never fetched again,
+// since forward sync only looks strictly above high_water.
 func (w *accountWorker) fetchAndIngest(
 	ctx context.Context,
 	conn Conn,
 	toFetch []imap.UID,
 	upstreamFolder, heroldMailbox string,
 	categorise bool,
-) (countNew int, lowestUID uint64, err error) {
+) (countNew int, lowestUID uint64, minFailedUID uint64, err error) {
 	if len(toFetch) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 
 	msgs, err := conn.UIDFetch(ctx, toFetch)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 
 	account := w.opts.account
 
 	for _, fm := range msgs {
 		if ctx.Err() != nil {
-			return countNew, lowestUID, ctx.Err()
+			return countNew, lowestUID, minFailedUID, ctx.Err()
 		}
 		uid := uint64(fm.UID)
 		if lowestUID == 0 || uid < lowestUID {
@@ -435,6 +460,9 @@ func (w *accountWorker) fetchAndIngest(
 				slog.Uint64("uid", uid),
 				slog.String("error", ingestErr.Error()),
 			)
+			if minFailedUID == 0 || uid < minFailedUID {
+				minFailedUID = uid
+			}
 			continue
 		}
 		if isNew {
@@ -481,7 +509,7 @@ func (w *accountWorker) fetchAndIngest(
 			}
 		}
 	}
-	return countNew, lowestUID, nil
+	return countNew, lowestUID, minFailedUID, nil
 }
 
 // ingestMessage inserts fm into the herold store. Returns (isNew,
@@ -513,8 +541,18 @@ func (w *accountWorker) ingestMessage(
 	account := w.opts.account
 	principalID := store.PrincipalID(account.PrincipalID)
 
-	// Parse the message for the envelope.
-	msg, parseErr := mailparse.Parse(bytes.NewReader(fm.RFC822), mailparse.NewParseOptions())
+	// Parse the message for the envelope. Lenient boundary/charset handling
+	// (re #279): a missing closing --boundary-- marker or an undecodable
+	// declared charset must not reject the whole message at ingest — the
+	// render, index, search-snippet and push paths already tolerate both
+	// (mailparse.ParseOptions{StrictBoundary: false} /
+	// storefts.NewMailparseExtractor), so a message that displays and
+	// indexes correctly must also be mirrorable. Genuine structural limits
+	// (MaxSize/MaxDepth/MaxParts/malformed headers) still fail hard.
+	opts := mailparse.NewParseOptions()
+	opts.StrictBoundary = false
+	opts.StrictCharset = false
+	msg, parseErr := mailparse.Parse(bytes.NewReader(fm.RFC822), opts)
 	if parseErr != nil {
 		return false, false, 0, 0, fmt.Errorf("mailparse.Parse: %w", parseErr)
 	}
