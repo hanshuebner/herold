@@ -11,7 +11,7 @@
 #                  Go) so we can ship a static binary on a minimal
 #                  runtime base.
 
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.26.6
 ARG NODE_VERSION=20
 ARG PNPM_VERSION=10
 
