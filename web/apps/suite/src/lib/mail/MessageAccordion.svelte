@@ -48,7 +48,9 @@
   import { untrack } from 'svelte';
   import ReactIcon from '../icons/ReactIcon.svelte';
   import ReplyIcon from '../icons/ReplyIcon.svelte';
-  import { compose } from '../compose/compose.svelte';
+  import ReplyAllIcon from '../icons/ReplyAllIcon.svelte';
+  import ForwardIcon from '../icons/ForwardIcon.svelte';
+  import { compose, computeActualReplyAllCc } from '../compose/compose.svelte';
   import { navigateBackFromThread } from './navigate-back';
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
   import RawSourceModal from './RawSourceModal.svelte';
@@ -538,10 +540,11 @@
   // (download .eml, show original, print this message) or whose
   // thread-scoped variant is wrong for multi-sender threads (delete one
   // msg, mark one msg unread, mark unread from here, report spam / phishing,
-  // filter messages like this). Reply / forward live in the fixed reply
-  // bar; block sender stays thread-only; report illegal and translate are
-  // deferred. See docs/design/web/requirements/02-mail-basics.md
-  // § Per-message context menu.
+  // filter messages like this). Reply / reply-all / forward live as
+  // per-message header buttons (re #281); block sender stays thread-only;
+  // report illegal and translate are deferred. See
+  // docs/design/web/requirements/02-mail-basics.md § Per-message context
+  // menu.
 
   /**
    * Leave the current thread after a per-message action, honouring the
@@ -578,6 +581,32 @@
     await compose.openReply(email);
     if (!compose.isOpen) compose.inlineMode = false;
   }
+
+  /**
+   * Reply-all / forward THIS specific message (re #281). Every message in
+   * the thread gets its own reply / reply-all / forward, not only the
+   * thread's latest — ThreadReplyBar in the footer remains the convenience
+   * path for replying to the latest message, unaffected by this.
+   */
+  function replyAllToThis(): void {
+    compose.inlineMode = true;
+    compose.openReplyAll(email);
+    if (!compose.isOpen) compose.inlineMode = false;
+  }
+
+  function forwardThis(): void {
+    compose.inlineMode = true;
+    compose.openForward(email);
+    if (!compose.isOpen) compose.inlineMode = false;
+  }
+
+  // Reply-All is shown iff it would actually produce a non-empty Cc for
+  // THIS message — same gate ThreadReplyBar uses for `latest`, applied
+  // per-message here so an earlier message with a single recipient does
+  // not get a Reply-All button that is indistinguishable from Reply.
+  let hasMultipleRecipients = $derived(
+    computeActualReplyAllCc(email, selfEmailSet, ownIdentities).length > 0,
+  );
 
   function deleteMessage(): void {
     void mail.deleteEmail(email.id);
@@ -803,11 +832,14 @@
       -->
       {#if expanded}
         {#if !isInlineOpen}
-          <!-- Per-message reply button (re #129): targets THIS specific message,
-               not the latest. Hidden while the inline composer is already open
-               so it does not compete with the active compose session. Click is
-               stopped at this span so expanding/collapsing the accordion is
-               not triggered. -->
+          <!-- Per-message reply / reply-all / forward buttons (re #129,
+               extended re #281): each targets THIS specific message, not
+               the thread's latest. ThreadReplyBar in the footer keeps
+               targeting the latest message as the convenience path. Hidden
+               while the inline composer is already open so these do not
+               compete with the active compose session. Click is stopped at
+               this span so expanding/collapsing the accordion is not
+               triggered. -->
           <span
             class="reply-anchor"
             onclick={(e) => e.stopPropagation()}
@@ -822,6 +854,26 @@
               title={t('msg.reply')}
             >
               <ReplyIcon size={16} />
+            </button>
+            {#if hasMultipleRecipients}
+              <button
+                type="button"
+                class="header-icon-btn"
+                onclick={replyAllToThis}
+                aria-label={t('msg.replyAll')}
+                title={t('msg.replyAll')}
+              >
+                <ReplyAllIcon size={16} />
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="header-icon-btn"
+              onclick={forwardThis}
+              aria-label={t('msg.forward')}
+              title={t('msg.forward')}
+            >
+              <ForwardIcon size={16} />
             </button>
           </span>
         {/if}
@@ -1100,11 +1152,12 @@
     font-size: var(--type-body-compact-01-size);
   }
 
-  /* Per-message reply button anchor (re #129). Click-through stopped so the
-     button does not fold/unfold the accordion. */
+  /* Per-message reply / reply-all / forward button anchor (re #129, #281).
+     Click-through stopped so the buttons do not fold/unfold the accordion. */
   .reply-anchor {
     display: inline-flex;
     align-items: center;
+    gap: var(--spacing-01);
   }
 
   /* Reactions strip + react button live in a single anchor span inside

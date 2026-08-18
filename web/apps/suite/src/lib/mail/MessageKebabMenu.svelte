@@ -9,9 +9,10 @@
    * (delete one msg, mark one msg unread, mark unread from here, report
    * spam, report phishing, filter messages like this).
    *
-   * Reply / forward live in the fixed reply bar at the thread bottom;
-   * block sender lives in ThreadToolbar; report illegal and translate
-   * are deferred.
+   * Reply / reply-all / forward live as per-message header buttons (re
+   * #281) and, for the thread's latest message, also in the fixed reply
+   * bar at the thread bottom as a convenience path; block sender lives
+   * in ThreadToolbar; report illegal and translate are deferred.
    *
    * Patterned after ActionOverflowMenu.svelte but icon-only trigger sized
    * to fit inside the message header next to the date.

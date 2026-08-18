@@ -11,9 +11,13 @@
  * - Per-message kebab menu (conservative-slice restore of re #98): the
  *   kebab is back inside the message header, expanded-only, and carries
  *   the verbs documented in 02-mail-basics.md § Per-message context menu.
- *   Reply / reply-all / forward stay in the fixed reply bar; thread-only
- *   verbs (archive, snooze, move, label, mute, block sender, restore)
- *   live in ThreadToolbar.
+ *   Reply / reply-all / forward render as header buttons (see below);
+ *   thread-only verbs (archive, snooze, move, label, mute, block sender,
+ *   restore) live in ThreadToolbar.
+ * - Per-message reply / reply-all / forward buttons (re #129, re #281):
+ *   each acts on the message the accordion is rendering, not on the
+ *   thread's latest message -- ThreadReplyBar in the footer keeps that
+ *   role as a convenience path.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -122,12 +126,21 @@ const { composeMock, navigateBackMock } = vi.hoisted(() => {
     isOpen: false,
     inlineMode: false,
     openReply: vi.fn().mockResolvedValue(undefined),
+    openReplyAll: vi.fn(),
+    openForward: vi.fn(),
   };
   const navigateBackMock = vi.fn();
   return { composeMock, navigateBackMock };
 });
 
-vi.mock('../compose/compose.svelte', () => ({ compose: composeMock }));
+// Mock only the `compose` singleton (its network/store side effects); keep
+// the real computeActualReplyAllCc (and the pure helpers it depends on) so
+// the per-message Reply-All gate is exercised against the exact same code
+// path openReplyAll uses (re #281, mirrors ThreadReplyBar.test.ts).
+vi.mock('../compose/compose.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../compose/compose.svelte')>();
+  return { ...actual, compose: composeMock };
+});
 vi.mock('./navigate-back', () => ({ navigateBackFromThread: navigateBackMock }));
 
 vi.mock('./identity-avatar', () => ({
@@ -187,22 +200,25 @@ function makePart(overrides: Partial<EmailBodyPart>): EmailBodyPart {
 }
 
 function makeEmail(overrides: {
+  id?: string;
   hasAttachment?: boolean;
   attachments?: Partial<EmailBodyPart>[];
   mailboxIds?: Record<string, true>;
   from?: Array<{ name: string | null; email: string }>;
+  to?: Array<{ name: string | null; email: string }> | null;
+  cc?: Array<{ name: string | null; email: string }> | null;
   subject?: string;
   blobId?: string;
 }): Email {
   return {
-    id: 'e1',
+    id: overrides.id ?? 'e1',
     threadId: 't1',
     blobId: overrides.blobId ?? 'blob-stub',
     mailboxIds: overrides.mailboxIds ?? {},
     keywords: {},
     from: overrides.from ?? [{ name: 'Alice', email: 'alice@example.test' }],
-    to: null,
-    cc: null,
+    to: overrides.to ?? null,
+    cc: overrides.cc ?? null,
     subject: overrides.subject ?? 'Test subject',
     preview: 'preview text',
     receivedAt: '2026-04-30T10:00:00Z',
@@ -300,8 +316,8 @@ describe('MessageAccordion: no per-message label badges (re #66, re #70)', () =>
 // or whose thread-scoped variant is wrong for multi-sender threads
 // (delete one msg, mark one msg unread, mark unread from here, report
 // spam, report phishing, filter messages like this). Reply / reply-all /
-// forward stay in the fixed reply bar; block sender + mute thread stay
-// in ThreadToolbar.
+// forward live as per-message header buttons (re #281); block sender +
+// mute thread stay in ThreadToolbar.
 
 describe('MessageAccordion: per-message kebab menu (conservative slice)', () => {
   beforeEach(() => {
@@ -314,17 +330,19 @@ describe('MessageAccordion: per-message kebab menu (conservative slice)', () => 
     mailMock.reportPhishing.mockClear();
   });
 
-  it('renders the per-message reply button when expanded but not reply-all / forward', () => {
-    // Per re #129: a per-message reply button lives in the expanded header.
-    // Reply-all and forward remain in ThreadReplyBar only.
+  it('renders the per-message reply and forward buttons when expanded, but not reply-all for a message with no other recipients', () => {
+    // Per re #129 / re #281: per-message reply and forward buttons live in
+    // the expanded header. Reply-all is gated on computeActualReplyAllCc
+    // being non-empty (see the dedicated describe block below) -- this
+    // default message has no To/Cc, so it stays hidden here.
     composeMock.isOpen = false;
     composeMock.inlineMode = false;
     const email = makeEmail({});
     renderAccordion(email, /* expanded */ true);
 
     expect(screen.getByLabelText('msg.reply')).toBeInTheDocument();
+    expect(screen.getByLabelText('msg.forward')).toBeInTheDocument();
     expect(screen.queryByLabelText('msg.replyAll')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('msg.forward')).not.toBeInTheDocument();
   });
 
   it('does not render thread-only verbs anywhere on the message', () => {
@@ -610,6 +628,92 @@ describe('MessageAccordion: per-message reply button (re #129)', () => {
     renderAccordion(email, /* expanded */ true);
     await fireEvent.click(screen.getByLabelText('msg.reply'));
     expect(composeMock.openReply).toHaveBeenCalledWith(email);
+  });
+});
+
+// ── Per-message reply-all / forward buttons (re #281) ────────────────────────
+// Every message in the thread gets its own reply-all / forward, acting on
+// THAT message rather than the thread's latest -- ThreadReplyBar (fixed to
+// the thread footer, always targeting `latest`) is unaffected and keeps its
+// own tests. MessageAccordion renders one message at a time, so "targets
+// the specific message, not latest" is demonstrated by rendering two
+// distinct messages and asserting each click carries its own email object.
+describe('MessageAccordion: per-message reply-all / forward buttons (re #281)', () => {
+  beforeEach(() => {
+    composeMock.isOpen = false;
+    composeMock.inlineMode = false;
+    composeMock.openReplyAll.mockClear();
+    composeMock.openForward.mockClear();
+    mailMock.identities = new Map();
+  });
+
+  it('forward button is present and always calls compose.openForward with the message when expanded', async () => {
+    const earlier = makeEmail({
+      id: 'earlier-msg',
+      from: [{ name: 'Alice', email: 'alice@example.test' }],
+    });
+    renderAccordion(earlier, /* expanded */ true);
+    expect(screen.getByLabelText('msg.forward')).toBeInTheDocument();
+    await fireEvent.click(screen.getByLabelText('msg.forward'));
+    expect(composeMock.openForward).toHaveBeenCalledTimes(1);
+    expect(composeMock.openForward).toHaveBeenCalledWith(earlier);
+    expect((composeMock.openForward.mock.calls[0]?.[0] as Email).id).toBe('earlier-msg');
+  });
+
+  it('forward button is hidden while the inline composer is open', () => {
+    composeMock.isOpen = true;
+    composeMock.inlineMode = true;
+    renderAccordion(makeEmail({}), /* expanded */ true);
+    expect(screen.queryByLabelText('msg.forward')).not.toBeInTheDocument();
+  });
+
+  it('reply-all button is hidden when the message has only the recipient self as To/Cc', () => {
+    // No identities registered as self, but also no To/Cc on the message
+    // at all -- computeActualReplyAllCc has nothing to reply to besides
+    // the sender, so the real gate function returns an empty Cc.
+    const email = makeEmail({ to: null, cc: null });
+    renderAccordion(email, /* expanded */ true);
+    expect(screen.queryByLabelText('msg.replyAll')).not.toBeInTheDocument();
+  });
+
+  it('reply-all button appears and targets THIS message when it has multiple recipients', async () => {
+    const email = makeEmail({
+      id: 'multi-recipient-msg',
+      from: [{ name: 'Alice', email: 'alice@example.test' }],
+      to: [{ name: 'Bob', email: 'bob@example.test' }],
+      cc: [{ name: 'Carol', email: 'carol@example.test' }],
+    });
+    renderAccordion(email, /* expanded */ true);
+    const button = screen.getByLabelText('msg.replyAll');
+    expect(button).toBeInTheDocument();
+    await fireEvent.click(button);
+    expect(composeMock.openReplyAll).toHaveBeenCalledWith(email);
+  });
+
+  it('reply-all targets an EARLIER message, not a different (later) one with different recipients', async () => {
+    const earlier = makeEmail({
+      id: 'earlier-msg',
+      from: [{ name: 'Alice', email: 'alice@example.test' }],
+      to: [{ name: 'Bob', email: 'bob@example.test' }],
+      cc: [{ name: 'Dana', email: 'dana@example.test' }],
+    });
+    const latest = makeEmail({
+      id: 'latest-msg',
+      from: [{ name: 'Eve', email: 'eve@example.test' }],
+      to: [{ name: 'Frank', email: 'frank@example.test' }],
+      cc: [{ name: 'Gina', email: 'gina@example.test' }],
+    });
+
+    // Render the earlier message's own accordion (as ThreadReader would
+    // for an expanded, non-latest message) and confirm reply-all fires
+    // against `earlier`'s recipients, not `latest`'s.
+    renderAccordion(earlier, /* expanded */ true);
+    await fireEvent.click(screen.getByLabelText('msg.replyAll'));
+    expect(composeMock.openReplyAll).toHaveBeenCalledWith(earlier);
+    expect(composeMock.openReplyAll).not.toHaveBeenCalledWith(latest);
+    const calledWith = composeMock.openReplyAll.mock.calls[0]?.[0] as Email;
+    expect(calledWith.cc).toEqual(earlier.cc);
+    expect(calledWith.cc).not.toEqual(latest.cc);
   });
 });
 
