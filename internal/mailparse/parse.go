@@ -69,6 +69,38 @@ func NewParseOptions() ParseOptions {
 	}
 }
 
+// NewLenientParseOptions returns the parser options for a path that renders
+// or indexes a message that was already accepted and stored: MaxSize,
+// MaxDepth, MaxParts, MaxHeaderLine and MaxTextPartBytes stay at the
+// NewParseOptions defaults (resource caps still apply), but every
+// StrictXxx cap that can discard the WHOLE message over a single
+// malformed leaf -- a missing closing "--boundary--" marker, a declared
+// charset that does not decode cleanly, malformed base64, or malformed
+// quoted-printable -- is relaxed so the leaf degrades to a best-effort
+// recovery (recorded in that Part's DecodeErrors) instead of the entire
+// message failing to parse.
+//
+// A message already accepted and stored must render whatever can be
+// recovered from it; rejecting it again at render time turns a lenient
+// acceptance into permanent invisibility (re #285). This matches the
+// all-relaxed policy internal/storefts already used for FTS indexing
+// (see its own doc comment) and internal/webpush /
+// internal/protojmap/mail/searchsnippet already used for preview text;
+// it is broader than the two-flag (StrictBoundary/StrictCharset)
+// leniency #279 gave internal/imapimport's ingest path specifically,
+// which this constructor does not change. Callers that decide whether
+// to ACCEPT a not-yet-stored message (SMTP inbound DATA, outbound
+// submission validation) are a different question and must keep using
+// NewParseOptions.
+func NewLenientParseOptions() ParseOptions {
+	opts := NewParseOptions()
+	opts.StrictBoundary = false
+	opts.StrictCharset = false
+	opts.StrictBase64 = false
+	opts.StrictQP = false
+	return opts
+}
+
 // applyDefaults fills zero fields with production defaults so callers may pass a sparse struct.
 func (o *ParseOptions) applyDefaults() {
 	if o.MaxSize <= 0 {

@@ -222,7 +222,7 @@ func (c *Categoriser) loadAndParse(ctx context.Context, m store.Message) (mailpa
 	if _, err := buf.ReadFrom(rc); err != nil {
 		return mailparse.Message{}, fmt.Errorf("read blob: %w", err)
 	}
-	parsed, err := mailparse.Parse(&buf, mailparse.NewParseOptions())
+	parsed, err := mailparse.Parse(&buf, mailparse.NewLenientParseOptions())
 	if err != nil {
 		return mailparse.Message{}, fmt.Errorf("parse: %w", err)
 	}

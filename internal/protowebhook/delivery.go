@@ -612,7 +612,7 @@ func (d *Dispatcher) fillExtractedBody(
 			"message_id", uint64(msg.ID),
 			"cap_bytes", extractedParseCap)
 	}
-	parsed, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	parsed, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
 	var (
 		text   string
 		origin mailparse.BodyTextOrigin

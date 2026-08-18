@@ -176,7 +176,7 @@ func processOne(ctx context.Context, st store.Store, id store.MessageID, apply b
 		return
 	}
 
-	popts := mailparse.NewParseOptions()
+	popts := mailparse.NewLenientParseOptions()
 	parsed, perr := mailparse.Parse(bytes.NewReader(raw), popts)
 	if perr != nil && !errors.Is(perr, mailparse.ErrTooLarge) {
 		sum.SkippedParseError++

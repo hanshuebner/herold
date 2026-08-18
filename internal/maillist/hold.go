@@ -166,7 +166,7 @@ func (e *Expander) ApproveHeldPost(ctx context.Context, id store.MailingListHeld
 	if err != nil {
 		return ExpandResult{}, err
 	}
-	parsed, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	parsed, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
 	if err != nil {
 		return ExpandResult{}, fmt.Errorf("maillist: reparse held post %d: %w", id, err)
 	}

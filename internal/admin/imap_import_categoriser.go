@@ -123,7 +123,7 @@ func (a *imapImportCategoriserAdapter) Categorise(ctx context.Context, principal
 	}
 
 	// Step 3: parse the RFC 822 bytes.
-	parsed, parseErr := mailparse.Parse(bytes.NewReader(rawBytes), mailparse.NewParseOptions())
+	parsed, parseErr := mailparse.Parse(bytes.NewReader(rawBytes), mailparse.NewLenientParseOptions())
 	if parseErr != nil {
 		a.logger.WarnContext(ctx, "imap-import categorise: mailparse.Parse",
 			slog.String("message_id", messageID),

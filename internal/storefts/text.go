@@ -59,22 +59,19 @@ type MailparseExtractor struct {
 // NewMailparseExtractor returns a MailparseExtractor with production
 // defaults. Callers override Options after construction if needed.
 //
-// The FTS extractor intentionally diverges from mailparse.NewParseOptions:
-// the strict modes (Base64/QP/Boundary/Charset) exist to reject silently
-// corrupted messages on the delivery hot path, where letting a parse
-// succeed against bad bytes would mask data loss. The FTS worker runs
-// post-delivery: a message with a malformed-base64 attachment is already
-// in the store and the user wants to find it via search. Aborting the
-// extraction would leave the message un-indexed for the entire life of
-// its row. Lenient parsing here means a malformed leaf is recorded in
-// the part's DecodeErrors and skipped, while the cleanly-parseable
-// leaves still contribute their text to the index.
+// The FTS extractor uses mailparse.NewLenientParseOptions: the strict
+// modes (Base64/QP/Boundary/Charset) NewParseOptions defaults to exist
+// to reject silently corrupted messages on the delivery hot path, where
+// letting a parse succeed against bad bytes would mask data loss. The
+// FTS worker runs post-delivery: a message with a malformed-base64
+// attachment is already in the store and the user wants to find it via
+// search. Aborting the extraction would leave the message un-indexed
+// for the entire life of its row. Lenient parsing here means a
+// malformed leaf is recorded in the part's DecodeErrors and skipped,
+// while the cleanly-parseable leaves still contribute their text to
+// the index.
 func NewMailparseExtractor() *MailparseExtractor {
-	opts := mailparse.NewParseOptions()
-	opts.StrictBase64 = false
-	opts.StrictQP = false
-	opts.StrictBoundary = false
-	opts.StrictCharset = false
+	opts := mailparse.NewLenientParseOptions()
 	return &MailparseExtractor{
 		Options:               opts,
 		PerAttachmentMaxBytes: defaultPerAttachmentMaxBytes,

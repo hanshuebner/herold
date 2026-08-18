@@ -388,7 +388,7 @@ func emailPreview(ctx context.Context, st store.Store, msg store.Message) string
 		return ""
 	}
 	parsed, err := mailparse.Parse(strings.NewReader(string(body)),
-		mailparse.ParseOptions{StrictBoundary: false})
+		mailparse.NewLenientParseOptions())
 	if err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelDebug,
 			"webpush: preview parse failed",

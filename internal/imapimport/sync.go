@@ -545,9 +545,12 @@ func (w *accountWorker) ingestMessage(
 	// (re #279): a missing closing --boundary-- marker or an undecodable
 	// declared charset must not reject the whole message at ingest — the
 	// render, index, search-snippet and push paths already tolerate both
-	// (mailparse.ParseOptions{StrictBoundary: false} /
-	// storefts.NewMailparseExtractor), so a message that displays and
-	// indexes correctly must also be mirrorable. Genuine structural limits
+	// (mailparse.NewLenientParseOptions, re #285), so a message that
+	// displays and indexes correctly must also be mirrorable. This ingest
+	// path keeps StrictBase64/StrictQP at their strict defaults (narrower
+	// than NewLenientParseOptions) rather than adopting the render/index
+	// leniency wholesale — a decision about accepting not-yet-mirrored
+	// mail is out of scope for #285. Genuine structural limits
 	// (MaxSize/MaxDepth/MaxParts/malformed headers) still fail hard.
 	opts := mailparse.NewParseOptions()
 	opts.StrictBoundary = false

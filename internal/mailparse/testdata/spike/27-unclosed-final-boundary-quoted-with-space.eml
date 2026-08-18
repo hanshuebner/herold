@@ -1,0 +1,20 @@
+From: Web Form <info@classic-computing.de>
+To: vorsitz@classic-computing.de
+Subject: Mitgliedsantrag
+Date: Tue, 18 Aug 2026 17:32:01 +0000
+Message-ID: <20260818153201.915B520233E1@mail.classic-computing.de>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="simple boundary"
+
+--simple boundary
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Neuer Mitgliedsantrag ueber das Formular.</p></body></html>
+
+--simple boundary
+Content-Type: text/csv
+Content-Disposition: attachment; filename="antrag.csv"
+
+name,email
+Max Mustermann,max@example.org
+--simple boundary

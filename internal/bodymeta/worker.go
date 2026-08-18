@@ -180,7 +180,7 @@ func (w *Worker) processOne(ctx context.Context, id store.MessageID) bool {
 		return false
 	}
 	nowUS := w.clk.Now().UnixMicro()
-	opts := mailparse.NewParseOptions()
+	opts := mailparse.NewLenientParseOptions()
 	parsed, perr := mailparse.Parse(bytes.NewReader(raw), opts)
 	if perr != nil {
 		// Unparseable body: write zeroed meta (if not already computed) so we

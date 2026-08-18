@@ -311,7 +311,7 @@ func resolvePartByParse(ctx context.Context, blobs store.Blobs, msgHash string, 
 	if err != nil {
 		return nil, fmt.Errorf("resolvePartBlob: read: %w", err)
 	}
-	parsed, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	parsed, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
 	if err != nil {
 		return nil, fmt.Errorf("resolvePartBlob: parse: %w", err)
 	}

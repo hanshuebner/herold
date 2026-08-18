@@ -85,7 +85,7 @@ type Report struct {
 // "bounce-ish" reply degrades gracefully rather than failing the
 // caller.
 func Parse(raw []byte) (Report, error) {
-	msg, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	msg, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
 	if err != nil {
 		return Report{}, fmt.Errorf("dsn: parse message: %w", err)
 	}

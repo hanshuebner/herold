@@ -277,7 +277,7 @@ func (h *handlerSet) previewText(ctx context.Context, msg store.Message) string 
 	if err != nil {
 		return ""
 	}
-	parsed, err := mailparse.Parse(strings.NewReader(string(body)), mailparse.ParseOptions{StrictBoundary: false})
+	parsed, err := mailparse.Parse(strings.NewReader(string(body)), mailparse.NewLenientParseOptions())
 	if err != nil {
 		// Unparsable bodies still produce a preview: use the raw
 		// bytes verbatim, modulo whitespace folding.

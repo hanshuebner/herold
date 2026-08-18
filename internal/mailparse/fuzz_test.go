@@ -37,15 +37,13 @@ func FuzzParse(f *testing.F) {
 	// passes after.
 	f.Add([]byte("Content-TYpe:multipArt/0\nContent-TrAnsfer-EnCoding:BAse64\n\n0000"))
 
-	opts := NewParseOptions()
+	// Keep strictness off during fuzzing so we exercise the happy-path parse
+	// surface; this is the same relaxed policy the render/index call sites
+	// use in production (NewLenientParseOptions, re #285).
+	opts := NewLenientParseOptions()
 	opts.MaxSize = 1 << 20
 	opts.MaxDepth = 8
 	opts.MaxParts = 256
-	// Keep strictness off during fuzzing so we exercise the happy-path parse surface.
-	opts.StrictCharset = false
-	opts.StrictBase64 = false
-	opts.StrictQP = false
-	opts.StrictBoundary = false
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		msg, perr := Parse(bytes.NewReader(data), opts)

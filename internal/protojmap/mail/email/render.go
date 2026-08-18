@@ -206,7 +206,7 @@ func writePartIndexBackground(meta store.Metadata, blobHash string, rawBodyOrig 
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		parsed, err := mailparse.Parse(bytes.NewReader(rawBodyOrig), mailparse.NewParseOptions())
+		parsed, err := mailparse.Parse(bytes.NewReader(rawBodyOrig), mailparse.NewLenientParseOptions())
 		if err != nil {
 			return
 		}
@@ -403,15 +403,16 @@ func hasRealAttachment(parts []bodyPart) bool {
 	return false
 }
 
-// parseFn is the body-parser injection point. v1 calls
-// mailparse.Parse with the default ParseOptions; tests inject a fake
-// parser to exercise specific parse outcomes without spinning up
-// actual blob parsing.
+// parseFn is the body-parser injection point. v1 calls mailparse.Parse
+// with the lenient render-path options (re #285): a message already
+// accepted and stored must render whatever can be recovered from it.
+// Tests inject a fake parser to exercise specific parse outcomes
+// without spinning up actual blob parsing.
 type parseFn func(io.Reader) (mailparse.Message, error)
 
 // defaultParseFn is the production parse function.
 func defaultParseFn(r io.Reader) (mailparse.Message, error) {
-	return mailparse.Parse(r, mailparse.NewParseOptions())
+	return mailparse.Parse(r, mailparse.NewLenientParseOptions())
 }
 
 // walkParts builds the bodyStructure tree and the flat textBody /

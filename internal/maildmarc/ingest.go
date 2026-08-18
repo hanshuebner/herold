@@ -68,7 +68,7 @@ func (i *Ingestor) IngestMessage(ctx context.Context, raw []byte) (bool, error) 
 		return false, errors.New("maildmarc: Ingestor not initialised")
 	}
 
-	msg, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	msg, err := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
 	if err != nil {
 		// We cannot recognise a malformed message as a DMARC report; let
 		// the caller continue.
