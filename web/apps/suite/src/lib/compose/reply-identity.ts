@@ -79,6 +79,7 @@
  */
 
 import type { Address, Email, Identity } from '../mail/types';
+import { tryCommit } from './recipient-parse';
 
 /**
  * True when the identity is "verified" for sending. The verification
@@ -141,29 +142,61 @@ function readHeraldRecipient(parent: Email): string | null {
 }
 
 /**
+ * Parse a raw RFC 822 header value into the bare address it names,
+ * discarding any display name (`"Name" <addr>` or `Name <addr>` both
+ * reduce to `addr`). Reuses `tryCommit` -- the same chip parser the
+ * compose recipient fields use -- rather than hand-rolling address-shape
+ * detection, so this header value is parsed identically to a pasted
+ * recipient string.
+ *
+ * Any run of whitespace, including an embedded newline left by a folded
+ * continuation line, is first collapsed to a single space so a folded
+ * header parses the same as its unfolded equivalent.
+ *
+ * When the value names more than one address (e.g. this string is later
+ * reused to model the value of more than one physical header line with
+ * the same name), only the first one is returned -- the same "first
+ * occurrence wins" rule `header:X:asText` already applies server-side
+ * (`mailparse.Headers.Get`) when a message carries the header more than
+ * once, e.g. a forwarded message with two `Delivered-To` lines.
+ *
+ * Returns null when the value is absent, empty, or does not parse to any
+ * recognizable address -- a malformed value must never surface raw.
+ */
+function parseFirstAddress(raw: string): string | null {
+  const unfolded = raw.replace(/\s+/g, ' ').trim();
+  if (!unfolded) return null;
+  const { chips } = tryCommit(unfolded);
+  const first = chips[0];
+  if (!first?.email) return null;
+  return first.email.toLowerCase().trim();
+}
+
+/**
  * Read the parent message's `Delivered-To` header (step 3b). Unlike
  * `X-Herold-Recipient`, this is an ordinary RFC 822 header herold never
  * generates, strips, or rewrites -- it survives verbatim from whatever
- * upstream MTA added it before relaying to herold. Returns the trimmed
- * lower-cased address, or null when absent or empty.
+ * upstream MTA added it before relaying to herold, so it may carry a
+ * display name (`"Name" <addr>`) rather than a bare address. Returns the
+ * parsed, trimmed, lower-cased address, or null when absent, empty, or
+ * unparseable (re #283).
  */
 function readDeliveredTo(parent: Email): string | null {
   const raw = parent['header:Delivered-To:asText'];
   if (raw == null) return null;
-  const trimmed = raw.trim().toLowerCase();
-  return trimmed.length > 0 ? trimmed : null;
+  return parseFirstAddress(raw);
 }
 
 /**
  * Read the parent message's `X-Original-To` header (step 3b, second
  * source). Same characteristics as `readDeliveredTo` -- an ordinary
- * pass-through header, not herold-generated.
+ * pass-through header, not herold-generated, that may carry a display
+ * name (re #283).
  */
 function readXOriginalTo(parent: Email): string | null {
   const raw = parent['header:X-Original-To:asText'];
   if (raw == null) return null;
-  const trimmed = raw.trim().toLowerCase();
-  return trimmed.length > 0 ? trimmed : null;
+  return parseFirstAddress(raw);
 }
 
 /**
@@ -543,6 +576,7 @@ export const _internals_forTest = {
   readHeraldRecipient,
   readDeliveredTo,
   readXOriginalTo,
+  parseFirstAddress,
   firstVerifiedMatch,
   firstVerifiedIdentityByDomain,
   firstDomainMatch,

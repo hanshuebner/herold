@@ -44,13 +44,41 @@ function parseAddressList(raw: string): Address[] {
 
 function parseHeaderBlock(raw: string): Map<string, string> {
   const headers = new Map<string, string>();
+  // `activeKey` tracks which header the next continuation (folded) line
+  // belongs to -- null while replaying a duplicate header name that lost
+  // to an earlier occurrence, so its own continuation lines cannot
+  // corrupt the value already recorded for that name.
+  let activeKey: string | null = null;
   for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
+    if (/^[ \t]/.test(line)) {
+      // RFC 822 folded continuation line: join onto the active header
+      // with a single space, mirroring net/textproto's unfolding.
+      if (activeKey) {
+        headers.set(activeKey, `${headers.get(activeKey)} ${line.trim()}`);
+      }
+      continue;
+    }
+    if (!line.trim()) {
+      activeKey = null;
+      continue;
+    }
     const colon = line.indexOf(':');
-    if (colon < 0) continue;
-    const key = line.slice(0, colon).trim();
+    if (colon < 0) {
+      activeKey = null;
+      continue;
+    }
+    const key = line.slice(0, colon).trim().toLowerCase();
     const value = line.slice(colon + 1).trim();
-    headers.set(key.toLowerCase(), value);
+    if (headers.has(key)) {
+      // Duplicate header name: the first (topmost) occurrence wins,
+      // matching mailparse.Headers.Get / JMAP's header:X:asText
+      // "first occurrence" semantics that the server applies before the
+      // client ever sees the value.
+      activeKey = null;
+    } else {
+      headers.set(key, value);
+      activeKey = key;
+    }
   }
   return headers;
 }
@@ -114,12 +142,22 @@ const VORSITZ = makeIdentity('vorsitz@classic-computing.de', {
   verifiedAt: '2026-01-01T00:00:00Z',
 });
 
+// A second, unrelated verified identity used as the account's own default
+// (REQ-MAIL-12's step-4 fallback) for rows that must prove a candidate
+// address was NOT picked up, rather than merely landing back on VORSITZ by
+// coincidence of it also being the passed-in default.
+const HANS = makeIdentity('hans@huebner.org', {
+  verifiedAt: '2026-01-01T00:00:00Z',
+});
+
 interface MatrixRow {
   name: string;
   headers: string;
   identities: Identity[];
   expectFromEmail: string;
   expectCc: string[];
+  /** Defaults to VORSITZ when omitted. */
+  defaultIdentity?: Identity;
 }
 
 const MATRIX: MatrixRow[] = [
@@ -168,13 +206,98 @@ To: vorsitz@classic-computing.de`,
     expectFromEmail: 'vorsitz@classic-computing.de',
     expectCc: [],
   },
+
+  // ── Display-name / folding / multiplicity / malformed shapes (re #283) ──
+
+  {
+    name: 'Delivered-To display-name form, quoted, matches a verified identity',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: "Vorsitz VzEkC" <vorsitz@classic-computing.de>`,
+    identities: [VORSITZ],
+    expectFromEmail: 'vorsitz@classic-computing.de',
+    expectCc: [],
+  },
+  {
+    name: 'Delivered-To display-name form, unquoted, matches a verified identity',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: Vorsitz VzEkC <vorsitz@classic-computing.de>`,
+    identities: [VORSITZ],
+    expectFromEmail: 'vorsitz@classic-computing.de',
+    expectCc: [],
+  },
+  {
+    name: 'X-Original-To display-name form, quoted, matches a verified identity (no Delivered-To)',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+X-Original-To: "Vorsitz VzEkC" <vorsitz@classic-computing.de>`,
+    identities: [VORSITZ],
+    expectFromEmail: 'vorsitz@classic-computing.de',
+    expectCc: [],
+  },
+  {
+    name: 'Delivered-To folded across a continuation line, quoted display-name form',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: "Vorsitz VzEkC"
+ <vorsitz@classic-computing.de>`,
+    identities: [VORSITZ],
+    expectFromEmail: 'vorsitz@classic-computing.de',
+    expectCc: [],
+  },
+  {
+    name: 'multiple Delivered-To occurrences: the first (topmost) wins and matches a verified identity',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: vorsitz@classic-computing.de
+Delivered-To: someone-else@example.org`,
+    identities: [VORSITZ],
+    expectFromEmail: 'vorsitz@classic-computing.de',
+    expectCc: [],
+  },
+  {
+    name: 'multiple Delivered-To occurrences: the first (topmost) wins even though it does NOT match and the second would',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: someone-else@example.org
+Delivered-To: vorsitz@classic-computing.de`,
+    identities: [VORSITZ],
+    defaultIdentity: HANS,
+    // The second occurrence names a verified identity, but only the
+    // first (topmost) occurrence is ever consulted -- so From falls all
+    // the way through to the account default, and the first occurrence's
+    // address (not the second's) is the one that lands in Cc.
+    expectFromEmail: 'hans@huebner.org',
+    expectCc: ['someone-else@example.org'],
+  },
+  {
+    name: 'empty Delivered-To value is ignored, not inserted anywhere',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To:`,
+    identities: [VORSITZ],
+    defaultIdentity: HANS,
+    expectFromEmail: 'hans@huebner.org',
+    expectCc: [],
+  },
+  {
+    name: 'malformed (non-address) Delivered-To value is ignored, not inserted raw into Cc',
+    headers: `From: correspondent@elsewhere.test
+To: someone@elsewhere.test
+Delivered-To: not-an-email-address-at-all`,
+    identities: [VORSITZ],
+    defaultIdentity: HANS,
+    expectFromEmail: 'hans@huebner.org',
+    expectCc: [],
+  },
 ];
 
 describe('reply delivery-shape matrix (From + Cc together, re #280)', () => {
   for (const row of MATRIX) {
     it(row.name, () => {
       const parent = emailFromHeaders(row.headers);
-      const identity = selectReplyIdentity(parent, row.identities, VORSITZ);
+      const identity = selectReplyIdentity(parent, row.identities, row.defaultIdentity ?? VORSITZ);
       const cc = localAliasesForCc(parent, row.identities, /* ownMessage */ false);
 
       expect(identity.email).toBe(row.expectFromEmail);
