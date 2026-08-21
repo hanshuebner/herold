@@ -23,7 +23,7 @@
   import type { EditorView } from 'prosemirror-view';
   import { recipientToString } from './recipient-parse';
   import { hasExternalSubmission } from '../auth/capabilities';
-  import { hasFileShares } from '../jmap/file-shares';
+  import { hasFileShares, formatRetention } from '../jmap/file-shares';
   import { attachmentBadge } from '../mail/attachment-icon';
   import { submissionStore } from '../identities/identity-submission.svelte';
   import type { Identity } from '../mail/types';
@@ -394,18 +394,15 @@
     };
   });
 
-  /** Format expiry for the shared links strip. */
-  function formatExpiry(expiresAt: string): string {
-    const now = Date.now();
-    const exp = new Date(expiresAt).getTime();
-    const diffMs = exp - now;
-    if (diffMs <= 0) return 'expired';
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    if (diffDays >= 2) return `expires in ${diffDays} days`;
-    if (diffDays === 1) return 'expires in 1 day';
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    if (diffHours >= 1) return `expires in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
-    return 'expires in less than 1 hour';
+  /**
+   * Format the shared-links strip label from the share's retention
+   * (REQ-ATT-63 / REQ-ATT-64). A ComposeShare is always `pending` while
+   * visible here, so its `expiresAt` reflects `pending_ttl`, not the
+   * chosen retention -- the label must come from `expiresIn`.
+   */
+  function formatExpiry(expiresIn: number): string {
+    const duration = formatRetention(expiresIn);
+    return duration === 'expired' ? 'expired' : `expires in ${duration}`;
   }
 
   function formatSize(bytes: number): string {
@@ -1014,7 +1011,7 @@
                 >{badge.label}</span>
                 <span class="share-name">{s.name}</span>
                 <span class="share-size">{formatSize(s.size)}</span>
-                <span class="share-expiry">{formatExpiry(s.expiresAt)}</span>
+                <span class="share-expiry">{formatExpiry(s.expiresIn)}</span>
                 {#if s.maxDownloads !== null}
                   <span class="share-cap" title="Download limit">{s.maxDownloads} dl max</span>
                 {/if}

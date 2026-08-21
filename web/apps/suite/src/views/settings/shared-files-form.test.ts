@@ -94,6 +94,7 @@ function makeShare(overrides: Partial<FileShare> = {}): FileShare {
     state: 'active',
     createdAt: new Date(Date.now() - 86400 * 1000).toISOString(),
     expiresAt: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
+    expiresIn: 30 * 86400,
     maxDownloads: null,
     downloadCount: 0,
     hasPassword: false,

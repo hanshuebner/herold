@@ -28,6 +28,7 @@ import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
 import { localeTag } from '../i18n/i18n.svelte';
 import { applyImage } from './editor';
+import { formatRetention } from '../jmap/file-shares';
 import { generateImageProxy } from './image-proxy';
 import {
   showExternalSubmissionFailure,
@@ -84,6 +85,15 @@ export interface ComposeShare {
   url: string;
   /** Absolute expiry as returned by the server (ISO-8601 UTC). */
   expiresAt: string;
+  /**
+   * The share's retention in seconds, as reported by the server
+   * (REQ-SHARE-41). A ComposeShare is always `pending` while visible
+   * in the compose UI (confirmed and removed from view on send), so
+   * this — not a diff against `expiresAt` — is the value the label
+   * must use: `expiresAt` on a pending share reflects `pending_ttl`,
+   * not the chosen retention.
+   */
+  expiresIn: number;
   maxDownloads: number | null;
   hasPassword: boolean;
 }
@@ -1036,6 +1046,7 @@ class ComposeStore {
         type: share.type,
         url: share.url,
         expiresAt: share.expiresAt,
+        expiresIn: share.expiresIn,
         maxDownloads: share.maxDownloads,
         hasPassword: share.hasPassword,
       };
@@ -2405,24 +2416,6 @@ function formatReplyQuote(parent: Email): string {
 // ── Share link body helpers (REQ-ATT-63) ─────────────────────────────────
 
 /**
- * Format a human-readable relative expiry string given an ISO-8601 UTC date.
- * Returns strings like "30 days", "1 day", "2 hours", or a short date for
- * expiries more than 90 days away.
- */
-function formatExpiry(expiresAt: string): string {
-  const now = Date.now();
-  const exp = new Date(expiresAt).getTime();
-  const diffMs = exp - now;
-  if (diffMs <= 0) return 'expired';
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (diffDays >= 2) return `${diffDays} days`;
-  if (diffDays === 1) return '1 day';
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  if (diffHours >= 1) return `${diffHours} hour${diffHours > 1 ? 's' : ''}`;
-  return 'less than 1 hour';
-}
-
-/**
  * Build the data-share-url sentinel value used to locate and remove link
  * blocks from the HTML body. The url is safe to embed as an attribute
  * because the server generates it as a URL-safe base64 token.
@@ -2440,7 +2433,7 @@ function shareBlockSelector(url: string): string {
  */
 export function buildShareLinkHtml(share: ComposeShare): string {
   const humanSize = formatBytes(share.size);
-  const expiryLabel = formatExpiry(share.expiresAt);
+  const expiryLabel = formatRetention(share.expiresIn);
   const safeUrl = escapeHtml(share.url);
   const safeName = escapeHtml(share.name);
   const safeSize = escapeHtml(humanSize);

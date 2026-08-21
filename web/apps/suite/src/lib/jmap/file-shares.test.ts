@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   isUnsafeExtension,
   confirmFileShares,
+  formatExpiry,
+  formatRetention,
   DEFAULT_OFFLOAD_THRESHOLD,
   DEFAULT_TTL_SECONDS,
   DEFAULT_MAX_TTL_SECONDS,
@@ -209,5 +211,60 @@ describe('confirmFileShares', () => {
       sourceSubject: 'No recipients',
       sourceRecipients: [],
     });
+  });
+});
+
+// ── formatExpiry / formatRetention (re #290) ────────────────────────────────
+
+describe('formatExpiry', () => {
+  const NOW = Date.parse('2026-01-01T00:00:00Z');
+
+  it('renders a 48-hour remaining span as "2 days", not "1 day"', () => {
+    // A few ms have elapsed off an exact 48h span -- the classic floor
+    // bug reads this as "1 day"; rounding must read "2 days".
+    const expiresAt = new Date(NOW + 48 * 3600 * 1000 - 5).toISOString();
+    expect(formatExpiry(expiresAt, NOW)).toBe('2 days');
+  });
+
+  it('renders an exact 48-hour remaining span as "2 days"', () => {
+    const expiresAt = new Date(NOW + 48 * 3600 * 1000).toISOString();
+    expect(formatExpiry(expiresAt, NOW)).toBe('2 days');
+  });
+
+  it('renders a 30-day remaining span as "30 days"', () => {
+    const expiresAt = new Date(NOW + 30 * 24 * 3600 * 1000).toISOString();
+    expect(formatExpiry(expiresAt, NOW)).toBe('30 days');
+  });
+
+  it('renders a sub-hour remaining span as "less than 1 hour"', () => {
+    const expiresAt = new Date(NOW + 30 * 1000).toISOString();
+    expect(formatExpiry(expiresAt, NOW)).toBe('less than 1 hour');
+  });
+
+  it('renders a past expiry as "expired"', () => {
+    const expiresAt = new Date(NOW - 1000).toISOString();
+    expect(formatExpiry(expiresAt, NOW)).toBe('expired');
+  });
+});
+
+describe('formatRetention', () => {
+  it('renders a 48-hour (172800s) retention as "2 days"', () => {
+    expect(formatRetention(48 * 3600)).toBe('2 days');
+  });
+
+  it('renders a 30-day retention as "30 days"', () => {
+    expect(formatRetention(30 * 24 * 3600)).toBe('30 days');
+  });
+
+  it('renders a 1-day retention as "1 day" (singular)', () => {
+    expect(formatRetention(24 * 3600)).toBe('1 day');
+  });
+
+  it('renders a 1-hour retention as "1 hour" (singular)', () => {
+    expect(formatRetention(3600)).toBe('1 hour');
+  });
+
+  it('renders a 0-second retention as "expired"', () => {
+    expect(formatRetention(0)).toBe('expired');
   });
 });

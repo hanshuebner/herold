@@ -22,8 +22,11 @@ function makeShare(overrides?: Partial<ComposeShare>): ComposeShare {
     size: 5 * 1024 * 1024,
     type: 'application/zip',
     url,
-    // 30 days from epoch so formatExpiry gives a days count
-    expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+    // pending_ttl-based; the block label is driven by expiresIn, not
+    // this field (see the retention-labeling tests below).
+    expiresAt: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
+    // 30-day retention chosen at create.
+    expiresIn: 30 * 24 * 3600,
     maxDownloads: null,
     hasPassword: false,
     ...overrides,
@@ -67,6 +70,21 @@ describe('insertShareLinkIntoBody', () => {
     const result = insertShareLinkIntoBody('', share);
     expect(result).not.toContain('"b"');
     expect(result).toContain('&quot;b');
+  });
+
+  it('labels the block with the chosen retention, not the pending expiry (re #290)', () => {
+    // 30-day retention chosen at create, but the share is still pending
+    // (expiresAt reflects pending_ttl, here 48h). The block must report
+    // "30 days", not a value derived from the ~48h pending expiresAt.
+    const share = makeShare({ expiresIn: 30 * 24 * 3600 });
+    const result = insertShareLinkIntoBody('', share);
+    expect(result).toContain('Expires in 30 days');
+  });
+
+  it('rounds a 48-hour retention to "2 days" (re #290)', () => {
+    const share = makeShare({ expiresIn: 48 * 3600 });
+    const result = insertShareLinkIntoBody('', share);
+    expect(result).toContain('Expires in 2 days');
   });
 });
 

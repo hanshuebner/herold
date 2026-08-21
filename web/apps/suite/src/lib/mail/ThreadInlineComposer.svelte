@@ -46,6 +46,7 @@
   import { composeFromGating, shouldShowFromPicker } from '../compose/from-picker';
   import { submissionStore } from '../identities/identity-submission.svelte';
   import { hasExternalSubmission } from '../auth/capabilities';
+  import { formatRetention } from '../jmap/file-shares';
   import type { Identity } from './types';
   import type { SubmissionSummary } from '../identities/identity-status';
 
@@ -313,15 +314,15 @@
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
 
-  function formatExpiry(expiresAt: string): string {
-    const diffMs = new Date(expiresAt).getTime() - Date.now();
-    if (diffMs <= 0) return 'expired';
-    const diffDays = Math.floor(diffMs / 86400000);
-    if (diffDays >= 2) return `expires in ${diffDays} days`;
-    if (diffDays === 1) return 'expires in 1 day';
-    const diffHours = Math.floor(diffMs / 3600000);
-    if (diffHours >= 1) return `expires in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
-    return 'expires in less than 1 hour';
+  /**
+   * Format the shared-links strip label from the share's retention
+   * (REQ-ATT-63 / REQ-ATT-64). A ComposeShare is always `pending` while
+   * visible here, so its `expiresAt` reflects `pending_ttl`, not the
+   * chosen retention -- the label must come from `expiresIn`.
+   */
+  function formatExpiry(expiresIn: number): string {
+    const duration = formatRetention(expiresIn);
+    return duration === 'expired' ? 'expired' : `expires in ${duration}`;
   }
 
   // ── Drop zone state (G15 — mirrors ComposeWindow) ─────────────────────
@@ -679,7 +680,7 @@
               >{badge.label}</span>
               <span class="share-name">{s.name}</span>
               <span class="share-size">{formatSize(s.size)}</span>
-              <span class="share-expiry">{formatExpiry(s.expiresAt)}</span>
+              <span class="share-expiry">{formatExpiry(s.expiresIn)}</span>
               {#if s.maxDownloads !== null}
                 <span class="share-cap" title="Download limit">{s.maxDownloads} dl max</span>
               {/if}

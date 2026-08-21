@@ -34,6 +34,15 @@ export interface FileShare {
   createdAt: string;
   /** ISO-8601 UTC timestamp like "2006-01-02T15:04:05Z". */
   expiresAt: string;
+  /**
+   * The share's retention in seconds: the lifetime it carries (or will
+   * carry once confirmed), independent of elapsed time (REQ-SHARE-02 /
+   * REQ-SHARE-41). For a still-`pending` share this is the retention
+   * it will receive on confirmation, NOT a value derived from
+   * `expiresAt` (which reflects `pending_ttl` while pending) — use
+   * `formatRetention(expiresIn)` to label a pending share.
+   */
+  expiresIn: number;
   maxDownloads: number | null;
   downloadCount: number;
   hasPassword: boolean;
@@ -167,6 +176,60 @@ export function defaultTtlSeconds(): number {
  */
 export function maxTtlSeconds(): number {
   return fileShareCapability()?.max_ttl_seconds ?? DEFAULT_MAX_TTL_SECONDS;
+}
+
+// ── Expiry rendering (REQ-ATT-63 / REQ-ATT-64) ──────────────────────────────
+
+const MS_PER_HOUR = 1000 * 60 * 60;
+const MS_PER_DAY = MS_PER_HOUR * 24;
+
+/**
+ * Core duration formatter shared by formatExpiry and formatRetention.
+ * Returns a bare duration string like "30 days", "1 day", "2 hours",
+ * "less than 1 hour", or "expired" — callers that need a sentence
+ * prepend their own "Expires in " / "expires in " prefix.
+ *
+ * Rounds rather than floors: a span of exactly 48 hours, or one that
+ * has only begun to elapse (a few milliseconds into a 48-hour
+ * lifetime), reports "2 days", not "1 day". Flooring under-reports a
+ * lifetime that has barely started elapsing by up to a full unit;
+ * rounding to the nearest day (or, under a day, the nearest hour)
+ * reports the lifetime the share actually carries.
+ */
+function formatDurationMs(diffMs: number): string {
+  if (diffMs <= 0) return 'expired';
+  const diffDays = Math.round(diffMs / MS_PER_DAY);
+  if (diffDays >= 2) return `${diffDays} days`;
+  if (diffDays === 1) return '1 day';
+  const diffHours = Math.round(diffMs / MS_PER_HOUR);
+  if (diffHours >= 1) return `${diffHours} hour${diffHours > 1 ? 's' : ''}`;
+  return 'less than 1 hour';
+}
+
+/**
+ * The single shared "how long until this share expires" formatter
+ * (REQ-ATT-63 / REQ-ATT-64), for an absolute expiry instant.
+ *
+ * `now` is injectable so callers (tests, primarily) can pin the
+ * "current instant" the remaining span is computed against; it
+ * defaults to the real clock.
+ */
+export function formatExpiry(expiresAt: string, now: number = Date.now()): string {
+  return formatDurationMs(new Date(expiresAt).getTime() - now);
+}
+
+/**
+ * Format a share's retention (its lifetime in seconds, independent of
+ * elapsed time) — the `expiresIn` the wire reports (REQ-SHARE-41). Use
+ * this, not formatExpiry, for a still-`pending` share: a pending
+ * share's `expiresAt` reflects `pending_ttl` (the compose-abandon
+ * backstop), not the retention it will receive on confirmation, so
+ * computing a remaining-time diff against it reports the wrong value
+ * entirely (a 30-day retention showing "expires in 2 days" because
+ * pending_ttl is 48h). REQ-ATT-63 / REQ-ATT-64.
+ */
+export function formatRetention(seconds: number): string {
+  return formatDurationMs(seconds * 1000);
 }
 
 // ── Unsafe-type detection (REQ-ATT-60 / REQ-ATT-30) ─────────────────────────
