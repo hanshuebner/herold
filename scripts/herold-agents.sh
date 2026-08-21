@@ -26,6 +26,8 @@
 #   status             One line per target.
 #   attach [target]    Attach to the session, selecting target's window.
 #   doctor             Run the preflight checks and report, starting nothing.
+#   dry-run [target]   Print the command and environment each window would get.
+#                      Starts nothing and touches nothing.
 #
 # Environment:
 #   HEROLD_AGENTS_SESSION   tmux session name           (herold-agents)
@@ -35,9 +37,10 @@
 #   BUG_REPORTER_DIR        bug-reporter checkout       ($HOME/Development/privat/bug-reporter)
 #   HEROLD_AGENT_PERMISSION_MODE
 #                           --permission-mode for the Claude windows
-#                           (acceptEdits). Set to bypassPermissions for fully
-#                           unattended runs; that lets the agents run any tool
-#                           call without asking, so choose it deliberately.
+#                           (bypassPermissions). The crew exists to run
+#                           unattended, so the windows do not stop for tool-call
+#                           approval: they commit code and write to Forgejo on
+#                           their own. Set acceptEdits to be asked instead.
 #
 # FORGEJO_TOKEN and the HEROLD_* settings are passed into each window with
 # `tmux -e` rather than left to inheritance: a window opened on an already-
@@ -52,7 +55,7 @@ SINK_ADDR="${HEROLD_SINK_ADDR:-127.0.0.1:7777}"
 DROP_ROOT="${HEROLD_DROP_ROOT:-$HOME/herold-bugs}"
 DROPS_DIR="${HEROLD_DROPS_DIR:-$HOME/Downloads/herold-bugs}"
 BUG_REPORTER_DIR="${BUG_REPORTER_DIR:-$HOME/Development/privat/bug-reporter}"
-PERM_MODE="${HEROLD_AGENT_PERMISSION_MODE:-acceptEdits}"
+PERM_MODE="${HEROLD_AGENT_PERMISSION_MODE:-bypassPermissions}"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HEROLD_BIN="$REPO/bin/herold"
@@ -309,6 +312,27 @@ case "${1:-}" in
     fi
     tmux attach -t "$SESSION"
     ;;
+  dry-run)
+    shift
+    validate_targets "$@"
+    say "session" "$SESSION"
+    say "repo" "$REPO"
+    say "permissions" "$PERM_MODE"
+    echo
+    echo "  window environment:"
+    while IFS= read -r -d '' a; do
+      [ "$a" = "-e" ] && continue
+      case "$a" in
+        FORGEJO_TOKEN=*) echo "    FORGEJO_TOKEN=<set, ${#a} chars incl. name>" ;;
+        *) echo "    $a" ;;
+      esac
+    done < <(tmux_env_args)
+    while read -r t; do
+      echo
+      echo "  [$t] would run:"
+      echo "    $(cmd_for "$t")"
+    done < <(resolve_targets "$@")
+    ;;
   doctor)
     doctor && echo && echo "  preflight ok" || { echo; die "preflight failed"; }
     ;;
@@ -316,6 +340,6 @@ case "${1:-}" in
     sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's|^# \{0,1\}||'
     ;;
   *)
-    die "unknown command '${1}' (want: start stop restart status attach doctor)"
+    die "unknown command '${1}' (want: start stop restart status attach doctor dry-run)"
     ;;
 esac
