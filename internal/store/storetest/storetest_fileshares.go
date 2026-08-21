@@ -1362,3 +1362,136 @@ func testFileShareSourceReconfirmUpdates(t *testing.T, s store.Store) {
 		t.Fatalf("after new re-confirm: SourceRecipients len = %d, want %d", len(active3.SourceRecipients), len(src2.Recipients))
 	}
 }
+
+// -- REQ-SHARE-02, REQ-SHARE-20, REQ-SHARE-41: per-share retention (issue #290) --
+
+func testFileShareRetentionAppliedOnConfirm(t *testing.T, s store.Store) {
+	// A share created with a retention shorter than DefaultTTL confirms
+	// to now + retention, not now + DefaultTTL.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-retention-applied@example.com")
+	hash, size := putShareBlob(t, s, "retention applied blob")
+	cfg := defaultShareConfig() // DefaultTTL=30d, MaxTTL=90d
+
+	retention := 5 * 24 * time.Hour
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID: p.ID,
+		BlobHash:    hash,
+		BlobSize:    size,
+		Filename:    "retained.bin",
+		ContentType: "application/octet-stream",
+		PendingTTL:  cfg.PendingTTL,
+		Retention:   retention,
+		Config:      cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+	if fs.Retention != retention {
+		t.Fatalf("Retention after create = %v, want %v", fs.Retention, retention)
+	}
+
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+	wantExpires := fs.CreatedAt.Add(retention)
+	// Allow small clock slack either side.
+	if diff := active.ExpiresAt.Sub(wantExpires); diff < -5*time.Second || diff > 5*time.Second {
+		t.Fatalf("ExpiresAt = %v, want ~%v (created %v + retention %v)",
+			active.ExpiresAt, wantExpires, fs.CreatedAt, retention)
+	}
+	if active.Retention != retention {
+		t.Fatalf("Retention after confirm = %v, want %v", active.Retention, retention)
+	}
+
+	// GetFileShareByID must also surface the retention.
+	got, err := s.Meta().GetFileShareByID(ctx, fs.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	if got.Retention != retention {
+		t.Fatalf("GetFileShareByID Retention = %v, want %v", got.Retention, retention)
+	}
+
+	// ListFileSharesByPrincipal must also surface the retention.
+	list, err := s.Meta().ListFileSharesByPrincipal(ctx, p.ID, store.FileShareListFilter{})
+	if err != nil {
+		t.Fatalf("ListFileSharesByPrincipal: %v", err)
+	}
+	found := false
+	for _, row := range list {
+		if row.ID == fs.ID {
+			found = true
+			if row.Retention != retention {
+				t.Fatalf("ListFileSharesByPrincipal Retention = %v, want %v", row.Retention, retention)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("share %s not found in ListFileSharesByPrincipal", fs.ID)
+	}
+}
+
+func testFileShareRetentionUnsetFallsBackToDefaultTTL(t *testing.T, s store.Store) {
+	// A share created without a retention (retention_us = 0, the state
+	// every pre-existing row carries after the migration) confirms to
+	// now + DefaultTTL: unchanged legacy behaviour.
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-retention-unset@example.com")
+	hash, size := putShareBlob(t, s, "retention unset blob")
+	cfg := defaultShareConfig()
+
+	fs := mustCreateShare(t, s, p.ID, hash, size, "legacy.bin", "application/octet-stream")
+	if fs.Retention != 0 {
+		t.Fatalf("Retention after create with no Retention set = %v, want 0", fs.Retention)
+	}
+
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+	wantExpires := fs.CreatedAt.Add(cfg.DefaultTTL)
+	if diff := active.ExpiresAt.Sub(wantExpires); diff < -5*time.Second || diff > 5*time.Second {
+		t.Fatalf("ExpiresAt = %v, want ~%v (created %v + DefaultTTL %v)",
+			active.ExpiresAt, wantExpires, fs.CreatedAt, cfg.DefaultTTL)
+	}
+}
+
+func testFileShareRetentionClampedToMaxTTLOnCreate(t *testing.T, s store.Store) {
+	// A requested retention above MaxTTL is clamped to MaxTTL at create,
+	// defensively, independent of any clamp already applied by the
+	// caller (REQ-SHARE-41).
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "share-retention-clamp@example.com")
+	hash, size := putShareBlob(t, s, "retention clamp blob")
+	cfg := defaultShareConfig() // MaxTTL=90d
+
+	requested := 365 * 24 * time.Hour // far above MaxTTL
+	fs, err := s.Meta().CreateFileShare(ctx, store.FileShareCreate{
+		PrincipalID: p.ID,
+		BlobHash:    hash,
+		BlobSize:    size,
+		Filename:    "clamped.bin",
+		ContentType: "application/octet-stream",
+		PendingTTL:  cfg.PendingTTL,
+		Retention:   requested,
+		Config:      cfg,
+	})
+	if err != nil {
+		t.Fatalf("CreateFileShare: %v", err)
+	}
+	if fs.Retention != cfg.MaxTTL {
+		t.Fatalf("Retention after create with over-ceiling request = %v, want clamped %v", fs.Retention, cfg.MaxTTL)
+	}
+
+	active, err := s.Meta().ConfirmFileShare(ctx, p.ID, fs.ID, cfg, store.FileShareSource{})
+	if err != nil {
+		t.Fatalf("ConfirmFileShare: %v", err)
+	}
+	wantExpires := fs.CreatedAt.Add(cfg.MaxTTL)
+	if diff := active.ExpiresAt.Sub(wantExpires); diff < -5*time.Second || diff > 5*time.Second {
+		t.Fatalf("ExpiresAt = %v, want ~%v (created %v + MaxTTL %v)",
+			active.ExpiresAt, wantExpires, fs.CreatedAt, cfg.MaxTTL)
+	}
+}

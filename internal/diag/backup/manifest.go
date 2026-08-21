@@ -781,7 +781,18 @@ const CurrentBackupVersion = 1
 //	the store.MailboxAttrInbox bit and falling back to a
 //	case-insensitive "INBOX" name match; rows where neither resolves
 //	stay NULL. No new table; MessageMailboxRow gains the one field.
-const CurrentSchemaVersion = 101
+//
+// 102 — 0102_file_shares_retention.sql (issue #290). Adds
+//
+//	file_shares.retention_us: the per-share lifetime chosen at create
+//	time (unix microseconds), column-only migration on the table added
+//	by migration 0055. 0 means unset: ConfirmFileShare falls back to
+//	Config.DefaultTTL, matching pre-migration behaviour, for every
+//	pre-existing row (no back-fill). The pending -> active transition
+//	applies max(retention_us, 0) or DefaultTTL, clamped to MaxTTL, in
+//	place of the previous unconditional now+DefaultTTL. No new table;
+//	FileShareRow gains the one field.
+const CurrentSchemaVersion = 102
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

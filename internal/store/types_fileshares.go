@@ -75,8 +75,14 @@ type FileShare struct {
 	// CreatedAt is the row insert instant.
 	CreatedAt time.Time
 	// ExpiresAt is the absolute expiry. State pending: now+pending_ttl.
-	// State active: now+default_ttl (clamped to max_ttl). REQ-SHARE-20.
+	// State active: now+Retention (falling back to default_ttl when
+	// Retention is unset), clamped to max_ttl. REQ-SHARE-20.
 	ExpiresAt time.Time
+	// Retention is the per-share lifetime chosen at create time, clamped
+	// to Config.MaxTTL by the store. Zero means "unset": the pending ->
+	// active transition falls back to Config.DefaultTTL. Persisted in
+	// retention_us; populated on every read path. REQ-SHARE-02.
+	Retention time.Duration
 	// MaxDownloads is the optional download cap. When non-nil the share
 	// becomes inaccessible once DownloadCount >= MaxDownloads.
 	MaxDownloads *int64
@@ -130,6 +136,12 @@ type FileShareCreate struct {
 	// before the sweeper removes it. Populated from
 	// FileSharesConfig.PendingTTL by the JMAP layer.
 	PendingTTL time.Duration
+	// Retention is the per-share lifetime requested at create time,
+	// applied on the pending -> active transition (Confirm). Zero means
+	// unset: Confirm falls back to Config.DefaultTTL. The store clamps
+	// a non-zero value to Config.MaxTTL defensively, independent of any
+	// clamp already applied by the caller. REQ-SHARE-02, REQ-SHARE-41.
+	Retention time.Duration
 	// MaxDownloads is the optional download cap. Nil means unlimited.
 	MaxDownloads *int64
 	// Password, when non-empty, is hashed with Argon2id and stored

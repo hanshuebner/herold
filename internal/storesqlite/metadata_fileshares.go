@@ -22,7 +22,7 @@ const fileShareSelectCols = `
 	id, principal_id, blob_hash, blob_size, filename, content_type,
 	created_at_us, expires_at_us, max_downloads, download_count,
 	password_hash, state, last_downloaded_at_us, revoked_at_us,
-	source_message_id, source_subject, source_recipients`
+	source_message_id, source_subject, source_recipients, retention_us`
 
 // scanFileShare scans one row of file_shares into a store.FileShare.
 // Column order must match fileShareSelectCols verbatim.
@@ -39,12 +39,13 @@ func scanFileShare(row rowLike) (store.FileShare, error) {
 		srcMessageID                               sql.NullString
 		srcSubject                                 sql.NullString
 		srcRecipients                              sql.NullString
+		retentionUs                                int64
 	)
 	if err := row.Scan(
 		&id, &pid, &blobHash, &blobSize, &filename, &contentType,
 		&createdUs, &expiresUs, &maxDownloads, &downloadCount,
 		&passwordHash, &state, &lastDownloadedUs, &revokedUs,
-		&srcMessageID, &srcSubject, &srcRecipients,
+		&srcMessageID, &srcSubject, &srcRecipients, &retentionUs,
 	); err != nil {
 		return store.FileShare{}, mapErr(err)
 	}
@@ -59,6 +60,7 @@ func scanFileShare(row rowLike) (store.FileShare, error) {
 		ExpiresAt:     fromMicros(expiresUs),
 		DownloadCount: downloadCount,
 		State:         store.FileShareState(state),
+		Retention:     time.Duration(retentionUs) * time.Microsecond,
 	}
 	if maxDownloads.Valid {
 		v := maxDownloads.Int64
@@ -124,6 +126,19 @@ func (m *metadata) CreateFileShare(ctx context.Context, req store.FileShareCreat
 	expiresAt := now.Add(req.PendingTTL)
 	expiresAtUs := usMicros(expiresAt)
 
+	// Clamp defensively to MaxTTL at the store boundary even though the
+	// JMAP layer already clamps: the store must not persist a retention
+	// above the deployment ceiling regardless of caller behaviour.
+	// Non-positive values mean "unset" and are stored as 0.
+	retention := req.Retention
+	if retention < 0 {
+		retention = 0
+	}
+	if req.Config.MaxTTL > 0 && retention > req.Config.MaxTTL {
+		retention = req.Config.MaxTTL
+	}
+	retentionUs := int64(retention / time.Microsecond)
+
 	var fs store.FileShare
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		// Cap enforcement (REQ-SHARE-12): count active+pending shares for
@@ -183,11 +198,12 @@ func (m *metadata) CreateFileShare(ctx context.Context, req store.FileShareCreat
 			INSERT INTO file_shares
 			  (id, principal_id, blob_hash, blob_size, filename, content_type,
 			   created_at_us, expires_at_us, max_downloads, download_count,
-			   password_hash, state, last_downloaded_at_us, revoked_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', NULL, NULL)`,
+			   password_hash, state, last_downloaded_at_us, revoked_at_us,
+			   retention_us)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', NULL, NULL, ?)`,
 			token, int64(req.PrincipalID), req.BlobHash, req.BlobSize,
 			req.Filename, req.ContentType,
-			nowUs, expiresAtUs, maxDL, ph); err != nil {
+			nowUs, expiresAtUs, maxDL, ph, retentionUs); err != nil {
 			return mapErr(err)
 		}
 
@@ -210,6 +226,7 @@ func (m *metadata) CreateFileShare(ctx context.Context, req store.FileShareCreat
 			DownloadCount: 0,
 			PasswordHash:  passwordHash,
 			State:         store.FileShareStatePending,
+			Retention:     retention,
 		}
 		return nil
 	})
@@ -254,7 +271,11 @@ func (m *metadata) ConfirmFileShare(ctx context.Context, principalID store.Princ
 		}
 
 		now := m.s.clock.Now().UTC()
-		newExpires := now.Add(cfg.DefaultTTL)
+		ttl := fs.Retention
+		if ttl <= 0 {
+			ttl = cfg.DefaultTTL
+		}
+		newExpires := now.Add(ttl)
 		maxExpires := now.Add(cfg.MaxTTL)
 		if newExpires.After(maxExpires) {
 			newExpires = maxExpires

@@ -263,6 +263,10 @@ func Run(t *testing.T, f Factory) {
 		{"FileShare_Source_EmptyLeavesNULL", testFileShareSourceEmptyLeavesNULL},
 		{"FileShare_Source_PendingIsNULL", testFileShareSourcePendingIsNULL},
 		{"FileShare_Source_ReconfirmUpdates", testFileShareSourceReconfirmUpdates},
+		// -- issue #290: per-share retention --
+		{"FileShare_Retention_AppliedOnConfirm", testFileShareRetentionAppliedOnConfirm},
+		{"FileShare_Retention_UnsetFallsBackToDefaultTTL", testFileShareRetentionUnsetFallsBackToDefaultTTL},
+		{"FileShare_Retention_ClampedToMaxTTLOnCreate", testFileShareRetentionClampedToMaxTTLOnCreate},
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},

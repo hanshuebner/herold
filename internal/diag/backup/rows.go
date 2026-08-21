@@ -1001,6 +1001,10 @@ type FileShareRow struct {
 	// (To + Cc + Bcc). Stored verbatim from the column; the backup
 	// round-trip preserves the raw JSON text.
 	SourceRecipients *string `json:"source_recipients,omitempty"`
+	// RetentionUs is the per-share lifetime chosen at create time, in
+	// microseconds, added by migration 0102 (issue #290). 0 means
+	// unset (falls back to Config.DefaultTTL on confirm).
+	RetentionUs int64 `json:"retention_us"`
 }
 
 // IMAPImportAccountRow mirrors one row of the imapimport_account table
