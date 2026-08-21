@@ -47,7 +47,12 @@ func Register(
 	reg.Register(protojmap.CapabilityFileShares, changesHandler{h: h})
 	reg.Register(protojmap.CapabilityFileShares, setHandler{h: h})
 	reg.Register(protojmap.CapabilityFileShares, queryHandler{h: h})
-	// The capability descriptor is the empty object; per-deployment caps
-	// live in sysconfig and are read at request time by the handlers.
-	reg.RegisterCapabilityDescriptor(protojmap.CapabilityFileShares, struct{}{})
+	// The capability descriptor advertises the deployment's configured
+	// default_ttl_seconds and max_ttl_seconds (and quota_max_bytes) so
+	// the composer's expiry picker reflects the operator's sysconfig
+	// rather than client-side constants. Per-request caps are still
+	// re-read from cfg by the handlers; this descriptor is captured
+	// once at Register (boot) time, consistent with the other static
+	// capability descriptors in this server.
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityFileShares, newCapabilityDescriptor(cfg))
 }

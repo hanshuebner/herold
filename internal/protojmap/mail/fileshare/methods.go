@@ -154,7 +154,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			return nil, protojmap.NewMethodError("serverFail", lerr.Error())
 		}
 		for _, fs := range rows {
-			resp.List = append(resp.List, recordToJMAP(fs, g.h.publicBaseURL))
+			resp.List = append(resp.List, recordToJMAP(fs, g.h.publicBaseURL, g.h.cfg.DefaultTTL))
 		}
 		return resp, nil
 	}
@@ -174,7 +174,7 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		resp.List = append(resp.List, recordToJMAP(rec, g.h.publicBaseURL))
+		resp.List = append(resp.List, recordToJMAP(rec, g.h.publicBaseURL, g.h.cfg.DefaultTTL))
 	}
 	return resp, nil
 }
@@ -456,6 +456,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			Filename:     in.Name,
 			ContentType:  in.Type,
 			PendingTTL:   s.h.cfg.PendingTTL,
+			Retention:    expiresIn,
 			MaxDownloads: in.MaxDownloads,
 			Password:     in.Password,
 			Config:       s.h.cfg,
@@ -482,7 +483,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		if resp.Created == nil {
 			resp.Created = make(map[string]jmapFileShare)
 		}
-		resp.Created[clientID] = recordToJMAP(created, s.h.publicBaseURL)
+		resp.Created[clientID] = recordToJMAP(created, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 		mutated = true
 		s.audit(ctx, p, "file_share.create", created.ID, map[string]string{
 			"blob_hash":    created.BlobHash,
@@ -619,7 +620,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 					}
 					return nil, protojmap.NewMethodError("serverFail", cerr.Error())
 				}
-				jrow := recordToJMAP(confirmed, s.h.publicBaseURL)
+				jrow := recordToJMAP(confirmed, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 				if resp.Updated == nil {
 					resp.Updated = make(map[jmapID]*jmapFileShare)
 				}
@@ -644,7 +645,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				if gerr != nil {
 					return nil, protojmap.NewMethodError("serverFail", gerr.Error())
 				}
-				jrow := recordToJMAP(revoked, s.h.publicBaseURL)
+				jrow := recordToJMAP(revoked, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 				if resp.Updated == nil {
 					resp.Updated = make(map[jmapID]*jmapFileShare)
 				}
@@ -723,7 +724,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			if gerr != nil {
 				return nil, protojmap.NewMethodError("serverFail", gerr.Error())
 			}
-			jrow := recordToJMAP(updated, s.h.publicBaseURL)
+			jrow := recordToJMAP(updated, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 			if resp.Updated == nil {
 				resp.Updated = make(map[jmapID]*jmapFileShare)
 			}
@@ -766,7 +767,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			if gerr != nil {
 				return nil, protojmap.NewMethodError("serverFail", gerr.Error())
 			}
-			jrow := recordToJMAP(updated, s.h.publicBaseURL)
+			jrow := recordToJMAP(updated, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 			if resp.Updated == nil {
 				resp.Updated = make(map[jmapID]*jmapFileShare)
 			}
@@ -777,7 +778,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 
 		// Empty patch — no-op success.
-		jrow := recordToJMAP(prior, s.h.publicBaseURL)
+		jrow := recordToJMAP(prior, s.h.publicBaseURL, s.h.cfg.DefaultTTL)
 		if resp.Updated == nil {
 			resp.Updated = make(map[jmapID]*jmapFileShare)
 		}

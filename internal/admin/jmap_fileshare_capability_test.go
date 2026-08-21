@@ -272,6 +272,75 @@ func TestFileShareCapabilityAbsentWithoutPublicBaseURL(t *testing.T) {
 	}
 }
 
+// TestFileShareCapabilityAdvertisesConfiguredTTLs verifies, through the
+// fully composed server (StartServer -> the real public listener -> the
+// session endpoint), that the FileShares capability descriptor reports the
+// deployment's configured default_ttl_seconds and max_ttl_seconds rather
+// than an empty object. minimalConfigFixture leaves [server.attachment_shares]
+// at its documented defaults (default_ttl=48h, max_ttl=90d); a handler-level
+// unit test cannot catch a wiring gap between sysconfig and the registered
+// capability descriptor, so this asserts against the wired server (re #290).
+func TestFileShareCapabilityAdvertisesConfiguredTTLs(t *testing.T) {
+	addrs, done, cancel := bootServerWithShares(t)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("server did not shut down within grace window")
+		}
+	})
+
+	publicAddr := addrs["public"]
+	adminAddr := addrs["admin"]
+	if publicAddr == "" {
+		t.Fatalf("public listener not bound; addrs=%+v", addrs)
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"email":        "fileshare-ttl-cap-test@example.com",
+		"display_name": "FileShare TTL Cap Test",
+	})
+	resp, err := http.Post("http://"+adminAddr+"/api/v1/bootstrap",
+		"application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("bootstrap POST: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("bootstrap: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var boot struct {
+		InitialAPIKey string `json:"initial_api_key"`
+	}
+	if err := json.Unmarshal(raw, &boot); err != nil {
+		t.Fatalf("bootstrap unmarshal: %v body=%s", err, raw)
+	}
+
+	caps := fetchSessionCapabilities(t, publicAddr, boot.InitialAPIKey)
+	const capFileShares = "https://netzhansa.com/jmap/file-shares"
+	descRaw, ok := caps[capFileShares]
+	if !ok {
+		t.Fatalf("session capabilities missing %q", capFileShares)
+	}
+	var desc struct {
+		DefaultTTLSeconds int64 `json:"default_ttl_seconds"`
+		MaxTTLSeconds     int64 `json:"max_ttl_seconds"`
+	}
+	if err := json.Unmarshal(descRaw, &desc); err != nil {
+		t.Fatalf("descriptor unmarshal: %v raw=%s", err, descRaw)
+	}
+	const wantDefaultTTL = int64(48 * 3600)  // 48h
+	const wantMaxTTL = int64(90 * 24 * 3600) // 90d
+	if desc.DefaultTTLSeconds != wantDefaultTTL {
+		t.Errorf("default_ttl_seconds = %d, want %d (raw=%s)", desc.DefaultTTLSeconds, wantDefaultTTL, descRaw)
+	}
+	if desc.MaxTTLSeconds != wantMaxTTL {
+		t.Errorf("max_ttl_seconds = %d, want %d (raw=%s)", desc.MaxTTLSeconds, wantMaxTTL, descRaw)
+	}
+}
+
 // TestFileShareRoutesMount verifies that the /share/{id} routes are mounted
 // on the public listener when attachment_shares is active. An unknown share
 // ID must return 410 Gone (not 404 Not Found), confirming the route was

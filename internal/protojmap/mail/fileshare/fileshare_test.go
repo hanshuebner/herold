@@ -6,13 +6,18 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
 )
 
@@ -44,13 +49,24 @@ func defaultCfg() store.FileSharesConfig {
 func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
 	st := newStore(t)
+	h, p := newHandlersFromStore(t, st, "alice@example.test")
+	return h, st, p
+}
+
+// newHandlersFromStore builds a handlerSet against a pre-opened store,
+// inserting the "example.test" domain and a principal with the given
+// email. Shared between the SQLite-backed newHandlers and the
+// Postgres-backed test variants so the same handler logic runs
+// against both backends (re #290).
+func newHandlersFromStore(t *testing.T, st store.Store, email string) (*handlerSet, store.Principal) {
+	t.Helper()
 	ctx := context.Background()
 	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
 		t.Fatalf("insert domain: %v", err)
 	}
 	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
-		CanonicalEmail: "alice@example.test",
+		CanonicalEmail: email,
 		DisplayName:    "Alice",
 	})
 	if err != nil {
@@ -63,7 +79,7 @@ func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 		cfg:           defaultCfg(),
 		publicBaseURL: testPublicBase,
 	}
-	return h, st, p
+	return h, p
 }
 
 func accountID(p store.Principal) string {
@@ -975,5 +991,417 @@ func TestRevokedShareAppearsInGet(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("revoked share not returned in /get list")
+	}
+}
+
+// -- Retention wiring (re #290) ---------------------------------------
+
+// TestCreate_ExpiresInHonoredThroughConfirm exercises the end-to-end
+// path: a per-share expiresIn chosen at create is persisted as the
+// share's retention and applied verbatim on the pending -> active
+// transition, through the JMAP layer (not just the store).
+func TestCreate_ExpiresInHonoredThroughConfirm(t *testing.T) {
+	h, st, p := newHandlers(t)
+	blobHash := uploadBlob(t, st, []byte("ten days"))
+
+	tenDays := int64(10 * 24 * 3600)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"blobId":    blobHash,
+				"name":      "ten.zip",
+				"type":      "application/zip",
+				"expiresIn": tenDays,
+			},
+		},
+	})
+	cr, merr := setHandler{h: h}.executeAs(p, createArgs)
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := cr.(setResponse).Created["c1"]
+	if created.ExpiresIn != tenDays {
+		t.Fatalf("created.ExpiresIn = %d, want %d", created.ExpiresIn, tenDays)
+	}
+
+	// Confirm.
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update": map[string]any{
+			created.ID: map[string]any{"state": "active"},
+		},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, updateArgs)
+	if merr != nil {
+		t.Fatalf("confirm: %v", merr)
+	}
+	updated := ur.(setResponse).Updated[created.ID]
+	if updated == nil {
+		t.Fatalf("share not in Updated")
+	}
+	if updated.ExpiresIn != tenDays {
+		t.Fatalf("updated.ExpiresIn = %d, want %d", updated.ExpiresIn, tenDays)
+	}
+
+	// The store row's expires_at must be exactly now + 10 days, not
+	// default_ttl (30 days per defaultCfg) and not pending_ttl (1h).
+	row, err := st.Meta().GetFileShareByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantExpiry := fakeNow.Add(10 * 24 * time.Hour)
+	if !row.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("stored ExpiresAt = %v, want %v", row.ExpiresAt, wantExpiry)
+	}
+	if row.Retention != 10*24*time.Hour {
+		t.Fatalf("stored Retention = %v, want 10 days", row.Retention)
+	}
+
+	// The wire ExpiresAt on the confirmed object must agree.
+	gotExpiry, err := time.Parse("2006-01-02T15:04:05Z", updated.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expiresAt: %v", err)
+	}
+	if !gotExpiry.Equal(wantExpiry) {
+		t.Fatalf("wire ExpiresAt = %v, want %v", gotExpiry, wantExpiry)
+	}
+}
+
+// TestCreate_ExpiresInAboveMaxTTLClampedAndReported asserts that an
+// expiresIn above max_ttl is clamped at create, that the clamped
+// (not requested) value is what the created object reports, and that
+// confirmation applies the clamped retention.
+func TestCreate_ExpiresInAboveMaxTTLClampedAndReported(t *testing.T) {
+	h, st, p := newHandlers(t)
+	blobHash := uploadBlob(t, st, []byte("too long"))
+
+	requested := int64(200 * 24 * 3600) // 200 days > 90-day MaxTTL
+	maxTTLSeconds := int64(defaultCfg().MaxTTL / time.Second)
+
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"blobId":    blobHash,
+				"name":      "long.zip",
+				"type":      "application/zip",
+				"expiresIn": requested,
+			},
+		},
+	})
+	cr, merr := setHandler{h: h}.executeAs(p, createArgs)
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := cr.(setResponse).Created["c1"]
+	if created.ExpiresIn != maxTTLSeconds {
+		t.Fatalf("created.ExpiresIn = %d, want clamped %d (not requested %d)",
+			created.ExpiresIn, maxTTLSeconds, requested)
+	}
+
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update": map[string]any{
+			created.ID: map[string]any{"state": "active"},
+		},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, updateArgs)
+	if merr != nil {
+		t.Fatalf("confirm: %v", merr)
+	}
+	updated := ur.(setResponse).Updated[created.ID]
+	if updated.ExpiresIn != maxTTLSeconds {
+		t.Fatalf("updated.ExpiresIn = %d, want %d", updated.ExpiresIn, maxTTLSeconds)
+	}
+
+	row, err := st.Meta().GetFileShareByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantExpiry := fakeNow.Add(defaultCfg().MaxTTL)
+	if !row.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("stored ExpiresAt = %v, want %v (MaxTTL-clamped)", row.ExpiresAt, wantExpiry)
+	}
+}
+
+// TestCreate_NoExpiresIn_ReportsDefaultTTL asserts that a still-pending
+// share whose create omitted no explicit retention (the store's own
+// zero-Retention fallback) reports the deployment default_ttl as its
+// ExpiresIn, not a value derived from its pending-state ExpiresAt.
+func TestGet_PendingShare_ReportsRetentionNotPendingExpiry(t *testing.T) {
+	h, st, p := newHandlers(t)
+	blobHash := uploadBlob(t, st, []byte("pending"))
+
+	sevenDays := int64(7 * 24 * 3600)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"blobId":    blobHash,
+				"name":      "p.zip",
+				"type":      "application/zip",
+				"expiresIn": sevenDays,
+			},
+		},
+	})
+	cr, merr := setHandler{h: h}.executeAs(p, createArgs)
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := cr.(setResponse).Created["c1"]
+	// Still pending: ExpiresAt reflects pending_ttl (1h per defaultCfg),
+	// but ExpiresIn must report the 7-day retention it will get on
+	// confirmation, not the pending-state expiry.
+	if created.State != "pending" {
+		t.Fatalf("expected pending, got %q", created.State)
+	}
+	if created.ExpiresIn != sevenDays {
+		t.Fatalf("created.ExpiresIn = %d, want %d", created.ExpiresIn, sevenDays)
+	}
+	_ = st
+}
+
+// TestSessionCapability_AdvertisesConfiguredTTLs asserts, through the
+// composed /.well-known/jmap session endpoint (not the bare handler
+// struct), that the FileShares capability descriptor reports the
+// deployment's configured default_ttl_seconds and max_ttl_seconds.
+func TestSessionCapability_AdvertisesConfiguredTTLs(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storesqlite.Open(context.Background(),
+		filepath.Join(t.TempDir(), "store.db"), nil, clk)
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Meta().InsertDomain(context.Background(),
+		store.Domain{Name: "example.com", IsLocal: true}); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
+	dir := directory.New(st.Meta(), nil, clk, nil)
+	if _, err := dir.CreatePrincipal(context.Background(),
+		"alice@example.com", "correct-horse-battery-staple-1"); err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	plaintext, _, err := dir.IssueDeviceToken(context.Background(),
+		"alice@example.com", "correct-horse-battery-staple-1", "", "test-device")
+	if err != nil {
+		t.Fatalf("issue device token: %v", err)
+	}
+
+	srv := protojmap.NewServer(st, dir, nil, nil, clk, protojmap.Options{
+		MaxCallsInRequest:  4,
+		PushPingInterval:   60 * time.Second,
+		PushCoalesceWindow: 50 * time.Millisecond,
+		DownloadRatePerSec: -1,
+	})
+	cfg := store.FileSharesConfig{
+		DefaultTTL:             14 * 24 * time.Hour,
+		MaxTTL:                 60 * 24 * time.Hour,
+		PendingTTL:             time.Hour,
+		RevokedGrace:           24 * time.Hour,
+		MaxSharesPerPrincipal:  1000,
+		ShareQuotaPerPrincipal: 1024 * 1024 * 1024,
+	}
+	Register(srv.Registry(), st, slog.New(slog.NewTextHandler(io.Discard, nil)), clk,
+		cfg, testPublicBase)
+
+	httpd := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpd.Close)
+
+	req, err := http.NewRequest("GET", httpd.URL+"/.well-known/jmap", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.StatusCode, body)
+	}
+	var desc map[string]any
+	if err := json.Unmarshal(body, &desc); err != nil {
+		t.Fatalf("decode session: %v: %s", err, body)
+	}
+	caps, ok := desc["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities missing: %#v", desc)
+	}
+	fc, ok := caps[string(protojmap.CapabilityFileShares)].(map[string]any)
+	if !ok {
+		t.Fatalf("FileShares capability descriptor missing: %#v", caps)
+	}
+	if v, _ := fc["default_ttl_seconds"].(float64); int64(v) != int64(14*24*3600) {
+		t.Fatalf("default_ttl_seconds = %v, want %d", fc["default_ttl_seconds"], 14*24*3600)
+	}
+	if v, _ := fc["max_ttl_seconds"].(float64); int64(v) != int64(60*24*3600) {
+		t.Fatalf("max_ttl_seconds = %v, want %d", fc["max_ttl_seconds"], 60*24*3600)
+	}
+	if v, _ := fc["quota_max_bytes"].(float64); int64(v) != 1024*1024*1024 {
+		t.Fatalf("quota_max_bytes = %v, want %d", fc["quota_max_bytes"], 1024*1024*1024)
+	}
+	if _, present := fc["quota_used_bytes"]; present {
+		t.Fatalf("quota_used_bytes unexpectedly present (per-principal value, not a server-wide capability field): %v", fc["quota_used_bytes"])
+	}
+}
+
+// -- Postgres backend leg (re #290) -----------------------------------
+
+// openPostgresStore opens a Postgres store for testing. It skips the test
+// (a silent no-op) if HEROLD_PG_DSN is not set; if HEROLD_PG_DSN IS set but
+// storepg.Open fails, it fails rather than skips, so a broken Postgres leg
+// cannot masquerade as "not configured". Mirrors the pattern in
+// internal/protojmap/mail/emailsubmission/emailsubmission_test.go.
+func openPostgresStore(t *testing.T) store.Store {
+	t.Helper()
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clk)
+	if err != nil {
+		t.Fatalf("HEROLD_PG_DSN is set but storepg.Open failed (Postgres leg NOT exercised): %v", err)
+	}
+	// HEROLD_PG_DSN is a single shared throwaway database; reset row
+	// state before each test so a fixed domain/principal does not
+	// collide with rows a prior test (or a prior failed run) left
+	// behind.
+	if tr, ok := st.(interface {
+		TruncateAll(ctx context.Context) error
+	}); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			_ = st.Close()
+			t.Fatalf("TruncateAll: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// TestPG_ExpiresInHonoredThroughConfirm is the Postgres-backed variant of
+// TestCreate_ExpiresInHonoredThroughConfirm: the chosen expiresIn is
+// persisted as the share's retention and applied verbatim on confirm.
+func TestPG_ExpiresInHonoredThroughConfirm(t *testing.T) {
+	st := openPostgresStore(t)
+	h, p := newHandlersFromStore(t, st, "alice-pg-1@example.test")
+	blobHash := uploadBlob(t, st, []byte("pg ten days"))
+
+	tenDays := int64(10 * 24 * 3600)
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"blobId":    blobHash,
+				"name":      "ten.zip",
+				"type":      "application/zip",
+				"expiresIn": tenDays,
+			},
+		},
+	})
+	cr, merr := setHandler{h: h}.executeAs(p, createArgs)
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := cr.(setResponse).Created["c1"]
+	if created.ExpiresIn != tenDays {
+		t.Fatalf("created.ExpiresIn = %d, want %d", created.ExpiresIn, tenDays)
+	}
+
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update": map[string]any{
+			created.ID: map[string]any{"state": "active"},
+		},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, updateArgs)
+	if merr != nil {
+		t.Fatalf("confirm: %v", merr)
+	}
+	updated := ur.(setResponse).Updated[created.ID]
+	if updated == nil {
+		t.Fatalf("share not in Updated")
+	}
+	if updated.ExpiresIn != tenDays {
+		t.Fatalf("updated.ExpiresIn = %d, want %d", updated.ExpiresIn, tenDays)
+	}
+
+	row, err := st.Meta().GetFileShareByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantExpiry := fakeNow.Add(10 * 24 * time.Hour)
+	if !row.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("stored ExpiresAt = %v, want %v", row.ExpiresAt, wantExpiry)
+	}
+	if row.Retention != 10*24*time.Hour {
+		t.Fatalf("stored Retention = %v, want 10 days", row.Retention)
+	}
+}
+
+// TestPG_ExpiresInAboveMaxTTLClampedAndReported is the Postgres-backed
+// variant of TestCreate_ExpiresInAboveMaxTTLClampedAndReported.
+func TestPG_ExpiresInAboveMaxTTLClampedAndReported(t *testing.T) {
+	st := openPostgresStore(t)
+	h, p := newHandlersFromStore(t, st, "alice-pg-2@example.test")
+	blobHash := uploadBlob(t, st, []byte("pg too long"))
+
+	requested := int64(200 * 24 * 3600) // 200 days > 90-day MaxTTL
+	maxTTLSeconds := int64(defaultCfg().MaxTTL / time.Second)
+
+	createArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"create": map[string]any{
+			"c1": map[string]any{
+				"blobId":    blobHash,
+				"name":      "long.zip",
+				"type":      "application/zip",
+				"expiresIn": requested,
+			},
+		},
+	})
+	cr, merr := setHandler{h: h}.executeAs(p, createArgs)
+	if merr != nil {
+		t.Fatalf("create: %v", merr)
+	}
+	created := cr.(setResponse).Created["c1"]
+	if created.ExpiresIn != maxTTLSeconds {
+		t.Fatalf("created.ExpiresIn = %d, want clamped %d (not requested %d)",
+			created.ExpiresIn, maxTTLSeconds, requested)
+	}
+
+	updateArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update": map[string]any{
+			created.ID: map[string]any{"state": "active"},
+		},
+	})
+	ur, merr := setHandler{h: h}.executeAs(p, updateArgs)
+	if merr != nil {
+		t.Fatalf("confirm: %v", merr)
+	}
+	updated := ur.(setResponse).Updated[created.ID]
+	if updated.ExpiresIn != maxTTLSeconds {
+		t.Fatalf("updated.ExpiresIn = %d, want %d", updated.ExpiresIn, maxTTLSeconds)
+	}
+
+	row, err := st.Meta().GetFileShareByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetFileShareByID: %v", err)
+	}
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantExpiry := fakeNow.Add(defaultCfg().MaxTTL)
+	if !row.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("stored ExpiresAt = %v, want %v (MaxTTL-clamped)", row.ExpiresAt, wantExpiry)
 	}
 }
