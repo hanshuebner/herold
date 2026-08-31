@@ -80,6 +80,15 @@
     void compose.discard();
   }
 
+  /**
+   * Toggle between the centered pop-up modal and the full-screen mode
+   * that expands the composer to fill the content area (re #291). Pure
+   * display-mode flip; does not touch any compose content.
+   */
+  function toggleFullScreen(): void {
+    compose.fullScreen = !compose.fullScreen;
+  }
+
   // Focus the right field when compose opens — for reply / reply-all, the
   // ProseMirror editor; otherwise (fresh compose, forward) the To field,
   // since those start with an empty To that the user must address first
@@ -737,9 +746,12 @@
 {/if}
 
 {#if compose.isOpen && !compose.inlineMode}
-  <div class="backdrop" onclick={closeWithConfirm} aria-hidden="true"></div>
+  {#if !compose.fullScreen}
+    <div class="backdrop" onclick={closeWithConfirm} aria-hidden="true"></div>
+  {/if}
   <div
     class="modal"
+    class:full-screen={compose.fullScreen}
     role="dialog"
     aria-modal="true"
     aria-labelledby="compose-title"
@@ -768,6 +780,34 @@
         title={t('compose.minimize')}
       >
         —
+      </button>
+      <button
+        type="button"
+        class="full-screen-toggle"
+        onclick={toggleFullScreen}
+        aria-label={compose.fullScreen ? t('compose.exitFullScreen') : t('compose.fullScreen')}
+        title={compose.fullScreen ? t('compose.exitFullScreen') : t('compose.fullScreen')}
+        data-testid="compose-fullscreen-toggle"
+      >
+        {#if compose.fullScreen}
+          <!-- Restore-to-popup icon: four arrows pointing inward -->
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 14 10 14 10 20" />
+            <polyline points="20 10 14 10 14 4" />
+            <line x1="14" y1="10" x2="21" y2="3" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        {:else}
+          <!-- Expand-to-full-screen icon: four arrows pointing outward -->
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 3 21 3 21 9" />
+            <polyline points="9 21 3 21 3 15" />
+            <line x1="21" y1="3" x2="14" y2="10" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        {/if}
       </button>
       <button
         type="button"
@@ -1110,6 +1150,32 @@
     animation: rise var(--duration-moderate-01) var(--easing-productive-enter);
   }
 
+  /* Full-screen mode (re #291): expand to fill the content area -- the
+     space to the right of the sidebar, matching the message-reader
+     layout -- instead of the centered pop-up. top/left match the
+     sidebar width (240px) and global-bar height (--spacing-08), the
+     same offsets GlobalBar's search popover uses for the same reason.
+     width/height stay auto so the top/left/right/bottom offsets alone
+     determine the box. */
+  .modal.full-screen {
+    top: var(--spacing-08);
+    left: 240px;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: auto;
+    max-height: none;
+    transform: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  @media (max-width: 768px) {
+    .modal.full-screen {
+      left: 0;
+    }
+  }
+
   .modal-header {
     display: flex;
     align-items: center;
@@ -1124,7 +1190,8 @@
     font-weight: var(--type-heading-01-weight);
   }
   .close,
-  .minimize {
+  .minimize,
+  .full-screen-toggle {
     color: var(--text-helper);
     font-size: 20px;
     line-height: 1;
@@ -1136,8 +1203,15 @@
     font-weight: 600;
     margin-right: var(--spacing-01);
   }
+  .full-screen-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: var(--spacing-01);
+  }
   .close:hover,
-  .minimize:hover {
+  .minimize:hover,
+  .full-screen-toggle:hover {
     background: var(--layer-03);
     color: var(--text-primary);
   }

@@ -188,3 +188,22 @@ describe('chipLabel', () => {
     expect(chip(s)).toBe('(empty)');
   });
 });
+
+describe('compose.fullScreen (re #291)', () => {
+  it('defaults to false and resets on close', () => {
+    compose.openBlank();
+    expect(compose.fullScreen).toBe(false);
+    compose.fullScreen = true;
+    compose.close();
+    expect(compose.fullScreen).toBe(false);
+  });
+
+  it('minimizeCurrent closes the compose, which resets fullScreen', () => {
+    compose.openBlank();
+    compose.subject = 'Full-screen draft';
+    compose.fullScreen = true;
+    expect(composeStack.minimizeCurrent()).toBe(true);
+    expect(compose.isOpen).toBe(false);
+    expect(compose.fullScreen).toBe(false);
+  });
+});

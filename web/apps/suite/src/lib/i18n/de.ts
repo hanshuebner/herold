@@ -377,6 +377,8 @@ export const de = {
   'compose.title.reply': 'Antwort',
   'compose.title.forward': 'Weiterleitung',
   'compose.minimize': 'Minimieren',
+  'compose.fullScreen': 'Vollbild',
+  'compose.exitFullScreen': 'Vollbild verlassen',
   'compose.close': 'Verfassen schließen',
   'compose.from': 'Von',
   'compose.to': 'An',

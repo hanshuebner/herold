@@ -210,6 +210,14 @@ class ComposeStore {
    * re #38.
    */
   inlineMode = $state(false);
+  /**
+   * True when the floating compose window is expanded to fill the
+   * content area instead of the centered pop-up modal (re #291).
+   * Reset by close() like every other display-mode flag; irrelevant
+   * while inlineMode is true (the inline composer has no full-screen
+   * state of its own).
+   */
+  fullScreen = $state(false);
   to = $state('');
   cc = $state('');
   bcc = $state('');
@@ -1139,6 +1147,7 @@ class ComposeStore {
   close(): void {
     this.status = 'idle';
     this.inlineMode = false;
+    this.fullScreen = false;
     this.to = '';
     this.cc = '';
     this.bcc = '';
