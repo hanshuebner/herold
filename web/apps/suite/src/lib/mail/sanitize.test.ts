@@ -860,6 +860,87 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(body).toContain('One more thing I forgot to mention.');
     });
   });
+
+  // re #292: fresh top-posted text nested as CHILDREN of the matched quote
+  // element itself (some Gmail composition paths), rather than as
+  // preceding siblings, must render unfolded — only the genuinely quoted
+  // tail inside the element folds.
+  describe('fresh content nested inside the matched quote element (re #292)', () => {
+    it('splits a top-posted reply nested inside the outer <blockquote> (Gmail cursor-in-quote shape) so only the attribution + nested quote fold', () => {
+      const html =
+        '<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex">' +
+        "<div>Sounds good, let's proceed on Monday.</div>" +
+        '<div class="gmail_attr">On Mon, Aug 31, 2026 at 6:48 PM Alice &lt;alice@example.local&gt; wrote:<br></div>' +
+        '<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex">' +
+        '<div>Original quoted text.</div>' +
+        '</blockquote>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      // The fresh top-posted text renders unfolded, before <details>.
+      const freshPos = body.indexOf("Sounds good, let's proceed on Monday.");
+      expect(freshPos).toBeGreaterThan(-1);
+      expect(freshPos).toBeLessThan(detailsStart);
+      // The attribution line and the nested quote both fold.
+      const attrPos = body.indexOf('wrote:');
+      const quotePos = body.indexOf('Original quoted text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('does not split when the outer <blockquote> carries no marker child (plain quote stays atomic)', () => {
+      // Regression guard: a <blockquote> whose children are all genuine
+      // quoted prose (no attribution line, no nested quote marker) has no
+      // boundary to find and must fold exactly as before this fix.
+      const html =
+        '<p>My reply.</p>' +
+        '<blockquote><div>Line one of the original.</div><div>Line two of the original.</div></blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('Line one of the original.')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('Line one of the original.')).toBeLessThan(detailsEnd);
+      expect(body.indexOf('Line two of the original.')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('Line two of the original.')).toBeLessThan(detailsEnd);
+    });
+
+    it('does not split when the leading children are only whitespace/<br> separators ahead of the marker', () => {
+      const html =
+        '<blockquote class="gmail_quote">' +
+        '<br>' +
+        '<div class="gmail_attr">On Mon, Alice wrote:</div>' +
+        '<div>Original quoted text.</div>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('Original quoted text.')).toBeGreaterThan(detailsStart);
+    });
+
+    it('a top-level attribution-classed div is unaffected by the split (re #32 sweep test stays green)', () => {
+      // findFirstQuotedRegion can match a "gmail_quote_attribution"-classed
+      // div directly (its class contains the "gmail_quote" substring); its
+      // own single text-node child is itself the attribution marker at
+      // index 0, so splitLeadingFreshContent must not touch it.
+      const html =
+        '<p>My reply.</p>' +
+        '<div class="gmail_quote_attribution">On Mon, Alice wrote:</div>' +
+        '<div class="gmail_quote">Original quoted text</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).not.toBe(-1);
+      expect(body.indexOf('On Mon, Alice wrote:')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('On Mon, Alice wrote:')).toBeLessThan(detailsEnd);
+      expect(body.indexOf('Original quoted text')).toBeGreaterThan(detailsStart);
+      expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+    });
+  });
 });
 
 describe('sanitizeHtml — script/style filters', () => {

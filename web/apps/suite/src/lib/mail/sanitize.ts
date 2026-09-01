@@ -875,10 +875,83 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
  * folded into the collapsed region too (re #234) — see the backward sweep
  * below.
  */
+/**
+ * True for a node that itself marks the start of quoted material: a nested
+ * `<blockquote>`, a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix` div, or
+ * an attribution/citation-introducer line. Used by `splitLeadingFreshContent`
+ * to find where genuinely quoted content begins among a candidate's own
+ * children (re #292) — distinct from `isQuoteOrEmptyNode`, which also
+ * matches whitespace/`<br>`/`<hr>` separators that carry no marker value of
+ * their own.
+ */
+function isQuoteStartNode(node: Node): boolean {
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const el = node as Element;
+    if (el.tagName === 'BLOCKQUOTE') return true;
+    if (el.tagName === 'DIV') {
+      const cls = el.getAttribute('class') ?? '';
+      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
+    }
+  }
+  return isAttributionNode(node);
+}
+
+/**
+ * Split fresh (non-quoted) content that some mail clients nest as CHILDREN
+ * of the matched quote element itself back out as preceding siblings, so it
+ * renders unfolded (re #292).
+ *
+ * Some Gmail composition paths — when the cursor ends up positioned inside
+ * the quoted `<blockquote>` while the user types a top-posted reply — place
+ * the new reply text as children of the outer `<blockquote>` ahead of the
+ * attribution line and the nested quote, rather than as siblings preceding
+ * it. `findFirstQuotedRegion` still matches that outer `<blockquote>` (a tag
+ * match short-circuits before any class check), and every guard in
+ * `collapseQuotedRegions` — the forward trailing-sibling sweep (#32/#49) and
+ * the backward introducer sweep (#234) — inspects only the candidate's
+ * SIBLINGS, never its own descendants. Left alone, the entire element,
+ * fresh text included, is swept into `<details>` as one opaque block.
+ *
+ * Scoped to the candidate's direct children only, and only the LEADING run
+ * before the first child that is itself an `isQuoteStartNode` marker — this
+ * mirrors, one level down, the top-level rule that only a single contiguous
+ * trailing quoted region collapses. A plain `<blockquote>text</blockquote>`
+ * with no such marker child (the overwhelmingly common shape) has no
+ * boundary to find, so it is left untouched and folds atomically exactly as
+ * before this function existed.
+ */
+function splitLeadingFreshContent(candidate: Element): void {
+  const parent = candidate.parentNode;
+  if (!parent) return;
+  const children = Array.from(candidate.childNodes);
+  let boundaryIdx = -1;
+  for (let i = 0; i < children.length; i++) {
+    if (isQuoteStartNode(children[i]!)) {
+      boundaryIdx = i;
+      break;
+    }
+  }
+  // No marker child found, or it is already the first child: nothing
+  // fresh precedes the quote inside the candidate.
+  if (boundaryIdx <= 0) return;
+  const leading = children.slice(0, boundaryIdx);
+  // Whitespace/<br>/<hr> only ahead of the marker is not fresh content —
+  // leave the candidate untouched rather than relocating inert separators.
+  if (!leading.some((n) => !isQuoteOrEmptyNode(n))) return;
+  for (const n of leading) {
+    parent.insertBefore(n, candidate);
+  }
+}
+
 function collapseQuotedRegions(fragment: DocumentFragment): void {
   const root = fragment;
   const candidate = findFirstQuotedRegion(root);
   if (!candidate) return;
+
+  // Split fresh content nested as leading CHILDREN of the matched element
+  // back out before the rest of this function ever inspects candidate's
+  // siblings (re #292) — see splitLeadingFreshContent's doc comment.
+  splitLeadingFreshContent(candidate);
 
   // Guard: only collapse when the quoted region is truly trailing. Walk
   // past the contiguous block of quote-or-empty siblings that would be
