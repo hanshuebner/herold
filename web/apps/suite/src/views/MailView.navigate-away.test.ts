@@ -26,7 +26,11 @@
  * let variable, the transition case cannot be verified by mutating the mock
  * between renders in a unit test. The transition behaviour (both the
  * original re #29 bounce and the re #294 reset) is verified by the
- * puppeteer integration test. The unit tests here cover:
+ * Playwright spec at
+ * `web/apps/suite/tests/e2e-live/thread-back-navigation.spec.ts`, which
+ * drives a genuine herold backend (no page.route() mocks) so the real
+ * EventSource push and Svelte effect-flush timing are exercised. The unit
+ * tests here cover:
  *   - Initial-render guards that must NOT navigate (FIX B assertions).
  *   - Unchanged guards that correctly skip virtual / search / loading states.
  */
@@ -369,5 +373,7 @@ describe('MailView: auto-navigate away when thread email leaves current folder (
   // unit test because `confirmedFolderKey` is a plain let variable inside
   // the component and the mocked store is not reactive (changing the mock
   // return value does not re-trigger the Svelte effect). The transition is
-  // verified by the puppeteer integration test for re #88 / re #29.
+  // verified by the Playwright spec at
+  // `web/apps/suite/tests/e2e-live/thread-back-navigation.spec.ts` (re #88,
+  // re #29, re #294).
 });

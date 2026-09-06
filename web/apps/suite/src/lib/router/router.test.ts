@@ -103,5 +103,37 @@ describe('router', () => {
       expect(router.parts).toEqual(['mail', 'thread', 't1']);
       expect(router.lastListPath).toBe('/mail/folder/sent');
     });
+
+    // re #294: two history transitions fired in quick succession (an
+    // archive action's own push immediately followed by the user's
+    // browser Back) each queue a genuine, distinct hashchange event. If
+    // this handler read a fresh `window.location.hash` instead of the
+    // event's own `newURL`, a handler slow to run for the first event
+    // would see the URL already moved on to the second transition's
+    // target, collapsing both into one and skipping the first
+    // transition's value entirely -- exactly the intermediate state
+    // MailView's auto-navigate-away effect needs to see to reset its
+    // confirmedFolderKey guard between thread visits.
+    it("processes a hashchange event using its own newURL, not window.location.hash read at handler-run time", () => {
+      router.replace('/mail/folder/sent');
+
+      // window.location.hash already reflects a LATER transition (as if
+      // a second, faster navigation landed before this event's handler
+      // got to run) -- deliberately different from the event's own
+      // newURL below.
+      window.location.hash = '#/mail/thread/t1';
+
+      const event = new HashChangeEvent('hashchange', {
+        oldURL: 'http://localhost/#/mail/folder/sent',
+        newURL: 'http://localhost/#/mail',
+      });
+      window.dispatchEvent(event);
+
+      // router.current must follow the event's own newURL (/mail), not
+      // whatever window.location.hash happens to read right now
+      // (/mail/thread/t1).
+      expect(router.current).toBe('/mail');
+      expect(router.lastListPath).toBe('/mail/folder/sent');
+    });
   });
 });

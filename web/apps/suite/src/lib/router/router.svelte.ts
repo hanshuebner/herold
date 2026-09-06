@@ -92,8 +92,21 @@ class Router {
   lastListPath: string | null = null;
 
   constructor() {
-    window.addEventListener('hashchange', () => {
-      this.setCurrent(parse(window.location.hash));
+    window.addEventListener('hashchange', (event) => {
+      // Read the hash from the event's own `newURL`, not a fresh
+      // `window.location.hash` lookup. Two history transitions fired in
+      // quick succession (e.g. an archive action's own push immediately
+      // followed by the user's browser Back) each queue a genuine,
+      // distinct hashchange event, but if this handler is slow to run for
+      // the first one, `window.location.hash` has by then already moved
+      // on to the second transition's target -- re-reading it collapses
+      // both transitions into one, so `current` never actually passes
+      // through the first transition's value. That skipped intermediate
+      // state is exactly what MailView's auto-navigate-away effect (re
+      // #29 / re #294) relies on seeing to reset its `confirmedFolderKey`
+      // guard between thread visits. `newURL` is captured at dispatch
+      // time and is immune to this race.
+      this.setCurrent(parse(new URL(event.newURL).hash));
     });
 
     // Default route on first load.
