@@ -510,6 +510,53 @@ describe('sanitizeHtml — anchor rewrite', () => {
     expect(body).toContain('target="_blank"');
     expect(body).toContain('rel="noopener noreferrer"');
   });
+
+  // Issue #293: a bare in-document fragment link must never open a new
+  // tab -- in a srcdoc iframe the resolved target of "#id" is the
+  // embedding page's own address with the mail's fragment appended
+  // (about:srcdoc's document base URL is the parent page, not itself),
+  // so target="_blank" would try to pop the Suite's own URL in a new
+  // tab at a route the router does not recognise.
+  it('strips target/rel from a bare fragment link', () => {
+    const html = '<a href="#section1">jump</a>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).not.toContain('target=');
+    expect(body).not.toContain('rel=');
+  });
+
+  it('leaves a bare fragment href untouched when no fragmentDocumentUrl is given', () => {
+    const html = '<a href="#section1">jump</a>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+    expect(body).toContain('href="#section1"');
+  });
+
+  it('rewrites a fragment href to fragmentDocumentUrl + fragment when given (HtmlBody srcdoc case)', () => {
+    const html = '<a href="#section1">jump</a>';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: false, fragmentDocumentUrl: 'about:srcdoc' }),
+    );
+    expect(body).toContain('href="about:srcdoc#section1"');
+    expect(body).not.toContain('target=');
+    expect(body).not.toContain('rel=');
+  });
+
+  it('tolerates surrounding whitespace in a fragment href', () => {
+    const html = '<a href="  #section1  ">jump</a>';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: false, fragmentDocumentUrl: 'about:srcdoc' }),
+    );
+    expect(body).toContain('href="about:srcdoc#section1"');
+  });
+
+  it('still opens non-fragment links in a new tab when fragmentDocumentUrl is set', () => {
+    const html = '<a href="https://x.test/">click</a>';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: false, fragmentDocumentUrl: 'about:srcdoc' }),
+    );
+    expect(body).toContain('href="https://x.test/"');
+    expect(body).toContain('target="_blank"');
+    expect(body).toContain('rel="noopener noreferrer"');
+  });
 });
 
 describe('sanitizeHtml — linkify plain-text URLs (issue #103)', () => {

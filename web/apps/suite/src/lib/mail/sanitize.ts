@@ -3,7 +3,10 @@
  *
  * Layered defence:
  *   1. DOMPurify drops unsafe tags / attributes / URL schemes.
- *   2. Anchors get target="_blank" rel="noopener noreferrer".
+ *   2. Anchors get target="_blank" rel="noopener noreferrer", except
+ *      bare in-document fragment links (href="#id") which stay
+ *      same-document so they scroll within the message instead of
+ *      trying to pop a new tab (issue #293).
  *   3. Images:
  *      - cid: → resolved via the per-message attachment map (blocked
  *        when no map entry exists).
@@ -61,6 +64,26 @@ export interface SanitizeOptions {
    * only apply while this specific message is still pending.
    */
   internalizePending?: boolean;
+  /**
+   * The value the host document's `document.URL` will have once this
+   * output is embedded (issue #293). Only meaningful when the caller
+   * embeds the result in an iframe via the `srcdoc` attribute, whose
+   * document address is always the fixed string `about:srcdoc`
+   * regardless of the embedding page's own URL -- relative fragment
+   * hrefs (`href="#id"`) resolve against the *embedding page's*
+   * address in that case, not `about:srcdoc`, so a plain `<a
+   * href="#id">` would try to navigate to the embedding page's own URL
+   * with the mail's fragment appended rather than scrolling in place.
+   * When set, bare fragment-only anchor hrefs are rewritten to
+   * `${fragmentDocumentUrl}#id` so the browser's own same-document
+   * fragment-navigation check (which compares against `document.URL`)
+   * matches and produces a plain in-page scroll. Left unset, fragment
+   * anchors are still stripped of target/rel but the href is left bare
+   * -- correct for hosts whose document address already matches its
+   * own base URL (e.g. the print popup in `print-message.ts`, which
+   * `document.write`s directly rather than using `srcdoc`).
+   */
+  fragmentDocumentUrl?: string;
 }
 
 const ALLOWED_TAGS = [
@@ -173,8 +196,20 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
   // <a> elements pick up target/rel in the same pass.
   linkifyTextNodes(fragment);
 
-  // Anchor rewriting: every <a> opens in a new tab with no referrer leak.
+  // Anchor rewriting: every <a> opens in a new tab with no referrer leak,
+  // except bare in-document fragment links (issue #293), which must stay
+  // same-document so the browser scrolls the reader instead of trying to
+  // pop a new tab at the mail's fragment appended to the host page's URL.
   for (const a of fragment.querySelectorAll('a')) {
+    const trimmedHref = a.getAttribute('href')?.trim();
+    if (trimmedHref?.startsWith('#')) {
+      a.removeAttribute('target');
+      a.removeAttribute('rel');
+      if (options.fragmentDocumentUrl !== undefined) {
+        a.setAttribute('href', options.fragmentDocumentUrl + trimmedHref);
+      }
+      continue;
+    }
     a.setAttribute('target', '_blank');
     a.setAttribute('rel', 'noopener noreferrer');
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { findScrollParent } from './scroll-parent';
+import { findScrollParent, fragmentScrollDelta } from './scroll-parent';
 
 /**
  * Tests for findScrollParent. happy-dom's getComputedStyle reflects inline
@@ -101,5 +101,33 @@ describe('findScrollParent', () => {
   it('returns null when el has no parentElement', () => {
     const detached = makeEl();
     expect(findScrollParent(detached)).toBeNull();
+  });
+});
+
+// Issue #293: fragment link clicks inside the sandboxed message-body
+// iframe need the outer thread scroll container moved by script, since
+// the iframe never scrolls internally (its CSS height always matches its
+// content's scrollHeight, so there is nothing for the browser's own
+// native fragment-scroll to act on inside the iframe's own viewport).
+describe('fragmentScrollDelta', () => {
+  it('is zero when the target already sits at the scroll parent\'s top edge', () => {
+    const frameRect = { top: 100 };
+    const targetRect = { top: 50 }; // 150 in outer-viewport terms
+    const parentRect = { top: 150 };
+    expect(fragmentScrollDelta(frameRect, targetRect, parentRect)).toBe(0);
+  });
+
+  it('is positive when the target sits below the scroll parent\'s top edge', () => {
+    const frameRect = { top: 0 };
+    const targetRect = { top: 2000 };
+    const parentRect = { top: 80 };
+    expect(fragmentScrollDelta(frameRect, targetRect, parentRect)).toBe(1920);
+  });
+
+  it('is negative when the target sits above the scroll parent\'s top edge', () => {
+    const frameRect = { top: -500 };
+    const targetRect = { top: 100 };
+    const parentRect = { top: 0 };
+    expect(fragmentScrollDelta(frameRect, targetRect, parentRect)).toBe(-400);
   });
 });

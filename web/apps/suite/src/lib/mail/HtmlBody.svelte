@@ -6,7 +6,9 @@
    *
    * Layered defence:
    *   - DOMPurify strips dangerous tags / attrs / URL schemes (sanitize.ts).
-   *   - <a> rewritten to target="_blank" rel="noopener noreferrer".
+   *   - <a> rewritten to target="_blank" rel="noopener noreferrer", except
+   *     bare in-document fragment links which stay same-document so they
+   *     scroll within the message (issue #293).
    *   - <img>: cid: blocked; http(s) blocked unless loadImages=true; when
    *     loaded, src rewritten through /proxy/image so the recipient's
    *     IP / cookies don't reach the sender.
@@ -44,7 +46,7 @@
    *   the image itself never displays.
    */
   import { sanitizeHtml } from './sanitize';
-  import { findScrollParent } from './scroll-parent';
+  import { findScrollParent, fragmentScrollDelta } from './scroll-parent';
   import { t } from '../i18n/i18n.svelte';
   import { inlineImageDecodeStatus } from './image-decode';
 
@@ -152,7 +154,17 @@
 
   // Re-sanitise whenever inputs change (e.g. user clicks "Load images").
   let srcdoc = $derived(
-    sanitizeHtml(html, { loadImages, cidMap, cidDimensions, internalizePending }),
+    sanitizeHtml(html, {
+      loadImages,
+      cidMap,
+      cidDimensions,
+      internalizePending,
+      // The rendered srcdoc document's own address is always the fixed
+      // string "about:srcdoc" (issue #293) -- see sanitize.ts's
+      // fragmentDocumentUrl doc comment for why bare fragment hrefs need
+      // this to scroll within the message instead of navigating away.
+      fragmentDocumentUrl: 'about:srcdoc',
+    }),
   );
 
   /**
@@ -208,6 +220,40 @@
       });
     }
     overlayButtons = buttons;
+  }
+
+  /**
+   * Scrolls the reader to the target of an in-document fragment link click
+   * (issue #293). The iframe never scrolls internally by design (its CSS
+   * height always matches `doc.body.scrollHeight`, see the wheel-forwarding
+   * comment in onLoad() below), so the browser's own native fragment-scroll
+   * inside the iframe's browsing context has no scrollable box to act on —
+   * the actual thread scroll container has to be moved from here instead.
+   *
+   * Wired to the iframe's `hashchange` event, which fires for the in-place
+   * same-document navigation that `sanitizeHtml`'s `fragmentDocumentUrl`
+   * rewrite produces (allow-same-origin lets the parent listen on the
+   * iframe's contentWindow directly; no script runs inside the sandbox).
+   */
+  function scrollToFragmentTarget(): void {
+    const frame = frameEl;
+    const wrapper = wrapperEl;
+    const win = frame?.contentWindow;
+    const doc = frame?.contentDocument;
+    if (!frame || !wrapper || !win || !doc) return;
+    const id = win.location.hash.slice(1);
+    if (!id) return;
+    const target = doc.getElementById(id) ?? doc.getElementsByName(id)[0];
+    if (!target) return;
+    const scrollParent = findScrollParent(wrapper);
+    if (!scrollParent) return;
+    const parentRect = scrollParent.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    scrollParent.scrollBy({
+      top: fragmentScrollDelta(frameRect, targetRect, parentRect),
+      behavior: 'smooth',
+    });
   }
 
   /**
@@ -309,6 +355,12 @@
       () => requestAnimationFrame(recomputeHeight),
       true,
     );
+    // In-document fragment link clicks (issue #293): scroll the reader to
+    // the target instead of leaving the iframe's own no-op fragment scroll
+    // as the only effect. The listener is attached to the iframe's own
+    // window so it is released automatically when the document is replaced
+    // (srcdoc change).
+    frameEl?.contentWindow?.addEventListener('hashchange', scrollToFragmentTarget);
 
     // Wheel-forwarding fix (issue #51): the iframe is always full-height
     // (its CSS height equals its content scrollHeight) so it has no
