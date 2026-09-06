@@ -27,24 +27,3 @@ export function findScrollParent(el: HTMLElement): HTMLElement | null {
   }
   return null;
 }
-
-/**
- * Computes the `scrollBy({ top })` delta that brings a fragment-link
- * target inside a sandboxed `srcdoc` iframe to the top edge of the
- * outer thread scroll container (issue #293).
- *
- * `targetRect` is the target element's `getBoundingClientRect()` as
- * read from inside the iframe -- relative to the iframe's own
- * (unscrolled, by design) viewport. Adding `frameRect.top` (the
- * iframe element's own position in the outer viewport) turns that into
- * an outer-viewport-relative coordinate, matching `parentRect`'s
- * coordinate space; subtracting `parentRect.top` gives the distance the
- * scroll container needs to move to bring the target to its top edge.
- */
-export function fragmentScrollDelta(
-  frameRect: { top: number },
-  targetRect: { top: number },
-  parentRect: { top: number },
-): number {
-  return frameRect.top + targetRect.top - parentRect.top;
-}
