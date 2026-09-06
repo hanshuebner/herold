@@ -302,6 +302,105 @@ jobs:
       - name: run admin e2e tests (chromium)
         run: pnpm --filter @herold/admin test:e2e
 
+  web-e2e-live:
+    name: web-e2e-live (suite SPA Playwright against an ephemeral instance)
+    runs-on: [self-hosted, netzhansa, amd64]
+    # 20 min: the specs themselves finish in ~15s (verified locally), but the
+    # job also builds the server binary, provisions a fresh instance
+    # (bootstrap + herold + vite), and installs Playwright's chromium +
+    # system deps, none of which overlap with the standard 15-minute
+    # web-e2e budget.
+    timeout-minutes: 20
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: pnpm install (workspace)
+        run: pnpm --dir web install --frozen-lockfile
+      # See the web-e2e job above for why apt needs to wait for the
+      # dpkg/apt lock before Playwright's own `install --with-deps` runs.
+      - name: make apt wait for the dpkg lock
+        run: |
+          echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99lock-timeout >/dev/null
+          sudo systemctl mask \
+            unattended-upgrades.service apt-daily.service apt-daily-upgrade.service \
+            apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl stop unattended-upgrades.service 2>/dev/null || true
+          sudo systemctl kill --kill-who=all unattended-upgrades.service 2>/dev/null || true
+          sudo dpkg --configure -a
+          sudo apt-get -f install -y
+      - name: install Playwright browsers (chromium only)
+        run: |
+          for i in 1 2 3; do
+            if pnpm --filter @herold/suite test:e2e:install; then
+              exit 0
+            fi
+            echo ">>> attempt $i of Playwright browser install failed; retrying in 10s..."
+            sleep 10
+          done
+          echo ">>> Playwright browser install failed on all attempts."
+          exit 1
+      # prep-web is a no-op here (the placeholder dist/ is never installed
+      # over a real build in this job), but build-server depends on it via
+      # the Makefile, same as every other job that builds the binary.
+      - name: build server binary
+        run: make build-server
+      # scripts/dev-instance.sh start --detach provisions a fresh tempdir
+      # instance on kernel-picked ports (bootstrap + herold + vite dev
+      # server), seeds the standard principals (admin/alice/filip/bob@
+      # example.local), and blocks until both listeners answer before
+      # returning -- so by the time this step exits the instance is ready
+      # for the harness. --detach disowns the herold/vite processes so
+      # they keep running after this step's shell exits; the teardown step
+      # below stops them by instance id.
+      - name: start ephemeral herold instance
+        run: |
+          set -euo pipefail
+          scripts/dev-instance.sh start --detach > dev-instance.out 2> dev-instance.log
+          cat dev-instance.out
+          grep -q '^SUITE_URL=' dev-instance.out || {
+            echo "instance did not report SUITE_URL; see dev-instance.log" >&2
+            cat dev-instance.log >&2
+            exit 1
+          }
+          {
+            echo "SUITE_URL=$(awk -F= '/^SUITE_URL=/{print $2}' dev-instance.out)"
+            echo "SMTP_ADDR=$(awk -F= '/^SMTP_ADDR=/{print $2}' dev-instance.out)"
+            echo "HEROLD_INSTANCE_ID=$(awk -F= '/^INSTANCE=/{print $2}' dev-instance.out)"
+          } >> "$GITHUB_ENV"
+      # Every spec under tests/e2e-live clears and re-seeds its own mailbox
+      # or contact list through live-helpers.ts before asserting anything,
+      # so the specs are order-independent and share no fixture state.
+      - name: run suite e2e-live Playwright specs
+        run: pnpm --filter @herold/suite exec playwright test --config=playwright.live.config.ts
+      # The HTML report (playwright.live.config.ts enables it under CI) and
+      # the per-test trace/screenshot output in test-results/ are the only
+      # way to diagnose a red run without reproducing it locally.
+      - name: upload Playwright report + traces
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: suite-e2e-live-report
+          path: |
+            web/apps/suite/playwright-report/
+            web/apps/suite/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: tear down ephemeral herold instance
+        if: always()
+        run: |
+          if [ -n "${HEROLD_INSTANCE_ID:-}" ]; then
+            scripts/dev-instance.sh stop "$HEROLD_INSTANCE_ID" || true
+          fi
+
   test:
     name: test (arm64 / ${{ matrix.store }})
     runs-on: [self-hosted, netzhansa, amd64]
@@ -691,6 +790,7 @@ jobs:
       - confidence-x86
       - web
       - web-e2e
+      - web-e2e-live
       - test
       - fuzz-short
       - conformance
