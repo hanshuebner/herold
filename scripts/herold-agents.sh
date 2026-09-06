@@ -57,7 +57,17 @@ DROPS_DIR="${HEROLD_DROPS_DIR:-$HOME/Downloads/herold-bugs}"
 BUG_REPORTER_DIR="${BUG_REPORTER_DIR:-$HOME/Development/privat/bug-reporter}"
 PERM_MODE="${HEROLD_AGENT_PERMISSION_MODE:-bypassPermissions}"
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the script's own path through any symlink chain so the repo root
+# is found relative to the checkout even when invoked via a symlink.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  link="$(readlink "$SELF")"
+  case "$link" in
+    /*) SELF="$link" ;;
+    *)  SELF="$(dirname "$SELF")/$link" ;;
+  esac
+done
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 HEROLD_BIN="$REPO/bin/herold"
 WATCHER="$BUG_REPORTER_DIR/scripts/watch-drops.sh"
 TARGETS=(sink bug-inbox work-tickets)
@@ -337,7 +347,7 @@ case "${1:-}" in
     doctor && echo && echo "  preflight ok" || { echo; die "preflight failed"; }
     ;;
   ""|-h|--help|help)
-    sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's|^# \{0,1\}||'
+    sed -n '2,45p' "$SELF" | sed 's|^# \{0,1\}||'
     ;;
   *)
     die "unknown command '${1}' (want: start stop restart status attach doctor dry-run)"
