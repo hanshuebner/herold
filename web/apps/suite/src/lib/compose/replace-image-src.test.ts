@@ -75,4 +75,30 @@ describe('replaceImageSrc', () => {
     expect(srcs).toContain('blob:test/img-b');
     expect(srcs).not.toContain('blob:test/img-a');
   });
+
+  it('preserves the width/height attrs across a src swap (issue #296)', () => {
+    const v = mountEditor();
+    const imageType = v.state.schema.nodes.image!;
+    const node = imageType.create({
+      src: 'blob:test/full-res',
+      alt: 'scan.jpg',
+      width: 320,
+      height: 240,
+    });
+    v.dispatch(v.state.tr.replaceSelectionWith(node, false));
+
+    replaceImageSrc(v, 'blob:test/full-res', 'blob:test/proxy');
+
+    const img = v.dom.querySelector('img');
+    expect(img?.getAttribute('src')).toBe('blob:test/proxy');
+    expect(img?.getAttribute('width')).toBe('320');
+    expect(img?.getAttribute('height')).toBe('240');
+
+    let sized: { attrs: Record<string, unknown> } | null = null;
+    v.state.doc.descendants((n) => {
+      if (!sized && n.type.name === 'image') sized = n;
+    });
+    expect(sized!.attrs.width).toBe(320);
+    expect(sized!.attrs.height).toBe(240);
+  });
 });

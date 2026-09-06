@@ -191,10 +191,56 @@
   /* REQ-MAIL-24: cap inline image preview at the editor column width.
      The full-resolution bytes still ship in the outbound MIME — this is
      a pure CSS visual cap so a 4032×3024 phone photo does not blow up
-     the compose pane. height:auto preserves aspect ratio. */
+     the compose pane. height:auto preserves aspect ratio. Explicitly
+     sized images (width/height attrs -- issue #296) already carry their
+     capped/resized display size inline via style, so this only guards
+     against an image whose size hasn't been resolved yet. */
   .rich-editor :global(.ProseMirror img) {
     max-width: 100%;
     height: auto;
+  }
+
+  /* Resize handles for inline composer images (issue #296). The image
+     NodeView (editor.ts) wraps the <img> in this span so it can position
+     corner handles that appear only while the node is selected. */
+  .rich-editor :global(.cq-image-view) {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+    max-width: 100%;
+  }
+  .rich-editor :global(.cq-image-view.cq-image-selected) {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  .rich-editor :global(.cq-image-handle) {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    background: var(--focus);
+    border: 1px solid var(--layer-01);
+    border-radius: var(--radius-sm);
+    z-index: 1;
+  }
+  .rich-editor :global(.cq-image-handle-nw) {
+    top: -5px;
+    left: -5px;
+    cursor: nwse-resize;
+  }
+  .rich-editor :global(.cq-image-handle-ne) {
+    top: -5px;
+    right: -5px;
+    cursor: nesw-resize;
+  }
+  .rich-editor :global(.cq-image-handle-sw) {
+    bottom: -5px;
+    left: -5px;
+    cursor: nesw-resize;
+  }
+  .rich-editor :global(.cq-image-handle-se) {
+    bottom: -5px;
+    right: -5px;
+    cursor: nwse-resize;
   }
 
   /* Upload progress overlay for inline images (issue #83).

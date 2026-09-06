@@ -297,6 +297,43 @@ describe('inline image proxy swap does not clobber the attachment record (issue 
     expect(att?.objectURL).toBe(proxySrc);
   });
 
+  it('preserves an explicitly resized width/height across a proxy swap (issue #296)', async () => {
+    stubProxyGeneration({ width: 4000, height: 3000 });
+    const v = mountEditorWithImageRemovedWiring();
+    compose.setSwapInlineImageSrcFn((oldSrc, newSrc) => replaceImageSrc(v, oldSrc, newSrc));
+
+    const file = makeLargeImageFile();
+    const started = compose.startInlineImage(file);
+    expect(started).not.toBeNull();
+    applyImage(v, started!.objectURL, file.name);
+
+    // Simulate the user having already resized the image (issue #296)
+    // before the proxy generation finishes.
+    let pos = -1;
+    v.state.doc.descendants((n, p) => {
+      if (n.type.name === 'image') pos = p;
+    });
+    v.dispatch(
+      v.state.tr.setNodeAttribute(pos, 'width', 250).setNodeAttribute(pos, 'height', 188),
+    );
+
+    await vi.waitFor(() => {
+      const img = v.dom.querySelector('img');
+      expect(img?.getAttribute('src')).not.toBe(started!.objectURL);
+    });
+
+    const img = v.dom.querySelector('img');
+    expect(img?.getAttribute('width')).toBe('250');
+    expect(img?.getAttribute('height')).toBe('188');
+
+    let node: { attrs: Record<string, unknown> } | null = null;
+    v.state.doc.descendants((n) => {
+      if (!node && n.type.name === 'image') node = n;
+    });
+    expect(node!.attrs.width).toBe(250);
+    expect(node!.attrs.height).toBe(188);
+  });
+
   it('a real user deletion (Backspace-equivalent removeImageBySrc) still removes the attachment', async () => {
     // Sanity check that the fix did not disable onImageRemoved entirely --
     // an actual removal of the image node must still drop the attachment.

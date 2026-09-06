@@ -19,7 +19,7 @@ import {
   type Transaction,
   type EditorState as EditorStateType,
 } from 'prosemirror-state';
-import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
+import { Decoration, DecorationSet, EditorView, type NodeView } from 'prosemirror-view';
 import {
   DOMParser as PMDOMParser,
   DOMSerializer,
@@ -43,7 +43,7 @@ import {
   wrapInList,
 } from 'prosemirror-schema-list';
 
-import { composeSchema } from './schema';
+import { composeSchema, type ImageAttrs } from './schema';
 import { settings, type ComposerEnterMode } from '../settings/settings.svelte';
 
 export interface ActiveState {
@@ -426,6 +426,224 @@ export function isQuoteFolded(state: EditorStateType): boolean {
   return quoteFoldPluginKey.getState(state)?.collapsed ?? false;
 }
 
+// ── Inline image resize handles (issue #296) ─────────────────────────────
+//
+// A NodeView for the image node renders the `<img>` inside a wrapper
+// `<span>` and, while the node is selected, four corner resize handles.
+// Dragging a handle scales the image, preserving aspect ratio, and commits
+// the result into the node's `width`/`height` attrs on mouse-up. The same
+// wrapper also caps an oversized image the first time its bytes decode
+// (`img.onload`), so a picked/pasted/dropped photo never starts at its full
+// natural size in the compose body.
+//
+// The outbound HTML is unaffected by any of this: docToHtml() serialises
+// from the schema's `toDOM`, not from the live NodeView DOM, so the
+// wrapper span and handle elements never leak into the message body.
+
+/** Fallback content width (CSS px) used when the editor DOM has no real
+ *  layout yet (e.g. hidden panels, or a test environment with no layout
+ *  engine). Matches the typical compose column width. */
+export const DEFAULT_EDITOR_CONTENT_WIDTH = 560;
+
+/** An image can never be resized smaller than this many CSS pixels wide. */
+export const MIN_IMAGE_DISPLAY_WIDTH = 40;
+
+/**
+ * Usable content width (CSS px) of the editor's editable area, i.e. its
+ * padding box minus left/right padding. Falls back to
+ * `DEFAULT_EDITOR_CONTENT_WIDTH` when the element has no live layout
+ * (`clientWidth` of 0).
+ */
+export function getEditorContentWidth(view: EditorView): number {
+  const dom = view.dom as HTMLElement;
+  const width = dom.clientWidth;
+  if (!width) return DEFAULT_EDITOR_CONTENT_WIDTH;
+  const style = getComputedStyle(dom);
+  const usable = width - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+  return usable > 0 ? usable : DEFAULT_EDITOR_CONTENT_WIDTH;
+}
+
+/**
+ * Scales `natural` down to fit within `maxWidth`, preserving aspect ratio.
+ * Returns `null` when no cap is needed (the image already fits, or the
+ * natural size is degenerate).
+ */
+export function capImageDimensions(
+  natural: { width: number; height: number },
+  maxWidth: number,
+): { width: number; height: number } | null {
+  if (!(natural.width > 0) || !(natural.height > 0)) return null;
+  if (natural.width <= maxWidth) return null;
+  const scale = maxWidth / natural.width;
+  return {
+    width: Math.round(maxWidth),
+    height: Math.max(1, Math.round(natural.height * scale)),
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+const RESIZE_CORNERS: readonly ResizeCorner[] = ['nw', 'ne', 'sw', 'se'];
+
+/**
+ * NodeView for the compose schema's `image` node (issue #296). Renders the
+ * `<img>` plus, when selected, corner resize handles; drags scale the
+ * image and commit `width`/`height` into the node's attrs.
+ */
+class ImageNodeView implements NodeView {
+  dom: HTMLElement;
+  private img: HTMLImageElement;
+  private node: Node;
+  private view: EditorView;
+  private getPos: () => number | undefined;
+  private handles: HTMLElement[] = [];
+  private cappedOnLoad = false;
+  private dragCleanup: (() => void) | null = null;
+
+  constructor(node: Node, view: EditorView, getPos: () => number | undefined) {
+    this.node = node;
+    this.view = view;
+    this.getPos = getPos;
+    this.dom = document.createElement('span');
+    this.dom.className = 'cq-image-view';
+    this.img = document.createElement('img');
+    this.img.addEventListener('load', this.onImgLoad);
+    this.dom.appendChild(this.img);
+    this.syncImgAttrs();
+  }
+
+  private syncImgAttrs(): void {
+    const { src, alt, title, width, height } = this.node.attrs as ImageAttrs;
+    this.img.setAttribute('src', src);
+    if (alt) this.img.setAttribute('alt', alt);
+    else this.img.removeAttribute('alt');
+    if (title) this.img.setAttribute('title', title);
+    else this.img.removeAttribute('title');
+    if (width != null) this.img.setAttribute('width', String(width));
+    else this.img.removeAttribute('width');
+    if (height != null) this.img.setAttribute('height', String(height));
+    else this.img.removeAttribute('height');
+    if (width != null && height != null) {
+      this.img.style.width = `${width}px`;
+      this.img.style.height = `${height}px`;
+    } else {
+      this.img.style.removeProperty('width');
+      this.img.style.removeProperty('height');
+    }
+  }
+
+  private onImgLoad = (): void => {
+    if (this.cappedOnLoad) return;
+    this.cappedOnLoad = true;
+    // Only cap an image that arrived with no explicit size -- one restored
+    // from a saved draft, or already resized, keeps whatever it has.
+    const attrs = this.node.attrs as ImageAttrs;
+    if (attrs.width != null || attrs.height != null) return;
+    const natural = { width: this.img.naturalWidth, height: this.img.naturalHeight };
+    const capped = capImageDimensions(natural, getEditorContentWidth(this.view));
+    if (!capped) return;
+    this.commitSize(capped.width, capped.height);
+  };
+
+  private commitSize(width: number, height: number): void {
+    const pos = this.getPos();
+    if (pos == null) return;
+    const tr = this.view.state.tr
+      .setNodeAttribute(pos, 'width', width)
+      .setNodeAttribute(pos, 'height', height);
+    this.view.dispatch(tr);
+  }
+
+  private renderHandles(): void {
+    this.clearHandles();
+    for (const corner of RESIZE_CORNERS) {
+      const handle = document.createElement('span');
+      handle.className = `cq-image-handle cq-image-handle-${corner}`;
+      handle.setAttribute('data-testid', `image-resize-handle-${corner}`);
+      handle.contentEditable = 'false';
+      handle.addEventListener('mousedown', (e) => this.startDrag(e, corner));
+      this.dom.appendChild(handle);
+      this.handles.push(handle);
+    }
+  }
+
+  private clearHandles(): void {
+    for (const handle of this.handles) handle.remove();
+    this.handles = [];
+  }
+
+  private startDrag(event: MouseEvent, corner: ResizeCorner): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const attrs = this.node.attrs as ImageAttrs;
+    const startWidth = attrs.width ?? this.img.naturalWidth ?? this.img.offsetWidth ?? DEFAULT_EDITOR_CONTENT_WIDTH;
+    const startHeight = attrs.height ?? this.img.naturalHeight ?? this.img.offsetHeight ?? Math.round(startWidth * 0.75);
+    const aspect = startWidth > 0 && startHeight > 0 ? startWidth / startHeight : 1;
+    const maxWidth = getEditorContentWidth(this.view);
+    // Right-side handles (ne/se) grow the image when dragged right;
+    // left-side handles (nw/sw) grow it when dragged left.
+    const sign = corner === 'ne' || corner === 'se' ? 1 : -1;
+    const startX = event.clientX;
+    let pendingWidth = startWidth;
+    let pendingHeight = startHeight;
+
+    const onMove = (moveEvent: MouseEvent): void => {
+      const delta = (moveEvent.clientX - startX) * sign;
+      pendingWidth = clamp(Math.round(startWidth + delta), MIN_IMAGE_DISPLAY_WIDTH, Math.max(maxWidth, MIN_IMAGE_DISPLAY_WIDTH));
+      pendingHeight = Math.max(1, Math.round(pendingWidth / aspect));
+      this.img.style.width = `${pendingWidth}px`;
+      this.img.style.height = `${pendingHeight}px`;
+    };
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      this.dragCleanup = null;
+      this.commitSize(pendingWidth, pendingHeight);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    this.dragCleanup = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }
+
+  selectNode(): void {
+    this.dom.classList.add('cq-image-selected');
+    this.renderHandles();
+  }
+
+  deselectNode(): void {
+    this.dom.classList.remove('cq-image-selected');
+    this.clearHandles();
+  }
+
+  update(node: Node): boolean {
+    if (node.type.name !== 'image') return false;
+    this.node = node;
+    this.syncImgAttrs();
+    return true;
+  }
+
+  stopEvent(event: Event): boolean {
+    return this.handles.includes(event.target as HTMLElement);
+  }
+
+  ignoreMutation(): boolean {
+    return true;
+  }
+
+  destroy(): void {
+    this.img.removeEventListener('load', this.onImgLoad);
+    this.dragCleanup?.();
+    this.clearHandles();
+  }
+}
+
 export function createComposeEditor(
   target: HTMLElement,
   options: {
@@ -479,6 +697,9 @@ export function createComposeEditor(
   });
   const view = new EditorView(target, {
     state,
+    nodeViews: {
+      image: (node, editorView, getPos) => new ImageNodeView(node, editorView, getPos),
+    },
     dispatchTransaction(tr: Transaction) {
       const prev = view.state;
       const next = prev.apply(tr);
