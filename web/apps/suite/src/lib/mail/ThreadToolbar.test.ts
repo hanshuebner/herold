@@ -222,8 +222,8 @@ describe('ThreadToolbar archive action visibility (re #35)', () => {
     // No network call: the thread is already archived (idempotent).
     expect(mailMock.bulkArchive).not.toHaveBeenCalled();
     // Navigation still happens: archive is idempotent but always leaves the thread.
-    // In the test environment history.length === 1, so navigateBackFromThread()
-    // falls back to router.navigate('/mail').
+    // routerMock carries no lastListPath, so navigateBackFromThread() falls
+    // back to router.navigate('/mail').
     expect(routerMock.navigate).toHaveBeenCalledWith('/mail');
   });
 

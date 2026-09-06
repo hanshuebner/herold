@@ -552,7 +552,17 @@
   let confirmedFolderKey = '';
 
   $effect(() => {
-    if (!threadId) return;
+    if (!threadId) {
+      // Leaving the thread reader clears the confirmation. Without this,
+      // returning to the SAME thread later (e.g. the browser Back button
+      // re-reaching an archived thread's reader, re #294) finds the guard
+      // still armed from the original viewing and bounces away instantly,
+      // before the reader ever renders — a page reload's cold-load guard
+      // (FIX B, re #88) only helps on a fresh page; it does not re-apply
+      // to a route re-entered within the same session.
+      confirmedFolderKey = '';
+      return;
+    }
 
     // On a cold load the folder list has never been fetched: listFolder
     // holds its default value ('inbox') with no real context. Only enforce

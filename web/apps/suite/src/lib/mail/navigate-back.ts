@@ -10,12 +10,18 @@
  *     no inbox shell, so navigating to /mail would show the full inbox UI
  *     inside the popup. We never do that.
  *
- *  2. Normal shell with browser history available (history.length > 1):
- *     window.history.back() returns the user to the thread list they came
- *     from, preserving their scroll position.
+ *  2. Normal shell, a prior list route is known (router.lastListPath set):
+ *     push that path via router.navigate(). Pushing (rather than calling
+ *     window.history.back()) leaves the thread's own history entry alone:
+ *     a subsequent browser Back press lands back on the thread's reader
+ *     instead of skipping past it (re #294). window.history.back() reuses
+ *     the existing list entry in place, which moves the current history
+ *     position one slot further back than opening the thread did -- a
+ *     following user-initiated Back then goes past the thread entirely.
  *
- *  3. No history (first page in session, direct link):
- *     fall back to the mail listing for the current folder.
+ *  3. No prior list route recorded (thread opened directly by URL, first
+ *     page in the session): fall back to the mail listing for the current
+ *     folder.
  */
 
 import { router } from '../router/router.svelte';
@@ -27,8 +33,8 @@ export function navigateBackFromThread(): void {
     router.navigate('/thread-window/' + encodeURIComponent(threadId));
     return;
   }
-  if (window.history.length > 1) {
-    window.history.back();
+  if (router.lastListPath) {
+    router.navigate(router.lastListPath);
     return;
   }
   const folder = mail.listFolder;

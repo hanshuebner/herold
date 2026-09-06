@@ -19,6 +19,12 @@ function parse(hash: string): string {
   return '/' + trimmed;
 }
 
+/** True when `path` is a thread-reader route (`/mail/thread/<id>`). */
+function isThreadPath(path: string): boolean {
+  const segs = (path.split('?')[0] ?? path).split('/').filter(Boolean);
+  return segs[0] === 'mail' && segs[1] === 'thread';
+}
+
 /**
  * Extract a query-parameter value from the hash fragment.
  * The hash may contain a `?key=value` portion after the path segments:
@@ -71,15 +77,41 @@ class Router {
   /** Current path (including query string); always starts with '/'. */
   current = $state(parse(window.location.hash));
 
+  /**
+   * The most recent non-thread route visited in this tab, e.g.
+   * `/mail`, `/mail/folder/sent`, `/mail/search?q=...`. `null` until the
+   * first non-thread route is recorded (e.g. a session that opens straight
+   * on a thread URL from a saved link or notification).
+   *
+   * `navigateBackFromThread()` (navigate-back.ts) pushes this path when
+   * leaving a thread rather than calling `window.history.back()`, so the
+   * thread's own history entry is never reused/consumed (re #294): the
+   * thread stays reachable by a subsequent Back press instead of being
+   * skipped over.
+   */
+  lastListPath: string | null = null;
+
   constructor() {
     window.addEventListener('hashchange', () => {
-      this.current = parse(window.location.hash);
+      this.setCurrent(parse(window.location.hash));
     });
 
     // Default route on first load.
     if (this.current === '/') {
       this.replace(DEFAULT_PATH);
     }
+  }
+
+  /**
+   * Update `current`, recording the outgoing path as `lastListPath` when it
+   * was a genuine route (not the pre-redirect empty-hash placeholder '/')
+   * and not itself a thread route.
+   */
+  private setCurrent(next: string): void {
+    if (this.current !== '/' && !isThreadPath(this.current)) {
+      this.lastListPath = this.current;
+    }
+    this.current = next;
   }
 
   /** Path segments (query string stripped), e.g. /mail/thread/abc → ['mail', 'thread', 'abc']. */
@@ -115,7 +147,7 @@ class Router {
   replace(path: string): void {
     if (!path.startsWith('/')) path = '/' + path;
     history.replaceState(null, '', '#' + path);
-    this.current = path;
+    this.setCurrent(path);
   }
 
   /** True when the current path starts with the given prefix segments. */

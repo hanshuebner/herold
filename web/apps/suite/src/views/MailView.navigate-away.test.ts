@@ -14,10 +14,19 @@
  * prevents the bounce that plagued self-sent threads before the mailboxIds
  * union (FIX A).
  *
+ * re #294: leaving the thread route (threadId becomes undefined) resets
+ * confirmedFolderKey. Without the reset, the browser Back button re-reaching
+ * an archived thread's reader found the guard still armed from the original
+ * viewing and bounced away before the reader ever rendered -- Back appeared
+ * to do nothing. The reset re-arms the FIX B cold-load guard on every fresh
+ * entry to a thread route, whether that's a first visit or a Back/Forward
+ * return to one left earlier in the same session.
+ *
  * Because the component tracks `confirmedFolderKey` in a plain (non-reactive)
  * let variable, the transition case cannot be verified by mutating the mock
- * between renders in a unit test. The transition behaviour is verified by
- * the puppeteer integration test. The unit tests here cover:
+ * between renders in a unit test. The transition behaviour (both the
+ * original re #29 bounce and the re #294 reset) is verified by the
+ * puppeteer integration test. The unit tests here cover:
  *   - Initial-render guards that must NOT navigate (FIX B assertions).
  *   - Unchanged guards that correctly skip virtual / search / loading states.
  */

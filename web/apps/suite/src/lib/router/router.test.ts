@@ -64,4 +64,44 @@ describe('router', () => {
     expect(router.parts).toEqual(['help', 'setup', 'install']);
     expect(router.matches('help')).toBe(true);
   });
+
+  // hashchange fires as a separate task in both real browsers and
+  // happy-dom, so router.current only reflects a navigate() call after an
+  // await; replace() updates it synchronously and is used to set up the
+  // "current route before" state deterministically.
+  describe('lastListPath (re #294)', () => {
+    it('records a non-thread route left via replace()', () => {
+      router.replace('/mail/folder/sent');
+      router.replace('/mail/thread/t1');
+      expect(router.lastListPath).toBe('/mail/folder/sent');
+    });
+
+    it('preserves the query string of a search route', () => {
+      router.replace('/mail/search?q=invoice');
+      router.replace('/mail/thread/t1');
+      expect(router.lastListPath).toBe('/mail/search?q=invoice');
+    });
+
+    it('does not overwrite lastListPath when moving from one thread to another', () => {
+      router.replace('/mail/folder/sent');
+      router.replace('/mail/thread/t1');
+      router.replace('/mail/thread/t2');
+      expect(router.lastListPath).toBe('/mail/folder/sent');
+    });
+
+    it('leaving a thread back to a list route does not overwrite lastListPath with the thread path', () => {
+      router.replace('/mail');
+      router.replace('/mail/thread/t1');
+      router.replace('/mail');
+      expect(router.lastListPath).toBe('/mail');
+    });
+
+    it('navigate() eventually records lastListPath once the hashchange fires', async () => {
+      router.replace('/mail/folder/sent');
+      router.navigate('/mail/thread/t1');
+      await new Promise((r) => window.addEventListener('hashchange', r, { once: true }));
+      expect(router.parts).toEqual(['mail', 'thread', 't1']);
+      expect(router.lastListPath).toBe('/mail/folder/sent');
+    });
+  });
 });
