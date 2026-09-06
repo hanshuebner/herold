@@ -353,34 +353,55 @@ jobs:
       # the Makefile, same as every other job that builds the binary.
       - name: build server binary
         run: make build-server
-      # scripts/dev-instance.sh start --detach provisions a fresh tempdir
-      # instance on kernel-picked ports (bootstrap + herold + vite dev
-      # server), seeds the standard principals (admin/alice/filip/bob@
-      # example.local), and blocks until both listeners answer before
-      # returning -- so by the time this step exits the instance is ready
-      # for the harness. --detach disowns the herold/vite processes so
-      # they keep running after this step's shell exits; the teardown step
-      # below stops them by instance id.
-      - name: start ephemeral herold instance
-        run: |
-          set -euo pipefail
-          scripts/dev-instance.sh start --detach > dev-instance.out 2> dev-instance.log
-          cat dev-instance.out
-          grep -q '^SUITE_URL=' dev-instance.out || {
-            echo "instance did not report SUITE_URL; see dev-instance.log" >&2
-            cat dev-instance.log >&2
-            exit 1
-          }
-          {
-            echo "SUITE_URL=$(awk -F= '/^SUITE_URL=/{print $2}' dev-instance.out)"
-            echo "SMTP_ADDR=$(awk -F= '/^SMTP_ADDR=/{print $2}' dev-instance.out)"
-            echo "HEROLD_INSTANCE_ID=$(awk -F= '/^INSTANCE=/{print $2}' dev-instance.out)"
-          } >> "$GITHUB_ENV"
+      # scripts/dev-instance.sh start provisions a fresh tempdir instance on
+      # kernel-picked ports (bootstrap + herold + vite dev server) and seeds
+      # the standard principals (admin/alice/filip/bob@example.local). It is
+      # started here in the background (foreground mode, backgrounded with
+      # `&`) and both the readiness wait, the Playwright run, and the
+      # teardown happen in this SAME step/shell: the runner reaps each
+      # step's whole process group when the step's own shell exits, which
+      # silently killed the --detach-orphaned herold/vite processes between
+      # a separate "start" step and the following "run tests" step (run
+      # #1040: every spec failed in ~250ms with
+      # `net::ERR_CONNECTION_REFUSED` because Vite was already dead by the
+      # time Playwright connected). Keeping start/run/stop in one shell
+      # means the instance's process tree lives exactly as long as this
+      # step does. The `trap ... EXIT` guarantees the instance is torn down
+      # whether the Playwright run passes, fails, or the script exits
+      # early.
+      #
       # Every spec under tests/e2e-live clears and re-seeds its own mailbox
       # or contact list through live-helpers.ts before asserting anything,
       # so the specs are order-independent and share no fixture state.
-      - name: run suite e2e-live Playwright specs
-        run: pnpm --filter @herold/suite exec playwright test --config=playwright.live.config.ts
+      - name: run suite e2e-live Playwright specs against an ephemeral instance
+        run: |
+          set -uo pipefail
+          scripts/dev-instance.sh start > dev-instance.out 2> dev-instance.log &
+          DEV_PID=$!
+          trap 'kill -TERM "$DEV_PID" 2>/dev/null || true; wait "$DEV_PID" 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 60); do
+            if grep -q '^SUITE_URL=' dev-instance.out 2>/dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$DEV_PID" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "instance did not report SUITE_URL within 60s; see dev-instance.log" >&2
+            cat dev-instance.log >&2
+            exit 1
+          fi
+
+          export SUITE_URL=$(awk -F= '/^SUITE_URL=/{print $2}' dev-instance.out)
+          export SMTP_ADDR=$(awk -F= '/^SMTP_ADDR=/{print $2}' dev-instance.out)
+          echo "instance ready: SUITE_URL=$SUITE_URL SMTP_ADDR=$SMTP_ADDR"
+
+          pnpm --filter @herold/suite exec playwright test --config=playwright.live.config.ts
       # The HTML report (playwright.live.config.ts enables it under CI) and
       # the per-test trace/screenshot output in test-results/ are the only
       # way to diagnose a red run without reproducing it locally.
@@ -394,12 +415,6 @@ jobs:
             web/apps/suite/test-results/
           if-no-files-found: warn
           retention-days: 7
-      - name: tear down ephemeral herold instance
-        if: always()
-        run: |
-          if [ -n "${HEROLD_INSTANCE_ID:-}" ]; then
-            scripts/dev-instance.sh stop "$HEROLD_INSTANCE_ID" || true
-          fi
 
   test:
     name: test (arm64 / ${{ matrix.store }})
