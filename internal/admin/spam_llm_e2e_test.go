@@ -297,7 +297,8 @@ metrics_bind = ""
 	var found bool
 	var lastErr string
 	for time.Now().Before(deadline) {
-		mb, err := verifySt.Meta().GetMailboxByName(ctx, pid, "INBOX")
+		// A spam verdict files into Junk by default (REQ-FILT-02).
+		mb, err := verifySt.Meta().GetMailboxByName(ctx, pid, "Junk")
 		if err != nil {
 			lastErr = fmt.Sprintf("GetMailboxByName: %v", err)
 			time.Sleep(50 * time.Millisecond)
