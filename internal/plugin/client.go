@@ -212,11 +212,23 @@ func (c *Client) deliverResponse(resp *Response) {
 // Call issues a request and waits for the matching response. The ctx deadline
 // is enforced; on timeout the pending slot is freed and ErrCodeTimeout is
 // returned.
+//
+// The semaphore is read once, under c.mu, into a local variable that both
+// Acquire and the deferred Release use. SetMaxConcurrent (called once the
+// supervisor learns the plugin's declared limit from its manifest) swaps
+// c.sem for a differently-sized instance; a caller in flight at that
+// moment must still Release the exact instance it Acquired; reading
+// c.sem twice (once for Acquire, once implicitly by the deferred call)
+// would let the swap land in between and release a permit on an
+// instance that never granted it, panicking the semaphore.
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
-	if err := c.sem.Acquire(ctx, 1); err != nil {
+	c.mu.Lock()
+	sem := c.sem
+	c.mu.Unlock()
+	if err := sem.Acquire(ctx, 1); err != nil {
 		return err
 	}
-	defer c.sem.Release(1)
+	defer sem.Release(1)
 
 	id := c.nextID()
 	idJSON, _ := json.Marshal(id)
