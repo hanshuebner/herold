@@ -20,13 +20,16 @@ import (
 // enum small — detailed fields live in Classification.RawResponse.
 type Verdict int
 
-// Verdict values. Ham / Spam are the two classifier outcomes; Unclassified
-// covers plugin timeouts, crashes, and unparseable responses. The delivery
-// path treats Unclassified as "not spam" by default (REQ-FILT-40).
+// Verdict values (REQ-FILT-01). Ham / Suspect / Spam are the three
+// classifier outcomes; Unclassified covers plugin timeouts, crashes, and
+// unparseable responses. The delivery path treats Unclassified as "not
+// spam" by default (REQ-FILT-40). Suspect is appended after Spam, not
+// inserted, so the numeric value of the pre-existing constants is stable.
 const (
 	Unclassified Verdict = iota
 	Ham
 	Spam
+	Suspect
 )
 
 // String returns the canonical lower-case token used in logs and the
@@ -37,6 +40,8 @@ func (v Verdict) String() string {
 		return "ham"
 	case Spam:
 		return "spam"
+	case Suspect:
+		return "suspect"
 	default:
 		return "unclassified"
 	}
@@ -49,6 +54,8 @@ func parseVerdict(s string) Verdict {
 		return Ham
 	case "spam", "junk":
 		return Spam
+	case "suspect", "likely_spam", "likely-spam":
+		return Suspect
 	default:
 		return Unclassified
 	}

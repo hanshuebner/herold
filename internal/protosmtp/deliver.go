@@ -463,8 +463,11 @@ func (sess *session) deliverOne(
 	if tagHit {
 		outcome = tagEffect.applyTaggedFilterPreSieve(outcome)
 	}
-	// Decide target mailboxes and redirect addresses.
-	targets, redirectAddrs, discarded, rejected, rejectReason := resolveSieveTargets(outcome)
+	// Decide target mailboxes and redirect addresses. REQ-FILT-02: the
+	// classifier's verdict picks the default target when Sieve produced
+	// no explicit keep/fileinto (ImplicitKeep); implicitKeywords carries
+	// the "$Junk" keyword for a suspect verdict staying in INBOX.
+	targets, redirectAddrs, discarded, rejected, rejectReason, implicitKeywords := resolveSieveTargets(outcome, classification.Verdict)
 
 	// REQ-TAG-22: a Sieve `discard` still wins. If Sieve discards AND
 	// produced no fileinto, the tag-filter's filing is dropped along
@@ -642,6 +645,17 @@ func (sess *session) deliverOne(
 		// (REQ-FILT-230); a failure here returns "" and we proceed.
 		var msgKeywords []string
 		var catResult categorise.CategorisationResult
+		if strings.EqualFold(mb.Name, "INBOX") {
+			// REQ-FILT-02: the "$Junk" keyword the classifier's suspect
+			// verdict earned when it picked the default INBOX target
+			// (resolveSieveTargets). Applied only to the INBOX target;
+			// an explicit Sieve fileinto elsewhere never carries it.
+			msgKeywords = append(msgKeywords, implicitKeywords...)
+		}
+		// REQ-FILT-200: only categorise messages destined for the
+		// inbox, after Sieve fileinto + spam classification. Spam
+		// suppresses the call. Categorisation NEVER blocks delivery
+		// (REQ-FILT-230); a failure here returns "" and we proceed.
 		if sess.srv.categorise != nil &&
 			classification.Verdict != spam.Spam &&
 			strings.EqualFold(mb.Name, "INBOX") {
@@ -1026,9 +1040,26 @@ func (sess *session) runSieve(
 // rejected + reason map the Sieve reject action to the operator-visible
 // log. redirects contains one entry per ActionRedirect in the outcome;
 // each is queued by the caller via queueSieveRedirect (re #63).
-func resolveSieveTargets(out sieve.Outcome) (targets []string, redirects []string, discarded, rejected bool, reason string) {
+//
+// REQ-FILT-02 / REQ-FILT-102: when the outcome carries no explicit
+// keep/fileinto/discard/reject/redirect action (ImplicitKeep), the
+// default target is picked from the classifier's verdict instead of
+// unconditionally defaulting to INBOX: spam files into the Junk
+// mailbox, suspect stays in INBOX and gets an extra "$Junk" keyword
+// (returned via implicitKeywords), ham/unclassified is INBOX as
+// before. An explicit Sieve keep or fileinto (ImplicitKeep == false)
+// always wins and is unaffected by verdict.
+func resolveSieveTargets(out sieve.Outcome, verdict spam.Verdict) (targets []string, redirects []string, discarded, rejected bool, reason string, implicitKeywords []string) {
 	if out.ImplicitKeep {
-		targets = append(targets, "INBOX")
+		switch verdict {
+		case spam.Spam:
+			targets = append(targets, "Junk")
+		case spam.Suspect:
+			targets = append(targets, "INBOX")
+			implicitKeywords = append(implicitKeywords, "$Junk")
+		default:
+			targets = append(targets, "INBOX")
+		}
 	}
 	for _, a := range out.Actions {
 		switch a.Kind {
@@ -1051,7 +1082,7 @@ func resolveSieveTargets(out sieve.Outcome) (targets []string, redirects []strin
 			}
 		}
 	}
-	return targets, redirects, discarded, rejected, reason
+	return targets, redirects, discarded, rejected, reason, implicitKeywords
 }
 
 // sieveFlagsFromOutcome maps Sieve setflag / addflag actions onto the
