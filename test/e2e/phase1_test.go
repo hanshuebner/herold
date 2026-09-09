@@ -161,9 +161,10 @@ func TestPhase1_LLMClassifier_HeaderStamped(t *testing.T) {
 			"body\r\n"
 		f.SendMessage(t, "bob@sender.test", []string{f.Email}, body, true)
 
-		msgs := fixtures.LoadMessagesIn(t, f, f.Principal, "INBOX")
+		// A spam verdict files into Junk by default (REQ-FILT-02).
+		msgs := fixtures.LoadMessagesIn(t, f, f.Principal, "Junk")
 		if len(msgs) != 1 {
-			t.Fatalf("expected 1 msg in INBOX, got %d", len(msgs))
+			t.Fatalf("expected 1 msg in Junk, got %d", len(msgs))
 		}
 		raw := msgs[0].Bytes
 		arIdx := bytes.Index(raw, []byte("Authentication-Results:"))
