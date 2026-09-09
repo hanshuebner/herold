@@ -6,6 +6,42 @@
 // The plugin is deliberately stateless beyond its configured options and
 // the shared *http.Client. It never retries on its own: the server owns
 // retry and circuit-breaker policy (REQ-FILT-41, REQ-FILT-52).
+//
+// # Options (system.toml [[plugin]] block, all under `options.`)
+//
+//   - endpoint (string, default "http://localhost:11434/v1"): base URL of
+//     the OpenAI-compatible server. {endpoint}/chat/completions and
+//     {endpoint}/models are used.
+//   - model (string, default "llama3.2"): chat-completions model name.
+//   - api_key (string, secret): the bearer token sent as
+//     "Authorization: Bearer <api_key>". Must be a "$VAR" or "file:/path"
+//     reference in system.toml (STANDARDS section 9); the server resolves
+//     the reference and forwards the secret's value directly.
+//   - api_key_env (string, secret, deprecated): kept for compatibility.
+//     Because its key also matches the secret-key heuristic, its value
+//     must likewise be a "$VAR"/"file:/path" reference and arrives here
+//     already resolved to the secret. That resolved value is used as-is
+//     only when it happens to look like an environment variable name
+//     (legacy direct-invocation form); otherwise configuration fails with
+//     a message pointing at api_key, which is the correct option for a
+//     resolved secret.
+//   - timeout_sec (integer, default 5, range 1..300): per-request LLM
+//     call deadline.
+//   - spam_threshold (number, default 0.7, range 0..1): score at/above
+//     which the verdict is "spam".
+//   - system_prompt_override (string): replaces the built-in classifier
+//     system prompt.
+//   - max_body_chars (integer, default 4000, range 1..1000000): body
+//     excerpt cap sent to the model.
+//   - log_samples (boolean, default false): log request/response byte
+//     counts at debug level (never message content).
+//
+// Every option value arrives from the server as a string (system.toml
+// [[plugin]] options are string-valued; internal/admin's
+// resolvePluginOptions forwards them verbatim after expanding any
+// "$VAR"/"file:" secret reference). Numeric and boolean options also
+// accept their native JSON types so direct JSON-RPC callers (tests, other
+// SDKs) are not forced through string encoding.
 package main
 
 import (
@@ -19,6 +55,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +91,7 @@ Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.`
 var knownOptions = map[string]struct{}{
 	"endpoint":               {},
 	"model":                  {},
+	"api_key":                {},
 	"api_key_env":            {},
 	"timeout_sec":            {},
 	"spam_threshold":         {},
@@ -61,6 +99,12 @@ var knownOptions = map[string]struct{}{
 	"max_body_chars":         {},
 	"log_samples":            {},
 }
+
+// envVarNameRE matches a POSIX-ish environment variable identifier:
+// letters, digits, underscore, not starting with a digit. Used to tell
+// a legacy api_key_env=NAME_OF_VAR value apart from a resolved secret
+// (which almost never happens to look like an identifier).
+var envVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // options holds the validated configuration. It is populated in
 // OnConfigure and read without locking afterwards — Configure runs
@@ -153,6 +197,19 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		cfg.model = s
 	}
+	haveAPIKey := false
+	if v, ok := opts["api_key"]; ok {
+		s, err := asString(v, "api_key")
+		if err != nil {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return errors.New("api_key must be non-empty")
+		}
+		cfg.apiKey = s
+		haveAPIKey = true
+	}
 	if v, ok := opts["api_key_env"]; ok {
 		s, err := asString(v, "api_key_env")
 		if err != nil {
@@ -160,6 +217,21 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		cfg.apiKeyEnv = strings.TrimSpace(s)
 		if cfg.apiKeyEnv != "" {
+			if haveAPIKey {
+				return errors.New("api_key_env and api_key are mutually exclusive; use api_key")
+			}
+			// The key api_key_env matches sysconfig's secret-key
+			// heuristic, so system.toml forces its value to be a
+			// "$VAR"/"file:" reference and the server resolves it to
+			// the secret's value before we see it here — not the name
+			// of an environment variable. Only when the resolved value
+			// itself happens to look like an identifier do we honor
+			// the legacy "look this env var up" behaviour; otherwise
+			// the operator should use api_key, which carries the
+			// resolved secret directly.
+			if !envVarNameRE.MatchString(cfg.apiKeyEnv) {
+				return fmt.Errorf("api_key_env value %q is not a valid environment variable name; use the api_key option to pass a resolved secret directly", cfg.apiKeyEnv)
+			}
 			key := os.Getenv(cfg.apiKeyEnv)
 			if key == "" {
 				return fmt.Errorf("api_key_env=%s is set but environment variable is empty", cfg.apiKeyEnv)
@@ -538,8 +610,9 @@ func withBoundedDeadline(parent context.Context, timeout time.Duration) (context
 	return context.WithDeadline(parent, deadline)
 }
 
-// asString coerces a JSON-decoded value to string. JSON numbers are
-// rejected so typos like timeout_sec="5" still validate cleanly elsewhere.
+// asString coerces a JSON-decoded value to string. Every documented
+// option is string-typed already, so this only rejects a caller that
+// hands us a number or object by mistake.
 func asString(v any, name string) (string, error) {
 	s, ok := v.(string)
 	if !ok {
@@ -548,16 +621,29 @@ func asString(v any, name string) (string, error) {
 	return s, nil
 }
 
+// asBool accepts a native JSON bool (direct JSON-RPC callers) or the
+// string forms "true"/"false" (system.toml [[plugin]] options, which the
+// server always forwards as strings; strconv.ParseBool also accepts
+// "1"/"0"/"t"/"f" for operator convenience).
 func asBool(v any, name string) (bool, error) {
-	b, ok := v.(bool)
-	if !ok {
+	switch t := v.(type) {
+	case bool:
+		return t, nil
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(t))
+		if err != nil {
+			return false, fmt.Errorf("%s must be a boolean, got %q", name, t)
+		}
+		return b, nil
+	default:
 		return false, fmt.Errorf("%s must be a boolean, got %T", name, v)
 	}
-	return b, nil
 }
 
-// asInt accepts either a json.Number-ish float (the default decoding of
-// integer literals through map[string]any) or an explicit int.
+// asInt accepts a json.Number-ish float (the default decoding of integer
+// literals through map[string]any), an explicit int/int64, or a decimal
+// string (system.toml [[plugin]] options arrive this way — every value
+// resolvePluginOptions forwards is a Go string).
 func asInt(v any, name string) (int, error) {
 	switch t := v.(type) {
 	case float64:
@@ -569,11 +655,19 @@ func asInt(v any, name string) (int, error) {
 		return t, nil
 	case int64:
 		return int(t), nil
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("%s must be an integer, got %q", name, t)
+		}
+		return n, nil
 	default:
 		return 0, fmt.Errorf("%s must be an integer, got %T", name, v)
 	}
 }
 
+// asFloat accepts a native JSON number, an explicit int/int64, or a
+// decimal string — see asInt for why the string form matters.
 func asFloat(v any, name string) (float64, error) {
 	switch t := v.(type) {
 	case float64:
@@ -582,6 +676,12 @@ func asFloat(v any, name string) (float64, error) {
 		return float64(t), nil
 	case int64:
 		return float64(t), nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be a number, got %q", name, t)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("%s must be a number, got %T", name, v)
 	}
@@ -600,7 +700,8 @@ func main() {
 		OptionsSchema: map[string]plug.OptionSchema{
 			"endpoint":               {Type: "string", Default: defaultEndpoint},
 			"model":                  {Type: "string", Default: defaultModel},
-			"api_key_env":            {Type: "string"},
+			"api_key":                {Type: "string", Secret: true},
+			"api_key_env":            {Type: "string", Secret: true},
 			"timeout_sec":            {Type: "integer", Default: defaultTimeoutSec},
 			"spam_threshold":         {Type: "number", Default: defaultThreshold},
 			"system_prompt_override": {Type: "string"},

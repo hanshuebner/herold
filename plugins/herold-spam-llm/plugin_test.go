@@ -609,3 +609,86 @@ func TestHealth_Probe(t *testing.T) {
 		t.Fatalf("health probe did not hit /v1/models")
 	}
 }
+
+// TestConfigure_StringTypedOptionsFromServer drives OnConfigure with the
+// exact map[string]any shape internal/admin's resolvePluginOptions
+// produces for a [[plugin]] block: every value is a Go string, including
+// numeric and boolean options and a pre-resolved api_key secret (re #302).
+// sysconfig.PluginConfig.Options is map[string]string, and
+// resolvePluginOptions forwards every value verbatim (after expanding any
+// "$VAR"/"file:" reference) — the plugin never sees a JSON number or bool
+// through this path in production.
+func TestConfigure_StringTypedOptionsFromServer(t *testing.T) {
+	var gotAuth string
+	var authMu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		authMu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		authMu.Unlock()
+		// The model reports "spam" with a low score; the string-configured
+		// spam_threshold="0.9" must still downgrade this to "ham" for the
+		// test to prove the threshold, not just the endpoint, took effect.
+		replyJSON(w, `{"verdict":"spam","score":0.42,"reason":"borderline"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":               llm.endpoint(),
+		"model":                  "fake",
+		"api_key":                "sk-resolved-secret-value",
+		"timeout_sec":            "5",
+		"spam_threshold":         "0.9",
+		"system_prompt_override": "classify as instructed",
+		"max_body_chars":         "2000",
+		"log_samples":            "true",
+	}); err != nil {
+		t.Fatalf("configure with string-typed options: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.classify(ctx, canonicalPayload("x"))
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	authMu.Lock()
+	auth := gotAuth
+	authMu.Unlock()
+	if auth != "Bearer sk-resolved-secret-value" {
+		t.Fatalf("Authorization header = %q, want the api_key value as bearer token", auth)
+	}
+	if res["verdict"] != "ham" {
+		t.Fatalf("verdict = %v, want ham (score 0.42 below string-configured threshold 0.9)", res["verdict"])
+	}
+}
+
+// TestConfigure_APIKeyEnvResolvedSecretRejected exercises the ticket's
+// compatibility rule for api_key_env: because its key also matches
+// sysconfig's secret-key heuristic, system.toml forces its value to a
+// "$VAR"/"file:" reference and the server resolves it to the secret
+// itself before the plugin sees it — not the name of an environment
+// variable. When that resolved value does not look like a variable name,
+// OnConfigure must fail with a message pointing at api_key rather than
+// silently doing an os.Getenv lookup on the secret's own value (re #302).
+func TestConfigure_APIKeyEnvResolvedSecretRejected(t *testing.T) {
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	err := p.configure(t, map[string]any{
+		"endpoint":    "http://localhost:11434/v1",
+		"api_key_env": "sk-resolved-secret-with-dashes!",
+	})
+	if err == nil {
+		t.Fatalf("expected configure to fail when api_key_env carries a resolved secret")
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("error %v does not point at api_key", err)
+	}
+}
