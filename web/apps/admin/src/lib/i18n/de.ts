@@ -136,6 +136,12 @@ export const de = {
   'dashboard.error.clientlogStatsNetwork': 'Netzwerkfehler beim Laden der Client-Log-Statistik',
   'dashboard.error.pushStatus': 'Push-Status konnte nicht geladen werden',
   'dashboard.error.pushStatusNetwork': 'Netzwerkfehler beim Laden des Push-Status',
+  'dashboard.spam.title': 'Spam-Filterung',
+  'dashboard.spam.enabled': 'Aktiviert',
+  'dashboard.spam.off': 'Aus',
+  'dashboard.spam.plugin': 'Plugin',
+  'dashboard.error.spamStatus': 'Spam-Filterstatus konnte nicht geladen werden',
+  'dashboard.error.spamStatusNetwork': 'Netzwerkfehler beim Laden des Spam-Filterstatus',
 
   // ── Principals ────────────────────────────────────────────────────────
   'principals.title': 'Principals',

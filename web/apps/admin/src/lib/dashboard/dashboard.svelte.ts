@@ -7,6 +7,7 @@
  *   GET /api/v1/domains                 -> {items:[...], next} local domain list
  *   GET /api/v1/admin/clientlog/stats   -> client-log counters (REQ-ADM-233)
  *   GET /api/v1/server/status           -> push transport configured status (re #200)
+ *   GET /api/v1/spam/status             -> spam classification status (Wave 4.1, re #301)
  *
  * The queue-stats, audit and domains endpoints each wrap their payload in
  * an envelope object (see handleQueueStats/handleAuditLog/handleListDomains
@@ -34,6 +35,16 @@ export interface PushStatus {
 
 interface ServerStatusResponse {
   push?: PushStatus;
+}
+
+// Spam classification status (Wave 4.1, re #301). Enabled is true only
+// when a spam plugin is both configured in system.toml and loaded
+// (healthy) in the supervisor; Reason explains why it is off otherwise
+// (internal/protoadmin/spam.go handleGetSpamStatus).
+export interface SpamStatus {
+  enabled: boolean;
+  plugin: string;
+  reason?: string;
 }
 
 export interface QueueStats {
@@ -80,6 +91,9 @@ class DashboardState {
   pushStatus = $state<PushStatus | null>(null);
   pushStatusError = $state<string | null>(null);
 
+  spamStatus = $state<SpamStatus | null>(null);
+  spamStatusError = $state<string | null>(null);
+
   /** Total active queue items for the summary card. */
   queueTotal = $derived(
     (this.queueStats?.queued ?? 0) +
@@ -90,14 +104,21 @@ class DashboardState {
   async load(): Promise<void> {
     this.status = 'loading';
 
-    const [queueResult, auditResult, domainsResult, clientlogResult, serverStatusResult] =
-      await Promise.allSettled([
-        apiGet<{ counts: QueueStats } | QueueStats>('/api/v1/queue/stats'),
-        apiGet<{ items: AuditEntry[]; next: string | null } | AuditEntry[]>('/api/v1/audit?limit=10'),
-        apiGet<{ items: Domain[]; next: string | null } | Domain[]>('/api/v1/domains'),
-        apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
-        apiGet<ServerStatusResponse>('/api/v1/server/status'),
-      ]);
+    const [
+      queueResult,
+      auditResult,
+      domainsResult,
+      clientlogResult,
+      serverStatusResult,
+      spamStatusResult,
+    ] = await Promise.allSettled([
+      apiGet<{ counts: QueueStats } | QueueStats>('/api/v1/queue/stats'),
+      apiGet<{ items: AuditEntry[]; next: string | null } | AuditEntry[]>('/api/v1/audit?limit=10'),
+      apiGet<{ items: Domain[]; next: string | null } | Domain[]>('/api/v1/domains'),
+      apiGet<ClientlogStats>('/api/v1/admin/clientlog/stats'),
+      apiGet<ServerStatusResponse>('/api/v1/server/status'),
+      apiGet<SpamStatus>('/api/v1/spam/status'),
+    ]);
 
     // Queue stats -- API returns {counts:{...}} (handleQueueStats in
     // internal/protoadmin/queue.go), not the bare per-state map.
@@ -172,6 +193,22 @@ class DashboardState {
         serverStatusResult.status === 'fulfilled'
           ? (serverStatusResult.value.errorMessage ?? t('dashboard.error.pushStatus'))
           : t('dashboard.error.pushStatusNetwork');
+    }
+
+    // Spam classification status (Wave 4.1, re #301)
+    if (
+      spamStatusResult.status === 'fulfilled' &&
+      spamStatusResult.value.ok &&
+      spamStatusResult.value.data
+    ) {
+      this.spamStatus = spamStatusResult.value.data;
+      this.spamStatusError = null;
+    } else {
+      this.spamStatus = null;
+      this.spamStatusError =
+        spamStatusResult.status === 'fulfilled'
+          ? (spamStatusResult.value.errorMessage ?? t('dashboard.error.spamStatus'))
+          : t('dashboard.error.spamStatusNetwork');
     }
 
     this.status = 'ready';

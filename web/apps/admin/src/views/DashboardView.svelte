@@ -226,6 +226,37 @@
         <p class="empty">{t('dashboard.push.notConfigured')}</p>
       {/if}
     </div>
+
+    <!-- Spam filtering status card (Wave 4.1, re #301) -->
+    <div class="card" class:card-warning={dashboard.spamStatus?.enabled === false}>
+      <div class="card-header">
+        <h2 class="card-title">{t('dashboard.spam.title')}</h2>
+      </div>
+
+      {#if dashboard.spamStatusError}
+        <p class="inline-error">{dashboard.spamStatusError}</p>
+      {:else if dashboard.spamStatus}
+        <p
+          class="spam-status"
+          class:spam-status-ok={dashboard.spamStatus.enabled}
+          class:spam-status-off={!dashboard.spamStatus.enabled}
+        >
+          {dashboard.spamStatus.enabled ? t('dashboard.spam.enabled') : t('dashboard.spam.off')}
+        </p>
+        {#if dashboard.spamStatus.enabled}
+          <dl class="stat-list">
+            <div class="stat-row">
+              <dt class="stat-key">{t('dashboard.spam.plugin')}</dt>
+              <dd class="stat-val">{dashboard.spamStatus.plugin}</dd>
+            </div>
+          </dl>
+        {:else if dashboard.spamStatus.reason}
+          <p class="spam-reason">{dashboard.spamStatus.reason}</p>
+        {/if}
+      {:else if dashboard.status === 'ready'}
+        <p class="empty">{t('dashboard.spam.off')}</p>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -431,6 +462,27 @@
   .push-hint {
     font-size: var(--type-body-compact-01-size);
     color: var(--text-helper);
+    margin: var(--spacing-03) 0 0;
+  }
+
+  /* Spam filtering status card (Wave 4.1, re #301) */
+  .card-warning {
+    border-color: var(--support-warning);
+  }
+  .spam-status {
+    font-size: var(--type-heading-02-size);
+    font-weight: 600;
+    margin: 0;
+  }
+  .spam-status-ok {
+    color: var(--support-success);
+  }
+  .spam-status-off {
+    color: var(--support-warning);
+  }
+  .spam-reason {
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-secondary);
     margin: var(--spacing-03) 0 0;
   }
 

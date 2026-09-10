@@ -138,6 +138,12 @@ export const en = {
   'dashboard.error.clientlogStatsNetwork': 'Network error loading client-log stats',
   'dashboard.error.pushStatus': 'Failed to load push status',
   'dashboard.error.pushStatusNetwork': 'Network error loading push status',
+  'dashboard.spam.title': 'Spam filtering',
+  'dashboard.spam.enabled': 'Enabled',
+  'dashboard.spam.off': 'Off',
+  'dashboard.spam.plugin': 'Plugin',
+  'dashboard.error.spamStatus': 'Failed to load spam filtering status',
+  'dashboard.error.spamStatusNetwork': 'Network error loading spam filtering status',
 
   // ── Principals ────────────────────────────────────────────────────────
   'principals.title': 'Principals',
