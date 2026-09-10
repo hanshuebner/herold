@@ -28,9 +28,11 @@
   import ImageProcessingForm from './settings/ImageProcessingForm.svelte';
   import DiagnosticsForm from './settings/DiagnosticsForm.svelte';
   import SharedFilesForm from './settings/SharedFilesForm.svelte';
+  import AccountsSection from './settings/AccountsSection.svelte';
   import { Capability } from '../lib/jmap/types';
   import { jmap } from '../lib/jmap/client';
   import { hasFileShares } from '../lib/jmap/file-shares';
+  import { hasSubAccounts } from '../lib/auth/capabilities';
   import { LOCALES, type Locale } from '../lib/i18n/i18n.svelte';
   import { t } from '../lib/i18n/i18n.svelte';
   import { llmTransparency } from '../lib/llm/transparency.svelte';
@@ -79,6 +81,7 @@
   // Notifications, API keys, Privacy, Shared files, Diagnostics, About.
   type Section =
     | 'account'
+    | 'accounts'
     | 'security'
     | 'sessions'
     | 'appearance'
@@ -99,15 +102,21 @@
   let hasLLMTransparency = $derived(jmap.hasCapability(Capability.HeroldLLMTransparency));
   let hasPush = $derived(jmap.hasCapability(Capability.HeroldPush));
   let hasSharedFiles = $derived(hasFileShares());
+  // REQ-MAIL-SUB-01/09: the Accounts section (separated identities) is a
+  // distinct section from the From-address Identity list above.
+  let hasAccountsCap = $derived(hasSubAccounts());
 
   let SECTIONS = $derived.by<{ id: Section; label: string }[]>(() => {
     const result: { id: Section; label: string }[] = [
       { id: 'account', label: t('settings.account') },
+    ];
+    if (hasAccountsCap) result.push({ id: 'accounts', label: t('settings.accounts.heading') });
+    result.push(
       { id: 'security', label: t('settings.security') },
       { id: 'sessions', label: t('settings.credentials') },
       { id: 'appearance', label: t('settings.appearance') },
       { id: 'mail', label: t('settings.mail') },
-    ];
+    );
     if (hasCategorise) result.push({ id: 'categories', label: t('settings.categories.heading') });
     if (hasManagedRules) result.push({ id: 'filters', label: t('settings.filters.heading') });
     if (hasTaggedAddresses)
@@ -403,6 +412,10 @@
           onclose={closeVerifyDialog}
         />
       {/if}
+
+    {:else if activeSection === 'accounts'}
+      <h2>{t('settings.accounts.heading')}</h2>
+      <AccountsSection />
 
     {:else if activeSection === 'security'}
       <h2>{t('settings.security')}</h2>

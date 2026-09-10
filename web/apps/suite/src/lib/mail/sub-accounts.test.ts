@@ -180,3 +180,62 @@ describe('subAccounts EventSource handling', () => {
     expect(subAccounts.list[0]?.unreadThreads).toBe(5);
   });
 });
+
+describe('subAccounts.removeSeparation', () => {
+  beforeEach(() => {
+    vi.mocked(jmap.batch).mockReset();
+    hasCapability.mockReturnValue(true);
+    subAccounts.reset();
+    mockSession = {
+      capabilities: {},
+      primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct-primary' },
+      accounts: {
+        'acct-primary': { name: 'alice@example.com', isPersonal: true, isReadOnly: false, accountCapabilities: {} },
+      },
+    };
+  });
+
+  it('addresses Identity/set via the sub-account\'s own accountId and refreshes on success', async () => {
+    let sentArgs: unknown = null;
+    vi.mocked(jmap.batch).mockImplementationOnce(async (fn) => {
+      fn({
+        call: (name: string, args: unknown) => {
+          sentArgs = args;
+          return { ref: () => ({}) };
+        },
+      } as never);
+      return {
+        responses: [['Identity/set', { updated: { '99': { subAccountId: null } } }, 'c0']],
+        sessionState: 's1',
+      };
+    });
+    // refresh() call inside removeSeparation, with no more sub-accounts left.
+    vi.mocked(jmap.batch).mockImplementationOnce(async () => ({
+      responses: [],
+      sessionState: 's2',
+    }));
+
+    await subAccounts.removeSeparation('acct-sub-1', '99', true);
+
+    expect(sentArgs).toEqual({
+      accountId: 'acct-sub-1',
+      update: { '99': { separated: false, keepMail: true } },
+    });
+    expect(subAccounts.list).toHaveLength(0);
+  });
+
+  it('throws on notUpdated without refreshing', async () => {
+    vi.mocked(jmap.batch).mockImplementationOnce(async (fn) => {
+      fn({ call: () => ({ ref: () => ({}) }) } as never);
+      return {
+        responses: [
+          ['Identity/set', { notUpdated: { '99': { type: 'forbidden', description: 'nope' } } }, 'c0'],
+        ],
+        sessionState: 's1',
+      };
+    });
+
+    await expect(subAccounts.removeSeparation('acct-sub-1', '99', true)).rejects.toThrow('nope');
+    expect(jmap.batch).toHaveBeenCalledTimes(1);
+  });
+});

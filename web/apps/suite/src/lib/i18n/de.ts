@@ -919,6 +919,7 @@ export const de = {
   'settings.categories.heading': 'Kategorien',
   'settings.filters.heading': 'Filter',
   'settings.sharedFiles.heading': 'Geteilte Dateien',
+  'settings.accounts.heading': 'Konten',
 
   // ── Einstellungen: Konto-Bereich (re #97) ────────────────────────────
   'settings.account.signedInAs': 'Angemeldet als',
@@ -2034,6 +2035,36 @@ export const de = {
   'settings.identityEdit.separateCancel': 'Abbrechen',
   'settings.identityEdit.separated': '{email} in ein eigenes Konto getrennt',
   'settings.identityEdit.separateFailed': 'Identität konnte nicht getrennt werden',
+
+  // Bereich "Konten" in den Einstellungen (Issue #212, REQ-MAIL-SUB-01)
+  'settings.accounts.hint':
+    'Identitäten, die Sie in ein eigenes Konto getrennt haben. Wechseln ' +
+    'Sie über das Konto-Menü dorthin; eine Identität trennen Sie über ' +
+    'ihre Bearbeitungsseite in der Konto-Liste oben.',
+  'settings.accounts.empty': 'Noch keine getrennten Konten.',
+  'settings.accounts.stateMigrating': 'E-Mails werden verschoben...',
+  'settings.accounts.stateSeparated': 'Getrennt',
+  'settings.accounts.progress': '{moved} von {total} Nachrichten verschoben',
+  'settings.accounts.lastSync': 'Letzte Synchronisierung',
+  'settings.accounts.lastSyncNever': 'Nie',
+  'settings.accounts.pause': 'Pausieren',
+  'settings.accounts.resume': 'Fortsetzen',
+  'settings.accounts.remove': 'Entfernen',
+  'settings.accounts.removeTitle': '{name} als getrenntes Konto entfernen?',
+  'settings.accounts.removeMessage':
+    'Dies beendet die Trennung; die Identität kehrt in die ' +
+    'Absenderadressen-Liste zurück. Im nächsten Schritt wählen Sie, ob ' +
+    'ihre E-Mails mitkommen.',
+  'settings.accounts.removeConfirmKeep': 'Weiter',
+  'settings.accounts.purgeTitle': 'Was soll mit den E-Mails geschehen?',
+  'settings.accounts.purgeMessage':
+    '"Behalten" verschiebt die E-Mails zurück in Ihr primäres Konto. ' +
+    '"Löschen" entfernt sie endgültig; dies kann nicht rückgängig ' +
+    'gemacht werden.',
+  'settings.accounts.purgeConfirm': 'E-Mails löschen',
+  'settings.accounts.purgeCancel': 'E-Mails behalten',
+  'settings.accounts.removed': '{name} ist kein getrenntes Konto mehr',
+  'settings.accounts.actionFailed': 'Konto konnte nicht aktualisiert werden',
 
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.hint':

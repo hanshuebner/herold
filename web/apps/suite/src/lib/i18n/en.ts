@@ -907,6 +907,7 @@ export const en = {
   'settings.categories.heading': 'Categories',
   'settings.filters.heading': 'Filters',
   'settings.sharedFiles.heading': 'Shared files',
+  'settings.accounts.heading': 'Accounts',
 
   // ── Settings: account section (re #97) ───────────────────────────────
   'settings.account.signedInAs': 'Signed in as',
@@ -2007,6 +2008,34 @@ export const en = {
   'settings.identityEdit.separateCancel': 'Cancel',
   'settings.identityEdit.separated': '{email} separated into its own account',
   'settings.identityEdit.separateFailed': 'Could not separate identity',
+
+  // Accounts settings section (issue #212, REQ-MAIL-SUB-01)
+  'settings.accounts.hint':
+    'Identities you have separated into their own account. Switch into ' +
+    'one from the account menu; separate an identity from its edit page ' +
+    'in the Account list above.',
+  'settings.accounts.empty': 'No separated accounts yet.',
+  'settings.accounts.stateMigrating': 'Moving mail...',
+  'settings.accounts.stateSeparated': 'Separated',
+  'settings.accounts.progress': '{moved} of {total} messages moved',
+  'settings.accounts.lastSync': 'Last sync',
+  'settings.accounts.lastSyncNever': 'Never',
+  'settings.accounts.pause': 'Pause',
+  'settings.accounts.resume': 'Resume',
+  'settings.accounts.remove': 'Remove',
+  'settings.accounts.removeTitle': 'Remove {name} as a separated account?',
+  'settings.accounts.removeMessage':
+    'This stops separation; the identity returns to the From-address ' +
+    'list. The next step lets you choose whether its mail comes with it.',
+  'settings.accounts.removeConfirmKeep': 'Continue',
+  'settings.accounts.purgeTitle': 'What should happen to its mail?',
+  'settings.accounts.purgeMessage':
+    'Keep moves the mail back to your primary account. Delete permanently ' +
+    'removes it; this cannot be undone.',
+  'settings.accounts.purgeConfirm': 'Delete the mail',
+  'settings.accounts.purgeCancel': 'Keep the mail',
+  'settings.accounts.removed': '{name} is no longer a separated account',
+  'settings.accounts.actionFailed': 'Could not update the account',
 
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.hint':

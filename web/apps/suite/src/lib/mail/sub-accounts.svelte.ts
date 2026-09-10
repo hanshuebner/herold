@@ -179,6 +179,47 @@ class SubAccountsStore {
     }
   }
 
+  /**
+   * Reverse a completed (or in-progress) separation via
+   * `Identity/set{separated: false}`, addressed via the sub-account's OWN
+   * accountId -- per REQ-SUBACCT-09/10 a separated Identity is only
+   * reachable from the account it currently lives under, never the
+   * parent (`resolveTargetPrincipal` never honours the parent for a
+   * sub-account it does not itself own).
+   *
+   * `keepMail: true` (default) moves the mail back to the parent account
+   * and reports the Identity updated; `keepMail: false` purges it and
+   * reports the Identity destroyed -- either way this method refreshes
+   * the discovered sub-account list afterwards so the removed row drops
+   * out of the switcher / Accounts section. It does NOT refresh
+   * `lib/mail/store.svelte.ts`'s identities cache (a `keepMail: true`
+   * reversal moves the Identity back there) -- callers that need the
+   * primary Identity list to reflect a kept-mail reversal immediately
+   * call `mail.loadIdentities()` themselves (Settings -> Accounts does).
+   */
+  async removeSeparation(accountId: string, identityId: string, keepMail: boolean): Promise<void> {
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: { [identityId]: { separated: false, keepMail } },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+      notDestroyed?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId] ?? result.notDestroyed?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+    await this.refresh();
+  }
+
   async #loadOne(accountId: string, name: string): Promise<SubAccountEntry> {
     try {
       const { responses } = await jmap.batch((b) => {

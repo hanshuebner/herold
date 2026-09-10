@@ -19,6 +19,16 @@ import { render, screen } from '@testing-library/svelte';
 vi.mock('../lib/auth/capabilities', () => ({
   hasExternalSubmission: vi.fn(() => false),
   hasIdentityVerification: vi.fn(() => true),
+  hasSubAccounts: vi.fn(() => false),
+  hasIMAPImport: vi.fn(() => false),
+}));
+
+vi.mock('../lib/mail/sub-accounts.svelte', () => ({
+  subAccounts: {
+    list: [],
+    load: vi.fn().mockResolvedValue(undefined),
+    refresh: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 // ── Singleton store mocks ─────────────────────────────────────────────────
@@ -239,6 +249,7 @@ vi.mock('../lib/jmap/sync.svelte', () => ({
     status: 'idle',
     start: vi.fn(),
     stop: vi.fn(),
+    on: vi.fn(() => vi.fn()),
   },
 }));
 
