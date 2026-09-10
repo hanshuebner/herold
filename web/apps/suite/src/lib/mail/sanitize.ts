@@ -43,6 +43,9 @@ export interface SanitizeOptions {
    * URL. Inline images referenced by Content-ID get rewritten to the
    * matching URL when present. Resolution is unconditional: cid refs
    * point at attachments of the same email so there is no privacy leak.
+   * Lookup falls back to a case-insensitive match (issue #306) since a
+   * sender's `Content-ID` header and its own `cid:` HTML reference are
+   * not always case-consistent.
    */
   cidMap?: Record<string, string>;
   /**
@@ -51,6 +54,7 @@ export interface SanitizeOptions {
    * an `aspect-ratio: W / H` declaration is appended to the img's inline
    * style so the browser can reserve the correct height before the image
    * bytes arrive (issue #47). Absent keys leave the image unchanged.
+   * Lookup falls back to a case-insensitive match, same as `cidMap`.
    */
   cidDimensions?: Record<string, { width: number; height: number }>;
   /**
@@ -444,6 +448,30 @@ function applyAspectRatio(img: Element, w: number, h: number): void {
   img.setAttribute('style', newStyle);
 }
 
+/**
+ * Looks up `cid` in `map`, falling back to a case-insensitive scan of the
+ * map's keys when the exact-case lookup misses (issue #306). RFC 2392 does
+ * not mandate case folding for the Content-ID local part, but real-world
+ * mail generators are not always internally consistent between the
+ * `Content-ID` header they emit on the MIME part and the `cid:` URL they
+ * write into the HTML body -- e.g. an uppercased `Content-ID` referenced by
+ * a lowercase `cid:` src. `cidMap` and `cidDimensions` are both keyed by
+ * the server's literal (trimmed, un-bracketed) `Content-ID` value, so an
+ * exact-case-only lookup left such a part chipped as a working attachment
+ * (chip resolution does not go through this map) while its inline `<img>`
+ * silently lost its `src` and fell through to the browser's broken-image
+ * icon.
+ */
+function lookupCid<T>(map: Record<string, T> | undefined, cid: string): T | undefined {
+  if (!map) return undefined;
+  if (Object.prototype.hasOwnProperty.call(map, cid)) return map[cid];
+  const lower = cid.toLowerCase();
+  for (const key of Object.keys(map)) {
+    if (key.toLowerCase() === lower) return map[key];
+  }
+  return undefined;
+}
+
 function rewriteImage(img: Element, options: SanitizeOptions): void {
   const src = img.getAttribute('src');
   const alt = img.getAttribute('alt') ?? '';
@@ -455,7 +483,7 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   // user knows the image is missing.
   if (src.startsWith('cid:')) {
     const cid = src.slice(4).trim();
-    const resolved = options.cidMap?.[cid];
+    const resolved = lookupCid(options.cidMap, cid);
     if (resolved) {
       img.setAttribute('src', resolved);
       img.setAttribute('referrerpolicy', 'no-referrer');
@@ -474,7 +502,7 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
       // the image bytes arrive. The author's width/height attributes are
       // never overwritten — the intrinsic dimensions may be a retina
       // multiple of the author's intended display width.
-      const dims = options.cidDimensions?.[cid];
+      const dims = lookupCid(options.cidDimensions, cid);
       if (dims) {
         applyAspectRatio(img, dims.width, dims.height);
       }

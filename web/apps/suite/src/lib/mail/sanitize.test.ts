@@ -67,6 +67,44 @@ describe('sanitizeHtml — cid: image rewrite', () => {
     });
     expect(bodyOf(out)).toContain('src="/jmap/download/xyz"');
   });
+
+  // Issue #306: a forum notification mailer's Content-ID header
+  // (`<SMILEY@FORUM>`, trimmed server-side to `SMILEY@FORUM`) did not
+  // case-match the lowercase `cid:smiley@forum` reference the same
+  // mailer wrote into its own HTML body. The part still downloaded and
+  // chipped fine (chip resolution never goes through cidMap), but the
+  // inline <img> lost its src and fell through to the browser's
+  // broken-image icon.
+  it('resolves cid case-insensitively when the Content-ID header and the cid: reference differ in case', () => {
+    const html = '<p><img src="cid:smiley@forum" alt=":)"></p>';
+    const out = sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { 'SMILEY@FORUM': '/jmap/download/smiley.png' },
+    });
+    const body = bodyOf(out);
+    expect(body).toContain('src="/jmap/download/smiley.png"');
+    expect(body).not.toContain('data-herold-blocked');
+  });
+
+  it('resolves cid case-insensitively in the other case direction (uppercase reference, lowercase header)', () => {
+    const html = '<p><img src="cid:SMILEY@FORUM" alt=":)"></p>';
+    const out = sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { 'smiley@forum': '/jmap/download/smiley.png' },
+    });
+    expect(bodyOf(out)).toContain('src="/jmap/download/smiley.png"');
+  });
+
+  it('applies cidDimensions case-insensitively alongside a case-mismatched cidMap resolution', () => {
+    const html = '<p><img src="cid:smiley@forum" alt=":)"></p>';
+    const out = sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { 'SMILEY@FORUM': '/jmap/download/smiley.png' },
+      cidDimensions: { 'SMILEY@FORUM': { width: 40, height: 40 } },
+    });
+    const body = bodyOf(out);
+    expect(body).toContain('aspect-ratio: 40 / 40');
+  });
 });
 
 describe('sanitizeHtml — inline image dimension preservation (issue #47)', () => {
