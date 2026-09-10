@@ -540,6 +540,40 @@ configure-time error such as a missing required option — `enabled`
 is `false`, `plugin` names the configured plugin, and `reason`
 carries the supervisor's error.
 
+### Choosing a classifier model
+
+`herold-spam-llm` ships with **no default model** (Wave 4.1): the
+`options.model` key is required, and configure fails naming the
+option when it is left unset. This is deliberate. The table below is
+the measured evaluation behind that choice, from
+`docs/design/server/implementation/07-spam-and-policy-plan.md`
+(3,631 human-labelled messages from a production mailbox; recall is
+measured on the hard subset — spam an upstream filter did not already
+catch — at a false-positive rate at or below 0.5% on representative
+ham):
+
+| Classifier | recall @ FPR <= 0.5% (hard subset) | false positives / 560 ham |
+|---|---|---|
+| Claude Haiku 4.5 | 65.7% | 0 |
+| GLM-4.7-flash | 43.0% | 0 |
+| Nova Lite | 25.0% | 2 |
+| `llama3.2:3b` (the withdrawn former default) | 4.4% | 29.8% FPR at threshold 80 |
+
+**Claude Haiku 4.5 via the Anthropic API** is the only measured
+configuration meeting the target and is what the plugin's own
+package documentation recommends; it is a cloud endpoint, so choosing
+it is also a privacy decision (REQ-FILT-60/61) — the plugin's data
+grant is envelope addresses, a handful of headers, and the first few
+KB of the text body, never the full message or attachments. Nothing
+small enough to self-host on a CPU-only mail server was measured to
+work: `llama3.2:3b` (the former default) misfiled roughly one real
+message in three, and GLM-4.7-flash needs about 19 GB of RAM to reach
+43%, still below the target. `temperature = 0` is pinned in the
+plugin's manifest (Wave 4.1, REQ-FILT-12) — the supervisor refuses to
+load a spam-type plugin whose manifest does not declare it — so a
+given message's verdict is reproducible across runs regardless of
+which model is chosen.
+
 ## OIDC RP (federated login)
 
 Herold authenticates principals against:
