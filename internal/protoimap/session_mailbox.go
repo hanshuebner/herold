@@ -856,6 +856,8 @@ func (ses *session) handleAPPEND(ctx context.Context, c *Command) error {
 		Size:         msgSize,
 		Blob:         blobRef,
 		Envelope:     env,
+		// re #143 (maintainer finding #2): a single-literal IMAP APPEND.
+		IngestSource: store.IngestSourceIMAPAppend,
 	}
 	insertTimer := observe.StartStoreOp("insert_message")
 	uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})

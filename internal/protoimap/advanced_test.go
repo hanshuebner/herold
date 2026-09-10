@@ -184,6 +184,13 @@ func TestMOVE_AtomicCopyExpunge(t *testing.T) {
 	if len(dmsgs) != 2 {
 		t.Fatalf("expected 2 messages in dest, got %d", len(dmsgs))
 	}
+	// re #143 (maintainer finding #2): MOVE re-stages the blob into a
+	// fresh row recording store.IngestSourceIMAPCopy.
+	for _, m := range dmsgs {
+		if m.IngestSource != store.IngestSourceIMAPCopy {
+			t.Errorf("IngestSource = %q; want %q", m.IngestSource, store.IngestSourceIMAPCopy)
+		}
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -248,6 +255,13 @@ func TestMULTIAPPEND_AllOrNothing(t *testing.T) {
 	msgs, _ := f.ha.Store.Meta().ListMessages(ctx, f.inbox.ID, store.MessageFilter{})
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 inserted, got %d", len(msgs))
+	}
+	// re #143 (maintainer finding #2): each MULTIAPPEND item records
+	// store.IngestSourceIMAPAppend.
+	for _, m := range msgs {
+		if m.IngestSource != store.IngestSourceIMAPAppend {
+			t.Errorf("IngestSource = %q; want %q", m.IngestSource, store.IngestSourceIMAPAppend)
+		}
 	}
 }
 

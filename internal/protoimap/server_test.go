@@ -540,6 +540,16 @@ func TestAPPEND_UIDPLUS_ReturnsUID(t *testing.T) {
 	if !strings.Contains(last, "OK") || !strings.Contains(last, "APPENDUID") {
 		t.Fatalf("expected OK [APPENDUID ...], got: %v", last)
 	}
+
+	// re #143 (maintainer finding #2): the appended message records
+	// store.IngestSourceIMAPAppend.
+	stored, err := f.ha.Store.Meta().GetMessageByMessageIDHeader(context.Background(), f.pid, "test-append@example.test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if stored.IngestSource != store.IngestSourceIMAPAppend {
+		t.Errorf("IngestSource = %q; want %q", stored.IngestSource, store.IngestSourceIMAPAppend)
+	}
 }
 
 func TestFETCH_Envelope_Body_Flags(t *testing.T) {

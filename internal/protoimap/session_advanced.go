@@ -95,6 +95,9 @@ func (ses *session) handleMOVE(ctx context.Context, c *Command) error {
 			Size:         m.Size,
 			Blob:         m.Blob,
 			Envelope:     m.Envelope,
+			// re #143 (maintainer finding #2): IMAP MOVE/COPY re-staging
+			// the blob into a fresh row.
+			IngestSource: store.IngestSourceIMAPCopy,
 		}
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
@@ -169,6 +172,9 @@ func (ses *session) handleCOPY(ctx context.Context, c *Command) error {
 			Size:         m.Size,
 			Blob:         m.Blob,
 			Envelope:     m.Envelope,
+			// re #143 (maintainer finding #2): IMAP MOVE/COPY re-staging
+			// the blob into a fresh row.
+			IngestSource: store.IngestSourceIMAPCopy,
 		}
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, copyMsg, []store.MessageMailbox{{MailboxID: dest.ID, Flags: m.Flags, Keywords: m.Keywords}})
 		if err != nil {
@@ -312,6 +318,9 @@ func (ses *session) applyMultiAppend(ctx context.Context, c *Command, mb store.M
 			Size:         msgSize,
 			Blob:         blobRef,
 			Envelope:     env,
+			// re #143 (maintainer finding #2): one item of an RFC 3502
+			// MULTIAPPEND.
+			IngestSource: store.IngestSourceIMAPAppend,
 		}
 		insertTimer := observe.StartStoreOp("insert_message")
 		uid, _, err := ses.s.store.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mb.ID, Flags: flags, Keywords: kw}})
