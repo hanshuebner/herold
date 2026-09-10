@@ -101,6 +101,20 @@ export function hasIMAPImport(): boolean {
 }
 
 /**
+ * True when the server advertises the sub-account substrate
+ * (`https://netzhansa.com/jmap/sub-accounts`), i.e. `[server.sub_accounts]`
+ * (or equivalent) support is built into the deployment.
+ *
+ * When true the suite surfaces: the scope switcher in the ProfileMenu, the
+ * Accounts settings section, and the "Separate this identity" affordance
+ * in the identity editor. When false, the suite renders exactly the
+ * single-account UI (REQ-MAIL-SUB-09).
+ */
+export function hasSubAccounts(): boolean {
+  return jmap.hasCapability(Capability.HeroldSubAccounts);
+}
+
+/**
  * Seconds threshold under which a chat message's timestamp is hidden
  * because the previous message in the same day-group is recent enough.
  * Sourced from the chat capability descriptor; defaults to 120 (2

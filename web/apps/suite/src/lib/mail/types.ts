@@ -70,6 +70,43 @@ export interface Identity {
    * (the server-side extension lands separately under REQ-IDENT-70).
    */
   isDefault?: boolean | null;
+  /**
+   * Herold sub-account extension (issue #227/#212, REQ-SUBACCT-09): the
+   * JMAP accountId of the sub-principal this identity was separated
+   * into, or null when it has never been separated. Read-only on the
+   * wire -- set it via the `separated` property on `Identity/set`, not
+   * directly. Once non-null the Identity itself is listed under that
+   * accountId, not under the account it was created in.
+   *
+   * Optional for legacy-server compatibility: absent means the server
+   * predates the sub-account substrate, equivalent to null.
+   */
+  subAccountId?: string | null;
+  /**
+   * Herold sub-account extension (issue #227/#212, REQ-SUBACCT-09/10):
+   * this identity's separation lifecycle. Optional for legacy-server
+   * compatibility -- absent is equivalent to `{state: 'none', ...0}`,
+   * see `separationOf()` in `identity-separation.ts`.
+   */
+  separation?: IdentitySeparation;
+}
+
+/** `Identity.separation.state` (REQ-SUBACCT-09/10). */
+export type SeparationState = 'none' | 'migrating' | 'separated';
+
+/**
+ * Wire shape of `Identity.separation` (REQ-SUBACCT-09/10). `messagesTotal`
+ * is populated even in the `'none'` state -- a pre-count of the mail an
+ * eventual separation would move, computed server-side from the
+ * identity's IMAP-import account(s) -- so the suite can show it before
+ * the user confirms (REQ-MAIL-SUB-07).
+ */
+export interface IdentitySeparation {
+  state: SeparationState;
+  messagesTotal: number;
+  messagesMoved: number;
+  messagesCopied: number;
+  lastError?: string;
 }
 
 export interface Mailbox {

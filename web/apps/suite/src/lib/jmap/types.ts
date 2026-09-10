@@ -210,6 +210,23 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldEmailImageRetry: 'https://netzhansa.com/jmap/email-image-retry',
+  /**
+   * Sub-account substrate (issue #227/#212, REQ-SUBACCT-01..11,
+   * REQ-MAIL-SUB-09). Advertised unconditionally whenever the deployment
+   * has sub-account support built in. Session-level (not per-account):
+   * `session.capabilities`, not `accountCapabilities`. When present, the
+   * session's `accounts` map lists one entry per separated identity's
+   * sub-principal alongside the caller's own primary account(s); the
+   * suite's scope switcher, Accounts settings section, and per-identity
+   * "Separate this identity" affordance render only when this capability
+   * is present (REQ-MAIL-SUB-09) -- absent it, the suite renders exactly
+   * the single-account UI.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilitySubAccounts.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldSubAccounts: 'https://netzhansa.com/jmap/sub-accounts',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

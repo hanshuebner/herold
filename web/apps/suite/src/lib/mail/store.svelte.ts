@@ -1837,6 +1837,59 @@ class MailStore {
   }
 
   /**
+   * Separate `identityId` into its own sub-account (issue #212, REQ-
+   * MAIL-SUB-01/07, REQ-SUBACCT-09) by issuing `Identity/set update
+   * {separated: true}` against the caller's own (parent) account -- the
+   * only account the identity is reachable from before separation.
+   *
+   * On success the server has already moved the Identity's row to a
+   * freshly-created sub-principal before the call returns and started
+   * the background migration sweep; the identity immediately stops
+   * appearing under this account's `Identity/get`, so this method drops
+   * it from the local cache optimistically (mirroring `destroyIdentity`)
+   * rather than trying to keep a now-foreign-accountId row around.
+   * Callers refresh `lib/mail/sub-accounts.svelte.ts`'s store afterwards
+   * to discover the new sub-account and its live migration state.
+   *
+   * Returns the newly-assigned sub-account id.
+   */
+  async separateIdentity(identityId: string): Promise<string> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: { [identityId]: { separated: true } },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      updated?: Record<string, { subAccountId?: string | null } | null>;
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+    const subAccountId = result.updated?.[identityId]?.subAccountId;
+    if (!subAccountId) {
+      throw new Error('Identity/set{separated:true} did not report a subAccountId');
+    }
+
+    const next = new Map(this.identities);
+    next.delete(identityId);
+    this.identities = next;
+
+    return subAccountId;
+  }
+
+  /**
    * Load the email list for the given folder. Idempotent: when the
    * requested folder is already showing 'ready' state, the call is a
    * no-op so route effects can fire freely. Switching to a different
