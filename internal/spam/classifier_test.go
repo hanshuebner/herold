@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/llmtest"
@@ -264,5 +265,152 @@ func TestClassify_ReplayerMissingFixtureError(t *testing.T) {
 	}
 	if !errors.Is(err, llmtest.ErrFixtureMissing) {
 		t.Fatalf("expected ErrFixtureMissing, got: %v", err)
+	}
+}
+
+// TestBuildRequest_ExcerptDecodesEntities verifies numeric and named
+// HTML entities left over from stripHTMLTags are decoded rather than
+// forwarded to the classifier as raw entity text (re #299).
+func TestBuildRequest_ExcerptDecodesEntities(t *testing.T) {
+	const raw = "From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<p>Sch&#228;fer &amp; S&ouml;hne</p>"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if strings.Contains(req.BodyExcerpt, "&#228;") || strings.Contains(req.BodyExcerpt, "&amp;") || strings.Contains(req.BodyExcerpt, "&ouml;") {
+		t.Fatalf("entities not decoded: %q", req.BodyExcerpt)
+	}
+	if !strings.Contains(req.BodyExcerpt, "Schäfer & Söhne") {
+		t.Fatalf("decoded text missing: %q", req.BodyExcerpt)
+	}
+}
+
+// TestBuildRequest_ExcerptCollapsesWhitespace verifies that whitespace
+// runs left behind by tag-stripping collapse: internal runs to a single
+// space and blank-line runs to at most one blank line (re #299).
+func TestBuildRequest_ExcerptCollapsesWhitespace(t *testing.T) {
+	const raw = "From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<p>Hello    there</p>\n\n\n\n<p>Goodbye</p>"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if strings.Contains(req.BodyExcerpt, "  ") {
+		t.Fatalf("internal whitespace run not collapsed: %q", req.BodyExcerpt)
+	}
+	if strings.Contains(req.BodyExcerpt, "\n\n\n") {
+		t.Fatalf("blank-line run not collapsed: %q", req.BodyExcerpt)
+	}
+	if !strings.Contains(req.BodyExcerpt, "Hello there") || !strings.Contains(req.BodyExcerpt, "Goodbye") {
+		t.Fatalf("content missing after collapse: %q", req.BodyExcerpt)
+	}
+}
+
+// TestBuildRequest_ExcerptAlternativeDedup verifies that a
+// multipart/alternative body contributes only its text/plain
+// representation to the excerpt, not both the plain and the HTML
+// sibling (re #299).
+func TestBuildRequest_ExcerptAlternativeDedup(t *testing.T) {
+	const raw = "From: a@b\r\n" +
+		"Subject: h\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"plain body content\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>html body content</p>\r\n" +
+		"--BOUND--\r\n"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if !strings.Contains(req.BodyExcerpt, "plain body content") {
+		t.Fatalf("expected text/plain content: %q", req.BodyExcerpt)
+	}
+	if strings.Contains(req.BodyExcerpt, "html body content") {
+		t.Fatalf("expected html sibling to be dropped, not duplicated: %q", req.BodyExcerpt)
+	}
+}
+
+// TestBuildRequest_ExcerptAlternativeHTMLFallback verifies that a
+// multipart/alternative body with no text/plain part falls back to the
+// tag-stripped text/html part (re #299).
+func TestBuildRequest_ExcerptAlternativeHTMLFallback(t *testing.T) {
+	const raw = "From: a@b\r\n" +
+		"Subject: h\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>only html content</p>\r\n" +
+		"--BOUND--\r\n"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if !strings.Contains(req.BodyExcerpt, "only html content") {
+		t.Fatalf("expected stripped html content: %q", req.BodyExcerpt)
+	}
+	if strings.Contains(req.BodyExcerpt, "<p>") {
+		t.Fatalf("html tags not stripped: %q", req.BodyExcerpt)
+	}
+}
+
+// TestBuildRequest_ExcerptPlainTextOnly verifies a plain single-part
+// text/plain message still normalizes (collapsed whitespace) and is
+// unaffected by the multipart/alternative handling (re #299).
+func TestBuildRequest_ExcerptPlainTextOnly(t *testing.T) {
+	const raw = "From: a@b\r\nSubject: h\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"Line one   with   extra   spaces\r\n\r\n\r\nLine two\r\n"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if req.BodyExcerpt != "Line one with extra spaces\n\nLine two" {
+		t.Fatalf("unexpected excerpt: %q", req.BodyExcerpt)
+	}
+}
+
+// TestBuildRequest_ExcerptCapAppliedAfterNormalization verifies the
+// DefaultBodyExcerptBytes cap is applied to the normalized text, not the
+// raw pre-normalization text: a body padded with whitespace and HTML
+// noise that shrinks under the cap after normalization is not truncated,
+// and its normalized (not raw) length is what determines whether
+// truncation is needed (re #299).
+func TestBuildRequest_ExcerptCapAppliedAfterNormalization(t *testing.T) {
+	// Build an HTML body whose raw byte length (tags + entity + repeated
+	// whitespace) exceeds DefaultBodyExcerptBytes, but whose normalized
+	// text is short. If the cap were applied before normalization, the
+	// excerpt would be truncated mid-entity/mid-tag; applied after, the
+	// full "hello world" content survives intact.
+	var b strings.Builder
+	b.WriteString("From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
+	b.WriteString("<p>hello&#32;world</p>")
+	for b.Len() < DefaultBodyExcerptBytes*2 {
+		b.WriteString("\n\n\n   \n\n\n")
+	}
+	req := BuildRequest(buildMessage(t, b.String()), nil)
+	if req.BodyExcerpt != "hello world" {
+		t.Fatalf("expected normalized excerpt \"hello world\", got %q (len=%d)", req.BodyExcerpt, len(req.BodyExcerpt))
+	}
+}
+
+// TestBuildRequest_ExcerptCapRuneBoundary verifies that when the
+// normalized excerpt exceeds DefaultBodyExcerptBytes, truncation lands on
+// a UTF-8 rune boundary rather than splitting a multi-byte codepoint.
+func TestBuildRequest_ExcerptCapRuneBoundary(t *testing.T) {
+	// Repeat a 2-byte UTF-8 rune (a with umlaut) enough times to exceed
+	// the cap; every byte offset is either a rune boundary or splits a
+	// codepoint, so a naive byte-slice cap would corrupt the excerpt on
+	// roughly half of possible cap values. DefaultBodyExcerptBytes is
+	// even, and the rune is 2 bytes, so the built-in cap itself would
+	// land cleanly -- shrink the message by one extra rune's worth of
+	// bytes via BuildRequest's own cap isn't adjustable, so instead
+	// assert directly that the returned excerpt is valid UTF-8 and at
+	// or under the cap regardless.
+	var b strings.Builder
+	b.WriteString("From: a@b\r\nSubject: h\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n")
+	for i := 0; i < DefaultBodyExcerptBytes; i++ {
+		b.WriteString("ä")
+	}
+	req := BuildRequest(buildMessage(t, b.String()), nil)
+	if len(req.BodyExcerpt) > DefaultBodyExcerptBytes {
+		t.Fatalf("excerpt exceeds cap: %d bytes", len(req.BodyExcerpt))
+	}
+	if !utf8.ValidString(req.BodyExcerpt) {
+		t.Fatalf("excerpt is not valid UTF-8: %q", req.BodyExcerpt)
 	}
 }

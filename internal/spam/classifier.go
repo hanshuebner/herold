@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/mail"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -275,24 +277,42 @@ func addrsToStrings(addrs []mail.Address) []string {
 	return out
 }
 
-// collectTextBody concatenates decoded text/* parts up to cap bytes. HTML
-// parts are rendered to plain text with a naive tag-strip; URLs and
-// addresses survive because they sit outside <> brackets.
-func collectTextBody(p mailparse.Part, cap int) string {
+// accumulateMultiplier bounds how much raw (pre-normalization) text
+// collectTextBodyInto gathers before giving up on a message, expressed
+// as a multiple of the final excerpt cap. Normalization only shrinks
+// text (tag-stripping, entity decoding, whitespace collapse), so a
+// modest multiple leaves headroom for that shrinkage to still fill the
+// cap without letting a pathologically large message balloon memory.
+const accumulateMultiplier = 4
+
+// collectTextBody concatenates the message's text content into a single
+// excerpt (REQ-FILT-30/31). Within a multipart/alternative branch only
+// one representation contributes -- the text/plain part when present,
+// else the tag-stripped text/html part -- so the two alternative
+// renderings of the same content are not both appended (re #299). Other
+// multipart containers keep concatenating every text/* child. The
+// result has HTML entities decoded and whitespace runs collapsed to at
+// most one blank line, then is capped to capBytes bytes on a rune
+// boundary.
+func collectTextBody(p mailparse.Part, capBytes int) string {
 	var b strings.Builder
-	collectTextBodyInto(p, &b, cap)
-	s := b.String()
-	if len(s) > cap {
-		s = s[:cap]
-	}
-	return s
+	collectTextBodyInto(p, &b, capBytes*accumulateMultiplier)
+	s := normalizeExcerpt(b.String())
+	return truncateUTF8(s, capBytes)
 }
 
-func collectTextBodyInto(p mailparse.Part, b *strings.Builder, cap int) {
-	if b.Len() >= cap {
+func collectTextBodyInto(p mailparse.Part, b *strings.Builder, limit int) {
+	if b.Len() >= limit {
 		return
 	}
 	ct := strings.ToLower(p.ContentType)
+	if strings.HasPrefix(ct, "multipart/alternative") {
+		if t := alternativeText(p); t != "" {
+			b.WriteString(t)
+			b.WriteByte('\n')
+		}
+		return
+	}
 	switch {
 	case strings.HasPrefix(ct, "text/html"):
 		b.WriteString(stripHTMLTags(p.Text))
@@ -302,11 +322,88 @@ func collectTextBodyInto(p mailparse.Part, b *strings.Builder, cap int) {
 		b.WriteByte('\n')
 	}
 	for _, c := range p.Children {
-		if b.Len() >= cap {
+		if b.Len() >= limit {
 			return
 		}
-		collectTextBodyInto(c, b, cap)
+		collectTextBodyInto(c, b, limit)
 	}
+}
+
+// alternativeText resolves a multipart/alternative part to the single
+// text rendering the excerpt should carry: the first text/plain leaf
+// found anywhere under it, or -- when there is none -- the tag-stripped
+// first text/html leaf. Mirrors how a mail client picks one alternative
+// to render rather than showing both.
+func alternativeText(p mailparse.Part) string {
+	if t := firstLeafText(p, "text/plain"); t != "" {
+		return t
+	}
+	if t := firstLeafText(p, "text/html"); t != "" {
+		return stripHTMLTags(t)
+	}
+	return ""
+}
+
+// firstLeafText walks the part tree depth-first and returns the Text of
+// the first leaf whose Content-Type starts with ctPrefix. Returns "" when
+// no such leaf exists.
+func firstLeafText(p mailparse.Part, ctPrefix string) string {
+	if len(p.Children) == 0 {
+		if strings.HasPrefix(strings.ToLower(p.ContentType), ctPrefix) {
+			return p.Text
+		}
+		return ""
+	}
+	for _, c := range p.Children {
+		if t := firstLeafText(c, ctPrefix); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// normalizeExcerpt decodes HTML entities left over from stripHTMLTags and
+// collapses whitespace: each line is trimmed and its internal whitespace
+// runs collapsed to single spaces, leading/trailing blank lines are
+// dropped, and runs of blank lines collapse to at most one -- so the
+// excerpt's byte budget is spent on content, not layout whitespace
+// (re #299).
+func normalizeExcerpt(s string) string {
+	s = html.UnescapeString(s)
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			if blank || len(out) == 0 {
+				continue
+			}
+			blank = true
+			out = append(out, "")
+			continue
+		}
+		blank = false
+		out = append(out, line)
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+// truncateUTF8 returns the longest prefix of s that is at most n bytes
+// and valid UTF-8, so a multi-byte rune straddling the cap is dropped
+// whole rather than split into an invalid trailing fragment.
+func truncateUTF8(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // stripHTMLTags is a deliberately simple HTML-to-text converter. The
