@@ -1006,6 +1006,193 @@ func TestIMAPImport_MyStatus_Scoped(t *testing.T) {
 	}
 }
 
+// ---- excluded_folders (re #305) --------------------------------------------
+
+// TestIMAPImport_ExcludedFolders_CreateEcho verifies that excluded_folders
+// supplied on create is trimmed, deduplicated, and echoed back on the
+// create response and on a subsequent list.
+func TestIMAPImport_ExcludedFolders_CreateEcho(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	body := minimalCreateBody()
+	body["excluded_folders"] = []string{" Spam ", "Trash", "Spam"}
+
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, body)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID              string   `json:"id"`
+		ExcludedFolders []string `json:"excluded_folders"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := []string{"Spam", "Trash"}
+	if !equalStringSlices(created.ExcludedFolders, want) {
+		t.Fatalf("create excluded_folders = %v, want %v", created.ExcludedFolders, want)
+	}
+
+	// Store row carries the same normalized list.
+	row, err := ih.fs.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if !equalStringSlices(row.ExcludedFolders, want) {
+		t.Fatalf("store excluded_folders = %v, want %v", row.ExcludedFolders, want)
+	}
+
+	// List echoes it too.
+	res2, buf2 := ih.do("GET", ih.listPath(), ih.adminKey, nil)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d: %s", res2.StatusCode, buf2)
+	}
+	var listOut struct {
+		Items []struct {
+			ID              string   `json:"id"`
+			ExcludedFolders []string `json:"excluded_folders"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf2, &listOut); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	if len(listOut.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(listOut.Items))
+	}
+	if !equalStringSlices(listOut.Items[0].ExcludedFolders, want) {
+		t.Fatalf("list excluded_folders = %v, want %v", listOut.Items[0].ExcludedFolders, want)
+	}
+}
+
+// TestIMAPImport_ExcludedFolders_Patch verifies that PATCH replaces the
+// stored excluded_folders list, that omitting the field preserves the
+// existing value, and that an explicit empty array clears it.
+func TestIMAPImport_ExcludedFolders_Patch(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d: %s", res.StatusCode, buf)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// PATCH sets the list.
+	res2, buf2 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"excluded_folders": []string{"Junk", " Junk", "Archive"},
+	})
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("patch: %d: %s", res2.StatusCode, buf2)
+	}
+	var patched struct {
+		ExcludedFolders []string `json:"excluded_folders"`
+	}
+	if err := json.Unmarshal(buf2, &patched); err != nil {
+		t.Fatalf("patch unmarshal: %v", err)
+	}
+	want := []string{"Junk", "Archive"}
+	if !equalStringSlices(patched.ExcludedFolders, want) {
+		t.Fatalf("patch excluded_folders = %v, want %v", patched.ExcludedFolders, want)
+	}
+
+	// PATCH without the field preserves the current value.
+	res3, buf3 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"account_name": "Still Gmail",
+	})
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("patch without excluded_folders: %d: %s", res3.StatusCode, buf3)
+	}
+	var patched3 struct {
+		ExcludedFolders []string `json:"excluded_folders"`
+	}
+	if err := json.Unmarshal(buf3, &patched3); err != nil {
+		t.Fatalf("patch3 unmarshal: %v", err)
+	}
+	if !equalStringSlices(patched3.ExcludedFolders, want) {
+		t.Fatalf("preserved excluded_folders = %v, want %v", patched3.ExcludedFolders, want)
+	}
+
+	// PATCH with an explicit empty array clears it.
+	res4, buf4 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"excluded_folders": []string{},
+	})
+	if res4.StatusCode != http.StatusOK {
+		t.Fatalf("patch clear: %d: %s", res4.StatusCode, buf4)
+	}
+	row, err := ih.fs.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if len(row.ExcludedFolders) != 0 {
+		t.Fatalf("excluded_folders after clear = %v, want empty", row.ExcludedFolders)
+	}
+}
+
+// TestIMAPImport_ExcludedFolders_ValidationError verifies that a blank
+// (or whitespace-only) entry is rejected with a problem+json 400 on both
+// create and PATCH.
+func TestIMAPImport_ExcludedFolders_ValidationError(t *testing.T) {
+	ih := newIMAPHarness(t, nil)
+
+	body := minimalCreateBody()
+	body["excluded_folders"] = []string{"Spam", "   "}
+	res, buf := ih.do("POST", ih.listPath(), ih.adminKey, body)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with blank entry: want 400, got %d: %s", res.StatusCode, buf)
+	}
+	ct := res.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem struct {
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal(buf, &problem); err != nil {
+		t.Fatalf("unmarshal problem: %v", err)
+	}
+	if problem.Status != http.StatusBadRequest {
+		t.Fatalf("problem.status = %d, want 400", problem.Status)
+	}
+
+	// A valid account exists to PATCH against.
+	res2, buf2 := ih.do("POST", ih.listPath(), ih.adminKey, minimalCreateBody())
+	if res2.StatusCode != http.StatusCreated {
+		t.Fatalf("create baseline: %d: %s", res2.StatusCode, buf2)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(buf2, &created); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	res3, buf3 := ih.do("PATCH", ih.accountPath(created.ID), ih.adminKey, map[string]any{
+		"excluded_folders": []string{""},
+	})
+	if res3.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch with blank entry: want 400, got %d: %s", res3.StatusCode, buf3)
+	}
+	ct3 := res3.Header.Get("Content-Type")
+	if !strings.Contains(ct3, "application/problem+json") {
+		t.Fatalf("patch Content-Type = %q, want application/problem+json", ct3)
+	}
+}
+
+// equalStringSlices compares two string slices for equality (order matters).
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ---- debug_log toggle (re #138) -------------------------------------------
 
 // TestIMAPImport_DebugLog_Toggle verifies that PATCH with debug_log:true

@@ -105,7 +105,8 @@ imapimport_account(
     username, auth_method, backfill_floor_date NULL,   -- NULL = "all"
     credential_ct BLOB,                                -- secrets.Seal output, v1: prefixed
     state, last_success_at, last_error,
-    delete_propagates BOOL, created_at, updated_at)
+    delete_propagates BOOL, created_at, updated_at,
+    excluded_folders_json)     -- upstream folder names never synced (migration 0103, re #305)
 
 imapimport_folder_map(account_id, upstream_folder, herold_mailbox_name)
 
@@ -206,6 +207,11 @@ DELETE /api/v1/principals/{pid}/imap-imports/{aid}
 The self-service subset is also exposed on the public listener's
 protoadmin server (the same split Phase 4 used for `/settings`), gated
 to the owning principal.
+
+GET/POST/PATCH bodies carry `excluded_folders`: a JSON array of upstream
+folder names (trimmed, deduplicated, no empty entries) the worker never
+syncs (re #305). It round-trips like `folder_map` — write-only on create
+and PATCH, and, unlike `folder_map`, also returned on GET/list.
 
 ### Metrics
 

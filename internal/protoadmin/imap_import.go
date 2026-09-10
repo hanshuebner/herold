@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/observe"
@@ -44,8 +45,11 @@ type imapImportAccountDTO struct {
 	DeletePropagates bool       `json:"delete_propagates"`
 	HasCredential    bool       `json:"has_credential"`
 	DebugLog         bool       `json:"debug_log"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	// ExcludedFolders lists upstream folder names the worker never syncs
+	// (re #305). See store.IMAPImportAccount.ExcludedFolders.
+	ExcludedFolders []string  `json:"excluded_folders,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // imapImportFolderMapEntryDTO is one folder-mapping row.
@@ -84,6 +88,7 @@ func toImapImportDTO(a store.IMAPImportAccount) imapImportAccountDTO {
 		dto.LastSuccessAt = &t
 	}
 	dto.DebugLog = a.DebugLog
+	dto.ExcludedFolders = a.ExcludedFolders
 	return dto
 }
 
@@ -101,6 +106,9 @@ type createIMAPImportRequest struct {
 	State            string                        `json:"state,omitempty"`
 	DeletePropagates *bool                         `json:"delete_propagates,omitempty"`
 	FolderMap        []imapImportFolderMapEntryDTO `json:"folder_map,omitempty"`
+	// ExcludedFolders lists upstream folder names to never sync (re #305).
+	// Nil/absent means none.
+	ExcludedFolders []string `json:"excluded_folders,omitempty"`
 }
 
 // patchIMAPImportRequest is the body for PATCH .../imap-imports/{aid}.
@@ -124,6 +132,10 @@ type patchIMAPImportRequest struct {
 	// the account ID. Runtime toggle without a herold restart (re #138).
 	DebugLog  *bool                         `json:"debug_log,omitempty"`
 	FolderMap []imapImportFolderMapEntryDTO `json:"folder_map,omitempty"`
+	// ExcludedFolders, when present (including an explicit empty array),
+	// replaces the stored no-sync folder list (re #305). Absent preserves
+	// the existing value.
+	ExcludedFolders []string `json:"excluded_folders,omitempty"`
 }
 
 // -- validation helpers -------------------------------------------------------
@@ -175,6 +187,26 @@ func validateIMAPState(s string) error {
 			store.IMAPImportAccountStateMigrating,
 			store.IMAPImportAccountStateMigrated, s)
 	}
+}
+
+// validateExcludedFolders trims each upstream folder name, rejects any
+// entry that is empty after trimming, and deduplicates while preserving
+// the order of first occurrence (re #305).
+func validateExcludedFolders(in []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, f := range in {
+		trimmed := strings.TrimSpace(f)
+		if trimmed == "" {
+			return nil, fmt.Errorf("excluded_folders entries must not be empty")
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out, nil
 }
 
 // validateIMAPStateTransition enforces the cutover lifecycle rules for an
@@ -291,6 +323,15 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, r, http.StatusBadRequest, "validation_failed", "credential is required", "")
 		return
 	}
+	var excludedFolders []string
+	if req.ExcludedFolders != nil {
+		ef, everr := validateExcludedFolders(req.ExcludedFolders)
+		if everr != nil {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", everr.Error(), "")
+			return
+		}
+		excludedFolders = ef
+	}
 
 	// Validate the owning Identity (decision 10, REQ-IMAP-IMP-01/02). When
 	// supplied it must reference an Identity owned by the same principal.
@@ -361,6 +402,7 @@ func (s *Server) handleCreateIMAPImport(w http.ResponseWriter, r *http.Request) 
 		CredentialCT:      ct,
 		State:             state,
 		DeletePropagates:  deletePropagates,
+		ExcludedFolders:   excludedFolders,
 	}
 	created, cerr := s.store.Meta().CreateIMAPImportAccount(r.Context(), create)
 	if cerr != nil {
@@ -452,6 +494,7 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 		BackfillFloorDate: existing.BackfillFloorDate,
 		State:             existing.State,
 		DeletePropagates:  existing.DeletePropagates,
+		ExcludedFolders:   existing.ExcludedFolders,
 		// CredentialCT nil means "keep existing"; DebugLog nil means "keep existing"
 	}
 
@@ -516,6 +559,14 @@ func (s *Server) handlePatchIMAPImport(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DebugLog != nil {
 		upd.DebugLog = req.DebugLog
+	}
+	if req.ExcludedFolders != nil {
+		ef, everr := validateExcludedFolders(req.ExcludedFolders)
+		if everr != nil {
+			writeProblem(w, r, http.StatusBadRequest, "validation_failed", everr.Error(), "")
+			return
+		}
+		upd.ExcludedFolders = ef
 	}
 
 	// Reseal credential if supplied (REQ-IMAP-IMP-70).
