@@ -181,13 +181,35 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 	return cl, nil
 }
 
-// deadline ensures ctx carries a deadline; if it does not, a DefaultTimeout
-// one is attached.
+// deadline ensures ctx carries a deadline; if it does not, the classifier's
+// configured budget (WithTimeout, default DefaultTimeout) is attached
+// regardless of what the plugin's own model-call timeout is set to
+// (Wave 4.1, REQ-FILT-40/42). The cutoff is driven by the injected Clock
+// rather than the runtime's wall-clock timers, so a test can assert it
+// deterministically with a FakeClock instead of a real sleep.
 func (c *Classifier) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, c.timeout)
+	// context.WithDeadline (rather than WithCancel) keeps ctx.Deadline()
+	// reporting a real value for callers/plugins that inspect it, and in
+	// production (clock.Real) its built-in wall-clock timer is the
+	// actual cutoff mechanism. The clock.Timer below is what makes the
+	// cutoff happen when the injected Clock is a FakeClock: real time
+	// does not advance during a test, so WithDeadline's own timer never
+	// fires there, and the explicit Advance() below does the job
+	// instead.
+	cctx, cancel := context.WithDeadline(ctx, c.clock.Now().Add(c.timeout))
+	timer := c.clock.NewTimer(c.timeout)
+	go func() {
+		select {
+		case <-timer.C():
+			cancel()
+		case <-cctx.Done():
+			timer.Stop()
+		}
+	}()
+	return cctx, cancel
 }
 
 // parseClassification distills the plugin's JSON object into a

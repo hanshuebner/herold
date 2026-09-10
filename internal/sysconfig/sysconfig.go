@@ -56,6 +56,25 @@ type Config struct {
 	// opt in. Supported providers: "mymemory" (free tier, default) and
 	// "deepl" (paid API requiring an api_key_ref).
 	Translation TranslationConfig `toml:"translation,omitempty"`
+	// Spam holds the classifier call budget (Wave 4.1, REQ-FILT-40/42).
+	Spam SpamConfig `toml:"spam,omitempty"`
+}
+
+// SpamConfig configures the spam classifier call the server makes after
+// SMTP DATA and on IMAP import (Wave 4.1, REQ-FILT-40/42).
+//
+// Example:
+//
+//	[spam]
+//	classify_timeout = "5s"
+type SpamConfig struct {
+	// ClassifyTimeout bounds the mail.classify RPC and is enforced by
+	// the server regardless of what the plugin's own model-call timeout
+	// is set to -- the sending MTA is waiting, so a slow or hung plugin
+	// must not stall the transaction past this budget. Default 5s when
+	// zero (internal/spam.DefaultTimeout). Only applies when the
+	// caller's context carries no deadline of its own.
+	ClassifyTimeout Duration `toml:"classify_timeout,omitempty"`
 }
 
 // PerformanceConfig configures the response-time budget enforced by
@@ -2951,6 +2970,15 @@ func Validate(c *Config) error {
 	}
 	if idle, abs := c.Server.UI.AdminIdleTTL.AsDuration(), c.Server.UI.AdminAbsoluteTTL.AsDuration(); idle > abs {
 		return fmt.Errorf("sysconfig: [server.ui] admin_idle_ttl %s exceeds admin_absolute_ttl %s", idle, abs)
+	}
+	// Spam classify budget (Wave 4.1, REQ-FILT-40/42, issue #301). Bounded
+	// to (0s, 60s]: zero/negative would either disable the timeout
+	// (nonsense, and spam.Classifier falls back to its own default
+	// instead of an unbounded call) or is an operator typo, and a budget
+	// above a minute holds an SMTP transaction open long enough to look
+	// like a hang to the sending MTA.
+	if dur := c.Spam.ClassifyTimeout.AsDuration(); dur < 0 || dur > time.Minute {
+		return fmt.Errorf("sysconfig: [spam] classify_timeout %s must be between 0 (default 5s) and 60s", dur)
 	}
 	// Elevation TTL (REQ-AUTH-74, issue #79). Bounded to [1m, 1h] to
 	// prevent operator misconfiguration that would either lock admins out

@@ -58,6 +58,7 @@ accept → authenticate (SPF/DKIM/DMARC/ARC) → score (compiled ruleset, in-pro
 - **REQ-FILT-41** If the LLM returns unparseable output past retry (1 retry by default), treat as `suspect` with `confidence=0.0` and log.
 - **REQ-FILT-42** Per-message classification SHOULD complete in ≤ 2s p95. Above threshold → accept anyway, mark `unknown`.
 - **REQ-FILT-43** Failure mode is observable: `herold_spam_classifier_{attempts,failures,timeouts}_total` + `herold_spam_classifier_latency_seconds` histogram.
+- **REQ-FILT-44** The classify-call budget is operator-settable (`[spam] classify_timeout` in `system.toml`, default 5s) and **enforced by the server regardless of the plugin's own timeout** -- the sending MTA is waiting, so a plugin that ignores its own configured timeout is still cut off at the server's budget and the mail is delivered unjudged (Wave 4.1, issue #301).
 
 ### Rate limiting and cost control
 

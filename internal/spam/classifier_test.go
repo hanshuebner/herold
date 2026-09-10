@@ -121,6 +121,67 @@ func TestClassify_TimeoutReturnsUnclassified(t *testing.T) {
 	}
 }
 
+// waitForWaiters polls until the fake clock has exactly n outstanding
+// waiters, per the convention documented in
+// internal/idpstalesweep/worker_test.go: the clock's own state is fully
+// deterministic (advanced only by explicit Advance calls), so the poll
+// loop only bridges goroutine-scheduling handoff, not wall-clock timing.
+func waitForWaiters(t *testing.T, clk *clock.FakeClock, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if clk.NumWaiters() == n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("NumWaiters never reached %d (stuck at %d)", n, clk.NumWaiters())
+}
+
+// TestClassify_BudgetCutoff_FakeClock covers Wave 4.1 / REQ-FILT-40/42
+// (issue #301): the server's classify budget cuts a plugin off even
+// though the plugin never returns on its own, and the cutoff is driven
+// by the injected Clock rather than a real sleep so the test is
+// deterministic.
+func TestClassify_BudgetCutoff_FakeClock(t *testing.T) {
+	invoker := newFakeInvoker()
+	started := make(chan struct{})
+	invoker.handle("slow", ClassifyMethod, func(ctx context.Context, _ any) (json.RawMessage, error) {
+		close(started)
+		<-ctx.Done() // the plugin "sleeps" past the budget
+		return nil, ctx.Err()
+	})
+
+	fc := clock.NewFake(time.Now())
+	c := New(invoker, silentLogger(), fc).WithTimeout(5 * time.Second)
+
+	type outcome struct {
+		r   Classification
+		err error
+	}
+	resultCh := make(chan outcome, 1)
+	go func() {
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "slow")
+		resultCh <- outcome{r, err}
+	}()
+
+	<-started
+	waitForWaiters(t, fc, 1)
+	fc.Advance(5 * time.Second)
+
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatal("expected an error when the budget is exceeded")
+		}
+		if got.r.Verdict != Unclassified {
+			t.Fatalf("verdict must be Unclassified on budget cutoff; got %v", got.r.Verdict)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Classify did not return after the fake clock advanced past the budget")
+	}
+}
+
 func TestClassify_PluginErrorReturnsUnclassified(t *testing.T) {
 	invoker := newFakeInvoker()
 	invoker.handle("broken", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {

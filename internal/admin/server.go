@@ -321,8 +321,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	dmarc := maildmarc.New(resolver)
 	arc := mailarc.New(resolver)
 
-	// Spam classifier.
+	// Spam classifier. ClassifyTimeout is operator-settable in system.toml
+	// (Wave 4.1, REQ-FILT-40/42, re #301); zero (unset) keeps
+	// spam.DefaultTimeout. The server enforces this budget regardless of
+	// the plugin's own model-call timeout -- see internal/spam.Classifier.
 	spamClassifier := spam.New(pluginInvoker{mgr: pluginMgr}, logger.With("subsystem", "spam"), clk)
+	if d := cfg.Spam.ClassifyTimeout.AsDuration(); d > 0 {
+		spamClassifier = spamClassifier.WithTimeout(d)
+	}
 	spamPluginName := firstPluginOfType(cfg.Plugin, "spam")
 
 	// Sieve interpreter.

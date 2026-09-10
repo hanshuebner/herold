@@ -493,6 +493,68 @@ tls = "starttls"
 	}
 }
 
+// TestParse_SpamClassifyTimeout covers Wave 4.1 (REQ-FILT-40/42, issue
+// #301): the classifier call budget is operator-settable in [spam] and
+// defaults to zero (internal/spam.DefaultTimeout applies at the
+// consumer).
+func TestParse_SpamClassifyTimeout(t *testing.T) {
+	const good = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[spam]
+classify_timeout = "10s"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Spam.ClassifyTimeout.AsDuration(); got != 10*time.Second {
+		t.Fatalf("classify_timeout = %v, want 10s", got)
+	}
+}
+
+func TestValidate_RejectsSpamClassifyTimeoutAboveCeiling(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[spam]
+classify_timeout = "5m"
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for classify_timeout=5m, got nil")
+	}
+	if !strings.Contains(err.Error(), "classify_timeout") {
+		t.Fatalf("error %q should mention classify_timeout", err.Error())
+	}
+}
+
 func TestParse_UnknownKeyRejected(t *testing.T) {
 	const bad = `
 [server]
