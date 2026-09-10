@@ -449,6 +449,27 @@ function applyAspectRatio(img: Element, w: number, h: number): void {
 }
 
 /**
+ * Normalizes a raw `cid:` URL reference (the part after the `cid:` prefix)
+ * the same way the server normalizes the `Content-ID` header it was sent
+ * with (`internal/protojmap/mail/email/render.go`'s
+ * `strings.Trim(raw, "<> \t")`): strip surrounding whitespace, then one
+ * enclosing pair of angle brackets if both are present, then whitespace
+ * again (for a value like `< smiley@forum >`). RFC 2392's `cid:` URL
+ * syntax never includes angle brackets -- the ASCII msg-id `<...>`
+ * delimiters are a `Content-ID` *header* convention -- but some senders
+ * copy the header's bracketed form verbatim into their own `cid:`
+ * reference (issue #306), and the map this looks up against is keyed by
+ * the server's already-unbracketed value.
+ */
+function normalizeCid(raw: string): string {
+  let cid = raw.trim();
+  if (cid.length >= 2 && cid.startsWith('<') && cid.endsWith('>')) {
+    cid = cid.slice(1, -1).trim();
+  }
+  return cid;
+}
+
+/**
  * Looks up `cid` in `map`, falling back to a case-insensitive scan of the
  * map's keys when the exact-case lookup misses (issue #306). RFC 2392 does
  * not mandate case folding for the Content-ID local part, but real-world
@@ -460,7 +481,8 @@ function applyAspectRatio(img: Element, w: number, h: number): void {
  * exact-case-only lookup left such a part chipped as a working attachment
  * (chip resolution does not go through this map) while its inline `<img>`
  * silently lost its `src` and fell through to the browser's broken-image
- * icon.
+ * icon. Callers are expected to pass a cid already run through
+ * `normalizeCid()`.
  */
 function lookupCid<T>(map: Record<string, T> | undefined, cid: string): T | undefined {
   if (!map) return undefined;
@@ -482,7 +504,7 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   // when present; otherwise leave the placeholder data attribute so the
   // user knows the image is missing.
   if (src.startsWith('cid:')) {
-    const cid = src.slice(4).trim();
+    const cid = normalizeCid(src.slice(4));
     const resolved = lookupCid(options.cidMap, cid);
     if (resolved) {
       img.setAttribute('src', resolved);

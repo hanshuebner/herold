@@ -95,6 +95,31 @@ describe('sanitizeHtml — cid: image rewrite', () => {
     expect(bodyOf(out)).toContain('src="/jmap/download/smiley.png"');
   });
 
+  // Issue #306 follow-up: the server trims a *header's* surrounding
+  // "<> \t" (internal/protojmap/mail/email/render.go), so cidMap is keyed
+  // by the un-bracketed Content-ID. A sender that copies the header's own
+  // bracketed form verbatim into its `cid:` HTML reference must still
+  // resolve against that same un-bracketed key.
+  it('strips a surrounding pair of angle brackets from the cid: reference', () => {
+    const html = '<p><img src="cid:<smiley@forum>" alt=":)"></p>';
+    const out = sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { 'smiley@forum': '/jmap/download/smiley.png' },
+    });
+    const body = bodyOf(out);
+    expect(body).toContain('src="/jmap/download/smiley.png"');
+    expect(body).not.toContain('data-herold-blocked');
+  });
+
+  it('strips whitespace inside a bracketed cid: reference', () => {
+    const html = '<p><img src="cid:< smiley@forum >" alt=":)"></p>';
+    const out = sanitizeHtml(html, {
+      loadImages: false,
+      cidMap: { 'smiley@forum': '/jmap/download/smiley.png' },
+    });
+    expect(bodyOf(out)).toContain('src="/jmap/download/smiley.png"');
+  });
+
   it('applies cidDimensions case-insensitively alongside a case-mismatched cidMap resolution', () => {
     const html = '<p><img src="cid:smiley@forum" alt=":)"></p>';
     const out = sanitizeHtml(html, {
