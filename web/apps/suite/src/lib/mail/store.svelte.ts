@@ -39,6 +39,7 @@ import {
   type SelectionOp,
 } from '../list-selection/range-select';
 import { appendPage, canLoadMore } from '../list-selection/paging';
+import { subAccounts } from './sub-accounts.svelte';
 import {
   allVisibleSelected,
   selectAllVisible as sharedSelectAllVisible,
@@ -177,6 +178,27 @@ class MailStore {
   emails = $state(new Map<string, Email>());
   threads = $state(new Map<string, Thread>());
   identities = $state(new Map<string, Identity>());
+  /**
+   * Owning accountId for any cached email that is NOT on this
+   * principal's own primary account (issue #212, REQ-MAIL-SUB-03/04).
+   * Absent (`.get(id) === undefined`) means "this principal's own
+   * account" -- the byte-for-byte default when no sub-account has ever
+   * contributed a row. Populated by:
+   *   - the combined-inbox merge (`#mergeCombinedInbox`) for a
+   *     separated identity's Inbox rows folded into the primary /mail
+   *     Inbox view;
+   *   - `mirrorScopedEmails()`, called by lib/mail/sub-accounts.svelte.ts
+   *     after it loads/opens a message in a scoped sub-account view, so
+   *     the SAME action methods below (which all resolve target
+   *     accountId through this map) work for scoped-view rows too
+   *     without a second, duplicated action implementation.
+   * `#emailSetUpdateBulk` and `loadThread` are the two read sites that
+   * make this map load-bearing; every bulk action (archive / delete /
+   * mark / move / label) routes through `#emailSetUpdateBulk`, so
+   * tagging a row here is sufficient to make every action on it target
+   * the right account.
+   */
+  emailAccountId = $state(new Map<string, string>());
 
   /** Which folder the generic list slice currently holds. */
   listFolder = $state<FolderID>('inbox');
@@ -257,6 +279,32 @@ class MailStore {
    */
   bulkJob = $state<BulkJobState | null>(null);
   #bulkJobPollTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Combined-inbox merge state (issue #212, REQ-MAIL-SUB-03). Non-null
+   * only while `listFolder === 'inbox'` and at least one separated
+   * identity exists: one entry per contributing source (this principal's
+   * own account plus every separated sub-account), each tracking its own
+   * Email/query position so "load more" can top up whichever source is
+   * running low without re-fetching or skipping anything. Null in every
+   * other case (including the whole single-account path when no
+   * separated identity exists), so `loadFolder`/`loadMoreFolder` fall
+   * straight through to their original, unchanged single-account
+   * behaviour -- see `#mergeCombinedInbox`.
+   */
+  #combinedInboxSources: Array<{
+    accountId: string;
+    mailboxId: string;
+    position: number;
+    exhausted: boolean;
+  }> | null = null;
+  /**
+   * Emails already fetched (from any combined-inbox source) but not yet
+   * placed into `listEmailIds` -- the buffer a merge round draws its next
+   * page from. Kept sorted is NOT an invariant; `#emitCombinedPage` sorts
+   * on every call, which is cheap at the bounded sizes involved (a
+   * handful of accounts x FOLDER_PAGE_SIZE each).
+   */
+  #combinedInboxPending: Email[] = [];
   /**
    * True while the current folder's last loaded page came back full
    * (`ids.length === FOLDER_PAGE_SIZE`), meaning an older page likely
@@ -403,6 +451,9 @@ class MailStore {
     this.emails = new Map();
     this.threads = new Map();
     this.identities = new Map();
+    this.emailAccountId = new Map();
+    this.#combinedInboxSources = null;
+    this.#combinedInboxPending = [];
     this.listFolder = 'inbox';
     this.listEmailIds = [];
     this.listLoadStatus = 'idle';
@@ -2032,6 +2083,18 @@ class MailStore {
       for (const t of threadResult.list) nextThreads.set(t.id, t);
       this.threads = nextThreads;
 
+      // Combined-inbox merge (issue #212, REQ-MAIL-SUB-03): fold every
+      // separated identity's own Inbox into this view, sorted by
+      // receivedAt across accounts. A no-op (leaves #combinedInboxSources
+      // null) when there are no separated identities, so the single-
+      // account path above is the entire behaviour in that case.
+      if (folder === 'inbox') {
+        await this.#initCombinedInbox(accountId, queryResult.ids.length === FOLDER_PAGE_SIZE);
+      } else {
+        this.#combinedInboxSources = null;
+        this.#combinedInboxPending = [];
+      }
+
       this.listLoadStatus = 'ready';
     } catch (err) {
       this.listLoadStatus = 'error';
@@ -2043,6 +2106,152 @@ class MailStore {
    * about generic folders. New code should call loadFolder('inbox'). */
   loadInbox(): Promise<void> {
     return this.loadFolder('inbox');
+  }
+
+  /**
+   * Fetch one combined-inbox source's next page (Email/query + Email/get
+   * on its own Inbox mailbox) and tag every returned email's owning
+   * account in `emailAccountId`. Used for both the primary account's own
+   * contribution and every separated sub-account's.
+   */
+  async #fetchInboxPage(
+    accountId: string,
+    mailboxId: string,
+    position: number,
+  ): Promise<Email[]> {
+    const { responses } = await jmap.batch((b) => {
+      const q = b.call(
+        'Email/query',
+        {
+          accountId,
+          filter: { inMailbox: mailboxId },
+          sort: [{ property: 'receivedAt', isAscending: false }],
+          collapseThreads: true,
+          position,
+          limit: FOLDER_PAGE_SIZE,
+          calculateTotal: false,
+        },
+        [Capability.Mail],
+      );
+      b.call(
+        'Email/get',
+        { accountId, '#ids': q.ref('/ids'), properties: EMAIL_LIST_PROPERTIES },
+        [Capability.Mail],
+      );
+    });
+    strict(responses);
+    const getResult = invocationArgs<{ list: Email[] }>(responses[1]);
+    if (accountId !== this.mailAccountId) {
+      const nextTags = new Map(this.emailAccountId);
+      for (const e of getResult.list) nextTags.set(e.id, accountId);
+      this.emailAccountId = nextTags;
+    }
+    return getResult.list;
+  }
+
+  /**
+   * Initialise combined-inbox state after the primary account's own
+   * Inbox page has already been fetched by `loadFolder`: seeds one
+   * source per separated identity, fetches each source's first page,
+   * merges everything (primary rows already in `listEmailIds` plus every
+   * sub-account's first page) into one receivedAt-sorted window, and
+   * replaces `listEmailIds`/`emails` with the merged result. A no-op
+   * (clears combined state) when there are no separated identities.
+   */
+  async #initCombinedInbox(primaryAccountId: string, primaryHasMore: boolean): Promise<void> {
+    const subs = subAccounts.list.filter((s) => s.identity && s.mailboxes.length > 0);
+    if (subs.length === 0) {
+      this.#combinedInboxSources = null;
+      this.#combinedInboxPending = [];
+      return;
+    }
+    const primaryInbox = this.#mailboxByRole('inbox');
+    if (!primaryInbox) {
+      this.#combinedInboxSources = null;
+      this.#combinedInboxPending = [];
+      return;
+    }
+    this.#combinedInboxSources = [
+      {
+        accountId: primaryAccountId,
+        mailboxId: primaryInbox.id,
+        position: this.listEmailIds.length,
+        exhausted: !primaryHasMore,
+      },
+    ];
+    // The primary page loadFolder already fetched is the first entry in
+    // the pending pool; everything after the merge-emit either stays
+    // visible or waits here for a later "load more" round.
+    this.#combinedInboxPending = this.listEmailIds
+      .map((id) => this.emails.get(id))
+      .filter((e): e is Email => e !== undefined);
+
+    for (const s of subs) {
+      const inbox = s.mailboxes.find((m) => m.role === 'inbox');
+      if (!inbox) continue;
+      const list = await this.#fetchInboxPage(s.accountId, inbox.id, 0);
+      this.#combinedInboxSources.push({
+        accountId: s.accountId,
+        mailboxId: inbox.id,
+        position: list.length,
+        exhausted: list.length < FOLDER_PAGE_SIZE,
+      });
+      this.#combinedInboxPending.push(...list);
+      const nextEmails = new Map(this.emails);
+      for (const e of list) nextEmails.set(e.id, e);
+      this.emails = nextEmails;
+    }
+
+    this.#emitCombinedPage(false);
+  }
+
+  /**
+   * Merge-sort the pending pool by receivedAt (ties by id, for
+   * determinism) and move the next `FOLDER_PAGE_SIZE` items into
+   * `listEmailIds`. `replace: false` appends (load-more); `true` replaces
+   * (initial load / a full re-merge).
+   */
+  #emitCombinedPage(append: boolean): void {
+    const sorted = mergeByReceivedAt(this.#combinedInboxPending);
+    const page = sorted.slice(0, FOLDER_PAGE_SIZE);
+    const pageIds = new Set(page.map((e) => e.id));
+    this.#combinedInboxPending = sorted.filter((e) => !pageIds.has(e.id));
+    this.listEmailIds = append
+      ? [...this.listEmailIds, ...page.map((e) => e.id)]
+      : page.map((e) => e.id);
+    const hasMoreSources = (this.#combinedInboxSources ?? []).some((s) => !s.exhausted);
+    this.listHasMore = this.#combinedInboxPending.length > 0 || hasMoreSources;
+  }
+
+  /**
+   * Combined-inbox "load more" (issue #212, REQ-MAIL-SUB-03): tops up any
+   * source whose contribution to the pending pool has run dry, then
+   * emits the next receivedAt-sorted page. Over-fetches slightly when
+   * several sources are simultaneously low (each gets a full
+   * FOLDER_PAGE_SIZE top-up) in exchange for a simple, always-correct
+   * cursor -- no message is ever skipped or duplicated across pages.
+   */
+  async #loadMoreCombinedInbox(): Promise<void> {
+    const sources = this.#combinedInboxSources;
+    if (!sources) return;
+    this.listLoadingMore = true;
+    try {
+      if (this.#combinedInboxPending.length < FOLDER_PAGE_SIZE) {
+        for (const s of sources) {
+          if (s.exhausted) continue;
+          const list = await this.#fetchInboxPage(s.accountId, s.mailboxId, s.position);
+          s.position += list.length;
+          s.exhausted = list.length < FOLDER_PAGE_SIZE;
+          this.#combinedInboxPending.push(...list);
+          const nextEmails = new Map(this.emails);
+          for (const e of list) nextEmails.set(e.id, e);
+          this.emails = nextEmails;
+        }
+      }
+      this.#emitCombinedPage(true);
+    } finally {
+      this.listLoadingMore = false;
+    }
   }
 
   /**
@@ -2234,6 +2443,13 @@ class MailStore {
         loadingMore: this.listLoadingMore,
       })
     ) {
+      return;
+    }
+    // Combined-inbox mode (issue #212, REQ-MAIL-SUB-03) has its own
+    // multi-source cursor; the single-account position-based paging
+    // below does not apply once more than one source is contributing.
+    if (this.#combinedInboxSources) {
+      await this.#loadMoreCombinedInbox();
       return;
     }
     const accountId = this.mailAccountId;
@@ -2452,13 +2668,69 @@ class MailStore {
    * Load a thread's emails with body content. Idempotent — already-loaded
    * threads are no-ops.
    */
+  /**
+   * Mirror a batch of scoped sub-account emails into this store's shared
+   * caches (issue #212, REQ-MAIL-SUB-04), tagging each with its owning
+   * accountId. Called by lib/mail/sub-accounts.svelte.ts after it loads
+   * or opens a message in a scoped sub-account view -- that store stays
+   * the source of truth for the scoped view's OWN rendering (its
+   * `emails`/`listStatus` are unchanged), but mirroring here lets the
+   * SAME bulk action methods below (move / delete / mark / label, all
+   * routed through `#emailSetUpdateBulk`, which resolves target account
+   * via `emailAccountId`) work on scoped-view rows too, without a second
+   * action implementation. Message ids are unique across the whole
+   * store (a single global sequence, not per-account), so merging scoped
+   * rows into the shared `emails` map alongside this principal's own
+   * cannot collide.
+   */
+  mirrorScopedEmails(accountId: string, emails: Email[]): void {
+    if (emails.length === 0) return;
+    const nextEmails = new Map(this.emails);
+    const nextTags = new Map(this.emailAccountId);
+    for (const e of emails) {
+      nextEmails.set(e.id, mergeEmailListFetch(nextEmails.get(e.id), e));
+      nextTags.set(e.id, accountId);
+    }
+    this.emails = nextEmails;
+    this.emailAccountId = nextTags;
+  }
+
+  /**
+   * Resolve which account owns `threadId` (issue #212, REQ-MAIL-SUB-03:
+   * opening a combined-inbox row folded in from a separated identity
+   * must fetch its thread from THAT account, not this principal's own).
+   * `emailAccountId` is keyed by email id, not thread id, so this scans
+   * for any already-cached email that both belongs to the thread and
+   * carries a tag -- the combined-inbox merge always caches the
+   * representative email (with its `.threadId`) before the thread is
+   * ever opened, so the scan below finds it on the very first open.
+   * Falls back to this principal's own account, matching the pre-#212
+   * behaviour when nothing is tagged.
+   */
+  #resolveThreadAccountId(threadId: string): string {
+    const thread = this.threads.get(threadId);
+    if (thread) {
+      for (const eid of thread.emailIds) {
+        const acc = this.emailAccountId.get(eid);
+        if (acc) return acc;
+      }
+    }
+    for (const e of this.emails.values()) {
+      if (e.threadId === threadId) {
+        const acc = this.emailAccountId.get(e.id);
+        if (acc) return acc;
+      }
+    }
+    return this.mailAccountId ?? '';
+  }
+
   async loadThread(threadId: string): Promise<void> {
     const status = this.threadStatus(threadId);
     if (status === 'loading' || status === 'ready') return;
     this.#setThreadStatus(threadId, 'loading');
     this.#clearThreadError(threadId);
     try {
-      const accountId = this.mailAccountId;
+      const accountId = this.#resolveThreadAccountId(threadId);
       if (!accountId) throw new Error('No Mail account on this session');
 
       const { responses } = await jmap.batch((b) => {
@@ -2641,7 +2913,7 @@ class MailStore {
    * stale cache in place rather than dropping the open thread.
    */
   async refreshThread(threadId: string): Promise<void> {
-    const accountId = this.mailAccountId;
+    const accountId = this.#resolveThreadAccountId(threadId);
     if (!accountId) return;
     const { responses } = await jmap.batch((b) => {
       const t = b.call(
@@ -3529,30 +3801,64 @@ class MailStore {
   }
 
   /**
-   * Issue a single `Email/set` with one entry in `update` per id. Used
-   * by every bulk action — archive / delete / mark / move — so the
-   * server gets one round-trip and we can present one summary toast.
+   * Issue one `Email/set` per distinct owning account, each carrying one
+   * `update` entry per id that resolves to that account. Used by every
+   * bulk action — archive / delete / mark / move / label — so the
+   * server gets one round-trip per account and we can present one
+   * summary toast across all of them.
+   *
+   * Account resolution (issue #212, REQ-MAIL-SUB-03/04): each id's
+   * target account is `emailAccountId.get(id) ?? mailAccountId` --
+   * this principal's own account by default, or whichever account
+   * `emailAccountId` tagged it with (a combined-inbox row folded in from
+   * a separated identity, or a scoped sub-account row mirrored in via
+   * `mirrorScopedEmails`). When every id resolves to the same account
+   * (the entire single-account path, byte-for-byte, since
+   * `emailAccountId` is empty absent any separated identity) this is
+   * exactly one `Email/set` call with exactly the shape it always had.
    */
   async #emailSetUpdateBulk(
     updates: Record<string, Record<string, unknown>>,
   ): Promise<{ updated: string[]; failed: Record<string, string> }> {
-    const accountId = this.mailAccountId;
-    if (!accountId) throw new Error('No Mail account on this session');
+    const groups = new Map<string, Record<string, Record<string, unknown>>>();
+    for (const [id, patch] of Object.entries(updates)) {
+      const accountId = this.emailAccountId.get(id) ?? this.mailAccountId;
+      if (!accountId) continue;
+      let g = groups.get(accountId);
+      if (!g) {
+        g = {};
+        groups.set(accountId, g);
+      }
+      g[id] = patch;
+    }
+    if (groups.size === 0) throw new Error('No Mail account on this session');
+
+    const accountIds = [...groups.keys()];
     const { responses } = await jmap.batch((b) => {
-      b.call('Email/set', { accountId, update: updates }, [Capability.Mail]);
+      for (const accountId of accountIds) {
+        b.call('Email/set', { accountId, update: groups.get(accountId) }, [Capability.Mail]);
+      }
     });
     strict(responses);
-    const result = invocationArgs<{
-      newState?: string;
-      updated?: Record<string, unknown> | null;
-      notUpdated?: Record<string, { type: string; description?: string }>;
-    }>(responses[0]);
-    this.#captureEmailSetNewState(result);
-    const updated = Object.keys(result.updated ?? {});
+
+    const updated: string[] = [];
     const failed: Record<string, string> = {};
-    for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
-      failed[id] = setErrorToUserMessage(info);
-    }
+    accountIds.forEach((accountId, i) => {
+      const result = invocationArgs<{
+        newState?: string;
+        updated?: Record<string, unknown> | null;
+        notUpdated?: Record<string, { type: string; description?: string }>;
+      }>(responses[i]);
+      // The store's own emailState/newState tracking only covers this
+      // principal's own account -- a sub-account's state string is its
+      // own concern (lib/mail/sub-accounts.svelte.ts's per-account
+      // EventSource handling), not this store's.
+      if (accountId === this.mailAccountId) this.#captureEmailSetNewState(result);
+      updated.push(...Object.keys(result.updated ?? {}));
+      for (const [id, info] of Object.entries(result.notUpdated ?? {})) {
+        failed[id] = setErrorToUserMessage(info);
+      }
+    });
     // Refresh sidebar mailbox counts after a bulk mutation. Issue #24.
     this.#refreshMailboxesSoon();
     return { updated, failed };
@@ -4841,6 +5147,25 @@ function formatSnoozeTarget(d: Date): string {
  *    all body-only fields from the existing entry.
  *  - Neither has `bodyValues` → plain list-to-list update; use incoming.
  */
+/**
+ * Merge-sort a pool of emails -- gathered from one or several JMAP
+ * accounts -- into one list ordered by `receivedAt` descending (issue
+ * #212, REQ-MAIL-SUB-03: the combined Inbox is "a unified merge...
+ * sorted by receivedAt"). Ties break on `id` descending purely for a
+ * deterministic, stable order across re-renders; `id` carries no
+ * temporal meaning across accounts (message ids are allocated from one
+ * global sequence in the store, but that is an implementation detail
+ * this function does not rely on beyond "some deterministic tiebreak").
+ * Pure and side-effect-free so it is unit-testable without a live store.
+ */
+export function mergeByReceivedAt(emails: Email[]): Email[] {
+  return [...emails].sort((a, b) => {
+    const byDate = b.receivedAt.localeCompare(a.receivedAt);
+    if (byDate !== 0) return byDate;
+    return b.id.localeCompare(a.id);
+  });
+}
+
 export function mergeEmailListFetch(existing: Email | undefined, incoming: Email): Email {
   if (incoming.bodyValues !== undefined) return incoming;
   if (existing?.bodyValues === undefined) return incoming;
