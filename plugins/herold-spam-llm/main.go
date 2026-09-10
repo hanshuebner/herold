@@ -12,7 +12,13 @@
 //   - endpoint (string, default "http://localhost:11434/v1"): base URL of
 //     the OpenAI-compatible server. {endpoint}/chat/completions and
 //     {endpoint}/models are used.
-//   - model (string, default "llama3.2"): chat-completions model name.
+//   - model (string, REQUIRED): chat-completions model name. There is no
+//     default: the measured evaluation in
+//     docs/design/server/implementation/07-spam-and-policy-plan.md found
+//     the previous default (llama3.2) misfiled roughly one real message
+//     in three, so the operator must choose a model on the evidence in
+//     that table rather than inherit a working-looking default that is
+//     not.
 //   - api_key (string, secret): the bearer token sent as
 //     "Authorization: Bearer <api_key>". Must be a "$VAR" or "file:/path"
 //     reference in system.toml (STANDARDS section 9); the server resolves
@@ -77,8 +83,10 @@ import (
 // Configure time. Keep the defaults conservative: local Ollama, small
 // model, short timeout. Cloud endpoints are opt-in (REQ-FILT-61).
 const (
-	defaultEndpoint       = "http://localhost:11434/v1"
-	defaultModel          = "llama3.2"
+	defaultEndpoint = "http://localhost:11434/v1"
+	// There is no default model (Wave 4.1): the measured evaluation found
+	// the withdrawn default misfiled about one real message in three, so
+	// the operator must set the model option explicitly.
 	defaultTimeoutSec     = 5
 	defaultThreshold      = 0.7
 	defaultMaxBodyChars   = 4000
@@ -186,7 +194,6 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 
 	cfg := options{
 		endpoint:       defaultEndpoint,
-		model:          defaultModel,
 		timeout:        time.Duration(defaultTimeoutSec) * time.Second,
 		spamThreshold:  defaultThreshold,
 		systemPrompt:   builtinSystemPrompt,
@@ -217,6 +224,13 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 			return errors.New("model must be non-empty")
 		}
 		cfg.model = s
+	}
+	if cfg.model == "" {
+		// Wave 4.1: no default model. The withdrawn default (llama3.2)
+		// misfiled roughly one real message in three in the measured
+		// evaluation; requiring an explicit choice keeps that failure
+		// mode from shipping quietly again.
+		return errors.New("model is required: no default model is shipped (see docs/design/server/implementation/07-spam-and-policy-plan.md for measured options)")
 	}
 	haveAPIKey := false
 	if v, ok := opts["api_key"]; ok {
@@ -799,7 +813,7 @@ func main() {
 		Temperature: sdk.PinnedTemperature(),
 		OptionsSchema: map[string]plug.OptionSchema{
 			"endpoint":               {Type: "string", Default: defaultEndpoint},
-			"model":                  {Type: "string", Default: defaultModel},
+			"model":                  {Type: "string", Required: true},
 			"api_key":                {Type: "string", Secret: true},
 			"api_key_env":            {Type: "string", Secret: true},
 			"timeout_sec":            {Type: "integer", Default: defaultTimeoutSec},

@@ -33,8 +33,8 @@ accept → authenticate (SPF/DKIM/DMARC/ARC) → score (compiled ruleset, in-pro
 ### Endpoint
 
 - **REQ-FILT-10** The classifier is reached via an HTTP endpoint speaking **OpenAI-compatible chat completions** (`POST /v1/chat/completions`). This covers: Ollama, llama.cpp server, vLLM, LocalAI, OpenAI, Anthropic (via compat gateway), Groq, Azure OpenAI, and any other OpenAI-compat inference service.
-- **REQ-FILT-11** Default endpoint: `http://localhost:11434/v1` (Ollama default). Default model name: operator-configured (recommend `llama3.2:3b` or similar small local model).
-- **REQ-FILT-12** Operator configures in application config: endpoint URL, API key (optional), model name, system prompt (overridable), temperature (default 0), max tokens, request timeout, daily request budget (optional).
+- **REQ-FILT-11** Default endpoint: `http://localhost:11434/v1` (Ollama default). There is no default model: the operator must configure one. The measured evaluation in `docs/design/server/implementation/07-spam-and-policy-plan.md` found the previously-recommended `llama3.2:3b` misfiled roughly one real message in three, so herold ships no model recommendation and points operators at that table instead.
+- **REQ-FILT-12** Operator configures in application config: endpoint URL, API key (optional), model name (required, no default), system prompt (overridable), max tokens, request timeout, daily request budget (optional). Temperature is **pinned to 0**, not merely configurable: a classifier's verdict must be reproducible, and the plugin manifest declares the pin (`docs/design/server/implementation/08-classifier-plugin.md`) so the supervisor can refuse a plugin that does not.
 - **REQ-FILT-13** The classifier is implemented as the **default spam plugin** (`REQ-PLUG`). Operators can replace it with any plugin conforming to the spam-classifier contract — for example, a custom fine-tuned model, a cloud API with a different protocol, or a purely deterministic plugin for testing.
 
 ### Prompt shape (built-in, customizable)

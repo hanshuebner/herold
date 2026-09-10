@@ -542,6 +542,26 @@ func TestClassify_ContextDeadlineWins(t *testing.T) {
 	}
 }
 
+// TestConfigure_ModelRequired covers Wave 4.1 (issue #301): there is no
+// default model, so Configure must fail, naming the "model" option, when
+// it is omitted.
+func TestConfigure_ModelRequired(t *testing.T) {
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	err := p.configure(t, map[string]any{
+		"endpoint": "http://localhost:11434/v1",
+	})
+	if err == nil {
+		t.Fatalf("expected configure to fail with no model configured")
+	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Fatalf("error %v does not name the model option", err)
+	}
+}
+
 func TestConfigure_UnknownOptionRejected(t *testing.T) {
 	bin := buildPlugin(t)
 	p := spawnPlugin(t, bin)
@@ -571,6 +591,7 @@ func TestConfigure_APIKeyEnvResolution(t *testing.T) {
 	_ = os.Unsetenv(unsetVar)
 	err := p.configure(t, map[string]any{
 		"endpoint":    "http://localhost:11434/v1",
+		"model":       "fake",
 		"api_key_env": unsetVar,
 	})
 	if err == nil {
@@ -589,6 +610,7 @@ func TestConfigure_ThresholdRange(t *testing.T) {
 	p.initialize(t)
 	err := p.configure(t, map[string]any{
 		"endpoint":       "http://localhost:11434/v1",
+		"model":          "fake",
 		"spam_threshold": 1.5,
 	})
 	if err == nil {
@@ -767,6 +789,7 @@ func TestConfigure_ResponseFormatRejectsUnknownValue(t *testing.T) {
 	p.initialize(t)
 	err := p.configure(t, map[string]any{
 		"endpoint":        "http://localhost:11434/v1",
+		"model":           "fake",
 		"response_format": "yaml",
 	})
 	if err == nil {
@@ -935,6 +958,7 @@ func TestConfigure_APIKeyEnvResolvedSecretRejected(t *testing.T) {
 	p.initialize(t)
 	err := p.configure(t, map[string]any{
 		"endpoint":    "http://localhost:11434/v1",
+		"model":       "fake",
 		"api_key_env": "sk-resolved-secret-with-dashes!",
 	})
 	if err == nil {

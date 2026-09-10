@@ -83,7 +83,9 @@ path = "/usr/lib/herold/plugins/herold-spam-llm"
 type = "spam"
 lifecycle = "long-running"
 options.endpoint = "http://localhost:11434/v1"
-options.model = "llama3.2:3b"
+# model has no default (Wave 4.1); choose one on the evidence in
+# docs/design/server/implementation/07-spam-and-policy-plan.md
+options.model = "<operator-chosen model>"
 
 [directory.internal]
 enabled = true
