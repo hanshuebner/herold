@@ -56,10 +56,14 @@ type accountWorkerOpts struct {
 	store       store.Store
 	dataKey     []byte
 	categoriser Categoriser
-	cfg         sysconfig.IMAPImportConfig
-	log         *slog.Logger
-	clk         clock.Clock
-	dialer      Dialer
+	// spamClassifier is the optional spam-classification seam (REQ-FILT-02,
+	// issue #300). Nil is valid -- ingestMessage guards with a nil check --
+	// though Pool always defaults it to noopSpamClassifier.
+	spamClassifier SpamClassifier
+	cfg            sysconfig.IMAPImportConfig
+	log            *slog.Logger
+	clk            clock.Clock
+	dialer         Dialer
 
 	// maxConsecutiveFailures overrides the package-level constant for
 	// tests that need a small M to keep execution fast. Zero means use

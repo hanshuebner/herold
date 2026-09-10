@@ -917,17 +917,30 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		logger.With("subsystem", "imap-import-categoriser"),
 	)
 
+	// IMAP import spam-classification adapter (REQ-FILT-02, issue #300). The
+	// same spam.Classifier instance and plugin name SMTP delivery uses
+	// (constructed above, spamClassifier / spamPluginName) are reused here so
+	// a single classifier plugin backs both delivery paths.
+	imapImportSpamAdapter := newIMAPImportSpamAdapter(
+		spamClassifier,
+		spamPluginName,
+		st,
+		clk,
+		logger.With("subsystem", "imap-import-spam"),
+	)
+
 	// IMAP import worker pool (REQ-IMAP-IMP-26, wave 5). Constructed before
 	// adminServerOpts so the pool pointer can be passed as IMAPImportStatus.
 	// Dialer is nil (pool defaults to the production dialer, which wires
 	// OAuth from cfg.IMAPImport.OAuth via accountWorker.tokenSourceForProvider).
 	imapImportPool := imapimport.NewPool(imapimport.PoolOptions{
-		Store:       st,
-		DataKey:     imapImportDataKey,
-		Categoriser: imapImportCatAdapter,
-		Config:      cfg.IMAPImport,
-		Logger:      logger.With("subsystem", "imap-import"),
-		Clock:       clk,
+		Store:          st,
+		DataKey:        imapImportDataKey,
+		Categoriser:    imapImportCatAdapter,
+		SpamClassifier: imapImportSpamAdapter,
+		Config:         cfg.IMAPImport,
+		Logger:         logger.With("subsystem", "imap-import"),
+		Clock:          clk,
 	})
 
 	// Admin HTTP handler: the real protoadmin server. Options defaults

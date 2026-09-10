@@ -330,7 +330,12 @@ func (w *accountWorker) fetchAndIngestLabels(
 			ingestErr      error
 		)
 		for i, name := range names {
-			isNew, isNewMember, msgID, mbID, e := w.ingestMessage(ctx, lm.fetchedMessage, gmailAllMail, name)
+			// #300: liveArrival mirrors categorise -- spam classification of
+			// an INBOX-mapped placement is gated the same way LLM
+			// categorisation already is (REQ-IMAP-IMP-31 / D1). A spam
+			// verdict can redirect the INBOX placement to Junk, so gate
+			// inboxNewMember below on finalMailbox, not the requested name.
+			isNew, isNewMember, msgID, mbID, finalMailbox, e := w.ingestMessage(ctx, lm.fetchedMessage, gmailAllMail, name, categorise)
 			if e != nil {
 				ingestErr = e
 				break
@@ -342,7 +347,7 @@ func (w *accountWorker) fetchAndIngestLabels(
 			if isNew {
 				anyNew = true
 			}
-			if isNewMember && strings.EqualFold(name, "INBOX") {
+			if isNewMember && strings.EqualFold(finalMailbox, "INBOX") {
 				inboxNewMember = true
 			}
 		}

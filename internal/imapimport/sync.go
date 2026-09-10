@@ -27,6 +27,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -452,7 +453,7 @@ func (w *accountWorker) fetchAndIngest(
 		if lowestUID == 0 || uid < lowestUID {
 			lowestUID = uid
 		}
-		isNew, isNewMember, msgID, mbID, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox)
+		isNew, isNewMember, msgID, mbID, finalMailbox, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox, categorise)
 		if ingestErr != nil {
 			w.opts.log.Warn("imapimport: ingest failed",
 				slog.String("account_id", account.ID),
@@ -499,7 +500,13 @@ func (w *accountWorker) fetchAndIngest(
 		// is synced and the dedup path adds the membership (isNew=false but
 		// isNewMember=true, mailbox == INBOX so categorise fires). Without this
 		// check the message would never receive a $category-* keyword (re #27).
-		if isNewMember && categorise && strings.EqualFold(heroldMailbox, "INBOX") {
+		//
+		// Gated on finalMailbox rather than heroldMailbox (#300): a spam
+		// verdict can route a message that was folder-mapped to INBOX into
+		// Junk instead (resolveImportSpamTarget), and Junk mail is never
+		// categorised, mirroring protosmtp's classification.Verdict !=
+		// spam.Spam gate.
+		if isNewMember && categorise && strings.EqualFold(finalMailbox, "INBOX") {
 			if catErr := w.opts.categoriser.Categorise(ctx, fmt.Sprint(account.PrincipalID), fmt.Sprint(msgID), heroldMailbox); catErr != nil {
 				w.opts.log.Warn("imapimport: categorise failed (non-fatal)",
 					slog.String("account_id", account.ID),
@@ -513,15 +520,18 @@ func (w *accountWorker) fetchAndIngest(
 }
 
 // ingestMessage inserts fm into the herold store. Returns (isNew,
-// isNewMember, heroldMessageID, heroldMailboxID, error). isNew is false when
-// the message already existed (dedup hit). isNewMember is true when the
-// message was just placed into heroldMailbox for the first time — either as a
-// fresh insert (isNew=true) or as a dedup hit where AddMessageToMailbox
-// created the membership now (isNew=false). isNewMember is false when the
-// message was already a member of heroldMailbox before this call (e.g. a
-// second sync pass of the same folder). Callers use isNewMember, not isNew,
-// to decide whether to run the categoriser so that categorisation happens
-// regardless of which upstream folder is synced first (re #27).
+// isNewMember, heroldMessageID, heroldMailboxID, finalMailbox, error).
+// isNew is false when the message already existed (dedup hit). isNewMember
+// is true when the message was just placed into heroldMailbox for the first
+// time — either as a fresh insert (isNew=true) or as a dedup hit where
+// AddMessageToMailbox created the membership now (isNew=false). isNewMember
+// is false when the message was already a member of heroldMailbox before
+// this call (e.g. a second sync pass of the same folder). Callers use
+// isNewMember, not isNew, to decide whether to run the categoriser so that
+// categorisation happens regardless of which upstream folder is synced
+// first (re #27). finalMailbox is the herold mailbox the message actually
+// landed in: normally heroldMailbox verbatim, except when spam
+// classification (below) redirected an INBOX-mapped fresh insert to Junk.
 //
 // On any error, msgID and mbID are still populated where known so the caller
 // can record the import state.
@@ -533,11 +543,20 @@ func (w *accountWorker) fetchAndIngest(
 // K upstream folders -> K herold mailbox memberships" correct for any
 // IMAP account. Re-fetching the SAME folder is a no-op (the membership
 // already exists), keeping TestDedup green.
+//
+// liveArrival mirrors the categorise flag fetchAndIngest already carries:
+// true only for genuine live arrivals on an already-initialised folder,
+// false across the initial/historical backfill and the lowered-horizon
+// re-scan. Spam classification (spam.go) is gated on it exactly like LLM
+// categorisation (REQ-IMAP-IMP-31 / D1) and only ever runs on a fresh
+// insert mapped to INBOX -- a dedup hit was already classified, if at all,
+// the first time it was mirrored or delivered.
 func (w *accountWorker) ingestMessage(
 	ctx context.Context,
 	fm fetchedMessage,
 	upstreamFolder, heroldMailbox string,
-) (isNew bool, isNewMember bool, msgID store.MessageID, mbID store.MailboxID, retErr error) {
+	liveArrival bool,
+) (isNew bool, isNewMember bool, msgID store.MessageID, mbID store.MailboxID, finalMailbox string, retErr error) {
 	account := w.opts.account
 	principalID := store.PrincipalID(account.PrincipalID)
 
@@ -557,7 +576,7 @@ func (w *accountWorker) ingestMessage(
 	opts.StrictCharset = false
 	msg, parseErr := mailparse.Parse(bytes.NewReader(fm.RFC822), opts)
 	if parseErr != nil {
-		return false, false, 0, 0, fmt.Errorf("mailparse.Parse: %w", parseErr)
+		return false, false, 0, 0, "", fmt.Errorf("mailparse.Parse: %w", parseErr)
 	}
 
 	// Dedup by Message-ID (primary, REQ-IMAP-IMP-30).
@@ -567,10 +586,10 @@ func (w *accountWorker) ingestMessage(
 		existing, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID)
 		if lookupErr == nil {
 			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
-			return false, newMember, eid, embID, placeErr
+			return false, newMember, eid, embID, heroldMailbox, placeErr
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
-			return false, false, 0, 0, fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)
+			return false, false, 0, 0, "", fmt.Errorf("imapimport: GetMessageByMessageIDHeader: %w", lookupErr)
 		}
 		// ErrNotFound -> proceed with insert.
 	}
@@ -579,7 +598,7 @@ func (w *accountWorker) ingestMessage(
 	// fallback dedup key for messages that have no usable Message-ID.
 	blobRef, putErr := w.opts.store.Blobs().Put(ctx, bytes.NewReader(fm.RFC822))
 	if putErr != nil {
-		return false, false, 0, 0, fmt.Errorf("imapimport: Blobs.Put: %w", putErr)
+		return false, false, 0, 0, "", fmt.Errorf("imapimport: Blobs.Put: %w", putErr)
 	}
 
 	// Dedup by blob_hash (fallback) when there is no Message-ID, matching the
@@ -590,18 +609,48 @@ func (w *accountWorker) ingestMessage(
 		existing, lookupErr := w.opts.store.Meta().GetMessageByBlobHash(ctx, principalID, blobRef.Hash)
 		if lookupErr == nil {
 			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
-			return false, newMember, eid, embID, placeErr
+			return false, newMember, eid, embID, heroldMailbox, placeErr
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
-			return false, false, 0, 0, fmt.Errorf("imapimport: GetMessageByBlobHash: %w", lookupErr)
+			return false, false, 0, 0, "", fmt.Errorf("imapimport: GetMessageByBlobHash: %w", lookupErr)
 		}
 		// ErrNotFound -> proceed with insert.
 	}
 
+	// Spam classification (REQ-FILT-02, issue #300): only for a fresh
+	// insert, mapped to INBOX by the folder mapping, on a genuine live
+	// arrival. A message the source already filed in its own Junk-
+	// attributed folder never reaches this point with heroldMailbox ==
+	// "INBOX", so it is never classified. The verdict picks the effective
+	// target mailbox before InsertMessage ever runs: spam is routed to
+	// Junk instead of INBOX; suspect stays in INBOX and gains the "$Junk"
+	// keyword; ham/unclassified stays in INBOX -- the same mapping SMTP
+	// delivery's resolveSieveTargets applies to its ImplicitKeep default.
+	effectiveMailbox := heroldMailbox
+	var spamKeywords []string
+	var classification spam.Classification
+	classified := false
+	if liveArrival && w.opts.spamClassifier != nil && strings.EqualFold(heroldMailbox, "INBOX") {
+		classification = w.opts.spamClassifier.Classify(ctx, msg)
+		classified = true
+		spamTarget := resolveImportSpamTarget(classification.Verdict)
+		effectiveMailbox = spamTarget.mailbox
+		spamKeywords = spamTarget.keywords
+	}
+
 	// Ensure the target herold mailbox exists.
-	mb, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
+	mb, mbErr := w.ensureMailbox(ctx, principalID, effectiveMailbox)
 	if mbErr != nil {
-		return false, false, 0, 0, fmt.Errorf("imapimport: ensureMailbox %q: %w", heroldMailbox, mbErr)
+		return false, false, 0, 0, "", fmt.Errorf("imapimport: ensureMailbox %q: %w", effectiveMailbox, mbErr)
+	}
+
+	// re #143 / #300: record the delivery disposition the same way the
+	// SMTP ingest path does (protosmtp/deliver.go) -- derived once from
+	// the resolved target mailbox's Junk special-use attribute, never
+	// recomputed later from live mailbox membership.
+	disposition := store.DeliveryDispositionInbox
+	if mb.Attributes&store.MailboxAttrJunk != 0 {
+		disposition = store.DeliveryDispositionJunk
 	}
 
 	// Build the store.Message. InternalDate and ReceivedAt are both set
@@ -609,23 +658,25 @@ func (w *accountWorker) ingestMessage(
 	// (REQ-IMAP-IMP-32 byte-fidelity). ThreadID is left 0; threading
 	// is handled store-side via InsertMessage's reference-chain walk.
 	storeMsg := store.Message{
-		PrincipalID:  principalID,
-		Size:         int64(len(fm.RFC822)),
-		Blob:         blobRef,
-		InternalDate: fm.InternalDate,
-		ReceivedAt:   fm.InternalDate,
-		Envelope:     envelopeFromParsed(msg),
+		PrincipalID:         principalID,
+		Size:                int64(len(fm.RFC822)),
+		Blob:                blobRef,
+		InternalDate:        fm.InternalDate,
+		ReceivedAt:          fm.InternalDate,
+		Envelope:            envelopeFromParsed(msg),
+		DeliveryDisposition: disposition,
 	}
 
 	flags := storeFlagsFromIMAP(fm.Flags)
 	target := store.MessageMailbox{
 		MailboxID: mb.ID,
 		Flags:     flags,
+		Keywords:  spamKeywords,
 	}
 
 	_, _, insertErr := w.opts.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
 	if insertErr != nil {
-		return false, false, 0, 0, fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
+		return false, false, 0, 0, "", fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
 	}
 
 	// Retrieve the assigned MessageID for state recording. InsertMessage does
@@ -647,8 +698,15 @@ func (w *accountWorker) ingestMessage(
 	// Tag with the per-account provenance label (REQ-IMAP-IMP-100).
 	w.addProvenanceLabel(ctx, assignedMsgID)
 
-	// Fresh insert: the message is a new member of heroldMailbox.
-	return true, true, assignedMsgID, mb.ID, nil
+	// Persist the spam-classification transparency record (REQ-FILT-66),
+	// mirroring protosmtp's persistLLMRecord. Fire-and-forget: RecordVerdict
+	// never blocks or fails the import.
+	if classified {
+		w.opts.spamClassifier.RecordVerdict(ctx, principalID, assignedMsgID, msg, classification)
+	}
+
+	// Fresh insert: the message is a new member of effectiveMailbox.
+	return true, true, assignedMsgID, mb.ID, effectiveMailbox, nil
 }
 
 // placeExistingMessage handles a dedup hit: the message `existing` is already

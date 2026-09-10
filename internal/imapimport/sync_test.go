@@ -142,6 +142,18 @@ func runSyncOnce(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc s
 // exercise operator-wide policy (e.g. the system default folder map,
 // REQ-IMAP-IMP-11).
 func runSyncOnceCfg(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, cfg sysconfig.IMAPImportConfig) error {
+	return runSyncOnceCfgSpam(t, ha, ts, acc, cat, nil, cfg)
+}
+
+// runSyncOnceSpam is runSyncOnce with an explicit SpamClassifier so tests
+// can exercise the #300 spam-routing seam (REQ-FILT-02).
+func runSyncOnceSpam(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, spamCl SpamClassifier) error {
+	return runSyncOnceCfgSpam(t, ha, ts, acc, cat, spamCl, sysconfig.IMAPImportConfig{})
+}
+
+// runSyncOnceCfgSpam is the shared implementation behind runSyncOnce,
+// runSyncOnceCfg, and runSyncOnceSpam.
+func runSyncOnceCfgSpam(t *testing.T, ha *testharness.Server, ts *testIMAPServer, acc store.IMAPImportAccount, cat Categoriser, spamCl SpamClassifier, cfg sysconfig.IMAPImportConfig) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -149,16 +161,20 @@ func runSyncOnceCfg(t *testing.T, ha *testharness.Server, ts *testIMAPServer, ac
 	if cat == nil {
 		cat = noopCategoriser{}
 	}
+	if spamCl == nil {
+		spamCl = noopSpamClassifier{}
+	}
 
 	w := newAccountWorker(accountWorkerOpts{
-		account:     acc,
-		store:       ha.Store,
-		dataKey:     testDataKey(t),
-		cfg:         cfg,
-		log:         newTestLogger(t),
-		clk:         ha.Clock,
-		dialer:      &fakeDialer{ts: ts},
-		categoriser: cat,
+		account:        acc,
+		store:          ha.Store,
+		dataKey:        testDataKey(t),
+		cfg:            cfg,
+		log:            newTestLogger(t),
+		clk:            ha.Clock,
+		dialer:         &fakeDialer{ts: ts},
+		categoriser:    cat,
+		spamClassifier: spamCl,
 	})
 
 	// Dial once and run a single syncAllFolders pass without entering

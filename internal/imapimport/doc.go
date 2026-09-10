@@ -22,6 +22,10 @@
 //     tests can inject a fake token endpoint.
 //   - Categoriser: seam for the optional LLM categorisation step (3c).
 //     Defined but unused in 3a.
+//   - SpamClassifier: seam for optional spam classification of newly
+//     imported INBOX-mapped mail (REQ-FILT-02, issue #300). Routes a
+//     spam verdict to Junk and a suspect verdict to INBOX + "$Junk"
+//     before InsertMessage runs; see spam.go.
 //
 // Security properties maintained across all sub-steps:
 //   - Credentials are opened by the accountWorker immediately before
