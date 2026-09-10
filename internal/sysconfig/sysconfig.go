@@ -2193,7 +2193,7 @@ var (
 	}
 	validTLSModes    = map[string]struct{}{"none": {}, "starttls": {}, "implicit": {}}
 	validLifecycles  = map[string]struct{}{"long-running": {}, "on-demand": {}}
-	validPluginType  = map[string]struct{}{"dns": {}, "spam": {}, "events": {}, "directory": {}, "delivery": {}}
+	validPluginType  = map[string]struct{}{"dns": {}, "spam": {}, "classifier": {}, "events": {}, "directory": {}, "delivery": {}}
 	validLogLevels   = map[string]struct{}{"trace": {}, "debug": {}, "info": {}, "warn": {}, "error": {}}
 	validLogFormats  = map[string]struct{}{"json": {}, "text": {}, "console": {}, "auto": {}}
 	validSinkFormats = map[string]struct{}{"json": {}, "console": {}, "auto": {}}

@@ -88,10 +88,21 @@ type DNSHandler interface {
 	DNSReplace(ctx context.Context, in DNSPresentParams) (DNSPresentResult, error)
 }
 
-// SpamHandler corresponds to the spam.* methods.
+// SpamHandler corresponds to the spam.* methods. Retained for one release
+// (issue #304 Decision 3) alongside ClassifierHandler: the supervisor
+// still accepts plugin type "spam" and treats it as a classifier that
+// never returns a category.
 type SpamHandler interface {
 	SpamClassify(ctx context.Context, in SpamClassifyParams) (SpamClassifyResult, error)
 	SpamHealth(ctx context.Context) (SpamHealthResult, error)
+}
+
+// ClassifierHandler corresponds to the mail.classify method (plugin type
+// "classifier", REQ-FILT-13, Wave 4.3). One call answers both the spam
+// verdict and the category, replacing SpamHandler.SpamClassify and
+// internal/categorise's direct HTTP call.
+type ClassifierHandler interface {
+	MailClassify(ctx context.Context, in MailClassifyParams) (MailClassifyResult, error)
 }
 
 // EventsHandler corresponds to the events.* methods.
@@ -250,6 +261,54 @@ type SpamHealthResult struct {
 	LatencyMsP int64 `json:"latency_ms_p50,omitempty"`
 }
 
+// MailClassifyContext carries what the operator granted a classifier
+// plugin for one mail.classify call (REQ-FILT-210, ADR-0002): who the
+// message is for, where it is headed, the principal's own policy prose,
+// and the category vocabulary the plugin may pick from. A category named
+// outside Categories is ignored and logged by the server (REQ-FILT-230).
+type MailClassifyContext struct {
+	// Principal is an opaque identifier (the recipient principal's
+	// numeric id, as a string) a plugin may use as a state-scoping key.
+	// Empty when the message has no local recipient.
+	Principal string `json:"principal,omitempty"`
+	// RecipientDomain is the domain part of the recipient address.
+	RecipientDomain string `json:"recipient_domain,omitempty"`
+	// Prompt is the principal's own categorisation policy in their own
+	// words (REQ-FILT-211), with any operator guardrail prepended
+	// (REQ-FILT-67). Empty when categorisation is disabled for this
+	// principal or no local recipient was found.
+	Prompt string `json:"prompt,omitempty"`
+	// Categories is the principal's stored category set (REQ-FILT-210).
+	// Empty when categorisation is disabled.
+	Categories []MailClassifyCategory `json:"categories,omitempty"`
+}
+
+// MailClassifyCategory is one entry in MailClassifyContext.Categories.
+type MailClassifyCategory struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// MailClassifyParams is the payload for mail.classify (plugin type
+// "classifier", Wave 4.3). The embedded SpamClassifyParams carries the
+// same message projection spam.classify sends; Context adds what a
+// classifier needs to also answer the category question in the same
+// call.
+type MailClassifyParams struct {
+	SpamClassifyParams
+	Context MailClassifyContext `json:"context"`
+}
+
+// MailClassifyResult is the verdict AND category for one message.
+// Category is optional (REQ-FILT-230): empty means uncategorised, and
+// the server applies its structural fallback categoriser instead.
+type MailClassifyResult struct {
+	Verdict    string  `json:"verdict"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason,omitempty"`
+	Category   string  `json:"category,omitempty"`
+}
+
 // EventsSubscribeParams is sent once at configure time.
 type EventsSubscribeParams struct {
 	Types  []string       `json:"types"`
@@ -332,6 +391,8 @@ const (
 
 	MethodSpamClassify = "spam.classify"
 	MethodSpamHealth   = "spam.health"
+
+	MethodMailClassify = "mail.classify"
 
 	MethodEventsSubscribe = "events.subscribe"
 	MethodEventsPublish   = "events.publish"
@@ -635,6 +696,23 @@ func dispatchTypeSpecific(ctx context.Context, req plug.Request, handler Handler
 			return
 		}
 		res, err := h.SpamHealth(ctx)
+		if err != nil {
+			writeErr(req.ID, plug.ErrCodeInternalError, err.Error())
+			return
+		}
+		writeResult(req.ID, res)
+	case MethodMailClassify:
+		h, ok := handler.(ClassifierHandler)
+		if !ok {
+			writeErr(req.ID, plug.ErrCodeMethodNotFound, "plugin does not implement classifier handler")
+			return
+		}
+		var p MailClassifyParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeErr(req.ID, plug.ErrCodeInvalidParams, err.Error())
+			return
+		}
+		res, err := h.MailClassify(ctx, p)
 		if err != nil {
 			writeErr(req.ID, plug.ErrCodeInternalError, err.Error())
 			return

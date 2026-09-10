@@ -141,12 +141,13 @@ type PluginType string
 
 // Known plugin types. Adding one requires matching SDK dispatch wiring.
 const (
-	TypeDNS       PluginType = "dns"
-	TypeSpam      PluginType = "spam"
-	TypeEvents    PluginType = "event-publisher"
-	TypeDirectory PluginType = "directory"
-	TypeDelivery  PluginType = "delivery-hook"
-	TypeEcho      PluginType = "echo"
+	TypeDNS        PluginType = "dns"
+	TypeSpam       PluginType = "spam"
+	TypeClassifier PluginType = "classifier"
+	TypeEvents     PluginType = "event-publisher"
+	TypeDirectory  PluginType = "directory"
+	TypeDelivery   PluginType = "delivery-hook"
+	TypeEcho       PluginType = "echo"
 )
 
 // Lifecycle describes how the supervisor runs the child process.
@@ -175,7 +176,7 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("%w: abi_version=%d, server=%d", ErrInvalidManifest, m.ABIVersion, ABIVersion)
 	}
 	switch m.Type {
-	case TypeDNS, TypeSpam, TypeEvents, TypeDirectory, TypeDelivery, TypeEcho:
+	case TypeDNS, TypeSpam, TypeClassifier, TypeEvents, TypeDirectory, TypeDelivery, TypeEcho:
 	default:
 		return fmt.Errorf("%w: unknown type %q", ErrInvalidManifest, m.Type)
 	}
@@ -185,14 +186,17 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("%w: unknown lifecycle %q", ErrInvalidManifest, m.Lifecycle)
 	}
 	// Wave 4.1 (REQ-FILT-12): a classifier's verdict must be reproducible,
-	// so a spam plugin must pin its sampling temperature to 0 and declare
-	// it in the manifest rather than merely being configurable to do so.
-	if m.Type == TypeSpam {
+	// so a spam or classifier plugin must pin its sampling temperature to
+	// 0 and declare it in the manifest rather than merely being
+	// configurable to do so. TypeClassifier carries the same obligation
+	// as the TypeSpam it is replacing (issue #304, Wave 4.3): both may
+	// drive an LLM call on the delivery path.
+	if m.Type == TypeSpam || m.Type == TypeClassifier {
 		if m.Temperature == nil {
-			return fmt.Errorf("%w: spam plugin %q must declare temperature=0 in its manifest", ErrInvalidManifest, m.Name)
+			return fmt.Errorf("%w: %s plugin %q must declare temperature=0 in its manifest", ErrInvalidManifest, m.Type, m.Name)
 		}
 		if *m.Temperature != 0 {
-			return fmt.Errorf("%w: spam plugin %q temperature must be pinned to 0, got %v", ErrInvalidManifest, m.Name, *m.Temperature)
+			return fmt.Errorf("%w: %s plugin %q temperature must be pinned to 0, got %v", ErrInvalidManifest, m.Type, m.Name, *m.Temperature)
 		}
 	}
 	return nil

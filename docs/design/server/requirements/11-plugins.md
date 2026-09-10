@@ -92,7 +92,7 @@ Delivery semantics: at-most-once (REQ-EVT-10). Event payload capped at 16 KiB (R
 
 ### Configuration
 
-- **REQ-PLUG-10** Plugins declared in **system config** (not application config). Each declaration: `name`, `path`, `type` (dns | spam | directory | delivery-hook | event-publisher), `lifecycle` (long-running | on-demand), plugin-specific `options`.
+- **REQ-PLUG-10** Plugins declared in **system config** (not application config). Each declaration: `name`, `path`, `type` (dns | classifier | spam | directory | delivery-hook | event-publisher), `lifecycle` (long-running | on-demand), plugin-specific `options`. `classifier` implements `mail.classify` (REQ-FILT-13, Wave 4.3); `spam` is the pre-Wave-4.3 `spam.classify`-only contract, accepted for one release as an alias (a plugin declaring `spam` never returns a category).
 - **REQ-PLUG-11** Multiple plugins of the same type allowed (e.g. DNS plugin for Cloudflare zones, another for Route53). Each is named and referenced by name.
 - **REQ-PLUG-12** Application config references plugins by name (e.g. domain `example.com` has `dns_plugin = "cloudflare"`).
 - **REQ-PLUG-13** SIGHUP reloads plugin manifests (starts new, stops removed, restarts changed).

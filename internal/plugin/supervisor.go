@@ -99,6 +99,23 @@ type Spec struct {
 	CrashWindow time.Duration
 }
 
+// compatiblePluginType reports whether a plugin process that declared got
+// in its manifest satisfies an operator's system.toml `type = want`.
+// Exact matches always satisfy it; TypeSpam and TypeClassifier are
+// additionally interchangeable for one release (issue #304 Decision 3):
+// a `[[plugin]] type = "spam"` configuration from before Wave 4.3 keeps
+// working unmodified against a binary that now declares itself a
+// classifier, and vice versa. The plugin's OWN declared manifest.Type
+// (not the operator's configured string) is what callers use to decide
+// between the spam.classify and mail.classify wire contracts (Plugin.Type).
+func compatiblePluginType(want, got PluginType) bool {
+	if want == got {
+		return true
+	}
+	isClassifierFamily := func(t PluginType) bool { return t == TypeSpam || t == TypeClassifier }
+	return isClassifierFamily(want) && isClassifierFamily(got)
+}
+
 // ManagerOptions configures a Manager.
 type ManagerOptions struct {
 	Logger *slog.Logger
@@ -532,7 +549,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 		<-clientErr
 		return err
 	}
-	if p.spec.Type != "" && initRes.Manifest.Type != p.spec.Type {
+	if p.spec.Type != "" && !compatiblePluginType(p.spec.Type, initRes.Manifest.Type) {
 		err := fmt.Errorf("plugin: type mismatch want=%s got=%s", p.spec.Type, initRes.Manifest.Type)
 		p.logger.Error(err.Error(), "activity", actSystem)
 		p.teardown(cmd, client)
