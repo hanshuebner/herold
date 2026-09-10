@@ -120,6 +120,38 @@ describe('subAccounts.refresh', () => {
     expect(subAccounts.list).toHaveLength(0);
     expect(jmap.batch).not.toHaveBeenCalled();
   });
+
+  it('prefers the real identity over the sub-account\'s synthesized default entry', async () => {
+    // A sub-account's Identity/get returns the synthesized "default" row
+    // (id "default", mayDelete: false, same email) alongside the real
+    // migrated identity -- observed live via puppeteer (issue #212).
+    // Picking list[0] blindly grabs "default", which then fails
+    // server-side on Identity/set{separated:false} ("the default
+    // identity cannot be separated").
+    vi.mocked(jmap.batch).mockImplementation(async (fn) => {
+      fn({ call: () => ({ ref: () => ({}) }) } as never);
+      return {
+        responses: [
+          [
+            'Identity/get',
+            {
+              list: [
+                { ...makeIdentity('default', 'club@example.com'), mayDelete: false },
+                makeIdentity('99', 'club@example.com'),
+              ],
+            },
+            'c0',
+          ],
+          ['Mailbox/get', { list: [makeMailbox('mb-1', 'inbox', 0)] }, 'c1'],
+        ],
+        sessionState: 's1',
+      };
+    });
+
+    await subAccounts.refresh();
+
+    expect(subAccounts.list[0]?.identity?.id).toBe('99');
+  });
 });
 
 describe('subAccounts EventSource handling', () => {

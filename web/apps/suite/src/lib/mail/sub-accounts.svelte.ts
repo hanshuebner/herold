@@ -229,7 +229,16 @@ class SubAccountsStore {
       strict(responses);
       const idArgs = invocationArgs<{ list: Identity[] }>(responses[0]);
       const mbArgs = invocationArgs<{ list: Mailbox[] }>(responses[1]);
-      const identity = idArgs.list[0] ?? null;
+      // A sub-account's Identity/get returns the synthesized "default"
+      // identity (the sub-principal's own canonical address, id
+      // "default", mayDelete: false) ALONGSIDE the real migrated
+      // identity -- both carry the same email. Passing the synthesized
+      // one to Identity/set{separated:false} fails server-side
+      // ("the default identity cannot be separated", internalID == 0 in
+      // internal/protojmap/mail/identity/methods.go), so always prefer
+      // the non-synthesized row; observed live via puppeteer against an
+      // ephemeral instance (issue #212 remove-flow verification).
+      const identity = idArgs.list.find((i) => i.id !== 'default') ?? idArgs.list[0] ?? null;
       const inbox = mbArgs.list.find((m) => m.role === 'inbox');
       return {
         accountId,
