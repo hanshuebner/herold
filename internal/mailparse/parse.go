@@ -236,7 +236,7 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 		bodyLen = 0
 	}
 
-	body, perr := w.walkPart(hdrs, ct, ctParams, bodyStart, bodyLen, 0)
+	body, perr := w.walkPart(hdrs, ct, ctParams, bodyStart, bodyLen, 0, 0, bodyStart)
 	if perr != nil {
 		return Message{}, perr
 	}
@@ -248,8 +248,11 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 
 // walkPart processes a single MIME part (either the message root or a part
 // within a multipart container). rawBodyOff and rawBodyLen describe the raw
-// (CTE-encoded) body bytes within w.raw. depth is the recursion depth for cap enforcement.
-func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]string, rawBodyOff, rawBodyLen int64, depth int) (Part, error) {
+// (CTE-encoded) body bytes within w.raw. rawHdrOff and rawHdrEnd describe the
+// part's own raw MIME header block within w.raw (rawHdrEnd is the offset of
+// the first body byte, i.e. the header block includes the blank-line
+// separator). depth is the recursion depth for cap enforcement.
+func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]string, rawBodyOff, rawBodyLen int64, depth int, rawHdrOff, rawHdrEnd int64) (Part, error) {
 	if depth > w.opts.MaxDepth {
 		return Part{}, &ParseError{
 			Reason:    ReasonDepthExceeded,
@@ -285,6 +288,8 @@ func (w *mimeWalker) walkPart(hdrs Headers, ct string, ctParams map[string]strin
 		DelSp:                   delSp,
 		rawOffset:               rawBodyOff,
 		rawLen:                  rawBodyLen,
+		rawHeaderOffset:         rawHdrOff,
+		rawHeaderLen:            rawHdrEnd - rawHdrOff,
 	}
 
 	// Multipart containers: recurse into children.
@@ -400,8 +405,10 @@ func (w *mimeWalker) walkMultipart(bodySlice []byte, bodyBaseOff int64, boundary
 
 		absBodyOff := bodyBaseOff + sp.bodyStart
 		bodyLen := sp.bodyEnd - sp.bodyStart
+		absHdrOff := bodyBaseOff + sp.hdrStart
+		absHdrEnd := bodyBaseOff + sp.bodyStart
 
-		child, perr := w.walkPart(partHdrs, partCT, partCTParams, absBodyOff, bodyLen, depth+1)
+		child, perr := w.walkPart(partHdrs, partCT, partCTParams, absBodyOff, bodyLen, depth+1, absHdrOff, absHdrEnd)
 		if perr != nil {
 			return nil, false, perr
 		}

@@ -228,6 +228,15 @@ type Part struct {
 	// rawLen is the byte length of this part's raw (CTE-encoded) body.
 	// Zero for containers.
 	rawLen int64
+
+	// rawHeaderOffset is the byte offset of this part's raw MIME header
+	// block (including the trailing CRLFCRLF/LFLF blank-line separator)
+	// within the bytes passed to Parse. Set for every part, container or
+	// leaf, since every MIME part carries a header block.
+	rawHeaderOffset int64
+	// rawHeaderLen is the byte length of the raw header block described by
+	// rawHeaderOffset.
+	rawHeaderLen int64
 }
 
 // IsText reports whether the part's media type is textual.
@@ -286,6 +295,18 @@ func (p Part) RawBody(src io.ReaderAt) (io.Reader, error) {
 		return nil, fmt.Errorf("mailparse: RawBody: part is a multipart container")
 	}
 	return io.NewSectionReader(src, p.rawOffset, p.rawLen), nil
+}
+
+// RawHeader returns a streaming reader over this part's raw (as-received)
+// MIME header block, including the trailing blank-line separator, from src
+// (the same io.ReaderAt that produced the bytes passed to Parse). Unlike
+// RawBody, RawHeader is valid for container parts (multipart/*) as well as
+// leaves: every MIME part carries its own header block.
+func (p Part) RawHeader(src io.ReaderAt) (io.Reader, error) {
+	if src == nil {
+		return nil, fmt.Errorf("mailparse: RawHeader: src is nil")
+	}
+	return io.NewSectionReader(src, p.rawHeaderOffset, p.rawHeaderLen), nil
 }
 
 // Message is the parsed, decoded form of an RFC 5322 message.

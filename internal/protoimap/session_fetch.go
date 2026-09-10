@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"sort"
 	"strings"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 
@@ -267,30 +269,126 @@ func (ses *session) fetchBlob(ctx context.Context, m store.Message) ([]byte, err
 	return mailparse.InjectXHeroldRecipient(buf.Bytes(), m.ReceivedTo), nil
 }
 
-// extractSection returns the requested section of the raw message body
-// for Phase 1. We support: full body (empty section), HEADER, TEXT,
-// HEADER.FIELDS / HEADER.FIELDS.NOT, and part-specifier [n] for top-level
-// single-part messages (returning the whole body). Multi-part traversal
-// is deferred.
+// extractSection returns the requested section of the raw message body.
+// With no part number (sec.Part empty) it addresses the outer RFC 5322
+// message: full body, HEADER, TEXT, HEADER.FIELDS / HEADER.FIELDS.NOT --
+// unchanged regardless of whether the message is multipart. With a part
+// number it resolves the numbered MIME part against the parsed tree
+// (resolveSection) and returns that part's raw (CTE-encoded, undecoded)
+// bytes: the whole part for a bare BODY[n], the part's own MIME header for
+// BODY[n.MIME], and -- only valid when part n is message/rfc822 -- the
+// encapsulated message's header or text for BODY[n.HEADER] / BODY[n.TEXT].
 func extractSection(raw []byte, sec *imap.FetchItemBodySection) []byte {
 	if sec == nil || (sec.Specifier == imap.PartSpecifierNone && len(sec.Part) == 0 && len(sec.HeaderFields) == 0 && len(sec.HeaderFieldsNot) == 0) {
 		return raw
 	}
-	hdr, body := splitRawMessage(raw)
+	if len(sec.Part) == 0 {
+		hdr, body := splitRawMessage(raw)
+		switch sec.Specifier {
+		case imap.PartSpecifierHeader:
+			if len(sec.HeaderFields) > 0 || len(sec.HeaderFieldsNot) > 0 {
+				return filterHeaders(hdr, sec.HeaderFields, sec.HeaderFieldsNot)
+			}
+			return hdr
+		case imap.PartSpecifierText:
+			return body
+		case imap.PartSpecifierMIME:
+			return hdr
+		case imap.PartSpecifierNone:
+			return raw
+		}
+		return raw
+	}
+
+	msg, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
+	if perr != nil && msg.Body.ContentType == "" {
+		return nil
+	}
+	rp, rpRaw, ok := resolveSection(raw, msg.Body, sec.Part)
+	if !ok {
+		return nil
+	}
 	switch sec.Specifier {
-	case imap.PartSpecifierHeader:
+	case imap.PartSpecifierMIME:
+		return readAllOrNil(rp.RawHeader(bytes.NewReader(rpRaw)))
+	case imap.PartSpecifierHeader, imap.PartSpecifierText:
+		if !strings.EqualFold(rp.ContentType, "message/rfc822") {
+			return nil
+		}
+		nestedRaw := readAllOrNil(rp.RawBody(bytes.NewReader(rpRaw)))
+		hdr, body := splitRawMessage(nestedRaw)
+		if sec.Specifier == imap.PartSpecifierText {
+			return body
+		}
 		if len(sec.HeaderFields) > 0 || len(sec.HeaderFieldsNot) > 0 {
 			return filterHeaders(hdr, sec.HeaderFields, sec.HeaderFieldsNot)
 		}
 		return hdr
-	case imap.PartSpecifierText:
-		return body
-	case imap.PartSpecifierMIME:
-		return hdr
 	case imap.PartSpecifierNone:
-		return raw
+		if len(rp.Children) > 0 {
+			// A bare BODY[n] on a multipart container has no well-defined
+			// wire form (RFC 3501 addresses multipart subparts via
+			// n.1, n.2, ...); return nothing rather than guess.
+			return nil
+		}
+		return readAllOrNil(rp.RawBody(bytes.NewReader(rpRaw)))
 	}
-	return raw
+	return nil
+}
+
+// resolveSection walks path (a FETCH section's dotted part number, e.g.
+// [2, 1] for "2.1") against root, the parsed MIME tree rooted at raw.
+// Numbering follows RFC 9051 sec 7.5.2: multipart children are numbered
+// 1..N; a non-multipart part (leaf or message/rfc822) with no children
+// yet consumed only answers to "1" as its own address; a message/rfc822
+// part's own nested numbering restarts at 1 inside the encapsulated
+// message, so remaining path segments are resolved against a fresh parse
+// of that part's raw bytes. Returns the resolved part together with the
+// raw byte slice its internal offsets are relative to.
+func resolveSection(raw []byte, root mailparse.Part, path []int) (mailparse.Part, []byte, bool) {
+	cur := root
+	curRaw := raw
+	for i, seg := range path {
+		if seg < 1 {
+			return mailparse.Part{}, nil, false
+		}
+		if len(cur.Children) > 0 {
+			if seg > len(cur.Children) {
+				return mailparse.Part{}, nil, false
+			}
+			cur = cur.Children[seg-1]
+			continue
+		}
+		if strings.EqualFold(cur.ContentType, "message/rfc822") {
+			nestedRaw := readAllOrNil(cur.RawBody(bytes.NewReader(curRaw)))
+			if nestedRaw == nil {
+				return mailparse.Part{}, nil, false
+			}
+			nestedMsg, nerr := mailparse.Parse(bytes.NewReader(nestedRaw), mailparse.NewLenientParseOptions())
+			if nerr != nil && nestedMsg.Body.ContentType == "" {
+				return mailparse.Part{}, nil, false
+			}
+			return resolveSection(nestedRaw, nestedMsg.Body, path[i:])
+		}
+		if i == 0 && seg == 1 {
+			continue
+		}
+		return mailparse.Part{}, nil, false
+	}
+	return cur, curRaw, true
+}
+
+// readAllOrNil drains r, returning nil on any read error (including a nil
+// reader from a failed RawBody/RawHeader call).
+func readAllOrNil(r io.Reader, err error) []byte {
+	if err != nil || r == nil {
+		return nil
+	}
+	b, rerr := io.ReadAll(r)
+	if rerr != nil {
+		return nil
+	}
+	return b
 }
 
 func splitRawMessage(raw []byte) (header, body []byte) {
@@ -421,33 +519,215 @@ func formatBodySectionHeader(sec *imap.FetchItemBodySection) string {
 	return sb.String()
 }
 
-// formatBodyStructure emits a conservative single-part BODYSTRUCTURE for
-// any message; multipart walking is a Phase 2 enhancement.
+// formatBodyStructure renders the RFC 9051 sec 7.5.2 BODY / BODYSTRUCTURE
+// response for a message by walking its parsed MIME tree (mailparse.Message)
+// rather than emitting a single-part structure for every message: a
+// multipart message gets the nested "(child child ... subtype)" form so
+// clients that navigate FETCH by BODYSTRUCTURE (e.g. the Gmail Android app)
+// can find and fetch the text part (re #321).
 func formatBodyStructure(raw []byte, extended bool) string {
-	hdr, body := splitRawMessage(raw)
-	m, err := mail.ReadMessage(bytes.NewReader(raw))
-	contentType := "text"
-	subType := "plain"
-	params := ""
-	if err == nil {
-		ct := m.Header.Get("Content-Type")
-		if ct != "" {
-			mt, plist := splitMediaType(ct)
-			if slash := strings.Index(mt, "/"); slash > 0 {
-				contentType = strings.ToUpper(mt[:slash])
-				subType = strings.ToUpper(mt[slash+1:])
-			}
-			params = formatMimeParams(plist)
-		}
-	}
-	_ = hdr
-	size := len(body)
-	lines := bytes.Count(body, []byte("\n"))
 	label := "BODY"
 	if extended {
 		label = "BODYSTRUCTURE"
 	}
-	return fmt.Sprintf("%s (\"%s\" \"%s\" %s NIL NIL \"7BIT\" %d %d)", label, contentType, subType, params, size, lines)
+	msg, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewLenientParseOptions())
+	if perr != nil && msg.Body.ContentType == "" {
+		// The blob could not be parsed at all (corrupt/hostile stored
+		// bytes): fall back to a minimal single-part placeholder so FETCH
+		// still returns a syntactically valid, if uninformative, structure
+		// instead of silently omitting it.
+		return fmt.Sprintf(`%s ("TEXT" "PLAIN" ("CHARSET" "us-ascii") NIL NIL "7BIT" %d 0)`, label, len(raw))
+	}
+	return label + " " + renderBodyStructure(msg.Body, raw, extended)
+}
+
+// renderBodyStructure renders one node of the MIME tree in RFC 9051
+// sec 7.5.2 form, recursing into children for multipart containers.
+func renderBodyStructure(p mailparse.Part, raw []byte, extended bool) string {
+	if len(p.Children) > 0 {
+		return renderMultipartStructure(p, raw, extended)
+	}
+	return renderSinglePartStructure(p, raw, extended)
+}
+
+// renderMultipartStructure renders a multipart/* container: the base form
+// is its children's structures followed by the subtype; the parameter
+// list, disposition, language, and location are BODYSTRUCTURE-only
+// extension data (RFC 9051 sec 7.5.2, "Extension data (multipart)").
+func renderMultipartStructure(p mailparse.Part, raw []byte, extended bool) string {
+	var sb strings.Builder
+	sb.WriteByte('(')
+	for _, c := range p.Children {
+		sb.WriteString(renderBodyStructure(c, raw, extended))
+	}
+	_, subtype := splitTypeSubtype(p.ContentType)
+	sb.WriteByte(' ')
+	sb.WriteString(imapQuote(strings.ToUpper(subtype)))
+	if extended {
+		_, params := splitMediaType(p.Headers.Get("Content-Type"))
+		fmt.Fprintf(&sb, " %s %s NIL NIL", formatMimeParams(params), formatDisposition(p))
+	}
+	sb.WriteByte(')')
+	return sb.String()
+}
+
+// renderSinglePartStructure renders a non-multipart part: type, subtype,
+// parameter list, id, description, encoding, and size are the base form
+// for every leaf; text/* parts append a line count and message/rfc822
+// parts append the encapsulated message's envelope, body structure, and
+// line count (RFC 9051 sec 7.5.2). BODYSTRUCTURE additionally appends the
+// extension data (MD5 NIL, disposition, language NIL, location NIL).
+func renderSinglePartStructure(p mailparse.Part, raw []byte, extended bool) string {
+	mt, params := splitMediaType(p.Headers.Get("Content-Type"))
+	if mt == "" {
+		mt = p.ContentType
+		if strings.EqualFold(mt, "text/plain") {
+			params = map[string]string{"charset": "us-ascii"}
+		}
+	}
+	typ, subtype := splitTypeSubtype(mt)
+	if typ == "" {
+		typ, subtype = "text", "plain"
+	}
+
+	encoding := strings.ToUpper(strings.TrimSpace(p.ContentTransferEncoding))
+	if encoding == "" {
+		encoding = "7BIT"
+	}
+
+	rawBody := readAllOrNil(p.RawBody(bytes.NewReader(raw)))
+
+	var sb strings.Builder
+	sb.WriteByte('(')
+	sb.WriteString(imapQuote(strings.ToUpper(typ)))
+	sb.WriteByte(' ')
+	sb.WriteString(imapQuote(strings.ToUpper(subtype)))
+	sb.WriteByte(' ')
+	sb.WriteString(formatMimeParams(params))
+	sb.WriteByte(' ')
+	sb.WriteString(imapNString(p.Headers.Get("Content-Id")))
+	sb.WriteByte(' ')
+	sb.WriteString(imapNString(p.Headers.Get("Content-Description")))
+	sb.WriteByte(' ')
+	sb.WriteString(imapQuote(encoding))
+	fmt.Fprintf(&sb, " %d", len(rawBody))
+
+	lowerMT := strings.ToLower(mt)
+	switch {
+	case strings.HasPrefix(lowerMT, "text/"):
+		fmt.Fprintf(&sb, " %d", bytes.Count(rawBody, []byte("\n")))
+	case lowerMT == "message/rfc822":
+		nestedMsg, nestedRaw, ok := parseNestedMessage(p, raw)
+		sb.WriteByte(' ')
+		if ok {
+			sb.WriteString(formatEnvelope(convertMailparseEnvelope(nestedMsg.Envelope)))
+			sb.WriteByte(' ')
+			sb.WriteString(renderBodyStructure(nestedMsg.Body, nestedRaw, extended))
+			fmt.Fprintf(&sb, " %d", bytes.Count(nestedRaw, []byte("\n")))
+		} else {
+			sb.WriteString(`NIL ("TEXT" "PLAIN" NIL NIL NIL "7BIT" 0 0) 0`)
+		}
+	}
+
+	if extended {
+		fmt.Fprintf(&sb, " NIL %s NIL NIL", formatDisposition(p))
+	}
+	sb.WriteByte(')')
+	return sb.String()
+}
+
+// formatDisposition renders a part's Content-Disposition as the RFC 9051
+// "body disposition" extension datum: NIL when the header is absent,
+// otherwise a (type (attr val ...)) pair.
+func formatDisposition(p mailparse.Part) string {
+	raw := p.Headers.Get("Content-Disposition")
+	if raw == "" {
+		return "NIL"
+	}
+	dtype, dparams := splitMediaType(raw)
+	if dtype == "" {
+		return "NIL"
+	}
+	return "(" + imapQuote(strings.ToUpper(dtype)) + " " + formatMimeParams(dparams) + ")"
+}
+
+// parseNestedMessage re-parses the raw bytes of a message/rfc822 leaf part
+// (mailparse does not itself recurse into encapsulated messages) so its
+// envelope and body structure can be rendered. Returns the nested Message,
+// the raw bytes it was parsed from (which its own Part offsets are
+// relative to), and false if the leaf's raw range cannot be read or
+// parsed at all.
+func parseNestedMessage(p mailparse.Part, raw []byte) (mailparse.Message, []byte, bool) {
+	nestedRaw := readAllOrNil(p.RawBody(bytes.NewReader(raw)))
+	if nestedRaw == nil {
+		return mailparse.Message{}, nil, false
+	}
+	nestedMsg, nerr := mailparse.Parse(bytes.NewReader(nestedRaw), mailparse.NewLenientParseOptions())
+	if nerr != nil && nestedMsg.Body.ContentType == "" {
+		return mailparse.Message{}, nil, false
+	}
+	return nestedMsg, nestedRaw, true
+}
+
+// convertMailparseEnvelope builds an imap.Envelope from a freshly parsed
+// mailparse.Envelope (used for the envelope embedded in a message/rfc822
+// BODYSTRUCTURE entry). convertEnvelope in session_mailbox.go performs the
+// equivalent conversion from the store's persisted store.Envelope for the
+// top-level ENVELOPE fetch item.
+func convertMailparseEnvelope(e mailparse.Envelope) imap.Envelope {
+	var sender []imap.Address
+	if e.Sender != nil {
+		sender = convertMailAddrs([]mail.Address{*e.Sender})
+	}
+	return imap.Envelope{
+		Date:      parseEnvelopeDate(e.Date),
+		Subject:   e.Subject,
+		From:      convertMailAddrs(e.From),
+		Sender:    sender,
+		ReplyTo:   convertMailAddrs(e.ReplyTo),
+		To:        convertMailAddrs(e.To),
+		Cc:        convertMailAddrs(e.Cc),
+		Bcc:       convertMailAddrs(e.Bcc),
+		InReplyTo: e.InReplyTo,
+		MessageID: e.MessageID,
+	}
+}
+
+func convertMailAddrs(addrs []mail.Address) []imap.Address {
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]imap.Address, 0, len(addrs))
+	for _, a := range addrs {
+		at := strings.LastIndexByte(a.Address, '@')
+		var mbox, host string
+		if at >= 0 {
+			mbox = a.Address[:at]
+			host = a.Address[at+1:]
+		} else {
+			mbox = a.Address
+		}
+		out = append(out, imap.Address{Name: a.Name, Mailbox: mbox, Host: host})
+	}
+	return out
+}
+
+func parseEnvelopeDate(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := mail.ParseDate(s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func splitTypeSubtype(mt string) (typ, subtype string) {
+	if slash := strings.Index(mt, "/"); slash > 0 {
+		return mt[:slash], mt[slash+1:]
+	}
+	return "", ""
 }
 
 func splitMediaType(s string) (mt string, params map[string]string) {
@@ -464,21 +744,28 @@ func splitMediaType(s string) (mt string, params map[string]string) {
 	return
 }
 
+// formatMimeParams renders a Content-Type/Content-Disposition parameter
+// map as an IMAP parenthesized attribute/value list, or NIL when empty.
+// Keys are sorted so the wire form (and therefore any test asserting exact
+// BODYSTRUCTURE text) is deterministic across Go map iteration.
 func formatMimeParams(params map[string]string) string {
 	if len(params) == 0 {
 		return "NIL"
 	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	var sb strings.Builder
 	sb.WriteByte('(')
-	first := true
-	for k, v := range params {
-		if !first {
+	for i, k := range keys {
+		if i > 0 {
 			sb.WriteByte(' ')
 		}
-		first = false
 		sb.WriteString(imapQuote(strings.ToUpper(k)))
 		sb.WriteByte(' ')
-		sb.WriteString(imapQuote(v))
+		sb.WriteString(imapQuote(params[k]))
 	}
 	sb.WriteByte(')')
 	return sb.String()
