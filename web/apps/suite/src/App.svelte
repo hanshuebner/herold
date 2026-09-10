@@ -44,6 +44,9 @@
   import SettingsView from './views/SettingsView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';
   import ThreadWindowView from './views/ThreadWindowView.svelte';
+  import SubAccountMailView from './views/SubAccountMailView.svelte';
+  import AccountSidebar from './lib/shell/AccountSidebar.svelte';
+  import { subAccounts } from './lib/mail/sub-accounts.svelte';
   import ArchiveMailboxView from './views/ArchiveMailboxView.svelte';
   import SidebarChats from './lib/chat/SidebarChats.svelte';
   import { archive } from './lib/archive/archive-store.svelte';
@@ -128,6 +131,15 @@
         if (archive.status === 'idle') {
           archive.loadSharedAccounts().catch((err) => {
             console.error('initial shared-account load failed', err);
+          });
+        }
+        // Prime the sub-accounts list (issue #212, REQ-MAIL-SUB-01/02) so
+        // the ProfileMenu switcher and the sidebar's "Accounts" section
+        // populate on first boot without needing to open either first.
+        // No-op (empty list) when the capability is absent.
+        if (subAccounts.status === 'idle') {
+          subAccounts.load().catch((err) => {
+            console.error('initial sub-account load failed', err);
           });
         }
         if (hasCap) {
@@ -519,6 +531,11 @@
   chatEnabled={hasChatCap}
 >
   {#snippet sidebar()}
+    {#if router.matches('account')}
+      <!-- Scope-aware sidebar (issue #212, REQ-MAIL-SUB-04): drilled into
+           a sub-account shows ONLY that account's own mailbox tree. -->
+      <AccountSidebar accountId={router.parts[1] ?? ''} />
+    {:else}
     <div class="sidebar-inner">
       <button type="button" class="compose" onclick={() => compose.openBlank()}>
         <span aria-hidden="true">&#x270E;</span> {t('sidebar.compose')}
@@ -690,6 +707,31 @@
         </ul>
       {/if}
 
+      <!-- Combined-view per-account section (issue #212, REQ-MAIL-SUB-04):
+           one row per separated identity, alongside the shared system
+           mailboxes above. Capability-gated via subAccounts.list, which
+           is always empty when the sub-accounts capability is absent --
+           so this block renders nothing on a legacy/non-sub-account
+           server (REQ-MAIL-SUB-09). -->
+      {#if subAccounts.list.length > 0}
+        <div class="sidebar-section-label">{t('shell.profile.scopesLabel')}</div>
+        <ul class="mailbox-list">
+          {#each subAccounts.list as account (account.accountId)}
+            <li class:active={router.matches('account', account.accountId)}>
+              <button
+                type="button"
+                onclick={() => router.navigate(`/account/${encodeURIComponent(account.accountId)}`)}
+              >
+                <span>{account.name}</span>
+                {#if account.unreadThreads > 0}
+                  <span class="count">{account.unreadThreads}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
       {#if hasChatCap}
         <SidebarChats />
       {/if}
@@ -718,6 +760,7 @@
              ProfileMenu dropdown in the global bar (issue #117). -->
       </div>
     </div>
+    {/if}
   {/snippet}
 
   {#if router.matches('mail')}
@@ -732,6 +775,14 @@
     <HelpView />
   {:else if router.matches('archive')}
     <ArchiveMailboxView accountId={router.parts[1] ?? ''} mailboxId={router.parts[2]} />
+  {:else if router.matches('account')}
+    <!-- Scoped sub-account view (issue #212, REQ-MAIL-SUB-02/04/05):
+         /account/<id> is that account's Inbox; /account/<id>/folder/<mbid>
+         is any other mailbox in its tree. -->
+    <SubAccountMailView
+      accountId={router.parts[1] ?? ''}
+      mailboxId={router.parts[2] === 'folder' ? router.parts[3] : undefined}
+    />
   {:else}
     <NotFoundView />
   {/if}
