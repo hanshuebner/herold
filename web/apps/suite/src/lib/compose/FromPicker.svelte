@@ -259,7 +259,10 @@
     display: inline-flex;
     align-items: center;
     gap: var(--spacing-02);
-    padding: var(--spacing-01) var(--spacing-03);
+    /* Left padding + the 1px border below sum to --compose-value-left,
+       so the trigger's label text aligns with the editor's text (re #286). */
+    padding: var(--spacing-01) var(--spacing-03) var(--spacing-01)
+      calc(var(--compose-value-left) - 1px);
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);

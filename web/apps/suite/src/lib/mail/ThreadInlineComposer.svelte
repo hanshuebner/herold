@@ -822,6 +822,8 @@
     color: var(--text-secondary);
     font-size: var(--type-body-compact-01-size);
     flex: 1;
+    /* Aligns the From text with the editor's text (re #286). */
+    padding-left: var(--compose-value-left);
   }
   .muted {
     color: var(--text-helper);

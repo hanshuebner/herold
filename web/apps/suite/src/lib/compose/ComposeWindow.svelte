@@ -1244,6 +1244,8 @@
     align-items: baseline;
     gap: var(--spacing-02);
     flex-wrap: wrap;
+    /* Aligns the From text with the editor's text (re #286). */
+    padding-left: var(--compose-value-left);
   }
 
   /* Cosmetic indicator for external submission (REQ-MAIL-SUBMIT-05). */
@@ -1275,7 +1277,8 @@
     color: var(--text-primary);
     font-size: var(--type-body-01-size);
     line-height: var(--type-body-01-line);
-    padding: 0;
+    /* Aligns the Subject value with the editor's text (re #286). */
+    padding: 0 0 0 var(--compose-value-left);
   }
   input[type='text']::placeholder {
     color: var(--text-helper);

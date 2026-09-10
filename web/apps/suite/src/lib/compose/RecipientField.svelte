@@ -636,6 +636,11 @@
     gap: var(--spacing-02);
     flex: 1;
     min-width: 0;
+    /* Aligns the input's typed text with the editor's text (re #286); the
+       first chip cancels this via its own negative margin below so its
+       label lands at the same edge instead of the padding plus the chip's
+       own inset. */
+    padding-left: var(--compose-value-left);
   }
 
   .chip {
@@ -650,6 +655,13 @@
     line-height: 1.4;
     max-width: 24em;
     overflow: hidden;
+  }
+
+  /* Cancels the first chip's own border + left padding so its label text
+     lands at --compose-value-left like the input and the editor, instead
+     of at --compose-value-left plus the chip's own inset (re #286). */
+  .chip-row > .chip:first-child {
+    margin-left: calc(-1px - var(--spacing-03));
   }
   /* Let the "Move to..." popup escape the chip's clipping box while open;
      other chips keep the label-truncating overflow:hidden. */

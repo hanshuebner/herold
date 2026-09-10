@@ -86,6 +86,17 @@
      maintained copies of the same width. */
   --compose-label-width: 6em;
 
+  /* Composer value-text left inset (re #286). The message editor's text
+     starts `.rich-editor`'s 1px border plus its `.ProseMirror` element's
+     `--spacing-04` padding to the right of the value column's left edge.
+     Every other value in the same column -- the From text, the From-picker
+     trigger, the An/Cc/Bcc input's typed text, and a committed recipient
+     chip's label -- carries this same inset (directly as padding, or via a
+     margin that cancels the element's own border/padding first) so all of
+     them line up with the editor instead of with each other's differing
+     built-in insets. */
+  --compose-value-left: calc(1px + var(--spacing-04));
+
   /* Motion — productive durations + curves */
   --duration-fast-01: 70ms;
   --duration-fast-02: 110ms;
