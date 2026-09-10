@@ -1988,6 +1988,26 @@ export const en = {
   'settings.identityEdit.removed': 'Identity {email} removed',
   'settings.identityEdit.removeFailed': 'Could not remove identity',
 
+  // "Separate this identity" (issue #212, REQ-MAIL-SUB-01/07)
+  'settings.identityEdit.separateHeading': 'Separate account',
+  'settings.identityEdit.separateHint':
+    'Move this identity into its own account with its own mailboxes, ' +
+    'filters, and notifications. You switch into it from the account ' +
+    'menu; it no longer shares your primary inbox.',
+  'settings.identityEdit.separateBtn': 'Separate this identity',
+  'settings.identityEdit.separateTitle': 'Separate {name} <{email}>?',
+  'settings.identityEdit.separateMessage':
+    'This identity has no mail to move yet. It will get its own account ' +
+    'right away.',
+  'settings.identityEdit.separateMessageWithCount':
+    '{count} message(s) will be moved into the new account. Mail is ' +
+    'never shown in both accounts at once; a restart mid-move resumes ' +
+    'and completes it.',
+  'settings.identityEdit.separateConfirm': 'Separate identity',
+  'settings.identityEdit.separateCancel': 'Cancel',
+  'settings.identityEdit.separated': '{email} separated into its own account',
+  'settings.identityEdit.separateFailed': 'Could not separate identity',
+
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.hint':
     'Files you have shared as links. Active shares can be revoked at any time. Download counts update when you refresh this view.',

@@ -15,6 +15,11 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 vi.mock('../../lib/auth/capabilities', () => ({
   hasExternalSubmission: vi.fn(() => false),
   hasIMAPImport: vi.fn(() => false),
+  hasSubAccounts: vi.fn(() => false),
+}));
+
+vi.mock('../../lib/mail/sub-accounts.svelte', () => ({
+  subAccounts: { refresh: vi.fn(async () => undefined) },
 }));
 
 vi.mock('../../lib/identities/identity-submission.svelte', () => {
@@ -57,6 +62,7 @@ vi.mock('../../lib/mail/store.svelte', () => ({
     updateIdentityAvatar: vi.fn(async () => undefined),
     updateIdentityXFaceEnabled: vi.fn(async () => undefined),
     deleteIdentity: vi.fn(async () => undefined),
+    separateIdentity: vi.fn(async () => 'sub-acct-1'),
   },
 }));
 
@@ -100,7 +106,7 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
   registerAccountResetCallback: vi.fn(),
 }));
 
-const { hasExternalSubmission } = await import('../../lib/auth/capabilities');
+const { hasExternalSubmission, hasSubAccounts } = await import('../../lib/auth/capabilities');
 const { jmap } = await import('../../lib/jmap/client');
 const { mail } = await import('../../lib/mail/store.svelte');
 const { toast } = await import('../../lib/toast/toast.svelte');
@@ -129,6 +135,7 @@ describe('IdentityEditPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(hasExternalSubmission).mockReturnValue(false);
+    vi.mocked(hasSubAccounts).mockReturnValue(false);
   });
 
   it('renders as a page (no modal backdrop)', () => {
@@ -342,5 +349,100 @@ describe('IdentityEditPage', () => {
     expect(vi.mocked(mail.deleteIdentity)).not.toHaveBeenCalled();
     expect(onback).not.toHaveBeenCalled();
     expect(vi.mocked(toast.show)).not.toHaveBeenCalled();
+  });
+
+  // ── Separate this identity (issue #212, REQ-MAIL-SUB-01/07) ────────────
+
+  it('hides the Separate button when the sub-accounts capability is absent', () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(false);
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback: vi.fn() },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-separate-btn"]'),
+    ).toBeNull();
+  });
+
+  it('hides the Separate button on the non-deletable default identity even with the capability present', () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(true);
+    const { container } = render(IdentityEditPage, {
+      props: { identity: IDENTITY, onback: vi.fn() },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-separate-btn"]'),
+    ).toBeNull();
+  });
+
+  it('shows the Separate button for an eligible identity when the capability is present', () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(true);
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback: vi.fn() },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-separate-btn"]'),
+    ).not.toBeNull();
+  });
+
+  it('hides the Separate button once the identity is already migrating', () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(true);
+    const { container } = render(IdentityEditPage, {
+      props: {
+        identity: {
+          ...DELETABLE_IDENTITY,
+          separation: { state: 'migrating', messagesTotal: 5, messagesMoved: 1, messagesCopied: 0 },
+        },
+        onback: vi.fn(),
+      },
+    });
+    expect(
+      container.querySelector('[data-testid="identity-edit-separate-btn"]'),
+    ).toBeNull();
+  });
+
+  it('confirming Separate calls mail.separateIdentity, refreshes sub-accounts, shows a success toast, and navigates back', async () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(true);
+    vi.mocked(confirm.ask).mockResolvedValue(true);
+    const onback = vi.fn();
+
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback },
+    });
+    const separateBtn = container.querySelector(
+      '[data-testid="identity-edit-separate-btn"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(separateBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(mail.separateIdentity)).toHaveBeenCalledWith(DELETABLE_IDENTITY.id);
+    });
+    await vi.waitFor(() => {
+      expect(onback).toHaveBeenCalledOnce();
+    });
+    const { subAccounts } = await import('../../lib/mail/sub-accounts.svelte');
+    expect(vi.mocked(subAccounts.refresh)).toHaveBeenCalled();
+    const calls = vi.mocked(toast.show).mock.calls;
+    const successCall = calls.find(([spec]) => spec.kind !== 'error');
+    expect(successCall).toBeDefined();
+  });
+
+  it('cancelling the Separate confirm dialog does not separate or navigate', async () => {
+    vi.mocked(hasSubAccounts).mockReturnValue(true);
+    vi.mocked(confirm.ask).mockResolvedValue(false);
+    const onback = vi.fn();
+
+    const { container } = render(IdentityEditPage, {
+      props: { identity: DELETABLE_IDENTITY, onback },
+    });
+    const separateBtn = container.querySelector(
+      '[data-testid="identity-edit-separate-btn"]',
+    ) as HTMLButtonElement;
+    await fireEvent.click(separateBtn);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(confirm.ask)).toHaveBeenCalled();
+    });
+    await Promise.resolve();
+    expect(vi.mocked(mail.separateIdentity)).not.toHaveBeenCalled();
+    expect(onback).not.toHaveBeenCalled();
   });
 });

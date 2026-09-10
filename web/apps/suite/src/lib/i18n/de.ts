@@ -2014,6 +2014,27 @@ export const de = {
   'settings.identityEdit.removed': 'Identität {email} entfernt',
   'settings.identityEdit.removeFailed': 'Identität konnte nicht entfernt werden',
 
+  // "Identität trennen" (Issue #212, REQ-MAIL-SUB-01/07)
+  'settings.identityEdit.separateHeading': 'Konto trennen',
+  'settings.identityEdit.separateHint':
+    'Verschiebt diese Identität in ein eigenes Konto mit eigenen ' +
+    'Postfächern, Filtern und Benachrichtigungen. Sie wechseln über das ' +
+    'Konto-Menü dorthin; es teilt sich dann nicht mehr Ihren primären ' +
+    'Posteingang.',
+  'settings.identityEdit.separateBtn': 'Diese Identität trennen',
+  'settings.identityEdit.separateTitle': '{name} <{email}> trennen?',
+  'settings.identityEdit.separateMessage':
+    'Diese Identität hat noch keine E-Mails zu verschieben. Sie erhält ' +
+    'sofort ein eigenes Konto.',
+  'settings.identityEdit.separateMessageWithCount':
+    '{count} Nachricht(en) werden in das neue Konto verschoben. E-Mails ' +
+    'werden nie gleichzeitig in beiden Konten angezeigt; ein Neustart ' +
+    'während der Verschiebung setzt sie fort und schließt sie ab.',
+  'settings.identityEdit.separateConfirm': 'Identität trennen',
+  'settings.identityEdit.separateCancel': 'Abbrechen',
+  'settings.identityEdit.separated': '{email} in ein eigenes Konto getrennt',
+  'settings.identityEdit.separateFailed': 'Identität konnte nicht getrennt werden',
+
   // shared files form (SharedFilesForm.svelte)
   'settings.sharedFiles.hint':
     'Dateien, die Sie als Links freigegeben haben. Aktive Freigaben können jederzeit widerrufen werden. Download-Zähler aktualisieren sich beim Laden dieser Seite.',

@@ -28,9 +28,11 @@
    */
 
   import { onDestroy } from 'svelte';
-  import { hasExternalSubmission, hasIMAPImport } from '../../lib/auth/capabilities';
+  import { hasExternalSubmission, hasIMAPImport, hasSubAccounts } from '../../lib/auth/capabilities';
   import { submissionStore } from '../../lib/identities/identity-submission.svelte';
+  import { canSeparate, separationOf } from '../../lib/identities/identity-separation';
   import { imapImportStore } from '../../lib/jmap/imap-import-store.svelte';
+  import { subAccounts } from '../../lib/mail/sub-accounts.svelte';
   import { mail } from '../../lib/mail/store.svelte';
   import { jmap, strict } from '../../lib/jmap/client';
   import { Capability, type Invocation } from '../../lib/jmap/types';
@@ -211,6 +213,62 @@
       }
     } finally {
       removing = false;
+    }
+  }
+
+  // ── Separate this identity (issue #212, REQ-MAIL-SUB-01/07) ─────────────
+  //
+  // Only offered on a non-default identity that has never been separated
+  // (canSeparate). Once separated the server moves the Identity's row to
+  // a new sub-principal synchronously and it stops appearing under this
+  // account's Identity/get, so there is nothing left to render "migrating"
+  // progress against here -- that lives in the Accounts settings section
+  // (views/settings/AccountsSection.svelte), which discovers the new
+  // sub-account from the session the moment separateIdentity() resolves.
+  let showSeparation = $derived(hasSubAccounts() && canSeparate(identity));
+  let separating = $state(false);
+
+  async function separateThisIdentity(): Promise<void> {
+    if (separating) return;
+
+    const identityId = identity.id;
+    const identityEmail = identity.email;
+    const identityName = identity.name;
+    const capturedOnback = onback;
+    const messagesTotal = separationOf(identity).messagesTotal;
+
+    const displayName = identityName || identityEmail;
+    const message =
+      messagesTotal > 0
+        ? t('settings.identityEdit.separateMessageWithCount', { count: String(messagesTotal) })
+        : t('settings.identityEdit.separateMessage');
+
+    const ok = await confirm.ask({
+      title: t('settings.identityEdit.separateTitle', { name: displayName, email: identityEmail }),
+      message,
+      confirmLabel: t('settings.identityEdit.separateConfirm'),
+      cancelLabel: t('settings.identityEdit.separateCancel'),
+    });
+    if (!ok) return;
+
+    separating = true;
+    try {
+      await mail.separateIdentity(identityId);
+      toast.show({
+        message: t('settings.identityEdit.separated', { email: identityEmail }),
+        timeoutMs: 4000,
+      });
+      void subAccounts.refresh();
+      capturedOnback();
+    } catch (err) {
+      toast.show({
+        message: t('settings.identityEdit.separateFailed'),
+        kind: 'error',
+        timeoutMs: 5000,
+      });
+      console.error('separateIdentity failed', err);
+    } finally {
+      separating = false;
     }
   }
 
@@ -417,6 +475,27 @@
     <IdentityImportSection {identity} />
   {/if}
 
+  <!-- Separate this identity into its own sub-account (issue #212,
+       REQ-MAIL-SUB-01/07). Only offered when the sub-accounts capability
+       is present and the identity is eligible (non-default, never
+       separated); once separated it moves off this account's Identity
+       list entirely, so this page navigates back to the list on
+       success and the new sub-account shows up in Settings -> Accounts. -->
+  {#if showSeparation}
+    <div class="separate-zone">
+      <h4 class="group-title">{t('settings.identityEdit.separateHeading')}</h4>
+      <p class="hint">{t('settings.identityEdit.separateHint')}</p>
+      <Button
+        variant="secondary"
+        onclick={() => void separateThisIdentity()}
+        disabled={separating}
+        testid="identity-edit-separate-btn"
+      >
+        {separating ? t('settings.import.saving') : t('settings.identityEdit.separateBtn')}
+      </Button>
+    </div>
+  {/if}
+
   <!-- Remove identity (REQ-SET-IDENT-12). Hidden for the synthesized
        default identity (mayDelete = false). -->
   {#if identity.mayDelete}
@@ -525,6 +604,17 @@
 
   input[type='email'][aria-invalid='true'] {
     border-color: var(--support-error);
+  }
+
+  .separate-zone {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    padding: var(--spacing-04);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    align-items: flex-start;
   }
 
   /* Remove identity — visually de-emphasised danger zone at page bottom. */
