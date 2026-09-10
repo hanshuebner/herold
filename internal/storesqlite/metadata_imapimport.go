@@ -371,6 +371,17 @@ func (m *metadata) ListIMAPImportMessageStatesByAccount(ctx context.Context, acc
 	return scanIMAPImportMessageStateRows(rows)
 }
 
+func (m *metadata) CountIMAPImportMessagesByAccount(ctx context.Context, accountID string) (int64, error) {
+	var n int64
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT herold_message_id) FROM imapimport_message_state WHERE account_id = ?`,
+		accountID).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
+}
+
 func (m *metadata) ListIMAPImportMessageStatesByMessage(ctx context.Context, heroldMessageID store.MessageID) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.db.QueryContext(ctx,
 		`SELECT `+imapImportMessageStateSelectCols+`

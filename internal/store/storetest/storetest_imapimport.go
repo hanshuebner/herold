@@ -941,6 +941,56 @@ func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_CountMessagesByAccount verifies
+// Metadata.CountIMAPImportMessagesByAccount counts distinct herold
+// messages, not message_state rows -- a message tracked under two
+// upstream folders by the same account counts once (issue #227,
+// REQ-SUBACCT-09: the JMAP Identity surface's pre-separation
+// messagesTotal count).
+func testIMAPImport_CountMessagesByAccount(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-countmsg@example.com")
+	acc := mustCreateIMAPImportAccount(t, s, p.ID, "CountMsg")
+	other := mustCreateIMAPImportAccount(t, s, p.ID, "CountMsgOther")
+
+	n, err := s.Meta().CountIMAPImportMessagesByAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("CountIMAPImportMessagesByAccount (empty): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("count = %d; want 0 before any message_state rows", n)
+	}
+
+	for _, ms := range []store.IMAPImportMessageState{
+		{AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 1, HeroldMessageID: 1001, HeroldMailboxID: 2001},
+		{AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 2, HeroldMessageID: 1002, HeroldMailboxID: 2001},
+		// Same message tracked under a second folder: must not double-count.
+		{AccountID: acc.ID, UpstreamFolder: "Archive", UpstreamUID: 1, HeroldMessageID: 1001, HeroldMailboxID: 2002},
+		// A different account's rows must not be counted.
+		{AccountID: other.ID, UpstreamFolder: "INBOX", UpstreamUID: 1, HeroldMessageID: 1003, HeroldMailboxID: 2001},
+	} {
+		if err := s.Meta().UpsertIMAPImportMessageState(ctx, ms); err != nil {
+			t.Fatalf("UpsertIMAPImportMessageState: %v", err)
+		}
+	}
+
+	n, err = s.Meta().CountIMAPImportMessagesByAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("CountIMAPImportMessagesByAccount: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("count = %d; want 2 distinct messages", n)
+	}
+	n, err = s.Meta().CountIMAPImportMessagesByAccount(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("CountIMAPImportMessagesByAccount(other): %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("other account count = %d; want 1", n)
+	}
+}
+
 // testIMAPImport_CredentialCTValidation verifies that CreateIMAPImportAccount
 // rejects a non-v1: credential (REQ-IMAP-IMP-70).
 func testIMAPImport_CredentialCTValidation(t *testing.T, s store.Store) {

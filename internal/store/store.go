@@ -2998,6 +2998,15 @@ type Metadata interface {
 	// placed them in (REQ-IMAP-IMP-103). Returns an empty slice when none.
 	ListIMAPImportMessageStatesByAccount(ctx context.Context, accountID string) ([]IMAPImportMessageState, error)
 
+	// CountIMAPImportMessagesByAccount returns the number of distinct
+	// herold messages tracked by accountID's message_state rows (a
+	// message may be tracked under more than one upstream folder, so
+	// this is COUNT(DISTINCT herold_message_id), not row count). Used
+	// by the JMAP Identity surface (issue #227, REQ-SUBACCT-09) to
+	// pre-count an identity's mail before separation, without loading
+	// every row via ListIMAPImportMessageStatesByAccount.
+	CountIMAPImportMessagesByAccount(ctx context.Context, accountID string) (int64, error)
+
 	// ListIMAPImportMessageStatesByMessage returns every message_state row
 	// across all accounts that maps to heroldMessageID. The purge uses it
 	// to decide dedup-safety: a message claimed by another import account
