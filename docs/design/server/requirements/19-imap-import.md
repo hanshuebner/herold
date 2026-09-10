@@ -18,13 +18,16 @@ are called out inline at the requirements they touch:*
 
 1. ***Store as-synced.** Mirrored messages are persisted verbatim and
    indexed for FTS; they do NOT re-run the inbound delivery pipeline
-   (no spam, no Sieve, no attachment policy, no webhooks, no
-   import-time external-image internalization). Only LLM categorisation
-   of newly-arrived INBOX-mapped mail runs, matching the live delivery
-   path's own gating. Rationale: a mirror's folder placement is dictated
-   by the upstream folder mapping, and Sieve `fileinto` would fight that
-   mapping; re-running spam/webhooks on a historical backfill is
-   redundant and dangerous. (Supersedes the original REQ-IMAP-IMP-31.)*
+   (no Sieve, no attachment policy, no webhooks, no import-time
+   external-image internalization). Two classifiers run on newly-arrived
+   INBOX-mapped mail, matching the live delivery path's own gating: spam
+   classification, whose verdict is recorded and decides between INBOX
+   and Junk (REQ-FILT-02), and LLM categorisation. Neither touches the
+   stored bytes. Rationale: a mirror's folder placement is dictated by
+   the upstream folder mapping, and Sieve `fileinto` would fight that
+   mapping; re-running webhooks on a historical backfill is redundant
+   and dangerous, and neither classifier runs across the backfill.
+   (Supersedes the original REQ-IMAP-IMP-31.)*
 2. ***App-encrypted credentials.** Upstream credentials are sealed in
    the DB with the existing `internal/secrets` data key
    (`[server.secrets].data_key_ref`), exactly as outbound submission
@@ -120,13 +123,15 @@ herold (mark read, star) propagate back upstream via IMAP STORE on a
 best-effort basis. Folder mappings are configurable per account.
 
 Mirrored messages do **not** re-run herold's inbound delivery
-pipeline (decision 1): spam classification, Sieve, attachment policy,
-webhooks, and import-time external-image internalization are all
-skipped. The bytes that arrive over IMAP are the bytes that land in
-the store, so the upstream's DKIM signatures and `Authentication-Results`
-stay intact and verifiable. LLM categorisation runs only for
+pipeline (decision 1): Sieve, attachment policy, webhooks, and
+import-time external-image internalization are all skipped. The bytes
+that arrive over IMAP are the bytes that land in the store, so the
+upstream's DKIM signatures and `Authentication-Results` stay intact and
+verifiable. Spam classification and LLM categorisation run only for
 newly-arrived mail mapped into INBOX, mirroring the live delivery
-path's own INBOX-only / not-spam gating.
+path's own INBOX-only / not-spam gating; the spam verdict is recorded
+in the classification record and routes the message to Junk or INBOX,
+and is never stamped into the stored bytes.
 
 Out of scope:
 
@@ -224,7 +229,7 @@ nothing is ever evicted.)*
 | ID | Requirement |
 |----|-------------|
 | REQ-IMAP-IMP-30 | Each upstream message is persisted in herold with the canonical `Message-ID` header preserved. The worker dedupes against the principal's existing `env_message_id` index; a message that already exists in herold (via prior takeout, prior IMAP-import session, dual SMTP+IMAP delivery during migration, or any other source) is not duplicated. Messages with no usable `Message-ID` fall back to a body content-hash (`blob_hash`) for dedup, matching the importer. |
-| REQ-IMAP-IMP-31 | **(Decision 1 — supersedes the original "run the full inbound pipeline" wording.)** A fetched message is stored **as-synced**: the exact upstream bytes are written to the blob store and a `messages` row is inserted into the mapped mailbox via the same low-level store append that IMAP APPEND uses (`InsertMessage`). The mirror does **not** invoke spam classification, Sieve, attachment policy, mail-arrival webhooks, or import-time external-image internalization. FTS indexing happens automatically off the store change feed (as for any inserted message). LLM categorisation (`$category-*`) runs only for messages mapped into INBOX and only on newly-arrived mail, mirroring the live path's INBOX-only / not-classified-spam gating — it is NOT run across the historical backfill. External-image internalization still occurs on demand at view time via the existing on-demand path; it is not forced at import so the stored bytes stay byte-identical to upstream. |
+| REQ-IMAP-IMP-31 | **(Decision 1 — supersedes the original "run the full inbound pipeline" wording.)** A fetched message is stored **as-synced**: the exact upstream bytes are written to the blob store and a `messages` row is inserted into the mapped mailbox via the same low-level store append that IMAP APPEND uses (`InsertMessage`). The mirror does **not** invoke Sieve, attachment policy, mail-arrival webhooks, or import-time external-image internalization. FTS indexing happens automatically off the store change feed (as for any inserted message). Spam classification runs for messages mapped into INBOX and only on newly-arrived mail, through the same classifier plugin and request projection as SMTP delivery; the verdict is recorded in the classification record and applies the REQ-FILT-02 mapping (spam to the Junk mailbox, suspect to INBOX with `$Junk`), and a classifier error or timeout degrades to INBOX. Messages the upstream already filed into a Junk-attributed folder are not classified. LLM categorisation (`$category-*`) runs only for messages mapped into INBOX and only on newly-arrived mail, mirroring the live path's INBOX-only / not-classified-spam gating. Neither classifier runs across the historical backfill, and neither alters the stored bytes. External-image internalization still occurs on demand at view time via the existing on-demand path; it is not forced at import so the stored bytes stay byte-identical to upstream. |
 | REQ-IMAP-IMP-32 | The `Received:` header chain is preserved verbatim from upstream. The worker does NOT prepend a synthetic `Received:` header, because rewriting the message would change the stored bytes and could invalidate the upstream's DKIM signature (decision 1 requires byte-fidelity). The IMAP-import provenance is recorded out-of-band in the per-message import-state row (account_id, upstream folder, upstream UID) and surfaced in the message-inspect view, not by mutating the message. |
 | REQ-IMAP-IMP-33 | Authentication-Results: the upstream's verdict is preserved verbatim. The worker does NOT re-run DKIM verification on top of the upstream's verdict — and because the body is stored unmodified, the upstream's signatures remain independently verifiable by any client that wants to check them. |
 | REQ-IMAP-IMP-34 | UID continuity: the worker stores the upstream UID per message in an `imapimport_message_state(account_id, upstream_folder, upstream_uid, herold_message_id, herold_mailbox_id, last_synced_flags)` table so flag-write-back can address upstream messages. The herold-side message_id is independent and stable across upstream UID changes (e.g. UIDVALIDITY rollover). Per-folder cursors (UIDVALIDITY, UIDNEXT, low-water mark, high-water mark, HIGHESTMODSEQ) live in `imapimport_folder_cursor`. |
