@@ -21,6 +21,13 @@ const imapImportAccountSelectCols = `
 	delete_propagates, provenance_mailbox_id, debug_log,
 	excluded_folders_json, created_at, updated_at`
 
+// imapImportMessageStateSelectCols is shared by every message_state read
+// site so the copied_message_id column (migration 0104, issue #227)
+// stays in sync across them.
+const imapImportMessageStateSelectCols = `
+	account_id, upstream_folder, upstream_uid,
+	herold_message_id, herold_mailbox_id, last_synced_flags, copied_message_id`
+
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
 		id, accountName, host, tlsMode, username, authMethod, state, lastError string
@@ -354,8 +361,7 @@ func (m *metadata) SetIMAPImportProvenanceMailbox(ctx context.Context, id string
 
 func (m *metadata) ListIMAPImportMessageStatesByAccount(ctx context.Context, accountID string) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.db.QueryContext(ctx,
-		`SELECT account_id, upstream_folder, upstream_uid,
-		        herold_message_id, herold_mailbox_id, last_synced_flags
+		`SELECT `+imapImportMessageStateSelectCols+`
 		   FROM imapimport_message_state WHERE account_id = ?`,
 		accountID)
 	if err != nil {
@@ -367,8 +373,7 @@ func (m *metadata) ListIMAPImportMessageStatesByAccount(ctx context.Context, acc
 
 func (m *metadata) ListIMAPImportMessageStatesByMessage(ctx context.Context, heroldMessageID store.MessageID) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.db.QueryContext(ctx,
-		`SELECT account_id, upstream_folder, upstream_uid,
-		        herold_message_id, herold_mailbox_id, last_synced_flags
+		`SELECT `+imapImportMessageStateSelectCols+`
 		   FROM imapimport_message_state WHERE herold_message_id = ?`,
 		int64(heroldMessageID))
 	if err != nil {
@@ -498,8 +503,7 @@ func (m *metadata) UpsertIMAPImportFolderCursor(ctx context.Context, cursor stor
 
 func (m *metadata) GetIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) (store.IMAPImportMessageState, bool, error) {
 	row := m.s.db.QueryRowContext(ctx,
-		`SELECT account_id, upstream_folder, upstream_uid,
-		        herold_message_id, herold_mailbox_id, last_synced_flags
+		`SELECT `+imapImportMessageStateSelectCols+`
 		   FROM imapimport_message_state
 		  WHERE account_id = ? AND upstream_folder = ? AND upstream_uid = ?`,
 		accountID, upstreamFolder, int64(upstreamUID))
@@ -515,8 +519,7 @@ func (m *metadata) GetIMAPImportMessageState(ctx context.Context, accountID, ups
 
 func (m *metadata) GetIMAPImportMessageStateByMessage(ctx context.Context, accountID string, heroldMessageID store.MessageID) (store.IMAPImportMessageState, bool, error) {
 	row := m.s.db.QueryRowContext(ctx,
-		`SELECT account_id, upstream_folder, upstream_uid,
-		        herold_message_id, herold_mailbox_id, last_synced_flags
+		`SELECT `+imapImportMessageStateSelectCols+`
 		   FROM imapimport_message_state
 		  WHERE account_id = ? AND herold_message_id = ?`,
 		accountID, int64(heroldMessageID))
@@ -537,9 +540,10 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		heroldMessageID           int64
 		heroldMailboxID           int64
 		lastSyncedFlags           int32
+		copiedMessageID           int64
 	)
 	err := row.Scan(&accountID, &upstreamFolder, &upstreamUID,
-		&heroldMessageID, &heroldMailboxID, &lastSyncedFlags)
+		&heroldMessageID, &heroldMailboxID, &lastSyncedFlags, &copiedMessageID)
 	if err != nil {
 		return store.IMAPImportMessageState{}, mapErr(err)
 	}
@@ -550,6 +554,7 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		HeroldMessageID: store.MessageID(heroldMessageID),
 		HeroldMailboxID: store.MailboxID(heroldMailboxID),
 		LastSyncedFlags: store.IMAPImportSyncedFlags(lastSyncedFlags),
+		CopiedMessageID: store.MessageID(copiedMessageID),
 	}, nil
 }
 
@@ -574,8 +579,7 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 
 func (m *metadata) ListIMAPImportMessageStatesByFolder(ctx context.Context, accountID, upstreamFolder string) ([]store.IMAPImportMessageState, error) {
 	rows, err := m.s.db.QueryContext(ctx,
-		`SELECT account_id, upstream_folder, upstream_uid,
-		        herold_message_id, herold_mailbox_id, last_synced_flags
+		`SELECT `+imapImportMessageStateSelectCols+`
 		   FROM imapimport_message_state WHERE account_id = ? AND upstream_folder = ?`,
 		accountID, upstreamFolder)
 	if err != nil {

@@ -172,6 +172,7 @@ var tableReg = map[string]tableDesc{
 	"email_bulk_jobs":            {&EmailBulkJobRow{}, "id"},
 	"oauth_auth_codes":           {&OAuthAuthCodeRow{}, "id"},
 	"oauth_refresh_tokens":       {&OAuthRefreshTokenRow{}, "id"},
+	"subaccount_migrations":      {&SubAccountMigrationRow{}, "id"},
 }
 
 // colName extracts the SQL column name from a struct field's json tag.

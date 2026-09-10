@@ -279,6 +279,13 @@ type IMAPImportMessageState struct {
 	// the last successful sync. Used as the "base" in upstream-authoritative
 	// three-way conflict resolution (REQ-IMAP-IMP-42).
 	LastSyncedFlags IMAPImportSyncedFlags
+	// CopiedMessageID is the durable "already copied into a sub-account"
+	// marker written by Metadata.CopyImportedMessageToSubAccount
+	// (REQ-IMAP-IMP-103/106 dedup-safe copy, issue #227). Zero means not
+	// copied. The ordinary UpsertIMAPImportMessageState never writes
+	// this column, so a live worker's routine flag-sync upserts cannot
+	// clobber it.
+	CopiedMessageID MessageID
 }
 
 // ValidateIMAPImportCredentialCT returns an error when ct is non-nil

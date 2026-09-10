@@ -10,7 +10,9 @@ package storetest
 // deletion of a parent's sub-accounts and their mail (REQ-SUBACCT-06).
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/store"
@@ -422,5 +424,483 @@ func testSubPrincipals_DeleteParentCascades(t *testing.T, s store.Store) {
 	// Its mailbox (and by extension its mail) is gone too.
 	if _, err := s.Meta().GetMailboxByID(ctx, subMB.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetMailboxByID(sub mailbox) after parent delete = %v, want ErrNotFound", err)
+	}
+}
+
+// -- Sub-account promotion (issue #227, REQ-SUBACCT-09/10,
+// REQ-IMAP-IMP-106/107): SeparateIdentity, RunSubAccountMigration,
+// RemoveSubAccount. ----------------------------------------------------
+
+// separationFixture is the common setup for the promotion tests: a
+// parent with an INBOX, a persisted Identity, and an IMAP-import account
+// (with a provenance label) attached to that Identity, all still owned
+// by the parent (the state SeparateIdentity expects to find).
+type separationFixture struct {
+	parent     store.Principal
+	inbox      store.Mailbox
+	identityID string
+	acc        store.IMAPImportAccount
+}
+
+func newSeparationFixture(t *testing.T, s store.Store, tag string) separationFixture {
+	t.Helper()
+	ctx := ctxT(t)
+	parent := mustInsertPrincipal(t, s, tag+"@example.com")
+	inbox := mustInsertMailbox(t, s, parent.ID, "INBOX")
+
+	identityID := tag + "-identity"
+	if err := s.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: identityID, PrincipalID: parent.ID, Email: tag + "@external.test",
+		Name: "External " + tag, MayDelete: true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	acc, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:       identityID,
+		PrincipalID:      parent.ID,
+		AccountName:      tag,
+		Host:             "imap.external.test",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         tag,
+		AuthMethod:       store.IMAPImportAuthMethodAppPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	prov := mustInsertMailbox(t, s, parent.ID, tag+" label")
+	if err := s.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, prov.ID); err != nil {
+		t.Fatalf("SetIMAPImportProvenanceMailbox: %v", err)
+	}
+	acc.ProvenanceMailboxID = prov.ID
+
+	return separationFixture{parent: parent, inbox: inbox, identityID: identityID, acc: acc}
+}
+
+// insertTrackedMessage inserts a message into f.inbox (and, when
+// withLabel is true, also into the account's provenance label -- the
+// normal ingest shape per REQ-IMAP-IMP-100), records the matching
+// imapimport_message_state row, and returns the new MessageID.
+func (f separationFixture) insertTrackedMessage(t *testing.T, s store.Store, uid uint32, body string, withLabel bool) store.MessageID {
+	t.Helper()
+	ctx := ctxT(t)
+	ref := putBlob(t, s, body)
+	if _, _, err := s.Meta().InsertMessage(ctx,
+		store.Message{PrincipalID: f.parent.ID, Blob: ref, Size: ref.Size},
+		[]store.MessageMailbox{{MailboxID: f.inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msg, err := s.Meta().GetMessageByBlobHash(ctx, f.parent.ID, ref.Hash)
+	if err != nil {
+		t.Fatalf("GetMessageByBlobHash: %v", err)
+	}
+	if withLabel {
+		if _, _, err := s.Meta().AddMessageToMailbox(ctx, msg.ID, f.acc.ProvenanceMailboxID); err != nil {
+			t.Fatalf("AddMessageToMailbox(label): %v", err)
+		}
+	}
+	if err := s.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+		AccountID: f.acc.ID, UpstreamFolder: "INBOX", UpstreamUID: uid,
+		HeroldMessageID: msg.ID, HeroldMailboxID: f.inbox.ID,
+	}); err != nil {
+		t.Fatalf("UpsertIMAPImportMessageState: %v", err)
+	}
+	return msg.ID
+}
+
+func testSubAccountMigration_SeparateIdentityIsIdempotent(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "sepident")
+
+	mig1, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if mig1.ID == "" || mig1.SubPrincipalID == 0 {
+		t.Fatalf("SeparateIdentity returned incomplete row: %+v", mig1)
+	}
+	if mig1.ParentPrincipalID != f.parent.ID || mig1.IdentityID != f.identityID {
+		t.Fatalf("SeparateIdentity row = %+v; want parent=%d identity=%s", mig1, f.parent.ID, f.identityID)
+	}
+	if mig1.Status != store.SubAccountMigrationStatusPending {
+		t.Fatalf("SeparateIdentity Status = %q; want pending", mig1.Status)
+	}
+
+	sub, err := s.Meta().GetPrincipalByID(ctx, mig1.SubPrincipalID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID(sub): %v", err)
+	}
+	if !sub.IsSubAccount() || sub.ParentPrincipalID != f.parent.ID {
+		t.Fatalf("sub-principal = %+v; want a sub-account of %d", sub, f.parent.ID)
+	}
+
+	// System mailbox tree provisioned.
+	subMailboxes, err := s.Meta().ListMailboxes(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes(sub): %v", err)
+	}
+	wantNames := map[string]bool{"INBOX": true, "Sent": true, "Drafts": true, "Trash": true, "Junk": true, "Archive": true}
+	for _, mb := range subMailboxes {
+		delete(wantNames, mb.Name)
+	}
+	if len(wantNames) != 0 {
+		t.Errorf("sub-account missing system mailboxes: %v", wantNames)
+	}
+
+	// Identity and import account both moved.
+	idn, err := s.Meta().GetJMAPIdentity(ctx, f.identityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if idn.PrincipalID != sub.ID {
+		t.Fatalf("identity.PrincipalID = %d; want sub %d", idn.PrincipalID, sub.ID)
+	}
+	gotAcc, err := s.Meta().GetIMAPImportAccount(ctx, f.acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if gotAcc.PrincipalID != sub.ID {
+		t.Fatalf("account.PrincipalID = %d; want sub %d", gotAcc.PrincipalID, sub.ID)
+	}
+
+	// Idempotent: calling again returns the identical row.
+	mig2, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity (second call): %v", err)
+	}
+	if mig2 != mig1 {
+		t.Fatalf("second SeparateIdentity = %+v; want identical to first %+v", mig2, mig1)
+	}
+}
+
+func testSubAccountMigration_RunMovesSoleClaimedMail(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "runmove")
+
+	msg1 := f.insertTrackedMessage(t, s, 1, "runmove-body-1", true)
+	msg2 := f.insertTrackedMessage(t, s, 2, "runmove-body-2", true)
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+
+	done, err := store.RunSubAccountMigration(ctx, s, mig.ID)
+	if err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+	if done.Status != store.SubAccountMigrationStatusDone {
+		t.Fatalf("Status = %q; want done", done.Status)
+	}
+	if done.MessagesMoved != 2 || done.MessagesCopied != 0 {
+		t.Fatalf("counts = moved=%d copied=%d; want moved=2 copied=0", done.MessagesMoved, done.MessagesCopied)
+	}
+
+	for _, msgID := range []store.MessageID{msg1, msg2} {
+		got, err := s.Meta().GetMessage(ctx, msgID)
+		if err != nil {
+			t.Fatalf("GetMessage(%d): %v", msgID, err)
+		}
+		if got.PrincipalID != mig.SubPrincipalID {
+			t.Errorf("message %d PrincipalID = %d; want sub %d", msgID, got.PrincipalID, mig.SubPrincipalID)
+		}
+		for _, mm := range got.Mailboxes {
+			mb, err := s.Meta().GetMailboxByID(ctx, mm.MailboxID)
+			if err != nil {
+				t.Fatalf("GetMailboxByID: %v", err)
+			}
+			if mb.PrincipalID != mig.SubPrincipalID {
+				t.Errorf("message %d has a membership in mailbox %d owned by %d, not the sub-account", msgID, mb.ID, mb.PrincipalID)
+			}
+		}
+	}
+
+	// The parent's original INBOX is empty; nothing was left behind.
+	parentInbox, err := s.Meta().ListMessages(ctx, f.inbox.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages(parent INBOX): %v", err)
+	}
+	if len(parentInbox) != 0 {
+		t.Errorf("parent INBOX still has %d message(s) after a sole-claim move", len(parentInbox))
+	}
+
+	// Re-running a done migration is a no-op success (idempotent).
+	again, err := store.RunSubAccountMigration(ctx, s, mig.ID)
+	if err != nil {
+		t.Fatalf("RunSubAccountMigration (re-run on done): %v", err)
+	}
+	if again.MessagesMoved != 2 || again.MessagesCopied != 0 {
+		t.Fatalf("re-run counts = moved=%d copied=%d; want unchanged moved=2 copied=0", again.MessagesMoved, again.MessagesCopied)
+	}
+}
+
+func testSubAccountMigration_RunCopiesDedupSafe(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "runcopy")
+
+	// A message claimed both by the import account (folder-mapped mailbox
+	// + provenance label) AND by a foreign membership (simulating native
+	// SMTP delivery into the same INBOX row via a second, independent
+	// mailbox) must be copied, not moved: the parent's copy survives.
+	shared := f.insertTrackedMessage(t, s, 1, "runcopy-shared-body", true)
+	foreignMB := mustInsertMailbox(t, s, f.parent.ID, "AlsoNative")
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, shared, foreignMB.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(foreign): %v", err)
+	}
+	// A second, ordinary sole-claimed message alongside it.
+	solo := f.insertTrackedMessage(t, s, 2, "runcopy-solo-body", true)
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	done, err := store.RunSubAccountMigration(ctx, s, mig.ID)
+	if err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+	if done.Status != store.SubAccountMigrationStatusDone {
+		t.Fatalf("Status = %q; want done", done.Status)
+	}
+	if done.MessagesMoved != 1 || done.MessagesCopied != 1 {
+		t.Fatalf("counts = moved=%d copied=%d; want moved=1 copied=1", done.MessagesMoved, done.MessagesCopied)
+	}
+
+	// The solo message moved: gone from the parent, present under the sub.
+	soloAfter, err := s.Meta().GetMessage(ctx, solo)
+	if err != nil {
+		t.Fatalf("GetMessage(solo): %v", err)
+	}
+	if soloAfter.PrincipalID != mig.SubPrincipalID {
+		t.Errorf("solo.PrincipalID = %d; want sub %d", soloAfter.PrincipalID, mig.SubPrincipalID)
+	}
+
+	// The shared message's original row survives under the parent,
+	// still carrying its foreign membership.
+	sharedAfter, err := s.Meta().GetMessage(ctx, shared)
+	if err != nil {
+		t.Fatalf("GetMessage(shared, original): %v", err)
+	}
+	if sharedAfter.PrincipalID != f.parent.ID {
+		t.Errorf("shared original PrincipalID = %d; want parent %d (it must survive)", sharedAfter.PrincipalID, f.parent.ID)
+	}
+	foreignStillThere := false
+	for _, mm := range sharedAfter.Mailboxes {
+		if mm.MailboxID == foreignMB.ID {
+			foreignStillThere = true
+		}
+	}
+	if !foreignStillThere {
+		t.Errorf("shared original lost its foreign membership")
+	}
+
+	// A copy exists under the sub-account's INBOX.
+	subInbox, err := s.Meta().GetMailboxByName(ctx, mig.SubPrincipalID, "INBOX")
+	if err != nil {
+		t.Fatalf("GetMailboxByName(sub INBOX): %v", err)
+	}
+	subMsgs, err := s.Meta().ListMessages(ctx, subInbox.ID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages(sub INBOX): %v", err)
+	}
+	if len(subMsgs) != 2 {
+		t.Fatalf("sub INBOX has %d message(s); want 2 (the moved solo + the copy of shared)", len(subMsgs))
+	}
+}
+
+// countdownContext lets ctx.Err() return context.Canceled starting on
+// the (n+1)th call, while every other Context method (notably Done(),
+// which internal DB drivers select on) delegates to a real, never-
+// cancelled background context. This gives deterministic, message-
+// granularity control over "abort after processing N items" without
+// depending on wall-clock timing or a package-private batch constant.
+type countdownContext struct {
+	context.Context
+	remaining int
+}
+
+func newCountdownContext(n int) *countdownContext {
+	return &countdownContext{Context: context.Background(), remaining: n}
+}
+
+func (c *countdownContext) Err() error {
+	if c.remaining <= 0 {
+		return context.Canceled
+	}
+	c.remaining--
+	return nil
+}
+
+func testSubAccountMigration_RunIsCrashSafe(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "runcrash")
+
+	const total = 6
+	want := make([]store.MessageID, 0, total)
+	for i := uint32(1); i <= total; i++ {
+		body := fmt.Sprintf("runcrash-body-%d", i)
+		want = append(want, f.insertTrackedMessage(t, s, i, body, true))
+	}
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+
+	// Abort after 3 of the 6 messages: RunSubAccountMigration's per-
+	// message loop checks ctx.Err() before each message, so a
+	// countdown of 3 processes exactly 3 and returns early with the row
+	// still "running".
+	cctx := newCountdownContext(3)
+	partial, err := store.RunSubAccountMigration(cctx, s, mig.ID)
+	if err != nil {
+		t.Fatalf("RunSubAccountMigration (aborted): %v", err)
+	}
+	if partial.Status == store.SubAccountMigrationStatusDone {
+		t.Fatalf("aborted run reports done; want running (partial)")
+	}
+	if partial.MessagesMoved == 0 || partial.MessagesMoved >= total {
+		t.Fatalf("aborted run MessagesMoved = %d; want a partial count in (0, %d)", partial.MessagesMoved, total)
+	}
+
+	// At no point is a message absent from both accounts: every message
+	// still exists, each under exactly one of {parent, sub}.
+	assertNoLossNoDuplication := func(label string) {
+		t.Helper()
+		seenParent, seenSub := 0, 0
+		for _, msgID := range want {
+			m, err := s.Meta().GetMessage(ctx, msgID)
+			if err != nil {
+				t.Fatalf("%s: GetMessage(%d): %v", label, msgID, err)
+			}
+			switch m.PrincipalID {
+			case f.parent.ID:
+				seenParent++
+			case mig.SubPrincipalID:
+				seenSub++
+			default:
+				t.Fatalf("%s: message %d owned by unexpected principal %d", label, msgID, m.PrincipalID)
+			}
+			if len(m.Mailboxes) != 2 {
+				// INBOX + provenance label -- a duplicated membership (the
+				// bug this test guards against) would show up as an
+				// unexpected count here on the destination side too, since
+				// ReparentMessage is a move (delete+insert), never an add.
+				t.Errorf("%s: message %d has %d membership(s); want 2 (INBOX + label)", label, msgID, len(m.Mailboxes))
+			}
+		}
+		if seenParent+seenSub != total {
+			t.Fatalf("%s: seenParent=%d seenSub=%d; want sum %d", label, seenParent, seenSub, total)
+		}
+	}
+	assertNoLossNoDuplication("after abort")
+
+	// Resume with a fresh, uncancelled context: completes the sweep.
+	done, err := store.RunSubAccountMigration(ctx, s, mig.ID)
+	if err != nil {
+		t.Fatalf("RunSubAccountMigration (resume): %v", err)
+	}
+	if done.Status != store.SubAccountMigrationStatusDone {
+		t.Fatalf("resumed Status = %q; want done", done.Status)
+	}
+	if done.MessagesMoved != total {
+		t.Fatalf("resumed MessagesMoved = %d; want %d (nothing lost, nothing duplicated)", done.MessagesMoved, total)
+	}
+	assertNoLossNoDuplication("after resume")
+
+	for _, msgID := range want {
+		m, err := s.Meta().GetMessage(ctx, msgID)
+		if err != nil {
+			t.Fatalf("GetMessage(%d) after resume: %v", msgID, err)
+		}
+		if m.PrincipalID != mig.SubPrincipalID {
+			t.Errorf("message %d PrincipalID = %d after full resume; want sub %d", msgID, m.PrincipalID, mig.SubPrincipalID)
+		}
+	}
+}
+
+func testSubAccountMigration_RemoveKeep(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "removekeep")
+	msgID := f.insertTrackedMessage(t, s, 1, "removekeep-body", true)
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if _, err := store.RunSubAccountMigration(ctx, s, mig.ID); err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, false); err != nil {
+		t.Fatalf("RemoveSubAccount(keep): %v", err)
+	}
+
+	// The sub-principal is gone.
+	if _, err := s.Meta().GetPrincipalByID(ctx, mig.SubPrincipalID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPrincipalByID(sub) after keep-remove = %v; want ErrNotFound", err)
+	}
+
+	// The message moved back under the parent, still fully intact.
+	m, err := s.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage after keep-remove: %v", err)
+	}
+	if m.PrincipalID != f.parent.ID {
+		t.Fatalf("message PrincipalID = %d after keep-remove; want parent %d", m.PrincipalID, f.parent.ID)
+	}
+
+	// The Identity and import account moved back to the parent too.
+	idn, err := s.Meta().GetJMAPIdentity(ctx, f.identityID)
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity after keep-remove: %v", err)
+	}
+	if idn.PrincipalID != f.parent.ID {
+		t.Fatalf("identity.PrincipalID = %d after keep-remove; want parent %d", idn.PrincipalID, f.parent.ID)
+	}
+	acc, err := s.Meta().GetIMAPImportAccount(ctx, f.acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount after keep-remove: %v", err)
+	}
+	if acc.PrincipalID != f.parent.ID {
+		t.Fatalf("account.PrincipalID = %d after keep-remove; want parent %d", acc.PrincipalID, f.parent.ID)
+	}
+
+	// Idempotent: removing an already-removed sub-account is a no-op.
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, false); err != nil {
+		t.Fatalf("RemoveSubAccount(keep, second call) = %v; want nil", err)
+	}
+}
+
+func testSubAccountMigration_RemovePurge(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "removepurge")
+	msgID := f.insertTrackedMessage(t, s, 1, "removepurge-body", true)
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if _, err := store.RunSubAccountMigration(ctx, s, mig.ID); err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, true); err != nil {
+		t.Fatalf("RemoveSubAccount(purge): %v", err)
+	}
+
+	if _, err := s.Meta().GetPrincipalByID(ctx, mig.SubPrincipalID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPrincipalByID(sub) after purge = %v; want ErrNotFound", err)
+	}
+	if _, err := s.Meta().GetMessage(ctx, msgID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMessage after purge = %v; want ErrNotFound (mail purged with the sub-account)", err)
+	}
+
+	// Idempotent: purging an already-purged sub-account is a no-op.
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, true); err != nil {
+		t.Fatalf("RemoveSubAccount(purge, second call) = %v; want nil", err)
 	}
 }

@@ -673,9 +673,15 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		"imap-1", "[Gmail]/All Mail", 0, 0, 0, 0, 0) // edge: all zeros
 
 	// imapimport_message_state
-	exec(`INSERT INTO imapimport_message_state (account_id, upstream_folder, upstream_uid, herold_message_id, herold_mailbox_id, last_synced_flags)
-	      VALUES (?, ?, ?, ?, ?, ?)`,
-		"imap-1", "INBOX", 50, 1, 1, 3)
+	exec(`INSERT INTO imapimport_message_state (account_id, upstream_folder, upstream_uid, herold_message_id, herold_mailbox_id, last_synced_flags, copied_message_id)
+	      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"imap-1", "INBOX", 50, 1, 1, 3, 0)
+
+	// subaccount_migrations
+	exec(`INSERT INTO subaccount_migrations (id, parent_principal_id, sub_principal_id, identity_id,
+	        status, messages_total, messages_moved, messages_copied, last_error, created_at_us, updated_at_us)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"submig-1", 1, 2, "17", "running", 42, 10, 1, "", int64(1000000), int64(2000000))
 
 	// sessions — excluded from backup by default; seed one row to verify
 	// the session table is at least scannable by the engine.

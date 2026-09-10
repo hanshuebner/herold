@@ -1068,6 +1068,28 @@ type IMAPImportMessageStateRow struct {
 	HeroldMessageID int64  `json:"herold_message_id"`
 	HeroldMailboxID int64  `json:"herold_mailbox_id"`
 	LastSyncedFlags int64  `json:"last_synced_flags"`
+	// CopiedMessageID is the durable "already copied into a sub-account"
+	// marker added by migration 0104 (issue #227, REQ-IMAP-IMP-106). 0
+	// means not copied.
+	CopiedMessageID int64 `json:"copied_message_id"`
+}
+
+// SubAccountMigrationRow mirrors one row of the subaccount_migrations
+// table introduced in migration 0104 (issue #227, REQ-SUBACCT-09,
+// REQ-IMAP-IMP-106/107): the resumable-sweep bookkeeping for separating
+// an Identity into its own sub-account.
+type SubAccountMigrationRow struct {
+	ID                string `json:"id"`
+	ParentPrincipalID int64  `json:"parent_principal_id"`
+	SubPrincipalID    int64  `json:"sub_principal_id"`
+	IdentityID        string `json:"identity_id"`
+	Status            string `json:"status"`
+	MessagesTotal     int64  `json:"messages_total"`
+	MessagesMoved     int64  `json:"messages_moved"`
+	MessagesCopied    int64  `json:"messages_copied"`
+	LastError         string `json:"last_error"`
+	CreatedAtUs       int64  `json:"created_at_us"`
+	UpdatedAtUs       int64  `json:"updated_at_us"`
 }
 
 // PushSubscriptionRow mirrors the push_subscription table introduced

@@ -800,7 +800,21 @@ const CurrentBackupVersion = 1
 //	table added by migration 0057. "[]" (the column default) means no
 //	exclusions, preserving pre-migration behaviour for every existing
 //	row. No new table; IMAPImportAccountRow gains the one field.
-const CurrentSchemaVersion = 103
+//
+// 104 — 0104_subaccount_migrations.sql (issue #227, REQ-SUBACCT-09,
+//
+//	REQ-IMAP-IMP-106/107). Adds the subaccount_migrations table: one row
+//	per SeparateIdentity call tracking the (parent, sub, identity)
+//	triple, the resumable-sweep status (pending/running/done), and
+//	running move/copy counts, for RunSubAccountMigration's crash-safe
+//	sweep and boot-time resume. Also adds
+//	imapimport_message_state.copied_message_id (default 0): the durable
+//	marker set atomically with the copy insert when a message claimed by
+//	more than one channel is copied rather than moved into a sub-account,
+//	so a crash-resumed sweep never re-copies it. New row type
+//	SubAccountMigrationRow; IMAPImportMessageStateRow gains the one
+//	field.
+const CurrentSchemaVersion = 104
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -1031,4 +1045,8 @@ var TableNames = []string{
 	// meaningful in-flight grant.
 	"oauth_auth_codes",
 	"oauth_refresh_tokens",
+	// Sub-account promotion sweep bookkeeping (issue #227, REQ-SUBACCT-09,
+	// REQ-IMAP-IMP-106/107, migration 0104). FKs to principals(id) ON
+	// DELETE CASCADE (parent and sub); restored after principals.
+	"subaccount_migrations",
 }

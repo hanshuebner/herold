@@ -959,7 +959,7 @@ func (m *metadata) InsertMessage(ctx context.Context, msg store.Message, targets
 	var firstUID store.UID
 	var firstModSeq store.ModSeq
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
-		uid, modseq, err := m.insertMessageTx(ctx, tx, msg, targets, now, false)
+		_, uid, modseq, err := m.insertMessageTx(ctx, tx, msg, targets, now, false)
 		if err != nil {
 			return err
 		}
@@ -991,7 +991,7 @@ func (m *metadata) InsertMessages(ctx context.Context, items []store.InsertMessa
 	anyPending := false
 	err := m.runTx(ctx, func(tx pgx.Tx) error {
 		for i, it := range items {
-			uid, modseq, err := m.insertMessageTx(ctx, tx, it.Message, it.Targets, now, opts.SkipThreading)
+			_, uid, modseq, err := m.insertMessageTx(ctx, tx, it.Message, it.Targets, now, opts.SkipThreading)
 			if err != nil {
 				return fmt.Errorf("storepg: InsertMessages item %d: %w", i, err)
 			}
@@ -1023,7 +1023,8 @@ func (m *metadata) insertMessageTx(
 	targets []store.MessageMailbox,
 	now time.Time,
 	skipThreading bool,
-) (store.UID, store.ModSeq, error) {
+) (store.MessageID, store.UID, store.ModSeq, error) {
+	var newID store.MessageID
 	var firstUID store.UID
 	var firstModSeq store.ModSeq
 	err := func() error {
@@ -1147,6 +1148,7 @@ func (m *metadata) insertMessageTx(
 		).Scan(&mid); err != nil {
 			return mapErr(err)
 		}
+		newID = store.MessageID(mid)
 		// Insert one message_mailboxes row per target.
 		for i, t := range targets {
 			// Inherit message-level flags/keywords if the target doesn't
@@ -1202,9 +1204,9 @@ func (m *metadata) insertMessageTx(
 		return incRef(ctx, tx, msg.Blob.Hash, msg.Blob.Size, now)
 	}()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return firstUID, firstModSeq, nil
+	return newID, firstUID, firstModSeq, nil
 }
 
 // RethreadPrincipal scans every message of pid in internal-date order
