@@ -4,7 +4,7 @@
  * start on one common left edge, in both the floating ComposeWindow and
  * the thread-reader inline composer.
  *
- * Two independent invariants make that true:
+ * Three independent invariants make that true:
  *
  * 1. The *column* start (the label width + gap before the value area)
  *    must be identical across ComposeWindow's From/Subject/Body rows,
@@ -21,6 +21,17 @@
  *    trigger button, a recipient chip) already have their own smaller
  *    built-in inset, so they get a compensating adjustment instead of a
  *    flat inset, landing their text at the same edge (re #286, round 2).
+ *
+ * 3. In ThreadInlineComposer specifically, the message editor is NOT
+ *    itself a field-row with a label -- it is a sibling block below
+ *    `.composer-fields` -- so invariant 1 does not reach it. Its
+ *    `.composer-body` wrapper must carry an explicit `padding-left`
+ *    that reconstructs the field-row's value-column start (the row's
+ *    own left padding, plus the label width, plus the row gap), or the
+ *    editor's box starts flush at the composer's edge while Von/An sit
+ *    past the label column (re #286, round 3). ComposeWindow does not
+ *    need this: its Body row already is a field-row with a label, so
+ *    invariant 1 places the editor's box correctly on its own.
  *
  * A getBoundingClientRect() layout assertion needs a real browser (see
  * the issue's puppeteer verification); this source-level check is the
@@ -58,6 +69,22 @@ function declaration(body: string, property: string): string {
   const match = body.match(new RegExp(`${escaped}:\\s*([^;]+);`));
   if (!match) throw new Error(`no ${property} declaration found`);
   return match[1]!.trim().replace(/\s+/g, ' ');
+}
+
+/** Resolve the left value out of a `padding` shorthand (1, 2, 3, or 4 value form). */
+function paddingLeftFromShorthand(shorthand: string): string {
+  const parts = shorthand.split(/\s+/);
+  switch (parts.length) {
+    case 1:
+      return parts[0]!;
+    case 2:
+    case 3:
+      return parts[1]!;
+    case 4:
+      return parts[3]!;
+    default:
+      throw new Error(`unexpected padding shorthand: ${shorthand}`);
+  }
 }
 
 describe('composer row label alignment (re #286)', () => {
@@ -136,5 +163,29 @@ describe('composer value-text inset (re #286)', () => {
     expect(chipPadding.endsWith('var(--spacing-03)')).toBe(true);
     expect(chipBorder).toMatch(/^1px\b/);
     expect(firstChipMargin).toBe('calc(-1px - var(--spacing-03))');
+  });
+
+  it("ThreadInlineComposer's composer-body reconstructs the field-row value-column start, so the editor lands on Von/An's edge", () => {
+    const fieldRowPaddingLeft = paddingLeftFromShorthand(
+      declaration(ruleBody(threadInlineComposerSource, '.field-row'), 'padding'),
+    );
+    const fieldRowGap = declaration(ruleBody(threadInlineComposerSource, '.field-row'), 'gap');
+    const fieldLabelWidth = declaration(
+      ruleBody(threadInlineComposerSource, '.field-label'),
+      'width',
+    );
+    const composerBodyPaddingLeft = declaration(
+      ruleBody(threadInlineComposerSource, '.composer-body'),
+      'padding-left',
+    );
+
+    // The three inputs composer-body's padding-left formula is built from
+    // must stay what it assumes they are.
+    expect(fieldRowPaddingLeft).toBe('var(--spacing-04)');
+    expect(fieldRowGap).toBe('var(--spacing-04)');
+    expect(fieldLabelWidth).toBe('var(--compose-label-width)');
+    expect(composerBodyPaddingLeft).toBe(
+      'calc(var(--spacing-04) * 2 + var(--compose-label-width))',
+    );
   });
 });

@@ -859,6 +859,14 @@
     flex-direction: column;
     min-height: 120px;
     overflow: hidden;
+    /* Aligns the editor's box with the Von/An value column: the
+       field-row's own left padding, plus the label width, plus the row
+       gap -- the offset the editor is missing because, unlike
+       ComposeWindow's Body row, it is not itself a field-row with a
+       label. The editor's own border+padding inset (--compose-value-left,
+       applied inside RichEditor) then lands its text on the same edge
+       as Von/An's (re #286). */
+    padding-left: calc(var(--spacing-04) * 2 + var(--compose-label-width));
   }
 
   /* Wraps RichEditor + inline drop zone (absolutely positioned overlay). */
