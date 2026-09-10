@@ -557,13 +557,15 @@ func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEma
 			return fmt.Errorf("dev seed-separable-identity: put blob %d: %w", i, err)
 		}
 		msg := store.Message{
-			PrincipalID:  principal.ID,
-			MailboxID:    inboxID,
-			InternalDate: now,
-			ReceivedAt:   now,
-			Size:         ref.Size,
-			Blob:         ref,
-			Envelope:     store.Envelope{Subject: subject, MessageID: "<" + msgID + ">"},
+			PrincipalID:     principal.ID,
+			MailboxID:       inboxID,
+			InternalDate:    now,
+			ReceivedAt:      now,
+			Size:            ref.Size,
+			Blob:            ref,
+			Envelope:        store.Envelope{Subject: subject, MessageID: "<" + msgID + ">"},
+			IngestSource:    store.IngestSourceIMAPImport,
+			IngestSourceRef: acc.AccountName,
 		}
 		if _, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: inboxID}}); err != nil {
 			return fmt.Errorf("dev seed-separable-identity: insert message %d: %w", i, err)
