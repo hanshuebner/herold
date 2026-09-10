@@ -330,6 +330,14 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		spamClassifier = spamClassifier.WithTimeout(d)
 	}
 	spamPluginName := firstPluginOfType(cfg.Plugin, "spam")
+	if spamPluginName == "" {
+		// Wave 4.1 (REQ-FILT §Spam, issue #301): with no spam plugin
+		// configured, the SMTP path delivers every message unjudged and
+		// files nothing into Junk. Say so at startup rather than leaving
+		// the operator to notice mail is unfiltered.
+		logger.Warn("spam filtering is off: no spam plugin configured; add a [[plugin]] block with type = \"spam\" to system.toml to enable it",
+			"subsystem", "spam")
+	}
 
 	// Sieve interpreter.
 	sieveInterp := sieve.NewInterpreter()
@@ -1014,6 +1022,11 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// configured-or-not status to the admin SPA. The credential
 		// itself is never read back out through this Options field.
 		Push: &cfg.Server.Push,
+		// Spam status (Wave 4.1, issue #301): GET /api/v1/spam/status
+		// reads the same spamPluginName + pluginMgr the SMTP path's
+		// spamClassifier uses, so the admin surface never drifts from
+		// what delivery is actually doing.
+		SpamStatus: spamStatusProvider(spamPluginName, pluginMgr),
 	}
 	// External-submission retryer: redelivers submissions parked
 	// held-for-reauth once the identity's auth recovers (re #70,
@@ -2352,6 +2365,43 @@ func firstPluginOfType(plugins []sysconfig.PluginConfig, kind string) string {
 		}
 	}
 	return ""
+}
+
+// spamStatusProvider builds the protoadmin.SpamStatusProvider backing GET
+// /api/v1/spam/status (Wave 4.1, issue #301). name is the configured spam
+// plugin's name (empty when none is configured); mgr is the same plugin
+// Manager the SMTP path's spam.Classifier calls through, so the reported
+// state always matches what delivery is actually doing.
+func spamStatusProvider(name string, mgr *plugin.Manager) protoadmin.SpamStatusProvider {
+	return func() protoadmin.SpamStatus {
+		if name == "" {
+			return protoadmin.SpamStatus{
+				Enabled: false,
+				Plugin:  "",
+				Reason:  "no spam plugin configured in system.toml",
+			}
+		}
+		p := mgr.Get(name)
+		if p == nil {
+			return protoadmin.SpamStatus{
+				Enabled: false,
+				Plugin:  name,
+				Reason:  "plugin not found in the running supervisor",
+			}
+		}
+		if p.State() != plugin.StateHealthy {
+			reason := p.LastError()
+			if reason == "" {
+				reason = fmt.Sprintf("plugin is %s", p.State())
+			}
+			return protoadmin.SpamStatus{
+				Enabled: false,
+				Plugin:  name,
+				Reason:  reason,
+			}
+		}
+		return protoadmin.SpamStatus{Enabled: true, Plugin: name}
+	}
 }
 
 // resolvePluginOptions expands any options value that starts with "$" or

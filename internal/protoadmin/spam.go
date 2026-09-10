@@ -49,3 +49,22 @@ func (s *Server) handlePutSpamPolicy(w http.ResponseWriter, r *http.Request) {
 		map[string]string{"plugin_name": req.PluginName})
 	writeJSON(w, http.StatusOK, s.opts.SpamPolicyStore.GetSpamPolicy())
 }
+
+// handleGetSpamStatus answers GET /api/v1/spam/status (Wave 4.1, issue
+// #301): whether the SMTP path is classifying mail right now, and, when it
+// is not, why. Read-only; not audit-logged (REQ-ADM-300 covers mutations).
+func (s *Server) handleGetSpamStatus(w http.ResponseWriter, r *http.Request) {
+	caller, _ := principalFrom(r.Context())
+	if !requireAdmin(w, r, caller) {
+		return
+	}
+	if s.opts.SpamStatus == nil {
+		writeJSON(w, http.StatusOK, SpamStatus{
+			Enabled: false,
+			Plugin:  "",
+			Reason:  "spam status is not available on this server",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.opts.SpamStatus())
+}

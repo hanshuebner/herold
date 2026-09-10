@@ -519,6 +519,27 @@ Plugin list reconciliation is part of SIGHUP reload (REQ-OPS-30):
 new plugins start, removed plugins stop. Edit `system.toml`, run
 `herold server reload` (or send `SIGHUP` directly).
 
+### Spam classification status
+
+`GET /api/v1/spam/status` reports whether inbound mail is being
+classified right now:
+
+```json
+{"enabled": true, "plugin": "herold-spam-llm", "reason": ""}
+```
+
+`enabled` is `true` only when a `[[plugin]]` block of type `"spam"`
+is both declared in `system.toml` and loaded (healthy) in the
+supervisor. With no spam plugin configured, `enabled` is `false`,
+`plugin` is `""`, and `reason` says so; the server also logs a
+warning at startup in this case, since a fresh install ships with
+spam filtering off (Wave 4.1, issue #301). If a spam plugin is
+configured but fails to load — a manifest the supervisor refuses
+(for example one that does not pin `temperature = 0`), or a
+configure-time error such as a missing required option — `enabled`
+is `false`, `plugin` names the configured plugin, and `reason`
+carries the supervisor's error.
+
 ## OIDC RP (federated login)
 
 Herold authenticates principals against:

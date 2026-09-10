@@ -144,6 +144,22 @@ type SpamPolicyStore interface {
 	SetSpamPolicy(SpamPolicy)
 }
 
+// SpamStatus is the wire-form answer to GET /api/v1/spam/status (Wave 4.1,
+// issue #301): whether spam classification is currently in effect, and,
+// when it is not, why. Enabled is true only when a spam plugin is both
+// configured in system.toml and loaded (healthy) in the supervisor.
+type SpamStatus struct {
+	Enabled bool   `json:"enabled"`
+	Plugin  string `json:"plugin"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// SpamStatusProvider computes the live SpamStatus on each call. Production
+// wiring closes over the plugin manager and the configured spam plugin
+// name (admin/server.go); nil leaves the endpoint reporting enabled=false
+// with a generic "not configured" reason.
+type SpamStatusProvider func() SpamStatus
+
 // CategoriseRecategoriser is the protoadmin-facing surface of the
 // categorise.Categoriser. The ticket lifts only the
 // RecategoriseRecent method through this seam so the admin server can
@@ -207,6 +223,9 @@ type Options struct {
 	// SpamPolicyStore drives /api/v1/spam/policy GET + PUT. Nil leaves
 	// the endpoints returning 501.
 	SpamPolicyStore SpamPolicyStore
+	// SpamStatus drives GET /api/v1/spam/status (Wave 4.1, issue #301).
+	// Nil reports enabled=false with a reason stating no provider is wired.
+	SpamStatus SpamStatusProvider
 	// Categoriser drives the per-principal "recategorise inbox" admin
 	// action (REQ-FILT-220). Nil leaves the endpoints returning 501.
 	Categoriser CategoriseRecategoriser

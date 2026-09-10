@@ -209,6 +209,11 @@ type Plugin struct {
 	state    atomic.Int32 // State
 	manifest atomic.Pointer[Manifest]
 	pid      atomic.Int32
+	// lastErr holds the reason the most recent runOnce attempt ended,
+	// e.g. a rejected manifest or a failed configure RPC. Cleared on
+	// reaching StateHealthy. Read by admin surfaces that report why a
+	// configured plugin is not serving (REQ-FILT §Wave 4.1 spam status).
+	lastErr atomic.Pointer[string]
 
 	mu           sync.Mutex
 	cmd          *exec.Cmd
@@ -250,6 +255,26 @@ func (p *Plugin) PID() int { return int(p.pid.Load()) }
 // Manifest returns the last successfully parsed manifest, or nil.
 func (p *Plugin) Manifest() *Manifest { return p.manifest.Load() }
 
+// LastError returns why the most recent run attempt ended, or "" if the
+// plugin is healthy or has not run yet. Set from the error runOnce returns
+// (a rejected manifest, a failed initialize/configure RPC, or a process
+// exit) and cleared once the plugin reaches StateHealthy.
+func (p *Plugin) LastError() string {
+	if v := p.lastErr.Load(); v != nil {
+		return *v
+	}
+	return ""
+}
+
+func (p *Plugin) setLastError(err error) {
+	if err == nil {
+		p.lastErr.Store(nil)
+		return
+	}
+	msg := err.Error()
+	p.lastErr.Store(&msg)
+}
+
 func (p *Plugin) setState(s State) {
 	prev := State(p.state.Swap(int32(s)))
 	if prev != s {
@@ -257,6 +282,9 @@ func (p *Plugin) setState(s State) {
 			"activity", actSystem,
 			"from", prev.String(),
 			"to", s.String())
+	}
+	if s == StateHealthy {
+		p.setLastError(nil)
 	}
 	if observe.PluginUp != nil {
 		if s == StateHealthy {
@@ -376,6 +404,7 @@ func (p *Plugin) superviseLoop(ctx context.Context) {
 		err := p.runOnce(ctx)
 		if err != nil {
 			p.logger.Warn("plugin run ended", "activity", actSystem, "err", err)
+			p.setLastError(err)
 		}
 
 		select {

@@ -177,6 +177,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Spam policy.
 	mux.HandleFunc("GET /api/v1/spam/policy", authAdmin(s.handleGetSpamPolicy))
 	mux.HandleFunc("PUT /api/v1/spam/policy", authAdmin(s.handlePutSpamPolicy))
+	// Spam status: is filtering on, and if not, why (Wave 4.1, issue #301).
+	mux.HandleFunc("GET /api/v1/spam/status", authAdmin(s.handleGetSpamStatus))
 
 	// LLM categorisation: per-principal recategorise + job poll
 	// (REQ-FILT-220). Config GET/PUT (REQ-FILT-210..212).
