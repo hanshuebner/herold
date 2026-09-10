@@ -266,6 +266,38 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		return fmt.Errorf("admin: store integrity check failed: %w", err)
 	}
 
+	// Resume any sub-account separation sweep left pending or running by
+	// a prior process (issue #227, REQ-SUBACCT-09, REQ-IMAP-IMP-107): a
+	// kill -9 between batches must not strand mail split across the
+	// parent and sub-account. One goroutine sweeps every such row
+	// sequentially before listeners start accepting connections, so a
+	// client cannot observe a half-migrated identity as "separated" on
+	// this boot. store.RunSubAccountMigration is idempotent -- resuming
+	// a row already finished by a previous run (or completed since
+	// ListPendingSubAccountMigrations was read) is a fast no-op.
+	if pending, perr := st.Meta().ListPendingSubAccountMigrations(ctx); perr != nil {
+		logger.LogAttrs(ctx, slog.LevelWarn, "sub-account migration: list pending failed",
+			slog.String("subsystem", "subaccount"), slog.String("err", perr.Error()))
+	} else if len(pending) > 0 {
+		logger.LogAttrs(ctx, slog.LevelInfo, "sub-account migration: resuming pending sweeps",
+			slog.String("subsystem", "subaccount"), slog.Int("count", len(pending)))
+		go func() {
+			bgCtx := context.Background()
+			for _, mig := range pending {
+				if _, err := store.RunSubAccountMigration(bgCtx, st, mig.ID); err != nil {
+					logger.LogAttrs(bgCtx, slog.LevelWarn, "sub-account migration: resume failed",
+						slog.String("subsystem", "subaccount"),
+						slog.String("migration_id", mig.ID),
+						slog.String("err", err.Error()))
+					continue
+				}
+				logger.LogAttrs(bgCtx, slog.LevelInfo, "sub-account migration: resumed sweep complete",
+					slog.String("subsystem", "subaccount"),
+					slog.String("migration_id", mig.ID))
+			}
+		}()
+	}
+
 	// TelemetryGate for the clientlog ingest pipeline (REQ-OPS-208). Backed
 	// by the sessions table so IsEnabled is a single indexed lookup at
 	// ingest time. The adapter bridges directory.TelemetryGate (takes ctx)
