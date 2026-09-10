@@ -35,6 +35,14 @@
 //     excerpt cap sent to the model.
 //   - log_samples (boolean, default false): log request/response byte
 //     counts at debug level (never message content).
+//   - response_format (string, default "json_object"): how the plugin
+//     asks the chat-completions endpoint to constrain its reply.
+//     "json_object" sends {"type":"json_object"} (Ollama, OpenAI).
+//     "json_schema" sends a strict JSON-schema response_format naming
+//     the verdict/score/reason shape the plugin parses; required for
+//     Anthropic's OpenAI-compatible endpoint, which rejects
+//     "json_object". "none" omits response_format entirely and relies
+//     on jsonObjectRE to extract the JSON object from the reply text.
 //
 // Every option value arrives from the server as a string (system.toml
 // [[plugin]] options are string-valued; internal/admin's
@@ -69,11 +77,21 @@ import (
 // Configure time. Keep the defaults conservative: local Ollama, small
 // model, short timeout. Cloud endpoints are opt-in (REQ-FILT-61).
 const (
-	defaultEndpoint     = "http://localhost:11434/v1"
-	defaultModel        = "llama3.2"
-	defaultTimeoutSec   = 5
-	defaultThreshold    = 0.7
-	defaultMaxBodyChars = 4000
+	defaultEndpoint       = "http://localhost:11434/v1"
+	defaultModel          = "llama3.2"
+	defaultTimeoutSec     = 5
+	defaultThreshold      = 0.7
+	defaultMaxBodyChars   = 4000
+	defaultResponseFormat = "json_object"
+)
+
+// responseFormatJSONObject, responseFormatJSONSchema, and
+// responseFormatNone are the only accepted values of the
+// response_format option.
+const (
+	responseFormatJSONObject = "json_object"
+	responseFormatJSONSchema = "json_schema"
+	responseFormatNone       = "none"
 )
 
 // builtinSystemPrompt is the classifier instruction. Keep it terse and
@@ -98,6 +116,7 @@ var knownOptions = map[string]struct{}{
 	"system_prompt_override": {},
 	"max_body_chars":         {},
 	"log_samples":            {},
+	"response_format":        {},
 }
 
 // envVarNameRE matches a POSIX-ish environment variable identifier:
@@ -110,15 +129,16 @@ var envVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // OnConfigure and read without locking afterwards — Configure runs
 // before any classify calls per REQ-PLUG lifecycle.
 type options struct {
-	endpoint      string
-	model         string
-	apiKey        string // resolved from api_key_env at Configure time
-	apiKeyEnv     string
-	timeout       time.Duration
-	spamThreshold float64
-	systemPrompt  string
-	maxBodyChars  int
-	logSamples    bool
+	endpoint       string
+	model          string
+	apiKey         string // resolved from api_key_env at Configure time
+	apiKeyEnv      string
+	timeout        time.Duration
+	spamThreshold  float64
+	systemPrompt   string
+	maxBodyChars   int
+	logSamples     bool
+	responseFormat string
 }
 
 type handler struct {
@@ -165,12 +185,13 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 	}
 
 	cfg := options{
-		endpoint:      defaultEndpoint,
-		model:         defaultModel,
-		timeout:       time.Duration(defaultTimeoutSec) * time.Second,
-		spamThreshold: defaultThreshold,
-		systemPrompt:  builtinSystemPrompt,
-		maxBodyChars:  defaultMaxBodyChars,
+		endpoint:       defaultEndpoint,
+		model:          defaultModel,
+		timeout:        time.Duration(defaultTimeoutSec) * time.Second,
+		spamThreshold:  defaultThreshold,
+		systemPrompt:   builtinSystemPrompt,
+		maxBodyChars:   defaultMaxBodyChars,
+		responseFormat: defaultResponseFormat,
 	}
 
 	if v, ok := opts["endpoint"]; ok {
@@ -284,6 +305,19 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 			return err
 		}
 		cfg.logSamples = b
+	}
+	if v, ok := opts["response_format"]; ok {
+		s, err := asString(v, "response_format")
+		if err != nil {
+			return err
+		}
+		switch s {
+		case responseFormatJSONObject, responseFormatJSONSchema, responseFormatNone:
+			cfg.responseFormat = s
+		default:
+			return fmt.Errorf("response_format must be one of %q, %q, %q, got %q",
+				responseFormatJSONObject, responseFormatJSONSchema, responseFormatNone, s)
+		}
 	}
 
 	h.mu.Lock()
@@ -487,6 +521,44 @@ type modelVerdict struct {
 	Reason  string  `json:"reason"`
 }
 
+// spamVerdictJSONSchema is the schema advertised to json_schema-mode
+// endpoints. It matches modelVerdict field-for-field: verdict is one of
+// spam/ham, score is a 0..1 confidence, reason is free text; all three
+// are required and no other properties are allowed.
+var spamVerdictJSONSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []string{"spam", "ham"}},
+		"score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+		"reason":  map[string]any{"type": "string"},
+	},
+	"required":             []string{"verdict", "score", "reason"},
+	"additionalProperties": false,
+}
+
+// responseFormatPayload builds the chat-completions request's
+// response_format field for the given option value. "none" returns nil
+// so the field is omitted (chatRequest.ResponseFormat carries
+// omitempty); the plugin then falls back to jsonObjectRE to extract the
+// verdict from free-form text.
+func responseFormatPayload(format string) map[string]any {
+	switch format {
+	case responseFormatJSONSchema:
+		return map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name":   "spam_verdict",
+				"strict": true,
+				"schema": spamVerdictJSONSchema,
+			},
+		}
+	case responseFormatNone:
+		return nil
+	default:
+		return map[string]any{"type": "json_object"}
+	}
+}
+
 // jsonObjectRE finds the first balanced-looking JSON object in a string.
 // Models wrap the verdict in prose often enough that a tolerant match
 // pays off; parsing failures still fall through to the plugin's
@@ -504,7 +576,7 @@ func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (s
 			{Role: "user", Content: string(userJSON)},
 		},
 		Temperature:    0.0,
-		ResponseFormat: map[string]any{"type": "json_object"},
+		ResponseFormat: responseFormatPayload(opts.responseFormat),
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -707,6 +779,7 @@ func main() {
 			"system_prompt_override": {Type: "string"},
 			"max_body_chars":         {Type: "integer", Default: defaultMaxBodyChars},
 			"log_samples":            {Type: "boolean", Default: false},
+			"response_format":        {Type: "string", Default: defaultResponseFormat},
 		},
 	}
 	if err := sdk.Run(manifest, newHandler()); err != nil {

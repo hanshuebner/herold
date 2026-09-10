@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -524,6 +525,189 @@ func TestConfigure_ThresholdRange(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected configure to fail on out-of-range threshold")
+	}
+}
+
+// captureRequestBody spawns and configures the plugin against a fakeLLM
+// that decodes the raw chat-completions request body into a map, then
+// issues one classify call and returns the decoded body. Each of the
+// TestClassify_ResponseFormat* tests asserts on a different slice of
+// that decoded shape.
+func captureRequestBody(t *testing.T, extraOpts map[string]any) map[string]any {
+	t.Helper()
+	var captured map[string]any
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Errorf("decode captured request body: %v (raw=%s)", err, body)
+		}
+		mu.Lock()
+		captured = decoded
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.1,"reason":"ok"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	opts := map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}
+	for k, v := range extraOpts {
+		opts[k] = v
+	}
+	if err := p.configure(t, opts); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.classify(ctx, canonicalPayload("please review")); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured == nil {
+		t.Fatalf("fakeLLM never received a request")
+	}
+	return captured
+}
+
+// TestClassify_ResponseFormatDefaultJSONObject asserts that with no
+// response_format option set, the request carries the original
+// {"type":"json_object"} shape unchanged (Ollama/OpenAI default).
+func TestClassify_ResponseFormatDefaultJSONObject(t *testing.T) {
+	body := captureRequestBody(t, nil)
+	want := map[string]any{"type": "json_object"}
+	got, _ := body["response_format"].(map[string]any)
+	if len(got) != len(want) || got["type"] != want["type"] {
+		t.Fatalf("response_format = %#v, want %#v", body["response_format"], want)
+	}
+}
+
+// TestClassify_ResponseFormatJSONObjectExplicit exercises
+// response_format="json_object" set explicitly, verifying it produces
+// the same body as the default.
+func TestClassify_ResponseFormatJSONObjectExplicit(t *testing.T) {
+	body := captureRequestBody(t, map[string]any{"response_format": "json_object"})
+	got, _ := body["response_format"].(map[string]any)
+	if len(got) != 1 || got["type"] != "json_object" {
+		t.Fatalf("response_format = %#v, want {type: json_object}", body["response_format"])
+	}
+}
+
+// TestClassify_ResponseFormatJSONSchema asserts that
+// response_format="json_schema" sends the strict spam_verdict schema
+// Anthropic's OpenAI-compatible endpoint requires (re #302).
+func TestClassify_ResponseFormatJSONSchema(t *testing.T) {
+	body := captureRequestBody(t, map[string]any{"response_format": "json_schema"})
+	rf, ok := body["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format missing or wrong type: %#v", body["response_format"])
+	}
+	if rf["type"] != "json_schema" {
+		t.Fatalf("response_format.type = %v, want json_schema", rf["type"])
+	}
+	js, ok := rf["json_schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format.json_schema missing or wrong type: %#v", rf["json_schema"])
+	}
+	if js["name"] != "spam_verdict" {
+		t.Fatalf("json_schema.name = %v, want spam_verdict", js["name"])
+	}
+	if js["strict"] != true {
+		t.Fatalf("json_schema.strict = %v, want true", js["strict"])
+	}
+	schema, ok := js["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("json_schema.schema missing or wrong type: %#v", js["schema"])
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("schema.type = %v, want object", schema["type"])
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("schema.additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	required, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatalf("schema.required missing or wrong type: %#v", schema["required"])
+	}
+	gotRequired := map[string]bool{}
+	for _, r := range required {
+		gotRequired[fmt.Sprint(r)] = true
+	}
+	for _, want := range []string{"verdict", "score", "reason"} {
+		if !gotRequired[want] {
+			t.Fatalf("schema.required = %v, missing %q", required, want)
+		}
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema.properties missing or wrong type: %#v", schema["properties"])
+	}
+	verdictProp, ok := props["verdict"].(map[string]any)
+	if !ok || verdictProp["type"] != "string" {
+		t.Fatalf("schema.properties.verdict = %#v, want string-typed property", props["verdict"])
+	}
+	enumVals, ok := verdictProp["enum"].([]any)
+	if !ok {
+		t.Fatalf("schema.properties.verdict.enum missing or wrong type: %#v", verdictProp["enum"])
+	}
+	gotEnum := map[string]bool{}
+	for _, e := range enumVals {
+		gotEnum[fmt.Sprint(e)] = true
+	}
+	if !gotEnum["spam"] || !gotEnum["ham"] {
+		t.Fatalf("schema.properties.verdict.enum = %v, want [spam ham]", enumVals)
+	}
+	scoreProp, ok := props["score"].(map[string]any)
+	if !ok || scoreProp["type"] != "number" {
+		t.Fatalf("schema.properties.score = %#v, want number-typed property", props["score"])
+	}
+	reasonProp, ok := props["reason"].(map[string]any)
+	if !ok || reasonProp["type"] != "string" {
+		t.Fatalf("schema.properties.reason = %#v, want string-typed property", props["reason"])
+	}
+}
+
+// TestClassify_ResponseFormatNone asserts that response_format="none"
+// omits the field entirely, relying on jsonObjectRE to extract the
+// verdict from free-form model text.
+func TestClassify_ResponseFormatNone(t *testing.T) {
+	body := captureRequestBody(t, map[string]any{"response_format": "none"})
+	if v, present := body["response_format"]; present {
+		t.Fatalf("response_format = %#v, want field omitted entirely", v)
+	}
+}
+
+// TestConfigure_ResponseFormatRejectsUnknownValue asserts that an
+// unrecognized response_format value fails Configure and the error
+// names all three accepted values.
+func TestConfigure_ResponseFormatRejectsUnknownValue(t *testing.T) {
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	err := p.configure(t, map[string]any{
+		"endpoint":        "http://localhost:11434/v1",
+		"response_format": "yaml",
+	})
+	if err == nil {
+		t.Fatalf("expected configure to fail on unknown response_format value")
+	}
+	for _, want := range []string{"json_object", "json_schema", "none"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v does not mention %q", err, want)
+		}
 	}
 }
 
