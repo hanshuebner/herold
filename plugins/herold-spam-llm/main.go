@@ -529,8 +529,11 @@ var spamVerdictJSONSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"verdict": map[string]any{"type": "string", "enum": []string{"spam", "ham"}},
-		"score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-		"reason":  map[string]any{"type": "string"},
+		// Anthropic's structured-output validator rejects minimum and
+		// maximum on numbers; the range is stated in the prompt and the
+		// plugin compares the score against spam_threshold anyway.
+		"score":  map[string]any{"type": "number", "description": "probability that the message is spam, 0.0 to 1.0"},
+		"reason": map[string]any{"type": "string"},
 	},
 	"required":             []string{"verdict", "score", "reason"},
 	"additionalProperties": false,
