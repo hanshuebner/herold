@@ -917,6 +917,9 @@ func (imp *Importer) prepareOneMessage(
 		Size:         ref.Size,
 		Blob:         ref,
 		Envelope:     envelope,
+		// re #143 (maintainer finding #2): Google Takeout / Gmail bulk
+		// import.
+		IngestSource: store.IngestSourceGmailImport,
 	}
 	// REQ-EXTIMG-91 / REQ-EXTIMG-93: flag for on-demand rewrite at
 	// first read when the body looks like HTML with at least one

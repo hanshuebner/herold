@@ -184,6 +184,21 @@ func TestImporterEndToEndGerman(t *testing.T) {
 	if !gotNames["Archiviert"] {
 		t.Errorf("expected user label Archiviert; got %v", gotNames)
 	}
+
+	// re #143 (maintainer finding #2): every imported message records
+	// store.IngestSourceGmailImport.
+	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != res.MessagesImported {
+		t.Fatalf("SearchAdminMessages hits = %d, want %d", len(hits), res.MessagesImported)
+	}
+	for _, h := range hits {
+		if h.IngestSource != store.IngestSourceGmailImport {
+			t.Errorf("IngestSource = %q; want %q", h.IngestSource, store.IngestSourceGmailImport)
+		}
+	}
 }
 
 func TestImporterDryRunWritesNothing(t *testing.T) {
