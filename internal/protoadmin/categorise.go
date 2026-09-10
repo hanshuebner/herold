@@ -193,6 +193,13 @@ func newJobID() string {
 // Field names mirror store.CategorisationConfig exactly so JSON
 // round-trips are lossless. APIKeyEnv is a $VAR or file:/path
 // reference — never a raw secret (STANDARDS §9).
+//
+// Deprecated: Endpoint, Model and APIKeyEnv are round-tripped for
+// backward compatibility but are no-ops (issue #304 Decision 2, Wave
+// 4.3): a classifier's endpoint/model is operator-configured plugin
+// wiring in system.toml, not a per-principal setting. They stored and
+// return whatever value a caller previously wrote; internal/categorise
+// no longer reads them when resolving an outbound call.
 type categorisationConfigDTO struct {
 	Prompt      string              `json:"prompt"`
 	CategorySet []store.CategoryDef `json:"category_set"`

@@ -146,19 +146,15 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		return fmt.Errorf("protosmtp.IngestBytes: parse: %w", perr)
 	}
 
-	// Spam classification (same as relay-in path).
+	// Merged spam+category classification (REQ-FILT-13, Wave 4.3; same
+	// single call as the relay-in path, classifyMessage in deliver.go).
 	var classification spam.Classification
 	if s.spam != nil {
-		cls, err := s.spam.Classify(ctx, msg, &authResults, s.spamPlug)
-		if err != nil {
-			s.log.InfoContext(ctx, "ingest: spam classify error",
-				slog.String("activity", observe.ActivitySystem),
-				slog.String("subsystem", "protosmtp"),
-				slog.String("err", err.Error()))
-			classification = spam.Classification{Verdict: spam.Unclassified, Score: -1}
-		} else {
-			classification = cls
+		recipients := make([]recipientRef, len(req.Recipients))
+		for i, rc := range req.Recipients {
+			recipients[i] = recipientRef{addr: rc.Addr, principalID: rc.PrincipalID}
 		}
+		classification = classifyMessage(ctx, s, msg, &authResults, recipients)
 		// Stamp spam verdict onto authResults for audit consistency.
 		authResults.Spam = &mailauth.SpamResult{
 			Verdict: classification.Verdict.String(),

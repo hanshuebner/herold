@@ -361,7 +361,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	if d := cfg.Spam.ClassifyTimeout.AsDuration(); d > 0 {
 		spamClassifier = spamClassifier.WithTimeout(d)
 	}
-	spamPluginName := firstPluginOfType(cfg.Plugin, "spam")
+	// issue #304 Decision 3: a "classifier"-typed plugin is the mail.classify
+	// contract's operator-facing name; "spam" is accepted for one release
+	// against the same binary (see compatiblePluginType in internal/plugin).
+	spamPluginName := firstPluginOfType(cfg.Plugin, "spam", "classifier")
 	if spamPluginName == "" {
 		// Wave 4.1 (REQ-FILT §Spam, issue #301): with no spam plugin
 		// configured, the SMTP path delivers every message unjudged and
@@ -639,19 +642,18 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Protocol servers.
 	smtpServer, err := protosmtp.New(protosmtp.Config{
-		Store:      st,
-		Directory:  dir,
-		DKIM:       dkim,
-		SPF:        spf,
-		DMARC:      dmarc,
-		ARC:        arc,
-		Spam:       spamClassifier,
-		Sieve:      sieveInterp,
-		Categorise: smtpCategoriser,
-		TLS:        tlsStore,
-		Resolver:   resolver,
-		Clock:      clk,
-		Logger:     logger.With("subsystem", "smtp"),
+		Store:     st,
+		Directory: dir,
+		DKIM:      dkim,
+		SPF:       spf,
+		DMARC:     dmarc,
+		ARC:       arc,
+		Spam:      spamClassifier,
+		Sieve:     sieveInterp,
+		TLS:       tlsStore,
+		Resolver:  resolver,
+		Clock:     clk,
+		Logger:    logger.With("subsystem", "smtp"),
 		Options: protosmtp.Options{
 			Hostname:      cfg.Server.Hostname,
 			ShutdownGrace: cfg.Server.ShutdownGrace.AsDuration(),
@@ -2390,10 +2392,31 @@ func (p pluginInvoker) Call(ctx context.Context, pluginName, method string, para
 	return pl.Call(ctx, method, params, result)
 }
 
-func firstPluginOfType(plugins []sysconfig.PluginConfig, kind string) string {
+// PluginType implements spam.PluginTypeResolver: it reports the plugin's
+// OWN declared manifest type (not the operator's configured system.toml
+// string), which is what lets internal/spam.Classifier choose the
+// mail.classify wire contract for a plugin that declares itself a
+// classifier even when the operator's [[plugin]] block still says
+// type = "spam" (issue #304 Decision 3, internal/plugin.compatiblePluginType).
+func (p pluginInvoker) PluginType(name string) (string, bool) {
+	pl := p.mgr.Get(name)
+	if pl == nil {
+		return "", false
+	}
+	return string(pl.Type()), true
+}
+
+// firstPluginOfType returns the Name of the first configured plugin whose
+// Type matches any of kinds, or "". Accepting several kinds is how
+// callers look for either of two operator-facing type strings that name
+// the same wire contract (issue #304 Decision 3: "spam" and
+// "classifier").
+func firstPluginOfType(plugins []sysconfig.PluginConfig, kinds ...string) string {
 	for _, p := range plugins {
-		if p.Type == kind {
-			return p.Name
+		for _, k := range kinds {
+			if p.Type == k {
+				return p.Name
+			}
 		}
 	}
 	return ""

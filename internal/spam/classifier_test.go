@@ -94,7 +94,7 @@ func TestClassify_ReturnsSpamVerdict(t *testing.T) {
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 	msg := buildMessage(t, canonMsg)
-	r, err := c.Classify(context.Background(), msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"), "my-spam")
+	r, err := c.Classify(context.Background(), msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"), "my-spam", ClassifyContext{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestClassify_TimeoutReturnsUnclassified(t *testing.T) {
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow")
+	r, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -161,7 +161,7 @@ func TestClassify_BudgetCutoff_FakeClock(t *testing.T) {
 	}
 	resultCh := make(chan outcome, 1)
 	go func() {
-		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "slow")
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "slow", ClassifyContext{})
 		resultCh <- outcome{r, err}
 	}()
 
@@ -188,7 +188,7 @@ func TestClassify_PluginErrorReturnsUnclassified(t *testing.T) {
 		return nil, errors.New("plugin crashed")
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken")
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -200,7 +200,7 @@ func TestClassify_PluginErrorReturnsUnclassified(t *testing.T) {
 func TestClassify_PluginNotRegistered(t *testing.T) {
 	invoker := newFakeInvoker()
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "missing")
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "missing", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -215,7 +215,7 @@ func TestClassify_UnparseableVerdict(t *testing.T) {
 		return json.RawMessage(`{"verdict":"maybe","confidence":0.5}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
-	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd")
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "odd", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -411,7 +411,7 @@ func TestClassify_AppliesDefaultTimeout(t *testing.T) {
 		return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
 	})
 	c := New(invoker, silentLogger(), clock.NewReal()).WithTimeout(10 * time.Millisecond)
-	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p")
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestClassify_WithLLMReplayer(t *testing.T) {
 	msg := buildMessage(t, canonMsg)
 	r, err := c.Classify(context.Background(), msg,
 		newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"),
-		"herold-spam-llm")
+		"herold-spam-llm", ClassifyContext{})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestClassify_ReplayerMissingFixtureError(t *testing.T) {
 	replayer := llmtest.NewReplayer(llmtest.KindSpamClassify, nil)
 	c := New(replayer, silentLogger(), clock.NewFake(time.Now()))
 	msg := buildMessage(t, canonMsg)
-	_, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm")
+	_, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected ErrFixtureMissing, got nil")
 	}

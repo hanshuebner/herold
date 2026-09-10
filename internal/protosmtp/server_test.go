@@ -287,6 +287,18 @@ func (f *fakePluginInvoker) Call(ctx context.Context, plugin, method string, par
 	return json.Unmarshal(raw, result)
 }
 
+// PluginType implements spam.PluginTypeResolver so tests can register a
+// "classifier"-kind fakeplugin.FakePlugin and exercise the mail.classify
+// wire contract (Wave 4.3, issue #304) instead of the legacy
+// spam.classify one.
+func (f *fakePluginInvoker) PluginType(name string) (string, bool) {
+	p, ok := f.reg.Get(name)
+	if !ok {
+		return "", false
+	}
+	return p.Kind, true
+}
+
 // resolverAdapter wraps fakedns.Resolver into mailauth.Resolver.
 type resolverAdapter struct{ d *fakedns.Resolver }
 

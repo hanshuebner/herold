@@ -42,7 +42,7 @@ type fakeSpamClassifier struct {
 	lastRecordedMID  store.MessageID
 }
 
-func (f *fakeSpamClassifier) Classify(context.Context, mailparse.Message) spam.Classification {
+func (f *fakeSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message) spam.Classification {
 	i := f.classifyCalls.Add(1) - 1
 	if len(f.verdicts) == 0 {
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}

@@ -70,8 +70,18 @@ type Classification struct {
 	// Score is the [0,1] confidence attached to Verdict. A negative
 	// value indicates the plugin returned no score (unclassified).
 	Score float64
-	// RawResponse carries the plugin's full JSON response so the
-	// delivery path can log reason strings, model name, etc.
+	// Reason is the plugin's one-sentence explanation (REQ-FILT-66),
+	// shown to the user. Empty when the plugin did not supply one.
+	Reason string
+	// Category is the classifier's category assignment (Wave 4.3,
+	// REQ-FILT-210), empty when the plugin returned none, named a
+	// category outside the principal's set (rejected and logged inside
+	// Classify), or the plugin is a TypeSpam classifier (which never
+	// returns one). The delivery path applies the server's structural
+	// fallback categoriser when this is empty (ADR-0002).
+	Category string
+	// RawResponse carries the plugin's full JSON response so callers
+	// can log extra fields (e.g. "model") the classifier reported.
 	RawResponse map[string]any
 }
 
@@ -92,8 +102,67 @@ const DefaultTimeout = 5 * time.Second
 // ~4 KiB per REQ-FILT-30.
 const DefaultBodyExcerptBytes = 4 * 1024
 
-// ClassifyMethod is the JSON-RPC method name the plugin must expose.
+// ClassifyMethod is the JSON-RPC method name a TypeSpam plugin exposes
+// (REQ-FILT-13, legacy contract retained for one release per issue #304
+// Decision 3).
 const ClassifyMethod = "spam.classify"
+
+// MailClassifyMethod is the JSON-RPC method name a TypeClassifier plugin
+// exposes (Wave 4.3, REQ-FILT-13). One call returns both the spam
+// verdict and the category, replacing ClassifyMethod and
+// internal/categorise's direct HTTP call.
+const MailClassifyMethod = "mail.classify"
+
+// classifierPluginType is the wire value of internal/plugin.TypeClassifier,
+// duplicated here as a plain string so this package does not need to
+// import internal/plugin merely to compare a manifest type tag.
+const classifierPluginType = "classifier"
+
+// PluginTypeResolver is an optional PluginInvoker extension a caller may
+// implement so Classify can choose between the spam.classify and
+// mail.classify wire contracts based on what the plugin process itself
+// declared at handshake (Plugin.Type()) -- not what the operator wrote
+// in system.toml, since issue #304 Decision 3 makes "spam" and
+// "classifier" interchangeable there for one release. An invoker that
+// does not implement this always gets the legacy spam.classify call.
+type PluginTypeResolver interface {
+	// PluginType returns the plugin's declared manifest type and true,
+	// or ("", false) when the plugin is unknown.
+	PluginType(name string) (string, bool)
+}
+
+// CategoryOption is one entry in the principal's stored category set
+// (REQ-FILT-210), passed to a TypeClassifier plugin so it names a
+// category the principal owns rather than inventing vocabulary
+// (ADR-0004).
+type CategoryOption struct {
+	Name        string
+	Description string
+}
+
+// ClassifyContext carries what the operator granted a TypeClassifier
+// plugin for one mail.classify call, beyond the message itself: who it
+// is for, where it is headed, the principal's own policy prose, and the
+// category vocabulary the plugin may pick from. The zero value carries
+// no context and is what a TypeSpam call always uses.
+type ClassifyContext struct {
+	// Principal is an opaque identifier (the recipient principal's
+	// numeric id, as a string) a plugin may use as a state-scoping
+	// key. Empty when the message has no local recipient.
+	Principal string
+	// RecipientDomain is the domain part of the recipient address.
+	RecipientDomain string
+	// Prompt is the principal's own categorisation policy in their own
+	// words (REQ-FILT-211), with any operator guardrail prepended
+	// (REQ-FILT-67). Empty when categorisation is disabled for this
+	// principal.
+	Prompt string
+	// Categories is the principal's stored category set (REQ-FILT-210).
+	// A category the plugin returns that does not name an entry here
+	// is ignored and logged (REQ-FILT-230); empty means categorisation
+	// is disabled and the returned category is always dropped.
+	Categories []CategoryOption
+}
 
 // Classifier orchestrates one classify call. Callers construct a single
 // Classifier and reuse it across deliveries; it is safe for concurrent
@@ -136,7 +205,15 @@ func (c *Classifier) WithTimeout(d time.Duration) *Classifier {
 // never with a real verdict: the delivery path can therefore switch on
 // Verdict alone. Timeout / plugin-unavailable / parse failures are
 // reported as errors but not raised as panics.
-func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string) (Classification, error) {
+//
+// clsCtx supplies the per-principal category context (REQ-FILT-210); its
+// zero value is valid and means "no category context" -- the call still
+// runs, but a TypeClassifier plugin's returned category is dropped since
+// there is no principal set to validate it against. Whether the wire
+// call is spam.classify or mail.classify is decided by the plugin's OWN
+// declared manifest type (via invoker's optional PluginTypeResolver),
+// not by clsCtx being non-zero.
+func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext) (Classification, error) {
 	if c.invoker == nil {
 		return Classification{Verdict: Unclassified, Score: -1}, errors.New("spam: no plugin invoker configured")
 	}
@@ -147,13 +224,28 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 	// carries subsystem=spam and classifier=<pluginName> (REQ-OPS-86).
 	log := c.logger.With("subsystem", "spam", "classifier", pluginName)
 
-	req := BuildRequest(msg, auth)
+	useClassifier := false
+	if tr, ok := c.invoker.(PluginTypeResolver); ok {
+		if t, found := tr.PluginType(pluginName); found && t == classifierPluginType {
+			useClassifier = true
+		}
+	}
+
+	method := ClassifyMethod
+	var req any = BuildRequest(msg, auth)
+	if useClassifier {
+		method = MailClassifyMethod
+		req = MailClassifyRequest{
+			Request: BuildRequest(msg, auth),
+			Context: requestContextFrom(clsCtx),
+		}
+	}
 	log.DebugContext(ctx, "spam classification request",
 		"activity", observe.ActivitySystem,
-		"method", ClassifyMethod)
+		"method", method)
 
 	var raw map[string]any
-	err := c.invoker.Call(ctx, pluginName, ClassifyMethod, req, &raw)
+	err := c.invoker.Call(ctx, pluginName, method, req, &raw)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			log.WarnContext(ctx, "spam classifier timeout",
@@ -174,11 +266,53 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			"err", err)
 		return cl, err
 	}
+	if !useClassifier {
+		// A TypeSpam plugin never carries a category (Decision 3): drop
+		// one defensively even if a rogue plugin sent it.
+		cl.Category = ""
+	} else if cl.Category != "" && !categoryInSet(cl.Category, clsCtx.Categories) {
+		log.WarnContext(ctx, "classifier returned category outside principal's set; ignoring",
+			"activity", observe.ActivitySystem,
+			"category", cl.Category)
+		cl.Category = ""
+	}
 	log.DebugContext(ctx, "spam classification verdict",
 		"activity", observe.ActivitySystem,
 		"verdict", cl.Verdict.String(),
-		"confidence", cl.Score)
+		"confidence", cl.Score,
+		"category", cl.Category)
 	return cl, nil
+}
+
+// categoryInSet reports whether name matches an entry in set, by
+// case-insensitive name comparison. An empty set means the principal has
+// no stored categories (or categorisation is disabled) -- nothing
+// validates against it, so a returned category is always rejected by the
+// caller (Classify passes an empty set exactly in that situation).
+func categoryInSet(name string, set []CategoryOption) bool {
+	for _, c := range set {
+		if strings.EqualFold(c.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestContextFrom converts a ClassifyContext into the wire shape sent
+// to a TypeClassifier plugin.
+func requestContextFrom(clsCtx ClassifyContext) RequestContext {
+	out := RequestContext{
+		Principal:       clsCtx.Principal,
+		RecipientDomain: clsCtx.RecipientDomain,
+		Prompt:          clsCtx.Prompt,
+	}
+	if len(clsCtx.Categories) > 0 {
+		out.Categories = make([]RequestCategory, len(clsCtx.Categories))
+		for i, c := range clsCtx.Categories {
+			out.Categories[i] = RequestCategory(c)
+		}
+	}
+	return out
 }
 
 // deadline ensures ctx carries a deadline; if it does not, the classifier's
@@ -227,6 +361,12 @@ func parseClassification(raw map[string]any) (Classification, error) {
 		out.Score = s
 	} else if s, ok := raw["confidence"].(float64); ok {
 		out.Score = s
+	}
+	if r, ok := raw["reason"].(string); ok {
+		out.Reason = r
+	}
+	if cat, ok := raw["category"].(string); ok {
+		out.Category = strings.TrimSpace(cat)
 	}
 	if out.Verdict == Unclassified {
 		return out, errors.New("spam: plugin returned unrecognised verdict")
@@ -316,6 +456,37 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 // MarshalJSON on Request is default; this helper exists for tests that
 // want the canonical on-wire representation.
 func (r Request) Canonical() (json.RawMessage, error) {
+	return json.Marshal(r)
+}
+
+// RequestCategory is one entry in RequestContext.Categories, mirroring
+// plugins/sdk.MailClassifyCategory field-for-field.
+type RequestCategory struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// RequestContext is the "context" object sent alongside a Request in a
+// MailClassifyRequest, mirroring plugins/sdk.MailClassifyContext
+// field-for-field.
+type RequestContext struct {
+	Principal       string            `json:"principal,omitempty"`
+	RecipientDomain string            `json:"recipient_domain,omitempty"`
+	Prompt          string            `json:"prompt,omitempty"`
+	Categories      []RequestCategory `json:"categories,omitempty"`
+}
+
+// MailClassifyRequest is the JSON shape sent to a TypeClassifier plugin's
+// mail.classify method: the same message projection Request carries
+// (embedded, so its fields marshal at the top level), plus Context.
+type MailClassifyRequest struct {
+	Request
+	Context RequestContext `json:"context"`
+}
+
+// Canonical returns the on-wire representation, used for transparency
+// records (REQ-FILT-66/216) and tests.
+func (r MailClassifyRequest) Canonical() (json.RawMessage, error) {
 	return json.Marshal(r)
 }
 

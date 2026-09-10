@@ -4,15 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/hanshuebner/herold/internal/categorise"
-	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/mailarc"
 	"github.com/hanshuebner/herold/internal/maildkim"
@@ -26,30 +21,12 @@ import (
 	"github.com/hanshuebner/herold/internal/testharness/fakeplugin"
 )
 
-// fakeChatJSON returns a marshalled OpenAI chat-completions response.
-func fakeChatJSON(content string) string {
-	resp := map[string]any{
-		"choices": []map[string]any{
-			{"message": map[string]any{"content": content}},
-		},
-	}
-	b, _ := json.Marshal(resp)
-	return string(b)
-}
-
 // TestDelivery_Categoriser_AddsCategoryKeyword exercises the
-// REQ-FILT-200 happy path: the spam plugin returns Ham, the Sieve
-// outcome is Keep to INBOX, and the categoriser is mocked to return
-// "promotions"; the stored Email's Keywords slice must carry
-// "$category-promotions".
+// REQ-FILT-200 happy path: a classifier-type plugin's ONE mail.classify
+// call returns both a ham verdict and a category (Wave 4.3, issue #304);
+// the Sieve outcome is Keep to INBOX, and the stored Email's Keywords
+// slice must carry "$category-promotions".
 func TestDelivery_Categoriser_AddsCategoryKeyword(t *testing.T) {
-	// Fake LLM endpoint that always answers "promotions" in the new
-	// {categories, assigned} shape (REQ-FILT-215).
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, fakeChatJSON(`{"categories":["primary","social","promotions","updates","forums"],"assigned":"promotions"}`))
-	}))
-	t.Cleanup(llm.Close)
-
 	ha, _ := testharness.Start(t, testharness.Options{
 		Listeners: []testharness.ListenerSpec{{Name: "smtp", Protocol: "smtp"}},
 	})
@@ -63,11 +40,11 @@ func TestDelivery_Categoriser_AddsCategoryKeyword(t *testing.T) {
 		t.Fatalf("CreatePrincipal: %v", err)
 	}
 
-	spamPlug := fakeplugin.New("spam", "spam")
-	spamPlug.Handle("spam.classify", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"verdict":"ham","score":0.05}`), nil
+	classifierPlug := fakeplugin.New("spam", "classifier")
+	classifierPlug.Handle("mail.classify", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","confidence":0.95,"category":"promotions"}`), nil
 	})
-	ha.RegisterPlugin("spam", spamPlug)
+	ha.RegisterPlugin("spam", classifierPlug)
 	invoker := &fakePluginInvoker{reg: ha.Plugins}
 	spamCls := spam.New(invoker, ha.Logger, ha.Clock)
 
@@ -79,36 +56,19 @@ func TestDelivery_Categoriser_AddsCategoryKeyword(t *testing.T) {
 	interp := sieve.NewInterpreter()
 	tlsStore, _ := newTestTLSStore(t)
 
-	// Categoriser deadlines are computed against the supplied Clock. The
-	// harness's FakeClock is anchored months behind real wall-clock so a
-	// fake-clock-driven deadline lands in the past and the upstream
-	// httptest call is cancelled before it begins. The categoriser's
-	// timeout discipline is exercised in internal/categorise/_test; here
-	// we use a real clock so the deadline lines up with the live
-	// httptest server.
-	cat := categorise.New(categorise.Options{
-		Store:           ha.Store,
-		Logger:          ha.Logger,
-		Clock:           clock.NewReal(),
-		DefaultEndpoint: llm.URL,
-		DefaultModel:    "test-model",
-		DefaultTimeout:  3 * time.Second,
-	})
-
 	srv, err := protosmtp.New(protosmtp.Config{
-		Store:      ha.Store,
-		Directory:  dir,
-		DKIM:       dkimV,
-		SPF:        spfV,
-		DMARC:      dmarcV,
-		ARC:        arcV,
-		Spam:       spamCls,
-		Sieve:      interp,
-		Categorise: cat,
-		TLS:        tlsStore,
-		Resolver:   resolver,
-		Clock:      ha.Clock,
-		Logger:     ha.Logger,
+		Store:     ha.Store,
+		Directory: dir,
+		DKIM:      dkimV,
+		SPF:       spfV,
+		DMARC:     dmarcV,
+		ARC:       arcV,
+		Spam:      spamCls,
+		Sieve:     interp,
+		TLS:       tlsStore,
+		Resolver:  resolver,
+		Clock:     ha.Clock,
+		Logger:    ha.Logger,
 		Options: protosmtp.Options{
 			Hostname:                 "mx.example.test",
 			AuthservID:               "mx.example.test",

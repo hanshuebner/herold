@@ -164,8 +164,8 @@ func (s *spawnedPlugin) initialize(t *testing.T) {
 	if res.Manifest.Name != "herold-spam-llm" {
 		t.Fatalf("manifest.Name = %q, want herold-spam-llm", res.Manifest.Name)
 	}
-	if res.Manifest.Type != plug.TypeSpam {
-		t.Fatalf("manifest.Type = %q, want %q", res.Manifest.Type, plug.TypeSpam)
+	if res.Manifest.Type != plug.TypeClassifier {
+		t.Fatalf("manifest.Type = %q, want %q", res.Manifest.Type, plug.TypeClassifier)
 	}
 	if res.Manifest.MaxConcurrentRequests != 16 {
 		t.Fatalf("manifest.MaxConcurrentRequests = %d, want 16", res.Manifest.MaxConcurrentRequests)
@@ -183,6 +183,15 @@ func (s *spawnedPlugin) configure(t *testing.T, opts map[string]any) error {
 func (s *spawnedPlugin) classify(ctx context.Context, params map[string]any) (map[string]any, error) {
 	var res map[string]any
 	err := s.client.Call(ctx, "spam.classify", params, &res)
+	return res, err
+}
+
+// mailClassify calls mail.classify (Wave 4.3, issue #304), the method
+// the server actually invokes against this binary. params is merged with
+// an optional "context" key the caller supplies directly.
+func (s *spawnedPlugin) mailClassify(ctx context.Context, params map[string]any) (map[string]any, error) {
+	var res map[string]any
+	err := s.client.Call(ctx, "mail.classify", params, &res)
 	return res, err
 }
 
@@ -239,6 +248,91 @@ func TestClassify_SpamVerdict(t *testing.T) {
 	}
 	if got, _ := res["reason"].(string); !strings.Contains(got, "urgency") {
 		t.Fatalf("reason = %q, want to contain 'urgency'", got)
+	}
+}
+
+// TestMailClassify_VerdictAndCategory exercises the Wave 4.3 (issue
+// #304) contract end-to-end: one mail.classify call returns both the
+// spam verdict and a category drawn from the request's context.
+func TestMailClassify_VerdictAndCategory(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		replyJSON(w, `{"verdict":"ham","score":0.05,"reason":"newsletter","category":"promotions"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	params := canonicalPayload("check out our sale")
+	params["context"] = map[string]any{
+		"principal":        "42",
+		"recipient_domain": "example.com",
+		"categories": []map[string]any{
+			{"name": "primary"},
+			{"name": "promotions", "description": "Marketing emails."},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.mailClassify(ctx, params)
+	if err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+	if got, _ := res["verdict"].(string); got != "ham" {
+		t.Fatalf("verdict = %q, want ham (full=%v)", got, res)
+	}
+	if got, _ := res["category"].(string); got != "promotions" {
+		t.Fatalf("category = %q, want promotions (full=%v)", got, res)
+	}
+}
+
+// TestMailClassify_SpamVerdictStillClassifies verifies a `type = "spam"`
+// plugin configuration (issue #304 Decision 3) still classifies through
+// this same binary -- the server always dispatches mail.classify to it
+// regardless of the operator's configured type string, and a spam
+// verdict is unaffected by no category being supplied in the request
+// context.
+func TestMailClassify_SpamVerdictStillClassifies(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		replyJSON(w, `{"verdict":"spam","score":0.97,"reason":"phishing","category":""}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.mailClassify(ctx, canonicalPayload("verify your account now"))
+	if err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+	if got, _ := res["verdict"].(string); got != "spam" {
+		t.Fatalf("verdict = %q, want spam (full=%v)", got, res)
+	}
+	if got, ok := res["category"].(string); ok && got != "" {
+		t.Fatalf("category = %q, want empty", got)
 	}
 }
 

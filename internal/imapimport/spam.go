@@ -1,13 +1,18 @@
 package imapimport
 
-// spam.go implements the spam-classification seam for newly imported
-// messages that map to INBOX (REQ-FILT-02, issue #300). It mirrors the SMTP
-// delivery path's verdict routing (internal/protosmtp/deliver.go
-// resolveSieveTargets): spam files into the principal's Junk mailbox instead
-// of INBOX, suspect stays in INBOX with the "$Junk" keyword, and
-// ham/unclassified stays in INBOX. Sieve itself is never run against
-// imported mail (REQ-IMAP-IMP-31 decision 1), so this is the only routing
-// decision the import worker makes off the classifier's verdict.
+// spam.go implements the merged spam+category classification seam for
+// newly imported messages that map to INBOX (REQ-FILT-02/13, issues #300
+// and #304). It mirrors the SMTP delivery path's verdict routing
+// (internal/protosmtp/deliver.go resolveSieveTargets / classifyMessage):
+// spam files into the principal's Junk mailbox instead of INBOX with no
+// category (ADR-0004), suspect stays in INBOX with the "$Junk" keyword,
+// and ham/unclassified stays in INBOX; whichever of those applies, a
+// non-empty Classification.Category earns a "$category-<name>" keyword.
+// One Classify call answers both questions (Wave 4.3): there is no
+// second, post-insert categorisation call on this path. Sieve itself is
+// never run against imported mail (REQ-IMAP-IMP-31 decision 1), so this
+// is the only routing decision the import worker makes off the
+// classifier's result.
 //
 // Classification runs only for messages that are:
 //   - newly inserted, not a dedup hit -- a message already known to herold
@@ -52,9 +57,15 @@ import (
 // spam.Classification{Verdict: spam.Unclassified}, exactly like
 // protosmtp's classify() helper.
 type SpamClassifier interface {
-	// Classify runs the configured spam plugin against msg using the same
-	// request projection as SMTP delivery (spam.BuildRequest).
-	Classify(ctx context.Context, msg mailparse.Message) spam.Classification
+	// Classify runs the configured classifier plugin against msg using
+	// the same request projection as SMTP delivery (spam.BuildRequest),
+	// plus the owning principal's category context (REQ-FILT-210): the
+	// returned Classification.Category is already fully resolved
+	// (validated against the principal's stored set, structural fallback
+	// applied, dropped for a spam verdict) -- see
+	// internal/admin/imap_import_spam.go, which builds the same
+	// spam.ClassifyContext protosmtp.classifyMessage does.
+	Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification
 
 	// RecordVerdict persists the classification for principalID/messageID
 	// (REQ-FILT-66), once the message id is known post-insert. A no-op
@@ -70,7 +81,7 @@ type SpamClassifier interface {
 // accountWorkerOpts directly without going through Pool.
 type noopSpamClassifier struct{}
 
-func (noopSpamClassifier) Classify(context.Context, mailparse.Message) spam.Classification {
+func (noopSpamClassifier) Classify(context.Context, store.PrincipalID, mailparse.Message) spam.Classification {
 	return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 }
 
@@ -86,16 +97,39 @@ type importSpamTarget struct {
 	keywords []string
 }
 
-// resolveImportSpamTarget maps a spam verdict to the import worker's
-// routing decision (REQ-FILT-02) -- the same mapping SMTP delivery's
-// resolveSieveTargets applies to a sieve.Outcome.ImplicitKeep default.
-func resolveImportSpamTarget(verdict spam.Verdict) importSpamTarget {
-	switch verdict {
+// resolveImportSpamTarget maps a classification to the import worker's
+// routing decision (REQ-FILT-02/13) -- the same mapping SMTP delivery's
+// resolveSieveTargets/classifyMessage apply. classification.Category is
+// expected to already be fully resolved (plugin category validated
+// against the principal's set, structural fallback applied, dropped for
+// a spam verdict) by the caller -- see
+// internal/admin/imap_import_spam.go's Classify adapter, which builds
+// the same spam.ClassifyContext protosmtp.classifyMessage does.
+func resolveImportSpamTarget(classification spam.Classification) importSpamTarget {
+	switch classification.Verdict {
 	case spam.Spam:
+		// ADR-0004: \Junk is exempt from categorisation even when the
+		// plugin returned one -- classification.Category is expected to
+		// already be "" here, but the routing decision does not rely on
+		// that invariant holding upstream.
 		return importSpamTarget{mailbox: "Junk"}
 	case spam.Suspect:
-		return importSpamTarget{mailbox: "INBOX", keywords: []string{"$Junk"}}
+		return importSpamTarget{mailbox: "INBOX", keywords: categoryKeywords(classification.Category, "$Junk")}
 	default:
-		return importSpamTarget{mailbox: "INBOX"}
+		return importSpamTarget{mailbox: "INBOX", keywords: categoryKeywords(classification.Category)}
 	}
+}
+
+// categoryKeywords appends "$category-<name>" (when category is
+// non-empty) to extra, returning nil rather than an empty slice when
+// there is nothing to add.
+func categoryKeywords(category string, extra ...string) []string {
+	kw := append([]string(nil), extra...)
+	if category != "" {
+		kw = append(kw, "$category-"+category)
+	}
+	if len(kw) == 0 {
+		return nil
+	}
+	return kw
 }

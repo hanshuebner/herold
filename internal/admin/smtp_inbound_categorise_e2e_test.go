@@ -1,26 +1,29 @@
 package admin
 
 // smtp_inbound_categorise_e2e_test.go verifies that the production
-// StartServer wiring passes a live categorise.Categoriser into the SMTP
-// server so inbound relay-in messages delivered to a local recipient's
-// INBOX receive the $category-* keyword assigned by the LLM.
+// StartServer wiring passes the configured classifier plugin into the
+// SMTP server so inbound relay-in messages delivered to a local
+// recipient's INBOX receive the $category-* keyword the plugin assigned
+// (Wave 4.3/4.4, issue #304) in the SAME mail.classify call that decided
+// the spam verdict -- no per-account LLM endpoint override (Decision 2)
+// and no second, category-only call (Decision/Wave 4.4).
 //
 // Prior to the fix for re #39, admin.StartServer constructed the
 // smtpServer WITHOUT a Categorise field, so the REQ-FILT-200 code path
 // in protosmtp/deliver.go was dead in production even though the
-// categoriser was wired for the IMAP import path.
+// categoriser was wired for the IMAP import path. That gap is now
+// closed by classifyMessage always resolving a category (plugin or
+// structural fallback) for every classify() call, not by a separate
+// categoriser wiring.
 
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,46 +37,41 @@ import (
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
-// fakeChatJSONForCategory returns a minimal OpenAI chat-completions
-// response JSON that makes the categoriser return the given category.
-// json.Marshal is used for both the inner content string and the outer
-// envelope to guarantee all escaping is correct.
-func fakeChatJSONForCategory(category string) string {
-	content := fmt.Sprintf(
-		`{"categories":["primary","social","promotions","updates","forums"],"assigned":%s}`,
-		func() string { b, _ := json.Marshal(category); return string(b) }(),
-	)
-	resp := map[string]any{
-		"choices": []map[string]any{
-			{"message": map[string]any{"content": content}},
-		},
+// buildClassifierFixture compiles internal/plugin/testdata/classifierfixture
+// into t.TempDir() and returns its path, mirroring the pattern
+// internal/plugin's own integration tests use for spamfixture -- a real
+// child process at the JSON-RPC boundary (STANDARDS section 8), not a
+// mock.
+func buildClassifierFixture(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "classifierfixture")
+	cmd := exec.Command("go", "build", "-o", out, "github.com/hanshuebner/herold/internal/plugin/testdata/classifierfixture")
+	if outb, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build classifierfixture: %v\n%s", err, outb)
 	}
-	b, _ := json.Marshal(resp)
-	return string(b)
+	return out
 }
 
 // TestSMTPInbound_E2E_CategorisesINBOXMessages is the production-wiring
-// regression test for re #39.
+// regression test for re #39, updated for issue #304 (Wave 4.3/4.4).
 //
-// It boots admin.StartServer with an inbound relay-in SMTP listener,
-// seeds the database with a local domain, a principal, and a
-// CategorisationConfig whose Endpoint points to a fake LLM server, then
-// delivers a message via raw SMTP and asserts the stored Email carries
-// the $category-promotions keyword. This verifies the end-to-end wiring:
-// StartServer must pass the categoriser to protosmtp.New so delivery
-// calls categorise.Categoriser.CategoriseRich for each INBOX placement.
+// It boots admin.StartServer with an inbound relay-in SMTP listener and a
+// configured classifier-type plugin (classifierfixture, scripted via
+// HEROLD_TEST_CLASSIFY_* env vars to assign category "promotions"),
+// seeds the database with a local domain and a principal, then delivers
+// a message via raw SMTP and asserts the stored Email carries the
+// $category-promotions keyword.
 func TestSMTPInbound_E2E_CategorisesINBOXMessages(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e wiring test")
 	}
 
-	// 1. Fake LLM endpoint that always assigns "promotions".
-	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, fakeChatJSONForCategory("promotions"))
-	}))
-	t.Cleanup(llmSrv.Close)
+	fixturePath := buildClassifierFixture(t)
+	t.Setenv("HEROLD_TEST_CLASSIFY_VERDICT", "ham")
+	t.Setenv("HEROLD_TEST_CLASSIFY_CATEGORY", "promotions")
 
-	// 2. Write system.toml: relay-in SMTP listener, no TLS anywhere.
+	// Write system.toml: relay-in SMTP listener, no TLS anywhere, one
+	// classifier plugin.
 	dir := t.TempDir()
 	systomlPath := filepath.Join(dir, "system.toml")
 	dbPath := filepath.Join(dir, "db.sqlite")
@@ -114,11 +112,17 @@ protocol = "http"
 kind = "admin"
 tls = "none"
 
+[[plugin]]
+name = "spam"
+type = "classifier"
+path = %q
+lifecycle = "long-running"
+
 [observability]
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, dir, filepath.Join(dir, "ports.toml"), dbPath)
+`, dir, filepath.Join(dir, "ports.toml"), dbPath, fixturePath)
 	if err := os.WriteFile(systomlPath, []byte(systomlBody), 0o600); err != nil {
 		t.Fatalf("write system.toml: %v", err)
 	}
@@ -127,10 +131,11 @@ metrics_bind = ""
 		t.Fatalf("sysconfig.Load: %v", err)
 	}
 
-	// 3. Seed the store before the server opens it:
-	//    - a local domain
-	//    - alice as a principal
-	//    - a CategorisationConfig for alice with Endpoint = fake LLM URL
+	// Seed the store before the server opens it: a local domain and
+	// alice as a principal. Alice's CategorisationConfig is left at the
+	// seeded default (Enabled=true, the five documented categories
+	// including "promotions") -- there is no per-account endpoint to
+	// configure any more (Decision 2).
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	clk := clock.NewReal()
@@ -149,26 +154,11 @@ metrics_bind = ""
 	if err != nil {
 		t.Fatalf("CreatePrincipal: %v", err)
 	}
-	// Set per-account endpoint so the production categoriser (which has no
-	// DefaultEndpoint) can reach the fake LLM. Model must be non-empty.
-	llmEndpoint := llmSrv.URL
-	llmModel := "test-model"
-	catCfg := store.CategorisationConfig{
-		PrincipalID: pid,
-		Endpoint:    &llmEndpoint,
-		Model:       &llmModel,
-		Enabled:     true,
-		TimeoutSec:  5,
-		Prompt:      "You are a mail categoriser. Return JSON {categories, assigned}.",
-	}
-	if err := st.Meta().UpdateCategorisationConfig(ctx, catCfg); err != nil {
-		t.Fatalf("UpdateCategorisationConfig: %v", err)
-	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("store close: %v", err)
 	}
 
-	// 4. Boot StartServer.
+	// Boot StartServer.
 	addrs := make(map[string]string)
 	addrsMu := &sync.Mutex{}
 	ready := make(chan struct{})

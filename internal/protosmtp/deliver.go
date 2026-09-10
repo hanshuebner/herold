@@ -13,7 +13,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/extimg"
 	"github.com/hanshuebner/herold/internal/mailauth"
@@ -651,30 +650,24 @@ func (sess *session) deliverOne(
 		if tagHit {
 			msgFlags |= tagEffect.extraSeenFlag()
 		}
-		// REQ-FILT-200: only categorise messages destined for the
-		// inbox, after Sieve fileinto + spam classification. Spam
-		// suppresses the call. Categorisation NEVER blocks delivery
-		// (REQ-FILT-230); a failure here returns "" and we proceed.
+		// REQ-FILT-200: only categorise messages destined for the inbox,
+		// after Sieve fileinto. classification.Category is already the
+		// fully-resolved value from the single classify() call above --
+		// dropped for a spam verdict (ADR-0004), the classifier's
+		// category when it gave one, the structural fallback otherwise
+		// (ADR-0002) -- so applying it here is a plain keyword add, not
+		// a second classifier call. Categorisation NEVER blocks delivery
+		// (REQ-FILT-230): a nil/errored classify() already collapsed to
+		// Category == "".
 		var msgKeywords []string
-		var catResult categorise.CategorisationResult
 		if strings.EqualFold(mb.Name, "INBOX") {
 			// REQ-FILT-02: the "$Junk" keyword the classifier's suspect
 			// verdict earned when it picked the default INBOX target
 			// (resolveSieveTargets). Applied only to the INBOX target;
 			// an explicit Sieve fileinto elsewhere never carries it.
 			msgKeywords = append(msgKeywords, implicitKeywords...)
-		}
-		// REQ-FILT-200: only categorise messages destined for the
-		// inbox, after Sieve fileinto + spam classification. Spam
-		// suppresses the call. Categorisation NEVER blocks delivery
-		// (REQ-FILT-230); a failure here returns "" and we proceed.
-		if sess.srv.categorise != nil &&
-			classification.Verdict != spam.Spam &&
-			strings.EqualFold(mb.Name, "INBOX") {
-			catResult, _ = sess.srv.categorise.CategoriseRich(
-				ctx, rc.principalID, msg, &authResults, classification.Verdict)
-			if catResult.Category != "" {
-				msgKeywords = append(msgKeywords, "$category-"+catResult.Category)
+			if classification.Category != "" {
+				msgKeywords = append(msgKeywords, "$category-"+classification.Category)
 			}
 		}
 		target := store.MessageMailbox{
@@ -707,8 +700,8 @@ func (sess *session) deliverOne(
 		// REQ-FILT-216 / G14). Only when at least one LLM was invoked.
 		// The record is fire-and-forget: a failure here is logged but never
 		// blocks delivery (REQ-FILT-230 / REQ-FILT-40).
-		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || catResult.PromptApplied != "") {
-			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification, catResult)
+		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "") {
+			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification)
 		}
 
 		// Seed-on-receive (REQ-MAIL-11h): record the From address in the
@@ -733,6 +726,13 @@ func (sess *session) deliverOne(
 // persistLLMRecord stores the LLM classification transparency record for a
 // newly-delivered message. It is fire-and-forget: any error is logged at
 // warn level but never propagated to the delivery caller.
+//
+// Wave 4.3 (issue #304): the spam and category sub-records both come from
+// the single classification result -- there is no second LLM call to
+// carry a distinct "category prompt" or "category model" any more. The
+// user-visible category prompt is still read back from
+// GetCategorisationConfig for the transparency surface (REQ-FILT-216);
+// that is a store read, not a classifier call.
 func (sess *session) persistLLMRecord(
 	ctx context.Context,
 	principalID store.PrincipalID,
@@ -740,7 +740,6 @@ func (sess *session) persistLLMRecord(
 	msg mailparse.Message,
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
-	catResult categorise.CategorisationResult,
 ) {
 	// Retrieve the message ID by Message-ID header lookup. This is the only
 	// way to get the store-assigned MessageID without changing InsertMessage's
@@ -774,10 +773,11 @@ func (sess *session) persistLLMRecord(
 		rec.SpamVerdict = &v
 		score := classification.Score
 		rec.SpamConfidence = &score
+		if classification.Reason != "" {
+			reason := classification.Reason
+			rec.SpamReason = &reason
+		}
 		if raw := classification.RawResponse; raw != nil {
-			if reason, ok := raw["reason"].(string); ok && reason != "" {
-				rec.SpamReason = &reason
-			}
 			if mdl, ok := raw["model"].(string); ok && mdl != "" {
 				rec.SpamModel = &mdl
 			}
@@ -795,12 +795,19 @@ func (sess *session) persistLLMRecord(
 		t := sess.srv.clk.Now()
 		rec.SpamClassifiedAt = &t
 	}
-	// Categorisation sub-record.
-	if catResult.PromptApplied != "" {
-		rec.CategoryPromptApplied = &catResult.PromptApplied
-		rec.CategoryModel = &catResult.Model
-		if catResult.Category != "" {
-			rec.CategoryAssigned = &catResult.Category
+	// Categorisation sub-record -- from the same classify() call above,
+	// not a second one (Wave 4.3).
+	if classification.Category != "" {
+		cat := classification.Category
+		rec.CategoryAssigned = &cat
+		if raw := classification.RawResponse; raw != nil {
+			if mdl, ok := raw["model"].(string); ok && mdl != "" {
+				rec.CategoryModel = &mdl
+			}
+		}
+		if cfg, cerr := sess.srv.store.Meta().GetCategorisationConfig(ctx, principalID); cerr == nil {
+			p := cfg.Prompt
+			rec.CategoryPromptApplied = &p
 		}
 		t := sess.srv.clk.Now()
 		rec.CategoryClassifiedAt = &t
@@ -991,14 +998,60 @@ func sanitizeHeaderValue(s string) string {
 	return b.String()
 }
 
-// classify runs the spam classifier. On any error (plugin missing,
+// classify runs the merged spam+category classifier (REQ-FILT-13, Wave
+// 4.3) for the whole message, once, using the recipients already
+// resolved onto the envelope by RCPT TO. On any error (plugin missing,
 // timeout, parse failure) we collapse to Unclassified and continue —
 // the filter step is not a gate for accept/reject by itself.
 func (sess *session) classify(ctx context.Context, msg mailparse.Message, authResults mailauth.AuthResults) spam.Classification {
-	if sess.srv.spam == nil {
+	recipients := make([]recipientRef, len(sess.envelope.rcpts))
+	for i, rc := range sess.envelope.rcpts {
+		recipients[i] = recipientRef{addr: rc.addr, principalID: rc.principalID}
+	}
+	return classifyMessage(ctx, sess.srv, msg, &authResults, recipients)
+}
+
+// recipientRef is the minimal recipient shape classifyMessage needs to
+// resolve the first local recipient's category context. Both the SMTP
+// session path (rcptEntry) and the external-ingest path
+// (IngestRecipient, ingest.go) convert into this before calling
+// classifyMessage.
+type recipientRef struct {
+	addr        string
+	principalID store.PrincipalID
+}
+
+// classifyMessage runs the merged spam+category classifier (REQ-FILT-13,
+// Wave 4.3, replacing spam.classify + internal/categorise's direct HTTP
+// call) for one message: a single plugin call returns both the spam
+// verdict and the category (or, for a legacy TypeSpam plugin per issue
+// #304 Decision 3, the verdict only). It is invoked exactly once per
+// message on the SMTP DATA path (session.classify) and the external
+// -ingest path (IngestBytes); internal/imapimport/spam.go carries the
+// IMAP-import path's equivalent.
+//
+// Multi-recipient simplification: the category context -- the
+// principal's own prompt and category set, REQ-FILT-210 -- is built
+// from the FIRST local recipient found in recipients. A message
+// addressed to several local recipients whose category sets differ
+// shares the first recipient's set; REQ-FILT-13 requires the classifier
+// invoked once per message, not once per recipient, and there is no way
+// to honour that AND a second principal's distinct vocabulary in the
+// same call.
+func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) spam.Classification {
+	if srv.spam == nil {
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
-	cls, err := sess.srv.spam.Classify(ctx, msg, &authResults, sess.srv.spamPlug)
+	var clsCtx spam.ClassifyContext
+	var categorisationEnabled bool
+	for _, r := range recipients {
+		if r.principalID == 0 {
+			continue
+		}
+		clsCtx, categorisationEnabled = buildClassifyContext(ctx, srv, r.principalID, r.addr)
+		break
+	}
+	cls, err := srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
 	if err != nil {
 		// Classifier.Classify already emits a warn-level
 		// "spam classifier error" with the plugin name and err
@@ -1006,7 +1059,56 @@ func (sess *session) classify(ctx context.Context, msg mailparse.Message, authRe
 		// same record at INFO; let the classifier own that line.
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
+	switch {
+	case cls.Verdict == spam.Spam:
+		// ADR-0004: \Junk is exempt from categorisation even when the
+		// plugin returned one.
+		cls.Category = ""
+	case !categorisationEnabled:
+		cls.Category = ""
+	case cls.Category == "":
+		// ADR-0002 structural fallback: runs only where the plugin's
+		// category is empty (no plugin at all collapses to the same
+		// case, since Category is already "" on that path too).
+		cls.Category = spam.StructuralCategory(msg)
+	}
 	return cls
+}
+
+// buildClassifyContext loads principalID's CategorisationConfig
+// (REQ-FILT-211) and translates it into the classifier's ClassifyContext
+// (REQ-FILT-210). The second return value is false when categorisation
+// is disabled for this principal or the config could not be loaded --
+// callers use it to suppress both the plugin's category and the
+// structural fallback.
+func buildClassifyContext(ctx context.Context, srv *Server, principalID store.PrincipalID, addr string) (spam.ClassifyContext, bool) {
+	base := spam.ClassifyContext{
+		Principal:       fmt.Sprint(principalID),
+		RecipientDomain: domainOfRecipient(addr),
+	}
+	cfg, err := srv.store.Meta().GetCategorisationConfig(ctx, principalID)
+	if err != nil {
+		srv.log.WarnContext(ctx, "classify: load categorisation config",
+			slog.String("activity", observe.ActivitySystem),
+			slog.Uint64("principal_id", uint64(principalID)),
+			slog.String("err", err.Error()))
+		return base, false
+	}
+	if !cfg.Enabled {
+		return base, false
+	}
+	prompt := cfg.Prompt
+	if cfg.Guardrail != "" {
+		prompt = cfg.Guardrail + "\n\n" + prompt
+	}
+	base.Prompt = prompt
+	if len(cfg.CategorySet) > 0 {
+		base.Categories = make([]spam.CategoryOption, len(cfg.CategorySet))
+		for i, c := range cfg.CategorySet {
+			base.Categories[i] = spam.CategoryOption{Name: c.Name, Description: c.Description}
+		}
+	}
+	return base, true
 }
 
 // runSieve loads the recipient's script via

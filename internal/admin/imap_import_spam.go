@@ -24,6 +24,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -57,18 +58,68 @@ func newIMAPImportSpamAdapter(cls *spam.Classifier, plugin string, st store.Stor
 // plugin timeout/error both collapse to spam.Classification{Verdict:
 // spam.Unclassified}, matching protosmtp's classify() helper -- the import
 // worker's caller treats Unclassified exactly like Ham (stays in INBOX).
-func (a *imapImportSpamAdapter) Classify(ctx context.Context, msg mailparse.Message) spam.Classification {
+//
+// The category context (REQ-FILT-210) is built from principalID's own
+// CategorisationConfig, mirroring protosmtp's buildClassifyContext
+// (internal/protosmtp/deliver.go) field-for-field; the structural
+// fallback (ADR-0002) and the spam-verdict category drop (ADR-0004) are
+// applied here too, so the returned Classification.Category is already
+// the fully-resolved value the import worker keywords the message with
+// (resolveImportSpamTarget).
+func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification {
 	if a.cls == nil {
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
-	cls, err := a.cls.Classify(ctx, msg, nil /* authResults: REQ-IMAP-IMP-33, no re-verification on import */, a.plugin)
+	clsCtx, categorisationEnabled := a.buildClassifyContext(ctx, principalID)
+	// authResults: REQ-IMAP-IMP-33, no re-verification on import.
+	cls, err := a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
 	if err != nil {
 		// spam.Classifier.Classify already logs a warn with the plugin name
 		// and error before returning; logging again here would duplicate
 		// the line at a lower level for no benefit.
 		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	}
+	switch {
+	case cls.Verdict == spam.Spam:
+		cls.Category = "" // ADR-0004
+	case !categorisationEnabled:
+		cls.Category = ""
+	case cls.Category == "":
+		cls.Category = spam.StructuralCategory(msg) // ADR-0002
+	}
 	return cls
+}
+
+// buildClassifyContext loads principalID's CategorisationConfig
+// (REQ-FILT-211) and translates it into the classifier's ClassifyContext
+// (REQ-FILT-210). The second return value is false when categorisation
+// is disabled for this principal or the config could not be loaded.
+// RecipientDomain is left empty: the IMAP import path has no SMTP
+// envelope recipient to derive one from.
+func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, principalID store.PrincipalID) (spam.ClassifyContext, bool) {
+	base := spam.ClassifyContext{Principal: fmt.Sprint(principalID)}
+	cfg, err := a.st.Meta().GetCategorisationConfig(ctx, principalID)
+	if err != nil {
+		a.logger.WarnContext(ctx, "imap-import spam: load categorisation config",
+			slog.Uint64("principal_id", uint64(principalID)),
+			slog.String("err", err.Error()))
+		return base, false
+	}
+	if !cfg.Enabled {
+		return base, false
+	}
+	prompt := cfg.Prompt
+	if cfg.Guardrail != "" {
+		prompt = cfg.Guardrail + "\n\n" + prompt
+	}
+	base.Prompt = prompt
+	if len(cfg.CategorySet) > 0 {
+		base.Categories = make([]spam.CategoryOption, len(cfg.CategorySet))
+		for i, c := range cfg.CategorySet {
+			base.Categories[i] = spam.CategoryOption{Name: c.Name, Description: c.Description}
+		}
+	}
+	return base, true
 }
 
 // RecordVerdict implements imapimport.SpamClassifier. A no-op when

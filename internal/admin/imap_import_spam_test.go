@@ -19,6 +19,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/spam"
+	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 )
 
@@ -62,7 +63,7 @@ func TestIMAPImportSpamAdapter_Classify(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
 	if got.Verdict != spam.Spam {
 		t.Errorf("Verdict = %v, want spam.Spam", got.Verdict)
 	}
@@ -83,7 +84,7 @@ func TestIMAPImportSpamAdapter_ClassifyDegradesOnPluginError(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}
@@ -98,7 +99,7 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier(t *testing.T) {
 	adapter := newIMAPImportSpamAdapter(nil, "spam-plug", st, clk, slog.Default())
 
 	msg := buildSpamTestMessage(t)
-	got := adapter.Classify(context.Background(), msg)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
 	if got.Verdict != spam.Unclassified {
 		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
 	}

@@ -561,25 +561,25 @@ func (w *accountWorker) fetchAndIngest(
 			)
 		}
 
-		// Categoriser seam: for new INBOX-mapped messages on a live-arrival
-		// pass (REQ-IMAP-IMP-31). Never called across the initial/historical
-		// backfill (categorise=false) — D1.
-		//
-		// isNewMember is true for both fresh inserts and for dedup hits where
-		// AddMessageToMailbox just placed the message into this mailbox for the
-		// first time. The latter handles the Gmail label-before-INBOX ordering:
-		// when a user-label folder syncs before INBOX the message is created
-		// there (isNew=true, but mailbox != INBOX so no categorise), then INBOX
-		// is synced and the dedup path adds the membership (isNew=false but
-		// isNewMember=true, mailbox == INBOX so categorise fires). Without this
-		// check the message would never receive a $category-* keyword (re #27).
+		// Categoriser seam: category-only retrofit for the Gmail
+		// label-before-INBOX ordering (re #27). A FRESH insert already
+		// carries its category as an insert-time keyword (ingestMessage,
+		// resolveImportSpamTarget -- Wave 4.3, issue #304, ONE classify
+		// call). This block covers only the remaining case the merged
+		// call cannot reach: a dedup hit (!isNew) that just placed an
+		// already-known message into INBOX for the first time
+		// (isNewMember=true). That message was classified, if at all,
+		// when it was first mirrored into its original (non-INBOX)
+		// folder, and REQ-IMAP-IMP-31/D1 forbids re-running spam
+		// classification on it now -- the categoriser seam here recovers
+		// only its category, via internal/categorise (unaffected by
+		// #304's merge on the primary path), never a verdict.
 		//
 		// Gated on finalMailbox rather than heroldMailbox (#300): a spam
-		// verdict can route a message that was folder-mapped to INBOX into
-		// Junk instead (resolveImportSpamTarget), and Junk mail is never
-		// categorised, mirroring protosmtp's classification.Verdict !=
-		// spam.Spam gate.
-		if isNewMember && categorise && strings.EqualFold(finalMailbox, "INBOX") {
+		// verdict can route a message that was folder-mapped to INBOX
+		// into Junk instead (resolveImportSpamTarget), and Junk mail is
+		// never categorised (ADR-0004).
+		if !isNew && isNewMember && categorise && strings.EqualFold(finalMailbox, "INBOX") {
 			if catErr := w.opts.categoriser.Categorise(ctx, fmt.Sprint(account.PrincipalID), fmt.Sprint(msgID), heroldMailbox); catErr != nil {
 				w.opts.log.Warn("imapimport: categorise failed (non-fatal)",
 					slog.String("account_id", account.ID),
@@ -704,9 +704,9 @@ func (w *accountWorker) ingestMessage(
 	var classification spam.Classification
 	classified := false
 	if liveArrival && w.opts.spamClassifier != nil && strings.EqualFold(heroldMailbox, "INBOX") {
-		classification = w.opts.spamClassifier.Classify(ctx, msg)
+		classification = w.opts.spamClassifier.Classify(ctx, principalID, msg)
 		classified = true
-		spamTarget := resolveImportSpamTarget(classification.Verdict)
+		spamTarget := resolveImportSpamTarget(classification)
 		effectiveMailbox = spamTarget.mailbox
 		spamKeywords = spamTarget.keywords
 	}

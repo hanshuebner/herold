@@ -63,43 +63,34 @@ type Options struct {
 	// do not need to set this.
 	HTTPClient *http.Client
 	// DefaultEndpoint is the operator-configured chat-completions
-	// endpoint URL (e.g. "http://localhost:11434/v1"). Per-account
-	// rows override; empty disables the categoriser unless every
-	// account row supplies its own endpoint.
+	// endpoint URL (e.g. "http://localhost:11434/v1"). Serves every
+	// principal (issue #304 Decision 2: no per-account override);
+	// empty disables the categoriser.
 	DefaultEndpoint string
 	// DefaultModel is the operator-configured model name.
 	DefaultModel string
 	// DefaultAPIKey is the resolved Bearer token (operator pulls
-	// from env at startup); per-account APIKeyEnv overrides.
+	// from env at startup).
 	DefaultAPIKey string
 	// DefaultTimeout bounds a single chat-completions call when the
 	// per-account TimeoutSec is zero. Zero applies DefaultTimeout
 	// (5s).
 	DefaultTimeout time.Duration
-	// AllowedEndpointHosts is the closed set of hostnames a per-account
-	// endpoint override is permitted to use. Empty means "only the
-	// operator-default endpoint is allowed" — every per-account override
-	// then falls back to DefaultEndpoint and the override row is logged
-	// at warn. The match is exact and case-insensitive on the host
-	// component of the URL; localhost variants are always permitted in
-	// addition to whatever the operator lists.
-	AllowedEndpointHosts []string
 }
 
 // Categoriser orchestrates the per-message LLM categorisation call.
 // One *Categoriser is constructed at server startup and reused across
 // deliveries; every method is safe for concurrent use.
 type Categoriser struct {
-	store        store.Store
-	logger       *slog.Logger
-	clock        clock.Clock
-	llmClient    LLMClient
-	httpClient   *http.Client
-	endpoint     string
-	model        string
-	apiKey       string
-	timeout      time.Duration
-	allowedHosts map[string]struct{}
+	store      store.Store
+	logger     *slog.Logger
+	clock      clock.Clock
+	llmClient  LLMClient
+	httpClient *http.Client
+	endpoint   string
+	model      string
+	apiKey     string
+	timeout    time.Duration
 }
 
 // New returns a Categoriser configured against opts. A nil Store is a
@@ -126,13 +117,6 @@ func New(opts Options) *Categoriser {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	allowed := make(map[string]struct{}, len(opts.AllowedEndpointHosts))
-	for _, h := range opts.AllowedEndpointHosts {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h != "" {
-			allowed[h] = struct{}{}
-		}
-	}
 	llmClient := opts.LLMClient
 	if llmClient == nil && strings.TrimRight(opts.DefaultEndpoint, "/") != "" {
 		// Build the real HTTP client from the endpoint/model/api-key
@@ -145,16 +129,15 @@ func New(opts Options) *Categoriser {
 		})
 	}
 	return &Categoriser{
-		store:        opts.Store,
-		logger:       logger,
-		clock:        clk,
-		llmClient:    llmClient,
-		httpClient:   httpClient,
-		endpoint:     strings.TrimRight(opts.DefaultEndpoint, "/"),
-		model:        opts.DefaultModel,
-		apiKey:       opts.DefaultAPIKey,
-		timeout:      timeout,
-		allowedHosts: allowed,
+		store:      opts.Store,
+		logger:     logger,
+		clock:      clk,
+		llmClient:  llmClient,
+		httpClient: httpClient,
+		endpoint:   strings.TrimRight(opts.DefaultEndpoint, "/"),
+		model:      opts.DefaultModel,
+		apiKey:     opts.DefaultAPIKey,
+		timeout:    timeout,
 	}
 }
 
@@ -337,147 +320,108 @@ func stringSliceEqual(a, b []string) bool {
 // resolveClient picks the LLM client and model to use for a single
 // categorisation call. It returns (nil, "", "", nil) when categorisation
 // should be silently skipped (no endpoint, no client configured). A
-// non-nil error means a hard rejection (bad endpoint, no model) that
-// the caller should log and count.
+// non-nil error means a hard rejection (no model configured) that the
+// caller should log and count.
+//
+// Wave 4.3 (issue #304 Decision 2): the per-account Endpoint/Model/
+// APIKeyEnv override is dropped -- "the operator's configured classifier
+// plugin serves every principal". cfg.Endpoint/Model/APIKeyEnv are
+// still accepted and round-tripped by the admin REST and JMAP surfaces
+// (protoadmin/categorise.go, protojmap/mail/categorysettings) for
+// backward compatibility, but are no-ops here: every call uses the
+// operator-configured endpoint and model, unconditionally. This
+// function now serves only the two callers that have not moved onto the
+// mail.classify plugin call -- JMAP CategorySettings/recategorise and
+// the IMAP-import dedup-retrofit seam
+// (internal/admin/imap_import_categoriser.go). The SMTP and IMAP
+// live-arrival delivery paths get their category from
+// internal/spam.Classifier's merged call instead
+// (protosmtp.classifyMessage, internal/admin/imap_import_spam.go).
 func (c *Categoriser) resolveClient(
 	ctx context.Context,
 	principal store.PrincipalID,
 	cfg store.CategorisationConfig,
 ) (client LLMClient, model, logEndpoint string, err error) {
+	_ = cfg // Decision 2: per-account overrides are no-ops; kept in the signature for call-site stability.
 	// Injected client takes precedence over everything — tests use this
 	// path. Endpoint validation is skipped; the injected client owns its
 	// transport.
 	if c.llmClient != nil {
-		model = c.model
-		if cfg.Model != nil && *cfg.Model != "" {
-			model = *cfg.Model
-		}
-		return c.llmClient, model, "(injected)", nil
+		return c.llmClient, c.model, "(injected)", nil
 	}
 
-	// Production path: resolve the endpoint.
-	endpoint := c.endpoint
-	overrideEndpoint := false
-	if cfg.Endpoint != nil && *cfg.Endpoint != "" {
-		endpoint = strings.TrimRight(*cfg.Endpoint, "/")
-		overrideEndpoint = true
-	}
-	if endpoint == "" {
+	if c.endpoint == "" {
 		c.logger.DebugContext(ctx, "categorise: no endpoint configured",
 			slog.Uint64("principal_id", uint64(principal)))
 		return nil, "", "", nil
 	}
-	host, attachOperatorKey, verr := c.validateEndpoint(ctx, endpoint, overrideEndpoint)
-	if verr != nil {
+	if _, verr := c.validateEndpoint(ctx, c.endpoint); verr != nil {
 		c.logger.WarnContext(ctx, "categorise: endpoint rejected",
 			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("endpoint", endpoint),
+			slog.String("endpoint", c.endpoint),
 			slog.String("err", verr.Error()))
 		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
 		return nil, "", "", verr
 	}
-	_ = host
 
-	model = c.model
-	if cfg.Model != nil && *cfg.Model != "" {
-		model = *cfg.Model
-	}
-	if model == "" {
+	if c.model == "" {
 		c.logger.WarnContext(ctx, "categorise: no model configured",
 			slog.Uint64("principal_id", uint64(principal)))
 		observe.CategoriseCallsTotal.WithLabelValues("endpoint_rejected").Inc()
 		return nil, "", "", errors.New("categorise: no model configured")
 	}
 
-	if cfg.APIKeyEnv != nil && *cfg.APIKeyEnv != "" {
-		c.logger.DebugContext(ctx, "categorise: per-account api_key_env override ignored at runtime; configure via operator default",
-			slog.Uint64("principal_id", uint64(principal)),
-			slog.String("api_key_env", *cfg.APIKeyEnv))
-	}
-	apiKey := c.apiKey
-	if !attachOperatorKey {
-		apiKey = ""
-	}
-
-	// When the per-account endpoint differs from the operator default,
-	// build a per-call HTTPChatCompleter rather than reusing c.llmClient
-	// which was built against the operator-default endpoint.
-	if overrideEndpoint {
-		client = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
-			Endpoint:   endpoint,
-			Model:      model,
-			APIKey:     apiKey,
-			HTTPClient: c.httpClient,
-		})
-	} else {
-		// The operator-default client was already constructed in New.
-		// Reconstruct it here to pick up the resolved model/key in case
-		// they differ from what New saw (shouldn't happen but keeps the
-		// logic explicit).
-		client = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
-			Endpoint:   endpoint,
-			Model:      model,
-			APIKey:     apiKey,
-			HTTPClient: c.httpClient,
-		})
-	}
-	return client, model, endpoint, nil
+	client = llmtest.NewHTTPChatCompleter(llmtest.HTTPChatCompleterOptions{
+		Endpoint:   c.endpoint,
+		Model:      c.model,
+		APIKey:     c.apiKey,
+		HTTPClient: c.httpClient,
+	})
+	return client, c.model, c.endpoint, nil
 }
 
-// validateEndpoint enforces the categoriser's outbound-call policy:
-// (a) https only, except http://localhost / 127.0.0.1 / [::1] which is
+// validateEndpoint enforces the categoriser's outbound-call policy: (a)
+// https only, except http://localhost / 127.0.0.1 / [::1] which is
 // permitted for the developer-Ollama loopback case; (b) the host must
-// not resolve to a private/loopback/link-local/CGNAT/multicast IP UNLESS
-// it is the operator-allowlisted set OR a localhost literal; (c) when
-// the endpoint is a per-account override pointing at a host the
-// operator did NOT allowlist, return attachOperatorKey=false so the
-// caller does not leak the operator-default API key to that endpoint.
+// not resolve to a private/loopback/link-local/CGNAT/multicast IP unless
+// it is a localhost literal.
 //
-// The operator-default endpoint (overrideEndpoint==false) is trusted
-// unconditionally — it is configured in the system.toml or via the
-// admin REST surface, both of which are operator-controlled.
-func (c *Categoriser) validateEndpoint(ctx context.Context, endpoint string, overrideEndpoint bool) (host string, attachOperatorKey bool, err error) {
+// The endpoint is always the operator default (Decision 2: no
+// per-account override survives to reach this function) -- it is
+// configured in system.toml or via the admin REST surface, both
+// operator-controlled, and is trusted unconditionally once it passes
+// this shape/reachability check.
+func (c *Categoriser) validateEndpoint(ctx context.Context, endpoint string) (host string, err error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return "", false, fmt.Errorf("parse endpoint: %w", err)
+		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
 	host = strings.ToLower(u.Hostname())
 	if host == "" {
-		return "", false, errors.New("endpoint has no host")
+		return "", errors.New("endpoint has no host")
 	}
 	if u.User != nil {
-		return "", false, errors.New("endpoint must not embed credentials")
+		return "", errors.New("endpoint must not embed credentials")
 	}
 	switch scheme {
 	case "https":
 		// fine
 	case "http":
 		if !netguard.IsLocalhost(host) {
-			return "", false, fmt.Errorf("http scheme not permitted for non-localhost host %q", host)
+			return "", fmt.Errorf("http scheme not permitted for non-localhost host %q", host)
 		}
 	default:
-		return "", false, fmt.Errorf("unsupported scheme %q", scheme)
-	}
-	allowed := false
-	if !overrideEndpoint {
-		allowed = true
-	} else if _, ok := c.allowedHosts[host]; ok {
-		allowed = true
-	} else if netguard.IsLocalhost(host) {
-		// Localhost is acceptable as a destination but is not the
-		// operator-default; do NOT attach the operator API key in that
-		// case (caller drops it via attachOperatorKey=false).
-		allowed = false
+		return "", fmt.Errorf("unsupported scheme %q", scheme)
 	}
 	if !netguard.IsLocalhost(host) {
 		// Resolve and refuse private ranges. Localhost short-circuits
 		// because IsLoopback covers it without a DNS round-trip.
 		if err := netguard.CheckHost(ctx, nil, host); err != nil {
-			return "", false, err
+			return "", err
 		}
 	}
-	return host, allowed, nil
+	return host, nil
 }
 
 // userPayload is the JSON body the LLM sees as the "user" turn.

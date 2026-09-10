@@ -27,6 +27,7 @@ import (
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/secrets"
+	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 	"github.com/hanshuebner/herold/internal/testharness"
@@ -302,6 +303,24 @@ func countMailboxMessages(t *testing.T, s store.Store, pid store.PrincipalID, ma
 	return 0
 }
 
+// messageHasCategoryKeyword reports whether the message identified by
+// rawMsgID carries a "$category-<name>" keyword, looked up by its
+// (un-normalised) Message-ID header.
+func messageHasCategoryKeyword(t *testing.T, s store.Store, pid store.PrincipalID, rawMsgID, category string) bool {
+	t.Helper()
+	msg, err := s.Meta().GetMessageByMessageIDHeader(context.Background(), pid, rawMsgID)
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader(%q): %v", rawMsgID, err)
+	}
+	want := "$category-" + category
+	for _, kw := range msg.Keywords {
+		if kw == want {
+			return true
+		}
+	}
+	return false
+}
+
 // getMailboxID returns the MailboxID for the named mailbox, or 0.
 func getMailboxID(t *testing.T, s store.Store, pid store.PrincipalID, mailboxName string) store.MailboxID {
 	t.Helper()
@@ -507,7 +526,8 @@ func TestSync_RecordsIngestSource(t *testing.T) {
 }
 
 // TestForwardSync verifies that a second sync pass fetches only the new
-// message, the categoriser is fired for new INBOX mail (not for the
+// message, the single classifier call (Wave 4.3, issue #304) is fired
+// for new INBOX mail and carries the category keyword (not for the
 // previously-synced ones), and old messages are not re-fetched.
 // REQ-IMAP-IMP-34.
 func TestForwardSync(t *testing.T) {
@@ -530,19 +550,21 @@ func TestForwardSync(t *testing.T) {
 		credentialPlaintext: "pw",
 	}, nil)
 
-	cat := &countingCategoriser{}
+	fc := &fakeSpamClassifier{verdicts: []spam.Classification{
+		{Verdict: spam.Ham, Score: 0.05, Category: "promotions"},
+	}}
 
 	// First pass: syncs 2 messages. This is the INITIAL backfill of the
-	// folder, so the categoriser must NOT fire (REQ-IMAP-IMP-31 / D1).
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	// folder, so the classifier must NOT fire (REQ-IMAP-IMP-31 / D1).
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 2 {
 		t.Fatalf("after first sync: want 2, got %d", got)
 	}
-	firstCalls := cat.calls.Load()
+	firstCalls := fc.classifyCalls.Load()
 	if firstCalls != 0 {
-		t.Errorf("categoriser calls after initial backfill = %d; want 0 (D1)", firstCalls)
+		t.Errorf("classifier calls after initial backfill = %d; want 0 (D1)", firstCalls)
 	}
 
 	// Append one more message.
@@ -551,18 +573,22 @@ func TestForwardSync(t *testing.T) {
 	appendToServer(t, ts, "u3", "pw", "INBOX", raw, nil, d)
 
 	// Second pass: should fetch only the new message. This is a genuine
-	// live arrival on an already-initialised folder, so the categoriser
-	// fires exactly once.
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	// live arrival on an already-initialised folder, so the classifier
+	// fires exactly once and its verdict+category apply in the same
+	// InsertMessage call (no second, category-only call).
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 3 {
 		t.Fatalf("after second sync: want 3, got %d", got)
 	}
-	// Exactly 1 categoriser call for the new live-arrival message.
-	secondCalls := cat.calls.Load()
+	// Exactly 1 classifier call for the new live-arrival message.
+	secondCalls := fc.classifyCalls.Load()
 	if secondCalls-firstCalls != 1 {
-		t.Errorf("categoriser calls delta for second sync = %d; want 1", secondCalls-firstCalls)
+		t.Errorf("classifier calls delta for second sync = %d; want 1", secondCalls-firstCalls)
+	}
+	if !messageHasCategoryKeyword(t, ha.Store, acc.PrincipalID, "fwd-new-0@test", "promotions") {
+		t.Errorf("new-arrival message missing $category-promotions keyword")
 	}
 }
 
@@ -958,9 +984,10 @@ func TestBodyPeekNoSeenSideEffect(t *testing.T) {
 }
 
 // TestCategoriserNotCalledForBackfill verifies the D1 invariant
-// (REQ-IMAP-IMP-31): the LLM categoriser is NOT invoked across the
-// initial/historical backfill of a folder, but IS invoked for a subsequent
-// genuine live arrival on that already-initialised folder.
+// (REQ-IMAP-IMP-31): the classifier is NOT invoked across the
+// initial/historical backfill of a folder, but IS invoked -- once, for
+// both the verdict and the category (Wave 4.3, issue #304) -- for a
+// subsequent genuine live arrival on that already-initialised folder.
 func TestCategoriserNotCalledForBackfill(t *testing.T) {
 	ts := startTestIMAPServer(t)
 	ts.addUser("u10", "pw")
@@ -968,8 +995,8 @@ func TestCategoriserNotCalledForBackfill(t *testing.T) {
 	ha, _ := testharness.Start(t, testharness.Options{})
 
 	// Seed a year's worth of historical INBOX mail. On first connect this is
-	// the initial backfill: running the LLM over it would be ruinous, so the
-	// categoriser must not fire at all.
+	// the initial backfill: running the classifier over it would be
+	// ruinous, so it must not fire at all.
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 12; i++ {
 		d := base.AddDate(0, i, 0)
@@ -983,18 +1010,20 @@ func TestCategoriserNotCalledForBackfill(t *testing.T) {
 		credentialPlaintext: "pw",
 	}, nil)
 
-	cat := &countingCategoriser{}
+	fc := &fakeSpamClassifier{verdicts: []spam.Classification{
+		{Verdict: spam.Ham, Score: 0.05, Category: "updates"},
+	}}
 
 	// Initial sync: the whole historical backfill lands in herold but the
-	// categoriser is NEVER called for it (D1).
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	// classifier is NEVER called for it (D1).
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("initial backfill sync: %v", err)
 	}
 	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 12 {
 		t.Fatalf("after initial backfill: want 12 messages, got %d", got)
 	}
-	if calls := cat.calls.Load(); calls != 0 {
-		t.Errorf("categoriser called %d times across initial backfill; want 0 (D1)", calls)
+	if calls := fc.classifyCalls.Load(); calls != 0 {
+		t.Errorf("classifier called %d times across initial backfill; want 0 (D1)", calls)
 	}
 
 	// A new message arrives upstream after the initial sync completed.
@@ -1003,15 +1032,15 @@ func TestCategoriserNotCalledForBackfill(t *testing.T) {
 	appendToServer(t, ts, "u10", "pw", "INBOX", rawNew, nil, dNew)
 
 	// Next sync round: the genuine live arrival on the already-initialised
-	// folder IS categorised, exactly once.
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	// folder IS classified, exactly once, and lands with the category.
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("live-arrival sync: %v", err)
 	}
-	if calls := cat.calls.Load(); calls != 1 {
-		t.Errorf("categoriser calls after live arrival = %d; want 1 (D1)", calls)
+	if calls := fc.classifyCalls.Load(); calls != 1 {
+		t.Errorf("classifier calls after live arrival = %d; want 1 (D1)", calls)
 	}
-	if lb := cat.lastMailbox.Load(); lb != "INBOX" {
-		t.Errorf("last categoriser mailbox = %v; want INBOX", lb)
+	if !messageHasCategoryKeyword(t, ha.Store, acc.PrincipalID, "live-arrival@test", "updates") {
+		t.Errorf("live-arrival message missing $category-updates keyword")
 	}
 }
 
@@ -1202,7 +1231,7 @@ func TestCursorAdvancedAfterSync(t *testing.T) {
 	}
 }
 
-// TestCategoriserCalledForINBOXOnly verifies the categoriser is only
+// TestCategoriserCalledForINBOXOnly verifies the classifier is only
 // called for messages in INBOX-mapped folders, not for other mailboxes.
 func TestCategoriserCalledForINBOXOnly(t *testing.T) {
 	ts := startTestIMAPServer(t)
@@ -1219,14 +1248,17 @@ func TestCategoriserCalledForINBOXOnly(t *testing.T) {
 		credentialPlaintext: "pw",
 	}, nil)
 
+	fc := &fakeSpamClassifier{verdicts: []spam.Classification{
+		{Verdict: spam.Ham, Score: 0.05, Category: "primary"},
+	}}
+
 	// Initial sync over the (empty) INBOX and Archive folders so they are
-	// recorded as initialised. Nothing is categorised here (D1).
-	cat := &countingCategoriser{}
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	// recorded as initialised. Nothing is classified here (D1).
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("initial sync: %v", err)
 	}
-	if cat.calls.Load() != 0 {
-		t.Fatalf("categoriser fired during initial sync = %d; want 0", cat.calls.Load())
+	if fc.classifyCalls.Load() != 0 {
+		t.Fatalf("classifier fired during initial sync = %d; want 0", fc.classifyCalls.Load())
 	}
 
 	// Now genuinely-new mail arrives in both INBOX and Archive.
@@ -1236,17 +1268,17 @@ func TestCategoriserCalledForINBOXOnly(t *testing.T) {
 	rawArchive := buildRFC822("cat-archive@test", "Cat Archive", d.AddDate(0, 0, 1))
 	appendToServer(t, ts, "u15", "pw", "Archive", rawArchive, nil, d.AddDate(0, 0, 1))
 
-	if err := runSyncOnce(t, ha, ts, acc, cat); err != nil {
+	if err := runSyncOnceSpam(t, ha, ts, acc, nil, fc); err != nil {
 		t.Fatalf("live-arrival sync: %v", err)
 	}
 
-	// Only 1 categoriser call (for the INBOX arrival), not 2 (not for Archive).
-	if cat.calls.Load() != 1 {
-		t.Errorf("categoriser calls = %d; want 1 (INBOX only)", cat.calls.Load())
+	// Only 1 classifier call (for the INBOX arrival), not 2 (not for
+	// Archive) -- and its category landed on the INBOX message.
+	if fc.classifyCalls.Load() != 1 {
+		t.Errorf("classifier calls = %d; want 1 (INBOX only)", fc.classifyCalls.Load())
 	}
-	// Verify it was for INBOX.
-	if lb := cat.lastMailbox.Load(); lb != "INBOX" {
-		t.Errorf("last categoriser mailbox = %q; want INBOX", lb)
+	if !messageHasCategoryKeyword(t, ha.Store, acc.PrincipalID, "cat-inbox@test", "primary") {
+		t.Errorf("INBOX-arrival message missing $category-primary keyword")
 	}
 }
 

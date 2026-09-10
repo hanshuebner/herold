@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hanshuebner/herold/internal/categorise"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/extimg"
@@ -183,7 +182,6 @@ type Server struct {
 	arc           *mailarc.Verifier
 	spam          *spam.Classifier
 	sieve         *sieve.Interpreter
-	categorise    *categorise.Categoriser
 	tls           *heroldtls.Store
 	resolver      mailauth.Resolver
 	clk           clock.Clock
@@ -226,19 +224,18 @@ type Server struct {
 
 // Config bundles all dependencies required to construct a Server.
 type Config struct {
-	Store      store.Store
-	Directory  *directory.Directory
-	DKIM       *maildkim.Verifier
-	SPF        *mailspf.Verifier
-	DMARC      *maildmarc.Evaluator
-	ARC        *mailarc.Verifier
-	Spam       *spam.Classifier
-	Sieve      *sieve.Interpreter
-	Categorise *categorise.Categoriser
-	TLS        *heroldtls.Store
-	Resolver   mailauth.Resolver
-	Clock      clock.Clock
-	Logger     *slog.Logger
+	Store     store.Store
+	Directory *directory.Directory
+	DKIM      *maildkim.Verifier
+	SPF       *mailspf.Verifier
+	DMARC     *maildmarc.Evaluator
+	ARC       *mailarc.Verifier
+	Spam      *spam.Classifier
+	Sieve     *sieve.Interpreter
+	TLS       *heroldtls.Store
+	Resolver  mailauth.Resolver
+	Clock     clock.Clock
+	Logger    *slog.Logger
 	// SCRAMLookup is the optional SCRAM credential source. When nil,
 	// SCRAM mechanisms are absent from the advertised AUTH list.
 	SCRAMLookup sasl.PasswordLookup
@@ -333,7 +330,6 @@ func New(cfg Config) (*Server, error) {
 		arc:               cfg.ARC,
 		spam:              cfg.Spam,
 		sieve:             cfg.Sieve,
-		categorise:        cfg.Categorise,
 		tls:               cfg.TLS,
 		resolver:          cfg.Resolver,
 		clk:               clk,

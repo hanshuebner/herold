@@ -110,7 +110,7 @@ func TestClassify_AssertActivityTagged(t *testing.T) {
 			return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
 		})
 		c := New(invoker, log, clock.NewFake(time.Now()))
-		_, _ = c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p")
+		_, _ = c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{})
 	})
 }
 
@@ -123,7 +123,7 @@ func TestClassify_Error_AssertActivityTagged(t *testing.T) {
 			return nil, errors.New("plugin crashed")
 		})
 		c := New(invoker, log, clock.NewFake(time.Now()))
-		_, _ = c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p")
+		_, _ = c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{})
 	})
 }
 
@@ -139,7 +139,7 @@ func TestClassify_Timeout_AssertActivityTagged(t *testing.T) {
 		c := New(invoker, log, clock.NewFake(time.Now()))
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
-		_, _ = c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow")
+		_, _ = c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{})
 	})
 }
 
@@ -161,6 +161,7 @@ func TestClassify_Success_SystemDebug(t *testing.T) {
 		buildMessage(t, canonMsg),
 		newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "example.com"),
 		"p",
+		ClassifyContext{},
 	)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
@@ -204,7 +205,7 @@ func TestClassify_Failure_SystemWarn(t *testing.T) {
 		return nil, errors.New("plugin crashed")
 	})
 	c := New(invoker, log, clock.NewFake(time.Now()))
-	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken")
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "broken", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected error from broken plugin")
 	}
@@ -243,7 +244,7 @@ func TestClassify_Timeout_SystemWarn(t *testing.T) {
 	c := New(invoker, log, clock.NewFake(time.Now()))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow")
+	_, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "slow", ClassifyContext{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

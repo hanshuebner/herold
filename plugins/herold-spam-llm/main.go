@@ -1,7 +1,12 @@
-// Command herold-spam-llm is a first-party spam classifier plugin that
-// forwards each classification request to an OpenAI-compatible
-// chat-completions endpoint (defaults to a local Ollama instance, per
-// REQ-FILT-05 / REQ-FILT-11).
+// Command herold-spam-llm is a first-party classifier plugin (plugin type
+// "classifier", Wave 4.3, issue #304) that forwards each mail.classify
+// request to an OpenAI-compatible chat-completions endpoint (defaults to
+// a local Ollama instance, per REQ-FILT-05 / REQ-FILT-11), in one model
+// call that returns both the spam verdict and the category. It also
+// implements the legacy spam.classify method (verdict only) for a raw
+// JSON-RPC caller that wants it directly; the herold server always calls
+// mail.classify against this binary regardless of what an operator's
+// system.toml [[plugin]] block says (issue #304 Decision 3).
 //
 // The plugin is deliberately stateless beyond its configured options and
 // the shared *http.Client. It never retries on its own: the server owns
@@ -35,8 +40,11 @@
 //     call deadline.
 //   - spam_threshold (number, default 0.7, range 0..1): score at/above
 //     which the verdict is "spam".
-//   - system_prompt_override (string): replaces the built-in classifier
-//     system prompt.
+//   - system_prompt_override (string): replaces the built-in spam.classify
+//     system prompt (legacy method; see classify_system_prompt_override
+//     for mail.classify, the method the server actually calls).
+//   - classify_system_prompt_override (string): replaces the built-in
+//     mail.classify system prompt.
 //   - max_body_chars (integer, default 4000, range 1..1000000): body
 //     excerpt cap sent to the model.
 //   - log_samples (boolean, default false): log request/response byte
@@ -105,26 +113,47 @@ const (
 // builtinSystemPrompt is the classifier instruction. Keep it terse and
 // structured: small local models follow short prompts better than long
 // ones. Operators may override via the system_prompt_override option.
+//
+// Retained for spam.classify (Decision 3, issue #304): a configuration
+// that still declares the manifest type "spam" -- which no longer
+// happens with this binary, but a caller invoking spam.classify directly
+// (a raw JSON-RPC client, not the herold server) still gets the
+// verdict-only shape.
 const builtinSystemPrompt = `You are a spam classifier. Return ONLY a single JSON object with this shape:
 {"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "..."}
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.`
 
+// builtinClassifySystemPrompt is the mail.classify instruction (Wave
+// 4.3, issue #304): one model call answers both the spam verdict and
+// the category. The request's "categories" array (from the principal's
+// stored set, REQ-FILT-210) and "policy" string (the principal's own
+// prompt, with any operator guardrail prepended) are appended to the
+// user turn by trimClassifyPayload, not hardcoded here.
+const builtinClassifySystemPrompt = `You are a spam classifier and mail categoriser. Return ONLY a single JSON object with this shape:
+{"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "...", "category": "<name>" | ""}
+Do not include any other text.
+Score is your confidence that the message is spam.
+Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
+When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
+When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.`
+
 // knownOptions enumerates every option key the plugin accepts. Any other
 // key in the configure map is rejected so typos surface immediately
 // (REQ-PLUG-21).
 var knownOptions = map[string]struct{}{
-	"endpoint":               {},
-	"model":                  {},
-	"api_key":                {},
-	"api_key_env":            {},
-	"timeout_sec":            {},
-	"spam_threshold":         {},
-	"system_prompt_override": {},
-	"max_body_chars":         {},
-	"log_samples":            {},
-	"response_format":        {},
+	"endpoint":                        {},
+	"model":                           {},
+	"api_key":                         {},
+	"api_key_env":                     {},
+	"timeout_sec":                     {},
+	"spam_threshold":                  {},
+	"system_prompt_override":          {},
+	"classify_system_prompt_override": {},
+	"max_body_chars":                  {},
+	"log_samples":                     {},
+	"response_format":                 {},
 }
 
 // envVarNameRE matches a POSIX-ish environment variable identifier:
@@ -137,16 +166,19 @@ var envVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // OnConfigure and read without locking afterwards — Configure runs
 // before any classify calls per REQ-PLUG lifecycle.
 type options struct {
-	endpoint       string
-	model          string
-	apiKey         string // resolved from api_key_env at Configure time
-	apiKeyEnv      string
-	timeout        time.Duration
-	spamThreshold  float64
-	systemPrompt   string
-	maxBodyChars   int
-	logSamples     bool
-	responseFormat string
+	endpoint      string
+	model         string
+	apiKey        string // resolved from api_key_env at Configure time
+	apiKeyEnv     string
+	timeout       time.Duration
+	spamThreshold float64
+	systemPrompt  string
+	// classifySystemPrompt is the mail.classify system instruction (Wave
+	// 4.3, issue #304), distinct from systemPrompt (spam.classify only).
+	classifySystemPrompt string
+	maxBodyChars         int
+	logSamples           bool
+	responseFormat       string
 }
 
 type handler struct {
@@ -193,12 +225,13 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 	}
 
 	cfg := options{
-		endpoint:       defaultEndpoint,
-		timeout:        time.Duration(defaultTimeoutSec) * time.Second,
-		spamThreshold:  defaultThreshold,
-		systemPrompt:   builtinSystemPrompt,
-		maxBodyChars:   defaultMaxBodyChars,
-		responseFormat: defaultResponseFormat,
+		endpoint:             defaultEndpoint,
+		timeout:              time.Duration(defaultTimeoutSec) * time.Second,
+		spamThreshold:        defaultThreshold,
+		systemPrompt:         builtinSystemPrompt,
+		classifySystemPrompt: builtinClassifySystemPrompt,
+		maxBodyChars:         defaultMaxBodyChars,
+		responseFormat:       defaultResponseFormat,
 	}
 
 	if v, ok := opts["endpoint"]; ok {
@@ -301,6 +334,15 @@ func (h *handler) OnConfigure(ctx context.Context, opts map[string]any) error {
 		}
 		if s = strings.TrimSpace(s); s != "" {
 			cfg.systemPrompt = s
+		}
+	}
+	if v, ok := opts["classify_system_prompt_override"]; ok {
+		s, err := asString(v, "classify_system_prompt_override")
+		if err != nil {
+			return err
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			cfg.classifySystemPrompt = s
 		}
 	}
 	if v, ok := opts["max_body_chars"]; ok {
@@ -471,6 +513,71 @@ func (h *handler) SpamHealth(ctx context.Context) (sdk.SpamHealthResult, error) 
 	return sdk.SpamHealthResult{OK: true, LatencyMsP: latency}, nil
 }
 
+// MailClassify satisfies sdk.ClassifierHandler (Wave 4.3, issue #304):
+// one model call answers both the spam verdict and the category. The
+// threshold-based verdict promotion/demotion mirrors SpamClassify
+// exactly; category is passed through as the model returned it -- the
+// server (internal/spam.Classifier) is the enforcement point for "only a
+// category from the set we sent", not this plugin.
+func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (sdk.MailClassifyResult, error) {
+	h.inflight.Add(1)
+	defer h.inflight.Done()
+
+	h.mu.RLock()
+	opts := h.opts
+	h.mu.RUnlock()
+	if opts.endpoint == "" {
+		return sdk.MailClassifyResult{}, errors.New("plugin not configured")
+	}
+
+	callCtx, cancel := withBoundedDeadline(ctx, opts.timeout)
+	defer cancel()
+
+	payload := trimClassifyPayload(in, opts.maxBodyChars)
+	userJSON, err := json.Marshal(payload)
+	if err != nil {
+		return sdk.MailClassifyResult{}, fmt.Errorf("marshal user payload: %w", err)
+	}
+
+	categoryNames := make([]string, len(in.Context.Categories))
+	for i, c := range in.Context.Categories {
+		categoryNames[i] = c.Name
+	}
+
+	started := time.Now()
+	mc, err := h.callClassify(callCtx, opts, userJSON, categoryNames)
+	elapsed := time.Since(started)
+
+	labels := map[string]string{"model": opts.model}
+	if err != nil {
+		labels["result"] = "error"
+		sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
+		return sdk.MailClassifyResult{}, err
+	}
+
+	final := sdk.MailClassifyResult{
+		Confidence: mc.Score,
+		Reason:     mc.Reason,
+		Category:   mc.Category,
+	}
+	// Apply threshold: same single operator-visible knob SpamClassify
+	// uses, so the two methods never disagree about what counts as spam.
+	if mc.Score >= opts.spamThreshold {
+		final.Verdict = "spam"
+	} else {
+		final.Verdict = "ham"
+	}
+	labels["verdict"] = final.Verdict
+	sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
+
+	n := h.callCount.Add(1)
+	if n%100 == 0 {
+		sdk.Logf("info", "herold-spam-llm classify samples=%d latest_verdict=%s latest_category=%q latest_latency_ms=%d",
+			n, final.Verdict, final.Category, elapsed.Milliseconds())
+	}
+	return final, nil
+}
+
 // trimPayload returns a sanitised copy of the inbound params, with
 // the body excerpt capped at maxBody. The flat shape mirrors
 // internal/spam.Request exactly: the LLM sees the envelope headers,
@@ -520,6 +627,32 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	}
 	if body != "" {
 		out["body_excerpt"] = body
+	}
+	return out
+}
+
+// trimClassifyPayload is trimPayload plus the mail.classify context
+// (Wave 4.3, issue #304): "policy" carries the principal's own
+// categorisation prose (with any operator guardrail prepended,
+// REQ-FILT-67), and "categories" carries the principal's stored set
+// (REQ-FILT-210) as {name, definition} pairs so the model has the same
+// gloss the suite shows the user. Both are omitted when empty --
+// categorisation disabled for this principal, or no stored set.
+func trimClassifyPayload(in sdk.MailClassifyParams, maxBody int) map[string]any {
+	out := trimPayload(in.SpamClassifyParams, maxBody)
+	if in.Context.Prompt != "" {
+		out["policy"] = in.Context.Prompt
+	}
+	if len(in.Context.Categories) > 0 {
+		cats := make([]map[string]any, len(in.Context.Categories))
+		for i, c := range in.Context.Categories {
+			cat := map[string]any{"name": c.Name}
+			if c.Description != "" {
+				cat["definition"] = c.Description
+			}
+			cats[i] = cat
+		}
+		out["categories"] = cats
 	}
 	return out
 }
@@ -597,28 +730,87 @@ func responseFormatPayload(format string) map[string]any {
 	}
 }
 
+// modelClassification is the JSON shape the model is instructed to emit
+// for mail.classify (Wave 4.3, issue #304): modelVerdict plus category.
+type modelClassification struct {
+	Verdict  string  `json:"verdict"`
+	Score    float64 `json:"score"`
+	Reason   string  `json:"reason"`
+	Category string  `json:"category"`
+}
+
+// classifyJSONSchema builds the schema advertised to json_schema-mode
+// endpoints for one mail.classify call. It matches modelClassification
+// field-for-field; when categoryNames is non-empty the "category"
+// property is constrained to that set plus the empty string (Wave 4.3:
+// "the plugin will only accept a category from the set it sent"),
+// tightening what the model can even attempt to return -- the server
+// enforces the real membership test regardless.
+func classifyJSONSchema(categoryNames []string) map[string]any {
+	category := map[string]any{"type": "string"}
+	if len(categoryNames) > 0 {
+		category["enum"] = append([]string{""}, categoryNames...)
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"verdict": map[string]any{"type": "string", "enum": []string{"spam", "ham"}},
+			// Anthropic's structured-output validator rejects minimum and
+			// maximum on numbers; the range is stated in the prompt and
+			// the plugin compares the score against spam_threshold anyway.
+			"score":    map[string]any{"type": "number", "description": "probability that the message is spam, 0.0 to 1.0"},
+			"reason":   map[string]any{"type": "string"},
+			"category": category,
+		},
+		"required":             []string{"verdict", "score", "reason", "category"},
+		"additionalProperties": false,
+	}
+}
+
+// classifyResponseFormatPayload mirrors responseFormatPayload for
+// mail.classify's richer schema.
+func classifyResponseFormatPayload(format string, categoryNames []string) map[string]any {
+	switch format {
+	case responseFormatJSONSchema:
+		return map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name":   "mail_classification",
+				"strict": true,
+				"schema": classifyJSONSchema(categoryNames),
+			},
+		}
+	case responseFormatNone:
+		return nil
+	default:
+		return map[string]any{"type": "json_object"}
+	}
+}
+
 // jsonObjectRE finds the first balanced-looking JSON object in a string.
 // Models wrap the verdict in prose often enough that a tolerant match
 // pays off; parsing failures still fall through to the plugin's
 // structured error path.
 var jsonObjectRE = regexp.MustCompile(`(?s)\{.*\}`)
 
-// callLLM performs the HTTP POST and parses the model's reply. It
-// returns (verdict, score, reason, error); error is non-nil on any
-// transport, HTTP, or parse failure.
-func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (string, float64, string, error) {
+// doChatCompletion performs the HTTP POST against opts.endpoint and
+// returns the assistant's raw text content. It is shared by callLLM
+// (spam.classify, single verdict) and callClassify (mail.classify,
+// verdict + category, Wave 4.3): the transport is identical, only the
+// system prompt and response_format schema differ per caller.
+func (h *handler) doChatCompletion(ctx context.Context, opts options, systemPrompt string, userJSON []byte, responseFormat map[string]any) (string, error) {
 	body := chatRequest{
 		Model: opts.model,
 		Messages: []chatMessage{
-			{Role: "system", Content: opts.systemPrompt},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(userJSON)},
 		},
 		Temperature:    0.0,
-		ResponseFormat: responseFormatPayload(opts.responseFormat),
+		ResponseFormat: responseFormat,
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("marshal chat request: %w", err)
+		return "", fmt.Errorf("marshal chat request: %w", err)
 	}
 	if opts.logSamples {
 		sdk.Logf("debug", "herold-spam-llm request bytes=%d", len(raw))
@@ -627,7 +819,7 @@ func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (s
 	url := opts.endpoint + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
-		return "", 0, "", fmt.Errorf("build chat request: %w", err)
+		return "", fmt.Errorf("build chat request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if opts.apiKey != "" {
@@ -636,13 +828,13 @@ func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (s
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("POST %s: %w", url, err)
+		return "", fmt.Errorf("POST %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", 0, "", fmt.Errorf("read chat response: %w", err)
+		return "", fmt.Errorf("read chat response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		prefix := string(respBytes)
@@ -650,26 +842,50 @@ func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (s
 			prefix = prefix[:256]
 		}
 		sdk.Logf("warn", "herold-spam-llm non-200 status=%d body_prefix=%q", resp.StatusCode, prefix)
-		return "", 0, "", fmt.Errorf("chat completions HTTP %d: %s", resp.StatusCode, prefix)
+		return "", fmt.Errorf("chat completions HTTP %d: %s", resp.StatusCode, prefix)
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(respBytes, &cr); err != nil {
-		return "", 0, "", fmt.Errorf("decode chat response: %w", err)
+		return "", fmt.Errorf("decode chat response: %w", err)
 	}
 	if len(cr.Choices) == 0 {
-		return "", 0, "", errors.New("chat completions returned no choices")
+		return "", errors.New("chat completions returned no choices")
 	}
 	content := cr.Choices[0].Message.Content
 	if opts.logSamples {
 		sdk.Logf("debug", "herold-spam-llm response bytes=%d", len(content))
 	}
+	return content, nil
+}
 
+// callLLM performs the spam.classify model call and parses the model's
+// reply. It returns (verdict, score, reason, error); error is non-nil on
+// any transport, HTTP, or parse failure.
+func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (string, float64, string, error) {
+	content, err := h.doChatCompletion(ctx, opts, opts.systemPrompt, userJSON, responseFormatPayload(opts.responseFormat))
+	if err != nil {
+		return "", 0, "", err
+	}
 	mv, err := parseModelVerdict(content)
 	if err != nil {
 		return "", 0, "", err
 	}
 	return mv.Verdict, mv.Score, mv.Reason, nil
+}
+
+// callClassify performs the mail.classify model call (Wave 4.3, issue
+// #304): one model call answers both the spam verdict and the category.
+// categoryNames constrains the schema's "category" enum in json_schema
+// mode and is passed through to parseModelClassification for a
+// best-effort local check; the server enforces the real membership test
+// against the principal's set regardless (internal/spam.Classifier).
+func (h *handler) callClassify(ctx context.Context, opts options, userJSON []byte, categoryNames []string) (modelClassification, error) {
+	content, err := h.doChatCompletion(ctx, opts, opts.classifySystemPrompt, userJSON, classifyResponseFormatPayload(opts.responseFormat, categoryNames))
+	if err != nil {
+		return modelClassification{}, err
+	}
+	return parseModelClassification(content)
 }
 
 // parseModelVerdict extracts a modelVerdict from the raw assistant text.
@@ -692,6 +908,27 @@ func parseModelVerdict(text string) (modelVerdict, error) {
 		return modelVerdict{}, fmt.Errorf("model JSON missing verdict: %q", truncateForError(m))
 	}
 	return mv, nil
+}
+
+// parseModelClassification extracts a modelClassification from the raw
+// assistant text, mirroring parseModelVerdict's two-pass strategy.
+func parseModelClassification(text string) (modelClassification, error) {
+	s := strings.TrimSpace(text)
+	var mc modelClassification
+	if err := json.Unmarshal([]byte(s), &mc); err == nil && mc.Verdict != "" {
+		return mc, nil
+	}
+	m := jsonObjectRE.FindString(s)
+	if m == "" {
+		return modelClassification{}, fmt.Errorf("no JSON object in model reply: %q", truncateForError(text))
+	}
+	if err := json.Unmarshal([]byte(m), &mc); err != nil {
+		return modelClassification{}, fmt.Errorf("parse model JSON: %w (raw=%q)", err, truncateForError(m))
+	}
+	if mc.Verdict == "" {
+		return modelClassification{}, fmt.Errorf("model JSON missing verdict: %q", truncateForError(m))
+	}
+	return mc, nil
 }
 
 // truncateForError bounds the length of a string embedded in an error
@@ -799,29 +1036,38 @@ func asFloat(v any, name string) (float64, error) {
 
 func main() {
 	manifest := sdk.Manifest{
-		Name:                  "herold-spam-llm",
-		Version:               "0.1.0",
-		Type:                  plug.TypeSpam,
+		Name:    "herold-spam-llm",
+		Version: "0.1.0",
+		// Wave 4.3 (issue #304 Decision 3): the plugin declares itself a
+		// classifier. The supervisor accepts an operator's system.toml
+		// [[plugin]] type = "spam" against this manifest for one release
+		// (internal/plugin.compatiblePluginType); the server always
+		// dispatches mail.classify to it either way, choosing the wire
+		// contract from THIS declared type, not the operator's string.
+		Type:                  plug.TypeClassifier,
 		Lifecycle:             plug.LifecycleLongRunning,
 		MaxConcurrentRequests: 16,
 		ABIVersion:            plug.ABIVersion,
 		ShutdownGraceSec:      10,
 		HealthIntervalSec:     30,
 		// Wave 4.1 (REQ-FILT-12): the model call below is always sent
-		// with temperature 0 (see callLLM); declaring it here lets the
-		// supervisor enforce reproducibility instead of trusting it.
+		// with temperature 0 (see callLLM/callClassify); declaring it
+		// here lets the supervisor enforce reproducibility instead of
+		// trusting it. Applies to both plugin types (internal/plugin's
+		// Manifest.Validate).
 		Temperature: sdk.PinnedTemperature(),
 		OptionsSchema: map[string]plug.OptionSchema{
-			"endpoint":               {Type: "string", Default: defaultEndpoint},
-			"model":                  {Type: "string", Required: true},
-			"api_key":                {Type: "string", Secret: true},
-			"api_key_env":            {Type: "string", Secret: true},
-			"timeout_sec":            {Type: "integer", Default: defaultTimeoutSec},
-			"spam_threshold":         {Type: "number", Default: defaultThreshold},
-			"system_prompt_override": {Type: "string"},
-			"max_body_chars":         {Type: "integer", Default: defaultMaxBodyChars},
-			"log_samples":            {Type: "boolean", Default: false},
-			"response_format":        {Type: "string", Default: defaultResponseFormat},
+			"endpoint":                        {Type: "string", Default: defaultEndpoint},
+			"model":                           {Type: "string", Required: true},
+			"api_key":                         {Type: "string", Secret: true},
+			"api_key_env":                     {Type: "string", Secret: true},
+			"timeout_sec":                     {Type: "integer", Default: defaultTimeoutSec},
+			"spam_threshold":                  {Type: "number", Default: defaultThreshold},
+			"system_prompt_override":          {Type: "string"},
+			"classify_system_prompt_override": {Type: "string"},
+			"max_body_chars":                  {Type: "integer", Default: defaultMaxBodyChars},
+			"log_samples":                     {Type: "boolean", Default: false},
+			"response_format":                 {Type: "string", Default: defaultResponseFormat},
 		},
 	}
 	if err := sdk.Run(manifest, newHandler()); err != nil {
