@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -175,7 +176,7 @@ func TestSupervisorIntegration_SpamPluginRequiresPinnedTemperature(t *testing.T)
 		testSpamFixtureRefused(t, bin, []string{"HEROLD_TEST_SPAM_TEMPERATURE=0.7"})
 	})
 	t.Run("pinned zero temperature is accepted", func(t *testing.T) {
-		var logBuf bytes.Buffer
+		var logBuf lockedBuffer
 		fake := clock.NewFake(time.Unix(0, 0).UTC())
 		mgr := plugin.NewManager(plugin.ManagerOptions{
 			Logger:        slog.New(slog.NewTextHandler(&logBuf, nil)),
@@ -214,7 +215,7 @@ func TestSupervisorIntegration_SpamPluginRequiresPinnedTemperature(t *testing.T)
 // than ever reaching StateHealthy.
 func testSpamFixtureRefused(t *testing.T, bin string, env []string) {
 	t.Helper()
-	var logBuf bytes.Buffer
+	var logBuf lockedBuffer
 	fake := clock.NewFake(time.Unix(0, 0).UTC())
 	mgr := plugin.NewManager(plugin.ManagerOptions{
 		Logger:        slog.New(slog.NewTextHandler(&logBuf, nil)),
@@ -270,6 +271,25 @@ func testSpamFixtureRefused(t *testing.T, bin string, env []string) {
 	if !strings.Contains(logs, "temperature") || !strings.Contains(logs, "spamfixture") {
 		t.Fatalf("log should name the plugin and mention temperature:\n%s", logs)
 	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for concurrent use: the supervisor
+// logs from its own goroutines while the test reads the captured output.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 func buildSpamFixture(t *testing.T) string {
