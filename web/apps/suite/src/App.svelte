@@ -846,8 +846,15 @@
   .mailbox-list.custom li {
     position: relative;
   }
+  /* Indent every row one level under the "Labels" disclosure header (the
+     label rows, the empty-state row, and the "+ Neues Label" add-row) so the
+     group reads as a child list rather than as siblings of the system
+     mailboxes above it (re #308). */
+  .mailbox-list.custom li button {
+    padding-left: var(--spacing-06);
+  }
   .mailbox-list.custom li.empty {
-    padding: var(--spacing-02) var(--spacing-04);
+    padding: var(--spacing-02) var(--spacing-04) var(--spacing-02) var(--spacing-06);
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     font-style: italic;
