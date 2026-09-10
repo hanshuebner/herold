@@ -34,6 +34,18 @@ type Manifest struct {
 	// implements beyond the type's mandatory contract. The only token
 	// recognised today is "resolve_rcpt" (REQ-DIR-RCPT-01).
 	Supports []string
+	// Temperature is the pinned sampling temperature (Wave 4.1,
+	// REQ-FILT-12). A spam-type plugin MUST set this to PinnedTemperature
+	// (a pointer to 0) or the supervisor refuses to start it.
+	Temperature *float64
+}
+
+// PinnedTemperature is temperature 0, the only value the supervisor
+// accepts from a spam-type plugin's manifest (REQ-FILT-12). Plugin authors
+// set Manifest.Temperature = sdk.PinnedTemperature().
+func PinnedTemperature() *float64 {
+	z := 0.0
+	return &z
 }
 
 func (m Manifest) toProtocol() plug.Manifest {
@@ -53,6 +65,7 @@ func (m Manifest) toProtocol() plug.Manifest {
 		ShutdownGraceSec:      m.ShutdownGraceSec,
 		HealthIntervalSec:     m.HealthIntervalSec,
 		Supports:              m.Supports,
+		Temperature:           m.Temperature,
 	}
 }
 

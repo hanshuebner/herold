@@ -101,8 +101,15 @@ type Manifest struct {
 	// implements beyond the type's mandatory contract. Currently the
 	// only recognised token is "resolve_rcpt" for directory plugins
 	// (REQ-DIR-RCPT-01).
-	Supports []string                   `json:"supports,omitempty"`
-	Extra    map[string]json.RawMessage `json:"-"`
+	Supports []string `json:"supports,omitempty"`
+	// Temperature is the sampling temperature the plugin pins its model
+	// calls to, declared so the server can enforce reproducibility
+	// (Wave 4.1, REQ-FILT-12) without inspecting the plugin's HTTP
+	// traffic. Nil means "not declared". A TypeSpam manifest MUST set
+	// this to a pointer to 0; Validate rejects an absent value or a
+	// non-zero one.
+	Temperature *float64                   `json:"temperature,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
 }
 
 // HasSupport reports whether m advertises the given optional capability
@@ -176,6 +183,17 @@ func (m Manifest) Validate() error {
 	case LifecycleLongRunning, LifecycleOnDemand:
 	default:
 		return fmt.Errorf("%w: unknown lifecycle %q", ErrInvalidManifest, m.Lifecycle)
+	}
+	// Wave 4.1 (REQ-FILT-12): a classifier's verdict must be reproducible,
+	// so a spam plugin must pin its sampling temperature to 0 and declare
+	// it in the manifest rather than merely being configurable to do so.
+	if m.Type == TypeSpam {
+		if m.Temperature == nil {
+			return fmt.Errorf("%w: spam plugin must declare temperature=0 in its manifest", ErrInvalidManifest)
+		}
+		if *m.Temperature != 0 {
+			return fmt.Errorf("%w: spam plugin temperature must be pinned to 0, got %v", ErrInvalidManifest, *m.Temperature)
+		}
 	}
 	return nil
 }

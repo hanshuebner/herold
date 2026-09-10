@@ -793,6 +793,10 @@ func main() {
 		ABIVersion:            plug.ABIVersion,
 		ShutdownGraceSec:      10,
 		HealthIntervalSec:     30,
+		// Wave 4.1 (REQ-FILT-12): the model call below is always sent
+		// with temperature 0 (see callLLM); declaring it here lets the
+		// supervisor enforce reproducibility instead of trusting it.
+		Temperature: sdk.PinnedTemperature(),
 		OptionsSchema: map[string]plug.OptionSchema{
 			"endpoint":               {Type: "string", Default: defaultEndpoint},
 			"model":                  {Type: "string", Default: defaultModel},
