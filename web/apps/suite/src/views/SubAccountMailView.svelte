@@ -14,7 +14,11 @@
    * Identity (REQ-MAIL-SUB-05).
    */
   import { subAccounts } from '../lib/mail/sub-accounts.svelte';
+  import { mail } from '../lib/mail/store.svelte';
+  import { movePicker } from '../lib/mail/move-picker.svelte';
+  import MessageKebabMenu, { type KebabItem } from '../lib/mail/MessageKebabMenu.svelte';
   import { compose } from '../lib/compose/compose.svelte';
+  import { toast } from '../lib/toast/toast.svelte';
   import { t, localeTag } from '../lib/i18n/i18n.svelte';
   import { jmap } from '../lib/jmap/client';
   import HtmlBody from '../lib/mail/HtmlBody.svelte';
@@ -49,9 +53,96 @@
     void subAccounts.loadEmails(acct, mb);
   });
 
+  // Mirror this account's fetched rows into the shared mail store cache
+  // (issue #212, REQ-MAIL-SUB-04) so the SAME generalized bulk action
+  // methods the primary/combined views use (move / delete / mark --
+  // routed through mail store's #emailSetUpdateBulk, which resolves each
+  // id's target account via emailAccountId) work here too, without a
+  // second action implementation. subAccounts.emails / .reading stay the
+  // source of truth for this view's OWN rendering -- this is purely
+  // additive glue, not a rework of the list-loading mechanism.
+  $effect(() => {
+    if (subAccounts.emails.length > 0) mail.mirrorScopedEmails(accountId, subAccounts.emails);
+  });
+  $effect(() => {
+    if (subAccounts.reading) mail.mirrorScopedEmails(accountId, [subAccounts.reading]);
+  });
+
   async function openEmail(id: string): Promise<void> {
     selectedId = id;
     await subAccounts.openEmail(accountId, id);
+  }
+
+  /** Reload the scoped list after a mutation (move / delete) so the row
+   * removal is reflected without a second bespoke removal path. */
+  async function reloadList(): Promise<void> {
+    const mb = effectiveMailboxId;
+    if (mb) await subAccounts.loadEmails(accountId, mb);
+  }
+
+  function toggleSeen(email: Email): void {
+    const nextSeen = !email.keywords.$seen;
+    void mail.bulkSetSeen([email.id], nextSeen).then(reloadList);
+  }
+
+  function moveEmail(email: Email): void {
+    // movePicker/MoveTargetPicker.svelte are the SAME global singleton +
+    // overlay the primary list's Move action uses; passing accountId
+    // scopes the candidate mailbox list to this sub-account's own tree
+    // (issue #212, REQ-MAIL-SUB-04) and mail.bulkMoveToMailbox resolves
+    // the source email's target account via the mirrored emailAccountId
+    // tag, so no separate move implementation is needed here.
+    movePicker.open(email.id, accountId);
+  }
+  // Reload the scoped list once a scoped move commits, so a moved-out
+  // row disappears from this view. MoveTargetPicker.svelte's commit()
+  // calls mail.bulkMoveToMailbox/moveEmailToMailbox directly and has no
+  // per-caller completion hook, so the reload is driven by watching
+  // movePicker close while it was scoped to this account.
+  let wasMovePickerOpenForThisAccount = $state(false);
+  $effect(() => {
+    if (movePicker.isOpen && movePicker.accountId === accountId) {
+      wasMovePickerOpenForThisAccount = true;
+    } else if (wasMovePickerOpenForThisAccount && !movePicker.isOpen) {
+      wasMovePickerOpenForThisAccount = false;
+      void reloadList();
+    }
+  });
+
+  function deleteEmail(email: Email): void {
+    const trash = entry?.mailboxes.find((m) => m.role === 'trash');
+    if (!trash) {
+      toast.show({ message: t('archive.error.loadMessageFailed'), kind: 'error', timeoutMs: 5000 });
+      return;
+    }
+    void mail.bulkMoveToMailbox([email.id], trash.id).then(() => {
+      if (selectedId === email.id) closeReading();
+      return reloadList();
+    });
+  }
+
+  function kebabItemsFor(email: Email): KebabItem[] {
+    const items: KebabItem[] = [
+      {
+        id: 'toggle-seen',
+        label: email.keywords.$seen
+          ? t('msg.kebab.markUnread')
+          : t('msg.kebab.markRead'),
+        onclick: () => toggleSeen(email),
+      },
+      {
+        id: 'move',
+        label: t('msg.kebab.move'),
+        onclick: () => moveEmail(email),
+      },
+      {
+        id: 'delete',
+        label: t('msg.kebab.delete'),
+        danger: true,
+        onclick: () => deleteEmail(email),
+      },
+    ];
+    return items;
   }
 
   function closeReading(): void {
@@ -130,18 +221,33 @@
           <ul class="message-list">
             {#each subAccounts.emails as email (email.id)}
               <li>
-                <button
-                  type="button"
+                <div
                   class="message-row"
                   class:selected={selectedId === email.id}
                   class:unread={isUnread(email)}
-                  onclick={() => void openEmail(email.id)}
                 >
-                  <span class="sender">{senderLabel(email)}</span>
-                  <span class="subject">{email.subject || t('msg.noSubject')}</span>
-                  <span class="preview">{email.preview}</span>
-                  <span class="date">{formatDate(email.receivedAt)}</span>
-                </button>
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+                  <div
+                    class="message-row-main"
+                    role="button"
+                    tabindex="0"
+                    onclick={() => void openEmail(email.id)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        void openEmail(email.id);
+                      }
+                    }}
+                  >
+                    <span class="sender">{senderLabel(email)}</span>
+                    <span class="subject">{email.subject || t('msg.noSubject')}</span>
+                    <span class="preview">{email.preview}</span>
+                    <span class="date">{formatDate(email.receivedAt)}</span>
+                  </div>
+                  <span class="message-row-kebab">
+                    <MessageKebabMenu items={kebabItemsFor(email)} />
+                  </span>
+                </div>
               </li>
             {/each}
           </ul>
@@ -289,15 +395,9 @@
 
   .message-row {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     width: 100%;
-    text-align: left;
-    gap: 2px;
-    padding: var(--spacing-03) var(--spacing-05);
-    border: none;
     border-bottom: 1px solid var(--border-subtle-01);
-    background: none;
-    cursor: pointer;
     color: var(--text-primary);
   }
   .message-row:hover {
@@ -309,6 +409,20 @@
   .message-row.unread .sender,
   .message-row.unread .subject {
     font-weight: 600;
+  }
+  .message-row-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    gap: 2px;
+    padding: var(--spacing-03) var(--spacing-05);
+    cursor: pointer;
+  }
+  .message-row-kebab {
+    flex-shrink: 0;
+    padding-right: var(--spacing-03);
   }
 
   .sender {

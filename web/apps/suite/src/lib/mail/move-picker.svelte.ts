@@ -12,18 +12,29 @@ class MovePicker {
   emailId = $state<string | null>(null);
   /** Bulk-mode targets, empty when single mode is active. */
   bulkIds = $state<string[]>([]);
+  /**
+   * The sub-account this move is scoped to (issue #212, REQ-MAIL-SUB-04),
+   * or null for this principal's own account -- the default, unchanged
+   * behaviour. When set, MoveTargetPicker.svelte sources candidate
+   * mailboxes from that sub-account's own tree instead of
+   * `mail.mailboxes`, so a scoped-view move only ever offers that
+   * account's own mailboxes as targets.
+   */
+  accountId = $state<string | null>(null);
 
-  /** Open the picker for a single email. */
-  open(emailId: string): void {
+  /** Open the picker for a single email, optionally scoped to `accountId`. */
+  open(emailId: string, accountId: string | null = null): void {
     this.emailId = emailId;
     this.bulkIds = [];
+    this.accountId = accountId;
     this.isOpen = true;
   }
 
-  /** Open the picker for a bulk move targeting many emails. */
-  openBulk(ids: string[]): void {
+  /** Open the picker for a bulk move targeting many emails, optionally scoped. */
+  openBulk(ids: string[], accountId: string | null = null): void {
     this.emailId = null;
     this.bulkIds = ids;
+    this.accountId = accountId;
     this.isOpen = true;
   }
 
@@ -36,6 +47,7 @@ class MovePicker {
     this.isOpen = false;
     this.emailId = null;
     this.bulkIds = [];
+    this.accountId = null;
   }
 }
 

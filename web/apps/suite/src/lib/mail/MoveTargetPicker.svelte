@@ -1,5 +1,6 @@
 <script lang="ts">
   import { mail } from './store.svelte';
+  import { subAccounts } from './sub-accounts.svelte';
   import {
     movePicker,
     computeMoveCandidates,
@@ -9,6 +10,17 @@
   import { t } from '../i18n/i18n.svelte';
   import type { Mailbox } from './types';
 
+  /**
+   * The candidate mailbox tree to move within: this principal's own
+   * `mail.mailboxes` by default, or the scoped sub-account's own tree
+   * when `movePicker.accountId` is set (issue #212, REQ-MAIL-SUB-04) --
+   * a scoped-view move only ever offers that account's own mailboxes.
+   */
+  let sourceMailboxes = $derived.by<Iterable<Mailbox>>(() => {
+    if (!movePicker.accountId) return mail.mailboxes.values();
+    return subAccounts.find(movePicker.accountId)?.mailboxes ?? [];
+  });
+
   let candidates = $derived.by<Mailbox[]>(() => {
     if (!movePicker.isOpen) return [];
     if (movePicker.isBulk) {
@@ -16,14 +28,14 @@
       // exclude "already there" because that would shrink the set
       // arbitrarily depending on which selected emails happen to live
       // where.
-      return computeMoveCandidates(mail.mailboxes.values(), new Set());
+      return computeMoveCandidates(sourceMailboxes, new Set());
     }
     const eid = movePicker.emailId;
     if (!eid) return [];
     const email = mail.emails.get(eid);
     if (!email) return [];
     return computeMoveCandidates(
-      mail.mailboxes.values(),
+      sourceMailboxes,
       new Set(Object.keys(email.mailboxIds)),
     );
   });

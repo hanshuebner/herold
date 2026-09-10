@@ -49,6 +49,29 @@ vi.mock('../lib/jmap/client', () => ({
   jmap: { downloadUrl: vi.fn(() => null) },
 }));
 
+const mirrorScopedEmailsMock = vi.fn();
+const bulkSetSeenMock = vi.fn(async (_ids: string[], _seen: boolean) => undefined);
+const bulkMoveToMailboxMock = vi.fn(async (_ids: string[], _targetId: string) => undefined);
+vi.mock('../lib/mail/store.svelte', () => ({
+  mail: {
+    mirrorScopedEmails: (accountId: string, emails: unknown[]) =>
+      mirrorScopedEmailsMock(accountId, emails),
+    bulkSetSeen: (ids: string[], seen: boolean) => bulkSetSeenMock(ids, seen),
+    bulkMoveToMailbox: (ids: string[], targetId: string) => bulkMoveToMailboxMock(ids, targetId),
+  },
+}));
+
+const movePickerOpenMock = vi.fn();
+vi.mock('../lib/mail/move-picker.svelte', () => ({
+  movePicker: {
+    open: (emailId: string, accountId: string | null) => movePickerOpenMock(emailId, accountId),
+    isOpen: false,
+    accountId: null,
+  },
+}));
+
+vi.mock('../lib/toast/toast.svelte', () => ({ toast: { show: vi.fn() } }));
+
 vi.mock('../lib/mail/HtmlBody.svelte', () => ({ default: () => null }));
 vi.mock('../lib/mail/sanitize', () => ({ sanitizeHtml: (s: string) => s }));
 
@@ -61,6 +84,11 @@ vi.mock('../lib/i18n/i18n.svelte', () => ({
       'archive.selectMessage': 'Select a message',
       'msg.noSender': 'No sender',
       'msg.noSubject': '(no subject)',
+      'msg.kebab.openLabel': 'More actions',
+      'msg.kebab.markUnread': 'Mark as unread',
+      'msg.kebab.markRead': 'Mark as read',
+      'msg.kebab.move': 'Move to...',
+      'msg.kebab.delete': 'Delete this message',
     };
     return map[key] ?? key;
   },
@@ -75,12 +103,19 @@ beforeEach(() => {
   openEmailMock.mockClear();
   closeReadingMock.mockClear();
   openWithMock.mockClear();
+  mirrorScopedEmailsMock.mockClear();
+  bulkSetSeenMock.mockClear();
+  bulkMoveToMailboxMock.mockClear();
+  movePickerOpenMock.mockClear();
   mockEmails = [];
   mockEntry = {
     accountId: 'acct-club',
     name: 'club@example.com',
     identity: { id: '99', email: 'club@example.com' },
-    mailboxes: [{ id: 'mb-inbox', role: 'inbox' }],
+    mailboxes: [
+      { id: 'mb-inbox', role: 'inbox' },
+      { id: 'mb-trash', role: 'trash' },
+    ],
   };
 });
 
@@ -117,5 +152,56 @@ describe('SubAccountMailView', () => {
     expect(openWithMock).toHaveBeenCalledWith(
       expect.objectContaining({ identity: { id: '99', email: 'club@example.com' } }),
     );
+  });
+
+  it('mirrors fetched rows into the shared mail store cache', () => {
+    mockEmails = [
+      {
+        id: 'e1',
+        subject: 'Hello',
+        from: [],
+        preview: 'p',
+        receivedAt: '2026-01-01T00:00:00Z',
+        keywords: {},
+      },
+    ];
+    render(SubAccountMailView, { props: { accountId: 'acct-club' } });
+    expect(mirrorScopedEmailsMock).toHaveBeenCalledWith('acct-club', mockEmails);
+  });
+
+  describe('per-row actions (issue #212, REQ-MAIL-SUB-04)', () => {
+    beforeEach(() => {
+      mockEmails = [
+        {
+          id: 'e1',
+          subject: 'Hello',
+          from: [],
+          preview: 'p',
+          receivedAt: '2026-01-01T00:00:00Z',
+          keywords: {},
+        },
+      ];
+    });
+
+    it('Move opens the shared movePicker scoped to this sub-account', async () => {
+      render(SubAccountMailView, { props: { accountId: 'acct-club' } });
+      await fireEvent.click(screen.getByLabelText('More actions'));
+      await fireEvent.click(screen.getByText('Move to...'));
+      expect(movePickerOpenMock).toHaveBeenCalledWith('e1', 'acct-club');
+    });
+
+    it('Delete moves the message to this sub-account\'s own Trash mailbox', async () => {
+      render(SubAccountMailView, { props: { accountId: 'acct-club' } });
+      await fireEvent.click(screen.getByLabelText('More actions'));
+      await fireEvent.click(screen.getByText('Delete this message'));
+      expect(bulkMoveToMailboxMock).toHaveBeenCalledWith(['e1'], 'mb-trash');
+    });
+
+    it('"Mark as read" calls mail.bulkSetSeen(true) for an unread message', async () => {
+      render(SubAccountMailView, { props: { accountId: 'acct-club' } });
+      await fireEvent.click(screen.getByLabelText('More actions'));
+      await fireEvent.click(screen.getByText('Mark as read'));
+      expect(bulkSetSeenMock).toHaveBeenCalledWith(['e1'], true);
+    });
   });
 });

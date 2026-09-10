@@ -351,7 +351,9 @@ export const de = {
   // ── Per-message kebab menu (REQ-UI-21b, REQ-MAIL-130..142) ──────────
   'msg.kebab.openLabel': 'Weitere Aktionen',
   'msg.kebab.markUnread': 'Als ungelesen markieren',
+  'msg.kebab.markRead': 'Als gelesen markieren',
   'msg.kebab.markUnreadFromHere': 'Ab hier als ungelesen markieren',
+  'msg.kebab.move': 'Verschieben nach...',
   'msg.kebab.delete': 'Diese Nachricht löschen',
   'msg.kebab.download': 'Nachricht herunterladen',
   'msg.kebab.showOriginal': 'Original anzeigen',
