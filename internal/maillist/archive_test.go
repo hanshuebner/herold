@@ -117,6 +117,15 @@ func TestExpand_ArchiveFilesOnce_SharesBlobWithFanout(t *testing.T) {
 			t.Fatalf("archive blob hash = %q, want the SAME hash as the fan-out copies %q (dedup broken)",
 				archived[0].Blob.Hash, sharedHash)
 		}
+		// re #143 (maintainer finding #2): the archived copy records
+		// store.IngestSourceMailingListArchive with the list address as
+		// IngestSourceRef.
+		if archived[0].IngestSource != store.IngestSourceMailingListArchive {
+			t.Errorf("IngestSource = %q; want %q", archived[0].IngestSource, store.IngestSourceMailingListArchive)
+		}
+		if archived[0].IngestSourceRef != ml.PostingAddress {
+			t.Errorf("IngestSourceRef = %q; want %q", archived[0].IngestSourceRef, ml.PostingAddress)
+		}
 
 		// Cross-check the store's own refcount: N member queue rows + 1
 		// archive message must all reference the one blob.

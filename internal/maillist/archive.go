@@ -160,6 +160,10 @@ func (e *Expander) fileArchive(ctx context.Context, ml store.MailingList, shaped
 		ReceivedAt:   now,
 		InternalDate: now,
 		Envelope:     envelopeFromParsedMessage(parsed),
+		// re #143 (maintainer finding #2): the list address identifies
+		// which mailing list archived this copy.
+		IngestSource:    store.IngestSourceMailingListArchive,
+		IngestSourceRef: ml.PostingAddress,
 	}
 	if _, _, err := e.Meta.InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: *ml.ArchiveMailboxID}}); err != nil {
 		e.Logger.ErrorContext(ctx, "maillist: archive: file message failed",
