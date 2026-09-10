@@ -332,6 +332,8 @@ func (i *importHandler) importOne(
 		Size:         ref.Size,
 		Blob:         ref,
 		Envelope:     env,
+		// re #143 (maintainer finding #2): a JMAP Email/import create.
+		IngestSource: store.IngestSourceJMAPImport,
 	}
 	memberships := make([]store.MessageMailbox, 0, len(mailboxIDs))
 	for _, mid := range mailboxIDs {

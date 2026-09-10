@@ -802,6 +802,20 @@ func TestEmail_Import_FromUploadedBlob(t *testing.T) {
 	if mid == "" {
 		t.Fatalf("created id missing: %v", resp.Created)
 	}
+
+	// re #143 (maintainer finding #2): an Email/import create records
+	// store.IngestSourceJMAPImport on the stored message.
+	midU, err := strconv.ParseUint(mid, 10, 64)
+	if err != nil {
+		t.Fatalf("parse email id %q: %v", mid, err)
+	}
+	stored, err := f.srv.Store.Meta().GetMessage(context.Background(), store.MessageID(midU))
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if stored.IngestSource != store.IngestSourceJMAPImport {
+		t.Errorf("IngestSource = %q; want %q", stored.IngestSource, store.IngestSourceJMAPImport)
+	}
 }
 
 // TestEmail_Import_ThreeMessageChain_StableThread reproduces the
@@ -2047,6 +2061,11 @@ func TestEmailSet_Create_OversizedBody_EnvelopeAndPlaceholderBody(t *testing.T) 
 	}
 	if stored.Envelope.Subject != "An oversized reply" {
 		t.Errorf("stored Envelope.Subject = %q, want %q", stored.Envelope.Subject, "An oversized reply")
+	}
+	// re #143 (maintainer finding #2): an Email/set create records
+	// store.IngestSourceJMAPImport on the stored message.
+	if stored.IngestSource != store.IngestSourceJMAPImport {
+		t.Errorf("IngestSource = %q; want %q", stored.IngestSource, store.IngestSourceJMAPImport)
 	}
 
 	// Email/get must render sender/subject from the (now correct) envelope

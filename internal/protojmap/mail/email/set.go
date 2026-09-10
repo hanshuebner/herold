@@ -530,6 +530,8 @@ func (h *handlerSet) createEmail(
 		Blob:         ref,
 		Envelope:     env,
 		SnoozedUntil: snoozedUntil,
+		// re #143 (maintainer finding #2): an Email/set create.
+		IngestSource: store.IngestSourceJMAPImport,
 	}
 	targets := make([]store.MessageMailbox, len(targetMailboxIDs))
 	for i, mbID := range targetMailboxIDs {
