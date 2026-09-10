@@ -814,7 +814,21 @@ const CurrentBackupVersion = 1
 //	so a crash-resumed sweep never re-copies it. New row type
 //	SubAccountMigrationRow; IMAPImportMessageStateRow gains the one
 //	field.
-const CurrentSchemaVersion = 104
+//
+// 105 — 0105_message_ingest_source.sql (issue #143, maintainer finding
+//
+//	#2, 2026-09-09). Adds messages.ingest_source and
+//	messages.ingest_source_ref (both '', the NOT NULL DEFAULT, meaning
+//	not recorded), written once by the caller alongside InsertMessage /
+//	InsertMessages and never recomputed, mirroring delivery_disposition
+//	(migration 0090). ingest_source names the write path
+//	(store.MessageIngestSource: smtp, imap-import, jmap-import,
+//	imap-append, imap-copy, mailing-list-archive, gmail-import);
+//	ingest_source_ref carries path-specific free text (the import
+//	account name for imap-import, the list address for
+//	mailing-list-archive). No new table; MessageRow gains the two
+//	fields.
+const CurrentSchemaVersion = 105
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

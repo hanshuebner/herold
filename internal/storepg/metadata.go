@@ -1132,8 +1132,9 @@ func (m *metadata) insertMessageTx(
 			  env_message_id, env_in_reply_to, env_references, env_date_us,
 			  internalize_pending, preview, has_attachment, body_meta_computed,
 			  failed_image_count, failed_image_state, delivery_disposition,
-			  retryable_failed_image_count, failed_image_reason)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+			  retryable_failed_image_count, failed_image_reason,
+			  ingest_source, ingest_source_ref)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 			RETURNING id`,
 			pid,
 			usMicros(msg.InternalDate), usMicros(msg.ReceivedAt), msg.Size,
@@ -1145,6 +1146,7 @@ func (m *metadata) insertMessageTx(
 			msg.HasAttachment, msg.BodyMetaComputed,
 			msg.FailedImageCount, msg.FailedImageState, string(msg.DeliveryDisposition),
 			msg.RetryableFailedImageCount, msg.FailedImageReason,
+			string(msg.IngestSource), msg.IngestSourceRef,
 		).Scan(&mid); err != nil {
 			return mapErr(err)
 		}
@@ -1462,7 +1464,8 @@ func (m *metadata) GetMessage(ctx context.Context, id store.MessageID) (store.Me
 		       env_message_id, env_in_reply_to, env_references, env_date_us,
 		       internalize_pending, preview, has_attachment, body_meta_computed,
 		       failed_image_count, failed_image_state,
-		       retryable_failed_image_count, failed_image_reason
+		       retryable_failed_image_count, failed_image_reason,
+		       ingest_source, ingest_source_ref
 		  FROM messages WHERE id = $1`, int64(id))
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -1487,6 +1490,7 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	var failedImageState string
 	var retryableFailedImageCount int
 	var failedImageReason string
+	var ingestSource string
 	err := row.Scan(&id, &pid, &idUs, &rcvUs,
 		&msg.Size, &msg.Blob.Hash, &blobSize, &thread,
 		&msg.Envelope.Subject, &msg.Envelope.From, &msg.Envelope.To,
@@ -1494,7 +1498,8 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed,
 		&failedImageCount, &failedImageState,
-		&retryableFailedImageCount, &failedImageReason)
+		&retryableFailedImageCount, &failedImageReason,
+		&ingestSource, &msg.IngestSourceRef)
 	if err != nil {
 		return store.Message{}, mapErr(err)
 	}
@@ -1510,6 +1515,7 @@ func scanMessageRow(row rowLike) (store.Message, error) {
 	msg.ThreadID = uint64(thread)
 	msg.Envelope.Date = fromMicros(envDateUs)
 	msg.InternalizePending = pending != 0
+	msg.IngestSource = store.MessageIngestSource(ingestSource)
 	return msg, nil
 }
 
@@ -1594,6 +1600,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	var thread int64
 	var envDateUs int64
 	var pending int16
+	var ingestSource string
 	// message_mailboxes fields
 	var mbox, uid, modseq, flags int64
 	var keywords string
@@ -1607,6 +1614,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 		&msg.Envelope.Cc, &msg.Envelope.Bcc, &msg.Envelope.ReplyTo,
 		&msg.Envelope.MessageID, &msg.Envelope.InReplyTo, &msg.Envelope.References, &envDateUs,
 		&pending, &msg.Preview, &msg.HasAttachment, &msg.BodyMetaComputed,
+		&ingestSource, &msg.IngestSourceRef,
 		// message_mailboxes columns
 		&mbox, &uid, &modseq, &flags, &keywords, &snoozedUs, &wakeMailboxID, &receivedTo,
 	)
@@ -1621,6 +1629,7 @@ func scanMessage(row rowLike) (store.Message, error) {
 	msg.ThreadID = uint64(thread)
 	msg.Envelope.Date = fromMicros(envDateUs)
 	msg.InternalizePending = pending != 0
+	msg.IngestSource = store.MessageIngestSource(ingestSource)
 	msg.MailboxID = store.MailboxID(mbox)
 	msg.UID = store.UID(uid)
 	msg.ModSeq = store.ModSeq(modseq)
@@ -3327,6 +3336,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
+			       m.ingest_source, m.ingest_source_ref,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
@@ -3340,6 +3350,7 @@ func (m *metadata) ListMessages(ctx context.Context, mailboxID store.MailboxID, 
 			       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 			       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 			       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
+			       m.ingest_source, m.ingest_source_ref,
 			       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 			  FROM messages m
 			  JOIN message_mailboxes mm ON mm.message_id = m.id AND mm.mailbox_id = $1
@@ -3959,6 +3970,7 @@ func (m *metadata) ListDueSnoozedMessages(ctx context.Context, now time.Time, li
 		       m.env_subject, m.env_from, m.env_to, m.env_cc, m.env_bcc, m.env_reply_to,
 		       m.env_message_id, m.env_in_reply_to, m.env_references, m.env_date_us,
 		       m.internalize_pending, m.preview, m.has_attachment, m.body_meta_computed,
+		       m.ingest_source, m.ingest_source_ref,
 		       mm.mailbox_id, mm.uid, mm.modseq, mm.flags, mm.keywords_csv, mm.snoozed_until_us, mm.wake_mailbox_id, mm.received_to
 		  FROM messages m
 		  JOIN message_mailboxes mm ON mm.message_id = m.id

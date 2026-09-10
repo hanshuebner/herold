@@ -45,7 +45,6 @@ import (
 //	sender       — substring match on envelope From (case-insensitive)
 //	recipient    — substring match on envelope To (case-insensitive)
 //	message_id   — exact match on Message-ID header (case-insensitive)
-//	subject      — substring match on Subject header (case-insensitive)
 //	date_from    — RFC3339 lower bound on event time (inclusive)
 //	date_to      — RFC3339 upper bound on event time (exclusive)
 //	limit        — page size (default 100, max 1000)
@@ -111,7 +110,6 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 	sender := q.Get("sender")
 	recipient := q.Get("recipient")
 	messageID := q.Get("message_id")
-	subject := q.Get("subject")
 
 	// Resolve domain filters per REQ-ADM-307.
 	// nil Domains = super-admin (unrestricted).
@@ -139,7 +137,6 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 		Sender:           sender,
 		Recipient:        recipient,
 		MessageID:        messageID,
-		Subject:          subject,
 		DateFrom:         dateFrom,
 		DateTo:           dateTo,
 		Domains:          msgDomains,
@@ -288,7 +285,6 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 			"mailbox_name": m.MailboxName,
 			"is_junk":      m.IsJunk,
 			"envelope": map[string]any{
-				"subject":     m.Envelope.Subject,
 				"from":        m.Envelope.From,
 				"to":          m.Envelope.To,
 				"cc":          m.Envelope.Cc,

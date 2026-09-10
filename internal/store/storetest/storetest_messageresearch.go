@@ -138,7 +138,9 @@ func mustInsertMailboxWithAttrs(t *testing.T, s store.Store, pID store.Principal
 
 // testSearchAdminMessages_ReceivedMessage verifies that SearchAdminMessages
 // returns received messages with envelope fields, mailbox name, Junk flag,
-// and spam verdict (REQ-ADM-306, re #143).
+// and spam verdict (REQ-ADM-306, re #143). It also verifies that no hit
+// carries subject text (re #143, maintainer finding #4, 2026-09-09) even
+// though the underlying messages carry a non-empty Subject header.
 func testSearchAdminMessages_ReceivedMessage(t *testing.T, s store.Store) {
 	t.Helper()
 	ctx := ctxT(t)
@@ -157,15 +159,25 @@ func testSearchAdminMessages_ReceivedMessage(t *testing.T, s store.Store) {
 	byID := make(map[store.MessageID]store.AdminMessageHit, len(hits))
 	for _, h := range hits {
 		byID[h.MessageID] = h
+		// No hit anywhere in the result carries subject text -- the
+		// fixture messages both have a non-empty Subject header
+		// ("Hello Alice" / "Win a prize"), so a non-empty
+		// Envelope.Subject here would prove a leak.
+		if h.Envelope.Subject != "" {
+			t.Errorf("hit %d leaked subject text: %q", h.MessageID, h.Envelope.Subject)
+		}
 	}
 
 	// Alice's message: INBOX, ham verdict.
 	if ah, ok := byID[aliceMsg]; ok {
-		if ah.Envelope.Subject != "Hello Alice" {
-			t.Errorf("alice subject: got %q", ah.Envelope.Subject)
+		if ah.Envelope.MessageID != "msg-alice-1@outside.example" {
+			t.Errorf("alice message_id: got %q", ah.Envelope.MessageID)
 		}
 		if ah.MailboxName == "" {
 			t.Errorf("alice mailbox_name empty")
+		}
+		if len(ah.Mailboxes) != 1 || ah.Mailboxes[0].Name != ah.MailboxName {
+			t.Errorf("alice mailboxes: got %+v", ah.Mailboxes)
 		}
 		if ah.IsJunk {
 			t.Errorf("alice is_junk should be false")
@@ -185,11 +197,14 @@ func testSearchAdminMessages_ReceivedMessage(t *testing.T, s store.Store) {
 
 	// Bob's message: Junk, no spam verdict.
 	if bh, ok := byID[bobMsg]; ok {
-		if bh.Envelope.Subject != "Win a prize" {
-			t.Errorf("bob subject: got %q", bh.Envelope.Subject)
+		if bh.Envelope.MessageID != "msg-bob-1@outside.example" {
+			t.Errorf("bob message_id: got %q", bh.Envelope.MessageID)
 		}
 		if !bh.IsJunk {
 			t.Errorf("bob is_junk should be true")
+		}
+		if len(bh.Mailboxes) != 1 || !bh.Mailboxes[0].IsJunk {
+			t.Errorf("bob mailboxes: got %+v", bh.Mailboxes)
 		}
 		if bh.PrincipalID != bob.ID {
 			t.Errorf("bob principal_id: got %d, want %d", bh.PrincipalID, bob.ID)
@@ -366,8 +381,8 @@ func testSearchAdminMessages_SenderFilter(t *testing.T, s store.Store) {
 	if len(hits) != 1 {
 		t.Fatalf("sender filter: got %d hits, want 1", len(hits))
 	}
-	if hits[0].Envelope.Subject != "Win a prize" {
-		t.Errorf("sender filter: got subject %q", hits[0].Envelope.Subject)
+	if hits[0].Envelope.MessageID != "msg-bob-1@outside.example" {
+		t.Errorf("sender filter: got message_id %q", hits[0].Envelope.MessageID)
 	}
 }
 
@@ -387,8 +402,8 @@ func testSearchAdminMessages_RecipientFilter(t *testing.T, s store.Store) {
 	if len(hits) != 1 {
 		t.Fatalf("recipient filter: got %d hits, want 1", len(hits))
 	}
-	if hits[0].Envelope.Subject != "Hello Alice" {
-		t.Errorf("recipient filter: got subject %q", hits[0].Envelope.Subject)
+	if hits[0].Envelope.MessageID != "msg-alice-1@outside.example" {
+		t.Errorf("recipient filter: got message_id %q", hits[0].Envelope.MessageID)
 	}
 }
 
@@ -413,27 +428,6 @@ func testSearchAdminMessages_MessageIDFilter(t *testing.T, s store.Store) {
 	}
 }
 
-// testSearchAdminMessages_SubjectFilter verifies Subject substring filter.
-func testSearchAdminMessages_SubjectFilter(t *testing.T, s store.Store) {
-	t.Helper()
-	ctx := ctxT(t)
-	seedMessageResearchFixture(t, s)
-
-	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
-		Subject: "prize",
-		Limit:   100,
-	})
-	if err != nil {
-		t.Fatalf("SearchAdminMessages subject: %v", err)
-	}
-	if len(hits) != 1 {
-		t.Fatalf("subject filter: got %d hits, want 1", len(hits))
-	}
-	if hits[0].Envelope.Subject != "Win a prize" {
-		t.Errorf("subject filter: got %q", hits[0].Envelope.Subject)
-	}
-}
-
 // testSearchAdminMessages_DateRangeFilter verifies DateFrom/DateTo filtering.
 func testSearchAdminMessages_DateRangeFilter(t *testing.T, s store.Store) {
 	t.Helper()
@@ -452,8 +446,8 @@ func testSearchAdminMessages_DateRangeFilter(t *testing.T, s store.Store) {
 	if len(hits) != 1 {
 		t.Fatalf("date range: got %d hits, want 1 (alice only)", len(hits))
 	}
-	if hits[0].Envelope.Subject != "Hello Alice" {
-		t.Errorf("date range: got subject %q", hits[0].Envelope.Subject)
+	if hits[0].Envelope.MessageID != "msg-alice-1@outside.example" {
+		t.Errorf("date range: got message_id %q", hits[0].Envelope.MessageID)
 	}
 }
 
@@ -497,7 +491,7 @@ func testSearchAdminMessages_DomainScope_Operator(t *testing.T, s store.Store) {
 		if strings.HasSuffix(h.Envelope.To, "@beta.test") || strings.HasSuffix(h.Envelope.From, "@beta.test") {
 			// Domain scope check is on principal's canonical_email domain,
 			// not envelope addresses, but beta.test messages must still be absent.
-			t.Errorf("operator for alpha.test leaked message to/from beta.test: subj=%q", h.Envelope.Subject)
+			t.Errorf("operator for alpha.test leaked message to/from beta.test: message_id=%q", h.Envelope.MessageID)
 		}
 	}
 	if len(hits) == 0 {
@@ -764,6 +758,218 @@ func testQueueFilter_Newest(t *testing.T, s store.Store) {
 	}
 	if len(newFirstTight) != 1 || newFirstTight[0].ID != newestID {
 		t.Fatalf("Newest order: got id=%v; want newest id=%v", idsOf(newFirstTight), newestID)
+	}
+}
+
+// testMessageIngestSource_RoundTrip verifies that IngestSource and
+// IngestSourceRef persist across InsertMessage and are returned by every
+// message-hydrating read path: ListMessages, GetMessage, and
+// SearchAdminMessages (re #143, maintainer finding #2, 2026-09-09).
+func testMessageIngestSource_RoundTrip(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	principal := mustInsertPrincipal(t, s, "gwen@ingest.test")
+	mb := mustInsertMailbox(t, s, principal.ID, "INBOX")
+	blob := putBlob(t, s, "ingest source body")
+	rcv := time.Date(2026, 5, 5, 8, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  principal.ID,
+		Blob:         blob,
+		Size:         blob.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Newsletter",
+			From:      "list@upstream.test",
+			To:        "gwen@ingest.test",
+			MessageID: "msg-gwen-1@upstream.test",
+		},
+		IngestSource:    store.IngestSourceMailingListArchive,
+		IngestSourceRef: "announce@lists.example",
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1})
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("ListMessages: %v (len=%d)", err, len(msgs))
+	}
+	msgID := msgs[0].ID
+	if msgs[0].IngestSource != store.IngestSourceMailingListArchive {
+		t.Errorf("ListMessages IngestSource: got %q, want %q", msgs[0].IngestSource, store.IngestSourceMailingListArchive)
+	}
+	if msgs[0].IngestSourceRef != "announce@lists.example" {
+		t.Errorf("ListMessages IngestSourceRef: got %q", msgs[0].IngestSourceRef)
+	}
+
+	got, err := s.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got.IngestSource != store.IngestSourceMailingListArchive {
+		t.Errorf("GetMessage IngestSource: got %q, want %q", got.IngestSource, store.IngestSourceMailingListArchive)
+	}
+	if got.IngestSourceRef != "announce@lists.example" {
+		t.Errorf("GetMessage IngestSourceRef: got %q", got.IngestSourceRef)
+	}
+
+	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-gwen-1@upstream.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits; want 1", len(hits))
+	}
+	if hits[0].IngestSource != store.IngestSourceMailingListArchive {
+		t.Errorf("SearchAdminMessages IngestSource: got %q", hits[0].IngestSource)
+	}
+	if hits[0].IngestSourceRef != "announce@lists.example" {
+		t.Errorf("SearchAdminMessages IngestSourceRef: got %q", hits[0].IngestSourceRef)
+	}
+}
+
+// testMessageIngestSource_UnknownForUnsetRows verifies that a message
+// inserted without an explicit IngestSource reports IngestSourceUnknown
+// ("") rather than some inferred value, across GetMessage and
+// SearchAdminMessages (re #143).
+func testMessageIngestSource_UnknownForUnsetRows(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	principal := mustInsertPrincipal(t, s, "hank@ingest.test")
+	mb := mustInsertMailbox(t, s, principal.ID, "INBOX")
+	blob := putBlob(t, s, "no ingest source recorded")
+	rcv := time.Date(2026, 5, 6, 8, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  principal.ID,
+		Blob:         blob,
+		Size:         blob.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "No source",
+			From:      "someone@elsewhere.test",
+			To:        "hank@ingest.test",
+			MessageID: "msg-hank-1@elsewhere.test",
+		},
+		// IngestSource intentionally left unset.
+	}, []store.MessageMailbox{{MailboxID: mb.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	msgs, err := s.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 1})
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("ListMessages: %v (len=%d)", err, len(msgs))
+	}
+	if got, err := s.Meta().GetMessage(ctx, msgs[0].ID); err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	} else if got.IngestSource != store.IngestSourceUnknown {
+		t.Errorf("GetMessage IngestSource: got %q, want unknown", got.IngestSource)
+	}
+
+	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-hank-1@elsewhere.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits; want 1", len(hits))
+	}
+	if hits[0].IngestSource != store.IngestSourceUnknown {
+		t.Errorf("SearchAdminMessages IngestSource: got %q, want unknown", hits[0].IngestSource)
+	}
+	if hits[0].IngestSourceRef != "" {
+		t.Errorf("SearchAdminMessages IngestSourceRef: got %q, want empty", hits[0].IngestSourceRef)
+	}
+}
+
+// testSearchAdminMessages_Mailboxes verifies that a message filed into
+// several mailboxes at once lists every one of them via
+// AdminMessageHit.Mailboxes, ordered by name, each carrying its own Junk
+// attribute (re #143, maintainer finding #1, 2026-09-09): a single
+// MailboxName/IsJunk pair misrepresents a message that sits in more than
+// one mailbox at once (e.g. an IMAP import's per-account mailbox
+// alongside Archive/Spam copies).
+func testSearchAdminMessages_Mailboxes(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+
+	principal := mustInsertPrincipal(t, s, "fenn@mailboxes.test")
+	// Names chosen for unambiguous ASCII ordering across both backends'
+	// default collations.
+	mbAlpha := mustInsertMailboxWithAttrs(t, s, principal.ID, "Alpha-Archive", 0)
+	mbBravo := mustInsertMailboxWithAttrs(t, s, principal.ID, "Bravo-Spam", store.MailboxAttrJunk)
+	mbCharlie := mustInsertMailboxWithAttrs(t, s, principal.ID, "Charlie-Account", 0)
+
+	blob := putBlob(t, s, "multi-mailbox body")
+	rcv := time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  principal.ID,
+		Blob:         blob,
+		Size:         blob.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Filed in three places",
+			From:      "someone@elsewhere.test",
+			To:        "fenn@mailboxes.test",
+			MessageID: "msg-fenn-1@elsewhere.test",
+		},
+		IngestSource:    store.IngestSourceIMAPImport,
+		IngestSourceRef: "acct-classic-computing",
+	}, []store.MessageMailbox{
+		{MailboxID: mbAlpha.ID},
+		{MailboxID: mbBravo.ID},
+		{MailboxID: mbCharlie.ID},
+	}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	hits, err := s.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{
+		MessageID: "msg-fenn-1@elsewhere.test",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits; want 1", len(hits))
+	}
+	hit := hits[0]
+
+	if hit.IngestSource != store.IngestSourceIMAPImport {
+		t.Errorf("IngestSource: got %q", hit.IngestSource)
+	}
+	if hit.IngestSourceRef != "acct-classic-computing" {
+		t.Errorf("IngestSourceRef: got %q", hit.IngestSourceRef)
+	}
+
+	if len(hit.Mailboxes) != 3 {
+		t.Fatalf("Mailboxes: got %d entries; want 3: %+v", len(hit.Mailboxes), hit.Mailboxes)
+	}
+	wantNames := []string{"Alpha-Archive", "Bravo-Spam", "Charlie-Account"}
+	wantJunk := []bool{false, true, false}
+	for i, mb := range hit.Mailboxes {
+		if mb.Name != wantNames[i] {
+			t.Errorf("Mailboxes[%d].Name: got %q, want %q", i, mb.Name, wantNames[i])
+		}
+		if mb.IsJunk != wantJunk[i] {
+			t.Errorf("Mailboxes[%d].IsJunk: got %v, want %v", i, mb.IsJunk, wantJunk[i])
+		}
+	}
+
+	// Compatibility fields, derived from Mailboxes.
+	if hit.MailboxName != "Alpha-Archive" {
+		t.Errorf("MailboxName: got %q, want Alpha-Archive (Mailboxes[0])", hit.MailboxName)
+	}
+	if !hit.IsJunk {
+		t.Errorf("IsJunk: got false; want true (Bravo-Spam carries the Junk attribute)")
 	}
 }
 

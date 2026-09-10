@@ -238,13 +238,13 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO messages (id, principal_id, internal_date_us, received_at_us, size,
 	        blob_hash, blob_size, thread_id, env_subject, env_from, env_to,
 	        env_cc, env_bcc, env_reply_to, env_message_id, env_in_reply_to,
-	        env_references, env_date_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        env_references, env_date_us, ingest_source, ingest_source_ref)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, int64(1000000), int64(1000001), 512,
 		"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", 512,
 		100, longUnicode, "alice@example.test", "bob@example.test",
 		"", "", "", "<msg1@example.test>", "",
-		"", int64(1000000))
+		"", int64(1000000), "imap-import", "acct-classic-computing")
 
 	// message_mailboxes
 	exec(`INSERT INTO message_mailboxes (message_id, mailbox_id, uid, modseq, flags, keywords_csv, snoozed_until_us, wake_mailbox_id, received_to)

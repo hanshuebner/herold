@@ -734,6 +734,21 @@ type Message struct {
 	// SMTP-ingest disposition decision.
 	DeliveryDisposition MessageDeliveryDisposition
 
+	// IngestSource records which ingest path produced this row (re
+	// #143), set once by the caller before InsertMessage / InsertMessages
+	// and never recomputed. See store.MessageIngestSource,
+	// types_messageresearch.go. The zero value
+	// (IngestSourceUnknown) means the row predates ingest-source
+	// recording (migration 0105) or was written by a caller that has
+	// not been updated to set it.
+	IngestSource MessageIngestSource
+
+	// IngestSourceRef is ingest-path-specific free text alongside
+	// IngestSource: the import account name for IngestSourceIMAPImport,
+	// the mailing list address for IngestSourceMailingListArchive, empty
+	// for every other source.
+	IngestSourceRef string
+
 	// -- Multi-mailbox membership (REQ-STORE-36) -----------------------
 
 	// Mailboxes is the full set of per-(message, mailbox) rows for this

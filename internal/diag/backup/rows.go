@@ -250,6 +250,16 @@ type MessageRow struct {
 	// were written by a non-SMTP-ingest path. Never recomputed from
 	// current mailbox membership -- see store.MessageDeliveryDisposition.
 	DeliveryDisposition string `json:"delivery_disposition"`
+	// IngestSource is the ingest path that produced this row (migration
+	// 0105, issue #143): "" (not recorded), "smtp", "imap-import",
+	// "jmap-import", "imap-append", "imap-copy", "mailing-list-archive",
+	// or "gmail-import" -- see store.MessageIngestSource. Written once
+	// by the insert caller, never recomputed.
+	IngestSource string `json:"ingest_source"`
+	// IngestSourceRef is ingest-path-specific free text alongside
+	// IngestSource: the import account name for "imap-import", the
+	// mailing list address for "mailing-list-archive", empty otherwise.
+	IngestSourceRef string `json:"ingest_source_ref"`
 }
 
 // MessageMailboxRow mirrors one row of the message_mailboxes join table

@@ -12,11 +12,15 @@ import (
 // This file implements store.Metadata.SearchAdminMessages for the SQLite
 // backend (REQ-ADM-306, re #143).
 //
-// The query joins messages, principals (for domain scope), mailboxes
-// (via correlated subqueries for mailbox name and junk detection), and
-// llm_classifications (LEFT JOIN for spam verdict). No body content is
-// returned. The MailboxAttrJunk bit value (16) is the iota ordinal from
-// store.MailboxAttrJunk in types.go.
+// The query joins messages, principals (for domain scope), and
+// llm_classifications (LEFT JOIN for spam verdict). Every mailbox a
+// returned message currently sits in is fetched in a second, batched
+// query (loadAdminMessageMailboxes) and used to derive
+// AdminMessageHit.Mailboxes / MailboxName / IsJunk (maintainer finding
+// #1, 2026-09-09: a message can sit in several mailboxes at once, and a
+// single name/flag pair misrepresents that). No body content or subject
+// text is ever returned. The MailboxAttrJunk bit value (16) is the iota
+// ordinal from store.MailboxAttrJunk in types.go.
 
 const mailboxAttrJunkBit = 16 // store.MailboxAttrJunk = 1 << 4
 
@@ -61,10 +65,6 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		conds = append(conds, "lower(m.env_message_id) = lower(?)")
 		args = append(args, filter.MessageID)
 	}
-	if filter.Subject != "" {
-		conds = append(conds, "lower(m.env_subject) LIKE lower('%'||?||'%')")
-		args = append(args, filter.Subject)
-	}
 	if len(filter.Domains) > 0 {
 		placeholders := make([]string, len(filter.Domains))
 		for i, d := range filter.Domains {
@@ -87,7 +87,6 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		    m.id,
 		    m.principal_id,
 		    m.received_at_us,
-		    m.env_subject,
 		    m.env_from,
 		    m.env_to,
 		    m.env_cc,
@@ -97,24 +96,11 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		    m.env_in_reply_to,
 		    m.env_references,
 		    m.env_date_us,
-		    COALESCE((
-		        SELECT mb.name
-		          FROM message_mailboxes mm2
-		          JOIN mailboxes mb ON mb.id = mm2.mailbox_id
-		         WHERE mm2.message_id = m.id
-		         ORDER BY mm2.mailbox_id ASC
-		         LIMIT 1
-		    ), '') AS mailbox_name,
-		    EXISTS (
-		        SELECT 1
-		          FROM message_mailboxes mm2
-		          JOIN mailboxes mb ON mb.id = mm2.mailbox_id
-		         WHERE mm2.message_id = m.id
-		           AND (mb.attributes & ` + fmt.Sprintf("%d", mailboxAttrJunkBit) + `) != 0
-		    ) AS is_junk,
 		    lc.spam_verdict,
 		    lc.spam_confidence,
-		    m.delivery_disposition
+		    m.delivery_disposition,
+		    m.ingest_source,
+		    m.ingest_source_ref
 		FROM messages m
 		JOIN principals p ON p.id = m.principal_id
 		LEFT JOIN llm_classifications lc ON lc.message_id = m.id` +
@@ -139,34 +125,97 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("storesqlite: SearchAdminMessages rows: %w", mapErr(err))
 	}
+
+	if err := m.loadAdminMessageMailboxes(ctx, out); err != nil {
+		return nil, fmt.Errorf("storesqlite: SearchAdminMessages mailboxes: %w", err)
+	}
 	return out, nil
 }
 
+// loadAdminMessageMailboxes batch-fetches every mailbox each hit's
+// message currently sits in and populates Mailboxes (ordered by name)
+// plus the MailboxName/IsJunk compatibility fields derived from it.
+func (m *metadata) loadAdminMessageMailboxes(ctx context.Context, hits []store.AdminMessageHit) error {
+	if len(hits) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(hits))
+	args := make([]any, len(hits))
+	idx := make(map[store.MessageID]int, len(hits))
+	for i, h := range hits {
+		placeholders[i] = "?"
+		args[i] = int64(h.MessageID)
+		idx[h.MessageID] = i
+	}
+	q := `
+		SELECT mm.message_id, mb.name, mb.attributes
+		  FROM message_mailboxes mm
+		  JOIN mailboxes mb ON mb.id = mm.mailbox_id
+		 WHERE mm.message_id IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY mm.message_id, mb.name ASC`
+	rows, err := m.s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var msgID, attrs int64
+		var name string
+		if err := rows.Scan(&msgID, &name, &attrs); err != nil {
+			return mapErr(err)
+		}
+		i, ok := idx[store.MessageID(msgID)]
+		if !ok {
+			continue
+		}
+		hits[i].Mailboxes = append(hits[i].Mailboxes, store.AdminMessageMailbox{
+			Name:   name,
+			IsJunk: attrs&mailboxAttrJunkBit != 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return mapErr(err)
+	}
+	for i := range hits {
+		for _, mb := range hits[i].Mailboxes {
+			if mb.IsJunk {
+				hits[i].IsJunk = true
+				break
+			}
+		}
+		if len(hits[i].Mailboxes) > 0 {
+			hits[i].MailboxName = hits[i].Mailboxes[0].Name
+		}
+	}
+	return nil
+}
+
 // scanAdminMessageHit scans one row from the SearchAdminMessages query.
+// Subject is never scanned -- SearchAdminMessages does not select
+// env_subject (REQ-ADM-306, maintainer finding #4).
 func scanAdminMessageHit(row interface {
 	Scan(dest ...any) error
 }) (store.AdminMessageHit, error) {
 	var hit store.AdminMessageHit
 	var id, pid, rcvUs, envDateUs int64
-	var isJunk int64
 	var spamVerdict sql.NullString
 	var spamConfidence sql.NullFloat64
 	var envCc, envBcc, envReplyTo, envInReplyTo, envReferences string
 	var disposition string
+	var ingestSource string
 	err := row.Scan(
 		&id, &pid, &rcvUs,
-		&hit.Envelope.Subject,
 		&hit.Envelope.From,
 		&hit.Envelope.To,
 		&envCc, &envBcc, &envReplyTo,
 		&hit.Envelope.MessageID,
 		&envInReplyTo, &envReferences,
 		&envDateUs,
-		&hit.MailboxName,
-		&isJunk,
 		&spamVerdict,
 		&spamConfidence,
 		&disposition,
+		&ingestSource,
+		&hit.IngestSourceRef,
 	)
 	if err != nil {
 		return store.AdminMessageHit{}, mapErr(err)
@@ -180,8 +229,8 @@ func scanAdminMessageHit(row interface {
 	hit.Envelope.InReplyTo = envInReplyTo
 	hit.Envelope.References = envReferences
 	hit.Envelope.Date = fromMicros(envDateUs)
-	hit.IsJunk = isJunk != 0
 	hit.Disposition = store.MessageDeliveryDisposition(disposition)
+	hit.IngestSource = store.MessageIngestSource(ingestSource)
 	if spamVerdict.Valid {
 		s := spamVerdict.String
 		hit.SpamVerdict = &s
