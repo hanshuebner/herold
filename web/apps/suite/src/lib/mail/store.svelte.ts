@@ -1875,7 +1875,7 @@ class MailStore {
       const accountId = this.mailAccountId;
       if (!accountId) throw new Error('No Mail account on this session');
 
-      let filter: Record<string, unknown> | undefined;
+      let filter: FilterCondition | FilterOperator | undefined;
       let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
       if (folder === 'important') {
         // Virtual folder: every email with the $important keyword,
@@ -1900,7 +1900,7 @@ class MailStore {
         } else {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
-        filter = { inMailbox: mailboxId };
+        filter = buildFolderViewFilter(mailboxId, this.mailboxes);
         // Sent / Drafts have no externally-set receivedAt the way inbound
         // mail does; sentAt is the natural ordering.
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
@@ -2048,7 +2048,7 @@ class MailStore {
     const accountId = this.mailAccountId;
     if (!accountId) return;
 
-    let filter: Record<string, unknown> | undefined;
+    let filter: FilterCondition | FilterOperator | undefined;
     let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
     try {
       if (folder === 'important') {
@@ -2069,7 +2069,7 @@ class MailStore {
         } else {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
-        filter = { inMailbox: mailboxId };
+        filter = buildFolderViewFilter(mailboxId, this.mailboxes);
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
       }
 
@@ -3306,14 +3306,14 @@ class MailStore {
    * and by `#startWholeMailboxBulk` to scope a whole-mailbox bulk job to
    * the folder currently shown (issue #149).
    */
-  #buildCurrentFolderFilter(): Record<string, unknown> | undefined {
+  #buildCurrentFolderFilter(): FilterCondition | FilterOperator | undefined {
     const folder = this.listFolder;
     if (folder === 'important') return { hasKeyword: '$important' };
     if (folder === 'snoozed') return { hasKeyword: '$snoozed' };
     if (folder === 'all') return undefined;
     const mailboxId = this.listMailboxId;
     if (mailboxId === null) return undefined;
-    return { inMailbox: mailboxId };
+    return buildFolderViewFilter(mailboxId, this.mailboxes);
   }
 
   /**
@@ -4722,6 +4722,30 @@ export function applyTrashJunkExclusion(
     operator: 'AND',
     conditions: [parsed, { inMailboxOtherThan: exclude }],
   };
+}
+
+/**
+ * Build the `Email/query` filter for a folder view scoped to `mailboxId`
+ * (issue #310). The Junk and Trash mailboxes are returned unfiltered --
+ * viewing Junk or Trash must still show everything filed there. Every
+ * other mailbox, including a user label such as the IMAP import's
+ * provenance label, excludes messages that also sit in Junk or Trash via
+ * `applyTrashJunkExclusion`, so a label view never lists junked or
+ * trashed mail. `loadFolder`, `#refreshFolderInPlace`, and
+ * `#buildCurrentFolderFilter` (which also scopes pagination and the
+ * whole-mailbox bulk actions run through `Email/setByQuery`) all route
+ * through this one helper, so a "select all" bulk action from a label
+ * view can never touch junked or trashed mail either.
+ */
+export function buildFolderViewFilter(
+  mailboxId: string,
+  mailboxes: Map<string, Mailbox>,
+): FilterCondition | FilterOperator {
+  const mailbox = mailboxes.get(mailboxId);
+  if (mailbox?.role === 'junk' || mailbox?.role === 'trash') {
+    return { inMailbox: mailboxId };
+  }
+  return applyTrashJunkExclusion({ inMailbox: mailboxId }, mailboxes);
 }
 
 function formatSnoozeTarget(d: Date): string {

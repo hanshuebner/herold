@@ -3717,7 +3717,16 @@ func (m *metadata) QueryEmailFast(
 			phs[i] = "?"
 			args = append(args, int64(id))
 		}
-		where = append(where, "mm.mailbox_id NOT IN ("+strings.Join(phs, ",")+")")
+		// A message can sit in more than one mailbox (message_mailboxes has
+		// one row per membership). Excluding it requires checking every row
+		// for the message, not just the row the outer JOIN happened to pick
+		// for this WHERE evaluation -- a per-joined-row "mm.mailbox_id NOT IN
+		// (...)" is a no-op whenever InMailbox also restricts the join to a
+		// different, non-excluded mailbox_id (issue #310: a label-mailbox
+		// row always satisfies that per-row check even when the same
+		// message also has a Junk membership row).
+		where = append(where, "NOT EXISTS (SELECT 1 FROM message_mailboxes mm2 "+
+			"WHERE mm2.message_id = m.id AND mm2.mailbox_id IN ("+strings.Join(phs, ",")+"))")
 	}
 	if opts.Before != nil {
 		where = append(where, "m.received_at_us < ?")

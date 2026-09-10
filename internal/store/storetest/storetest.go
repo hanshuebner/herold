@@ -65,6 +65,7 @@ func Run(t *testing.T, f Factory) {
 		{"QueryEmailFast_Basic", testQueryEmailFastBasic},
 		{"QueryEmailFast_Pagination", testQueryEmailFastPagination},
 		{"QueryEmailFast_Filters", testQueryEmailFastFilters},
+		{"QueryEmailFast_InMailboxOtherThan_MultiMembership", testQueryEmailFastInMailboxOtherThanMultiMembership},
 		{"QueryEmailFast_Keywords", testQueryEmailFastKeywords},
 		{"ListThreadsByKeys", testListThreadsByKeys},
 		{"InternalizePending_Lifecycle", testInternalizePendingLifecycle},
@@ -2775,6 +2776,78 @@ func testQueryEmailFastFilters(t *testing.T, s store.Store) {
 	// In Inbox we now have ids[0..4]; the largest (size 1004) is ids[4].
 	if r.IDs[0] != ids[4] {
 		t.Fatalf("SortBy size DESC IDs[0] = %d, want %d", r.IDs[0], ids[4])
+	}
+}
+
+// testQueryEmailFastInMailboxOtherThanMultiMembership covers issue
+// #310: a message that sits in more than one mailbox at once (the
+// message_mailboxes join table carries one row per membership) must be
+// excluded by InMailboxOtherThan even when InMailbox also names a
+// different, non-excluded mailbox the same message belongs to. A naive
+// per-joined-row "mailbox_id NOT IN (...)" filter is a no-op in that
+// case, since the row the InMailbox restriction picks out always
+// satisfies it; the exclusion must hold across all of the message's
+// mailbox memberships.
+func testQueryEmailFastInMailboxOtherThanMultiMembership(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "fq-multimem@example.com")
+	label := mustInsertMailbox(t, s, p.ID, "Label")
+	junk := mustInsertMailbox(t, s, p.ID, "Junk")
+
+	ref := putBlob(t, s, "fq-multimem-plain")
+	plainUID, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        ref,
+		Size:        1000,
+		ReceivedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, []store.MessageMailbox{{MailboxID: label.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage plain: %v", err)
+	}
+
+	junkedRef := putBlob(t, s, "fq-multimem-junked")
+	junkedUID, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Blob:        junkedRef,
+		Size:        1001,
+		ReceivedAt:  time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+	}, []store.MessageMailbox{{MailboxID: label.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage junked: %v", err)
+	}
+
+	labelMsgs, err := s.Meta().ListMessages(ctx, label.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages label: %v", err)
+	}
+	var plainID, junkedID store.MessageID
+	for _, m := range labelMsgs {
+		switch m.UID {
+		case plainUID:
+			plainID = m.ID
+		case junkedUID:
+			junkedID = m.ID
+		}
+	}
+	if plainID == 0 || junkedID == 0 {
+		t.Fatalf("could not resolve MessageIDs from UIDs plain=%d junked=%d, listed=%v", plainUID, junkedUID, labelMsgs)
+	}
+
+	if _, _, err := s.Meta().AddMessageToMailbox(ctx, junkedID, junk.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(junk): %v", err)
+	}
+
+	labelID := label.ID
+	r, err := s.Meta().QueryEmailFast(ctx, p.ID, store.EmailQueryFastOpts{
+		InMailbox:          &labelID,
+		InMailboxOtherThan: []store.MailboxID{junk.ID},
+	})
+	if err != nil {
+		t.Fatalf("QueryEmailFast InMailbox+InMailboxOtherThan: %v", err)
+	}
+	if len(r.IDs) != 1 || r.IDs[0] != plainID {
+		t.Fatalf("IDs = %v, want [%d] (the label-only message; the label+Junk message %d must be excluded)",
+			r.IDs, plainID, junkedID)
 	}
 }
 

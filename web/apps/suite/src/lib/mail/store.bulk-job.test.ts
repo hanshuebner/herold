@@ -199,7 +199,10 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
     expect(calls[0]?.[0]).toBe('Email/setByQuery');
     expect(calls[0]?.[1]).toEqual({
       accountId: 'acct-1',
-      filter: { inMailbox: INBOX_ID },
+      // Issue #310: the folder filter for a non-Junk/Trash mailbox excludes
+      // Trash (and Junk, when present) so a whole-mailbox bulk action never
+      // touches junked or trashed mail.
+      filter: { inMailbox: INBOX_ID, inMailboxOtherThan: [TRASH_ID] },
       patch: {
         [`mailboxIds/${INBOX_ID}`]: null,
         [`mailboxIds/${ARCHIVE_ID}`]: true,
@@ -379,7 +382,8 @@ describe('whole-mailbox async bulk job (issue #149/#161)', () => {
     expect(calls[0]?.[0]).toBe('Email/setByQuery');
     expect(calls[0]?.[1]).toEqual({
       accountId: 'acct-1',
-      filter: { inMailbox: INBOX_ID },
+      // Issue #310: same Trash/Junk exclusion as the archive case above.
+      filter: { inMailbox: INBOX_ID, inMailboxOtherThan: [TRASH_ID] },
       destroy: true,
     });
     expect(mail.listWholeMailboxSelected).toBe(false);
