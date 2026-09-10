@@ -59,6 +59,7 @@ accept → authenticate (SPF/DKIM/DMARC/ARC) → score (compiled ruleset, in-pro
 - **REQ-FILT-42** Per-message classification SHOULD complete in ≤ 2s p95. Above threshold → accept anyway, mark `unknown`.
 - **REQ-FILT-43** Failure mode is observable: `herold_spam_classifier_{attempts,failures,timeouts}_total` + `herold_spam_classifier_latency_seconds` histogram.
 - **REQ-FILT-44** The classify-call budget is operator-settable (`[spam] classify_timeout` in `system.toml`, default 5s) and **enforced by the server regardless of the plugin's own timeout** -- the sending MTA is waiting, so a plugin that ignores its own configured timeout is still cut off at the server's budget and the mail is delivered unjudged (Wave 4.1, issue #301).
+- **REQ-FILT-45** With no spam-type plugin configured, or a configured one that has not reached the supervisor's healthy state, filtering is **disabled**: the server logs one line at startup saying so, and `GET /api/v1/spam/status` reports `enabled: false` with the plugin name (when one is configured) and a `reason`. Mail is delivered with no spam verdict stamped, same as REQ-FILT-40's degrade-open outcome (Wave 4.1, issue #301).
 
 ### Rate limiting and cost control
 
