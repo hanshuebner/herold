@@ -94,6 +94,14 @@ type handlerSet struct {
 	// external_domains knob). May be nil; the legacy hosted-only
 	// behaviour applies then.
 	externalDomain DomainPolicy
+	// reg is the capability registry this handler set was installed
+	// into. Used to gate Identity/set{separated} on the sub-accounts
+	// capability being present (REQ-SUBACCT-11): tests that build a
+	// bare handlerSet via test_helpers.go without a registry leave
+	// this nil, and separated updates are then rejected as the
+	// capability being absent, matching the "no registry configured
+	// this feature" reading of REQ-SUBACCT-11.
+	reg *protojmap.CapabilityRegistry
 }
 
 // makeDomainsFn returns a closure that lists the locally-hosted domains.
@@ -131,17 +139,35 @@ func accountIDForPrincipal(p store.Principal) string {
 	return string(protojmap.AccountIDForPrincipal(p.ID))
 }
 
-// validateAccountID checks the inbound accountId against the
-// authenticated principal.
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
-	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
+// resolveTargetPrincipal resolves the requested accountId to the
+// principal whose Identity set the request addresses: the caller's own
+// account, or one of the caller's own sub-accounts (REQ-SUBACCT-03/04).
+// It never honours a mailbox-ACL grant (protojmap.ResolveOwnAccount,
+// not ResolveAccount) -- sharing a mailbox never exposes another
+// principal's Identities.
+//
+// Once an Identity has been separated (Identity/set{separated:true},
+// REQ-SUBACCT-09) it is moved into the sub-principal's own
+// jmap_identities rows, so it stops appearing under the parent's
+// Identity/get and starts appearing under the sub-account's. A client
+// that wants to see or manage a separated identity calls Identity/get
+// or Identity/set with accountId set to that sub-account's id (as
+// advertised in the JMAP session's `accounts` map, REQ-SUBACCT-03) --
+// there is no separate "list separated identities" method.
+func (h *handlerSet) resolveTargetPrincipal(ctx context.Context, caller store.Principal, requested jmapID) (store.Principal, *protojmap.MethodError) {
+	pid, merr := protojmap.ResolveOwnAccount(ctx, h.store.Meta(), caller.ID, requested)
+	if merr != nil {
+		return store.Principal{}, merr
 	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
+	if pid == caller.ID {
+		return caller, nil
+	}
+	target, err := h.store.Meta().GetPrincipalByID(ctx, pid)
+	if err != nil {
+		return store.Principal{}, protojmap.NewMethodError("accountNotFound",
 			"requested account is not accessible to the caller")
 	}
-	return nil
+	return target, nil
 }
 
 // -- Identity/get -----------------------------------------------------
@@ -161,16 +187,17 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := g.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
-	state, err := g.h.currentState(ctx, p)
+	state, err := g.h.currentState(ctx, target)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
-	all := g.h.identity.snapshot(ctx, p)
+	all := g.h.identity.snapshot(ctx, target)
 	resp := getResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: accountIDForPrincipal(target),
 		State:     state,
 		List:      []jmapIdentity{},
 		NotFound:  []jmapID{},
@@ -216,16 +243,17 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := c.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
-	now, err := c.h.currentState(ctx, p)
+	now, err := c.h.currentState(ctx, target)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	if req.SinceState == now {
 		return changesResponse{
-			AccountID: accountIDForPrincipal(p),
+			AccountID: accountIDForPrincipal(target),
 			OldState:  req.SinceState,
 			NewState:  now,
 			Created:   []jmapID{},
@@ -234,14 +262,14 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 		}, nil
 	}
 	resp := changesResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: accountIDForPrincipal(target),
 		OldState:  req.SinceState,
 		NewState:  now,
 		Created:   []jmapID{},
 		Updated:   []jmapID{},
 		Destroyed: []jmapID{},
 	}
-	for _, rec := range c.h.identity.snapshot(ctx, p) {
+	for _, rec := range c.h.identity.snapshot(ctx, target) {
 		resp.Updated = append(resp.Updated, renderID(rec.ID))
 	}
 	return resp, nil
@@ -262,10 +290,11 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := s.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
-	oldState, err := s.h.currentState(ctx, p)
+	oldState, err := s.h.currentState(ctx, target)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
@@ -274,10 +303,15 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			"server state does not match ifInState")
 	}
 	resp := setResponse{
-		AccountID: accountIDForPrincipal(p),
+		AccountID: accountIDForPrincipal(target),
 		OldState:  oldState,
 	}
 	mutated := false
+	// targetStillExists tracks whether target's principal row survived
+	// the update batch: a successful separated:false reversal always
+	// deletes the sub-principal target addresses (see the trailing
+	// state-bump comment below).
+	targetStillExists := true
 	// Process creates.
 	for clientID, raw := range req.Create {
 		var in struct {
@@ -348,7 +382,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// matching how the rest of the identity code lowercases the
 		// domain; the local-part is preserved by senders but a
 		// case-insensitive compare is the safe, user-facing choice.
-		if dup := s.h.identity.hasIdentityWithEmail(ctx, p, in.Email); dup {
+		if dup := s.h.identity.hasIdentityWithEmail(ctx, target, in.Email); dup {
 			if resp.NotCreated == nil {
 				resp.NotCreated = make(map[string]setError)
 			}
@@ -395,7 +429,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			v := *in.Signature
 			rec.Signature = &v
 		}
-		created := s.h.identity.create(ctx, p, rec)
+		created := s.h.identity.create(ctx, target, rec)
 		// incRef the avatar blob after the row is committed.
 		if avatarHash != "" {
 			_ = s.h.store.Meta().IncRefBlob(ctx, avatarHash, avatarSize)
@@ -438,6 +472,30 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			resp.NotUpdated[id] = setError{Type: "notFound"}
 			continue
 		}
+		if hasSeparatedKey(raw) {
+			result, serr := s.h.applySeparationUpdate(ctx, target, v, raw)
+			if serr != nil {
+				if resp.NotUpdated == nil {
+					resp.NotUpdated = make(map[jmapID]setError)
+				}
+				resp.NotUpdated[id] = *serr
+				continue
+			}
+			if result.targetDeleted {
+				targetStillExists = false
+			}
+			if result.destroyed {
+				resp.Destroyed = append(resp.Destroyed, id)
+			} else {
+				if resp.Updated == nil {
+					resp.Updated = make(map[jmapID]*jmapIdentity)
+				}
+				j := result.rec.toJMAP()
+				resp.Updated[id] = &j
+			}
+			mutated = true
+			continue
+		}
 		patch, perr := decodePatch(ctx, s.h.store, raw)
 		if perr != nil {
 			if resp.NotUpdated == nil {
@@ -448,8 +506,8 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 		// Snapshot old avatar hash before applying so we can manage
 		// refcounts after a successful update.
-		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, p, v)
-		rec, ok := s.h.identity.update(ctx, p, v, patch)
+		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, target, v)
+		rec, ok := s.h.identity.update(ctx, target, v, patch)
 		if !ok {
 			if resp.NotUpdated == nil {
 				resp.NotUpdated = make(map[jmapID]setError)
@@ -493,8 +551,8 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			continue
 		}
 		// Snapshot the avatar hash before destroying so we can decRef.
-		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, p, v)
-		if !s.h.identity.destroy(ctx, p, v) {
+		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, target, v)
+		if !s.h.identity.destroy(ctx, target, v) {
 			if resp.NotDestroyed == nil {
 				resp.NotDestroyed = make(map[jmapID]setError)
 			}
@@ -507,19 +565,245 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		resp.Destroyed = append(resp.Destroyed, id)
 		mutated = true
 	}
-	// Bump JMAP state on any mutation.
+	// Bump JMAP state on any mutation. A successful separated:false
+	// reversal deletes the sub-principal addressed by target (issue
+	// #227, REQ-SUBACCT-10: store.RemoveSubAccount always ends by
+	// deleting the sub-principal, in both the keep and purge cases), so
+	// bumping target.ID's own JMAPStates row would hit the row's
+	// ON DELETE CASCADE FK and fail; bump the caller's own account
+	// instead in that case, since that is where the mail (and, for
+	// keepMail, the Identity) now lives.
+	// effectivePID is target.ID, unless the request's own separated:false
+	// deleted that principal -- then both the state bump and the
+	// trailing currentState read must target a principal that still
+	// exists (Metadata.GetJMAPStates lazily creates its row on read, so
+	// reading a deleted principal's state would itself hit the same FK
+	// as writing it).
+	effectivePID := target.ID
+	if !targetStillExists {
+		effectivePID = p.ID
+	}
 	if mutated {
-		if _, err := s.h.store.Meta().IncrementJMAPState(ctx, p.ID,
+		if _, err := s.h.store.Meta().IncrementJMAPState(ctx, effectivePID,
 			store.JMAPStateKindIdentity); err != nil {
 			return nil, protojmap.NewMethodError("serverFail", err.Error())
 		}
 	}
-	newState, err := s.h.currentState(ctx, p)
+	newState, err := s.h.currentState(ctx, store.Principal{ID: effectivePID})
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
 	}
 	resp.NewState = newState
 	return resp, nil
+}
+
+// hasSeparatedKey reports whether raw (an Identity/set update object)
+// carries a "separated" property. Used to route the update to
+// applySeparationUpdate instead of the ordinary field-patch path
+// (issue #227, REQ-SUBACCT-09/10).
+func hasSeparatedKey(raw json.RawMessage) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false
+	}
+	_, ok := m["separated"]
+	return ok
+}
+
+// separationResult is the outcome of applySeparationUpdate: either the
+// Identity survives (possibly having moved accountId, for
+// separated:true) and is reported in Identity/set's "updated", or it
+// was destroyed as a side effect (separated:false with keepMail:false)
+// and is reported in "destroyed" instead. targetDeleted is true
+// whenever the sub-principal addressed by the request's accountId no
+// longer exists after this call (every successful separated:false
+// reversal, keepMail:true or false alike -- store.RemoveSubAccount
+// always ends by deleting the sub-principal); the caller uses it to
+// avoid bumping a JMAPStates row that the delete's ON DELETE CASCADE
+// already removed.
+type separationResult struct {
+	destroyed     bool
+	targetDeleted bool
+	rec           identityRecord
+}
+
+// applySeparationUpdate implements the "separated" control property on
+// Identity/set update (issue #227, REQ-SUBACCT-09/10). It is not an
+// ordinary persisted field: setting it drives store.SeparateIdentity /
+// store.RunSubAccountMigration / store.RemoveSubAccount rather than a
+// column write, so it is intercepted before decodePatch ever sees it.
+//
+//   - separated:true on a not-yet-separated identity calls
+//     store.SeparateIdentity synchronously (so the identity has already
+//     moved to its new accountId by the time this call returns) and
+//     starts store.RunSubAccountMigration in a server-owned background
+//     goroutine (REQ-SUBACCT-09: promotion is idempotent and
+//     crash-safe, so a restart before the goroutine finishes resumes it
+//     via the boot-time sweep, not this call). Calling it again while
+//     already separated is a no-op success; calling it while a sweep is
+//     still running is rejected.
+//   - separated:false reverses a completed separation via
+//     store.RemoveSubAccount, honouring an optional "keepMail" boolean
+//     (default true) alongside "separated" in the same update object.
+//     keepMail:true moves the mail back to the parent and reports the
+//     Identity as updated; keepMail:false purges it and reports the
+//     Identity as destroyed.
+//
+// internalID identifies the Identity within target (the JMAP account
+// the request addressed, already resolved to the caller's own account
+// or one of the caller's own sub-accounts by resolveTargetPrincipal --
+// an ACL-shared foreign account can never reach this method at all).
+// fullRaw is the complete update-object JSON for this id.
+func (h *handlerSet) applySeparationUpdate(
+	ctx context.Context,
+	target store.Principal,
+	internalID uint64,
+	fullRaw json.RawMessage,
+) (separationResult, *setError) {
+	if !h.hasSubAccountsCapability() {
+		return separationResult{}, &setError{
+			Type:        "forbidden",
+			Description: "the sub-accounts capability is not enabled on this session",
+		}
+	}
+	var body struct {
+		Separated *bool `json:"separated"`
+		KeepMail  *bool `json:"keepMail"`
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(fullRaw, &raw); err != nil {
+		return separationResult{}, &setError{Type: "invalidProperties", Description: err.Error()}
+	}
+	for k := range raw {
+		if k != "separated" && k != "keepMail" {
+			return separationResult{}, &setError{
+				Type:        "invalidProperties",
+				Properties:  []string{k},
+				Description: "separated cannot be combined with other property updates in the same call",
+			}
+		}
+	}
+	if err := json.Unmarshal(fullRaw, &body); err != nil || body.Separated == nil {
+		return separationResult{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"separated"},
+			Description: "separated must be a boolean",
+		}
+	}
+	want := *body.Separated
+	// keepMail defaults to true (REQ-SUBACCT-10: "keep" is the default --
+	// the same default the REST removal flow uses for IMAP-import
+	// accounts, REQ-IMAP-IMP-102).
+	keepMail := true
+	if body.KeepMail != nil {
+		keepMail = *body.KeepMail
+	}
+	if body.KeepMail != nil && want {
+		return separationResult{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"keepMail"},
+			Description: "keepMail only applies to separated:false",
+		}
+	}
+
+	if internalID == 0 {
+		return separationResult{}, &setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"separated"},
+			Description: "the default identity cannot be separated",
+		}
+	}
+	rowID := strconv.FormatUint(internalID, 10)
+	cur, err := h.store.Meta().GetJMAPIdentity(ctx, rowID)
+	if err != nil || cur.PrincipalID != target.ID {
+		return separationResult{}, &setError{Type: "notFound"}
+	}
+
+	mig, migErr := h.store.Meta().GetSubAccountMigrationByIdentity(ctx, rowID)
+	switch {
+	case migErr == nil && mig.Status != store.SubAccountMigrationStatusDone:
+		return separationResult{}, &setError{
+			Type:        "invalidProperties",
+			Description: "a separation migration is already running for this identity",
+		}
+	case migErr == nil && want:
+		// Already separated; idempotent no-op.
+		rec := persistedToRecord(cur)
+		h.identity.attachSeparation(ctx, &rec)
+		return separationResult{rec: rec}, nil
+	case migErr == nil && !want:
+		if err := store.RemoveSubAccount(ctx, h.store, mig.SubPrincipalID, !keepMail); err != nil {
+			return separationResult{}, &setError{Type: "serverFail", Description: err.Error()}
+		}
+		if !keepMail {
+			return separationResult{destroyed: true, targetDeleted: true}, nil
+		}
+		row, err := h.store.Meta().GetJMAPIdentity(ctx, rowID)
+		if err != nil {
+			return separationResult{}, &setError{Type: "serverFail", Description: err.Error()}
+		}
+		rec := persistedToRecord(row)
+		h.identity.attachSeparation(ctx, &rec)
+		return separationResult{rec: rec, targetDeleted: true}, nil
+	case !errors.Is(migErr, store.ErrNotFound):
+		return separationResult{}, &setError{Type: "serverFail", Description: migErr.Error()}
+	case !want:
+		return separationResult{}, &setError{
+			Type:        "invalidProperties",
+			Description: "identity has not been separated",
+		}
+	}
+
+	// Not yet separated, separated:true: promote synchronously (the
+	// identity has moved accountId by the time this returns) and sweep
+	// its mail in the background (REQ-SUBACCT-09).
+	newMig, err := store.SeparateIdentity(ctx, h.store, target.ID, rowID)
+	if err != nil {
+		return separationResult{}, &setError{Type: "invalidProperties", Description: err.Error()}
+	}
+	st := h.store
+	logger := h.logger
+	migID := newMig.ID
+	subPID := newMig.SubPrincipalID
+	parentPID := newMig.ParentPrincipalID
+	go func() {
+		bgCtx := context.Background()
+		if _, err := store.RunSubAccountMigration(bgCtx, st, migID); err != nil {
+			logger.Warn("identity: sub-account migration sweep failed",
+				slog.String("subsystem", "jmap-identity"),
+				slog.String("migration_id", migID),
+				slog.Uint64("sub_principal_id", uint64(subPID)),
+				slog.String("err", err.Error()))
+		}
+		// Bump both accounts' Identity state so an EventSource listener
+		// on either side observes the sweep's completion.
+		if _, err := st.Meta().IncrementJMAPState(bgCtx, subPID, store.JMAPStateKindIdentity); err != nil {
+			logger.Warn("identity: post-migration state bump failed (sub)",
+				slog.String("subsystem", "jmap-identity"), slog.String("err", err.Error()))
+		}
+		if _, err := st.Meta().IncrementJMAPState(bgCtx, parentPID, store.JMAPStateKindIdentity); err != nil {
+			logger.Warn("identity: post-migration state bump failed (parent)",
+				slog.String("subsystem", "jmap-identity"), slog.String("err", err.Error()))
+		}
+	}()
+
+	row, err := h.store.Meta().GetJMAPIdentity(ctx, rowID)
+	if err != nil {
+		return separationResult{}, &setError{Type: "serverFail", Description: err.Error()}
+	}
+	rec := persistedToRecord(row)
+	h.identity.attachSeparation(ctx, &rec)
+	return separationResult{rec: rec}, nil
+}
+
+// hasSubAccountsCapability reports whether the sub-accounts capability
+// (REQ-SUBACCT-11) is registered on this handler set's capability
+// registry. h.reg is nil for handler sets built without a registry
+// (test_helpers.go's bare handlerSet, used by most of this package's
+// own unit tests), which is treated as "capability absent" -- those
+// tests do not exercise Identity/set{separated}.
+func (h *handlerSet) hasSubAccountsCapability() bool {
+	return h.reg != nil && h.reg.HasCapability(protojmap.CapabilitySubAccounts)
 }
 
 // decodePatch reads an Identity/set "update" object into the Store's

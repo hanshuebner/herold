@@ -98,6 +98,7 @@ func RegisterWithOptions(
 		identity:            identityStore,
 		domains:             makeDomainsFn(st),
 		logger:              logger,
+		reg:                 reg,
 		verificationTrigger: opts.VerificationTrigger,
 		externalDomain:      opts.ExternalDomainPolicy,
 	}

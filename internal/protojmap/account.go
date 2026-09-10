@@ -87,6 +87,42 @@ func ResolveAccount(
 		"account "+string(accountID)+" is not accessible to this principal")
 }
 
+// ResolveOwnAccount is ResolveAccount restricted to the caller's own
+// account and their own sub-accounts (REQ-SUBACCT-03/04) -- it never
+// honours the ACL-shared-mailbox branch. Datatype surfaces that are
+// never legitimately reachable via a mailbox ACL grant (Identity,
+// REQ-SUBACCT-09's separation control in particular) call this instead
+// of ResolveAccount, so sharing one mailbox can never be used to pivot
+// into the owner's account-level configuration.
+func ResolveOwnAccount(
+	ctx context.Context,
+	meta store.Metadata,
+	callerPID store.PrincipalID,
+	accountID Id,
+) (store.PrincipalID, *MethodError) {
+	if accountID == "" {
+		return 0, NewMethodError("invalidArguments", "accountId is required")
+	}
+	ownerPID, ok := principalIDFromAccountID(accountID)
+	if !ok {
+		return 0, NewMethodError("accountNotFound",
+			"account "+string(accountID)+" is not accessible to this principal")
+	}
+	if ownerPID == callerPID {
+		return callerPID, nil
+	}
+	owner, err := meta.GetPrincipalByID(ctx, ownerPID)
+	if err != nil {
+		return 0, NewMethodError("accountNotFound",
+			"account "+string(accountID)+" is not accessible to this principal")
+	}
+	if owner.IsSubAccount() && owner.ParentPrincipalID == callerPID {
+		return ownerPID, nil
+	}
+	return 0, NewMethodError("accountNotFound",
+		"account "+string(accountID)+" is not accessible to this principal")
+}
+
 // HasOwnerAccess reports whether pid should be treated as having full
 // owner-equivalent rights on resources owned by ownerPID: either they
 // are the same principal, or ownerPID is a sub-account (REQ-SUBACCT-01)

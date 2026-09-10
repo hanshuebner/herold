@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -67,7 +68,46 @@ type jmapIdentity struct {
 	// the rest. The suite's From picker and compose-default selector
 	// key off it (web REQ-SET-IDENT-04).
 	IsDefault bool `json:"isDefault"`
+	// SubAccountId is the herold sub-account extension property
+	// (issue #227, REQ-SUBACCT-09): the JMAP accountId of the
+	// sub-principal this identity was separated into, or null when
+	// the identity has never been separated. Read-only -- set it via
+	// the "separated" property on Identity/set, not directly. Once
+	// non-null the Identity itself is listed under that accountId, not
+	// under the account it was created in; see Identity/get's doc
+	// comment for how a client discovers a separated identity.
+	SubAccountId *jmapID `json:"subAccountId"`
+	// Separation is the herold sub-account extension property
+	// (issue #227, REQ-SUBACCT-09/10) describing this identity's
+	// separation lifecycle. Always present (never null): state "none"
+	// for an identity that has never been separated (messagesTotal is
+	// then a pre-count of the mail separation would move, so the
+	// client can show it before the user confirms -- REQ-MAIL-SUB-07),
+	// "migrating" while the background sweep started by
+	// Identity/set{separated:true} is in progress, "separated" once
+	// it has completed.
+	Separation separationDesc `json:"separation"`
 }
+
+// separationDesc is the wire form of Identity.separation (issue #227,
+// REQ-SUBACCT-09/10). Mirrors store.SubAccountMigration's progress
+// fields verbatim so the client can render a progress indicator
+// without a second round-trip.
+type separationDesc struct {
+	State          string `json:"state"`
+	MessagesTotal  int64  `json:"messagesTotal"`
+	MessagesMoved  int64  `json:"messagesMoved"`
+	MessagesCopied int64  `json:"messagesCopied"`
+	LastError      string `json:"lastError,omitempty"`
+}
+
+// Separation lifecycle state strings for the wire-form
+// separationDesc.State (REQ-SUBACCT-09/10).
+const (
+	separationStateNone      = "none"
+	separationStateMigrating = "migrating"
+	separationStateSeparated = "separated"
+)
 
 // identityRecord is the in-memory representation backing an Identity.
 // The default per-principal identity is synthesized from the principal
@@ -104,6 +144,24 @@ type identityRecord struct {
 	// exactly one record per principal carries it. The synthesised
 	// default (id 0) is default whenever no persisted row is flagged.
 	IsDefault bool
+	// separation carries this identity's sub-account separation
+	// status (issue #227, REQ-SUBACCT-09/10), attached by
+	// Store.attachSeparation. The zero value is separationStateNone
+	// with zero counts, matching an identity that has never been
+	// separated.
+	separation separationInfo
+}
+
+// separationInfo is the in-memory counterpart of the wire-form
+// separationDesc, plus the sub-account's internal PrincipalID (kept
+// unexported so only this package resolves it to a wire accountId).
+type separationInfo struct {
+	state          string
+	subAccountID   store.PrincipalID // 0 when not separated
+	messagesTotal  int64
+	messagesMoved  int64
+	messagesCopied int64
+	lastError      string
 }
 
 func (r identityRecord) toJMAP() jmapIdentity {
@@ -137,6 +195,15 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		v := jmapDateTime(r.VerifiedAt)
 		verifiedAt = &v
 	}
+	var subAccountID *jmapID
+	if r.separation.subAccountID != 0 {
+		v := string(protojmap.AccountIDForPrincipal(r.separation.subAccountID))
+		subAccountID = &v
+	}
+	state := r.separation.state
+	if state == "" {
+		state = separationStateNone
+	}
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
@@ -151,6 +218,14 @@ func (r identityRecord) toJMAP() jmapIdentity {
 		XFaceEnabled:  r.XFaceEnabled,
 		VerifiedAt:    verifiedAt,
 		IsDefault:     r.IsDefault,
+		SubAccountId:  subAccountID,
+		Separation: separationDesc{
+			State:          state,
+			MessagesTotal:  r.separation.messagesTotal,
+			MessagesMoved:  r.separation.messagesMoved,
+			MessagesCopied: r.separation.messagesCopied,
+			LastError:      r.separation.lastError,
+		},
 	}
 }
 

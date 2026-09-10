@@ -97,7 +97,76 @@ func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []ident
 	if !seen {
 		out[0].IsDefault = true
 	}
+	for i := range out {
+		s.attachSeparation(ctx, &out[i])
+	}
 	return out
+}
+
+// attachSeparation fills in rec.separation (issue #227,
+// REQ-SUBACCT-09/10). The synthesised default identity (id 0) is never
+// separable (store.SeparateIdentity rejects it outright, matching
+// REQ-IMAP-IMP-01: IMAP import -- the only current promotion path -- is
+// meaningful only for external-domain identities) so it always carries
+// the zero value (state "none", zero counts).
+//
+// For every other identity, store.SubAccountMigration rows are keyed
+// by the identity's persisted id and outlive a rebind (the row's
+// IdentityID column is written once at creation and never mutated), so
+// this lookup finds the migration regardless of which principal
+// currently owns the identity row -- the parent, pre-separation, or
+// the sub-account, once RebindJMAPIdentityPrincipal has moved it.
+func (s *Store) attachSeparation(ctx context.Context, rec *identityRecord) {
+	if rec.ID == 0 || s.st == nil {
+		return
+	}
+	idStr := strconv.FormatUint(rec.ID, 10)
+	mig, err := s.st.Meta().GetSubAccountMigrationByIdentity(ctx, idStr)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			rec.separation = s.precountSeparation(ctx, rec.PrincipalID, idStr)
+		}
+		return
+	}
+	state := separationStateMigrating
+	if mig.Status == store.SubAccountMigrationStatusDone {
+		state = separationStateSeparated
+	}
+	rec.separation = separationInfo{
+		state:          state,
+		subAccountID:   mig.SubPrincipalID,
+		messagesTotal:  mig.MessagesTotal,
+		messagesMoved:  mig.MessagesMoved,
+		messagesCopied: mig.MessagesCopied,
+		lastError:      mig.LastError,
+	}
+}
+
+// precountSeparation computes separation.messagesTotal for an
+// identity that has never been separated: the number of distinct
+// messages already tracked by any IMAP-import account attached to it
+// (REQ-MAIL-SUB-07: "the suite shows the message count before the
+// user confirms"). Best-effort -- a store error surfaces as state
+// "none" with a zero count rather than failing the whole Identity/get.
+func (s *Store) precountSeparation(ctx context.Context, pid store.PrincipalID, identityID string) separationInfo {
+	info := separationInfo{state: separationStateNone}
+	if s.st == nil {
+		return info
+	}
+	accounts, err := s.st.Meta().ListIMAPImportAccountsByPrincipal(ctx, pid)
+	if err != nil {
+		return info
+	}
+	for _, acc := range accounts {
+		if acc.IdentityID != identityID {
+			continue
+		}
+		n, cerr := s.st.Meta().CountIMAPImportMessagesByAccount(ctx, acc.ID)
+		if cerr == nil {
+			info.messagesTotal += n
+		}
+	}
+	return info
 }
 
 // loadPersisted reads the principal's persisted identities. Returns

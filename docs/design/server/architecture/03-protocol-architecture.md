@@ -93,6 +93,26 @@ Consequence: adding a JMAP datatype later (`urn:ietf:params:jmap:submission`, `:
 
 The `Account` abstraction (one Principal → N Accounts, each with its own capability subset) is also where shared-mailbox handling (phase 2) lives. Build it now even though v1 will only mint one Account per Principal — retrofitting an Account boundary into already-shipped JMAP state strings is migration-grade work.
 
+#### Sub-accounts and Identity separation (REQ-SUBACCT-01..11)
+
+A sub-account is a **sub-principal**: an ordinary `principals` row (`store.PrincipalKindSubAccount`) owned by an individual principal, excluded from every auth path, carrying its own Mailbox tree, Identity set, and JMAP state strings. `buildSessionDescriptor` lists each of the caller's sub-accounts in `accounts` via `AccountIDForPrincipal`, with the same `accountCapabilities` shape as the primary account; `https://netzhansa.com/jmap/sub-accounts` is advertised unconditionally at the session level (`server.go`) whenever the deployment has sub-account support built in.
+
+`Identity` (RFC 8621 §6.1, under the `urn:ietf:params:jmap:submission` capability) carries two herold extension properties describing separation:
+
+- `subAccountId` (nullable string) — the JMAP accountId of the sub-principal this Identity was separated into, or `null` when it has never been separated.
+- `separation` (object, always present) — `{state, messagesTotal, messagesMoved, messagesCopied, lastError}`. `state` is `"none"` (not separated; `messagesTotal` is then a pre-count of the mail an eventual separation would move, computed from the identity's IMAP-import account(s) via `Metadata.CountIMAPImportMessagesByAccount`), `"migrating"` (a `store.SubAccountMigration` sweep is pending or running), or `"separated"` (the sweep is done).
+
+Separation itself is driven by a settable boolean on `Identity/set update`, not a separate method:
+
+- `separated: true` calls `store.SeparateIdentity` synchronously — the Identity's `jmap_identities` row moves to a freshly-created sub-principal before the call returns, so it immediately stops appearing under the parent's `Identity/get` and starts appearing under the sub-account's — then starts `store.RunSubAccountMigration` in a server-owned background goroutine (its own `context.Background()`, logged, not tied to the request) to sweep the mail the identity's IMAP-import account(s) already pulled in.
+- `separated: false` reverses a completed separation via `store.RemoveSubAccount`, with an optional `keepMail` boolean alongside `separated` in the same update object (default `true`): `keepMail:true` moves the mail back to the parent and reports the Identity as updated; `keepMail:false` purges it and reports the Identity as destroyed.
+
+Because a separated Identity moves accountId, a client discovers it by calling `Identity/get` (or `Identity/set`) with `accountId` set to the sub-account's id, not the parent's — `Identity/set`'s accountId resolution (`resolveTargetPrincipal`) accepts the caller's own account or one of the caller's own sub-accounts, and deliberately never honours a mailbox-ACL grant the way `ResolveAccount` does for shared mailboxes (`protojmap.ResolveOwnAccount`), so sharing a mailbox can never be used to pivot into the owner's Identity/separation surface.
+
+At boot, `admin.StartServer` resumes every pending/running `SubAccountMigration` row (`ListPendingSubAccountMigrations`) in one background goroutine before listeners accept connections, so a `kill -9` mid-sweep is completed on the next start rather than leaving mail split across two accounts (REQ-IMAP-IMP-107).
+
+Transport wiring: an `internal/imapimport` `accountWorker` reads its owning principal fresh at ingest time (`ingestMessage` reads `w.opts.account.PrincipalID`, not a value captured once per session), and both `refreshAccount` (called between connection attempts) and `stateChangedFromEnabled` (called periodically and after every IDLE-wake sync round, live within an already-open session) refresh that field from the store — so a separation's `RebindIMAPImportAccountPrincipal` reaches a running worker without requiring a reconnect. Local SMTP delivery for a separated identity's address is not wired: herold's address-routing table (`aliases`) carries no link to `jmap_identities`, so there is currently no way to know which alias row(s), if any, correspond to a given Identity's email — see the open items tracked against issue #227.
+
 ### Chat WebSocket (`/chat/ws`)
 
 Phase 2 — see `requirements/14-chat.md` and `architecture/08-chat.md`.

@@ -32,6 +32,7 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/email"
+	"github.com/hanshuebner/herold/internal/protojmap/mail/identity"
 	"github.com/hanshuebner/herold/internal/protojmap/mail/mailbox"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
@@ -516,4 +517,191 @@ func assertNotContains(t *testing.T, xs []string, unwanted, ctxMsg string) {
 			t.Fatalf("%s: %v unexpectedly contains %q", ctxMsg, xs, unwanted)
 		}
 	}
+}
+
+// invokeIdentity is invokeAs plus the JMAP Submission capability
+// (Identity lives under urn:ietf:params:jmap:submission per RFC 8621
+// §1.1, not under Mail; invokeAs's fixed using-list omits it).
+func (f *subFixture) invokeIdentity(t *testing.T, apiKey, method string, args any) (string, json.RawMessage) {
+	t.Helper()
+	argsBytes, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	body := map[string]any{
+		"using": []protojmap.CapabilityID{
+			protojmap.CapabilityCore, protojmap.CapabilityMail,
+			"urn:ietf:params:jmap:submission",
+		},
+		"methodCalls": []any{[]any{method, json.RawMessage(argsBytes), "c0"}},
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, f.httpd.URL+"/jmap", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := f.httpd.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var envelope struct {
+		MethodResponses []protojmap.Invocation `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, respBody)
+	}
+	if len(envelope.MethodResponses) != 1 {
+		t.Fatalf("got %d method responses, want 1", len(envelope.MethodResponses))
+	}
+	return envelope.MethodResponses[0].Name, envelope.MethodResponses[0].Args
+}
+
+// TestIdentitySeparation_EndToEnd drives the full REQ-SUBACCT-09/10
+// promotion/removal lifecycle through real JMAP HTTP calls: Identity/set
+// {separated:true} on an imported identity moves it and its mail into a
+// freshly-created sub-account; once the background sweep completes the
+// mail is queryable via Email/query scoped to the sub-account and absent
+// from the parent's; Identity/set{separated:false, keepMail:true} moves
+// it back and the mail is queryable under the parent again.
+func TestIdentitySeparation_EndToEnd(t *testing.T) {
+	f := newSubFixture(t)
+	ctx := context.Background()
+	identity.RegisterWithOptions(f.srv.Registry(), f.store, nil, f.clk, identity.Options{})
+
+	// The wire-form Identity id must be numeric (or "default"; see
+	// identity.parseID) since Identity/set{update} inverts it back to
+	// the persisted jmap_identities.id -- a real Identity/set{create}
+	// always allocates one of these, so this mirrors that shape.
+	const identityID = "90010001"
+	if err := f.store.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: identityID, PrincipalID: f.alice, Email: "vorsitz@classic-computing.example",
+		Name: "Vorsitz", MayDelete: true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	acc, err := f.store.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID: identityID, PrincipalID: f.alice, AccountName: "classic-computing",
+		Host: "mail.classic-computing.example", Port: 993, TLSMode: store.IMAPImportTLSModeImplicit,
+		Username: "vorsitz", AuthMethod: store.IMAPImportAuthMethodAppPassword,
+		CredentialCT: []byte("v1:pw"), State: store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	prov, err := f.store.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: f.alice, Name: "classic-computing label"})
+	if err != nil {
+		t.Fatalf("InsertMailbox (provenance): %v", err)
+	}
+	if err := f.store.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, prov.ID); err != nil {
+		t.Fatalf("SetIMAPImportProvenanceMailbox: %v", err)
+	}
+
+	importedMail := f.insertMessage(t, f.alice, f.aliceInbox, "club-mail")
+	if _, _, err := f.store.Meta().AddMessageToMailbox(ctx, importedMail, prov.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox(label): %v", err)
+	}
+	if err := f.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+		AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 1,
+		HeroldMessageID: importedMail, HeroldMailboxID: f.aliceInbox,
+	}); err != nil {
+		t.Fatalf("UpsertIMAPImportMessageState: %v", err)
+	}
+	// A second, unrelated message stays in alice's own inbox throughout,
+	// proving separation moves only the identity's own mail.
+	parentOnlyMail := f.insertMessage(t, f.alice, f.aliceInbox, "parent-only-mail")
+
+	_, raw := f.invokeIdentity(t, f.aliceKey, "Identity/set", map[string]any{
+		"accountId": f.aliceAcctID,
+		"update":    map[string]any{identityID: map[string]any{"separated": true}},
+	})
+	var setResp struct {
+		Updated map[string]struct {
+			SubAccountId *string `json:"subAccountId"`
+		} `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &setResp); err != nil {
+		t.Fatalf("unmarshal Identity/set: %v: %s", err, raw)
+	}
+	updated, ok := setResp.Updated[identityID]
+	if !ok || updated.SubAccountId == nil {
+		t.Fatalf("Identity/set{separated:true} did not report subAccountId: %s", raw)
+	}
+	subAcctID := *updated.SubAccountId
+
+	// Wait for the background sweep (REQ-SUBACCT-09) to finish.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mig, merr := f.store.Meta().GetSubAccountMigrationByIdentity(ctx, identityID)
+		if merr != nil {
+			t.Fatalf("GetSubAccountMigrationByIdentity: %v", merr)
+		}
+		if mig.Status == store.SubAccountMigrationStatusDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("migration did not complete in time: %+v", mig)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The imported mail is queryable under the sub-account and absent
+	// from the parent; the unrelated message stays put.
+	_, subQuery := f.invokeAs(t, f.aliceKey, "Email/query", map[string]any{"accountId": subAcctID})
+	var subIDs struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(subQuery, &subIDs); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, subQuery)
+	}
+	assertContains(t, subIDs.IDs, fmt.Sprintf("%d", importedMail), "sub-account Email/query after separation")
+
+	_, parentQuery := f.invokeAs(t, f.aliceKey, "Email/query", map[string]any{"accountId": f.aliceAcctID})
+	var parentIDs struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(parentQuery, &parentIDs); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, parentQuery)
+	}
+	assertNotContains(t, parentIDs.IDs, fmt.Sprintf("%d", importedMail), "parent Email/query after separation")
+	assertContains(t, parentIDs.IDs, fmt.Sprintf("%d", parentOnlyMail), "parent Email/query after separation")
+
+	// Reverse it: separated:false with keepMail:true, addressed via the
+	// sub-account's own accountId (Identity/get's doc comment: a
+	// separated identity is discovered/managed there, not under the
+	// parent).
+	_, revertRaw := f.invokeIdentity(t, f.aliceKey, "Identity/set", map[string]any{
+		"accountId": subAcctID,
+		"update":    map[string]any{identityID: map[string]any{"separated": false, "keepMail": true}},
+	})
+	var revertResp struct {
+		Updated map[string]struct {
+			SubAccountId *string `json:"subAccountId"`
+		} `json:"updated"`
+		NotUpdated map[string]any `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(revertRaw, &revertResp); err != nil {
+		t.Fatalf("unmarshal Identity/set (revert): %v: %s", err, revertRaw)
+	}
+	reverted, ok := revertResp.Updated[identityID]
+	if !ok {
+		t.Fatalf("Identity/set{separated:false} did not report updated: %s", revertRaw)
+	}
+	if reverted.SubAccountId != nil {
+		t.Fatalf("subAccountId = %v after reversal; want null", *reverted.SubAccountId)
+	}
+
+	_, parentQuery2 := f.invokeAs(t, f.aliceKey, "Email/query", map[string]any{"accountId": f.aliceAcctID})
+	var parentIDs2 struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(parentQuery2, &parentIDs2); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, parentQuery2)
+	}
+	assertContains(t, parentIDs2.IDs, fmt.Sprintf("%d", importedMail), "parent Email/query after keepMail reversal")
 }
