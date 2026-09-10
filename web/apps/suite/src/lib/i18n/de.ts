@@ -865,6 +865,10 @@ export const de = {
   'app.admin': 'Server-Verwaltung',
   'app.switch': 'Suite-Komponente wechseln',
   'shell.profile.menu': 'Konto-Menü',
+  // ── Konto-Umschalter für getrennte Identitäten (Issue #212) ──────────
+  'shell.profile.scopesLabel': 'Konten',
+  'shell.profile.allMail': 'Alle E-Mails',
+  'shell.profile.scopeUnreadAria': '{count} ungelesen',
 
   // ── Zeit ────────────────────────────────────────────────────────────
   'time.justNow': 'gerade eben',

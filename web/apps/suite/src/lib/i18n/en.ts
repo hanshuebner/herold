@@ -853,6 +853,10 @@ export const en = {
   'app.admin': 'Server admin',
   'app.switch': 'Switch suite component',
   'shell.profile.menu': 'Account menu',
+  // ── Sub-account scope switcher (issue #212, REQ-MAIL-SUB-02) ────────
+  'shell.profile.scopesLabel': 'Accounts',
+  'shell.profile.allMail': 'All mail',
+  'shell.profile.scopeUnreadAria': '{count} unread',
 
   // ── Time ────────────────────────────────────────────────────────────
   'time.justNow': 'just now',

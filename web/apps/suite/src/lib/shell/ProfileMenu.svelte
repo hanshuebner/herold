@@ -10,6 +10,8 @@
   import { auth } from '../auth/auth.svelte';
   import { router } from '../router/router.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import { hasSubAccounts } from '../auth/capabilities';
+  import { subAccounts } from '../mail/sub-accounts.svelte';
   import ProfileIcon from '../icons/ProfileIcon.svelte';
   import SettingsIcon from '../icons/SettingsIcon.svelte';
 
@@ -23,6 +25,28 @@
 
   function close(): void {
     open = false;
+  }
+
+  // ── Sub-account scope switcher (issue #212, REQ-MAIL-SUB-02/09) ─────
+  //
+  // Renders only when the session advertises the sub-accounts capability
+  // (REQ-MAIL-SUB-09); absent it this whole block is skipped and the menu
+  // is byte-for-byte the pre-#212 Settings/Sign-out list.
+  let showSwitcher = $derived(hasSubAccounts());
+
+  $effect(() => {
+    if (open && showSwitcher) void subAccounts.load();
+  });
+
+  /** The accountId of the currently-scoped sub-account, or null in "All mail". */
+  let currentScopeAccountId = $derived(
+    router.parts[0] === 'account' ? (router.parts[1] ?? null) : null,
+  );
+
+  function selectScope(accountId: string | null): void {
+    close();
+    if (accountId) router.navigate(`/account/${encodeURIComponent(accountId)}`);
+    else router.navigate('/mail');
   }
 
   function onMenuKeydown(event: KeyboardEvent): void {
@@ -87,6 +111,46 @@
       class="menu"
       onkeydown={onMenuKeydown}
     >
+      {#if showSwitcher}
+        <li role="none" class="menu-section-label">{t('shell.profile.scopesLabel')}</li>
+        <li role="none">
+          <button
+            role="menuitemradio"
+            type="button"
+            class="menu-item scope-item"
+            aria-checked={currentScopeAccountId === null}
+            class:current={currentScopeAccountId === null}
+            onclick={() => selectScope(null)}
+            data-testid="profile-scope-all"
+          >
+            <span class="scope-name">{t('shell.profile.allMail')}</span>
+          </button>
+        </li>
+        {#each subAccounts.list as account (account.accountId)}
+          <li role="none">
+            <button
+              role="menuitemradio"
+              type="button"
+              class="menu-item scope-item"
+              aria-checked={currentScopeAccountId === account.accountId}
+              class:current={currentScopeAccountId === account.accountId}
+              onclick={() => selectScope(account.accountId)}
+              data-testid="profile-scope-{account.accountId}"
+            >
+              <span class="scope-name">{account.name}</span>
+              {#if account.unreadThreads > 0}
+                <span
+                  class="scope-badge"
+                  aria-label={t('shell.profile.scopeUnreadAria', { count: account.unreadThreads })}
+                >
+                  {account.unreadThreads}
+                </span>
+              {/if}
+            </button>
+          </li>
+        {/each}
+        <li role="none" class="menu-divider"></li>
+      {/if}
       <li role="none">
         <button
           role="menuitem"
@@ -198,5 +262,46 @@
     align-items: center;
     flex-shrink: 0;
     color: var(--text-secondary);
+  }
+
+  .menu-section-label {
+    padding: var(--spacing-02, 4px) var(--spacing-04, 12px);
+    font-size: var(--type-helper-text-01-size, 12px);
+    font-weight: 600;
+    color: var(--text-helper);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .scope-item {
+    justify-content: space-between;
+  }
+
+  .scope-item.current {
+    font-weight: 600;
+    color: var(--interactive);
+  }
+
+  .scope-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scope-badge {
+    flex-shrink: 0;
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--interactive);
+    color: var(--text-on-color);
+    font-size: var(--type-helper-text-01-size, 11px);
+    line-height: 18px;
+    text-align: center;
+  }
+
+  .menu-divider {
+    margin: var(--spacing-02, 4px) 0;
+    border-top: 1px solid var(--border-subtle-01);
   }
 </style>
