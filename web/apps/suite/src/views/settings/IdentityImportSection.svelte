@@ -72,6 +72,13 @@
   let horizonPreset = $state<BackfillHorizonPreset>('90d');
   let horizonCustomDate = $state('');
 
+  // Excluded folders (re #305): upstream folder names the worker never
+  // syncs. Edited as chips; each entry is trimmed and deduplicated before
+  // being added.
+  let excludedFolders = $state<string[]>([]);
+  let excludedFolderInput = $state('');
+  let excludedFolderError = $state<string | null>(null);
+
   // Save state
   let saving = $state(false);
   let saveError = $state<string | null>(null);
@@ -138,6 +145,9 @@
     credential = '';
     horizonPreset = '90d';
     horizonCustomDate = '';
+    excludedFolders = [];
+    excludedFolderInput = '';
+    excludedFolderError = null;
   }
 
   function openEditForm(): void {
@@ -160,12 +170,41 @@
       horizonPreset = 'custom';
       horizonCustomDate = account.backfillHorizon;
     }
+    excludedFolders = [...(account.excludedFolders ?? [])];
+    excludedFolderInput = '';
+    excludedFolderError = null;
   }
 
   function cancelForm(): void {
     formOpen = false;
     saveError = null;
     validationErrors = {};
+  }
+
+  // ── Excluded folders editor (re #305) ────────────────────────────────────
+
+  function addExcludedFolder(): void {
+    const name = excludedFolderInput.trim();
+    if (!name) {
+      excludedFolderError = t('settings.import.excludedFolderEmpty');
+      return;
+    }
+    excludedFolderError = null;
+    if (!excludedFolders.includes(name)) {
+      excludedFolders = [...excludedFolders, name];
+    }
+    excludedFolderInput = '';
+  }
+
+  function removeExcludedFolder(index: number): void {
+    excludedFolders = excludedFolders.filter((_, i) => i !== index);
+  }
+
+  function onExcludedFolderKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addExcludedFolder();
+    }
   }
 
   // ── Validation ────────────────────────────────────────────────────────────
@@ -205,6 +244,7 @@
           username: username.trim(),
           authMethod,
           backfillHorizon: resolvedHorizon(),
+          excludedFolders,
         };
         if (credential.trim()) {
           patch.credential = credential.trim();
@@ -220,6 +260,7 @@
           authMethod,
           backfillHorizon: resolvedHorizon(),
           credential: credential.trim(),
+          excludedFolders,
         });
       }
       formOpen = false;
@@ -399,6 +440,13 @@
         {#if account.lastError}
           <span class="detail-item error-text" data-testid="import-last-error">
             {t('settings.import.lastError', { error: account.lastError })}
+          </span>
+        {/if}
+        {#if account.excludedFolders && account.excludedFolders.length > 0}
+          <span class="detail-item" data-testid="import-excluded-folders-summary">
+            {t('settings.import.excludedFoldersSummary', {
+              folders: account.excludedFolders.join(', '),
+            })}
           </span>
         {/if}
       </div>
@@ -671,6 +719,62 @@
           {/if}
         </div>
       {/if}
+
+      <!-- Excluded folders (re #305): upstream folder names never synced. -->
+      <div class="field">
+        <label for="imap-excluded-folder-input-{identity.id}" class="field-label">
+          {t('settings.import.fieldExcludedFolders')}
+        </label>
+        <div class="excluded-folders-editor" data-testid="import-excluded-folders">
+          {#if excludedFolders.length > 0}
+            <div class="excluded-folder-chips">
+              {#each excludedFolders as folder, i (folder)}
+                <span class="excluded-folder-chip" data-testid="excluded-folder-chip">
+                  {folder}
+                  <button
+                    type="button"
+                    class="chip-remove"
+                    aria-label={t('settings.import.removeExcludedFolderAriaLabel', { folder })}
+                    disabled={saving}
+                    onclick={() => removeExcludedFolder(i)}
+                    data-testid="excluded-folder-remove"
+                  >
+                    x
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          <div class="excluded-folder-add-row">
+            <input
+              id="imap-excluded-folder-input-{identity.id}"
+              type="text"
+              class="input"
+              class:invalid={!!excludedFolderError}
+              placeholder={t('settings.import.excludedFolderPlaceholder')}
+              bind:value={excludedFolderInput}
+              onkeydown={onExcludedFolderKeydown}
+              disabled={saving}
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="import-excluded-folder-input"
+            />
+            <Button
+              variant="secondary"
+              compact
+              onclick={addExcludedFolder}
+              disabled={saving}
+              testid="import-excluded-folder-add-btn"
+            >
+              {t('settings.import.addBtn')}
+            </Button>
+          </div>
+          {#if excludedFolderError}
+            <span class="field-error" role="alert">{excludedFolderError}</span>
+          {/if}
+        </div>
+        <span class="field-note">{t('settings.import.excludedFoldersHint')}</span>
+      </div>
 
       {#if saveError}
         <p class="form-error" role="alert" data-testid="import-save-error">{saveError}</p>
@@ -1098,6 +1202,65 @@
 
   .input.invalid {
     border-color: var(--support-error);
+  }
+
+  /* Excluded folders editor (re #305) */
+  .excluded-folders-editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+  }
+
+  .excluded-folder-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+  }
+
+  .excluded-folder-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: 2px var(--spacing-02);
+    background: var(--layer-02);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+
+  .chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    padding: 0;
+    width: 16px;
+    height: 16px;
+    line-height: 1;
+  }
+
+  .chip-remove:hover:not(:disabled) {
+    color: var(--support-error);
+  }
+
+  .chip-remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .excluded-folder-add-row {
+    display: flex;
+    gap: var(--spacing-02);
+    align-items: center;
+  }
+
+  .excluded-folder-add-row .input {
+    flex: 1;
   }
 
   .select {

@@ -1953,6 +1953,20 @@ export const de = {
   'settings.import.horizonAll': 'Alle E-Mails (kein Limit)',
   'settings.import.horizonCustom': 'Benutzerdefiniertes Datum',
   'settings.import.fieldHorizonDate': 'E-Mails ab diesem Datum importieren',
+  // Ausgeschlossene Ordner (re #305)
+  'settings.import.fieldExcludedFolders': 'Ausgeschlossene Ordner',
+  'settings.import.excludedFoldersHint':
+    'Diese Ordner auf dem vorgelagerten Server werden nie synchronisiert. ' +
+    'Wird ein bereits synchronisierter Ordner ausgeschlossen, wird er beim ' +
+    'nächsten Abgleich aus herold entfernt; Nachrichten, die noch einem ' +
+    'anderen Ordner angehören, bleiben erhalten.',
+  'settings.import.excludedFolderPlaceholder': 'Ordnername (z. B. Spam)',
+  'settings.import.addBtn': 'Hinzufügen',
+  'settings.import.excludedFolderEmpty':
+    'Geben Sie vor dem Hinzufügen einen Ordnernamen ein.',
+  'settings.import.removeExcludedFolderAriaLabel':
+    'Ausgeschlossenen Ordner {folder} entfernen',
+  'settings.import.excludedFoldersSummary': 'Ausgeschlossene Ordner: {folders}',
   'settings.import.hostRequired': 'Host ist erforderlich.',
   'settings.import.usernameRequired': 'Benutzername ist erforderlich.',
   'settings.import.horizonRequired': 'Ein Rückfüllhorizont ist erforderlich.',

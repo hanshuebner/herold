@@ -39,6 +39,82 @@
     }
   }
 
+  // ── Excluded folders editor (re #305) ────────────────────────────────────
+  //
+  // Each account's excluded-folders list is edited inline and saved
+  // immediately on add/remove (mirrors the debug-log toggle above), rather
+  // than through a separate form + save step.
+
+  let excludedFolderInput = $state<Record<string, string>>({});
+  let excludedFolderInFlight = $state<Record<string, boolean>>({});
+  let excludedFolderError = $state<Record<string, string | null>>({});
+
+  async function addExcludedFolder(worker: {
+    account_id: string;
+    principal_id: string;
+  }): Promise<void> {
+    const accountId = worker.account_id;
+    const name = (excludedFolderInput[accountId] ?? '').trim();
+    if (!name) {
+      excludedFolderError = {
+        ...excludedFolderError,
+        [accountId]: t('imapImports.excludedFolders.empty'),
+      };
+      return;
+    }
+    const current = imapImports.excludedFoldersByAccount[accountId] ?? [];
+    if (current.includes(name)) {
+      excludedFolderInput = { ...excludedFolderInput, [accountId]: '' };
+      excludedFolderError = { ...excludedFolderError, [accountId]: null };
+      return;
+    }
+    excludedFolderError = { ...excludedFolderError, [accountId]: null };
+    excludedFolderInFlight = { ...excludedFolderInFlight, [accountId]: true };
+    const result = await imapImports.setExcludedFolders(worker.principal_id, accountId, [
+      ...current,
+      name,
+    ]);
+    excludedFolderInFlight = { ...excludedFolderInFlight, [accountId]: false };
+    if (!result.ok) {
+      excludedFolderError = { ...excludedFolderError, [accountId]: result.errorMessage };
+      return;
+    }
+    excludedFolderInput = { ...excludedFolderInput, [accountId]: '' };
+  }
+
+  async function removeExcludedFolder(
+    worker: { account_id: string; principal_id: string },
+    folder: string,
+  ): Promise<void> {
+    const accountId = worker.account_id;
+    const current = imapImports.excludedFoldersByAccount[accountId] ?? [];
+    excludedFolderInFlight = { ...excludedFolderInFlight, [accountId]: true };
+    const result = await imapImports.setExcludedFolders(
+      worker.principal_id,
+      accountId,
+      current.filter((f) => f !== folder),
+    );
+    excludedFolderInFlight = { ...excludedFolderInFlight, [accountId]: false };
+    if (!result.ok) {
+      excludedFolderError = { ...excludedFolderError, [accountId]: result.errorMessage };
+    }
+  }
+
+  function onExcludedFolderInput(accountId: string, e: Event): void {
+    const value = (e.target as HTMLInputElement).value;
+    excludedFolderInput = { ...excludedFolderInput, [accountId]: value };
+  }
+
+  function onExcludedFolderKeydown(
+    worker: { account_id: string; principal_id: string },
+    e: KeyboardEvent,
+  ): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void addExcludedFolder(worker);
+    }
+  }
+
   function phaseClass(phase: string): string {
     switch (phase) {
       case 'idle':
@@ -206,6 +282,62 @@
               <span class="error-text">{worker.last_error}</span>
             </div>
           {/if}
+
+          <!-- Excluded folders editor (re #305) -->
+          <div
+            class="excluded-folders-editor"
+            data-testid="worker-excluded-folders-{worker.account_id}"
+          >
+            <span class="excluded-folders-label">
+              {t('imapImports.excludedFolders.label')}
+            </span>
+            {#if (imapImports.excludedFoldersByAccount[worker.account_id] ?? []).length > 0}
+              <div class="excluded-folder-chips">
+                {#each imapImports.excludedFoldersByAccount[worker.account_id] ?? [] as folder (folder)}
+                  <span class="excluded-folder-chip" data-testid="worker-excluded-folder-chip">
+                    {folder}
+                    <button
+                      type="button"
+                      class="chip-remove"
+                      aria-label={t('imapImports.excludedFolders.removeAriaLabel', { folder })}
+                      disabled={excludedFolderInFlight[worker.account_id]}
+                      onclick={() => void removeExcludedFolder(worker, folder)}
+                      data-testid="worker-excluded-folder-remove"
+                    >
+                      x
+                    </button>
+                  </span>
+                {/each}
+              </div>
+            {/if}
+            <div class="excluded-folder-add-row">
+              <input
+                type="text"
+                class="excluded-folder-input"
+                placeholder={t('imapImports.excludedFolders.placeholder')}
+                value={excludedFolderInput[worker.account_id] ?? ''}
+                oninput={(e) => onExcludedFolderInput(worker.account_id, e)}
+                onkeydown={(e) => onExcludedFolderKeydown(worker, e)}
+                disabled={excludedFolderInFlight[worker.account_id]}
+                autocomplete="off"
+                spellcheck="false"
+                data-testid="worker-excluded-folder-input-{worker.account_id}"
+              />
+              <button
+                type="button"
+                class="btn-secondary btn-sm"
+                onclick={() => void addExcludedFolder(worker)}
+                disabled={excludedFolderInFlight[worker.account_id]}
+                data-testid="worker-excluded-folder-add-{worker.account_id}"
+              >
+                {t('imapImports.excludedFolders.add')}
+              </button>
+            </div>
+            {#if excludedFolderError[worker.account_id]}
+              <p class="toggle-error" role="alert">{excludedFolderError[worker.account_id]}</p>
+            {/if}
+            <p class="debug-hint">{t('imapImports.excludedFolders.hint')}</p>
+          </div>
 
           <!-- Debug logging toggle + events link -->
           <div class="worker-actions">
@@ -462,6 +594,88 @@
     font-size: var(--type-body-compact-01-size);
     font-weight: 600;
     color: var(--support-error);
+  }
+
+  /* Excluded folders editor (re #305) */
+  .excluded-folders-editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-02);
+    padding: var(--spacing-03) var(--spacing-04);
+    background: var(--layer-02);
+    border-radius: var(--radius-md);
+  }
+
+  .excluded-folders-label {
+    font-size: var(--type-body-compact-01-size);
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .excluded-folder-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
+  }
+
+  .excluded-folder-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-02);
+    padding: 2px var(--spacing-02);
+    background: var(--layer-01);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-pill);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+
+  .chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-helper);
+    font-size: var(--type-body-compact-01-size);
+    cursor: pointer;
+    padding: 0;
+    width: 16px;
+    height: 16px;
+    line-height: 1;
+  }
+
+  .chip-remove:hover:not(:disabled) {
+    color: var(--support-error);
+  }
+
+  .chip-remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .excluded-folder-add-row {
+    display: flex;
+    gap: var(--spacing-02);
+    align-items: center;
+  }
+
+  .excluded-folder-input {
+    flex: 1;
+    box-sizing: border-box;
+    padding: var(--spacing-02) var(--spacing-03);
+    background: var(--background);
+    border: 1px solid var(--border-subtle-01);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--type-body-compact-01-size);
+    min-height: var(--touch-min);
+  }
+
+  .excluded-folder-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .error-text {

@@ -604,6 +604,21 @@ export const de = {
     'Wenn aktiviert, sendet dieser Worker feingliedrige Ereignisse (Verbindungslebenszyklus, IDLE-Wachzustand, Ordner-Syncs) an den Ereignisse-View, gefiltert nach der Konto-ID als Akteur. Der Overhead wird auf inaktive Konten beschränkt.',
   'imapImports.error.loadFailed': 'IMAP-Import-Status konnte nicht geladen werden',
   'imapImports.error.setDebugLogFailed': 'Debug-Protokollierung konnte nicht geändert werden',
+  // Editor für ausgeschlossene Ordner (re #305)
+  'imapImports.excludedFolders.label': 'Ausgeschlossene Ordner',
+  'imapImports.excludedFolders.hint':
+    'Ordner auf dem vorgelagerten Server, die der Worker nie synchronisiert. ' +
+    'Wird ein bereits synchronisierter Ordner ausgeschlossen, wird er beim ' +
+    'nächsten Abgleich entfernt; Nachrichten, die noch einem anderen Ordner ' +
+    'angehören, bleiben erhalten.',
+  'imapImports.excludedFolders.placeholder': 'Ordnername (z. B. Spam)',
+  'imapImports.excludedFolders.add': 'Hinzufügen',
+  'imapImports.excludedFolders.removeAriaLabel':
+    'Ausgeschlossenen Ordner {folder} entfernen',
+  'imapImports.excludedFolders.empty':
+    'Geben Sie vor dem Hinzufügen einen Ordnernamen ein.',
+  'imapImports.error.setExcludedFoldersFailed':
+    'Ausgeschlossene Ordner konnten nicht geändert werden',
 
   // ── Settings ──────────────────────────────────────────────────────────
   'settings.title': 'Einstellungen',

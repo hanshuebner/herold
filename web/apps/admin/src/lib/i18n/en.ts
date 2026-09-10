@@ -602,6 +602,17 @@ export const en = {
     'When enabled, this worker sends fine-grained events (connection lifecycle, IDLE wake, folder syncs) to the events view, filtered by the account ID as actor. Overhead is limited to inactive accounts.',
   'imapImports.error.loadFailed': 'Failed to load IMAP import status',
   'imapImports.error.setDebugLogFailed': 'Failed to change debug logging',
+  // Excluded folders editor (re #305)
+  'imapImports.excludedFolders.label': 'Excluded folders',
+  'imapImports.excludedFolders.hint':
+    'Upstream folders the worker never syncs. Excluding a folder that was ' +
+    'already synced removes it on the next sync; messages that also belong ' +
+    'to another folder are kept.',
+  'imapImports.excludedFolders.placeholder': 'Folder name (e.g. Spam)',
+  'imapImports.excludedFolders.add': 'Add',
+  'imapImports.excludedFolders.removeAriaLabel': 'Remove excluded folder {folder}',
+  'imapImports.excludedFolders.empty': 'Enter a folder name before adding.',
+  'imapImports.error.setExcludedFoldersFailed': 'Failed to change excluded folders',
 
   // ── Settings ──────────────────────────────────────────────────────────
   'settings.title': 'Settings',

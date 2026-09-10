@@ -61,6 +61,11 @@ export interface IMAPImportAccount {
   deletePropagates: boolean;
   /** True when a sealed credential is stored (credential is write-only). */
   hasCredential: boolean;
+  /**
+   * Upstream folder names the worker never syncs (re #305). Omitted on
+   * the wire when empty; treat a missing value as an empty list.
+   */
+  excludedFolders?: string[];
 }
 
 /**
@@ -95,12 +100,17 @@ export interface IMAPImportCreateArgs {
   backfillHorizon: string;
   credential: string;
   deletePropagates?: boolean;
+  /** Upstream folder names the worker never syncs (re #305). */
+  excludedFolders?: string[];
 }
 
 /**
  * Body for IMAPImport/set update (partial patch; omit unchanged fields).
  * Providing `credential` re-seals a new credential.
  * `state` transitions are validated server-side (REQ-IMAP-IMP-90..95).
+ * `excludedFolders`, when present (including an explicit empty array),
+ * replaces the stored list; omitting it leaves the list unchanged
+ * (re #305).
  */
 export interface IMAPImportUpdateArgs {
   accountName?: string;
@@ -113,6 +123,7 @@ export interface IMAPImportUpdateArgs {
   credential?: string;
   state?: IMAPImportState;
   deletePropagates?: boolean;
+  excludedFolders?: string[];
 }
 
 /**

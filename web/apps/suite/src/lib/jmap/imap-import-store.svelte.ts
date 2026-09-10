@@ -167,6 +167,7 @@ export class IMAPImportHandle {
     backfillHorizon: string;
     credential: string;
     deletePropagates?: boolean;
+    excludedFolders?: string[];
   }): Promise<IMAPImportAccount> {
     const req: IMAPImportSetRequest = {
       accountId: this.#accountId,
@@ -206,6 +207,7 @@ export class IMAPImportHandle {
     credential?: string;
     state?: IMAPImportState;
     deletePropagates?: boolean;
+    excludedFolders?: string[];
   }): Promise<IMAPImportAccount> {
     const req: IMAPImportSetRequest = {
       accountId: this.#accountId,

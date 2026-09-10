@@ -1929,6 +1929,17 @@ export const en = {
   'settings.import.horizonAll': 'All mail (no limit)',
   'settings.import.horizonCustom': 'Custom date',
   'settings.import.fieldHorizonDate': 'Import mail from this date',
+  // Excluded folders (re #305)
+  'settings.import.fieldExcludedFolders': 'Excluded folders',
+  'settings.import.excludedFoldersHint':
+    'These upstream folders are never synced. Excluding a folder that was ' +
+    'already synced removes it from herold on the next sync; messages that ' +
+    'also belong to another folder are kept.',
+  'settings.import.excludedFolderPlaceholder': 'Folder name (e.g. Spam)',
+  'settings.import.addBtn': 'Add',
+  'settings.import.excludedFolderEmpty': 'Enter a folder name before adding.',
+  'settings.import.removeExcludedFolderAriaLabel': 'Remove excluded folder {folder}',
+  'settings.import.excludedFoldersSummary': 'Excluded folders: {folders}',
   'settings.import.hostRequired': 'Host is required.',
   'settings.import.usernameRequired': 'Username is required.',
   'settings.import.horizonRequired': 'A backfill horizon is required.',
