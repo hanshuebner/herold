@@ -94,7 +94,8 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 
 	// excludedFolders is the per-account no-sync set (re #303/#305): an
 	// excluded folder is never SELECTed, so it gets no cursor row and no
-	// message_state rows.
+	// message_state rows. A folder that was already synced before it became
+	// excluded is cleaned up below rather than just skipped.
 	excludedFolders := make(map[string]bool, len(account.ExcludedFolders))
 	for _, f := range account.ExcludedFolders {
 		excludedFolders[f] = true
@@ -107,6 +108,7 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 			continue
 		}
 		if excludedFolders[fi.Name] {
+			w.excludeFolderCleanup(ctx, fi.Name)
 			continue
 		}
 		heroldName, ok := mapping[fi.Name]
@@ -961,6 +963,42 @@ func (w *accountWorker) reconcileExpungedMessages(ctx context.Context, upstreamF
 		w.removeMessageStateMembership(ctx, s)
 	}
 	return nil
+}
+
+// excludeFolderCleanup removes any state a previously-synced folder left
+// behind once it becomes excluded (re #305): every message_state row this
+// account holds for upstreamFolder, and the mailbox membership each row
+// produced, are removed through removeMessageStateMembership -- the same
+// store-level removal path afe08c39 uses for an upstream expunge, so a
+// message with another membership survives and one with none is destroyed
+// by RemoveMessageFromMailbox's normal "last membership gone" contract. The
+// folder's cursor row is dropped too, so a later un-exclusion starts a fresh
+// initial sync (folderInitialised=false) rather than resuming a stale
+// high-water mark. Called on every pass an excluded folder is seen upstream;
+// once cleaned up, ListIMAPImportMessageStatesByFolder returns empty and this
+// is a cheap no-op. Best-effort: a failure is logged and does not abort the
+// pass.
+func (w *accountWorker) excludeFolderCleanup(ctx context.Context, upstreamFolder string) {
+	account := w.opts.account
+	states, err := w.opts.store.Meta().ListIMAPImportMessageStatesByFolder(ctx, account.ID, upstreamFolder)
+	if err != nil {
+		w.opts.log.Warn("imapimport: excluded-folder cleanup: ListIMAPImportMessageStatesByFolder failed",
+			slog.String("account_id", account.ID),
+			slog.String("upstream_folder", upstreamFolder),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	for _, s := range states {
+		w.removeMessageStateMembership(ctx, s)
+	}
+	if err := w.opts.store.Meta().DeleteIMAPImportFolderCursor(ctx, account.ID, upstreamFolder); err != nil && !errors.Is(err, store.ErrNotFound) {
+		w.opts.log.Warn("imapimport: excluded-folder cleanup: DeleteIMAPImportFolderCursor failed",
+			slog.String("account_id", account.ID),
+			slog.String("upstream_folder", upstreamFolder),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // ensureMailbox returns the herold mailbox named mbName owned by pid,

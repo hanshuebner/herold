@@ -384,11 +384,30 @@ func (w *accountWorker) syncAllFoldersGmail(ctx context.Context, conn Conn, fold
 	// account-wide sum to the gauge below (REQ-IMAP-IMP-63 / D6).
 	w.backfillRemaining = 0
 
+	// excludedFolders (re #305): honoured the same way as the non-Gmail loop
+	// in sync.go -- an excluded label/system folder is never synced, and a
+	// folder that was already synced before it became excluded has its state
+	// cleaned up on this pass (excludeFolderCleanup). Phase 2 below (All Mail
+	// envelope-dedup) has no per-message label data to test against
+	// excludedFolders and is unreachable from the only caller of this
+	// function (syncAllFoldersGmailLabels falls back here exactly when All
+	// Mail is absent from the same folder list), so it is not a gap in
+	// practice; see the X-GM-LABELS path (gmail_labels.go) for the primary,
+	// exclusion-aware Gmail placement path.
+	excludedFolders := make(map[string]bool, len(account.ExcludedFolders))
+	for _, f := range account.ExcludedFolders {
+		excludedFolders[f] = true
+	}
+
 	var lastErr error
 
 	// Phase 1: Sync all Normal folders (label/system folders except All Mail).
 	for _, fi := range folders {
 		if hasAttr(fi.Attrs, imap.MailboxAttrNoSelect) {
+			continue
+		}
+		if excludedFolders[fi.Name] {
+			w.excludeFolderCleanup(ctx, fi.Name)
 			continue
 		}
 		switch classifyGmailFolder(fi.Name) {

@@ -3025,6 +3025,14 @@ type Metadata interface {
 	// Idempotent: calling with the same values is a no-op.
 	UpsertIMAPImportFolderCursor(ctx context.Context, cursor IMAPImportFolderCursor) error
 
+	// DeleteIMAPImportFolderCursor removes the sync cursor for the
+	// (accountID, upstreamFolder) pair. Used when a previously-synced
+	// folder becomes excluded (re #305): dropping the cursor alongside its
+	// message_state rows means a later un-exclusion starts a fresh initial
+	// sync rather than resuming a stale high/low-water mark. Returns
+	// ErrNotFound when no cursor row exists.
+	DeleteIMAPImportFolderCursor(ctx context.Context, accountID, upstreamFolder string) error
+
 	// GetIMAPImportMessageState returns the per-message sync state for
 	// the (accountID, upstreamFolder, upstreamUID) triple. The bool
 	// return is false when no row exists (message not yet imported or

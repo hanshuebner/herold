@@ -511,6 +511,22 @@ func (m *metadata) UpsertIMAPImportFolderCursor(ctx context.Context, cursor stor
 	})
 }
 
+func (m *metadata) DeleteIMAPImportFolderCursor(ctx context.Context, accountID, upstreamFolder string) error {
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM imapimport_folder_cursor
+			  WHERE account_id = $1 AND upstream_folder = $2`,
+			accountID, upstreamFolder)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // -- message state --------------------------------------------------------
 
 func (m *metadata) GetIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) (store.IMAPImportMessageState, bool, error) {

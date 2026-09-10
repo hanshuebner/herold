@@ -499,6 +499,26 @@ func (m *metadata) UpsertIMAPImportFolderCursor(ctx context.Context, cursor stor
 	})
 }
 
+func (m *metadata) DeleteIMAPImportFolderCursor(ctx context.Context, accountID, upstreamFolder string) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM imapimport_folder_cursor
+			  WHERE account_id = ? AND upstream_folder = ?`,
+			accountID, upstreamFolder)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: DeleteIMAPImportFolderCursor rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
 // -- message state --------------------------------------------------------
 
 func (m *metadata) GetIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) (store.IMAPImportMessageState, bool, error) {

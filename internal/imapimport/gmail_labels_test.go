@@ -16,6 +16,7 @@ package imapimport
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -56,7 +57,7 @@ func TestGmailLabelSetToMailboxNames(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := gmailLabelSetToMailboxNames(tc.labels, nil, nil)
+			got, _ := gmailLabelSetToMailboxNames(tc.labels, nil, nil, nil)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -72,7 +73,7 @@ func TestGmailLabelSetToMailboxNames(t *testing.T) {
 func TestGmailLabelSetToMailboxNames_FolderMapOverride(t *testing.T) {
 	// Per-account override on the Gmail system folder-equivalent for \Sent.
 	userMapping := map[string]string{"[Gmail]/Sent Mail": "Outbox"}
-	got := gmailLabelSetToMailboxNames([]string{`\Sent`, "Personal"}, userMapping, nil)
+	got, _ := gmailLabelSetToMailboxNames([]string{`\Sent`, "Personal"}, userMapping, nil, nil)
 	want := []string{"Outbox", "Personal"}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %q, want %q", got, want)
@@ -268,6 +269,195 @@ func TestSyncAllFoldersGmailLabels_Placement(t *testing.T) {
 	}
 }
 
+// TestSyncAllFoldersGmailLabels_ExcludedLabel verifies the prospective side
+// of per-account folder exclusion (re #305) on the X-GM-LABELS placement
+// path: a message whose only placement-bearing label resolves to an excluded
+// Gmail folder-equivalent ("[Gmail]/Spam" for \Spam) is never mirrored at
+// all -- no message, no message_state row, mirroring the non-Gmail folder
+// loop's "never creates state rows for it". A message that carries the
+// excluded label ALONGSIDE a still-included user label keeps its placement
+// in the included mailbox; only the excluded placement is dropped.
+func TestSyncAllFoldersGmailLabels_ExcludedLabel(t *testing.T) {
+	ha, _ := testharness.Start(t, testharness.Options{})
+	ctx := context.Background()
+
+	p, err := ha.Store.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "labels-excl@example.test",
+		DisplayName:    "labels-excl",
+		QuotaBytes:     1 << 30,
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	acc, err := ha.Store.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:     p.ID,
+		AccountName:     "Gmail",
+		Host:            "imap.gmail.com",
+		Port:            993,
+		TLSMode:         store.IMAPImportTLSModeImplicit,
+		Username:        "labels-excl@example.test",
+		AuthMethod:      store.IMAPImportAuthMethodPassword,
+		CredentialCT:    sealCred(t, "pw"),
+		State:           store.IMAPImportAccountStateEnabled,
+		ExcludedFolders: []string{"[Gmail]/Spam"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+
+	d := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	conn := &fakeLabelsConn{
+		uidNext: 4,
+		msgs: []labeledMsg{
+			{uid: 1, raw: buildRFC822("gm-spam-only@test", "Spam only", d), labels: []string{`\Spam`}},
+			{uid: 2, raw: buildRFC822("gm-inbox@test", "Inbox", d), labels: []string{`\Inbox`}},
+			{uid: 3, raw: buildRFC822("gm-spam-and-work@test", "Spam+Work", d), labels: []string{`\Spam`, "Work"}},
+		},
+	}
+
+	w := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		categoriser: noopCategoriser{},
+	})
+
+	if err := w.syncAllFoldersGmailLabels(ctx, conn, []folderInfo{{Name: gmailAllMail}}); err != nil {
+		t.Fatalf("syncAllFoldersGmailLabels: %v", err)
+	}
+
+	// uid 1: spam-only never mirrored at all.
+	if _, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "gm-spam-only@test"); err == nil {
+		t.Error("spam-only message was imported; want it skipped entirely")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMessageByMessageIDHeader (spam-only): unexpected error: %v", err)
+	}
+	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, gmailAllMail, 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (spam-only uid 1): %v", err)
+	} else if found {
+		t.Error("message_state row exists for the excluded spam-only message; want none")
+	}
+	if got := countMailboxMessages(t, ha.Store, p.ID, "Junk"); got != 0 {
+		t.Errorf("Junk mailbox has %d messages; want 0 (Spam label fully excluded)", got)
+	}
+
+	// uid 2: unaffected normal placement.
+	if countMailboxMessages(t, ha.Store, p.ID, "INBOX") != 1 {
+		t.Errorf("INBOX count = %d; want 1", countMailboxMessages(t, ha.Store, p.ID, "INBOX"))
+	}
+
+	// uid 3: Spam dropped, Work placement kept.
+	m3, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "gm-spam-and-work@test")
+	if err != nil {
+		t.Fatalf("lookup spam-and-work: %v", err)
+	}
+	names := messageMailboxNames(t, ha.Store, p.ID, m3)
+	if len(names) != 1 || names[0] != "Work" {
+		t.Errorf("spam-and-work mailboxes = %v; want exactly [Work]", names)
+	}
+}
+
+// TestSyncAllFoldersGmailLabels_ExcludedLabelCleanup verifies the retroactive
+// side of #305 on the X-GM-LABELS path: a message whose PRIMARY (first,
+// message_state-anchoring) placement was Junk from an earlier sync loses
+// that membership -- and, since Junk was its only membership, is destroyed
+// -- once \Spam becomes excluded and the account is re-synced. See
+// excludeGmailLabelFolders for what this reconciliation covers (the primary
+// placement) and does not cover (a secondary placement on a multi-label
+// message, a documented structural limit of the single-anchor-row design).
+func TestSyncAllFoldersGmailLabels_ExcludedLabelCleanup(t *testing.T) {
+	ha, _ := testharness.Start(t, testharness.Options{})
+	ctx := context.Background()
+
+	p, err := ha.Store.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "labels-cleanup@example.test",
+		DisplayName:    "labels-cleanup",
+		QuotaBytes:     1 << 30,
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	acc, err := ha.Store.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:  p.ID,
+		AccountName:  "Gmail",
+		Host:         "imap.gmail.com",
+		Port:         993,
+		TLSMode:      store.IMAPImportTLSModeImplicit,
+		Username:     "labels-cleanup@example.test",
+		AuthMethod:   store.IMAPImportAuthMethodPassword,
+		CredentialCT: sealCred(t, "pw"),
+		State:        store.IMAPImportAccountStateEnabled,
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+
+	d := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
+	conn := &fakeLabelsConn{
+		uidNext: 2,
+		msgs: []labeledMsg{
+			{uid: 1, raw: buildRFC822("gm-cleanup-spam@test", "Cleanup Spam", d), labels: []string{`\Spam`}},
+		},
+	}
+
+	w := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		categoriser: noopCategoriser{},
+	})
+	if err := w.syncAllFoldersGmailLabels(ctx, conn, []folderInfo{{Name: gmailAllMail}}); err != nil {
+		t.Fatalf("first syncAllFoldersGmailLabels: %v", err)
+	}
+
+	// Pre-exclusion: mirrored into Junk with a message_state anchor row.
+	if countMailboxMessages(t, ha.Store, p.ID, "Junk") != 1 {
+		t.Fatalf("Junk count = %d; want 1 before exclusion", countMailboxMessages(t, ha.Store, p.ID, "Junk"))
+	}
+	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, gmailAllMail, 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (pre-exclusion): %v", err)
+	} else if !found {
+		t.Fatal("message_state row missing before exclusion")
+	}
+
+	// Exclude \Spam's folder-equivalent and re-sync with a fresh worker
+	// carrying the updated account (mirrors how the real worker refreshes
+	// ExcludedFolders between attempts -- see accountWorker.refreshAccount).
+	acc.ExcludedFolders = []string{"[Gmail]/Spam"}
+	w2 := newAccountWorker(accountWorkerOpts{
+		account:     acc,
+		store:       ha.Store,
+		dataKey:     testDataKey(t),
+		log:         newTestLogger(t),
+		clk:         ha.Clock,
+		categoriser: noopCategoriser{},
+	})
+	if err := w2.syncAllFoldersGmailLabels(ctx, conn, []folderInfo{{Name: gmailAllMail}}); err != nil {
+		t.Fatalf("second syncAllFoldersGmailLabels (post-exclusion): %v", err)
+	}
+
+	if got := countMailboxMessages(t, ha.Store, p.ID, "Junk"); got != 0 {
+		t.Errorf("Junk count = %d; want 0 after exclusion", got)
+	}
+	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, gmailAllMail, 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (post-exclusion): %v", err)
+	} else if found {
+		t.Error("message_state row still exists after exclusion; want it removed")
+	}
+	// Junk was the message's only membership: it is destroyed.
+	if _, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "gm-cleanup-spam@test"); err == nil {
+		t.Error("message still exists after its only membership was excluded; want it destroyed")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMessageByMessageIDHeader (post-exclusion): unexpected error: %v", err)
+	}
+}
+
 // TestSyncAllFoldersGmailLabels_FallbackNoAllMail verifies that an X-GM-EXT-1
 // server with no [Gmail]/All Mail folder falls back to folder-based placement
 // rather than failing (REQ-IMAP-IMP-53 fallback clause).
@@ -404,7 +594,7 @@ func TestProdConnUIDFetchWithLabels(t *testing.T) {
 		t.Errorf("RFC822=%q, want %q", got.RFC822, "hello world!")
 	}
 	// Placement derived from the parsed labels.
-	names := gmailLabelSetToMailboxNames(got.Labels, nil, nil)
+	names, _ := gmailLabelSetToMailboxNames(got.Labels, nil, nil, nil)
 	if len(names) != 3 || names[0] != "INBOX" || names[1] != "Travel" || names[2] != "Receipts/2024" {
 		t.Errorf("derived mailbox names = %q", names)
 	}

@@ -463,6 +463,7 @@ func Run(t *testing.T, f Factory) {
 		{"IMAPImport_ProvenanceAndRemoval", testIMAPImport_ProvenanceAndRemoval},
 		{"IMAPImport_FolderMapReplace", testIMAPImport_FolderMapReplace},
 		{"IMAPImport_FolderCursorUpsertGet", testIMAPImport_FolderCursorUpsertGet},
+		{"IMAPImport_FolderCursorDelete", testIMAPImport_FolderCursorDelete},
 		{"IMAPImport_MessageStateUpsertAndLookups", testIMAPImport_MessageStateUpsertAndLookups},
 		{"IMAPImport_CredentialCTValidation", testIMAPImport_CredentialCTValidation},
 		{"IMAPImport_NullBackfillFloor", testIMAPImport_NullBackfillFloor},

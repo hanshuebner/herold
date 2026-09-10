@@ -339,3 +339,115 @@ func TestExcludedFolderNoStateRows(t *testing.T) {
 		t.Errorf("non-excluded INBOX message was not imported: %v", err)
 	}
 }
+
+// TestExcludedFolderCleanupOnBecomingExcluded verifies the remainder of #305:
+// a folder excluded AFTER it was already synced has its message_state rows
+// and cursor removed on the next sync, and the mailbox memberships those
+// rows produced go with them -- mirroring the store's normal removal path
+// (the same one afe08c39 uses for an upstream expunge). A message with
+// another surviving membership (Shared, mirrored from both INBOX and
+// Archive) keeps that membership; a message that lived only in the excluded
+// folder (Archive-only) is destroyed.
+func TestExcludedFolderCleanupOnBecomingExcluded(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("becl1", "pw")
+	if err := u.Create("Archive", nil); err != nil {
+		t.Fatalf("Create Archive: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 8, 5, 9, 0, 0, 0, time.UTC)
+	rawShared := buildRFC822("becomes-excluded-shared@test", "Shared", d)
+	appendToServer(t, ts, "becl1", "pw", "INBOX", rawShared, nil, d)
+	appendToServer(t, ts, "becl1", "pw", "Archive", rawShared, nil, d)
+	rawOnly := buildRFC822("becomes-excluded-only@test", "Only Archive", d)
+	archiveOnlyUID := appendToServer(t, ts, "becl1", "pw", "Archive", rawOnly, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "becl1@example.test",
+		username:            "becl1",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Pre-exclusion sanity: the cursor exists and the shared message has two
+	// memberships.
+	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Archive"); err != nil {
+		t.Fatalf("GetIMAPImportFolderCursor (pre-exclusion): %v", err)
+	} else if !found {
+		t.Fatal("Archive cursor missing after first sync")
+	}
+	sharedMsg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "becomes-excluded-shared@test")
+	if err != nil {
+		t.Fatalf("lookup shared message: %v", err)
+	}
+	if len(sharedMsg.Mailboxes) != 2 {
+		t.Fatalf("shared message has %d memberships; want 2 (INBOX, Archive)", len(sharedMsg.Mailboxes))
+	}
+
+	// Exclude Archive after it was already synced.
+	acc2, err := ha.Store.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      acc.PrincipalID,
+		AccountName:      acc.AccountName,
+		Host:             acc.Host,
+		Port:             acc.Port,
+		TLSMode:          acc.TLSMode,
+		Username:         acc.Username,
+		AuthMethod:       acc.AuthMethod,
+		State:            acc.State,
+		DeletePropagates: acc.DeletePropagates,
+		ExcludedFolders:  []string{"Archive"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount: %v", err)
+	}
+
+	if err := runSyncOnce(t, ha, ts, acc2, nil); err != nil {
+		t.Fatalf("second sync (post-exclusion): %v", err)
+	}
+
+	// The Archive cursor is gone.
+	if _, found, err := ha.Store.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Archive"); err != nil {
+		t.Fatalf("GetIMAPImportFolderCursor (post-exclusion): %v", err)
+	} else if found {
+		t.Error("Archive cursor still exists after exclusion; want it removed")
+	}
+
+	// No message_state rows remain for Archive.
+	states, err := ha.Store.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "Archive")
+	if err != nil {
+		t.Fatalf("ListIMAPImportMessageStatesByFolder: %v", err)
+	}
+	if len(states) != 0 {
+		t.Errorf("%d message_state rows remain for excluded Archive; want 0", len(states))
+	}
+	if _, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Archive", uint32(archiveOnlyUID)); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (archive-only): %v", err)
+	} else if found {
+		t.Error("message_state row for the Archive-only message still exists; want it deleted")
+	}
+
+	// The shared message survives with its INBOX membership only.
+	sharedMsg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "becomes-excluded-shared@test")
+	if err != nil {
+		t.Fatalf("lookup shared message (post-exclusion): %v", err)
+	}
+	names := messageMailboxNames(t, ha.Store, acc.PrincipalID, sharedMsg2)
+	if len(names) != 1 || names[0] != "INBOX" {
+		t.Errorf("shared message mailboxes = %v; want exactly [INBOX]", names)
+	}
+
+	// The Archive-only message is destroyed: no membership survives it.
+	if _, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "becomes-excluded-only@test"); err == nil {
+		t.Error("Archive-only message still exists after exclusion; want it destroyed")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMessageByMessageIDHeader (archive-only): unexpected error: %v", err)
+	}
+}

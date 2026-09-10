@@ -816,6 +816,52 @@ func testIMAPImport_FolderCursorUpsertGet(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_FolderCursorDelete verifies DeleteIMAPImportFolderCursor
+// (re #305): it removes only the targeted (account, upstreamFolder) cursor
+// row, leaves a sibling folder's cursor and another account's cursor of the
+// same folder name untouched, and returns ErrNotFound for an absent row.
+func testIMAPImport_FolderCursorDelete(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-cursor-delete@example.com")
+	acc := mustCreateIMAPImportAccount(t, s, p.ID, "CursorDelete")
+	otherAcc := mustCreateIMAPImportAccount(t, s, p.ID, "CursorDeleteOther")
+
+	for _, c := range []store.IMAPImportFolderCursor{
+		{AccountID: acc.ID, UpstreamFolder: "INBOX", UIDValidity: 1, UIDNext: 10, HighWaterUID: 9},
+		{AccountID: acc.ID, UpstreamFolder: "Archive", UIDValidity: 1, UIDNext: 20, HighWaterUID: 19},
+		{AccountID: otherAcc.ID, UpstreamFolder: "INBOX", UIDValidity: 1, UIDNext: 30, HighWaterUID: 29},
+	} {
+		if err := s.Meta().UpsertIMAPImportFolderCursor(ctx, c); err != nil {
+			t.Fatalf("UpsertIMAPImportFolderCursor(%+v): %v", c, err)
+		}
+	}
+
+	if err := s.Meta().DeleteIMAPImportFolderCursor(ctx, acc.ID, "INBOX"); err != nil {
+		t.Fatalf("DeleteIMAPImportFolderCursor: %v", err)
+	}
+	if _, found, err := s.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "INBOX"); err != nil {
+		t.Fatalf("GetIMAPImportFolderCursor (post-delete): %v", err)
+	} else if found {
+		t.Error("deleted cursor row still found")
+	}
+	if _, found, err := s.Meta().GetIMAPImportFolderCursor(ctx, acc.ID, "Archive"); err != nil {
+		t.Fatalf("GetIMAPImportFolderCursor (sibling folder): %v", err)
+	} else if !found {
+		t.Error("sibling folder's cursor was deleted; want it kept")
+	}
+	if _, found, err := s.Meta().GetIMAPImportFolderCursor(ctx, otherAcc.ID, "INBOX"); err != nil {
+		t.Fatalf("GetIMAPImportFolderCursor (other account): %v", err)
+	} else if !found {
+		t.Error("other account's INBOX cursor was deleted; want it kept")
+	}
+
+	// Deleting an absent row returns ErrNotFound.
+	if err := s.Meta().DeleteIMAPImportFolderCursor(ctx, acc.ID, "INBOX"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteIMAPImportFolderCursor (already gone) = %v; want ErrNotFound", err)
+	}
+}
+
 // testIMAPImport_MessageStateUpsertAndLookups verifies UpsertIMAPImportMessageState
 // and both lookup paths (by UID and by herold message id).
 func testIMAPImport_MessageStateUpsertAndLookups(t *testing.T, s store.Store) {
