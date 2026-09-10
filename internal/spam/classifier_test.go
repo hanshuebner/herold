@@ -278,6 +278,55 @@ func TestBuildRequest_ForwardingHeadersAbsent(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_AuthResultsUsesServerRendering verifies that when the
+// caller supplies a non-nil *mailauth.AuthResults, BuildRequest sends the
+// server's own rendered Authentication-Results (auth.Raw) to the
+// classifier and ignores the upstream Authentication-Results header
+// present in the message bytes — the classifier data grant specifies
+// herold's own SPF/DKIM/DMARC verdict, not a forgeable upstream header
+// (re #298).
+func TestBuildRequest_AuthResultsUsesServerRendering(t *testing.T) {
+	const raw = "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Authentication-Results: forged.attacker.example; spf=pass smtp.mailfrom=attacker.example\r\n" +
+		"Subject: Newsletter\r\n" +
+		"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"hello\r\n"
+	auth := &mailauth.AuthResults{
+		SPF: mailauth.SPFResult{Status: mailauth.AuthPass, From: "alice@example.com"},
+		Raw: "mail.herold.example; spf=pass smtp.mailfrom=alice@example.com",
+	}
+	req := BuildRequest(buildMessage(t, raw), auth)
+	if req.AuthResults != auth.Raw {
+		t.Fatalf("auth_results: got %q, want the server-rendered value %q", req.AuthResults, auth.Raw)
+	}
+	if strings.Contains(req.AuthResults, "attacker.example") {
+		t.Fatalf("auth_results leaked the upstream header: %q", req.AuthResults)
+	}
+}
+
+// TestBuildRequest_AuthResultsFallsBackToUpstreamWhenNilAuth verifies
+// that a nil auth argument — the IMAP import path, which performs no
+// server-side verification — falls back to msg.AuthResultsRaw, the
+// upstream Authentication-Results header content as received (re #298).
+func TestBuildRequest_AuthResultsFallsBackToUpstreamWhenNilAuth(t *testing.T) {
+	const raw = "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Authentication-Results: mail.example.com; spf=pass smtp.mailfrom=example.com\r\n" +
+		"Subject: Newsletter\r\n" +
+		"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"hello\r\n"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	const want = "mail.example.com; spf=pass smtp.mailfrom=example.com"
+	if req.AuthResults != want {
+		t.Fatalf("auth_results: got %q, want upstream header %q", req.AuthResults, want)
+	}
+}
+
 func TestBuildRequest_HTMLStripped(t *testing.T) {
 	const html = "From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
 		"<html><body>hello <a href=\"https://example.com\">link</a></body></html>"

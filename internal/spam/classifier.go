@@ -247,9 +247,19 @@ type Request struct {
 // ListID, ListUnsubscribe, Precedence and AutoSubmitted are read
 // straight off msg.Headers (single, unfolded occurrence) so a message
 // carrying none of them simply omits those keys from the wire payload.
-// AuthResults carries msg.AuthResultsRaw, the Authentication-Results
-// header content as received (re #298). A nil auth argument collapses
-// every did-pass boolean to false and FromDomain to "".
+//
+// AuthResults is herold's own rendered Authentication-Results value
+// (auth.Raw, the same string protosmtp's stamping path writes) whenever
+// the caller has a verified auth result: the classifier data grant
+// (docs/design/server/implementation/08-classifier-plugin.md) specifies
+// the server's own SPF/DKIM/DMARC verdict, not a forgeable upstream
+// header. auth.Raw is populated before classification runs and therefore
+// never carries the x-herold-spam token (the verdict does not exist
+// yet). A nil auth argument — the IMAP import path, which stores bytes
+// as-synced and performs no server-side verification (REQ-IMAP-IMP-33)
+// — falls back to msg.AuthResultsRaw, the upstream header content as
+// received, and collapses every did-pass boolean to false and
+// FromDomain to "" (re #298).
 func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 	from := addrsToStrings(msg.Envelope.From)
 	to := addrsToStrings(msg.Envelope.To)
@@ -276,6 +286,7 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		req.SPFPass = auth.SPF.Status == mailauth.AuthPass
 		req.DMARCPass = auth.DMARC.Status == mailauth.AuthPass
 		req.FromDomain = auth.FromDomain()
+		req.AuthResults = auth.Raw
 	}
 	return req
 }
