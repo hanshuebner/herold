@@ -213,37 +213,63 @@ func parseClassification(raw map[string]any) (Classification, error) {
 }
 
 // Request is the JSON shape sent to the plugin. Fields follow
-// docs/design/server/requirements/06-filtering.md §Prompt shape.
+// docs/design/server/requirements/06-filtering.md §Prompt shape
+// (REQ-FILT-20/30) and the classifier data grant in
+// docs/design/server/implementation/08-classifier-plugin.md: envelope
+// From/To/Cc/Subject/Date, the forwarding/list headers Reply-To,
+// Return-Path, List-Id, List-Unsubscribe, Precedence and
+// Auto-Submitted, the server's own Authentication-Results verdict, and
+// a body excerpt. No message.raw, no attachments, no full body.
 type Request struct {
-	From         []string `json:"from"`
-	To           []string `json:"to"`
-	Cc           []string `json:"cc,omitempty"`
-	Subject      string   `json:"subject"`
-	ReceivedDate string   `json:"received_date,omitempty"`
-	DKIMPass     bool     `json:"dkim_pass"`
-	SPFPass      bool     `json:"spf_pass"`
-	DMARCPass    bool     `json:"dmarc_pass"`
-	FromDomain   string   `json:"from_domain,omitempty"`
-	BodyExcerpt  string   `json:"body_excerpt"`
+	From            []string `json:"from"`
+	To              []string `json:"to"`
+	Cc              []string `json:"cc,omitempty"`
+	Subject         string   `json:"subject"`
+	ReplyTo         string   `json:"reply_to,omitempty"`
+	ReturnPath      string   `json:"return_path,omitempty"`
+	ReceivedDate    string   `json:"received_date,omitempty"`
+	ListID          string   `json:"list_id,omitempty"`
+	ListUnsubscribe string   `json:"list_unsubscribe,omitempty"`
+	Precedence      string   `json:"precedence,omitempty"`
+	AutoSubmitted   string   `json:"auto_submitted,omitempty"`
+	AuthResults     string   `json:"auth_results,omitempty"`
+	DKIMPass        bool     `json:"dkim_pass"`
+	SPFPass         bool     `json:"spf_pass"`
+	DMARCPass       bool     `json:"dmarc_pass"`
+	FromDomain      string   `json:"from_domain,omitempty"`
+	BodyExcerpt     string   `json:"body_excerpt"`
 }
 
 // BuildRequest assembles the Request from a parsed message + auth
 // results. The excerpt is capped to DefaultBodyExcerptBytes and HTML is
 // stripped to text. URLs and email addresses are preserved because the
-// classifier prompt specifically wants them. A nil auth argument
-// collapses every did-pass boolean to false and FromDomain to "".
+// classifier prompt specifically wants them. ReplyTo, ReturnPath,
+// ListID, ListUnsubscribe, Precedence and AutoSubmitted are read
+// straight off msg.Headers (single, unfolded occurrence) so a message
+// carrying none of them simply omits those keys from the wire payload.
+// AuthResults carries msg.AuthResultsRaw, the Authentication-Results
+// header content as received (re #298). A nil auth argument collapses
+// every did-pass boolean to false and FromDomain to "".
 func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 	from := addrsToStrings(msg.Envelope.From)
 	to := addrsToStrings(msg.Envelope.To)
 	cc := addrsToStrings(msg.Envelope.Cc)
+	replyTo := strings.Join(addrsToStrings(msg.Envelope.ReplyTo), ", ")
 	body := collectTextBody(msg.Body, DefaultBodyExcerptBytes)
 	req := Request{
-		From:         from,
-		To:           to,
-		Cc:           cc,
-		Subject:      msg.Envelope.Subject,
-		ReceivedDate: msg.Envelope.Date,
-		BodyExcerpt:  body,
+		From:            from,
+		To:              to,
+		Cc:              cc,
+		Subject:         msg.Envelope.Subject,
+		ReplyTo:         replyTo,
+		ReturnPath:      msg.Headers.Get("Return-Path"),
+		ReceivedDate:    msg.Envelope.Date,
+		ListID:          msg.Headers.Get("List-Id"),
+		ListUnsubscribe: msg.Headers.Get("List-Unsubscribe"),
+		Precedence:      msg.Headers.Get("Precedence"),
+		AutoSubmitted:   msg.Headers.Get("Auto-Submitted"),
+		AuthResults:     msg.AuthResultsRaw,
+		BodyExcerpt:     body,
 	}
 	if auth != nil {
 		req.DKIMPass = auth.BestDKIMStatus() == mailauth.AuthPass

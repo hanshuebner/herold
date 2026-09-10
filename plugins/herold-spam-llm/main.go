@@ -473,8 +473,29 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	if len(in.Cc) > 0 {
 		out["cc"] = in.Cc
 	}
+	if in.ReplyTo != "" {
+		out["reply_to"] = in.ReplyTo
+	}
+	if in.ReturnPath != "" {
+		out["return_path"] = in.ReturnPath
+	}
 	if in.ReceivedDate != "" {
 		out["received_date"] = in.ReceivedDate
+	}
+	if in.ListID != "" {
+		out["list_id"] = in.ListID
+	}
+	if in.ListUnsubscribe != "" {
+		out["list_unsubscribe"] = in.ListUnsubscribe
+	}
+	if in.Precedence != "" {
+		out["precedence"] = in.Precedence
+	}
+	if in.AutoSubmitted != "" {
+		out["auto_submitted"] = in.AutoSubmitted
+	}
+	if in.AuthResults != "" {
+		out["auth_results"] = in.AuthResults
 	}
 	if in.FromDomain != "" {
 		out["from_domain"] = in.FromDomain

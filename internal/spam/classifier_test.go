@@ -195,6 +195,89 @@ func TestBuildRequest_Snapshot(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_ForwardingHeadersPresent verifies that BuildRequest
+// populates ReplyTo, ReturnPath, ListID, ListUnsubscribe, Precedence,
+// AutoSubmitted and AuthResults from the message's headers, and that
+// each field round-trips onto the wire payload the plugin receives
+// (re #298).
+func TestBuildRequest_ForwardingHeadersPresent(t *testing.T) {
+	const raw = "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Reply-To: Reply <reply@example.com>\r\n" +
+		"Return-Path: <bounce@example.com>\r\n" +
+		"List-Id: Kayak Club <kajak.example.org>\r\n" +
+		"List-Unsubscribe: <mailto:unsub@example.com>\r\n" +
+		"Precedence: bulk\r\n" +
+		"Auto-Submitted: auto-generated\r\n" +
+		"Authentication-Results: mail.example.com; spf=pass smtp.mailfrom=example.com\r\n" +
+		"Subject: Newsletter\r\n" +
+		"Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"hello\r\n"
+	req := BuildRequest(buildMessage(t, raw), nil)
+	if req.ReplyTo != "Reply <reply@example.com>" {
+		t.Fatalf("reply_to: %q", req.ReplyTo)
+	}
+	if req.ReturnPath != "<bounce@example.com>" {
+		t.Fatalf("return_path: %q", req.ReturnPath)
+	}
+	if req.ListID != "Kayak Club <kajak.example.org>" {
+		t.Fatalf("list_id: %q", req.ListID)
+	}
+	if req.ListUnsubscribe != "<mailto:unsub@example.com>" {
+		t.Fatalf("list_unsubscribe: %q", req.ListUnsubscribe)
+	}
+	if req.Precedence != "bulk" {
+		t.Fatalf("precedence: %q", req.Precedence)
+	}
+	if req.AutoSubmitted != "auto-generated" {
+		t.Fatalf("auto_submitted: %q", req.AutoSubmitted)
+	}
+	if req.AuthResults != "mail.example.com; spf=pass smtp.mailfrom=example.com" {
+		t.Fatalf("auth_results: %q", req.AuthResults)
+	}
+	raw2, err := req.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw2, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"reply_to", "return_path", "list_id", "list_unsubscribe", "precedence", "auto_submitted", "auth_results"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("wire payload missing key %q: %+v", key, got)
+		}
+	}
+}
+
+// TestBuildRequest_ForwardingHeadersAbsent verifies that a message
+// carrying none of the new forwarding/list/auth headers leaves the
+// corresponding Request fields empty and, because every new field is
+// `omitempty`, off the wire payload entirely (re #298).
+func TestBuildRequest_ForwardingHeadersAbsent(t *testing.T) {
+	req := BuildRequest(buildMessage(t, canonMsg), nil)
+	if req.ReplyTo != "" || req.ReturnPath != "" || req.ListID != "" ||
+		req.ListUnsubscribe != "" || req.Precedence != "" ||
+		req.AutoSubmitted != "" || req.AuthResults != "" {
+		t.Fatalf("expected empty forwarding-header fields, got %+v", req)
+	}
+	raw, err := req.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"reply_to", "return_path", "list_id", "list_unsubscribe", "precedence", "auto_submitted", "auth_results"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("wire payload unexpectedly carries omitempty key %q: %+v", key, got)
+		}
+	}
+}
+
 func TestBuildRequest_HTMLStripped(t *testing.T) {
 	const html = "From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
 		"<html><body>hello <a href=\"https://example.com\">link</a></body></html>"

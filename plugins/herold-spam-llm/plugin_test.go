@@ -303,6 +303,74 @@ func TestClassify_FullPayloadReachesLLM(t *testing.T) {
 	}
 }
 
+// TestClassify_ForwardingHeadersReachLLM asserts that the data-grant
+// forwarding/list headers and the server's own Authentication-Results
+// string -- ReplyTo, ReturnPath, ListID, ListUnsubscribe, Precedence,
+// AutoSubmitted, AuthResults -- survive trimPayload and land in the
+// LLM's user-turn JSON, matching what internal/spam.BuildRequest now
+// puts on the wire (re #298).
+func TestClassify_ForwardingHeadersReachLLM(t *testing.T) {
+	var captured string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(body)
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.1,"reason":"ok"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("newsletter body")
+	payload["reply_to"] = "Reply <reply@example.com>"
+	payload["return_path"] = "<bounce@example.com>"
+	payload["list_id"] = "Kayak Club <kajak.example.org>"
+	payload["list_unsubscribe"] = "<mailto:unsub@example.com>"
+	payload["precedence"] = "bulk"
+	payload["auto_submitted"] = "auto-generated"
+	payload["auth_results"] = "mail.example.com; spf=pass smtp.mailfrom=example.com"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.classify(ctx, payload); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	// The LLM request is a chat-completion envelope whose user turn
+	// carries the payload as a JSON-stringified object; scan for the
+	// escaped keys/values so the assertion matches what actually
+	// reaches the model.
+	for _, want := range []string{
+		`\"reply_to\"`, `reply@example.com`,
+		`\"return_path\"`, `bounce@example.com`,
+		`\"list_id\"`, `kajak.example.org`,
+		`\"list_unsubscribe\"`, `unsub@example.com`,
+		`\"precedence\":\"bulk\"`,
+		`\"auto_submitted\":\"auto-generated\"`,
+		`\"auth_results\"`, `spf=pass`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("LLM body missing %s; got %s", want, body)
+		}
+	}
+}
+
 func TestClassify_HamVerdictBelowThreshold(t *testing.T) {
 	llm := newFakeLLM(t)
 	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {

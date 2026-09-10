@@ -205,16 +205,23 @@ type DNSRecord struct {
 // a translation layer. Keeping it flat reads better in the LLM prompt
 // than a nested envelope/headers map would.
 type SpamClassifyParams struct {
-	From         []string `json:"from"`
-	To           []string `json:"to"`
-	Cc           []string `json:"cc,omitempty"`
-	Subject      string   `json:"subject"`
-	ReceivedDate string   `json:"received_date,omitempty"`
-	DKIMPass     bool     `json:"dkim_pass"`
-	SPFPass      bool     `json:"spf_pass"`
-	DMARCPass    bool     `json:"dmarc_pass"`
-	FromDomain   string   `json:"from_domain,omitempty"`
-	BodyExcerpt  string   `json:"body_excerpt"`
+	From            []string `json:"from"`
+	To              []string `json:"to"`
+	Cc              []string `json:"cc,omitempty"`
+	Subject         string   `json:"subject"`
+	ReplyTo         string   `json:"reply_to,omitempty"`
+	ReturnPath      string   `json:"return_path,omitempty"`
+	ReceivedDate    string   `json:"received_date,omitempty"`
+	ListID          string   `json:"list_id,omitempty"`
+	ListUnsubscribe string   `json:"list_unsubscribe,omitempty"`
+	Precedence      string   `json:"precedence,omitempty"`
+	AutoSubmitted   string   `json:"auto_submitted,omitempty"`
+	AuthResults     string   `json:"auth_results,omitempty"`
+	DKIMPass        bool     `json:"dkim_pass"`
+	SPFPass         bool     `json:"spf_pass"`
+	DMARCPass       bool     `json:"dmarc_pass"`
+	FromDomain      string   `json:"from_domain,omitempty"`
+	BodyExcerpt     string   `json:"body_excerpt"`
 }
 
 // SpamClassifyResult is the verdict for one message.
