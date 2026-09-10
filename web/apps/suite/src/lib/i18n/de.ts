@@ -987,6 +987,10 @@ export const de = {
   'settings.notifications.desktopHint':
     'Zeigt eine Desktop-Benachrichtigung für neue Posteingangs-Nachrichten an, wenn dieser Tab geöffnet ist und die Berechtigung erteilt wurde.',
   'settings.notifications.desktopAria': 'Desktop-Benachrichtigungen',
+  // Konto-Benachrichtigungskanal (Issue #212, REQ-MAIL-SUB-06)
+  'notifications.subAccountNewMail': 'Neue E-Mail in {name}',
+  'settings.accounts.notifications': 'Benachrichtigungen',
+  'settings.accounts.notificationsHint': 'Desktop-Benachrichtigungen für neue E-Mails in diesem Konto',
   'settings.notifications.pushLabel': 'Push-Benachrichtigungen',
   'settings.notifications.pushDeniedHint':
     'Benachrichtigungen sind aus. Sie können sie in den Browser-Einstellungen wieder aktivieren.',

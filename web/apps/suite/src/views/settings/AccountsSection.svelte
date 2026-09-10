@@ -23,10 +23,17 @@
   import { auth } from '../../lib/auth/auth.svelte';
   import { imapImportStore, type IMAPImportHandle } from '../../lib/jmap/imap-import-store.svelte';
   import { separationState, separationProgress, separationOf } from '../../lib/identities/identity-separation';
+  import { accountNotificationMute } from '../../lib/notifications/account-mute.svelte';
   import { confirm } from '../../lib/dialog/confirm.svelte';
   import { toast } from '../../lib/toast/toast.svelte';
   import { t, localeTag } from '../../lib/i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
+
+  // Notifications toggle persistence needs the hydrated mute set; this is
+  // a cheap idempotent call (App.svelte's ready effect also calls it, so
+  // this is only load-bearing for a user who opens Settings before that
+  // effect has had a chance to run).
+  accountNotificationMute.hydrate();
 
   $effect(() => {
     void subAccounts.load();
@@ -82,6 +89,10 @@
     } finally {
       pausingAccountId = null;
     }
+  }
+
+  function toggleNotifications(accountId: string, currentlyMuted: boolean): void {
+    accountNotificationMute.setMuted(accountId, !currentlyMuted);
   }
 
   let removingAccountId = $state<string | null>(null);
@@ -168,6 +179,21 @@
           <span class="label">{t('settings.accounts.lastSync')}</span>
           <span class="value">{formatLastSync(account?.lastSuccessAt)}</span>
         </div>
+        {#if !migrating}
+          {@const muted = accountNotificationMute.isMuted(entry.accountId)}
+          <div class="account-notifications">
+            <span class="label">{t('settings.accounts.notifications')}</span>
+            <label class="switch" aria-label={t('settings.accounts.notificationsHint')}>
+              <input
+                type="checkbox"
+                checked={!muted}
+                onchange={() => toggleNotifications(entry.accountId, muted)}
+                data-testid="account-notifications-{entry.accountId}"
+              />
+              <span class="track" aria-hidden="true"></span>
+            </label>
+          </div>
+        {/if}
         <div class="account-actions">
           {#if account}
             <Button
@@ -272,5 +298,57 @@
     display: flex;
     gap: var(--spacing-03);
     margin-top: var(--spacing-02);
+  }
+
+  .account-notifications {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    font-size: var(--type-body-compact-01-size);
+  }
+  .account-notifications .label {
+    color: var(--text-helper);
+  }
+
+  .switch {
+    position: relative;
+    display: inline-flex;
+    width: 40px;
+    height: 22px;
+    cursor: pointer;
+  }
+  .switch input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+  }
+  .switch .track {
+    width: 100%;
+    height: 100%;
+    background: var(--border-strong-01);
+    border-radius: var(--radius-pill);
+    position: relative;
+    transition: background var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .switch .track::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text-on-color);
+    border-radius: var(--radius-pill);
+    transition: transform var(--duration-fast-02) var(--easing-productive-enter);
+  }
+  .switch input:checked + .track {
+    background: var(--interactive);
+  }
+  .switch input:checked + .track::before {
+    transform: translateX(18px);
   }
 </style>

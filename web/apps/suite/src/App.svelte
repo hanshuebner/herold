@@ -47,6 +47,7 @@
   import SubAccountMailView from './views/SubAccountMailView.svelte';
   import AccountSidebar from './lib/shell/AccountSidebar.svelte';
   import { subAccounts } from './lib/mail/sub-accounts.svelte';
+  import { accountNotificationMute } from './lib/notifications/account-mute.svelte';
   import ArchiveMailboxView from './views/ArchiveMailboxView.svelte';
   import SidebarChats from './lib/chat/SidebarChats.svelte';
   import { archive } from './lib/archive/archive-store.svelte';
@@ -74,6 +75,12 @@
   $effect(() => {
     if (auth.status === 'ready') {
       settings.hydrate();
+      // Per-sub-account notification mute (issue #212, REQ-MAIL-SUB-06):
+      // hydrated as early as auth allows so a push that arrives before
+      // the user ever opens Settings still honours a previously-set
+      // mute (accountKey() needs auth.session.username to scope the
+      // storage read correctly, hence waiting for 'ready').
+      accountNotificationMute.hydrate();
       // Reload search history from the newly-authenticated account's
       // localStorage namespace. The mail store clears its in-memory
       // history on account change (reset callback); this call re-reads

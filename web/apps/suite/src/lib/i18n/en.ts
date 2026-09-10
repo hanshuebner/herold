@@ -972,6 +972,10 @@ export const en = {
   'settings.notifications.desktopHint':
     'Show a desktop notification for new inbox messages when this tab is open and permission is granted.',
   'settings.notifications.desktopAria': 'Desktop notifications',
+  // Per-account notification channel (issue #212, REQ-MAIL-SUB-06)
+  'notifications.subAccountNewMail': 'New mail in {name}',
+  'settings.accounts.notifications': 'Notifications',
+  'settings.accounts.notificationsHint': 'Desktop notifications for new mail in this account',
   'settings.notifications.pushLabel': 'Push notifications',
   'settings.notifications.pushDeniedHint':
     'Notifications are off. You can re-enable them in your browser settings.',

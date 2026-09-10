@@ -34,6 +34,10 @@ import { jmap, strict } from '../jmap/client';
 import { auth, registerAccountResetCallback } from '../auth/auth.svelte';
 import { sync } from '../jmap/sync.svelte';
 import { Capability, type Invocation } from '../jmap/types';
+import { settings } from '../settings/settings.svelte';
+import { accountNotificationMute } from '../notifications/account-mute.svelte';
+import { appendEvent } from '../debug-ring/debug-ring';
+import { i18n } from '../i18n/i18n.svelte';
 import type { Email, Identity, Mailbox } from './types';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -169,6 +173,7 @@ class SubAccountsStore {
     try {
       const updated = await this.#loadOne(accountId, existing.name);
       this.entries = this.entries.map((e) => (e.accountId === accountId ? updated : e));
+      this.#maybeNotify(existing, updated);
     } catch {
       // Best-effort background refresh; keep the stale entry rather than
       // dropping the row out of the switcher on a transient failure.
@@ -176,6 +181,51 @@ class SubAccountsStore {
     if (this.listAccountId === accountId) {
       const mailboxId = this.listMailboxId;
       if (mailboxId) void this.loadEmails(accountId, mailboxId);
+    }
+  }
+
+  /**
+   * Desktop notification for new mail arriving in a separated identity's
+   * own Inbox while this tab is open (issue #212, REQ-MAIL-SUB-06: "its
+   * own notification channel, mutable independently"). This is the
+   * page-Notification channel -- the same one lib/mail/store.svelte.ts's
+   * own `#fireDesktopNotification` uses for the primary account; the
+   * service-worker push channel is a separate delivery path (fires with
+   * the tab closed) whose payload is constructed server-side and does
+   * not yet carry a sub-account's accountId, so it cannot honour this
+   * per-account mute yet -- tracked as an open item, not silently
+   * dropped.
+   *
+   * Fires only on a genuine increase in unread count (a real new
+   * message, not merely a push that happened to touch this account for
+   * some other reason -- e.g. the user reading a message on another
+   * device would DECREASE the count and must not notify), gated on the
+   * same global `settings.desktopNotifEnabled` opt-in the primary
+   * account's notifications use, AND this account's own independent
+   * mute switch (`accountNotificationMute`).
+   */
+  #maybeNotify(prev: SubAccountEntry, updated: SubAccountEntry): void {
+    if (updated.unreadThreads <= prev.unreadThreads) return;
+    if (!settings.desktopNotifEnabled) return;
+    if (accountNotificationMute.isMuted(updated.accountId)) return;
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    void appendEvent('page', 'info', 'sub-account-desktop-notif.fire', {
+      accountId: updated.accountId,
+    });
+    try {
+      const notification = new Notification(updated.name, {
+        body: i18n.t('notifications.subAccountNewMail', { name: updated.name }),
+        tag: `sub-account-${updated.accountId}`,
+      });
+      notification.onclick = () => {
+        window.focus();
+        location.hash = `#/account/${encodeURIComponent(updated.accountId)}`;
+        notification.close();
+      };
+    } catch {
+      // Browser policy (e.g. secure-context check) may reject; swallow
+      // silently, matching the primary account's own notification path.
     }
   }
 

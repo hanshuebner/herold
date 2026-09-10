@@ -33,6 +33,16 @@ vi.mock('../../lib/mail/store.svelte', () => ({
   mail: { loadIdentities: () => loadIdentitiesMock() },
 }));
 
+const isMutedMock = vi.fn((_accountId: string) => false);
+const setMutedMock = vi.fn((_accountId: string, _muted: boolean) => undefined);
+vi.mock('../../lib/notifications/account-mute.svelte', () => ({
+  accountNotificationMute: {
+    hydrate: vi.fn(),
+    isMuted: (accountId: string) => isMutedMock(accountId),
+    setMuted: (accountId: string, muted: boolean) => setMutedMock(accountId, muted),
+  },
+}));
+
 const refreshSessionMock = vi.fn(async () => undefined);
 vi.mock('../../lib/auth/auth.svelte', () => ({
   auth: { refreshSession: () => refreshSessionMock() },
@@ -72,6 +82,8 @@ vi.mock('../../lib/i18n/i18n.svelte', () => ({
       'settings.accounts.pause': 'Pause',
       'settings.accounts.resume': 'Resume',
       'settings.accounts.remove': 'Remove',
+      'settings.accounts.notifications': 'Notifications',
+      'settings.accounts.notificationsHint': 'Desktop notifications for new mail in this account',
       'common.cancel': 'Cancel',
     };
     let s = map[key] ?? key;
@@ -110,6 +122,8 @@ beforeEach(() => {
   loadMock.mockClear();
   loadIdentitiesMock.mockClear();
   refreshSessionMock.mockClear();
+  isMutedMock.mockReset().mockReturnValue(false);
+  setMutedMock.mockClear();
   importHandleFactory.mockClear();
   importHandleFactory.mockReturnValue({
     status: 'ready',
@@ -168,6 +182,34 @@ describe('AccountsSection -- rows', () => {
     mockEntries = [makeEntry()];
     render(AccountsSection);
     expect(screen.getByTestId('account-pause-acct-sub-1')).toHaveTextContent('Pause');
+  });
+
+  it('notifications toggle reflects the mute state and calls setMuted on click (issue #212, REQ-MAIL-SUB-06)', async () => {
+    mockEntries = [makeEntry()];
+    isMutedMock.mockReturnValue(false);
+    render(AccountsSection);
+
+    const toggle = screen.getByTestId('account-notifications-acct-sub-1') as HTMLInputElement;
+    expect(toggle.checked).toBe(true); // not muted -> notifications on
+
+    await fireEvent.click(toggle);
+    expect(setMutedMock).toHaveBeenCalledWith('acct-sub-1', true);
+  });
+
+  it('hides the notifications toggle while migrating (nothing to notify about yet)', () => {
+    mockEntries = [
+      makeEntry({
+        identity: {
+          id: '99',
+          name: 'Club',
+          email: 'club@example.com',
+          mayDelete: true,
+          separation: { state: 'migrating', messagesTotal: 10, messagesMoved: 3, messagesCopied: 1 },
+        },
+      }),
+    ];
+    render(AccountsSection);
+    expect(screen.queryByTestId('account-notifications-acct-sub-1')).not.toBeInTheDocument();
   });
 });
 

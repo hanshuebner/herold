@@ -9,7 +9,7 @@
  * known sub-account refreshes only that entry.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Identity, Mailbox } from './types';
 
 type SyncHandler = (newState: string, accountId: string) => void;
@@ -46,6 +46,27 @@ vi.mock('../auth/auth.svelte', () => ({
     },
   },
   registerAccountResetCallback: vi.fn(),
+}));
+
+const desktopNotifEnabled = vi.fn(() => true);
+vi.mock('../settings/settings.svelte', () => ({
+  settings: {
+    get desktopNotifEnabled() {
+      return desktopNotifEnabled();
+    },
+  },
+}));
+
+const isMuted = vi.fn((_accountId: string) => false);
+vi.mock('../notifications/account-mute.svelte', () => ({
+  accountNotificationMute: {
+    isMuted: (accountId: string) => isMuted(accountId),
+  },
+}));
+
+vi.mock('../debug-ring/debug-ring', () => ({ appendEvent: vi.fn() }));
+vi.mock('../i18n/i18n.svelte', () => ({
+  i18n: { t: (key: string, params?: Record<string, string>) => `${key}:${JSON.stringify(params ?? {})}` },
 }));
 
 function makeIdentity(id: string, email: string): Identity {
@@ -269,5 +290,93 @@ describe('subAccounts.removeSeparation', () => {
 
     await expect(subAccounts.removeSeparation('acct-sub-1', '99', true)).rejects.toThrow('nope');
     expect(jmap.batch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('per-account desktop notification mute gate (issue #212, REQ-MAIL-SUB-06)', () => {
+  let notificationCtor: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.mocked(jmap.batch).mockReset();
+    hasCapability.mockReturnValue(true);
+    desktopNotifEnabled.mockReturnValue(true);
+    isMuted.mockReturnValue(false);
+    subAccounts.reset();
+    mockSession = {
+      capabilities: {},
+      primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct-primary' },
+      accounts: {
+        'acct-primary': { name: 'alice@example.com', isPersonal: true, isReadOnly: false, accountCapabilities: {} },
+        'acct-sub-1': { name: 'club@example.com', isPersonal: true, isReadOnly: false, accountCapabilities: {} },
+      },
+    };
+
+    notificationCtor = vi.fn().mockImplementation(function (this: { onclick: unknown }) {
+      this.onclick = null;
+    });
+    vi.stubGlobal('Notification', Object.assign(notificationCtor, { permission: 'granted' }));
+
+    // Seed one known sub-account at unreadThreads = 1.
+    vi.mocked(jmap.batch).mockImplementationOnce(async (fn) => {
+      fn({ call: () => ({ ref: () => ({}) }) } as never);
+      return {
+        responses: [
+          ['Identity/get', { list: [makeIdentity('99', 'club@example.com')] }, 'c0'],
+          ['Mailbox/get', { list: [makeMailbox('mb-1', 'inbox', 1)] }, 'c1'],
+        ],
+        sessionState: 's1',
+      };
+    });
+    await subAccounts.refresh();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockNextRefreshUnread(count: number): void {
+    vi.mocked(jmap.batch).mockImplementationOnce(async (fn) => {
+      fn({ call: () => ({ ref: () => ({}) }) } as never);
+      return {
+        responses: [
+          ['Identity/get', { list: [makeIdentity('99', 'club@example.com')] }, 'c0'],
+          ['Mailbox/get', { list: [makeMailbox('mb-1', 'inbox', count)] }, 'c1'],
+        ],
+        sessionState: 's2',
+      };
+    });
+  }
+
+  it('fires a Notification when unread count increases and the account is not muted', async () => {
+    mockNextRefreshUnread(2);
+    await subAccounts.refreshOne('acct-sub-1');
+    expect(notificationCtor).toHaveBeenCalledTimes(1);
+    expect(notificationCtor.mock.calls[0]?.[0]).toBe('club@example.com');
+  });
+
+  it('does not fire when the account is muted', async () => {
+    isMuted.mockReturnValue(true);
+    mockNextRefreshUnread(2);
+    await subAccounts.refreshOne('acct-sub-1');
+    expect(notificationCtor).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when desktop notifications are globally disabled', async () => {
+    desktopNotifEnabled.mockReturnValue(false);
+    mockNextRefreshUnread(2);
+    await subAccounts.refreshOne('acct-sub-1');
+    expect(notificationCtor).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when the unread count decreases (a read, not a new arrival)', async () => {
+    mockNextRefreshUnread(0);
+    await subAccounts.refreshOne('acct-sub-1');
+    expect(notificationCtor).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when the unread count is unchanged', async () => {
+    mockNextRefreshUnread(1);
+    await subAccounts.refreshOne('acct-sub-1');
+    expect(notificationCtor).not.toHaveBeenCalled();
   });
 });
