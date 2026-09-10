@@ -2,7 +2,9 @@
  * Message-research state (REQ-ADM-306).
  *
  * Loads GET /api/v1/admin/message-research with before_us cursor + limit.
- * Supports sender, recipient, message_id, subject, date_from, date_to filters.
+ * Supports sender, recipient, message_id, date_from, date_to filters. No
+ * subject filter: the surface is envelope metadata and disposition only,
+ * never message content (re #143, maintainer finding #4).
  * Default limit 50; "Weitere laden" appends via before_us cursor.
  *
  * Results are returned newest-first by the server.
@@ -13,6 +15,24 @@ import { apiGet } from '../api/client';
 import { t } from '../i18n/i18n.svelte';
 
 // --- Type definitions -------------------------------------------------------
+
+/** One of the write paths that records a message (re #143). "" means the
+ * ingest path was not recorded, either because the row predates the
+ * ingest_source column or because the write path has not been updated. */
+export type IngestSource =
+  | ''
+  | 'smtp'
+  | 'imap-import'
+  | 'jmap-import'
+  | 'imap-append'
+  | 'imap-copy'
+  | 'mailing-list-archive'
+  | 'gmail-import';
+
+export interface ReceivedMailbox {
+  name: string;
+  is_junk: boolean;
+}
 
 export interface ReceivedHit {
   source: 'received';
@@ -25,15 +45,24 @@ export interface ReceivedHit {
    * ingest path decided when the message was accepted, immutable
    * regardless of later moves. "" means not recorded (row predates the
    * disposition column, or was written by a non-SMTP-ingest path) --
-   * render as "unknown", never inferred from mailbox_name/is_junk.
+   * render as "unknown" with an explicit reason, never inferred from
+   * mailbox_name/is_junk.
    */
   disposition: '' | 'delivered_inbox' | 'delivered_junk';
+  /** Write path that produced this row. "" = not recorded. */
+  ingest_source: IngestSource;
+  /** Import account name (imap-import) or list address
+   * (mailing-list-archive); "" otherwise or when not recorded. */
+  ingest_source_ref: string;
+  /** LIVE state: every mailbox the message currently sits in ("where is
+   * it now"), which can differ from the recorded disposition after a
+   * later move/refile (re #143, maintainer finding #1). */
+  mailboxes: ReceivedMailbox[];
   mailbox_name: string;
   is_junk: boolean;
   spam_verdict?: string;
   spam_confidence?: number;
   envelope: {
-    subject: string;
     from: string;
     to: string;
     cc: string;
@@ -51,7 +80,17 @@ export interface SmtpEventHit {
   at: string;
   action: string;
   actor_id: string;
-  subject: string;
+  /**
+   * The event's subject-of-record: "message:<blob hash>" for
+   * smtp.accept/<source>.accept, "recipient:<addr>" for
+   * smtp.synthetic_accept/smtp.attpol, "rcpt:<addr>" for
+   * smtp.rcpt.resolve. Never the email Subject header; render under a
+   * "message reference" label, never "Empfaenger"/"Recipient"
+   * (re #143, maintainer finding #3).
+   */
+  ref: string;
+  /** smtp.accept carries mail_from and comma-separated rcpt_to here. */
+  metadata?: Record<string, string>;
   remote_addr: string;
   outcome: 'success' | 'failure' | 'unknown';
   message: string;
@@ -103,7 +142,6 @@ class MessageResearchState {
   senderFilter = $state('');
   recipientFilter = $state('');
   messageIdFilter = $state('');
-  subjectFilter = $state('');
   dateFromFilter = $state('');
   dateToFilter = $state('');
 
@@ -118,9 +156,6 @@ class MessageResearchState {
     }
     if (this.messageIdFilter.trim()) {
       params.set('message_id', this.messageIdFilter.trim());
-    }
-    if (this.subjectFilter.trim()) {
-      params.set('subject', this.subjectFilter.trim());
     }
     if (this.dateFromFilter.trim()) {
       const dateFrom = toRFC3339(this.dateFromFilter.trim());
@@ -183,7 +218,6 @@ class MessageResearchState {
     this.senderFilter = '';
     this.recipientFilter = '';
     this.messageIdFilter = '';
-    this.subjectFilter = '';
     this.dateFromFilter = '';
     this.dateToFilter = '';
   }

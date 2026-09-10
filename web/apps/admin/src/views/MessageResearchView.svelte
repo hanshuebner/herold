@@ -115,13 +115,29 @@
     return from || t('messageResearch.unknown');
   }
 
-  /** Human label for the recorded-at-ingest delivery disposition. */
-  function dispositionLabel(disposition: string): string {
-    switch (disposition) {
+  /**
+   * Human label for the recorded-at-ingest delivery disposition. When it
+   * was not recorded, gives an explicit reason instead of a bare
+   * "unknown" (re #143, maintainer finding #1): the ingest path that
+   * wrote the row when known, or "row predates recording" otherwise --
+   * never silently inferred from live mailbox state.
+   */
+  function dispositionLabel(hit: ReceivedHit): string {
+    switch (hit.disposition) {
       case 'delivered_inbox': return t('messageResearch.disposition.inbox');
       case 'delivered_junk': return t('messageResearch.disposition.junk');
-      default: return t('messageResearch.disposition.unknown');
+      default: return dispositionUnknownReason(hit);
     }
+  }
+
+  function dispositionUnknownReason(hit: ReceivedHit): string {
+    if (!hit.ingest_source) {
+      return t('messageResearch.disposition.unknownReasonPredates');
+    }
+    const sourceRef = hit.ingest_source_ref
+      ? `${hit.ingest_source} ${hit.ingest_source_ref}`
+      : hit.ingest_source;
+    return t('messageResearch.disposition.unknownReasonSource', { sourceRef });
   }
 
   function dispositionChipClass(disposition: string): string {
@@ -130,6 +146,29 @@
       case 'delivered_junk': return 'chip-amber';
       default: return 'chip-grey';
     }
+  }
+
+  /** Human label for the ingest source ("Eingangsweg"), the write path
+   * that recorded this message (re #143, maintainer finding #2). */
+  function ingestSourceLabel(hit: ReceivedHit): string {
+    switch (hit.ingest_source) {
+      case 'smtp': return t('messageResearch.ingestSource.smtp');
+      case 'imap-import':
+        return t('messageResearch.ingestSource.imapImport', { account: hit.ingest_source_ref });
+      case 'jmap-import': return t('messageResearch.ingestSource.jmapImport');
+      case 'imap-append': return t('messageResearch.ingestSource.imapAppend');
+      case 'imap-copy': return t('messageResearch.ingestSource.imapCopy');
+      case 'mailing-list-archive':
+        return t('messageResearch.ingestSource.mailingListArchive', { account: hit.ingest_source_ref });
+      case 'gmail-import': return t('messageResearch.ingestSource.gmailImport');
+      default: return t('messageResearch.ingestSource.unknown');
+    }
+  }
+
+  /** Chip text for one entry in the current-mailboxes list, marking
+   * Junk-attributed mailboxes (re #143, maintainer finding #1). */
+  function mailboxLabel(mb: { name: string; is_junk: boolean }): string {
+    return mb.is_junk ? `${mb.name} (${t('messageResearch.field.junk')})` : mb.name;
   }
 </script>
 
@@ -167,18 +206,6 @@
         bind:value={messageResearch.recipientFilter}
         onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
         aria-label={t('messageResearch.filter.recipientAriaLabel')}
-      />
-    </div>
-    <div class="filter-field">
-      <label for="mr-subject" class="filter-label">{t('messageResearch.filter.subject')}</label>
-      <input
-        id="mr-subject"
-        type="text"
-        class="input"
-        placeholder={t('messageResearch.filter.subjectPlaceholder')}
-        bind:value={messageResearch.subjectFilter}
-        onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-        aria-label={t('messageResearch.filter.subjectAriaLabel')}
       />
     </div>
     <div class="filter-field">
@@ -265,28 +292,26 @@
                     <span class="entry-val mono-sm">{hit.envelope.to}</span>
                   </div>
                 {/if}
-                {#if hit.envelope.subject}
-                  <div class="entry-row">
-                    <span class="entry-key">{t('messageResearch.field.subject')}</span>
-                    <span class="entry-val">{hit.envelope.subject}</span>
-                  </div>
-                {/if}
+                <div class="entry-row">
+                  <span class="entry-key">{t('messageResearch.field.ingestSource')}</span>
+                  <span class="entry-val mono-sm">{ingestSourceLabel(hit)}</span>
+                </div>
                 <div class="entry-row">
                   <span class="entry-key">{t('messageResearch.field.deliveredTo')}</span>
                   <span class="entry-val mono-sm">{hit.principal_email || t('messageResearch.unknown')}</span>
                 </div>
                 <div class="entry-row">
                   <span class="entry-key">{t('messageResearch.field.disposition')}</span>
-                  <span class="chip {dispositionChipClass(hit.disposition)}">{dispositionLabel(hit.disposition)}</span>
+                  <span class="chip {dispositionChipClass(hit.disposition)}">{dispositionLabel(hit)}</span>
                 </div>
-                <div class="entry-row">
-                  <span class="entry-key">{t('messageResearch.field.mailbox')}</span>
-                  <span class="entry-val mono-sm">{hit.mailbox_name || t('messageResearch.unknown')}</span>
-                </div>
-                {#if hit.is_junk}
+                {#if hit.mailboxes.length > 0}
                   <div class="entry-row">
-                    <span class="entry-key">{t('messageResearch.field.junk')}</span>
-                    <span class="chip chip-amber">{t('messageResearch.field.junk')}</span>
+                    <span class="entry-key">{t('messageResearch.field.mailboxes')}</span>
+                    <span class="entry-val mailbox-list">
+                      {#each hit.mailboxes as mb (mb.name)}
+                        <span class="chip {mb.is_junk ? 'chip-amber' : 'chip-grey'}">{mailboxLabel(mb)}</span>
+                      {/each}
+                    </span>
                   </div>
                 {/if}
                 {#if hit.spam_verdict}
@@ -313,10 +338,16 @@
                   <span class="entry-key">{t('messageResearch.field.action')}</span>
                   <span class="entry-val mono-sm">{hit.action}</span>
                 </div>
-                {#if hit.subject}
+                {#if hit.metadata?.mail_from}
+                  <div class="entry-row">
+                    <span class="entry-key">{t('messageResearch.field.from')}</span>
+                    <span class="entry-val mono-sm">{hit.metadata.mail_from}</span>
+                  </div>
+                {/if}
+                {#if hit.metadata?.rcpt_to}
                   <div class="entry-row">
                     <span class="entry-key">{t('messageResearch.field.recipient')}</span>
-                    <span class="entry-val mono-sm">{hit.subject}</span>
+                    <span class="entry-val mono-sm">{hit.metadata.rcpt_to}</span>
                   </div>
                 {/if}
                 <div class="entry-row">
@@ -345,6 +376,12 @@
                   <div class="entry-row">
                     <span class="entry-key">{t('messageResearch.field.ipAddress')}</span>
                     <span class="entry-val mono-sm">{hit.remote_addr}</span>
+                  </div>
+                {/if}
+                {#if hit.ref}
+                  <div class="entry-row">
+                    <span class="entry-key">{t('messageResearch.field.messageRef')}</span>
+                    <span class="entry-val mono-sm">{truncate(hit.ref, 60)}</span>
                   </div>
                 {/if}
               </div>
@@ -606,6 +643,12 @@
     color: var(--text-primary);
     word-break: break-all;
     min-width: 0;
+  }
+
+  .mailbox-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-02);
   }
 
   .mono-sm {
