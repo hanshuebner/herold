@@ -468,6 +468,44 @@ func TestAllHorizon(t *testing.T) {
 	}
 }
 
+// TestSync_RecordsIngestSource verifies that a synced message's
+// store.Message row carries store.IngestSourceIMAPImport with
+// IngestSourceRef set to the import account's AccountName (re #143,
+// maintainer finding #2): an operator reviewing message research must be
+// able to tell an imported message apart from a live SMTP delivery, and
+// which import account pulled it in.
+func TestSync_RecordsIngestSource(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("u3", "pw")
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	raw := buildRFC822("ingest-src@test", "Ingest source", d)
+	appendToServer(t, ts, "u3", "pw", "INBOX", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u3@example.test",
+		username:            "u3",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(context.Background(), acc.PrincipalID, "ingest-src@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if msg.IngestSource != store.IngestSourceIMAPImport {
+		t.Errorf("IngestSource = %q; want %q", msg.IngestSource, store.IngestSourceIMAPImport)
+	}
+	if msg.IngestSourceRef != acc.AccountName {
+		t.Errorf("IngestSourceRef = %q; want %q (the import account name)", msg.IngestSourceRef, acc.AccountName)
+	}
+}
+
 // TestForwardSync verifies that a second sync pass fetches only the new
 // message, the categoriser is fired for new INBOX mail (not for the
 // previously-synced ones), and old messages are not re-fetched.

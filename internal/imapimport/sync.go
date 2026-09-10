@@ -738,6 +738,11 @@ func (w *accountWorker) ingestMessage(
 		ReceivedAt:          fm.InternalDate,
 		Envelope:            envelopeFromParsed(msg),
 		DeliveryDisposition: disposition,
+		// re #143 (maintainer finding #2): record the ingest path and
+		// the import account name so message research can tell a live
+		// SMTP arrival apart from a pulled-in import.
+		IngestSource:    store.IngestSourceIMAPImport,
+		IngestSourceRef: account.AccountName,
 	}
 
 	flags := storeFlagsFromIMAP(fm.Flags)
