@@ -98,7 +98,7 @@ func (ses *session) installDeflate() error {
 	// / SetReadDeadline keep working — only the I/O paths swing onto
 	// the compressed streams.
 	ses.br = bufio.NewReaderSize(dc, 16*1024)
-	ses.resp = newRespWriter(dc)
+	ses.resp = newRespWriter(dc, ses.logger)
 	ses.compressed = true
 	return nil
 }

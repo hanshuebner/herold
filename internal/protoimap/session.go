@@ -51,6 +51,7 @@ type session struct {
 	allowPlainAuth bool // per-listener override of Options.AllowPlainLoginWithoutTLS (issue #114)
 	state          sessionState
 	logger         *slog.Logger
+	sessID         string // correlates every trace/log record for this connection (issue #320)
 	pid            store.PrincipalID
 	bypassDeadline bool // PrincipalFlagBypassResponseDeadline cached at login time
 	bucket         *tokenBucket
@@ -96,24 +97,30 @@ type selectedMailbox struct {
 }
 
 func newSession(s *Server, c net.Conn, tlsActive, allowPlainAuth bool) *session {
+	sessID := newIMAPSessionID()
 	ses := &session{
 		s:              s,
 		conn:           c,
 		br:             bufio.NewReaderSize(c, 16*1024),
-		resp:           newRespWriter(c),
 		remote:         c.RemoteAddr().String(),
 		tlsActive:      tlsActive,
 		allowPlainAuth: allowPlainAuth,
 		state:          stateNotAuthed,
-		// Pre-scope subsystem, remote_addr so per-event records only add
-		// activity and event-specific attrs (STANDARDS §7, REQ-OPS-86).
-		// principal_id is added by handleLOGIN / handleAUTHENTICATE via
-		// a logger replacement once authentication succeeds.
+		sessID:         sessID,
+		// Pre-scope subsystem, session_id, remote_addr so per-event
+		// records only add activity and event-specific attrs (STANDARDS
+		// §7, REQ-OPS-86). principal_id is added by handleLOGIN /
+		// handleAUTHENTICATE via a logger replacement once authentication
+		// succeeds; ses.resp is kept in sync via respWriter.setLogger so
+		// the trace-level wire log (issue #320) carries the same fields
+		// on both the command and response sides.
 		logger: s.logger.With(
 			"subsystem", "protoimap",
+			"session_id", sessID,
 			"remote_addr", c.RemoteAddr().String(),
 		),
 	}
+	ses.resp = newRespWriter(c, ses.logger)
 	if s.opts.DownloadBytesPerSecond > 0 {
 		ses.bucket = newTokenBucket(s.clk, s.opts.DownloadBytesPerSecond, s.opts.DownloadBurstBytes)
 	}
@@ -158,6 +165,7 @@ func (ses *session) run(ctx context.Context) {
 		if cmd.Tag == "" && cmd.Op == "" {
 			continue
 		}
+		ses.traceCommand(ctx, cmd)
 		ses.cmdCount++
 		if err := ses.dispatch(ctx, cmd); err != nil {
 			// A dispatch error ends the session (protocol violation).
@@ -461,7 +469,7 @@ func (ses *session) handleSTARTTLS(ctx context.Context, c *Command) error {
 	}
 	ses.conn = tlsConn
 	ses.br = bufio.NewReaderSize(tlsConn, 16*1024)
-	ses.resp = newRespWriter(tlsConn)
+	ses.resp = newRespWriter(tlsConn, ses.logger)
 	ses.tlsActive = true
 	if leaf := cap.Leaf(); leaf != nil {
 		if cb, err := sasl.TLSServerEndpoint(leaf); err == nil {
@@ -493,6 +501,7 @@ func (ses *session) handleLOGIN(ctx context.Context, c *Command) error {
 	// Narrow the session logger to include the authenticated principal so
 	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
 	ses.logger = ses.logger.With("principal_id", pid)
+	ses.resp.setLogger(ses.logger)
 	ses.logger.Info("protoimap: LOGIN succeeded",
 		"activity", "audit",
 		"username", c.LoginUser,
@@ -604,6 +613,7 @@ func (ses *session) handleAUTHENTICATE(ctx context.Context, c *Command) error {
 	// Narrow the session logger to include the authenticated principal so
 	// all subsequent records carry principal_id (STANDARDS §7, REQ-OPS-86).
 	ses.logger = ses.logger.With("principal_id", pid)
+	ses.resp.setLogger(ses.logger)
 	ses.logger.Info("protoimap: AUTHENTICATE succeeded",
 		"activity", "audit",
 		"mechanism", c.AuthMechanism,

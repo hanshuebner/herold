@@ -199,6 +199,29 @@ func (ses *session) emitFetch(ctx context.Context, seq int, opts *imap.FetchOpti
 		observe.IMAPFetchBytesTotal.Add(float64(totalBytes))
 	}
 
+	// Trace-level response log (REQ-OPS-82, issue #320): one line for this
+	// untagged FETCH response, with any literal body section truncated to
+	// responseTraceLiteralMax bytes and its full length noted. Gated on
+	// traceEnabled() so a session without protoimap at trace level never
+	// pays the string-building cost — writeRaw itself carries no framing
+	// to hook generically the way writeLine does, so the FETCH response
+	// (the package's only writeRaw caller) traces itself explicitly here.
+	if ses.resp.traceEnabled() {
+		var tsb strings.Builder
+		fmt.Fprintf(&tsb, "* %d FETCH (", seq)
+		tsb.WriteString(strings.Join(parts, " "))
+		for _, bc := range bodyChunks {
+			if tsb.Len() > 0 && tsb.String()[tsb.Len()-1] != '(' {
+				tsb.WriteByte(' ')
+			}
+			tsb.WriteString(bc.header)
+			tsb.WriteByte(' ')
+			tsb.WriteString(traceLiteral(bc.data))
+		}
+		tsb.WriteString(")")
+		ses.resp.traceLine("untagged", tsb.String())
+	}
+
 	// Build the final line: "* seq FETCH (part1 part2 ... bodySection[...] {N}\r\n<bytes>)"
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "* %d FETCH (", seq)

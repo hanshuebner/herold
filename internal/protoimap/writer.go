@@ -2,34 +2,88 @@ package protoimap
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+
+	"github.com/hanshuebner/herold/internal/observe"
 )
 
 // respWriter serialises untagged and tagged responses to the client. It is
 // safe for concurrent use: IDLE delivery from the broadcaster goroutine
 // holds the mutex while writing an untagged response, so no two responses
 // can interleave on the wire.
+//
+// logger is stored behind an atomic pointer because it changes shape twice
+// during a session's life without a new respWriter being built for either
+// change: LOGIN/AUTHENTICATE narrow it to add principal_id, and both of
+// those plus STARTTLS/COMPRESS (which do rebuild the respWriter) must keep
+// the trace-level wire log (issue #320) attributed correctly regardless of
+// which transport wraps the connection at the time.
 type respWriter struct {
-	mu  sync.Mutex
-	bw  *bufio.Writer
-	raw io.Writer
+	mu     sync.Mutex
+	bw     *bufio.Writer
+	raw    io.Writer
+	logger atomic.Pointer[slog.Logger]
 }
 
-func newRespWriter(w io.Writer) *respWriter {
+func newRespWriter(w io.Writer, logger *slog.Logger) *respWriter {
 	bw, ok := w.(*bufio.Writer)
 	if !ok {
 		bw = bufio.NewWriter(w)
 	}
-	return &respWriter{bw: bw, raw: w}
+	rw := &respWriter{bw: bw, raw: w}
+	rw.logger.Store(logger)
+	return rw
 }
 
-// writeLine writes a CRLF-terminated line.
+// setLogger updates the logger used for trace-level response logging
+// (issue #320). Called whenever the session's logger gains attributes
+// (principal_id on LOGIN/AUTHENTICATE) or the respWriter is rebuilt over a
+// new transport (STARTTLS, COMPRESS).
+func (w *respWriter) setLogger(logger *slog.Logger) {
+	w.logger.Store(logger)
+}
+
+// traceEnabled reports whether the current logger would accept a
+// trace-level record. Callers building an expensive trace representation
+// (e.g. the FETCH literal preview) MUST check this first so a session
+// without protoimap at trace level pays no formatting cost (REQ-OPS-82).
+func (w *respWriter) traceEnabled() bool {
+	logger := w.logger.Load()
+	return logger != nil && logger.Enabled(context.Background(), observe.LevelTrace)
+}
+
+// traceLine emits one trace-level log line for a response line sent to the
+// client. kind is "tagged", "untagged", or "continuation".
+func (w *respWriter) traceLine(kind, line string) {
+	logger := w.logger.Load()
+	if logger == nil {
+		return
+	}
+	ctx := context.Background()
+	if !logger.Enabled(ctx, observe.LevelTrace) {
+		return
+	}
+	logger.Log(ctx, observe.LevelTrace, "protoimap: S: "+line,
+		"activity", observe.ActivityAccess,
+		"kind", kind,
+	)
+}
+
+// writeLine writes a CRLF-terminated line and, at trace level, logs it
+// (REQ-OPS-82, issue #320). This is the single hook point for the plain,
+// tagged, and continuation response paths; STARTTLS and COMPRESS rebuild
+// the respWriter over a new transport but every write still funnels
+// through this method, so the trace log covers all three transports
+// uniformly.
 func (w *respWriter) writeLine(s string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -39,7 +93,18 @@ func (w *respWriter) writeLine(s string) error {
 	if _, err := w.bw.WriteString("\r\n"); err != nil {
 		return err
 	}
-	return w.bw.Flush()
+	err := w.bw.Flush()
+	if err == nil {
+		kind := "tagged"
+		switch {
+		case strings.HasPrefix(s, "* "):
+			kind = "untagged"
+		case strings.HasPrefix(s, "+ "):
+			kind = "continuation"
+		}
+		w.traceLine(kind, s)
+	}
+	return err
 }
 
 // writeRaw writes arbitrary bytes (no framing) under the mutex. Used for

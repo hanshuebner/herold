@@ -136,6 +136,13 @@ type Command struct {
 
 	// IsUID flags the UID-prefixed variants.
 	IsUID bool
+
+	// LiteralSizes carries the declared byte length of each literal
+	// consumed while parsing this command, in the order the literals
+	// appear on the wire. The trace-level wire log (issue #320) uses
+	// this to render literal slots in Raw as "{N bytes}" without ever
+	// holding or printing the literal content itself.
+	LiteralSizes []int64
 }
 
 // AppendItem is one (flags, internal-date, spill) tuple in a MULTIAPPEND
@@ -168,6 +175,7 @@ type parser struct {
 func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 	var sb strings.Builder
 	var lits []parsedLiteral
+	var litSizes []int64
 	cleanupSpills := func() {
 		for _, pl := range lits {
 			if pl.spill != nil {
@@ -197,6 +205,7 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 			return nil, lerr
 		}
 		lits = append(lits, parsedLiteral{data: data, spill: spill})
+		litSizes = append(litSizes, size)
 		// Replace "{N}"/"{N+}" with a single NUL marker so the tokeniser
 		// recognises the literal slot without re-scanning for braces.
 		sb.Reset()
@@ -210,7 +219,7 @@ func readCommand(br *bufio.Reader, readLit literalReader) (*Command, error) {
 		sb.WriteString(cont)
 	}
 	p := &parser{src: []byte(sb.String()), lits: lits}
-	cmd := &Command{Raw: sb.String()}
+	cmd := &Command{Raw: sb.String(), LiteralSizes: litSizes}
 	if err := parseCommand(p, cmd); err != nil {
 		// Return the partially-parsed command so the caller can log
 		// cmd.Raw alongside the error — without that surface a parser

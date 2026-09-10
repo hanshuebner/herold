@@ -686,6 +686,42 @@ Receiving servers refuse mail when the domain's DMARC TXT is missing
 or its policy is `reject` and SPF / DKIM do not align. Publish (or
 fix) the DMARC TXT and re-run `herold diag dns-check example.com`.
 
+### "A client shows the wrong/empty body, or I can't tell what an IMAP client actually sent"
+
+Turn on the `trace` level for `protoimap` (REQ-OPS-82) to see every IMAP
+command received and every response line sent, on a per-session basis
+(session id, and principal once authenticated). Add a module override to
+a sink in `system.toml`:
+
+```toml
+[[log.sink]]
+target  = "/var/log/herold/herold-imap-trace.jsonl"
+format  = "json"
+level   = "debug"
+modules = { protoimap = "trace" }
+```
+
+Reload with `SIGHUP` (REQ-OPS-85); no restart needed. `LOGIN` and
+`AUTHENTICATE` credentials are always redacted, and any FETCH body
+literal is truncated to 256 bytes in the log with its true length noted
+- large enough to see whether a body actually shipped, small enough to
+keep the trace file from ballooning. A `FETCH BODY.PEEK[]` exchange
+looks like:
+
+```json
+{"msg":"protoimap: C: a3 FETCH 1 (BODY.PEEK[])","session_id":"...","principal_id":1,"tag":"a3","verb":"FETCH","activity":"access"}
+{"msg":"protoimap: S: * 1 FETCH (BODY[] {647 bytes, showing first 256}\"From: ...\")","session_id":"...","principal_id":1,"kind":"untagged","activity":"access"}
+{"msg":"protoimap: S: a3 OK FETCH completed","session_id":"...","principal_id":1,"kind":"tagged","activity":"access"}
+```
+
+Turn it off again by removing the `modules` override (or setting it back
+to `info`/`debug`) once the session is captured - `trace` is verbose by
+design and is not meant to run continuously. `--log-verbose` /
+`HEROLD_LOG_VERBOSE=1` floor every sink at `debug`, not `trace` (REQ-OPS-86c);
+they surface the rest of the existing `activity=access` command/response
+logging but not this wire-level detail, so a module override is the only
+way to reach `protoimap = "trace"`.
+
 ## Signals
 
 - **`SIGTERM`** - graceful shutdown. Stop accepting new connections,
