@@ -147,6 +147,14 @@ type IMAPImportAccount struct {
 	// tagged with the account ID as actor_id. Toggled at runtime via the
 	// admin PATCH endpoint without a herold restart (re #138).
 	DebugLog bool
+	// ExcludedFolders lists upstream folder names (verbatim, case-sensitive,
+	// matching the folder-map convention) that the worker never syncs: no
+	// cursor row and no message_state rows are created for them, and any
+	// mail already mirrored from a folder before it was excluded is left in
+	// place (exclusion is forward-only, mirroring REQ-IMAP-IMP-19's
+	// raise-horizon no-op). Lets a user opt an upstream folder such as a
+	// spam-only mailbox out of import entirely (re #303/#305).
+	ExcludedFolders []string
 	// CreatedAt / UpdatedAt are the row lifecycle timestamps.
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -173,6 +181,9 @@ type IMAPImportAccountCreate struct {
 	// State defaults to IMAPImportAccountStateEnabled when zero-valued.
 	State            IMAPImportAccountState
 	DeletePropagates bool
+	// ExcludedFolders is the initial no-sync folder list (see
+	// IMAPImportAccount.ExcludedFolders). Nil/empty means none.
+	ExcludedFolders []string
 }
 
 // IMAPImportAccountUpdate carries the fields that may be changed on an
@@ -204,6 +215,10 @@ type IMAPImportAccountUpdate struct {
 	// DebugLog, when non-nil, replaces the stored debug-log flag.
 	// nil means "preserve existing".
 	DebugLog *bool
+	// ExcludedFolders replaces the stored no-sync folder list (see
+	// IMAPImportAccount.ExcludedFolders). Always written (nil/empty clears
+	// it), matching the other plain-value fields on this struct.
+	ExcludedFolders []string
 }
 
 // IMAPImportFolderMapEntry is one row in the imapimport_folder_map

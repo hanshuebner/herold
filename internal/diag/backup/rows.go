@@ -1027,8 +1027,11 @@ type IMAPImportAccountRow struct {
 	LastSuccessAt     *int64 `json:"last_success_at,omitempty"` // unix-micros, NULL = never
 	LastError         string `json:"last_error"`
 	DeletePropagates  bool   `json:"delete_propagates"` // SQLite 0/1, Postgres bool
-	CreatedAt         int64  `json:"created_at"`
-	UpdatedAt         int64  `json:"updated_at"`
+	// ExcludedFoldersJSON is the JSON array of no-sync upstream folder
+	// names, added by migration 0103 (issue #303/#305). "[]" means none.
+	ExcludedFoldersJSON string `json:"excluded_folders_json"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
 }
 
 // IMAPImportFolderMapRow mirrors one row of the imapimport_folder_map

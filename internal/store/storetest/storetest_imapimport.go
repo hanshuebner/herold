@@ -1076,6 +1076,169 @@ func testIMAPImport_DebugLog(t *testing.T, s store.Store) {
 	}
 }
 
+// testIMAPImport_ExcludedFolders verifies that ExcludedFolders round-trips
+// through Create/Get, that Update replaces it, and that an explicit empty
+// slice clears it (re #303/#305).
+func testIMAPImport_ExcludedFolders(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-exclfold@example.com")
+
+	acc, err := s.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		PrincipalID:      p.ID,
+		AccountName:      "Excl",
+		Host:             "imap.example.com",
+		Port:             993,
+		TLSMode:          store.IMAPImportTLSModeImplicit,
+		Username:         "user",
+		AuthMethod:       store.IMAPImportAuthMethodPassword,
+		CredentialCT:     []byte("v1:pw"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+		ExcludedFolders:  []string{"Promo", "Social"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+	if len(acc.ExcludedFolders) != 2 || acc.ExcludedFolders[0] != "Promo" || acc.ExcludedFolders[1] != "Social" {
+		t.Errorf("create-returned ExcludedFolders = %v; want [Promo Social]", acc.ExcludedFolders)
+	}
+
+	got, err := s.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if len(got.ExcludedFolders) != 2 || got.ExcludedFolders[0] != "Promo" || got.ExcludedFolders[1] != "Social" {
+		t.Errorf("Get ExcludedFolders = %v; want [Promo Social]", got.ExcludedFolders)
+	}
+
+	// An account created without ExcludedFolders round-trips to nil/empty,
+	// not a one-element slice of the empty string.
+	acc2 := mustCreateIMAPImportAccount(t, s, p.ID, "NoExclusions")
+	if len(acc2.ExcludedFolders) != 0 {
+		t.Errorf("ExcludedFolders on a plain create = %v; want empty", acc2.ExcludedFolders)
+	}
+
+	// Update replaces the list.
+	upd, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      got.AccountName,
+		Host:             got.Host,
+		Port:             got.Port,
+		TLSMode:          got.TLSMode,
+		Username:         got.Username,
+		AuthMethod:       got.AuthMethod,
+		State:            got.State,
+		DeletePropagates: got.DeletePropagates,
+		ExcludedFolders:  []string{"Newsletters"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount: %v", err)
+	}
+	if len(upd.ExcludedFolders) != 1 || upd.ExcludedFolders[0] != "Newsletters" {
+		t.Errorf("updated ExcludedFolders = %v; want [Newsletters]", upd.ExcludedFolders)
+	}
+
+	// Update with an explicit empty slice clears it.
+	upd2, err := s.Meta().UpdateIMAPImportAccount(ctx, store.IMAPImportAccountUpdate{
+		ID:               acc.ID,
+		PrincipalID:      p.ID,
+		AccountName:      got.AccountName,
+		Host:             got.Host,
+		Port:             got.Port,
+		TLSMode:          got.TLSMode,
+		Username:         got.Username,
+		AuthMethod:       got.AuthMethod,
+		State:            got.State,
+		DeletePropagates: got.DeletePropagates,
+		ExcludedFolders:  []string{},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIMAPImportAccount (clear): %v", err)
+	}
+	if len(upd2.ExcludedFolders) != 0 {
+		t.Errorf("cleared ExcludedFolders = %v; want empty", upd2.ExcludedFolders)
+	}
+}
+
+// testIMAPImport_MessageStateByFolderAndDelete verifies
+// ListIMAPImportMessageStatesByFolder scopes to one (account, folder) pair
+// and DeleteIMAPImportMessageState removes exactly the targeted row,
+// leaving state rows for other folders/accounts untouched (re #303).
+func testIMAPImport_MessageStateByFolderAndDelete(t *testing.T, s store.Store) {
+	t.Helper()
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "imap-msgstate-folder@example.com")
+	acc := mustCreateIMAPImportAccount(t, s, p.ID, "ByFolder")
+	otherAcc := mustCreateIMAPImportAccount(t, s, p.ID, "OtherAccount")
+
+	rows := []store.IMAPImportMessageState{
+		{AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 1, HeroldMessageID: 101, HeroldMailboxID: 201},
+		{AccountID: acc.ID, UpstreamFolder: "INBOX", UpstreamUID: 2, HeroldMessageID: 102, HeroldMailboxID: 201},
+		{AccountID: acc.ID, UpstreamFolder: "Archive", UpstreamUID: 1, HeroldMessageID: 103, HeroldMailboxID: 202},
+		{AccountID: otherAcc.ID, UpstreamFolder: "INBOX", UpstreamUID: 1, HeroldMessageID: 104, HeroldMailboxID: 203},
+	}
+	for _, r := range rows {
+		if err := s.Meta().UpsertIMAPImportMessageState(ctx, r); err != nil {
+			t.Fatalf("UpsertIMAPImportMessageState(%+v): %v", r, err)
+		}
+	}
+
+	inbox, err := s.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "INBOX")
+	if err != nil {
+		t.Fatalf("ListIMAPImportMessageStatesByFolder(INBOX): %v", err)
+	}
+	if len(inbox) != 2 {
+		t.Fatalf("INBOX rows = %d; want 2", len(inbox))
+	}
+	archive, err := s.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "Archive")
+	if err != nil {
+		t.Fatalf("ListIMAPImportMessageStatesByFolder(Archive): %v", err)
+	}
+	if len(archive) != 1 {
+		t.Fatalf("Archive rows = %d; want 1", len(archive))
+	}
+	empty, err := s.Meta().ListIMAPImportMessageStatesByFolder(ctx, acc.ID, "NoSuchFolder")
+	if err != nil {
+		t.Fatalf("ListIMAPImportMessageStatesByFolder(NoSuchFolder): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("NoSuchFolder rows = %d; want 0", len(empty))
+	}
+
+	// Delete one INBOX row; the other INBOX row, the Archive row, and the
+	// other account's INBOX row must survive untouched.
+	if err := s.Meta().DeleteIMAPImportMessageState(ctx, acc.ID, "INBOX", 1); err != nil {
+		t.Fatalf("DeleteIMAPImportMessageState: %v", err)
+	}
+	if _, found, err := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (post-delete): %v", err)
+	} else if found {
+		t.Error("deleted row still found")
+	}
+	if _, found, err := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", 2); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (sibling uid): %v", err)
+	} else if !found {
+		t.Error("sibling INBOX row (uid=2) was deleted; want it kept")
+	}
+	if _, found, err := s.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Archive", 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (Archive): %v", err)
+	} else if !found {
+		t.Error("Archive row was deleted; want it kept")
+	}
+	if _, found, err := s.Meta().GetIMAPImportMessageState(ctx, otherAcc.ID, "INBOX", 1); err != nil {
+		t.Fatalf("GetIMAPImportMessageState (other account): %v", err)
+	} else if !found {
+		t.Error("other account's INBOX row was deleted; want it kept")
+	}
+
+	// Deleting an absent row returns ErrNotFound.
+	if err := s.Meta().DeleteIMAPImportMessageState(ctx, acc.ID, "INBOX", 1); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteIMAPImportMessageState (already gone) = %v; want ErrNotFound", err)
+	}
+}
+
 // mustCreateIMAPImportAccount is a test helper that creates an account
 // and fails the test on error.
 func mustCreateIMAPImportAccount(t *testing.T, s store.Store, pid store.PrincipalID, name string) store.IMAPImportAccount {

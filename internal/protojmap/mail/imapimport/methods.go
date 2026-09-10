@@ -327,6 +327,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		State            string             `json:"state,omitempty"`
 		DeletePropagates *bool              `json:"deletePropagates,omitempty"`
 		FolderMap        []folderMapEntryIn `json:"folderMap,omitempty"`
+		ExcludedFolders  []string           `json:"excludedFolders,omitempty"`
 	}
 
 	for clientID, raw := range req.Create {
@@ -475,6 +476,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			CredentialCT:      ct,
 			State:             state,
 			DeletePropagates:  deletePropagates,
+			ExcludedFolders:   in.ExcludedFolders,
 		}
 		created, cerr := s.h.store.Meta().CreateIMAPImportAccount(ctx, create)
 		if cerr != nil {
@@ -529,6 +531,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		State            *string             `json:"state,omitempty"`
 		DeletePropagates *bool               `json:"deletePropagates,omitempty"`
 		FolderMap        *[]folderMapEntryIn `json:"folderMap,omitempty"`
+		ExcludedFolders  *[]string           `json:"excludedFolders,omitempty"`
 	}
 
 	// Load current accounts for update validation.
@@ -580,6 +583,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			BackfillFloorDate: prior.BackfillFloorDate,
 			State:             prior.State,
 			DeletePropagates:  prior.DeletePropagates,
+			ExcludedFolders:   prior.ExcludedFolders,
 			// CredentialCT: nil means "keep existing"; set below if
 			// credential is present in the patch.
 		}
@@ -653,6 +657,9 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		}
 		if in.DeletePropagates != nil {
 			upd.DeletePropagates = *in.DeletePropagates
+		}
+		if in.ExcludedFolders != nil {
+			upd.ExcludedFolders = *in.ExcludedFolders
 		}
 
 		// If a new credential is supplied, re-seal it. Otherwise leave
@@ -844,7 +851,7 @@ func immutableUpdateField(rawMap map[string]json.RawMessage) string {
 		switch k {
 		case "accountName", "host", "port", "tlsMode", "username",
 			"authMethod", "backfillHorizon", "credential",
-			"state", "deletePropagates", "folderMap":
+			"state", "deletePropagates", "folderMap", "excludedFolders":
 			// mutable
 		default:
 			return k

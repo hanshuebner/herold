@@ -792,7 +792,15 @@ const CurrentBackupVersion = 1
 //	applies max(retention_us, 0) or DefaultTTL, clamped to MaxTTL, in
 //	place of the previous unconditional now+DefaultTTL. No new table;
 //	FileShareRow gains the one field.
-const CurrentSchemaVersion = 102
+//
+// 103 — 0103_imapimport_excluded_folders.sql (issue #303/#305). Adds
+//
+//	imapimport_account.excluded_folders_json: a JSON array of upstream
+//	folder names the worker never syncs, column-only migration on the
+//	table added by migration 0057. "[]" (the column default) means no
+//	exclusions, preserving pre-migration behaviour for every existing
+//	row. No new table; IMAPImportAccountRow gains the one field.
+const CurrentSchemaVersion = 103
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

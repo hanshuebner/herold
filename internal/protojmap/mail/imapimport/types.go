@@ -59,6 +59,10 @@ type jmapIMAPImportAccount struct {
 	// table (REQ-IMAP-IMP-10/11). Self-service users manage it through
 	// IMAPImport/set; it is echoed here on read. Omitted when empty.
 	FolderMap []jmapFolderMapEntry `json:"folderMap,omitempty"`
+	// ExcludedFolders lists upstream folder names the worker never syncs
+	// (re #303/#305): no cursor and no message_state rows are created for
+	// them. Omitted when empty.
+	ExcludedFolders []string `json:"excludedFolders,omitempty"`
 }
 
 // jmapFolderMapEntry is one wire-form folder-mapping row: a mapping from an
@@ -101,6 +105,7 @@ func recordToJMAP(a store.IMAPImportAccount) jmapIMAPImportAccount {
 		LastError:        a.LastError,
 		DeletePropagates: a.DeletePropagates,
 		HasCredential:    len(a.CredentialCT) > 0,
+		ExcludedFolders:  a.ExcludedFolders,
 	}
 	// BackfillHorizon: nil floor means "all"; non-nil is the absolute date
 	// (REQ-IMAP-IMP-16).

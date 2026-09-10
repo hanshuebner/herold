@@ -3,6 +3,7 @@ package storesqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -17,7 +18,8 @@ const imapImportAccountSelectCols = `
 	id, identity_id, principal_id, account_name, host, port, tls_mode,
 	username, auth_method, backfill_floor_date,
 	credential_ct, state, last_success_at, last_error,
-	delete_propagates, provenance_mailbox_id, debug_log, created_at, updated_at`
+	delete_propagates, provenance_mailbox_id, debug_log,
+	excluded_folders_json, created_at, updated_at`
 
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
@@ -29,16 +31,22 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		deletePropagates                                                       int64
 		provenanceMailboxID                                                    sql.NullInt64
 		debugLog                                                               int64
+		excludedFoldersJSON                                                    string
 		createdUs, updatedUs                                                   int64
 	)
 	err := row.Scan(
 		&id, &identityID, &pid, &accountName, &host, &port, &tlsMode,
 		&username, &authMethod, &backfillFloorUs,
 		&credentialCT, &state, &lastSuccessUs, &lastError,
-		&deletePropagates, &provenanceMailboxID, &debugLog, &createdUs, &updatedUs,
+		&deletePropagates, &provenanceMailboxID, &debugLog,
+		&excludedFoldersJSON, &createdUs, &updatedUs,
 	)
 	if err != nil {
 		return store.IMAPImportAccount{}, mapErr(err)
+	}
+	excludedFolders, err := decodeExcludedFolders(excludedFoldersJSON)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
 	}
 	acc := store.IMAPImportAccount{
 		ID:                  id,
@@ -56,6 +64,7 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		LastError:           lastError,
 		DeletePropagates:    deletePropagates != 0,
 		DebugLog:            debugLog != 0,
+		ExcludedFolders:     excludedFolders,
 		CreatedAt:           fromMicros(createdUs),
 		UpdatedAt:           fromMicros(updatedUs),
 	}
@@ -68,6 +77,32 @@ func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 		acc.LastSuccessAt = &t
 	}
 	return acc, nil
+}
+
+// decodeExcludedFolders parses the excluded_folders_json column. An empty
+// string (should not occur; the column default is "[]") decodes to nil.
+func decodeExcludedFolders(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("storesqlite: decode excluded_folders_json: %w", err)
+	}
+	return out, nil
+}
+
+// encodeExcludedFolders serialises an excluded-folders list for storage.
+// A nil/empty slice encodes to "[]" so the column is never NULL.
+func encodeExcludedFolders(folders []string) (string, error) {
+	if len(folders) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(folders)
+	if err != nil {
+		return "", fmt.Errorf("storesqlite: encode excluded_folders_json: %w", err)
+	}
+	return string(b), nil
 }
 
 func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMAPImportAccountCreate) (store.IMAPImportAccount, error) {
@@ -88,20 +123,24 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 	if create.DeletePropagates {
 		deletePropagates = 1
 	}
+	excludedFoldersJSON, err := encodeExcludedFolders(create.ExcludedFolders)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
 	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO imapimport_account
 			  (id, identity_id, principal_id, account_name, host, port, tls_mode,
 			   username, auth_method, backfill_floor_date,
 			   credential_ct, state, last_success_at, last_error,
-			   delete_propagates, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?)`,
+			   delete_propagates, excluded_folders_json, created_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,'',?,?,?,?)`,
 			id, nullStringOrNil(create.IdentityID), int64(create.PrincipalID),
 			create.AccountName, create.Host, create.Port,
 			string(create.TLSMode), create.Username, string(create.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(create.BackfillFloorDate)),
 			create.CredentialCT, string(state),
-			deletePropagates, nowUs, nowUs,
+			deletePropagates, excludedFoldersJSON, nowUs, nowUs,
 		)
 		return mapErr(err)
 	})
@@ -119,6 +158,7 @@ func (m *metadata) CreateIMAPImportAccount(ctx context.Context, create store.IMA
 		Username:          create.Username,
 		AuthMethod:        create.AuthMethod,
 		BackfillFloorDate: create.BackfillFloorDate,
+		ExcludedFolders:   create.ExcludedFolders,
 		CredentialCT:      create.CredentialCT,
 		State:             state,
 		LastError:         "",
@@ -139,13 +179,18 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 	if update.DeletePropagates {
 		deletePropagates = 1
 	}
-	err := m.runTx(ctx, func(tx *sql.Tx) error {
+	excludedFoldersJSON, err := encodeExcludedFolders(update.ExcludedFolders)
+	if err != nil {
+		return store.IMAPImportAccount{}, err
+	}
+	err = m.runTx(ctx, func(tx *sql.Tx) error {
 		// Build args in query column order so positional ? placeholders align.
 		args := []any{
 			nullStringOrNil(update.IdentityID),
 			update.AccountName, update.Host, update.Port,
 			string(update.TLSMode), update.Username, string(update.AuthMethod),
 			nullOrMicros(ptrTimeOrZero(update.BackfillFloorDate)),
+			excludedFoldersJSON,
 		}
 		var credExpr string
 		if len(update.CredentialCT) > 0 {
@@ -172,6 +217,7 @@ func (m *metadata) UpdateIMAPImportAccount(ctx context.Context, update store.IMA
 			  account_name = ?, host = ?, port = ?, tls_mode = ?,
 			  username = ?, auth_method = ?,
 			  backfill_floor_date = ?,
+			  excluded_folders_json = ?,
 			  `+credExpr+debugLogExpr+`
 			  state = ?, delete_propagates = ?, updated_at = ?
 			WHERE id = ? AND principal_id = ?`,
@@ -523,6 +569,39 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 			int32(state.LastSyncedFlags),
 		)
 		return mapErr(err)
+	})
+}
+
+func (m *metadata) ListIMAPImportMessageStatesByFolder(ctx context.Context, accountID, upstreamFolder string) ([]store.IMAPImportMessageState, error) {
+	rows, err := m.s.db.QueryContext(ctx,
+		`SELECT account_id, upstream_folder, upstream_uid,
+		        herold_message_id, herold_mailbox_id, last_synced_flags
+		   FROM imapimport_message_state WHERE account_id = ? AND upstream_folder = ?`,
+		accountID, upstreamFolder)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	return scanIMAPImportMessageStateRows(rows)
+}
+
+func (m *metadata) DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error {
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM imapimport_message_state
+			  WHERE account_id = ? AND upstream_folder = ? AND upstream_uid = ?`,
+			accountID, upstreamFolder, int64(upstreamUID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: DeleteIMAPImportMessageState rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
 	})
 }
 

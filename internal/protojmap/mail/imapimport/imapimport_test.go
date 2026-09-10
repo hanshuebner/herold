@@ -1235,6 +1235,90 @@ func TestFolderMap_UpdateReplaces(t *testing.T) {
 	}
 }
 
+// TestExcludedFolders_CreateEchoAndUpdate verifies that excludedFolders
+// supplied on create is persisted and echoed back on the created object and
+// on get, that an update without excludedFolders leaves it untouched, and
+// that an update with excludedFolders replaces it (re #303/#305).
+func TestExcludedFolders_CreateEchoAndUpdate(t *testing.T) {
+	h, st, p := newHandlers(t)
+
+	creates := map[string]any{
+		"c1": map[string]any{
+			"accountName":     "With exclusions",
+			"host":            "imap.example.com",
+			"port":            993,
+			"tlsMode":         "implicit",
+			"username":        "user",
+			"authMethod":      "password",
+			"backfillHorizon": "30d",
+			"credential":      "pw",
+			"excludedFolders": []string{"Promo", "Social"},
+		},
+	}
+	resp := doCreate(t, h, p, creates)
+	created, ok := resp.Created["c1"]
+	if !ok {
+		t.Fatalf("c1 not created; notCreated=%v", resp.NotCreated)
+	}
+	if got := created.ExcludedFolders; len(got) != 2 || got[0] != "Promo" || got[1] != "Social" {
+		t.Fatalf("created excludedFolders = %v", got)
+	}
+	// Persisted in the store.
+	stored, err := st.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+	if len(stored.ExcludedFolders) != 2 {
+		t.Fatalf("stored excludedFolders len = %d, want 2", len(stored.ExcludedFolders))
+	}
+
+	// Rename only: excludedFolders left untouched.
+	renameArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{created.ID: map[string]any{"accountName": "Renamed"}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, renameArgs); merr != nil {
+		t.Fatalf("rename: %v", merr)
+	}
+	if stored2, err := st.Meta().GetIMAPImportAccount(context.Background(), created.ID); err != nil {
+		t.Fatalf("GetIMAPImportAccount (after rename): %v", err)
+	} else if len(stored2.ExcludedFolders) != 2 {
+		t.Fatalf("absent excludedFolders should leave it untouched; got %v", stored2.ExcludedFolders)
+	}
+
+	// Update with a new list: replaces.
+	upArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{created.ID: map[string]any{"excludedFolders": []string{"Newsletters"}}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, upArgs); merr != nil {
+		t.Fatalf("update: %v", merr)
+	}
+	stored3, err := st.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount (after update): %v", err)
+	}
+	if len(stored3.ExcludedFolders) != 1 || stored3.ExcludedFolders[0] != "Newsletters" {
+		t.Fatalf("excludedFolders not replaced: %v", stored3.ExcludedFolders)
+	}
+
+	// Update with an explicit empty array clears it.
+	clearArgs, _ := json.Marshal(map[string]any{
+		"accountId": accountID(p),
+		"update":    map[string]any{created.ID: map[string]any{"excludedFolders": []string{}}},
+	})
+	if _, merr := (setHandler{h: h}).executeAs(p, clearArgs); merr != nil {
+		t.Fatalf("clear: %v", merr)
+	}
+	stored4, err := st.Meta().GetIMAPImportAccount(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount (after clear): %v", err)
+	}
+	if len(stored4.ExcludedFolders) != 0 {
+		t.Fatalf("excludedFolders not cleared: %v", stored4.ExcludedFolders)
+	}
+}
+
 // TestFolderMap_InvalidEntryRejected verifies that a folderMap entry with an
 // empty name is rejected on create without creating the account.
 func TestFolderMap_InvalidEntryRejected(t *testing.T) {

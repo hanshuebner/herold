@@ -106,6 +106,16 @@ func (w *accountWorker) applyUpstreamFlagChange(ctx context.Context, upstreamFol
 		return
 	}
 
+	if hasFlag(cf.Flags, imap.FlagDeleted) {
+		// The upstream message was flagged \Deleted after it was mirrored,
+		// but has not been expunged yet (re #303): the source folder no
+		// longer claims it, so drop the membership and state row now rather
+		// than waiting for the eventual EXPUNGE. Bypasses the normal
+		// \Seen/\Flagged reconcile below entirely.
+		w.removeMessageStateMembership(ctx, ms)
+		return
+	}
+
 	upstreamSynced := syncedFlagsFromIMAP(cf.Flags)
 	if upstreamSynced == ms.LastSyncedFlags {
 		// Upstream unchanged since the last sync — nothing to apply.

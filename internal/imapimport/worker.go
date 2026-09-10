@@ -348,6 +348,7 @@ func (w *accountWorker) refreshAccount(cur store.IMAPImportAccount) {
 	w.opts.account.DeletePropagates = cur.DeletePropagates
 	w.opts.account.ProvenanceMailboxID = cur.ProvenanceMailboxID
 	w.opts.account.DebugLog = cur.DebugLog
+	w.opts.account.ExcludedFolders = cur.ExcludedFolders
 	w.status.setDebugLog(cur.DebugLog)
 }
 

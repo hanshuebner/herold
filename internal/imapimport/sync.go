@@ -92,10 +92,21 @@ func (w *accountWorker) syncAllFolders(ctx context.Context, conn Conn) error {
 	// count and we publish the account-wide sum to the gauge below (D6).
 	w.backfillRemaining = 0
 
+	// excludedFolders is the per-account no-sync set (re #303/#305): an
+	// excluded folder is never SELECTed, so it gets no cursor row and no
+	// message_state rows.
+	excludedFolders := make(map[string]bool, len(account.ExcludedFolders))
+	for _, f := range account.ExcludedFolders {
+		excludedFolders[f] = true
+	}
+
 	var lastErr error
 	for _, fi := range folders {
 		// Skip \NoSelect mailboxes (e.g. hierarchy-only nodes).
 		if hasAttr(fi.Attrs, imap.MailboxAttrNoSelect) {
+			continue
+		}
+		if excludedFolders[fi.Name] {
 			continue
 		}
 		heroldName, ok := mapping[fi.Name]
@@ -217,8 +228,36 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 	// every subsequently-arriving message too.
 	var highWaterFailedUID uint64
 
+	// currentUpstreamUIDs holds the full current UID set of the folder (no
+	// SINCE bound), populated only on an incremental pass's forward-sync
+	// search below. It is the base set for upstream-expunge reconciliation
+	// (re #303): a message_state row whose UID is absent from this set was
+	// expunged upstream since the last sync. haveCurrentUpstreamUIDs
+	// distinguishes "search ran, folder happens to be empty now" from
+	// "search never ran this pass" (initial sync, rollover, empty mailbox)
+	// — an empty-but-populated result set must still drive reconciliation.
+	var currentUpstreamUIDs []imap.UID
+	var haveCurrentUpstreamUIDs bool
+
 	if si.NumMessages == 0 {
-		// Empty mailbox: nothing to do; just advance cursor state.
+		// Empty mailbox: nothing to fetch. If the folder was already
+		// initialised, still reconcile against an empty current-UID set
+		// (re #303): every message_state row this account holds for the
+		// folder is now stale, whether each message was expunged
+		// individually earlier (and already caught below) or the folder's
+		// last message(s) vanished between this pass and the last — the
+		// "goto persistCursor" below would otherwise skip that case
+		// entirely, since it jumps past the guarded down-sync/reconcile
+		// block that normally runs after the if/else below.
+		if folderInitialised && !w.authorityIsHerold() {
+			if err := w.reconcileExpungedMessages(ctx, upstreamFolder, nil); err != nil {
+				log.Warn("imapimport: expunge reconcile failed (continuing)",
+					slog.String("account_id", accountID),
+					slog.String("upstream_folder", upstreamFolder),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
 		goto persistCursor
 	}
 
@@ -285,11 +324,22 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 			}
 		}
 
-		// 3b. Forward sync: fetch UIDs strictly above high_water.
+		// 3b. Forward sync: fetch UIDs strictly above high_water. The
+		//     unbounded search also gives us the folder's full current UID
+		//     set, reused below for upstream-expunge reconciliation
+		//     (re #303) so it costs one UID SEARCH ALL round-trip, not two.
 		//     REQ-IMAP-IMP-34.
-		forwardUIDs, err := uidsAbove(conn, ctx, cursor.HighWaterUID)
+		allUIDs, err := conn.UIDSearchSince(ctx, time.Time{})
 		if err != nil {
 			return fmt.Errorf("imapimport: forward search: %w", err)
+		}
+		currentUpstreamUIDs = allUIDs
+		haveCurrentUpstreamUIDs = true
+		var forwardUIDs []imap.UID
+		for _, uid := range allUIDs {
+			if uint64(uid) > cursor.HighWaterUID {
+				forwardUIDs = append(forwardUIDs, uid)
+			}
 		}
 		if len(forwardUIDs) > 0 {
 			// Forward UIDs on an already-initialised folder are genuine live
@@ -323,6 +373,24 @@ func (w *accountWorker) syncFolder(ctx context.Context, conn Conn, upstreamFolde
 				slog.String("upstream_folder", upstreamFolder),
 				slog.String("error", err.Error()),
 			)
+		}
+
+		// Reconcile upstream expunges (re #303): drop the membership and
+		// message_state row for any previously-mirrored UID this pass's
+		// unbounded UID search no longer sees. Only runs when the pass took
+		// the incremental branch above (currentUpstreamUIDs non-nil) — an
+		// initial/rollover pass or an empty mailbox has no expunges to
+		// detect against. Same authority-transfer gate as downSyncFlags:
+		// once herold is authoritative (migrating/migrated) upstream state
+		// no longer drives herold-side removals.
+		if haveCurrentUpstreamUIDs {
+			if err := w.reconcileExpungedMessages(ctx, upstreamFolder, currentUpstreamUIDs); err != nil {
+				log.Warn("imapimport: expunge reconcile failed (continuing)",
+					slog.String("account_id", accountID),
+					slog.String("upstream_folder", upstreamFolder),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
 	}
 
@@ -394,22 +462,6 @@ func countUIDsBelow(uids []imap.UID, mark uint64) int {
 	return n
 }
 
-// uidsAbove returns all UIDs strictly above aboveUID in the currently-selected
-// mailbox by fetching all UIDs and filtering.
-func uidsAbove(conn Conn, ctx context.Context, aboveUID uint64) ([]imap.UID, error) {
-	all, err := conn.UIDSearchSince(ctx, time.Time{}) // no date filter = all
-	if err != nil {
-		return nil, err
-	}
-	var out []imap.UID
-	for _, uid := range all {
-		if uint64(uid) > aboveUID {
-			out = append(out, uid)
-		}
-	}
-	return out, nil
-}
-
 // fetchAndIngest downloads uids, parses each message, deduplicates it,
 // and writes it into the herold store. Returns (countNew, lowestUID,
 // error). countNew is the number of messages actually inserted
@@ -453,8 +505,27 @@ func (w *accountWorker) fetchAndIngest(
 		if lowestUID == 0 || uid < lowestUID {
 			lowestUID = uid
 		}
+		if hasFlag(fm.Flags, imap.FlagDeleted) {
+			// A message flagged \Deleted upstream is not imported from this
+			// folder (re #303). If an earlier pass had already mirrored it
+			// from here (the flag was set afterwards, before expunge), drop
+			// that folder's membership now.
+			if ms, found, gerr := w.opts.store.Meta().GetIMAPImportMessageState(ctx, account.ID, upstreamFolder, uint32(fm.UID)); gerr == nil && found {
+				w.removeMessageStateMembership(ctx, ms)
+			}
+			continue
+		}
+
 		isNew, isNewMember, msgID, mbID, finalMailbox, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox, categorise)
 		if ingestErr != nil {
+			if errors.Is(ingestErr, errINBOXSuppressedByJunk) {
+				// Junk wins over inbox (re #303): this folder's mapped
+				// INBOX placement is intentionally suppressed because the
+				// message already carries a Junk-attributed membership.
+				// Not a failure: no message_state row is recorded for this
+				// (folder, uid) since no membership was created here.
+				continue
+			}
 			w.opts.log.Warn("imapimport: ingest failed",
 				slog.String("account_id", account.ID),
 				slog.String("upstream_folder", upstreamFolder),
@@ -729,24 +800,167 @@ func (w *accountWorker) placeExistingMessage(
 	// Tag with the per-account provenance label (REQ-IMAP-IMP-100); idempotent
 	// across the K folder placements of a multi-mailbox dedup.
 	w.addProvenanceLabel(ctx, existing.ID)
+
+	// Junk-wins precedence (re #303): an imported message never carries both
+	// a Junk-attributed membership and an INBOX membership, regardless of
+	// which source folder is synced first. The INBOX-suppression check runs
+	// before any membership is touched; the INBOX-stripping side effect
+	// (below) runs only after the new Junk membership is confirmed in
+	// place, so the message always has at least one membership — stripping
+	// first would let RemoveMessageFromMailbox's "last membership gone"
+	// contract destroy the message out from under the pending Junk add.
+	if targetMB.Attributes&store.MailboxAttrInbox != 0 {
+		attrs := w.mailboxAttrByID(ctx, principalID)
+		for _, mm := range existing.Mailboxes {
+			if attrs[mm.MailboxID]&store.MailboxAttrJunk != 0 {
+				return false, existing.ID, targetMB.ID, errINBOXSuppressedByJunk
+			}
+		}
+	}
+
+	alreadyMember := false
 	for _, mm := range existing.Mailboxes {
 		if mm.MailboxID == targetMB.ID {
-			// Already a member (e.g. re-fetching the same folder): no-op.
-			return false, existing.ID, targetMB.ID, nil
+			alreadyMember = true
+			break
 		}
 	}
-	// Add the membership. Idempotent per AddMessageToMailbox's ErrConflict
-	// guard — a concurrent ingest of the same message into the same mailbox
-	// loses the race harmlessly.
-	if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
-		if !errors.Is(addErr, store.ErrConflict) {
-			return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+	isNewMember = false
+	if !alreadyMember {
+		// Add the membership. Idempotent per AddMessageToMailbox's ErrConflict
+		// guard — a concurrent ingest of the same message into the same
+		// mailbox loses the race harmlessly.
+		if _, _, addErr := w.opts.store.Meta().AddMessageToMailbox(ctx, existing.ID, targetMB.ID); addErr != nil {
+			if !errors.Is(addErr, store.ErrConflict) {
+				return false, existing.ID, targetMB.ID, fmt.Errorf("imapimport: AddMessageToMailbox (dedup): %w", addErr)
+			}
+			// ErrConflict: another path already added it; not a new member here.
+		} else {
+			isNewMember = true
 		}
-		// ErrConflict: another path already added it; not a new member here.
-		return false, existing.ID, targetMB.ID, nil
 	}
-	// Membership created now: the caller should categorise if INBOX.
-	return true, existing.ID, targetMB.ID, nil
+
+	if targetMB.Attributes&store.MailboxAttrJunk != 0 {
+		// Placing into Junk: strip any INBOX membership this message already
+		// carries from an earlier sync pass. The Junk membership added above
+		// (or already present) guarantees the message is never left with
+		// zero memberships by this step.
+		w.stripInboxMembershipsForJunk(ctx, principalID, existing)
+	}
+
+	// Membership created now (or already in place): the caller decides
+	// whether to categorise based on isNewMember and heroldMailbox == INBOX.
+	return isNewMember, existing.ID, targetMB.ID, nil
+}
+
+// errINBOXSuppressedByJunk is returned by placeExistingMessage when an
+// INBOX-mapped folder placement is suppressed because the message already
+// carries a Junk-attributed membership (re #303). Not a failure: the caller
+// treats it as a benign skip and records no message_state row for the
+// (folder, uid) that would have produced the suppressed membership.
+var errINBOXSuppressedByJunk = errors.New("imapimport: inbox membership suppressed by junk precedence")
+
+// mailboxAttrByID returns a MailboxID -> Attributes map for every mailbox
+// owned by pid, for callers that need to classify several
+// Message.Mailboxes entries in one pass without a per-membership store
+// round-trip. Returns nil (all lookups miss) on a store error; callers
+// treat a miss as "no special-use bits".
+func (w *accountWorker) mailboxAttrByID(ctx context.Context, pid store.PrincipalID) map[store.MailboxID]store.MailboxAttributes {
+	mbs, err := w.opts.store.Meta().ListMailboxes(ctx, pid)
+	if err != nil {
+		return nil
+	}
+	out := make(map[store.MailboxID]store.MailboxAttributes, len(mbs))
+	for _, mb := range mbs {
+		out[mb.ID] = mb.Attributes
+	}
+	return out
+}
+
+// stripInboxMembershipsForJunk removes every INBOX-attributed membership
+// `existing` currently carries and the message_state row(s) that recorded
+// it, so a message just placed into a Junk-attributed mailbox never keeps
+// an INBOX membership from an earlier sync pass (re #303, junk-wins).
+func (w *accountWorker) stripInboxMembershipsForJunk(ctx context.Context, pid store.PrincipalID, existing store.Message) {
+	attrs := w.mailboxAttrByID(ctx, pid)
+	for _, mm := range existing.Mailboxes {
+		if attrs[mm.MailboxID]&store.MailboxAttrInbox == 0 {
+			continue
+		}
+		if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, existing.ID, mm.MailboxID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
+			w.opts.log.Warn("imapimport: failed to remove inbox membership (junk precedence)",
+				slog.String("account_id", w.opts.account.ID),
+				slog.Uint64("msg_id", uint64(existing.ID)),
+				slog.String("error", rerr.Error()),
+			)
+			continue
+		}
+		// Drop this account's stale message_state row(s) that pointed at the
+		// membership just removed, so a later flag-sync pass does not try to
+		// address a (message, mailbox) pair that no longer exists.
+		states, serr := w.opts.store.Meta().ListIMAPImportMessageStatesByMessage(ctx, existing.ID)
+		if serr != nil {
+			continue
+		}
+		for _, s := range states {
+			if s.AccountID == w.opts.account.ID && s.HeroldMailboxID == mm.MailboxID {
+				_ = w.opts.store.Meta().DeleteIMAPImportMessageState(ctx, s.AccountID, s.UpstreamFolder, s.UpstreamUID)
+			}
+		}
+	}
+}
+
+// removeMessageStateMembership removes the mailbox membership ms recorded
+// and deletes the message_state row itself. Used when the source folder no
+// longer claims the message: an upstream \Deleted flag or an upstream
+// EXPUNGE (re #303). If the message has no other mailbox membership,
+// RemoveMessageFromMailbox's contract destroys it — herold's normal removal
+// path for a message with no mailbox.
+func (w *accountWorker) removeMessageStateMembership(ctx context.Context, ms store.IMAPImportMessageState) {
+	if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, ms.HeroldMessageID, ms.HeroldMailboxID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
+		w.opts.log.Warn("imapimport: failed to remove mailbox membership",
+			slog.String("account_id", ms.AccountID),
+			slog.String("upstream_folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.String("error", rerr.Error()),
+		)
+	}
+	if derr := w.opts.store.Meta().DeleteIMAPImportMessageState(ctx, ms.AccountID, ms.UpstreamFolder, ms.UpstreamUID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+		w.opts.log.Warn("imapimport: failed to delete message_state row",
+			slog.String("account_id", ms.AccountID),
+			slog.String("upstream_folder", ms.UpstreamFolder),
+			slog.Uint64("uid", uint64(ms.UpstreamUID)),
+			slog.String("error", derr.Error()),
+		)
+	}
+}
+
+// reconcileExpungedMessages detects upstream expunges for upstreamFolder: a
+// message_state row whose UpstreamUID is absent from currentUIDs (the
+// folder's just-observed full UID set) was expunged upstream since the last
+// sync. Each such message loses the membership and state row this account
+// recorded for that folder, mirroring the expunge (re #303). Best-effort
+// per row; logs and continues past individual failures.
+func (w *accountWorker) reconcileExpungedMessages(ctx context.Context, upstreamFolder string, currentUIDs []imap.UID) error {
+	account := w.opts.account
+	states, err := w.opts.store.Meta().ListIMAPImportMessageStatesByFolder(ctx, account.ID, upstreamFolder)
+	if err != nil {
+		return fmt.Errorf("imapimport: ListIMAPImportMessageStatesByFolder: %w", err)
+	}
+	if len(states) == 0 {
+		return nil
+	}
+	present := make(map[uint32]bool, len(currentUIDs))
+	for _, uid := range currentUIDs {
+		present[uint32(uid)] = true
+	}
+	for _, s := range states {
+		if present[s.UpstreamUID] {
+			continue
+		}
+		w.removeMessageStateMembership(ctx, s)
+	}
+	return nil
 }
 
 // ensureMailbox returns the herold mailbox named mbName owned by pid,
@@ -946,6 +1160,16 @@ func syncedFlagsFromIMAP(flags []imap.Flag) store.IMAPImportSyncedFlags {
 func hasAttr(attrs []imap.MailboxAttr, target imap.MailboxAttr) bool {
 	for _, a := range attrs {
 		if a == target {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFlag reports whether flags contains the given IMAP system flag.
+func hasFlag(flags []imap.Flag, target imap.Flag) bool {
+	for _, f := range flags {
+		if f == target {
 			return true
 		}
 	}

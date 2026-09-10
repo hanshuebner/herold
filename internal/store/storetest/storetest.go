@@ -460,6 +460,8 @@ func Run(t *testing.T, f Factory) {
 		{"IMAPImport_NullBackfillFloor", testIMAPImport_NullBackfillFloor},
 		{"IMAPImport_DeleteNotFound", testIMAPImport_DeleteNotFound},
 		{"IMAPImport_DebugLog", testIMAPImport_DebugLog},
+		{"IMAPImport_ExcludedFolders", testIMAPImport_ExcludedFolders},
+		{"IMAPImport_MessageStateByFolderAndDelete", testIMAPImport_MessageStateByFolderAndDelete},
 		// -- re #29: label-preserving Restore (email_pretrash_mailboxes) -----
 		{"PreTrash_SnapshotOnTrashAdd_EmptyForNoCustomMailbox", testPreTrashSnapshotOnTrashAddEmptyForNoCustomMailbox},
 		{"PreTrash_SnapshotOnTrashAdd_MultiMailboxPreserved", testPreTrashSnapshotOnTrashAddMultiMailboxPreserved},

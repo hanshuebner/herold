@@ -3042,6 +3042,21 @@ type Metadata interface {
 	// the herold-side IDs and LastSyncedFlags are replaced.
 	UpsertIMAPImportMessageState(ctx context.Context, state IMAPImportMessageState) error
 
+	// ListIMAPImportMessageStatesByFolder returns every message_state row
+	// for the (accountID, upstreamFolder) pair. Used to detect upstream
+	// expunges: the worker diffs this set's UpstreamUID values against the
+	// folder's current UID set and drops any state row (and the mailbox
+	// membership it recorded) whose UID no longer exists upstream (re #303).
+	// Returns an empty slice when none.
+	ListIMAPImportMessageStatesByFolder(ctx context.Context, accountID, upstreamFolder string) ([]IMAPImportMessageState, error)
+
+	// DeleteIMAPImportMessageState removes the message_state row identified
+	// by (accountID, upstreamFolder, upstreamUID). Returns ErrNotFound when
+	// the row is absent. Used when the source folder no longer claims the
+	// message — an upstream \Deleted flag, an upstream EXPUNGE, or a herold-
+	// side junk-precedence membership removal (re #303).
+	DeleteIMAPImportMessageState(ctx context.Context, accountID, upstreamFolder string, upstreamUID uint32) error
+
 	// -- EmailBulkJob (whole-mailbox async bulk mutation) --------------
 
 	// CreateEmailBulkJob inserts a new job row in status=running with
