@@ -35,6 +35,7 @@
     'sent',
     'drafts',
     'trash',
+    'junk',
     'all',
     'important',
     'snoozed',
@@ -810,6 +811,7 @@
     sent: 'sidebar.sent',
     drafts: 'sidebar.drafts',
     trash: 'sidebar.trash',
+    junk: 'sidebar.junk',
     important: 'sidebar.important',
     snoozed: 'sidebar.snoozed',
   };

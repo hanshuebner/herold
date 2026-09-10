@@ -583,6 +583,11 @@
             <span>{t('sidebar.trash')}</span>
           </button>
         </li>
+        <li class:active={router.matches('mail', 'folder', 'junk')}>
+          <button type="button" onclick={() => router.navigate('/mail/folder/junk')}>
+            <span>{t('sidebar.junk')}</span>
+          </button>
+        </li>
         <li class:active={router.matches('mail', 'folder', 'all')}>
           <button type="button" onclick={() => router.navigate('/mail/folder/all')}>
             <span>{t('sidebar.allMail')}</span>

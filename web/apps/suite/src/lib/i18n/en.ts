@@ -12,6 +12,7 @@ export const en = {
   'sidebar.sent': 'Sent',
   'sidebar.drafts': 'Drafts',
   'sidebar.trash': 'Trash',
+  'sidebar.junk': 'Spam',
   'sidebar.allMail': 'All Mail',
   'sidebar.more': 'More',
   'sidebar.labels': 'Labels',

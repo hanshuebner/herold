@@ -11,6 +11,7 @@ export const de = {
   'sidebar.sent': 'Gesendet',
   'sidebar.drafts': 'Entwürfe',
   'sidebar.trash': 'Papierkorb',
+  'sidebar.junk': 'Spam',
   'sidebar.allMail': 'Alle Nachrichten',
   'sidebar.more': 'Mehr',
   'sidebar.labels': 'Labels',

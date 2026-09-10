@@ -61,7 +61,7 @@ type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
  */
 export type FolderID = string;
 
-const ROLED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash']);
+const ROLED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash', 'junk']);
 
 /**
  * Structured error thrown by Identity/set actions (create / destroy)
@@ -151,6 +151,7 @@ const FOLDER_ROLE: Record<string, string> = {
   sent: 'sent',
   drafts: 'drafts',
   trash: 'trash',
+  junk: 'junk',
 };
 
 const FOLDER_LABEL: Record<string, string> = {
@@ -158,6 +159,7 @@ const FOLDER_LABEL: Record<string, string> = {
   sent: 'Sent',
   drafts: 'Drafts',
   trash: 'Trash',
+  junk: 'Junk',
   all: 'All Mail',
   important: 'Important',
   snoozed: 'Snoozed',
