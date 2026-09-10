@@ -206,8 +206,11 @@ func TestMessageResearch_ReceivedFields(t *testing.T) {
 			t.Errorf("envelope missing or wrong type: %T", item["envelope"])
 			continue
 		}
-		if env["subject"] != "Hello from research test" {
-			t.Errorf("envelope.subject: got %v", env["subject"])
+		// No subject anywhere in the response (re #143, maintainer
+		// finding #4): the Subject header is message content, not
+		// envelope metadata.
+		if _, has := env["subject"]; has {
+			t.Errorf("envelope.subject must not be present, got %v", env["subject"])
 		}
 		if env["from"] != "sender@outside.test" {
 			t.Errorf("envelope.from: got %v", env["from"])
@@ -469,7 +472,7 @@ func TestMessageResearch_OperatorScope(t *testing.T) {
 		}
 		env, _ := item["envelope"].(map[string]any)
 		if env != nil {
-			if subj, _ := env["subject"].(string); subj == "Hello from research test" {
+			if mid, _ := env["message_id"].(string); mid == "research-test-msg-1@outside.test" {
 				sawAlpha = true
 			}
 		}
@@ -962,5 +965,282 @@ func assertHasReceivedAndRelay(t *testing.T, items []map[string]any, label strin
 	}
 	if !gotRelay {
 		t.Errorf("%s: no send_outcome relay entry found (message-id correlation failed); items=%+v", label, items)
+	}
+}
+
+// TestMessageResearch_IngestSourceSMTP verifies that a received entry from
+// a live SMTP delivery carries ingest_source = "smtp" with an empty
+// ingest_source_ref, and every current mailbox in the "mailboxes" array
+// (re #143, maintainer findings #1/#2).
+func TestMessageResearch_IngestSourceSMTP(t *testing.T) {
+	h := newHarness(t)
+	adminKey, aliceID, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	alice, err := s.Meta().GetPrincipalByID(ctx, store.PrincipalID(aliceID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	inbox, err := s.Meta().GetMailboxByName(ctx, alice.ID, "INBOX")
+	if err != nil {
+		t.Fatalf("GetMailboxByName INBOX: %v", err)
+	}
+	archive, err := s.Meta().GetMailboxByName(ctx, alice.ID, "Archive")
+	if err != nil {
+		t.Fatalf("GetMailboxByName Archive: %v", err)
+	}
+
+	blobRef, err := s.Blobs().Put(ctx, strings.NewReader("smtp ingest body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	rcv := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  alice.ID,
+		Blob:         blobRef,
+		Size:         blobRef.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			From:      "smtp-sender@outside.test",
+			To:        "alice@alpha.test",
+			MessageID: "ingest-smtp-1@outside.test",
+		},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}, {MailboxID: archive.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?message_id=ingest-smtp-1%40outside.test", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+
+	var found bool
+	for _, item := range out.Items {
+		if item["source"] != "received" {
+			continue
+		}
+		found = true
+		if item["ingest_source"] != "smtp" {
+			t.Errorf("ingest_source: got %v, want smtp", item["ingest_source"])
+		}
+		if item["ingest_source_ref"] != "" {
+			t.Errorf("ingest_source_ref: got %v, want empty", item["ingest_source_ref"])
+		}
+		mailboxes, ok := item["mailboxes"].([]any)
+		if !ok {
+			t.Fatalf("mailboxes missing or wrong type: %T", item["mailboxes"])
+		}
+		if len(mailboxes) != 2 {
+			t.Fatalf("mailboxes = %v, want 2 entries (INBOX + Archive)", mailboxes)
+		}
+		gotNames := map[string]bool{}
+		for _, mbAny := range mailboxes {
+			mb, ok := mbAny.(map[string]any)
+			if !ok {
+				t.Fatalf("mailbox entry wrong type: %T", mbAny)
+			}
+			name, _ := mb["name"].(string)
+			gotNames[name] = true
+			if _, has := mb["is_junk"]; !has {
+				t.Errorf("mailbox entry %v missing is_junk", mb)
+			}
+		}
+		if !gotNames["INBOX"] || !gotNames["Archive"] {
+			t.Errorf("mailbox names = %v, want INBOX and Archive", gotNames)
+		}
+	}
+	if !found {
+		t.Fatalf("no 'received' entry found; items=%+v", out.Items)
+	}
+}
+
+// TestMessageResearch_IngestSourceIMAPImport verifies that a received
+// entry from the IMAP import path carries ingest_source = "imap-import"
+// with ingest_source_ref set to the import account name (re #143,
+// maintainer finding #2).
+func TestMessageResearch_IngestSourceIMAPImport(t *testing.T) {
+	h := newHarness(t)
+	adminKey, aliceID, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	alice, err := s.Meta().GetPrincipalByID(ctx, store.PrincipalID(aliceID))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	inbox, err := s.Meta().GetMailboxByName(ctx, alice.ID, "INBOX")
+	if err != nil {
+		t.Fatalf("GetMailboxByName INBOX: %v", err)
+	}
+
+	blobRef, err := s.Blobs().Put(ctx, strings.NewReader("imap import body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	rcv := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  alice.ID,
+		Blob:         blobRef,
+		Size:         blobRef.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			From:      "imported-sender@outside.test",
+			To:        "alice@alpha.test",
+			MessageID: "ingest-import-1@outside.test",
+		},
+		IngestSource:    store.IngestSourceIMAPImport,
+		IngestSourceRef: "mail.classic-computing.de",
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?message_id=ingest-import-1%40outside.test", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+
+	var found bool
+	for _, item := range out.Items {
+		if item["source"] != "received" {
+			continue
+		}
+		found = true
+		if item["ingest_source"] != "imap-import" {
+			t.Errorf("ingest_source: got %v, want imap-import", item["ingest_source"])
+		}
+		if item["ingest_source_ref"] != "mail.classic-computing.de" {
+			t.Errorf("ingest_source_ref: got %v, want mail.classic-computing.de", item["ingest_source_ref"])
+		}
+	}
+	if !found {
+		t.Fatalf("no 'received' entry found; items=%+v", out.Items)
+	}
+}
+
+// TestMessageResearch_NoSubjectKeyAnywhere is a JSON key scan (re #143,
+// maintainer finding #4): the Subject header is message content, not
+// envelope metadata, and REQ-ADM-306 restricts this surface to envelope
+// metadata and disposition only. No object anywhere in the response --
+// received entries, smtp_event entries, or send_outcome entries -- may
+// carry a key literally named "subject".
+func TestMessageResearch_NoSubjectKeyAnywhere(t *testing.T) {
+	h := newHarness(t)
+	adminKey, _, _ := seedResearchFixture(t, h)
+
+	// A bogus "subject" query parameter must not resurrect subject
+	// filtering or search-echo behaviour; the endpoint accepts or
+	// silently ignores it.
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?subject=anything", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+
+	var raw any
+	if err := json.Unmarshal(buf, &raw); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	if bad := findKey(raw, "subject"); bad {
+		t.Errorf("response contains a %q key; body=%s", "subject", buf)
+	}
+}
+
+// findKey recursively scans a decoded JSON value for an object key that
+// exactly matches want.
+func findKey(v any, want string) bool {
+	switch vv := v.(type) {
+	case map[string]any:
+		for k, val := range vv {
+			if k == want {
+				return true
+			}
+			if findKey(val, want) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range vv {
+			if findKey(item, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestMessageResearch_SMTPEventCarriesRcptTo verifies that a smtp_event
+// timeline entry exposes the envelope's mail_from and rcpt_to via its
+// Metadata, and that the event's blob-hash subject-of-record surfaces as
+// "ref", never "subject" (re #143, maintainer finding #3).
+func TestMessageResearch_SMTPEventCarriesRcptTo(t *testing.T) {
+	h := newHarness(t)
+	adminKey, _, _ := seedResearchFixture(t, h)
+	ctx := context.Background()
+	s := h.h.Store
+
+	if err := s.Meta().AppendSystemEvent(ctx, store.SystemEvent{
+		At:      time.Date(2026, 6, 1, 11, 50, 0, 0, time.UTC),
+		Action:  "smtp.accept",
+		ActorID: "smtp",
+		Subject: "message:accept-hash-rcptto-test",
+		Outcome: store.OutcomeSuccess,
+		Message: "session=s9 recipients=2 size=100",
+		Domain:  "alpha.test",
+		Metadata: map[string]string{
+			"mail_from": "ext@sender.test",
+			"rcpt_to":   "alice@alpha.test,dana@alpha.test",
+		},
+	}); err != nil {
+		t.Fatalf("AppendSystemEvent: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?limit=1000", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+
+	var found bool
+	for _, item := range out.Items {
+		if item["source"] != "smtp_event" || item["ref"] != "message:accept-hash-rcptto-test" {
+			continue
+		}
+		found = true
+		if _, has := item["subject"]; has {
+			t.Errorf("smtp_event entry carries a 'subject' key: %v", item)
+		}
+		meta, ok := item["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("metadata missing or wrong type: %T", item["metadata"])
+		}
+		if meta["mail_from"] != "ext@sender.test" {
+			t.Errorf("metadata.mail_from: got %v", meta["mail_from"])
+		}
+		if meta["rcpt_to"] != "alice@alpha.test,dana@alpha.test" {
+			t.Errorf("metadata.rcpt_to: got %v", meta["rcpt_to"])
+		}
+	}
+	if !found {
+		t.Fatalf("smtp_event entry not found; items=%+v", out.Items)
 	}
 }

@@ -266,11 +266,27 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, m := range msgs {
+		mailboxes := make([]map[string]any, len(m.Mailboxes))
+		for i, mb := range m.Mailboxes {
+			mailboxes[i] = map[string]any{
+				"name":    mb.Name,
+				"is_junk": mb.IsJunk,
+			}
+		}
 		e := map[string]any{
 			"source":          "received",
 			"at":              m.ReceivedAt.UTC().Format(time.RFC3339Nano),
 			"principal_id":    uint64(m.PrincipalID),
 			"principal_email": resolvePrincipalEmail(m.PrincipalID),
+			// ingest_source / ingest_source_ref record which write path
+			// produced this row (re #143, maintainer finding #2): "smtp",
+			// "imap-import" (ref = the import account name),
+			// "jmap-import", "imap-append", "imap-copy",
+			// "mailing-list-archive" (ref = the list address), or
+			// "gmail-import". "" means not recorded (row predates
+			// migration 0105, or the write path has not been updated).
+			"ingest_source":     string(m.IngestSource),
+			"ingest_source_ref": m.IngestSourceRef,
 			// disposition is the recorded-at-ingest fact (re #143): what
 			// the SMTP ingest path decided when the message was
 			// accepted, immutable regardless of later moves. "" means
@@ -284,6 +300,12 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 			// field.
 			"mailbox_name": m.MailboxName,
 			"is_junk":      m.IsJunk,
+			// mailboxes lists every mailbox the message currently sits
+			// in (re #143, maintainer finding #1): a message can sit in
+			// several at once (e.g. an IMAP import's per-account mailbox
+			// alongside Archive/Spam copies), and mailbox_name/is_junk
+			// alone misrepresent that.
+			"mailboxes": mailboxes,
 			"envelope": map[string]any{
 				"from":        m.Envelope.From,
 				"to":          m.Envelope.To,
@@ -318,11 +340,18 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		e := map[string]any{
-			"source":      "smtp_event",
-			"at":          ev.At.UTC().Format(time.RFC3339Nano),
-			"action":      ev.Action,
-			"actor_id":    ev.ActorID,
-			"subject":     ev.Subject,
+			"source":   "smtp_event",
+			"at":       ev.At.UTC().Format(time.RFC3339Nano),
+			"action":   ev.Action,
+			"actor_id": ev.ActorID,
+			// ref is the event's subject-of-record: "message:<blob hash>"
+			// for smtp.accept / <source>.accept / ses_inbound_received,
+			// "recipient:<addr>" for smtp.synthetic_accept / smtp.attpol,
+			// "rcpt:<addr>" for smtp.rcpt.resolve. Named "ref", not
+			// "subject" (re #143, maintainer finding #3/#4): it is never
+			// the email Subject header, and a blob-hash value must not
+			// be rendered as a recipient.
+			"ref":         ev.Subject,
 			"remote_addr": ev.RemoteAddr,
 			"outcome":     outcomeStr(ev.Outcome),
 			"message":     ev.Message,
