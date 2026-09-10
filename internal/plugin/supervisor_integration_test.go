@@ -1,8 +1,10 @@
 package plugin_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -136,6 +138,144 @@ func buildEcho(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "herold-echo")
 	cmd := exec.Command("go", "build", "-o", out, "github.com/hanshuebner/herold/plugins/herold-echo")
+	if outb, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, outb)
+	}
+	return out
+}
+
+// TestSupervisorIntegration_SpamPluginRequiresPinnedTemperature drives the
+// REQ-FILT-12 contract through a real child process: the supervisor
+// refuses to load a spam-type plugin whose manifest does not pin
+// temperature to 0, and loads one that does. spamfixture (testdata) is a
+// throwaway plugin whose declared temperature is controlled by an env
+// var, so both outcomes are exercised against the real handshake path
+// rather than a Manifest.Validate unit test alone.
+//
+// Manager.Start's returned error is non-nil only for a malformed Spec
+// (see its doc comment); a bad manifest is instead surfaced as a
+// logged "plugin manifest invalid" diagnostic and the plugin cycling
+// through its crash-restart loop into StateDisabled once its (tightly
+// bounded, for this test) crash budget is exhausted — the same failure
+// mode as any other handshake rejection (REQ-PLUG-05).
+func TestSupervisorIntegration_SpamPluginRequiresPinnedTemperature(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: builds a plugin binary")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("plugin supervisor uses POSIX signals")
+	}
+
+	bin := buildSpamFixture(t)
+
+	t.Run("undeclared temperature is refused", func(t *testing.T) {
+		testSpamFixtureRefused(t, bin, nil)
+	})
+	t.Run("non-zero temperature is refused", func(t *testing.T) {
+		testSpamFixtureRefused(t, bin, []string{"HEROLD_TEST_SPAM_TEMPERATURE=0.7"})
+	})
+	t.Run("pinned zero temperature is accepted", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		fake := clock.NewFake(time.Unix(0, 0).UTC())
+		mgr := plugin.NewManager(plugin.ManagerOptions{
+			Logger:        slog.New(slog.NewTextHandler(&logBuf, nil)),
+			Clock:         fake,
+			ServerVersion: "test",
+		})
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = mgr.Shutdown(ctx)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+
+		p, err := mgr.Start(ctx, plugin.Spec{
+			Name:      "spamfixture",
+			Path:      bin,
+			Type:      plugin.TypeSpam,
+			Lifecycle: plugin.LifecycleLongRunning,
+			Env:       []string{"HEROLD_TEST_SPAM_TEMPERATURE=0"},
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		waitForState(t, p, plugin.StateHealthy, 5*time.Second)
+		mf := p.Manifest()
+		if mf == nil || mf.Temperature == nil || *mf.Temperature != 0 {
+			t.Fatalf("manifest temperature not pinned to 0: %+v", mf)
+		}
+	})
+}
+
+// testSpamFixtureRefused starts spamfixture with env (which declares a
+// manifest that does not pin temperature to 0) and asserts the
+// supervisor logs the refusal by name and disables the plugin rather
+// than ever reaching StateHealthy.
+func testSpamFixtureRefused(t *testing.T, bin string, env []string) {
+	t.Helper()
+	var logBuf bytes.Buffer
+	fake := clock.NewFake(time.Unix(0, 0).UTC())
+	mgr := plugin.NewManager(plugin.ManagerOptions{
+		Logger:        slog.New(slog.NewTextHandler(&logBuf, nil)),
+		Clock:         fake,
+		ServerVersion: "test",
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = mgr.Shutdown(ctx)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	p, err := mgr.Start(ctx, plugin.Spec{
+		Name:      "spamfixture",
+		Path:      bin,
+		Type:      plugin.TypeSpam,
+		Lifecycle: plugin.LifecycleLongRunning,
+		Env:       env,
+		// Small, generous-window crash budget so the test reaches
+		// StateDisabled in two quick fake-clock-driven restarts
+		// instead of the production default of five.
+		MaxCrashes:  1,
+		CrashWindow: time.Hour,
+		// A rejected handshake leaves p.manifest unset, so teardown's
+		// grace period falls back to its 10s default; override it so
+		// the child (still blocked reading stdin, since a manifest
+		// rejection happens before the plugin could ever be told to
+		// shut down) is reaped quickly instead of stalling each cycle
+		// for 10 real seconds.
+		ShutdownGrace: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && p.State() != plugin.StateDisabled {
+		time.Sleep(100 * time.Millisecond)
+		fake.Advance(2 * time.Second)
+	}
+	if p.State() != plugin.StateDisabled {
+		t.Fatalf("plugin never disabled after repeated manifest rejection (state=%s)", p.State())
+	}
+	if p.State() == plugin.StateHealthy {
+		t.Fatal("plugin reached StateHealthy despite an unpinned temperature")
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "plugin manifest invalid") {
+		t.Fatalf("expected a manifest-invalid log line; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "temperature") || !strings.Contains(logs, "spamfixture") {
+		t.Fatalf("log should name the plugin and mention temperature:\n%s", logs)
+	}
+}
+
+func buildSpamFixture(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "spamfixture")
+	cmd := exec.Command("go", "build", "-o", out, "github.com/hanshuebner/herold/internal/plugin/testdata/spamfixture")
 	if outb, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, outb)
 	}

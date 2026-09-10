@@ -189,10 +189,10 @@ func (m Manifest) Validate() error {
 	// it in the manifest rather than merely being configurable to do so.
 	if m.Type == TypeSpam {
 		if m.Temperature == nil {
-			return fmt.Errorf("%w: spam plugin must declare temperature=0 in its manifest", ErrInvalidManifest)
+			return fmt.Errorf("%w: spam plugin %q must declare temperature=0 in its manifest", ErrInvalidManifest, m.Name)
 		}
 		if *m.Temperature != 0 {
-			return fmt.Errorf("%w: spam plugin temperature must be pinned to 0, got %v", ErrInvalidManifest, *m.Temperature)
+			return fmt.Errorf("%w: spam plugin %q temperature must be pinned to 0, got %v", ErrInvalidManifest, m.Name, *m.Temperature)
 		}
 	}
 	return nil
