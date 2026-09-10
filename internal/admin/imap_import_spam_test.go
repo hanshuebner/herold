@@ -105,6 +105,39 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier(t *testing.T) {
 	}
 }
 
+// TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback is
+// the regression test for a defect found while writing the #304
+// acceptance matrix: REQ-FILT-214/ADR-0002 requires the structural
+// fallback categoriser to run whenever no classifier plugin is
+// installed, but Classify used to return Classification{Verdict:
+// Unclassified} immediately on a nil Classifier without ever reaching
+// the category-resolution switch. A List-Id message imported with no
+// spam plugin configured therefore never got $category-forums.
+func TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(nil, "spam-plug", st, clk, slog.Default())
+
+	raw := "From: sender@example.com\r\nTo: bob@example.com\r\n" +
+		"List-Id: <announce.example.com>\r\n" +
+		"Subject: list mail, no plugin configured\r\nMessage-ID: <spam-adapter-fallback@example.com>\r\n\r\n" +
+		"Hello.\r\n"
+	msg, err := mailparse.Parse(bytes.NewReader([]byte(raw)), mailparse.NewParseOptions())
+	if err != nil {
+		t.Fatalf("mailparse.Parse: %v", err)
+	}
+	// PrincipalID(1) has no seeded row yet; GetCategorisationConfig
+	// auto-seeds the enabled-by-default config on first read (same as
+	// production), so categorisation is enabled here without any setup.
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	if got.Verdict != spam.Unclassified {
+		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
+	}
+	if got.Category != "forums" {
+		t.Errorf("Category = %q, want \"forums\" (structural fallback, REQ-FILT-214)", got.Category)
+	}
+}
+
 // TestIMAPImportSpamAdapter_RecordVerdict verifies RecordVerdict persists
 // the llm_classifications transparency row (REQ-FILT-66).
 func TestIMAPImportSpamAdapter_RecordVerdict(t *testing.T) {

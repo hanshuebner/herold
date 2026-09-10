@@ -1039,9 +1039,6 @@ type recipientRef struct {
 // to honour that AND a second principal's distinct vocabulary in the
 // same call.
 func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) spam.Classification {
-	if srv.spam == nil {
-		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
-	}
 	var clsCtx spam.ClassifyContext
 	var categorisationEnabled bool
 	for _, r := range recipients {
@@ -1051,13 +1048,27 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 		clsCtx, categorisationEnabled = buildClassifyContext(ctx, srv, r.principalID, r.addr)
 		break
 	}
-	cls, err := srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
-	if err != nil {
-		// Classifier.Classify already emits a warn-level
-		// "spam classifier error" with the plugin name and err
-		// before returning. Logging again here would duplicate the
-		// same record at INFO; let the classifier own that line.
-		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
+	// cls starts as the "no plugin verdict" default and is overwritten by
+	// a successful classifier call below. Every exit from here -- no
+	// Classifier wired at all, a Classify error (no plugin configured,
+	// timeout, crash), or a real verdict -- MUST fall through to the
+	// switch below: REQ-FILT-214/ADR-0002 requires the structural
+	// fallback categoriser to run whenever the plugin's category is
+	// empty OR no classifier plugin is installed, not only on the happy
+	// path. Returning early here (the pre-#304-acceptance-matrix
+	// behaviour) silently dropped the fallback -- and therefore the tab
+	// strip -- for every herold with no spam plugin configured at all.
+	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
+	if srv.spam != nil {
+		var err error
+		cls, err = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
+		if err != nil {
+			// Classifier.Classify already emits a warn-level
+			// "spam classifier error" with the plugin name and err
+			// before returning. Logging again here would duplicate the
+			// same record at INFO; let the classifier own that line.
+			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1}
+		}
 	}
 	switch {
 	case cls.Verdict == spam.Spam:

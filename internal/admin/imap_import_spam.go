@@ -67,17 +67,25 @@ func newIMAPImportSpamAdapter(cls *spam.Classifier, plugin string, st store.Stor
 // the fully-resolved value the import worker keywords the message with
 // (resolveImportSpamTarget).
 func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message) spam.Classification {
-	if a.cls == nil {
-		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
-	}
 	clsCtx, categorisationEnabled := a.buildClassifyContext(ctx, principalID)
-	// authResults: REQ-IMAP-IMP-33, no re-verification on import.
-	cls, err := a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
-	if err != nil {
-		// spam.Classifier.Classify already logs a warn with the plugin name
-		// and error before returning; logging again here would duplicate
-		// the line at a lower level for no benefit.
-		return spam.Classification{Verdict: spam.Unclassified, Score: -1}
+	// cls starts as the "no plugin verdict" default and is overwritten by
+	// a successful classifier call below. A nil Classifier, a Classify
+	// error (no plugin configured, timeout, crash), and a real verdict
+	// all fall through to the same switch: REQ-FILT-214/ADR-0002 requires
+	// the structural fallback categoriser to run whenever the plugin's
+	// category is empty OR no classifier plugin is installed, mirroring
+	// protosmtp.classifyMessage.
+	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
+	if a.cls != nil {
+		var err error
+		// authResults: REQ-IMAP-IMP-33, no re-verification on import.
+		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
+		if err != nil {
+			// spam.Classifier.Classify already logs a warn with the plugin
+			// name and error before returning; logging again here would
+			// duplicate the line at a lower level for no benefit.
+			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1}
+		}
 	}
 	switch {
 	case cls.Verdict == spam.Spam:
