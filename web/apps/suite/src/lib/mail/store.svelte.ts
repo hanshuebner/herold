@@ -120,6 +120,13 @@ export interface BulkJobState {
 const FOLDER_PAGE_SIZE = 50;
 
 /**
+ * Minimum time the manual "check for new mail" button spends visibly
+ * spinning, even when the round trip returns sooner (issue #309). Exported
+ * so tests can assert against the same value instead of a magic number.
+ */
+export const REFRESH_MIN_SPIN_MS = 500;
+
+/**
  * Page size for a search's `Email/query` window (issue #219). Used for the
  * initial `runSearch` page and every `loadMoreSearch` append, mirroring
  * `FOLDER_PAGE_SIZE`'s role for the folder list (issue #161).
@@ -177,6 +184,15 @@ class MailStore {
   listEmailIds = $state<string[]>([]);
   listLoadStatus = $state<LoadStatus>('idle');
   listError = $state<string | null>(null);
+  /**
+   * True while a manual "check for new mail" round trip started by
+   * refreshFolder() is in flight, held for at least REFRESH_MIN_SPIN_MS so
+   * a fast response still gives visible feedback (issue #309). Independent
+   * of listLoadStatus: #refreshFolderInPlace() leaves listLoadStatus at
+   * 'ready' throughout, by design, so this flag is the only in-flight
+   * signal the toolbar button has to bind to.
+   */
+  listRefreshing = $state(false);
   /** Index into listEmailIds of the keyboard-focused row; -1 = none. */
   listFocusedIndex = $state<number>(-1);
   /** Bulk-selected email ids in the current list view. Cleared on folder switch. */
@@ -391,6 +407,7 @@ class MailStore {
     this.listEmailIds = [];
     this.listLoadStatus = 'idle';
     this.listError = null;
+    this.listRefreshing = false;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
@@ -1986,15 +2003,32 @@ class MailStore {
    *
    * When the list is not yet loaded (idle/error) the method falls back to
    * a full reload via loadFolder, which does the normal loading transition.
+   *
+   * Sets listRefreshing for the duration of the call, held for at least
+   * REFRESH_MIN_SPIN_MS regardless of how fast the round trip completes, so
+   * the toolbar reload button has a visible in-flight state to bind to
+   * (issue #309). A call while a check is already running is a no-op --
+   * the caller should also disable the button on listRefreshing, but the
+   * store enforces it independently.
    */
   async refreshFolder(): Promise<void> {
-    if (this.listLoadStatus === 'ready') {
-      await this.#refreshFolderInPlace();
-    } else {
-      const folder = this.listFolder;
-      this.listLoadStatus = 'idle';
-      this.listEmailIds = [];
-      await this.loadFolder(folder);
+    if (this.listRefreshing) return;
+    this.listRefreshing = true;
+    const minSpin = new Promise<void>((resolve) => {
+      setTimeout(resolve, REFRESH_MIN_SPIN_MS);
+    });
+    try {
+      if (this.listLoadStatus === 'ready') {
+        await this.#refreshFolderInPlace();
+      } else {
+        const folder = this.listFolder;
+        this.listLoadStatus = 'idle';
+        this.listEmailIds = [];
+        await this.loadFolder(folder);
+      }
+    } finally {
+      await minSpin;
+      this.listRefreshing = false;
     }
   }
 

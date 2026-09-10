@@ -1370,9 +1370,11 @@
       <button
         type="button"
         class="refresh"
+        class:spinning={mail.listRefreshing}
         aria-label={t('list.refresh')}
+        aria-busy={mail.listRefreshing}
         onclick={() => mail.refreshFolder()}
-        disabled={mail.listLoadStatus === 'loading'}
+        disabled={mail.listLoadStatus === 'loading' || mail.listRefreshing}
       >
         ↻
       </button>
@@ -1828,6 +1830,22 @@
   .refresh:disabled {
     opacity: 0.4;
     cursor: progress;
+  }
+  .refresh.spinning {
+    animation: refresh-spin 0.8s linear infinite;
+  }
+  @keyframes refresh-spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .refresh.spinning {
+      animation: none;
+    }
   }
   .danger {
     padding: var(--spacing-02) var(--spacing-04);
