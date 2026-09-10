@@ -895,6 +895,93 @@ if spamtest :value "ge" :comparator "i;ascii-numeric" "5" {
 	}
 }
 
+// TestDelivery_RecordsIngestSource verifies that deliverOne records
+// store.IngestSourceSMTP on the messages row it inserts (re #143,
+// maintainer finding #2): an operator reviewing message research must be
+// able to tell a live SMTP delivery apart from an imported message.
+func TestDelivery_RecordsIngestSource(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "MAIL FROM:<friend@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "DATA")
+	mustOK(t, cli, 354)
+	body := "From: friend@example.test\r\nTo: alice@example.test\r\nMessage-ID: <ingest-src-1@example.test>\r\nSubject: hello\r\n\r\nHi there.\r\n.\r\n"
+	cli.sendRaw(t, []byte(body))
+	mustOK(t, cli, 250)
+
+	ctx := context.Background()
+	hits, err := f.ha.Store.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	var found bool
+	for _, h := range hits {
+		if h.Envelope.MessageID != "ingest-src-1@example.test" {
+			continue
+		}
+		found = true
+		if h.IngestSource != store.IngestSourceSMTP {
+			t.Errorf("IngestSource = %q; want %q", h.IngestSource, store.IngestSourceSMTP)
+		}
+		if h.IngestSourceRef != "" {
+			t.Errorf("IngestSourceRef = %q; want empty for a live SMTP connection", h.IngestSourceRef)
+		}
+	}
+	if !found {
+		t.Fatalf("ingest-src-1@example.test not found in SearchAdminMessages results")
+	}
+}
+
+// TestDelivery_AcceptEvent_CarriesEnvelope verifies that the "smtp.accept"
+// system event's Metadata carries both mail_from and rcpt_to (re #143,
+// maintainer finding #3): the event previously exposed only mail_from, so
+// message research's smtp_event entry could not render the recipients
+// without a database join.
+func TestDelivery_AcceptEvent_CarriesEnvelope(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
+	ctx := context.Background()
+	dir := directory.New(f.ha.Store.Meta(), f.ha.Logger, f.ha.Clock, rand.Reader)
+	if _, err := dir.CreatePrincipal(ctx, "bob@example.test", "correct-horse-staple-battery"); err != nil {
+		t.Fatalf("principal: %v", err)
+	}
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.sendRaw(t, []byte("MAIL FROM:<ext@sender.test>\r\nRCPT TO:<alice@example.test>\r\nRCPT TO:<bob@example.test>\r\nDATA\r\n"))
+	mustOK(t, cli, 250)
+	mustOK(t, cli, 250)
+	mustOK(t, cli, 250)
+	mustOK(t, cli, 354)
+	body := "From: ext@sender.test\r\nTo: alice@example.test, bob@example.test\r\nSubject: accept event\r\n\r\nBody.\r\n.\r\n"
+	cli.sendRaw(t, []byte(body))
+	mustOK(t, cli, 250)
+
+	evs, err := f.ha.Store.Meta().ListSystemEvents(ctx, store.SystemEventFilter{Action: "smtp.accept", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListSystemEvents: %v", err)
+	}
+	if len(evs) == 0 {
+		t.Fatalf("no smtp.accept event recorded")
+	}
+	ev := evs[0]
+	if got := ev.Metadata["mail_from"]; got != "ext@sender.test" {
+		t.Errorf("Metadata[mail_from] = %q; want ext@sender.test", got)
+	}
+	rcptTo := ev.Metadata["rcpt_to"]
+	if !strings.Contains(rcptTo, "alice@example.test") || !strings.Contains(rcptTo, "bob@example.test") {
+		t.Errorf("Metadata[rcpt_to] = %q; want both alice@example.test and bob@example.test", rcptTo)
+	}
+}
+
 func TestDelivery_AuthenticationResults_Header_Prepended(t *testing.T) {
 	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
 	f.ha.AddDNSRecord("_dmarc.sender.test", "TXT", "v=DMARC1; p=none;")

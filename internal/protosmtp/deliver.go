@@ -369,10 +369,11 @@ func (sess *session) finishMessageWithBlob(
 	// Record the accept in the system events ring-buffer (REQ-ADM-304).
 	// Derive domain from the first local recipient for REQ-ADM-307 scoping.
 	var acceptDomain string
+	rcptAddrs := make([]string, 0, len(sess.envelope.rcpts))
 	for _, rc := range sess.envelope.rcpts {
-		if rc.domain != "" {
+		rcptAddrs = append(rcptAddrs, rc.addr)
+		if acceptDomain == "" && rc.domain != "" {
 			acceptDomain = rc.domain
-			break
 		}
 	}
 	auditTimer := observe.StartStoreOp("append_audit")
@@ -392,6 +393,10 @@ func (sess *session) finishMessageWithBlob(
 			"auth":      boolStr(sess.authenticated),
 			"spam":      classification.Verdict.String(),
 			"mail_from": sess.envelope.mailFrom,
+			// re #143 (maintainer finding #3): the envelope recipients,
+			// so message research can render sender and recipients on
+			// the smtp.accept entry instead of just the blob reference.
+			"rcpt_to": strings.Join(rcptAddrs, ","),
 		},
 	})
 	auditTimer.Done()
@@ -631,6 +636,13 @@ func (sess *session) deliverOne(
 			RetryableFailedImageCount: sess.envelope.retryableFailedImageCount,
 			FailedImageReason:         sess.envelope.failedImageReason,
 			DeliveryDisposition:       disposition,
+			// re #143 (maintainer finding #2): live SMTP DATA and the
+			// IngestBytes ingest paths (SES inbound, loopback) share
+			// this deliverOne call. sess.ingestSourceRef is empty for a
+			// live connection and carries the IngestRequest source
+			// label for the ingest paths.
+			IngestSource:    store.IngestSourceSMTP,
+			IngestSourceRef: sess.ingestSourceRef,
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)

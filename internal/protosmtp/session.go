@@ -83,6 +83,13 @@ type session struct {
 	// allowPlainAuth opts this session into accepting SASL PLAIN /
 	// LOGIN over cleartext on a SubmissionSTARTTLS listener (issue #114).
 	allowPlainAuth bool
+	// ingestSourceRef carries the IngestRequest.IngestSource label
+	// ("ses_inbound", "loopback") for a fake session constructed by
+	// IngestBytes (internal/protosmtp/ingest.go). Empty for a live SMTP
+	// connection. Stored on the delivered message's
+	// store.Message.IngestSourceRef alongside IngestSource = "smtp" (re
+	// #143, maintainer finding #2).
+	ingestSourceRef string
 }
 
 // envelope accumulates MAIL FROM + RCPT TO state for one in-flight

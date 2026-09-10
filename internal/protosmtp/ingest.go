@@ -267,6 +267,9 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			mode:     RelayIn,
 			remoteIP: req.SourceIP,
 			sessID:   source,
+			// re #143 (maintainer finding #2): recorded on the message
+			// as IngestSourceRef alongside IngestSource = "smtp".
+			ingestSourceRef: req.IngestSource,
 			log: s.log.With(
 				slog.String("subsystem", "protosmtp"),
 				slog.String("session_id", source),
