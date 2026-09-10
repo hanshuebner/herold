@@ -12,6 +12,7 @@ package admin
 // HEROLD_DEV_EXTERNAL_SUBMISSION is set.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -72,6 +73,7 @@ func newDevCmd() *cobra.Command {
 	c.AddCommand(newDevSeedExternalIdentitiesCmd())
 	c.AddCommand(newDevEnrollAdminTOTPCmd())
 	c.AddCommand(newDevGenTOTPCodeCmd())
+	c.AddCommand(newDevSeedSeparableIdentityCmd())
 	return c
 }
 
@@ -409,5 +411,195 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 	if sinkAddr != "" {
 		fmt.Fprintf(w, "  working-external sink: %s (security=none)\n", sinkAddr)
 	}
+	return nil
+}
+
+// devSeparableIdentityID is the deterministic identity id used by
+// dev-seed-separable-identity. Chosen outside both the auto-allocator
+// range and the seed-external-identities block (800001-800004) so the
+// two seed commands never collide.
+const devSeparableIdentityID = "800101"
+
+// newDevSeedSeparableIdentityCmd implements the issue #212 dev-seed step:
+// an identity with an attached IMAP-import account, a provenance
+// mailbox, and a handful of already-imported messages, so the Suite's
+// "Separate this identity" flow (REQ-MAIL-SUB-01/07) has a non-zero
+// message count to show before the user confirms, and something real
+// for the migration sweep to move.
+//
+// It does NOT start an actual IMAP fetch -- the seeded IMAPImportAccount
+// points at a host nothing resolves; that's fine, because the flow this
+// command exists to exercise is separation itself (Identity/set{
+// separated: true} and the store-side migration sweep), not live IMAP
+// fetch, which is covered elsewhere (internal/imapimport).
+func newDevSeedSeparableIdentityCmd() *cobra.Command {
+	var principalEmail string
+	var identityEmail string
+	var messageCount int
+	c := &cobra.Command{
+		Use:   "seed-separable-identity",
+		Short: "seed an identity with imported mail ready to separate (not for production)",
+		Long: "Inserts a verified JMAP identity for the named principal with an\n" +
+			"attached IMAP-import account, a provenance mailbox, and\n" +
+			"--message-count already-imported messages in the principal's INBOX\n" +
+			"(mirroring internal/protojmap/subaccount_test.go's\n" +
+			"TestIdentitySeparation_EndToEnd fixture). The identity is then ready\n" +
+			"for the Suite's \"Separate this identity\" action (REQ-MAIL-SUB-01/07)\n" +
+			"to exercise for real: the confirm dialog shows the seeded message\n" +
+			"count, and confirming drives the actual Identity/set{separated:true}\n" +
+			"call and background migration sweep against the seeded messages.\n\n" +
+			"The principal must already exist. Requires the sub-accounts capability\n" +
+			"to be built in (it always is; there is no sysconfig gate).",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDevSeedSeparableIdentity(cmd, principalEmail, identityEmail, messageCount)
+		},
+	}
+	c.Flags().StringVar(&principalEmail, "principal", "alice@example.local",
+		"email of the principal that will own the seeded identity")
+	c.Flags().StringVar(&identityEmail, "identity-email", "vorsitz@classic-computing.example",
+		"email address of the seeded, separable identity")
+	c.Flags().IntVar(&messageCount, "message-count", 3,
+		"number of already-imported messages to seed for the identity")
+	return c
+}
+
+func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEmail string, messageCount int) error {
+	g := globals(cmd.Context())
+	cfg, err := requireConfig(g)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	clk := clock.NewReal()
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		return fmt.Errorf("dev seed-separable-identity: open store: %w", err)
+	}
+	defer st.Close()
+
+	principal, err := st.Meta().GetPrincipalByEmail(ctx, principalEmail)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("dev seed-separable-identity: principal %q not found; create it first", principalEmail)
+		}
+		return fmt.Errorf("dev seed-separable-identity: lookup principal: %w", err)
+	}
+
+	now := clk.Now()
+
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:           devSeparableIdentityID,
+		PrincipalID:  principal.ID,
+		Name:         "Vorsitz",
+		Email:        identityEmail,
+		MayDelete:    true,
+		VerifiedAtUs: now.UnixMicro(),
+	}); err != nil {
+		return fmt.Errorf("dev seed-separable-identity: insert identity: %w", err)
+	}
+
+	acc, err := st.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:  devSeparableIdentityID,
+		PrincipalID: principal.ID,
+		AccountName: "classic-computing",
+		Host:        "mail.classic-computing.example",
+		Port:        993,
+		TLSMode:     store.IMAPImportTLSModeImplicit,
+		Username:    identityEmail,
+		AuthMethod:  store.IMAPImportAuthMethodAppPassword,
+		// "v1:" prefix satisfies CreateIMAPImportAccount's format check; the
+		// value is a placeholder -- this command never performs a live fetch.
+		CredentialCT:     []byte("v1:dev-placeholder"),
+		State:            store.IMAPImportAccountStateEnabled,
+		DeletePropagates: true,
+	})
+	if err != nil {
+		return fmt.Errorf("dev seed-separable-identity: create IMAP-import account: %w", err)
+	}
+
+	provMailbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: principal.ID,
+		Name:        acc.AccountName,
+	})
+	if err != nil {
+		return fmt.Errorf("dev seed-separable-identity: insert provenance mailbox: %w", err)
+	}
+	if err := st.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, provMailbox.ID); err != nil {
+		return fmt.Errorf("dev seed-separable-identity: set provenance mailbox: %w", err)
+	}
+
+	boxes, err := st.Meta().ListMailboxes(ctx, principal.ID)
+	if err != nil {
+		return fmt.Errorf("dev seed-separable-identity: list mailboxes: %w", err)
+	}
+	var inboxID store.MailboxID
+	for _, mb := range boxes {
+		if mb.Attributes&store.MailboxAttrInbox != 0 {
+			inboxID = mb.ID
+			break
+		}
+	}
+	if inboxID == 0 {
+		return fmt.Errorf("dev seed-separable-identity: principal %q has no INBOX", principalEmail)
+	}
+
+	for i := 0; i < messageCount; i++ {
+		subject := fmt.Sprintf("Vorstandssitzung %d", i+1)
+		msgID := fmt.Sprintf("seed-separable-%s-%d@dev", devSeparableIdentityID, i+1)
+		rawBody := fmt.Sprintf(
+			"Subject: %s\r\nMessage-ID: <%s>\r\nFrom: vorstand@classic-computing.example\r\nTo: %s\r\nDate: %s\r\n\r\nSeeded by herold dev seed-separable-identity.\r\n",
+			subject, msgID, identityEmail, now.Format(time.RFC1123Z),
+		)
+		ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(rawBody)))
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: put blob %d: %w", i, err)
+		}
+		msg := store.Message{
+			PrincipalID:  principal.ID,
+			MailboxID:    inboxID,
+			InternalDate: now,
+			ReceivedAt:   now,
+			Size:         ref.Size,
+			Blob:         ref,
+			Envelope:     store.Envelope{Subject: subject, MessageID: "<" + msgID + ">"},
+		}
+		if _, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: inboxID}}); err != nil {
+			return fmt.Errorf("dev seed-separable-identity: insert message %d: %w", i, err)
+		}
+
+		feed, err := st.Meta().ReadChangeFeed(ctx, principal.ID, 0, 10000)
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: read change feed: %w", err)
+		}
+		var insertedID store.MessageID
+		for j := len(feed) - 1; j >= 0; j-- {
+			if feed[j].Kind == store.EntityKindEmail && feed[j].Op == store.ChangeOpCreated {
+				insertedID = store.MessageID(feed[j].EntityID)
+				break
+			}
+		}
+		if insertedID == 0 {
+			return fmt.Errorf("dev seed-separable-identity: could not locate inserted message %d in change feed", i)
+		}
+
+		if _, _, err := st.Meta().AddMessageToMailbox(ctx, insertedID, provMailbox.ID); err != nil {
+			return fmt.Errorf("dev seed-separable-identity: add message %d to provenance mailbox: %w", i, err)
+		}
+		if err := st.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+			AccountID:       acc.ID,
+			UpstreamFolder:  "INBOX",
+			UpstreamUID:     uint32(i + 1),
+			HeroldMessageID: insertedID,
+			HeroldMailboxID: inboxID,
+		}); err != nil {
+			return fmt.Errorf("dev seed-separable-identity: upsert import-message-state %d: %w", i, err)
+		}
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "dev-seed: identity_id=%s email=%s principal=%s messages=%d\n",
+		devSeparableIdentityID, identityEmail, principalEmail, messageCount)
 	return nil
 }

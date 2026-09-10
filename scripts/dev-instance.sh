@@ -451,6 +451,26 @@ seed_instance() {
             || { cat "$dir/logs/principal-$local_part.err" >&2; die "principal create $local_part failed"; }
     done
 
+    # Optional: seed a separable identity (issue #212, REQ-MAIL-SUB-01/07)
+    # for alice -- a verified JMAP identity with an attached IMAP-import
+    # account, a provenance mailbox, and a few already-imported messages
+    # in alice's INBOX, mirroring internal/protojmap/subaccount_test.go's
+    # TestIdentitySeparation_EndToEnd fixture. This gives puppeteer flows
+    # a real identity to drive through the Suite's "Separate this
+    # identity" action (message count before confirm, migrating ->
+    # separated) without hand-editing the DB. The sub-accounts capability
+    # itself is always advertised (no sysconfig gate); this flag only
+    # controls whether the seed data exists.
+    if [ -n "${HEROLD_DEV_SUB_ACCOUNTS:-}" ]; then
+        log "seeding separable identity for alice@$SEED_DOMAIN"
+        "$HEROLD_BIN" dev seed-separable-identity \
+            --system-config "$dir/system.toml" \
+            --principal "alice@$SEED_DOMAIN" \
+            >"$dir/logs/dev-seed-subaccount.log" 2>&1 \
+            || { cat "$dir/logs/dev-seed-subaccount.log" >&2; die "dev seed-separable-identity failed"; }
+        cat "$dir/logs/dev-seed-subaccount.log" >&2
+    fi
+
     # When external-submission is enabled, seed four foreign-domain JMAP
     # identities for alice covering the four UI rendering states:
     #   800001 = setup-needed    (no submission row)
