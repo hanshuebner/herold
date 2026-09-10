@@ -303,7 +303,7 @@ path = "/usr/lib/herold/plugins/herold-spam-llm"
 type = "spam"
 lifecycle = "long-running"
 options.endpoint = "http://localhost:11434/v1"
-options.model = "llama3.2:3b"
+options.model = "<choose a model; see below>"
 options.api_token_env = "$OLLAMA_TOKEN"        # secrets via env or file: only.
 
 [[plugin]]
@@ -325,6 +325,12 @@ Plugin protocol is JSON-RPC 2.0 on stdio; lifecycle, restart policy,
 and the type-specific RPC schemas live in
 `docs/design/server/architecture/07-plugin-architecture.md` and
 `docs/design/server/requirements/11-plugins.md`.
+
+`herold-spam-llm` has no default `model`; configuration fails, naming the
+option, until the operator sets one (REQ-FILT-11). "Choosing a classifier
+model" in [Operating Herold](operate) carries the measured recall /
+false-positive table behind that choice, and the plugin's pinned-temperature
+contract (REQ-FILT-12).
 
 ### `[server.snooze]` - JMAP snooze worker (REQ-PROTO-49)
 
