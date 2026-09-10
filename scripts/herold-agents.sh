@@ -50,6 +50,8 @@
 # this script's argv while a window starts.
 set -uo pipefail
 
+unset ANTHROPIC_API_KEY
+
 SESSION="${HEROLD_AGENTS_SESSION:-herold-agents}"
 SINK_ADDR="${HEROLD_SINK_ADDR:-127.0.0.1:7777}"
 DROP_ROOT="${HEROLD_DROP_ROOT:-$HOME/herold-bugs}"
