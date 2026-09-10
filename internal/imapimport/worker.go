@@ -337,12 +337,23 @@ func (w *accountWorker) handleAttemptFailure(ctx context.Context, err error) (st
 // refreshAccount copies the durable fields that can change at runtime from a
 // freshly-read account row onto the worker's in-memory copy, so the next
 // dispatch and the running loops see the current state, backfill floor,
-// provenance label, delete policy, and debug-log flag. Called only from the
-// worker's own goroutine between attempts, so no other goroutine reads
-// w.opts.account concurrently. The cached identity fields in w.status are
-// left untouched (account_id / host do not change).
+// provenance label, delete policy, debug-log flag, and owning principal.
+// Called only from the worker's own goroutine between attempts, so no other
+// goroutine reads w.opts.account concurrently. The cached identity fields in
+// w.status are left untouched (account_id / host do not change).
+//
+// PrincipalID matters for sub-account separation (issue #227,
+// REQ-SUBACCT-09/REQ-IMAP-IMP-107): store.SeparateIdentity rebinds an
+// account's owning principal to the new sub-principal without touching its
+// State, so a worker that only watched State would keep depositing newly-
+// arrived mail under the old (parent) principal indefinitely. ingestMessage
+// (sync.go) reads w.opts.account.PrincipalID fresh at insertion time, so
+// updating it here (and in stateChangedFromEnabled below, for a live IDLE
+// session that has not reconnected) is sufficient -- no separate cache to
+// invalidate.
 func (w *accountWorker) refreshAccount(cur store.IMAPImportAccount) {
 	w.opts.account.State = cur.State
+	w.opts.account.PrincipalID = cur.PrincipalID
 	w.opts.account.BackfillFloorDate = cur.BackfillFloorDate
 	w.opts.account.AccountName = cur.AccountName
 	w.opts.account.DeletePropagates = cur.DeletePropagates
@@ -407,6 +418,13 @@ func (w *accountWorker) stateChangedFromEnabled(ctx context.Context) bool {
 	// toggle debugging without waiting for a full reconnect cycle.
 	w.opts.account.DebugLog = cur.DebugLog
 	w.status.setDebugLog(cur.DebugLog)
+	// Refresh the owning principal live too (issue #227, REQ-SUBACCT-09):
+	// this is called after every IDLE-wake sync round and on every
+	// stateRecheckInterval tick, so a sub-account separation mid-session
+	// (which does not change State) still reaches ingestMessage's
+	// w.opts.account.PrincipalID read well before the next live arrival in
+	// the common case, without forcing a reconnect purely for this.
+	w.opts.account.PrincipalID = cur.PrincipalID
 	return cur.State != store.IMAPImportAccountStateEnabled
 }
 
