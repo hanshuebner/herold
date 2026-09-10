@@ -34,6 +34,7 @@
   import { imapImportStore } from '../../lib/jmap/imap-import-store.svelte';
   import { subAccounts } from '../../lib/mail/sub-accounts.svelte';
   import { mail } from '../../lib/mail/store.svelte';
+  import { auth } from '../../lib/auth/auth.svelte';
   import { jmap, strict } from '../../lib/jmap/client';
   import { Capability, type Invocation } from '../../lib/jmap/types';
   import { identityStatus } from '../../lib/identities/identity-status';
@@ -258,6 +259,15 @@
         message: t('settings.identityEdit.separated', { email: identityEmail }),
         timeoutMs: 4000,
       });
+      // The new sub-account is not in the SPA's in-memory session
+      // descriptor yet -- separation created it server-side just now, and
+      // nothing else re-fetches /.well-known/jmap on this timeline.
+      // Refresh the session BEFORE the sub-accounts store, since its
+      // discovery diffs session.accounts against session.primaryAccounts
+      // (see lib/mail/sub-accounts.svelte.ts); without this the switcher
+      // and the Accounts section stay empty until an unrelated push or a
+      // manual reload happens to refresh the session first.
+      await auth.refreshSession();
       void subAccounts.refresh();
       capturedOnback();
     } catch (err) {

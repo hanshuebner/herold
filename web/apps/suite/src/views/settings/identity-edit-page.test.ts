@@ -102,6 +102,7 @@ vi.mock('../../lib/auth/auth.svelte', () => ({
       primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct1' },
       capabilities: {},
     },
+    refreshSession: vi.fn(async () => undefined),
   },
   registerAccountResetCallback: vi.fn(),
 }));
@@ -419,6 +420,12 @@ describe('IdentityEditPage', () => {
       expect(onback).toHaveBeenCalledOnce();
     });
     const { subAccounts } = await import('../../lib/mail/sub-accounts.svelte');
+    const { auth } = await import('../../lib/auth/auth.svelte');
+    // The session must be refreshed (to pick up the new sub-account id in
+    // session.accounts) before the sub-accounts store re-derives its list
+    // -- otherwise the switcher and the Accounts section stay empty until
+    // an unrelated event happens to refresh the session first.
+    expect(vi.mocked(auth.refreshSession)).toHaveBeenCalled();
     expect(vi.mocked(subAccounts.refresh)).toHaveBeenCalled();
     const calls = vi.mocked(toast.show).mock.calls;
     const successCall = calls.find(([spec]) => spec.kind !== 'error');

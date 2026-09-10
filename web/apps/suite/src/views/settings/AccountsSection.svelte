@@ -20,6 +20,7 @@
    */
   import { subAccounts, type SubAccountEntry } from '../../lib/mail/sub-accounts.svelte';
   import { mail } from '../../lib/mail/store.svelte';
+  import { auth } from '../../lib/auth/auth.svelte';
   import { imapImportStore, type IMAPImportHandle } from '../../lib/jmap/imap-import-store.svelte';
   import { separationState, separationProgress, separationOf } from '../../lib/identities/identity-separation';
   import { confirm } from '../../lib/dialog/confirm.svelte';
@@ -117,6 +118,14 @@
       // own account; refresh so it reappears in the Account section's
       // From-address list without waiting for the next full reload.
       void mail.loadIdentities();
+      // The SPA's in-memory session descriptor still lists the
+      // now-removed sub-account (nothing else re-fetches /.well-known/jmap
+      // on this timeline); refresh it, then re-derive the sub-accounts
+      // list against the corrected accounts map so the removed row does
+      // not linger with a stale accountId (see the matching fix in
+      // IdentityEditPage.svelte's separateThisIdentity).
+      await auth.refreshSession();
+      await subAccounts.refresh();
     } catch (err) {
       toast.show({
         message: err instanceof Error ? err.message : t('settings.accounts.actionFailed'),

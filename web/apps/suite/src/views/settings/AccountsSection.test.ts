@@ -33,6 +33,11 @@ vi.mock('../../lib/mail/store.svelte', () => ({
   mail: { loadIdentities: () => loadIdentitiesMock() },
 }));
 
+const refreshSessionMock = vi.fn(async () => undefined);
+vi.mock('../../lib/auth/auth.svelte', () => ({
+  auth: { refreshSession: () => refreshSessionMock() },
+}));
+
 const importHandleFactory = vi.fn(() => ({
   status: 'ready',
   account: null as null | { id: string; state: string; lastSuccessAt: string | null },
@@ -104,6 +109,7 @@ beforeEach(() => {
   refreshMock.mockClear();
   loadMock.mockClear();
   loadIdentitiesMock.mockClear();
+  refreshSessionMock.mockClear();
   importHandleFactory.mockClear();
   importHandleFactory.mockReturnValue({
     status: 'ready',
@@ -179,6 +185,11 @@ describe('AccountsSection -- remove flow', () => {
       expect(removeSeparationMock).toHaveBeenCalledWith('acct-sub-1', '99', true);
     });
     expect(loadIdentitiesMock).toHaveBeenCalled();
+    // The session must be refreshed so a removed sub-account does not
+    // linger in the derived list with a now-stale accountId.
+    await vi.waitFor(() => {
+      expect(refreshSessionMock).toHaveBeenCalled();
+    });
   });
 
   it('purges the mail when the purge confirm is accepted', async () => {
