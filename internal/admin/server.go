@@ -2633,6 +2633,12 @@ func composeAdminAndUI(
 	publicSessionWithScopeResolver := func(r *http.Request) (store.PrincipalID, auth.ScopeSet, bool) {
 		return authsession.ResolveSessionWithScope(r, publicCookieCfg, st, clk)
 	}
+	// Bearer-or-cookie resolver (re #332): a device token (POST
+	// /api/v1/auth/device-token) or an OAuth2 access token authenticates
+	// public-listener surfaces that previously accepted only the suite
+	// session cookie, e.g. the image proxy. See
+	// newPublicBearerOrCookieResolver for the precedence rules.
+	publicBearerOrCookieResolver := newPublicBearerOrCookieResolver(st, clk, logger, publicSessionResolver)
 
 	// ----- Single unified public handler (re #58) -----
 	// The admin SPA, admin REST API, and all end-user surfaces live on
@@ -2712,9 +2718,10 @@ func composeAdminAndUI(
 		http.NotFound(w, r)
 	})
 
-	// Image proxy (REQ-SEND-70..78). Public-listener-only: the
-	// browser presenting an end-user cookie loads upstream-tracking-
-	// free images without a separate auth dance.
+	// Image proxy (REQ-SEND-70..78). Public-listener-only: a browser
+	// presenting an end-user cookie, or a native client presenting a
+	// device-token / OAuth2 Bearer credential, loads upstream-tracking-
+	// free images without a separate auth dance (re #332).
 	if cfg.Server.ImageProxy.Enabled == nil || *cfg.Server.ImageProxy.Enabled {
 		ipCfg := cfg.Server.ImageProxy
 		imgSrv := protoimg.New(protoimg.Options{
@@ -2727,7 +2734,7 @@ func composeAdminAndUI(
 			PerUserPerMin:       ipCfg.PerUserPerMinute,
 			PerUserOriginPerMin: ipCfg.PerUserOriginPerMinute,
 			PerUserConcurrent:   ipCfg.PerUserConcurrent,
-			SessionResolver:     publicSessionResolver,
+			SessionResolver:     publicBearerOrCookieResolver,
 		})
 		publicMux.Handle("/proxy/image",
 			withPanicRecover(logger.With("subsystem", "protoimg"),

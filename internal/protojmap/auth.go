@@ -7,10 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/authsession"
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -188,41 +190,64 @@ func (s *Server) extractSessionID(r *http.Request) string {
 }
 
 func (s *Server) authenticateBearer(ctx context.Context, token string) (store.Principal, *store.APIKey, bool) {
-	if !strings.HasPrefix(token, APIKeyPrefix) {
+	p, key, ok := AuthenticateBearerToken(ctx, s.store, s.apikeyLookup, s.clk, s.log, token)
+	if !ok {
 		return store.Principal{}, nil, false
+	}
+	return p, &key, true
+}
+
+// AuthenticateBearerToken validates an "Authorization: Bearer hk_..."
+// token against the API-key store and returns the authenticated
+// principal and key row. It applies the same rules requireAuth applies
+// to JMAP requests: the "hk_" prefix, a matching stored hash, an
+// unexpired ExpiresAt (device tokens and operator-issued keys leave it
+// zero; short-lived OAuth2 access tokens populate it), and an
+// authenticatable principal (REQ-SUBACCT-02).
+//
+// Exported so other public-listener surfaces that accept the same
+// device-token / OAuth2 bearer credential (e.g. the image proxy,
+// internal/protoimg) resolve it through this one implementation rather
+// than re-deriving the hash-and-lookup logic (re #332). log may be nil
+// to suppress warning-level diagnostics.
+func AuthenticateBearerToken(ctx context.Context, st store.Store, lookup APIKeyLookup, clk clock.Clock, log *slog.Logger, token string) (store.Principal, store.APIKey, bool) {
+	if !strings.HasPrefix(token, APIKeyPrefix) {
+		return store.Principal{}, store.APIKey{}, false
 	}
 	hashed := hashAPIKey(token)
-	key, err := s.apikeyLookup(ctx, hashed)
+	key, err := lookup(ctx, hashed)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("auth.lookup_failed", "err", err)
+		if !errors.Is(err, store.ErrNotFound) && log != nil {
+			log.Warn("auth.lookup_failed", "err", err)
 		}
-		return store.Principal{}, nil, false
+		return store.Principal{}, store.APIKey{}, false
 	}
 	if subtle.ConstantTimeCompare([]byte(key.Hash), []byte(hashed)) != 1 {
-		return store.Principal{}, nil, false
+		return store.Principal{}, store.APIKey{}, false
 	}
 	// Short-lived OAuth2 access tokens (issue #199, REQ-AND-AUTH-02)
 	// populate ExpiresAt; every other Bearer key (operator-issued,
 	// device token) leaves it zero and never expires this way. A zero
 	// ExpiresAt therefore always passes; a non-zero one must be in the
 	// future.
-	if !key.ExpiresAt.IsZero() && !s.clk.Now().Before(key.ExpiresAt) {
-		return store.Principal{}, nil, false
+	if !key.ExpiresAt.IsZero() && !clk.Now().Before(key.ExpiresAt) {
+		return store.Principal{}, store.APIKey{}, false
 	}
-	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
+	p, err := st.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
-		s.log.Warn("auth.principal_lookup_failed",
-			"err", err, "principal_id", key.PrincipalID)
-		return store.Principal{}, nil, false
+		if log != nil {
+			log.Warn("auth.principal_lookup_failed",
+				"err", err, "principal_id", key.PrincipalID)
+		}
+		return store.Principal{}, store.APIKey{}, false
 	}
 	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
 	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
 	if !p.IsAuthenticatable() {
-		return store.Principal{}, nil, false
+		return store.Principal{}, store.APIKey{}, false
 	}
-	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
-	return p, &key, true
+	_ = st.Meta().TouchAPIKey(ctx, key.ID, clk.Now())
+	return p, key, true
 }
 
 func (s *Server) authenticateBasic(ctx context.Context, encoded string) (store.Principal, bool) {
