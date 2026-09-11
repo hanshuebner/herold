@@ -522,18 +522,22 @@ type stepUpResponse struct {
 	ElevationExpiresAt string `json:"elevation_expires_at"`
 }
 
-// handleStepUp handles POST /api/v1/auth/step-up (REQ-AUTH-74, issue #79).
+// handleStepUp handles POST /api/v1/auth/step-up (REQ-AUTH-74, REQ-AUTH-78,
+// issue #79, re #330).
 //
 // The caller must be authenticated (requireAuth) and CSRF-checked. It
 // supplies a TOTP code; on success a server-side elevation record is created
 // (or refreshed) for the session, expiring at now + Options.ElevationTTL.
-// Admin-gated endpoints then check GetActiveElevation to authorise the call.
+// The elevation record carries no "admin" vs "self-service" kind: any
+// TOTP-enrolled principal, admin or not, can create one here. Admin-gated
+// endpoints authorise on TWO independent checks -- PrincipalFlagAdmin AND
+// an active elevation record (requireElevation, auth.go) -- so a non-admin's
+// elevation record satisfies requireSelfServiceElevation (REQ-AUTH-78) for
+// their own account but never unlocks an admin route.
 //
 // Error responses:
 //   - 400  principal has no TOTP enrolled:  {enroll_required: true}
 //   - 401  TOTP code invalid or rate-limited: RFC 7807 "unauthorized"
-//   - 403  principal does not have the admin flag (elevation is only
-//     meaningful for admin principals)
 func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 	sessID := s.sessionIDFromRequest(r)
 	if sessID == "" {
@@ -550,14 +554,6 @@ func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 			"unauthorized", "authentication required", "")
 		return
 	}
-	// Only admin principals can elevate — non-admin step-up is a no-op
-	// that would never be consumed.
-	if !p.Flags.Has(store.PrincipalFlagAdmin) {
-		writeProblem(w, r, http.StatusForbidden,
-			"forbidden", "admin privileges required for step-up", "")
-		return
-	}
-
 	// TOTP must be enrolled before step-up can be granted (REQ-AUTH-44).
 	// Return enroll_required so the SPA can redirect to TOTP setup.
 	if !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {

@@ -1,12 +1,16 @@
 package protoadmin_test
 
-// step_up_test.go covers POST /api/v1/auth/step-up (REQ-AUTH-74, issue #79).
+// step_up_test.go covers POST /api/v1/auth/step-up (REQ-AUTH-74,
+// REQ-AUTH-78, issue #79, re #330).
 //
 // Test matrix:
-//   - valid TOTP code -> 200 + elevation_expires_at
-//   - invalid TOTP code -> 401
+//   - valid TOTP code (admin) -> 200 + elevation_expires_at
+//   - invalid TOTP code (admin) -> 401
 //   - not enrolled -> 400 enroll_required
-//   - non-admin principal -> 403
+//   - valid TOTP code (non-admin) -> 200 + elevation_expires_at (re #330)
+//   - invalid TOTP code (non-admin) -> 401 (re #330)
+//   - non-admin elevation unlocks set-password and TOTP-disable (re #330)
+//   - non-admin elevation does NOT unlock admin-only routes
 //   - no CSRF header -> 403
 //   - admin endpoint without elevation -> 403 step_up_required
 //   - admin endpoint after elevation -> 200
@@ -119,40 +123,169 @@ func TestStepUp_NotEnrolled_Returns400EnrollRequired(t *testing.T) {
 	}
 }
 
-// TestStepUp_NonAdmin_Returns403 asserts that a non-admin principal attempting
-// step-up gets 403 (elevation is only meaningful for admin principals).
-func TestStepUp_NonAdmin_Returns403(t *testing.T) {
-	t.Parallel()
-	sh := newSessionHarness(t)
-
-	// Bootstrap admin to get an API key for creating the non-admin principal.
-	_, _, adminKey := sh.bootstrapWithPassword("stepup-admin2@example.com")
-
-	// Create a non-admin principal.
-	const nonAdminEmail = "stepup-nonadmin@example.com"
-	const nonAdminPass = "hunter2hunter2hunter2"
+// nonAdminTOTPPrincipal creates a non-admin principal, enrolls and confirms
+// TOTP for it via an admin API key, and returns
+// (email, password, principalID, totpSecret). Used by tests that need a
+// non-admin, TOTP-enrolled caller (re #330).
+func (sh *sessionHarness) nonAdminTOTPPrincipal(adminKey, email, password string) (string, string, uint64, string) {
+	sh.t.Helper()
 	res, raw := sh.doRequest("POST", "/api/v1/principals", adminKey, map[string]any{
-		"email":    nonAdminEmail,
-		"password": nonAdminPass,
+		"email":    email,
+		"password": password,
 	})
 	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create non-admin principal: status=%d body=%s", res.StatusCode, raw)
+		sh.t.Fatalf("create non-admin principal: status=%d body=%s", res.StatusCode, raw)
+	}
+	var created struct {
+		ID uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		sh.t.Fatalf("unmarshal created principal: %v body=%s", err, raw)
 	}
 
-	// Login as the non-admin principal with a fresh cookie jar.
+	enrollRes, enrollRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/enroll", created.ID), adminKey, nil)
+	if enrollRes.StatusCode != http.StatusOK {
+		sh.t.Fatalf("totp/enroll: status=%d body=%s", enrollRes.StatusCode, enrollRaw)
+	}
+	var enrollBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(enrollRaw, &enrollBody); err != nil {
+		sh.t.Fatalf("unmarshal enroll: %v body=%s", err, enrollRaw)
+	}
+	enrollCode, err := otpGenerateCode(enrollBody.Secret, sh.clk.Now())
+	if err != nil {
+		sh.t.Fatalf("otpGenerateCode (enroll): %v", err)
+	}
+	confirmRes, confirmRaw := sh.doRequest("POST",
+		fmt.Sprintf("/api/v1/principals/%d/totp/confirm", created.ID), adminKey,
+		map[string]any{"code": enrollCode})
+	if confirmRes.StatusCode != http.StatusNoContent {
+		sh.t.Fatalf("totp/confirm: status=%d body=%s", confirmRes.StatusCode, confirmRaw)
+	}
+	sh.clk.Advance(time.Second)
+	return email, password, created.ID, enrollBody.Secret
+}
+
+// TestStepUp_NonAdminWithTOTP_CorrectCode_CreatesElevation asserts that a
+// non-admin, TOTP-enrolled principal posting a correct code to step-up
+// succeeds and returns the elevation -- previously refused with 403 before
+// the code was ever checked (issue #330). requireElevation still gates
+// admin routes on PrincipalFlagAdmin independently of the elevation record
+// (see TestStepUp_NonAdminWithTOTP_LoginElevatesButAdminRouteStill403), so
+// this does not grant admin access.
+func TestStepUp_NonAdminWithTOTP_CorrectCode_CreatesElevation(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	_, _, adminKey := sh.bootstrapWithPassword("stepup-admin2@example.com")
+
+	const nonAdminEmail = "stepup-nonadmin@example.com"
+	const nonAdminPass = "hunter2hunter2hunter2"
+	_, _, _, secret := sh.nonAdminTOTPPrincipal(adminKey, nonAdminEmail, nonAdminPass)
+
+	// Login as the non-admin principal on a fresh cookie jar, with the
+	// required TOTP code. This already creates an initial elevation
+	// (REQ-AUTH-74(a)); let it lapse so step-up itself is what's exercised.
 	jar, _ := cookiejar.New(nil)
 	sh.cookieJar = jar
 	sh.cookieJarClient.Jar = jar
-	if code, _ := sh.doLogin(nonAdminEmail, nonAdminPass, nil); code != http.StatusOK {
-		t.Fatalf("non-admin login: status=%d", code)
+	loginCode, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	if code, body := sh.doLogin(nonAdminEmail, nonAdminPass, map[string]any{"totp_code": loginCode}); code != http.StatusOK {
+		t.Fatalf("non-admin TOTP login: status=%d body=%v", code, body)
+	}
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
+
+	sc, body := sh.doStepUp(secret)
+	if sc != http.StatusOK {
+		t.Fatalf("step-up as non-admin with correct code: status=%d body=%v, want 200", sc, body)
+	}
+	if body["elevation_expires_at"] == nil || body["elevation_expires_at"] == "" {
+		t.Errorf("elevation_expires_at missing from step-up response: %v", body)
+	}
+}
+
+// TestStepUp_NonAdminWithTOTP_WrongCode_Returns401 asserts that a wrong TOTP
+// code at step-up still fails for a non-admin principal (re #330).
+func TestStepUp_NonAdminWithTOTP_WrongCode_Returns401(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	_, _, adminKey := sh.bootstrapWithPassword("stepup-admin3@example.com")
+
+	const nonAdminEmail = "stepup-nonadmin-wrong@example.com"
+	const nonAdminPass = "hunter2hunter2hunter2"
+	_, _, _, secret := sh.nonAdminTOTPPrincipal(adminKey, nonAdminEmail, nonAdminPass)
+
+	jar, _ := cookiejar.New(nil)
+	sh.cookieJar = jar
+	sh.cookieJarClient.Jar = jar
+	loginCode, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	if code, body := sh.doLogin(nonAdminEmail, nonAdminPass, map[string]any{"totp_code": loginCode}); code != http.StatusOK {
+		t.Fatalf("non-admin TOTP login: status=%d body=%v", code, body)
 	}
 
 	csrf := sh.csrfToken()
-	sc, raw2 := sh.doWithCookie("POST", "/api/v1/auth/step-up", map[string]any{
-		"totp_code": "123456",
+	sc, raw := sh.doWithCookie("POST", "/api/v1/auth/step-up", map[string]any{
+		"totp_code": "000000", // deliberately wrong
 	}, csrf)
-	if sc != http.StatusForbidden {
-		t.Errorf("step-up as non-admin: status=%d body=%s, want 403", sc, raw2)
+	if sc != http.StatusUnauthorized {
+		t.Errorf("step-up as non-admin with wrong code: status=%d body=%s, want 401", sc, raw)
+	}
+}
+
+// TestStepUp_NonAdminWithTOTP_UnlocksSetPasswordAndTOTPDisable is the
+// end-to-end acceptance case for issue #330: a non-admin principal with
+// TOTP enrolled elevates via step-up with a correct code, then successfully
+// changes their own password and disables their own TOTP -- both gated by
+// requireSelfServiceElevation (REQ-AUTH-78), which previously could never
+// be satisfied by a non-admin because handleStepUp refused them outright.
+func TestStepUp_NonAdminWithTOTP_UnlocksSetPasswordAndTOTPDisable(t *testing.T) {
+	t.Parallel()
+	sh := newSessionHarness(t)
+	_, _, adminKey := sh.bootstrapWithPassword("stepup-admin4@example.com")
+
+	const nonAdminEmail = "stepup-nonadmin-unlock@example.com"
+	const nonAdminPass = "hunter2hunter2hunter2"
+	_, _, pid, secret := sh.nonAdminTOTPPrincipal(adminKey, nonAdminEmail, nonAdminPass)
+
+	jar, _ := cookiejar.New(nil)
+	sh.cookieJar = jar
+	sh.cookieJarClient.Jar = jar
+	loginCode, err := otpGenerateCode(secret, sh.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode (login): %v", err)
+	}
+	if code, body := sh.doLogin(nonAdminEmail, nonAdminPass, map[string]any{"totp_code": loginCode}); code != http.StatusOK {
+		t.Fatalf("non-admin TOTP login: status=%d body=%v", code, body)
+	}
+	// Let the login-time elevation lapse so the explicit step-up below is
+	// what actually satisfies requireSelfServiceElevation.
+	sh.clk.Advance(stepUpDefaultElevationTTL + time.Minute)
+
+	if sc, body := sh.doStepUp(secret); sc != http.StatusOK {
+		t.Fatalf("non-admin step-up: status=%d body=%v, want 200", sc, body)
+	}
+
+	csrf := sh.csrfToken()
+	sc, raw := sh.doWithCookie("PUT", fmt.Sprintf("/api/v1/principals/%d/password", pid), map[string]any{
+		"current_password": nonAdminPass,
+		"new_password":     "newNonAdminPassword99!",
+	}, csrf)
+	if sc != http.StatusNoContent {
+		t.Fatalf("non-admin password change after step-up: status=%d body=%s, want 204", sc, raw)
+	}
+
+	sc, raw = sh.doWithCookie("DELETE", fmt.Sprintf("/api/v1/principals/%d/totp", pid), map[string]any{
+		"current_password": "newNonAdminPassword99!",
+	}, csrf)
+	if sc != http.StatusNoContent {
+		t.Fatalf("non-admin TOTP disable after step-up: status=%d body=%s, want 204", sc, raw)
 	}
 }
 
