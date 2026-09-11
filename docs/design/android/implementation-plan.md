@@ -1,6 +1,6 @@
 # Implementation plan — herold mobile client
 
-Phasing for the native mobile client (`00-scope.md`). Each phase closes on an
+Milestones for the native mobile client (`00-scope.md`). Each milestone closes on an
 **acceptance check** — an instrumented run against a real herold, not a pushed
 commit — per the project's convergence discipline (`CLAUDE.md` § Verification
 and done-state).
@@ -33,8 +33,8 @@ Mirrors `docs/design/web/`:
 
 ## Server-side prerequisites (not mobile work)
 
-These block real-device testing and must land first. They belong to server
-specialists, not the mobile agent.
+Both are on `main` (#199, #200). They belong to server specialists, not the
+mobile agent.
 
 1. **Bearer-token auth grant.** The suite uses a same-origin session cookie;
    a native app cannot. herold exposes a token grant (OAuth2 auth-code /
@@ -51,8 +51,9 @@ specialists, not the mobile agent.
 The mobile toolchain must not leak into the Go pipeline:
 
 - A path-filtered Forgejo Actions workflow (`.forgejo/workflows/mobile.yml`)
-  triggered only on `mobile/**` and `docs/design/android/**`. It builds the
-  KMP project and runs unit + instrumented tests on an emulator.
+  triggered only on `mobile/**` and `docs/design/android/**`, on `main` and
+  on `android-*` milestone branches. It builds the KMP project and runs the
+  host-JVM unit tests; the emulator lane is #256.
 - The mobile job is **not** in the `deploy` job's `needs:` chain; a mobile
   build failure never blocks the server auto-deploy.
 - pre-commit hooks scoped by path: gofmt/goimports/staticcheck stay on Go
@@ -71,32 +72,87 @@ The project requires UI changes be exercised in a live environment
   `scripts/dev-instance.sh` (seeded principals
   `alice@example.local` etc., password `testpass123...`). The dev-instance
   contract is reused; no new fake server is built for the happy path.
-- A phase closes when its acceptance flow passes on the emulator against
+- A milestone closes when its acceptance flow passes on the emulator against
   dev-instance, with a captured screenshot in the tracking ticket — not when
-  a commit lands.
+  a commit lands. Until a KVM-capable CI runner exists (#256), the emulator
+  is the local AVD on the maintainer's development machine.
 - Offline behaviour is tested by toggling the emulator's connectivity
   mid-flow and asserting the outbox drains correctly on reconnect.
 
-## Phases
+## Milestones
 
-- **Phase 0 — foundations.** These docs; the two server prerequisites; the KMP
-  project skeleton (`shared`, `androidApp`); the mobile CI workflow; the
-  dev-instance-driven emulator harness. Acceptance: the app authenticates
-  against dev-instance and renders the account's mailbox list.
-- **Phase 1 — read path.** Session/bootstrap, the sync engine + local store,
-  thread list, reading pane (HTML render + inline images), push delivery and
-  tap-through. Acceptance: new mail arrives via push, opens to the thread,
-  and is readable offline after sync.
-- **Phase 2 — write path.** Optimistic actions (archive/label/snooze/star/
-  delete) with the offline outbox; compose (including the inline-vs-attach
-  distinction, suite G8); drafts; `EmailSubmission`. Acceptance: compose and
-  send offline, outbox drains on reconnect, recipient receives.
-- **Phase 3 — organise + find.** Filters (Sieve), categorisation display and
-  LLM transparency (suite G7), snooze, search. Acceptance: category chips and
-  the per-message "the LLM was asked ..." inspect view match the suite.
-- **Phase 4+ — sibling apps.** Contacts, calendar, chat + 1:1 video calls,
-  tracking each suite sibling app as it ships. Not started until the suite's
-  own sibling apps exist.
+The client is delivered in milestones. Each milestone is a short-lived
+branch (`android-<milestone>`) off `main`, fast-forwarded into `main` when
+its acceptance check is green on the emulator, then deleted. Server-side
+changes a milestone needs land on `main` directly. Maintainer real-world
+verification is batched: one session on the maintainer's phone per
+milestone group, never one guessed fix at a time.
+
+### Milestone 0 — foundations (done)
+
+The design tree, the two server prerequisites (#199, #200), the KMP project
+skeleton, the build + unit-test CI lane. Acceptance met (#251): the app
+authenticates against dev-instance and renders the mailbox list.
+
+### Milestone 1 — replace the Gmail-over-IMAP setup
+
+Goal: one signed APK on the maintainer's Play-enabled phone that receives
+mail by push within seconds, reads threaded conversations with category
+tabs and labels, sends from any identity with attachments and rich text,
+and searches the whole mailbox. Cache-first (G3): the app opens instantly
+from the local store; compose, actions and search need connectivity.
+
+- **1a — foundation and read path.** Sign-in with email, password and TOTP
+  through the device-token grant; token in Keystore-backed storage; base URL
+  defaulting to the production host; cleartext HTTP only in debug builds.
+  SQLDelight schema keyed by JMAP account id: mailbox, thread, email,
+  identity, per-type state strings, blob cache under a size budget. Sync
+  engine walking every account in the session descriptor with `Foo/changes`
+  per type and EventSource in the foreground. Threaded inbox with pinned
+  category tabs and bundled category rows, combined across accounts, with the
+  account scope switcher. Thread view rendering sanitised HTML with inline
+  images via the image proxy. Star, archive with undo, mark read, label
+  apply, snooze picker, all online-optimistic with revert on failure.
+  Acceptance: seeded mail, category tabs, an opened thread and
+  swipe-archive-with-undo on the emulator against dev-instance.
+- **1b — push and release pipeline.** Firebase Messaging with the FCM token
+  registered as a `PushSubscription` of kind `fcm`, carrying the suite's
+  rules and quiet hours; per-kind notification channels; thread-grouped
+  notifications with Archive and Mark Read actions; tap-through to the
+  thread. FCM service-account key deployed to production. Release signing
+  with a keystore held as CI secrets; the mobile workflow signs a release
+  APK and attaches it to a Forgejo release on an `android-v*` tag.
+  Acceptance: a push emitted by dev-instance reaches the emulator; a tagged
+  CI run produces an installable signed APK.
+- **1c — compose and search.** New, reply, reply-all and forward with
+  quoting and threading headers; identity picker across accounts;
+  attachments via the system picker uploaded to the JMAP blob endpoint;
+  rich-text body editing; server-side drafts; `EmailSubmission`. Search
+  running `Email/query` with the suite's text filter and Trash/Junk
+  exclusion plus `SearchSnippet/get` online, and filtering the local cache
+  with a visible "cached results only" scope offline. Acceptance: a message
+  composed with an attachment on the emulator arrives in the dev-instance
+  SMTP sink; a search for a seeded subject returns its thread.
+
+Milestone 1 closes with one real-world session on the maintainer's phone.
+
+### Milestone 2 — offline, second push transport, hardened auth
+
+Durable outbox for offline sends and actions (`requirements/02-offline-and-sync.md`
+REQ-AND-SYNC-20..25); UnifiedPush client for the de-Googled device (#229);
+Custom Tab OAuth2 code + PKCE sign-in with refresh tokens
+(REQ-AND-AUTH-01/02); biometric unlock; active-sessions surface.
+
+### Milestone 3 — organise and system integration
+
+Filter editor (Sieve), LLM transparency inspect view (suite G7), List-
+Unsubscribe, share intents, widgets, tiles, deep links
+(`requirements/04-system-integration.md`).
+
+### Milestone 4+ — sibling apps
+
+Contacts, calendar, chat + 1:1 video calls, tracking each suite sibling app
+as it ships. Not started until the suite's own sibling apps exist.
 
 ## Roster and process change
 

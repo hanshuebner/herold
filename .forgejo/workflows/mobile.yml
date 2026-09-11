@@ -20,7 +20,7 @@ name: mobile
 
 on:
   push:
-    branches: [main]
+    branches: [main, "android-*"]
     paths:
       - "mobile/**"
       - "docs/design/android/**"

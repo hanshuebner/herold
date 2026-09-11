@@ -38,11 +38,14 @@ maintained at the JMAP contract and tracked in `notes/parity-matrix.md`.
   `REQ-*` where the requirement is platform-independent.
 - **G2. Be a competent JMAP citizen.** RFC 8620/8621 conformant; incremental
   sync via `Foo/changes` + state strings; push via the platform push channel.
-- **G3. Full offline.** The local store is the UI's source of truth. The app
-  is usable with no connectivity: read synced mail, compose, and queue actions;
-  reconcile on reconnect. This is the deliberate divergence from suite NG2
-  (the suite is online-first with no offline) — a native mobile mail client
-  that shows nothing on a dead connection is not acceptable.
+- **G3. Full offline, staged.** The local store is the UI's source of truth
+  and the app opens instantly from it with no connectivity. The first
+  milestone is cache-first: synced mail reads offline; compose, actions and
+  search require connectivity. The durable outbox that queues sends and
+  actions offline is a later milestone (`implementation-plan.md`). This is
+  the deliberate divergence from suite NG2 (the suite is online-first with no
+  offline) — a native mobile mail client that shows nothing on a dead
+  connection is not acceptable.
 - **G4. Optimistic UI.** Archive / label / snooze / star / delete update the
   screen before the server confirms; on failure they revert with a clear error
   and a Retry affordance. Same semantics as suite `11-optimistic-ui.md`,
@@ -53,8 +56,12 @@ maintained at the JMAP contract and tracked in `notes/parity-matrix.md`.
   Credential Manager / passkeys, BiometricPrompt, Storage Access Framework,
   per-app language, Material You dynamic colour, predictive back. This goal
   drove the toolkit choice (see Defaults).
-- **G6. Single-user, single-account.** Matches suite NG3. One JMAP account;
-  account switching is not a feature.
+- **G6. Single user, all of that user's accounts.** One principal per
+  install. Every JMAP account the session descriptor exposes for that
+  principal (the primary account and its sub-accounts, suite
+  `REQ-MAIL-SUB-01..09`) is synced, shown in a combined inbox, and reachable
+  through a scope switcher matching the suite's. Signing in as a second
+  principal is not a feature.
 - **G7. Continuous follow.** When the suite adds a user-facing feature, the
   mobile client tracks it. Protocol-level additions (a new JMAP type, keyword,
   filter capability) are available by construction; presentation-level additions
@@ -62,7 +69,8 @@ maintained at the JMAP contract and tracked in `notes/parity-matrix.md`.
 
 ## Non-goals
 
-- **NG1.** Multi-account UI. One JMAP account per install (suite NG3).
+- **NG1.** Multi-principal sign-in. One principal per install; the
+  sub-account switcher (G6) covers that principal's separated identities.
 - **NG2.** Delegation, shared mailboxes, admin / multi-user views (suite NG4).
 - **NG3.** The operator admin surface. The mobile client tracks the *suite*
   (consumer mail), never the admin SPA.
@@ -96,8 +104,9 @@ maintained at the JMAP contract and tracked in `notes/parity-matrix.md`.
 - **Location:** the herold monorepo, top-level `mobile/` (KMP project:
   `shared`, `androidApp`, later `iosApp`). Design docs live here under
   `docs/design/android/`.
-- **Platform support:** Android 10 (API 29) minimum, targeting the current
-  Android SDK. Revisited per release.
+- **Platform support:** Android 8.0 (API 26) minimum, targeting the current
+  Android SDK. Platform features that need a newer API are gated at runtime.
+  Revisited per release.
 - **Localisation:** English (US/GB), German (DE/AT/CH), French (FR/BE/CA/CH)
   at v1, matching suite `22-internationalization.md`.
 - **Visual style:** Material 3 with dynamic colour; light and dark are equal

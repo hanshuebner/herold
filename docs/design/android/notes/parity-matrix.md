@@ -25,7 +25,8 @@ presentation-level and not yet built.
 | Suite REQ / feature | Kind | Status | Ticket |
 |---|---|---|---|
 | `02-mail-basics` — thread model, read/unread, star | protocol | n/a | — |
-| `02-mail-basics` — reading-pane HTML render + inline images | presentation | todo | — |
+| `02-mail-basics` — reading-pane HTML render + inline images | presentation | in-progress | — |
+| `02-mail-basics` — sub-account combined inbox + scope switcher (`REQ-MAIL-SUB-01..09`) | presentation | in-progress | — |
 | `02-mail-basics` — emoji reactions (`Email.reactions`) | protocol | n/a | — |
 | `03-labels` — label CRUD, apply/remove | protocol | n/a | — |
 | `03-labels` — sidebar label tree UI | presentation | todo | — |
@@ -69,8 +70,10 @@ matrix is a complete picture of mobile scope.
 
 | Feature | REQ | Status |
 |---|---|---|
-| Bearer-token auth + biometric unlock | REQ-AND-01x | todo |
-| Full offline local store + outbox | REQ-AND-02x | todo |
+| Bearer-token auth (device-token grant, Keystore storage) | REQ-AND-AUTH-03/04/10 | in-progress |
+| OAuth2 Custom Tab sign-in + biometric unlock | REQ-AND-AUTH-01/02/11 | deferred (milestone 2) |
+| Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | in-progress |
+| Durable offline outbox | REQ-AND-SYNC-20..25 | deferred (milestone 2) |
 | FCM notifications (direct-reply, shortcuts, Bubbles) | REQ-AND-03x | todo |
 | System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
 | Native navigation shell + predictive back | REQ-AND-05x | todo |

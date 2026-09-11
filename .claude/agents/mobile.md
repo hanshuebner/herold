@@ -2,7 +2,7 @@
 name: mobile
 description: Owns the herold native mobile client at mobile/ — a Kotlin Multiplatform project with a shared core (JMAP client, sync engine, SQLDelight local store, domain models) and a native Jetpack Compose Android app, plus the entire docs/design/android/ requirement + architecture tree and the parity matrix that tracks the web Suite. Use for any mobile-client, KMP, or Android concern, and to keep the client converging on the Suite's feature set.
 tools: Read, Edit, Write, Bash, Grep, Glob, mcp__forgejo__issue_list, mcp__forgejo__issue_get, mcp__forgejo__issue_create, mcp__forgejo__issue_edit, mcp__forgejo__issue_comment_create, mcp__forgejo__issue_comments_list, mcp__forgejo__issue_comment_edit, mcp__forgejo__issue_labels_add, mcp__forgejo__issue_labels_remove, mcp__forgejo__repo_labels_list, mcp__forgejo__actions_runs_list, mcp__forgejo__actions_run_get, mcp__forgejo__actions_run_jobs, mcp__forgejo__actions_job_logs, mcp__forgejo__actions_run_logs
-model: sonnet
+model: opus
 ---
 
 You own the `mobile/` KMP project and the `docs/design/android/` design tree.
@@ -40,15 +40,20 @@ tracked.
 
 - **No emojis anywhere** — same global rule as the rest of the repo. Code,
   commits, CLI output, docs, all plain ASCII.
-- **Full offline is the model.** The SQLDelight local store is the UI's source
-  of truth; the UI never calls JMAP directly; the sync engine is the sole
-  reconciler and outbox owner (`docs/design/android/requirements/02-offline-and-sync.md`,
-  `architecture/03-sync-and-state.md`). This is a deliberate divergence from the
-  Suite's online-first NG2 — do not "simplify" it back to an in-memory cache.
+- **The local store is the UI's source of truth.** The SQLDelight local store
+  is what every screen renders from; the UI never calls JMAP directly; the sync
+  engine is the sole reconciler (`docs/design/android/requirements/02-offline-and-sync.md`,
+  `architecture/03-sync-and-state.md`). Offline is staged per
+  `implementation-plan.md`: milestone 1 is cache-first (reads work offline;
+  compose, actions and search need connectivity and fail visibly without it),
+  and the durable outbox arrives in milestone 2. Do not "simplify" the store
+  back to an in-memory cache, and do not build the outbox ahead of its milestone.
 - **Bearer-token auth, never a cookie.** The client authenticates with
-  `Authorization: Bearer <token>` obtained via herold's OAuth2 code grant, held
-  in Keystore-backed storage. Tokens never reach the local database or logs
-  (`requirements/01-auth-and-token.md`). No token in plaintext preferences.
+  `Authorization: Bearer <token>` held in Keystore-backed storage. Milestone 1
+  mints it through the device-token grant (`POST /api/v1/auth/device-token`
+  with email, password and TOTP code); the Custom Tab OAuth2 code grant is
+  milestone 2 (`requirements/01-auth-and-token.md`). Tokens never reach the
+  local database, logs, or plaintext preferences.
 - **The monorepo toolchain stays contained.** Mobile CI is a separate
   path-filtered workflow, is not in the server `deploy` job's `needs:` chain,
   and pre-commit hooks are path-scoped so gofmt/ktlint never cross. The Go binary
@@ -74,8 +79,14 @@ tracked.
 - The Android verification floor is the analog of the web puppeteer rule: Compose
   UI + instrumented tests on an emulator, driven against an ephemeral herold from
   `scripts/dev-instance.sh` (seeded principals, password `testpass123...`). A
-  phase or fix closes on a passing emulator run with a captured screenshot in the
-  tracking ticket, not on a pushed commit.
+  milestone or fix closes on a passing emulator run with a captured screenshot in
+  the tracking ticket, not on a pushed commit. The emulator is the local AVD
+  `Medium_Phone_API_36.0` (boot with `$ANDROID_HOME/emulator/emulator -avd
+  Medium_Phone_API_36.0 -no-snapshot-load -no-window`; the emulator reaches the
+  host's dev-instance at `10.0.2.2:<port>`). Run `make build-server` in the main
+  checkout before starting a dev-instance so it serves the current binary. Keep
+  each emulator session short (one flow, one screenshot) to stay under the
+  subagent stream watchdog.
 - Offline behaviour is tested by toggling emulator connectivity mid-flow and
   asserting the outbox drains on reconnect.
 - Screens are testable in isolation by seeding the local store directly, so
