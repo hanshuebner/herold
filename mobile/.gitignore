@@ -10,6 +10,10 @@ build/
 captures/
 *.iml
 
-# SQLDelight generated verification database (checked-in schema is the
-# source of truth; the .db snapshot is derived).
+# Stray SQLite files from local runs.
 *.db
+
+# The SQLDelight schema snapshot is the baseline `verifyMigrations` replays
+# a numbered .sqm against, so it is checked in and regenerated with
+# ./gradlew :shared:generateCommonMainHeroldDatabaseSchema.
+!shared/src/commonMain/sqldelight/databases/*.db
