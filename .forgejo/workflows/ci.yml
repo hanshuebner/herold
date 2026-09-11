@@ -917,6 +917,15 @@ jobs:
           fi
           echo "all first-party plugin binaries present"
 
+      # Exercises scripts/release-post-install.sh's atomic install
+      # against synthetic archives (good set, one-bad-checksum set,
+      # re-run idempotence) -- independent of this run's actual build
+      # artifacts, so it catches a regression in the install logic
+      # itself (re #317).
+      - name: release-post-install.sh atomic-install tests
+        if: steps.guard.outputs.enabled == 'true'
+        run: ./scripts/test-release-post-install.sh
+
       - name: package release assets
         if: steps.guard.outputs.enabled == 'true'
         run: |
