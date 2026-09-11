@@ -617,6 +617,161 @@ func TestInternalizeReader_AttachmentPassThrough(t *testing.T) {
 	}
 }
 
+// TestInternalize_MalformedServerContentType_MailparseSeesValidImageType
+// covers issue #324: a remote server answering a malformed
+// "Content-Type: image/" (empty subtype) header must not have that
+// header written verbatim onto the rebuilt inline part. Re-parses the
+// rebuilt message with internal/mailparse -- herold's own parser,
+// which the IMAP/JMAP/webmail read paths use -- and confirms the
+// internalized part reports ContentType "image/png", not the
+// RFC 2045 §5.2 default ("text/plain") that an unparseable
+// Content-Type header produces (internal/mailparse/parse.go:399-403).
+// Pre-fix this fails: mailparse.Parse reports "text/plain" for the
+// image part, exactly the "downstream treats the payload as body
+// text" defect from the issue.
+func TestInternalize_MalformedServerContentType_MailparseSeesValidImageType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+	raw := buildTestMessage(t, []string{srv.URL + "/x.png"})
+
+	out, sum, err := Internalize(context.Background(), raw, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("Internalize: %v", err)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1; sum=%+v", sum.Internalized, sum)
+	}
+
+	parsed, perr := mailparse.Parse(bytes.NewReader(out), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse(rebuilt): %v", perr)
+	}
+	part := findPartByContentIDSuffix(t, parsed.Body, "@herold")
+	if part.ContentType != "image/png" {
+		t.Fatalf("internalized part ContentType=%q, want image/png (mailparse must not fall back to the RFC2045 text/plain default)", part.ContentType)
+	}
+}
+
+// TestInternalize_SharedImageAcrossHTMLRepresentations covers the
+// issue #324 duplicate-Content-ID observation (production message
+// 3400 showed the same freshly-minted Content-ID on two sibling
+// parts). Builds a multipart/related whose first child is a
+// multipart/alternative (text/plain + text/html, the html
+// referencing a remote image) and whose second child is a sibling
+// top-level text/html referencing the *same* remote image URL --
+// the structure described in the issue.
+//
+// enmime's Envelope construction only ever populates env.HTML from
+// the first HTML-shaped part it finds (DepthMatchFirst), so
+// Internalize's candidate extraction, fetch, and CID-minting only
+// ever see one HTML source: this pins that the rebuilt message
+// carries exactly one part with a freshly-minted "@herold"
+// Content-ID -- the internalizer does not double-write a shared
+// image under two parts sharing one Content-ID.
+func TestInternalize_SharedImageAcrossHTMLRepresentations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+	imgURL := srv.URL + "/shared.png"
+	raw := []byte("From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: dup test\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/related; boundary=\"REL\"\r\n" +
+		"\r\n" +
+		"--REL\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"ALT\"\r\n" +
+		"\r\n" +
+		"--ALT\r\n" +
+		"Content-Type: text/plain\r\n" +
+		"\r\n" +
+		"plain fallback\r\n" +
+		"--ALT\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body><img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--ALT--\r\n" +
+		"--REL\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body>top-level dup <img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--REL--\r\n")
+
+	out, sum, err := Internalize(context.Background(), raw, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("Internalize: %v", err)
+	}
+	if !sum.Modified {
+		t.Fatalf("expected Modified=true; sum=%+v", sum)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1 (one unique remote URL, deduplicated by extractCandidates); sum=%+v", sum.Internalized, sum)
+	}
+
+	parsed, perr := mailparse.Parse(bytes.NewReader(out), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse(rebuilt): %v", perr)
+	}
+	cids := collectContentIDsWithSuffix(parsed.Body, "@herold")
+	if len(cids) != 1 {
+		t.Fatalf("found %d parts with a freshly-minted Content-ID, want exactly 1; cids=%v", len(cids), cids)
+	}
+}
+
+// findPartByContentIDSuffix walks the part tree depth-first and
+// returns the first part whose Content-ID header contains suffix.
+// Fails the test if none is found.
+func findPartByContentIDSuffix(t *testing.T, root mailparse.Part, suffix string) mailparse.Part {
+	t.Helper()
+	var found *mailparse.Part
+	var walk func(p mailparse.Part)
+	walk = func(p mailparse.Part) {
+		if found != nil {
+			return
+		}
+		if strings.Contains(p.Headers.Get("Content-ID"), suffix) {
+			pp := p
+			found = &pp
+			return
+		}
+		for _, c := range p.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	if found == nil {
+		t.Fatalf("no part found with Content-ID containing %q", suffix)
+	}
+	return *found
+}
+
+// collectContentIDsWithSuffix walks the part tree and returns every
+// Content-ID header value (raw, as stored) whose value contains
+// suffix.
+func collectContentIDsWithSuffix(root mailparse.Part, suffix string) []string {
+	var out []string
+	var walk func(p mailparse.Part)
+	walk = func(p mailparse.Part) {
+		if cid := p.Headers.Get("Content-ID"); strings.Contains(cid, suffix) {
+			out = append(out, cid)
+		}
+		for _, c := range p.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	return out
+}
+
 // silence unused imports when the test set narrows
 var (
 	_ = io.ReadAll

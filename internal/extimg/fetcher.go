@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -264,35 +265,54 @@ func readWithCap(r io.Reader, cap int64) ([]byte, error) {
 	return buf, nil
 }
 
+// validImageMediaType parses ct with mime.ParseMediaType and reports
+// the canonicalised (lowercased) "image/subtype" when the header is a
+// well-formed media type with a non-empty image/* subtype. A header
+// with an empty subtype (issue #324: some origins send the literal
+// "Content-Type: image/") fails ParseMediaType and is treated the
+// same as a missing header by both callers below.
+func validImageMediaType(ct string) (string, bool) {
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil || !strings.HasPrefix(mt, "image/") {
+		return "", false
+	}
+	return mt, true
+}
+
 // looksLikeImage reports whether the response is plausibly an image.
-// Header is checked first; if missing/wrong we sniff the magic bytes.
-// Refuses HTML, JSON, plain text — common 4xx-served-as-200 patterns.
+// A well-formed image/* header is trusted outright. A missing header,
+// application/octet-stream, or a header that merely claims image/*
+// but fails to parse (empty subtype, stray parameters with no
+// subtype, etc.) falls through to a magic-byte sniff of the body.
+// Anything else -- an explicit, well-formed, non-image type such as
+// text/html or application/json -- is refused outright even when the
+// bytes happen to look like an image; common 4xx-served-as-200
+// pattern.
 func looksLikeImage(ct string, body []byte) bool {
+	if _, ok := validImageMediaType(ct); ok {
+		return true
+	}
 	low := strings.ToLower(strings.TrimSpace(ct))
 	if i := strings.IndexByte(low, ';'); i >= 0 {
 		low = strings.TrimSpace(low[:i])
 	}
-	if strings.HasPrefix(low, "image/") {
-		return true
-	}
-	if low == "" || low == "application/octet-stream" {
+	if low == "" || low == "application/octet-stream" || strings.HasPrefix(low, "image/") {
 		return sniffImage(body) != ""
 	}
-	// Anything else (text/html, application/json, etc.) is suspect
-	// even if it happens to start with image magic bytes; refuse.
 	return false
 }
 
 // canonicalImageContentType returns the content-type we record on the
-// inline part. We prefer the server's header when it claims an image
-// type, else fall back to the sniffed type.
+// inline part. The server's header wins when it parses as a genuine
+// image/* media type (REQ-EXTIMG-xx); otherwise -- a missing header,
+// or one that only claims image/* without a valid subtype (issue
+// #324) -- we fall back to the sniffed type, then
+// application/octet-stream. This is the same fallback chain already
+// used for a missing header; we never write an unparseable media type
+// onto the rebuilt part.
 func canonicalImageContentType(ct string, body []byte) string {
-	low := strings.ToLower(strings.TrimSpace(ct))
-	if i := strings.IndexByte(low, ';'); i >= 0 {
-		low = strings.TrimSpace(low[:i])
-	}
-	if strings.HasPrefix(low, "image/") {
-		return low
+	if mt, ok := validImageMediaType(ct); ok {
+		return mt
 	}
 	if sniffed := sniffImage(body); sniffed != "" {
 		return sniffed
