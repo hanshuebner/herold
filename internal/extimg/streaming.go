@@ -7,26 +7,45 @@ package extimg
 // Design:
 //   - src is an io.ReaderAt over the assembled message bytes passed to
 //     mailparse.Parse.
-//   - For the text/html leaf: Part.Text (already in RAM, bounded by 1 MiB)
-//     is rewritten via rewriteHTML / RewriteForPlaceholder, QP-encoded.
+//   - Every text/html leaf in the message (not just the first) is scanned
+//     for external image references and rewritten via rewriteHTML /
+//     RewriteForPlaceholder, QP-encoded, using its own Part.Text (already
+//     in RAM, bounded by 1 MiB).
 //   - For every other leaf: raw CTE-encoded bytes are streamed verbatim via
 //     Part.RawBody, never decoded or re-encoded.
 //   - Multipart containers are reconstructed from the parsed Part tree using
 //     original boundary strings from the Content-Type header.
-//   - New fetched images are appended as inline parts.
+//   - New fetched images are appended as inline parts exactly once each
+//     (issue #324): at the lowest multipart/related container that
+//     encloses every HTML leaf referencing that image, or -- when no
+//     such container exists -- at a synthetic multipart/related wrapped
+//     around the lowest common ancestor of those leaves. Every
+//     referencing HTML leaf's src is rewritten to the same cid:.
 //
 // MIME reconstruction contract:
 //
-//	buildPartContent returns (partHeaders []string, bodyReaders []io.Reader, err)
-//	where partHeaders are the MIME part header lines (each ending with \r\n)
-//	and bodyReaders stream the body content. Both callers use this differently:
+//	buildPartContent / buildMultipartBody return (bodyReaders, contentType,
+//	contentTransferEncoding, err). Both callers use this differently:
 //
 //	  buildMsgReaders (top-level): emits all message headers from msg.Headers,
 //	  plus MIME-Version, Content-Type and CTE from partHeaders, then \r\n,
-//	  then bodyReaders.
+//	  then bodyReaders. If the message root itself is the placement point
+//	  for an image group, the whole body is wrapped in a synthetic
+//	  multipart/related first.
 //
-//	  buildMultipartBodyReaders (child): emits --boundary\r\n, then partHeaders,
-//	  then \r\n (blank line between part headers and part body), then bodyReaders.
+//	  buildChildPartBlock (child): returns a self-contained block (its own
+//	  Content-Type/CTE header lines + blank line + body); the caller
+//	  prepends --boundary\r\n. If the child's own path is the placement
+//	  point for an image group not already consumed by an enclosing
+//	  multipart/related, the block is wrapped in a synthetic
+//	  multipart/related before being returned.
+//
+// Placement bookkeeping: `groups` maps a tree path (see pathKey) to the
+// inline image parts to emit there. buildMultipartBody consumes (deletes)
+// its own path's entry directly when the container is multipart/related.
+// Every other node consults `groups` for its own path after building its
+// normal content and wraps if an entry remains -- so each entry is
+// consumed exactly once, guaranteeing each image is emitted exactly once.
 
 import (
 	"bytes"
@@ -43,6 +62,79 @@ import (
 
 	"github.com/hanshuebner/herold/internal/mailparse"
 )
+
+// htmlLeafRef is one text/html leaf found in the parsed Part tree, along
+// with its path (the sequence of child indices from the message root).
+type htmlLeafRef struct {
+	Path []int
+	Part mailparse.Part
+}
+
+// collectHTMLLeaves walks p depth-first, left-to-right, and returns every
+// text/html leaf (Children == 0) with non-empty decoded Text, in document
+// order. This traversal order must match the rebuild walk in
+// buildMultipartBody/buildPartContent exactly, since InternalizeReader
+// correlates leafHTML[i] to the i-th HTML leaf visited during rebuild via
+// a monotonic cursor rather than by re-matching Part values.
+func collectHTMLLeaves(p mailparse.Part, path []int) []htmlLeafRef {
+	if len(p.Children) == 0 {
+		if strings.EqualFold(p.ContentType, "text/html") && p.Text != "" {
+			return []htmlLeafRef{{Path: append([]int(nil), path...), Part: p}}
+		}
+		return nil
+	}
+	var out []htmlLeafRef
+	for i, c := range p.Children {
+		out = append(out, collectHTMLLeaves(c, appendPath(path, i))...)
+	}
+	return out
+}
+
+// appendPath returns a new path with i appended, never aliasing path's
+// backing array (siblings in the same recursion frame must not share
+// storage).
+func appendPath(path []int, i int) []int {
+	out := make([]int, len(path)+1)
+	copy(out, path)
+	out[len(path)] = i
+	return out
+}
+
+// pathKey renders a tree path as a map key. Distinct paths (including the
+// root, nil) always render distinctly.
+func pathKey(path []int) string {
+	return fmt.Sprint(path)
+}
+
+// lcaPath returns the lowest common ancestor path of leaves[idxs[i]] for
+// every i -- the longest path prefix shared by all of them. Returns the
+// root path (nil) for an empty idxs, a defensive fallback that should
+// never be exercised: every successfully-fetched URL originates from
+// extractCandidates on at least one leaf's own text, so its referencing
+// set is never empty.
+func lcaPath(leaves []htmlLeafRef, idxs []int) []int {
+	if len(idxs) == 0 {
+		return nil
+	}
+	lca := append([]int(nil), leaves[idxs[0]].Path...)
+	for _, idx := range idxs[1:] {
+		lca = commonPrefix(lca, leaves[idx].Path)
+	}
+	return lca
+}
+
+// commonPrefix returns the longest common prefix of a and b.
+func commonPrefix(a, b []int) []int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return append([]int(nil), a[:i]...)
+}
 
 // InternalizeReader rewrites the message referenced by src using the
 // pre-parsed mailparse.Message for structure. Returns a streaming io.Reader
@@ -76,23 +168,37 @@ func InternalizeReader(
 		return io.NewSectionReader(src, 0, srcSize), sum, nil
 	}
 
-	htmlPart, found := findHTMLLeaf(msg.Body)
-	if !found || htmlPart.Text == "" {
+	leaves := collectHTMLLeaves(msg.Body, nil)
+	if len(leaves) == 0 {
 		sum.NotEligibleReason = "no_html_body"
 		sum.WallClock = time.Since(start)
 		return io.NewSectionReader(src, 0, srcSize), sum, nil
 	}
-	sum.HTMLPartsScanned = 1
+	sum.HTMLPartsScanned = len(leaves)
 
-	htmlBytes := []byte(htmlPart.Text)
-	cands, cerr := extractCandidates(htmlBytes)
-	if cerr != nil {
-		sum.ParseError = cerr.Error()
-		sum.WallClock = time.Since(start)
-		return io.NewSectionReader(src, 0, srcSize), sum, nil
+	// Extract candidates per leaf (so each leaf's own references are
+	// known for placement below) and fetch the message-wide deduplicated
+	// union.
+	leafCands := make([][]candidate, len(leaves))
+	urlSeen := map[string]bool{}
+	var allCands []candidate
+	for i, lf := range leaves {
+		cs, cerr := extractCandidates([]byte(lf.Part.Text))
+		if cerr != nil {
+			sum.ParseError = cerr.Error()
+			sum.WallClock = time.Since(start)
+			return io.NewSectionReader(src, 0, srcSize), sum, nil
+		}
+		leafCands[i] = cs
+		for _, c := range cs {
+			if !urlSeen[c.URL] {
+				urlSeen[c.URL] = true
+				allCands = append(allCands, c)
+			}
+		}
 	}
-	sum.Candidates = len(cands)
-	if len(cands) == 0 {
+	sum.Candidates = len(allCands)
+	if len(allCands) == 0 {
 		sum.NotEligibleReason = "no_external_refs"
 		sum.WallClock = time.Since(start)
 		return io.NewSectionReader(src, 0, srcSize), sum, nil
@@ -102,7 +208,7 @@ func InternalizeReader(
 	defer cancel()
 
 	fetcher := NewFetcher(cfg)
-	results := fetchAllBudgeted(fetchCtx, fetcher, cfg, cands, &sum)
+	results := fetchAllBudgeted(fetchCtx, fetcher, cfg, allCands, &sum)
 
 	cidMap := make(map[string]string, len(results))
 	var inlines []inlinePart
@@ -121,33 +227,72 @@ func InternalizeReader(
 		sum.NotEligibleReason = "no_successful_fetches"
 	}
 
-	rewrittenHTML, err := rewriteHTML(htmlBytes, cidMap)
-	if err != nil {
-		sum.ParseError = err.Error()
-		sum.WallClock = time.Since(start)
-		return io.NewSectionReader(src, 0, srcSize), sum, nil
-	}
-
-	if sum.Failed > 0 {
-		// See the matching comment in internalize.go's Internalize:
-		// retain the failed URLs + pre-placeholder HTML server-side
-		// (issue #162) before the placeholder pass below discards the
-		// only copy of that association.
-		if failedCands, ferr := extractCandidates(rewrittenHTML); ferr == nil {
-			urls := make([]string, len(failedCands))
-			for i, c := range failedCands {
-				urls[i] = c.URL
+	// Rewrite each leaf's own HTML using the shared cidMap, and collect
+	// failed-URL / placeholder bookkeeping across all leaves (the
+	// single-leaf equivalent of the matching pass in internalize.go's
+	// Internalize).
+	leafHTML := make([][]byte, len(leaves))
+	var failedURLs []string
+	failedSeen := map[string]bool{}
+	var failedTemplate []byte
+	for i, lf := range leaves {
+		rw, rerr := rewriteHTML([]byte(lf.Part.Text), cidMap)
+		if rerr != nil {
+			sum.ParseError = rerr.Error()
+			sum.WallClock = time.Since(start)
+			return io.NewSectionReader(src, 0, srcSize), sum, nil
+		}
+		if sum.Failed > 0 {
+			if fc, ferr := extractCandidates(rw); ferr == nil {
+				for _, c := range fc {
+					if !failedSeen[c.URL] {
+						failedSeen[c.URL] = true
+						failedURLs = append(failedURLs, c.URL)
+					}
+				}
+				if len(fc) > 0 && failedTemplate == nil {
+					// Best-effort representative template (issue #162
+					// retry affordance): when multiple HTML leaves
+					// still carry failed URLs, the first one found
+					// stands in for the whole message, matching
+					// RetryFailedImages' existing single-html-template
+					// assumption (internal/extimg/retry.go rebuilds via
+					// enmime.Builder, which itself only ever produces
+					// one HTML body).
+					failedTemplate = append([]byte(nil), rw...)
+				}
 			}
-			sum.FailedURLs = urls
-			sum.FailedImageTemplate = append([]byte(nil), rewrittenHTML...)
+			if placeheld, perr := RewriteForPlaceholder(rw); perr == nil {
+				rw = placeheld
+			}
 		}
-		if placeheld, perr := RewriteForPlaceholder(rewrittenHTML); perr == nil {
-			rewrittenHTML = placeheld
-			sum.Placeholdered = sum.Failed
-		}
+		leafHTML[i] = rw
+	}
+	if sum.Failed > 0 {
+		sum.FailedURLs = failedURLs
+		sum.FailedImageTemplate = failedTemplate
+		sum.Placeholdered = sum.Failed
 	}
 
-	outReaders, err := buildMsgReaders(src, msg, rewrittenHTML, inlines, cfg, verdict)
+	// Group successfully-fetched images by the lowest common ancestor of
+	// the HTML leaves that reference them (issue #324): each image is
+	// placed -- and therefore emitted -- exactly once.
+	referencing := map[string][]int{}
+	for i, cs := range leafCands {
+		for _, c := range cs {
+			if cid, ok := cidMap[c.URL]; ok {
+				referencing[cid] = append(referencing[cid], i)
+			}
+		}
+	}
+	groups := map[string][]inlinePart{}
+	for _, in := range inlines {
+		lca := lcaPath(leaves, referencing[in.cid])
+		key := pathKey(lca)
+		groups[key] = append(groups[key], in)
+	}
+
+	outReaders, err := buildMsgReaders(src, msg, leafHTML, groups, cfg, verdict)
 	if err != nil {
 		sum.ParseError = err.Error()
 		sum.WallClock = time.Since(start)
@@ -158,22 +303,6 @@ func InternalizeReader(
 	sum.RewrittenSize = 0 // caller updates from blob size after Blobs().Put
 	sum.WallClock = time.Since(start)
 	return io.MultiReader(outReaders...), sum, nil
-}
-
-// findHTMLLeaf returns the first text/html leaf with non-empty decoded Text.
-func findHTMLLeaf(p mailparse.Part) (mailparse.Part, bool) {
-	if len(p.Children) == 0 {
-		if strings.EqualFold(p.ContentType, "text/html") && p.Text != "" {
-			return p, true
-		}
-		return mailparse.Part{}, false
-	}
-	for _, c := range p.Children {
-		if part, ok := findHTMLLeaf(c); ok {
-			return part, ok
-		}
-	}
-	return mailparse.Part{}, false
 }
 
 // buildMsgReaders assembles the complete rewritten message as a slice of
@@ -190,15 +319,27 @@ func findHTMLLeaf(p mailparse.Part) (mailparse.Part, bool) {
 func buildMsgReaders(
 	src io.ReaderAt,
 	msg mailparse.Message,
-	rewrittenHTML []byte,
-	inlines []inlinePart,
+	leafHTML [][]byte,
+	groups map[string][]inlinePart,
 	cfg Config,
 	verdict DKIMVerdict,
 ) ([]io.Reader, error) {
-	// Build body first to learn topCT and topCTE.
-	bodyReaders, topCT, topCTE, err := buildPartContent(src, msg.Body, rewrittenHTML, inlines)
+	cursor := 0
+	bodyReaders, topCT, topCTE, err := buildPartContent(src, msg.Body, nil, leafHTML, &cursor, groups)
 	if err != nil {
 		return nil, err
+	}
+
+	// The message root is the placement point for an image group only
+	// when every leaf referencing that image sits in a different
+	// top-level subtree (their LCA is the root) and the root is not
+	// itself already multipart/related -- buildMultipartBody consumes
+	// its own group in place when it is. Wrap the whole body once.
+	if imgs := groups[pathKey(nil)]; len(imgs) > 0 {
+		delete(groups, pathKey(nil))
+		inner := assembleSelfContained(topCT, topCTE, bodyReaders)
+		topCT, bodyReaders = wrapInRelated(inner, imgs)
+		topCTE = ""
 	}
 
 	var hdrBuf bytes.Buffer
@@ -263,8 +404,10 @@ func isMsgDroppedHeader(name string, cfg Config) bool {
 func buildPartContent(
 	src io.ReaderAt,
 	p mailparse.Part,
-	rewrittenHTML []byte,
-	inlines []inlinePart,
+	path []int,
+	leafHTML [][]byte,
+	cursor *int,
+	groups map[string][]inlinePart,
 ) (bodyReaders []io.Reader, contentType string, contentTransferEncoding string, err error) {
 	ct := strings.ToLower(strings.TrimSpace(p.ContentType))
 
@@ -274,27 +417,16 @@ func buildPartContent(
 		if charset == "" {
 			charset = "utf-8"
 		}
-		if len(inlines) > 0 {
-			// Wrap in multipart/related sub-container. No top-level CTE needed.
-			boundary := sMakeBoundary()
-			contentType = fmt.Sprintf("multipart/related; boundary=%q", boundary)
-			bodyReaders, err = wrapHTMLInRelated(rewrittenHTML, inlines, charset, boundary)
-			if err != nil {
-				return nil, "", "", err
-			}
-			contentTransferEncoding = ""
-		} else {
-			contentType = fmt.Sprintf("text/html; charset=%q", charset)
-			contentTransferEncoding = "quoted-printable"
-			bodyReaders, err = encodeHTMLBody(rewrittenHTML)
-			if err != nil {
-				return nil, "", "", err
-			}
+		contentType = fmt.Sprintf("text/html; charset=%q", charset)
+		contentTransferEncoding = "quoted-printable"
+		bodyReaders, err = encodeHTMLBody(nextLeafHTML(leafHTML, cursor))
+		if err != nil {
+			return nil, "", "", err
 		}
 		return bodyReaders, contentType, contentTransferEncoding, nil
 
 	case strings.HasPrefix(ct, "multipart/"):
-		readers, mct, merr := buildMultipartBody(src, p, rewrittenHTML, inlines)
+		readers, mct, merr := buildMultipartBody(src, p, path, leafHTML, cursor, groups)
 		if merr != nil {
 			return nil, "", "", merr
 		}
@@ -317,6 +449,16 @@ func buildPartContent(
 	}
 }
 
+// nextLeafHTML returns leafHTML[*cursor] and advances the cursor. The
+// cursor tracks which HTML leaf is currently being rendered; it advances
+// in the same depth-first order collectHTMLLeaves used to populate
+// leafHTML, so the two stay correlated without re-matching Part values.
+func nextLeafHTML(leafHTML [][]byte, cursor *int) []byte {
+	rw := leafHTML[*cursor]
+	*cursor++
+	return rw
+}
+
 // encodeHTMLBody QP-encodes rewrittenHTML and returns [QP body reader].
 func encodeHTMLBody(rewrittenHTML []byte) ([]io.Reader, error) {
 	var qpBuf bytes.Buffer
@@ -330,32 +472,49 @@ func encodeHTMLBody(rewrittenHTML []byte) ([]io.Reader, error) {
 	return []io.Reader{&qpBuf}, nil
 }
 
-// wrapHTMLInRelated builds a multipart/related body containing the HTML
-// plus the inline image parts. Returns the body readers (starting with
-// --boundary, no outer Content-Type header) and the Content-Type string.
-func wrapHTMLInRelated(rewrittenHTML []byte, inlines []inlinePart, charset, boundary string) ([]io.Reader, error) {
-	var qpBuf bytes.Buffer
-	qpw := quotedprintable.NewWriter(&qpBuf)
-	if _, werr := qpw.Write(rewrittenHTML); werr != nil {
-		return nil, fmt.Errorf("extimg: qp write: %w", werr)
+// assembleSelfContained builds a self-contained MIME part block (Content-Type
+// header, optional CTE header, blank line, body) from a top-level-style
+// (ct, cte, bodyReaders) triple -- the same shape buildChildPartBlock's
+// callers already produce -- so it can be wrapped by wrapInRelated like
+// any other self-contained block.
+func assembleSelfContained(ct, cte string, bodyReaders []io.Reader) []io.Reader {
+	var hdrBuf bytes.Buffer
+	fmt.Fprintf(&hdrBuf, "Content-Type: %s\r\n", ct)
+	if cte != "" {
+		fmt.Fprintf(&hdrBuf, "Content-Transfer-Encoding: %s\r\n", cte)
 	}
-	if cerr := qpw.Close(); cerr != nil {
-		return nil, fmt.Errorf("extimg: qp close: %w", cerr)
-	}
+	hdrBuf.WriteString("\r\n")
+	out := []io.Reader{&hdrBuf}
+	out = append(out, bodyReaders...)
+	return out
+}
 
-	var buf bytes.Buffer
-	// First child: HTML.
-	fmt.Fprintf(&buf, "--%s\r\n", boundary)
-	fmt.Fprintf(&buf, "Content-Type: text/html; charset=%q\r\n", charset)
-	buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
-	buf.WriteString("\r\n")
-	buf.Write(qpBuf.Bytes())
-	buf.WriteString("\r\n")
-	// Inline image parts.
-	appendInlineParts(&buf, inlines, boundary)
-	// Closing boundary.
-	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
-	return []io.Reader{&buf}, nil
+// wrapInRelated wraps innerBlock -- a self-contained MIME part block (its
+// own Content-Type/CTE headers + blank line + body, no boundary markers)
+// -- as the sole content child of a new multipart/related container,
+// followed by images as additional children. Returns the new Content-Type
+// value and the body-only readers (starting with --boundary; the caller
+// supplies its own Content-Type header line for this new value).
+func wrapInRelated(innerBlock []io.Reader, images []inlinePart) (string, []io.Reader) {
+	boundary := sMakeBoundary()
+	ct := fmt.Sprintf("multipart/related; boundary=%q", boundary)
+
+	var open bytes.Buffer
+	fmt.Fprintf(&open, "--%s\r\n", boundary)
+
+	var sep bytes.Buffer
+	sep.WriteString("\r\n")
+
+	var imgBuf bytes.Buffer
+	appendInlineParts(&imgBuf, images, boundary)
+
+	var closeBuf bytes.Buffer
+	fmt.Fprintf(&closeBuf, "--%s--\r\n", boundary)
+
+	body := []io.Reader{&open}
+	body = append(body, innerBlock...)
+	body = append(body, &sep, &imgBuf, &closeBuf)
+	return ct, body
 }
 
 // buildMultipartBody builds the body content of a multipart/* part.
@@ -364,8 +523,10 @@ func wrapHTMLInRelated(rewrittenHTML []byte, inlines []inlinePart, charset, boun
 func buildMultipartBody(
 	src io.ReaderAt,
 	p mailparse.Part,
-	rewrittenHTML []byte,
-	inlines []inlinePart,
+	path []int,
+	leafHTML [][]byte,
+	cursor *int,
+	groups map[string][]inlinePart,
 ) ([]io.Reader, string, error) {
 	rawCT := p.Headers.Get("Content-Type")
 	boundary := extractMIMEBoundary(rawCT)
@@ -383,13 +544,14 @@ func buildMultipartBody(
 
 	var out []io.Reader
 
-	for _, child := range p.Children {
+	for i, child := range p.Children {
 		childCT := strings.ToLower(strings.TrimSpace(child.ContentType))
 		isHTMLChild := childCT == "text/html" && len(child.Children) == 0
+		childPath := appendPath(path, i)
 
 		// Build the child part as a self-contained block (all headers + blank
 		// line + body). Then prepend --boundary\r\n.
-		childBlock, berr := buildChildPartBlock(src, child, rewrittenHTML, inlines, isHTMLChild)
+		childBlock, berr := buildChildPartBlock(src, child, childPath, leafHTML, cursor, groups, isHTMLChild)
 		if berr != nil {
 			return nil, "", berr
 		}
@@ -405,11 +567,16 @@ func buildMultipartBody(
 		out = append(out, &sepBuf)
 	}
 
-	// For multipart/related: append newly-fetched inline images.
+	// For multipart/related: append any images placed at this exact
+	// container (issue #324: consumed here, in place, so no ancestor or
+	// descendant re-emits the same image).
 	if isRelated {
-		var inBuf bytes.Buffer
-		appendInlineParts(&inBuf, inlines, boundary)
-		out = append(out, &inBuf)
+		if imgs := groups[pathKey(path)]; len(imgs) > 0 {
+			delete(groups, pathKey(path))
+			var inBuf bytes.Buffer
+			appendInlineParts(&inBuf, imgs, boundary)
+			out = append(out, &inBuf)
+		}
 	}
 
 	var closeBuf bytes.Buffer
@@ -423,74 +590,66 @@ func buildMultipartBody(
 // buildChildPartBlock builds a self-contained MIME part block:
 // [part headers (all headers, including Content-Type)] + [\r\n] + [body readers].
 // This is for children of a multipart/* container; the caller prepends --boundary\r\n.
+//
+// After building the child's normal content, checks whether path is the
+// placement point for an image group nothing upstream has consumed yet
+// (issue #324) -- e.g. the child is the single HTML leaf referencing an
+// image, or a non-related container that is the lowest common ancestor of
+// several referencing leaves -- and wraps the block in a synthetic
+// multipart/related if so.
 func buildChildPartBlock(
 	src io.ReaderAt,
 	p mailparse.Part,
-	rewrittenHTML []byte,
-	inlines []inlinePart,
+	path []int,
+	leafHTML [][]byte,
+	cursor *int,
+	groups map[string][]inlinePart,
 	isHTMLChild bool,
 ) ([]io.Reader, error) {
+	var block []io.Reader
+	var err error
 	if isHTMLChild {
-		return buildHTMLChildBlock(p, rewrittenHTML, inlines)
+		block, err = buildHTMLChildBlock(p, leafHTML, cursor)
+	} else if len(p.Children) > 0 {
+		block, err = buildMultipartChildBlock(src, p, path, leafHTML, cursor, groups)
+	} else {
+		block, err = buildRawChildBlock(src, p)
 	}
-	if len(p.Children) > 0 {
-		return buildMultipartChildBlock(src, p, rewrittenHTML, inlines)
+	if err != nil {
+		return nil, err
 	}
-	return buildRawChildBlock(src, p)
+
+	if imgs := groups[pathKey(path)]; len(imgs) > 0 {
+		delete(groups, pathKey(path))
+		newCT, newBody := wrapInRelated(block, imgs)
+		block = assembleSelfContained(newCT, "", newBody)
+	}
+	return block, nil
 }
 
-// buildHTMLChildBlock builds a self-contained MIME part block for a text/html
-// leaf. If inlines are present, wraps in a multipart/related sub-container.
-// Returns (hdrBlk + blankLine + body readers).
-func buildHTMLChildBlock(p mailparse.Part, rewrittenHTML []byte, inlines []inlinePart) ([]io.Reader, error) {
+// buildHTMLChildBlock builds a self-contained MIME part block for a
+// text/html leaf: its own rewritten content, QP-encoded, with no
+// placement decision -- the caller (buildChildPartBlock) wraps in a
+// synthetic multipart/related if this leaf's own path turns out to be an
+// image's placement point.
+func buildHTMLChildBlock(p mailparse.Part, leafHTML [][]byte, cursor *int) ([]io.Reader, error) {
 	charset := p.Charset
 	if charset == "" {
 		charset = "utf-8"
 	}
-
-	if len(inlines) == 0 {
-		// Standalone HTML: emit CT + CTE + blank + QP body.
-		var qpBuf bytes.Buffer
-		qpw := quotedprintable.NewWriter(&qpBuf)
-		if _, werr := qpw.Write(rewrittenHTML); werr != nil {
-			return nil, fmt.Errorf("extimg: qp write: %w", werr)
-		}
-		if cerr := qpw.Close(); cerr != nil {
-			return nil, fmt.Errorf("extimg: qp close: %w", cerr)
-		}
-		var hdrBuf bytes.Buffer
-		fmt.Fprintf(&hdrBuf, "Content-Type: text/html; charset=%q\r\n", charset)
-		hdrBuf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
-		hdrBuf.WriteString("\r\n")
-		return []io.Reader{&hdrBuf, &qpBuf}, nil
-	}
-
-	// Wrap in multipart/related sub-container.
-	boundary := sMakeBoundary()
-	var buf bytes.Buffer
-	// Part headers for the multipart/related sub-container.
-	fmt.Fprintf(&buf, "Content-Type: multipart/related; boundary=%q\r\n", boundary)
-	buf.WriteString("\r\n")
-	// First child of the sub-container: HTML.
-	fmt.Fprintf(&buf, "--%s\r\n", boundary)
-	// QP-encode HTML.
 	var qpBuf bytes.Buffer
 	qpw := quotedprintable.NewWriter(&qpBuf)
-	if _, werr := qpw.Write(rewrittenHTML); werr != nil {
+	if _, werr := qpw.Write(nextLeafHTML(leafHTML, cursor)); werr != nil {
 		return nil, fmt.Errorf("extimg: qp write: %w", werr)
 	}
 	if cerr := qpw.Close(); cerr != nil {
 		return nil, fmt.Errorf("extimg: qp close: %w", cerr)
 	}
-	fmt.Fprintf(&buf, "Content-Type: text/html; charset=%q\r\n", charset)
-	buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
-	buf.WriteString("\r\n")
-	buf.Write(qpBuf.Bytes())
-	buf.WriteString("\r\n")
-	// Inline images.
-	appendInlineParts(&buf, inlines, boundary)
-	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
-	return []io.Reader{&buf}, nil
+	var hdrBuf bytes.Buffer
+	fmt.Fprintf(&hdrBuf, "Content-Type: text/html; charset=%q\r\n", charset)
+	hdrBuf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+	hdrBuf.WriteString("\r\n")
+	return []io.Reader{&hdrBuf, &qpBuf}, nil
 }
 
 // buildMultipartChildBlock builds a self-contained MIME part block for a
@@ -498,10 +657,12 @@ func buildHTMLChildBlock(p mailparse.Part, rewrittenHTML []byte, inlines []inlin
 func buildMultipartChildBlock(
 	src io.ReaderAt,
 	p mailparse.Part,
-	rewrittenHTML []byte,
-	inlines []inlinePart,
+	path []int,
+	leafHTML [][]byte,
+	cursor *int,
+	groups map[string][]inlinePart,
 ) ([]io.Reader, error) {
-	bodyReaders, ct, berr := buildMultipartBody(src, p, rewrittenHTML, inlines)
+	bodyReaders, ct, berr := buildMultipartBody(src, p, path, leafHTML, cursor, groups)
 	if berr != nil {
 		return nil, berr
 	}

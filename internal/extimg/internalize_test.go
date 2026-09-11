@@ -772,6 +772,230 @@ func collectContentIDsWithSuffix(root mailparse.Part, suffix string) []string {
 	return out
 }
 
+// collectHTMLLeafTexts walks the part tree and returns the decoded Text
+// of every text/html leaf.
+func collectHTMLLeafTexts(root mailparse.Part) []string {
+	var out []string
+	var walk func(p mailparse.Part)
+	walk = func(p mailparse.Part) {
+		if len(p.Children) == 0 {
+			if strings.EqualFold(p.ContentType, "text/html") {
+				out = append(out, p.Text)
+			}
+			return
+		}
+		for _, c := range p.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	return out
+}
+
+// sharedImageRelatedHTML builds the issue #324 ticket shape: a
+// multipart/related whose first child is a multipart/alternative
+// (text/plain + text/html referencing imgURL) and whose second child
+// is a sibling top-level text/html also referencing imgURL. Both HTML
+// leaves sit under the same enclosing multipart/related.
+func sharedImageRelatedHTML(imgURL string) []byte {
+	return []byte("From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: dup test\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/related; boundary=\"REL\"\r\n" +
+		"\r\n" +
+		"--REL\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"ALT\"\r\n" +
+		"\r\n" +
+		"--ALT\r\n" +
+		"Content-Type: text/plain\r\n" +
+		"\r\n" +
+		"plain fallback\r\n" +
+		"--ALT\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body><img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--ALT--\r\n" +
+		"--REL\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body>top-level dup <img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--REL--\r\n")
+}
+
+// sharedImageDisjointSubtreesHTML builds a second shape where the two
+// HTML leaves referencing the same remote image are NOT enclosed by
+// any multipart/related: a multipart/mixed with two sibling
+// text/html children, no related container anywhere in the tree.
+func sharedImageDisjointSubtreesHTML(imgURL string) []byte {
+	return []byte("From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: dup test disjoint\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"MIX\"\r\n" +
+		"\r\n" +
+		"--MIX\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body>leaf one <img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--MIX\r\n" +
+		"Content-Type: text/html\r\n" +
+		"\r\n" +
+		"<html><body>leaf two <img src=\"" + imgURL + "\"></body></html>\r\n" +
+		"--MIX--\r\n")
+}
+
+// assertOneImageResolvedByEveryHTMLLeaf re-parses out with mailparse
+// and asserts: exactly one part carries a freshly-minted ("@herold")
+// Content-ID, and every text/html leaf in the tree that originally
+// referenced imgURL now contains a cid: reference to that same id
+// (issue #324: an image is emitted exactly once and every referencing
+// leaf resolves to it).
+func assertOneImageResolvedByEveryHTMLLeaf(t *testing.T, out []byte, wantReferencingLeaves int) {
+	t.Helper()
+	parsed, perr := mailparse.Parse(bytes.NewReader(out), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse(rebuilt): %v\n--- rebuilt ---\n%s", perr, out)
+	}
+	cids := collectContentIDsWithSuffix(parsed.Body, "@herold")
+	if len(cids) != 1 {
+		t.Fatalf("found %d parts with a freshly-minted Content-ID, want exactly 1; cids=%v\n--- rebuilt ---\n%s", len(cids), cids, out)
+	}
+	cid := strings.Trim(cids[0], "<>")
+
+	texts := collectHTMLLeafTexts(parsed.Body)
+	resolved := 0
+	for _, txt := range texts {
+		if strings.Contains(txt, "cid:"+cid) {
+			resolved++
+		}
+	}
+	if resolved != wantReferencingLeaves {
+		t.Fatalf("HTML leaves resolving to cid:%s = %d, want %d (leaves=%v)", cid, resolved, wantReferencingLeaves, texts)
+	}
+}
+
+// TestInternalizeReader_SharedImageAcrossHTMLRepresentations covers
+// the issue #324 duplicate-Content-ID defect on the streaming
+// delivery path (the one production message 3400 actually goes
+// through: internal/protosmtp/deliver.go calls InternalizeReader, not
+// the non-streaming Internalize). Pre-fix, buildMultipartBody emitted
+// the fetched image once per HTML leaf found by buildHTMLChildBlock
+// plus once more at the enclosing multipart/related, producing THREE
+// parts sharing one minted Content-ID. Post-fix: exactly one image
+// part, referenced by both HTML leaves.
+func TestInternalizeReader_SharedImageAcrossHTMLRepresentations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+	imgURL := srv.URL + "/shared.png"
+	raw := sharedImageRelatedHTML(imgURL)
+
+	parsedMsg, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse: %v", perr)
+	}
+
+	outReader, sum, err := InternalizeReader(context.Background(), bytes.NewReader(raw), int64(len(raw)), parsedMsg, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("InternalizeReader: %v", err)
+	}
+	if !sum.Modified {
+		t.Fatalf("expected Modified=true; sum=%+v", sum)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1 (one unique remote URL); sum=%+v", sum.Internalized, sum)
+	}
+	out, rerr := io.ReadAll(outReader)
+	if rerr != nil {
+		t.Fatalf("read output: %v", rerr)
+	}
+
+	assertOneImageResolvedByEveryHTMLLeaf(t, out, 2)
+}
+
+// TestInternalizeReader_SharedImageAcrossDisjointSubtrees covers the
+// shape where the HTML leaves referencing the same image are NOT
+// under one common multipart/related container (a multipart/mixed
+// with two sibling text/html children, no related anywhere): the
+// lowest common ancestor (the mixed container, i.e. the message root)
+// is not itself multipart/related, so the fix must wrap it in a
+// synthetic one rather than emit per-leaf.
+func TestInternalizeReader_SharedImageAcrossDisjointSubtrees(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+	imgURL := srv.URL + "/shared.png"
+	raw := sharedImageDisjointSubtreesHTML(imgURL)
+
+	parsedMsg, perr := mailparse.Parse(bytes.NewReader(raw), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse: %v", perr)
+	}
+
+	outReader, sum, err := InternalizeReader(context.Background(), bytes.NewReader(raw), int64(len(raw)), parsedMsg, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("InternalizeReader: %v", err)
+	}
+	if !sum.Modified {
+		t.Fatalf("expected Modified=true; sum=%+v", sum)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1 (one unique remote URL); sum=%+v", sum.Internalized, sum)
+	}
+	out, rerr := io.ReadAll(outReader)
+	if rerr != nil {
+		t.Fatalf("read output: %v", rerr)
+	}
+
+	assertOneImageResolvedByEveryHTMLLeaf(t, out, 2)
+}
+
+// TestInternalize_SharedImageAcrossDisjointSubtrees is the
+// non-streaming Internalize() counterpart to
+// TestInternalizeReader_SharedImageAcrossDisjointSubtrees, run
+// against the same MIME shape, so both entry points are pinned
+// against the same set of shapes (issue #324).
+func TestInternalize_SharedImageAcrossDisjointSubtrees(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(pngBytes())
+	}))
+	defer srv.Close()
+
+	cfg := testFetcherCfg(t, srv)
+	imgURL := srv.URL + "/shared.png"
+	raw := sharedImageDisjointSubtreesHTML(imgURL)
+
+	out, sum, err := Internalize(context.Background(), raw, cfg, DKIMVerdict{})
+	if err != nil {
+		t.Fatalf("Internalize: %v", err)
+	}
+	if !sum.Modified {
+		t.Fatalf("expected Modified=true; sum=%+v", sum)
+	}
+	if sum.Internalized != 1 {
+		t.Fatalf("Internalized=%d, want 1; sum=%+v", sum.Internalized, sum)
+	}
+
+	parsed, perr := mailparse.Parse(bytes.NewReader(out), mailparse.NewParseOptions())
+	if perr != nil {
+		t.Fatalf("mailparse.Parse(rebuilt): %v", perr)
+	}
+	cids := collectContentIDsWithSuffix(parsed.Body, "@herold")
+	if len(cids) != 1 {
+		t.Fatalf("found %d parts with a freshly-minted Content-ID, want exactly 1; cids=%v", len(cids), cids)
+	}
+}
+
 // silence unused imports when the test set narrows
 var (
 	_ = io.ReadAll

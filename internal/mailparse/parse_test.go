@@ -2,6 +2,7 @@ package mailparse
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -198,6 +199,108 @@ func TestParseRoundTripText(t *testing.T) {
 				t.Errorf("round-trip mismatch:\nfirst:  %q\nsecond: %q", m1.Body.Text, m2.Body.Text)
 			}
 		})
+	}
+}
+
+// pngBytesForFallbackTest is a minimal 1x1 PNG, used to build a
+// base64-encoded body for TestFallbackContentType_Base64PartDefaultsToOctetStream.
+func pngBytesForFallbackTest() []byte {
+	return []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+		0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+		0x42, 0x60, 0x82,
+	}
+}
+
+// TestFallbackContentType_Base64PartDefaultsToOctetStream covers issue
+// #324's read-time tolerance: a multipart child whose Content-Type
+// header is unparseable (empty subtype, e.g. the malformed
+// "Content-Type: image/" a remote image origin sent, which extimg wrote
+// onto the rebuilt part verbatim pre-fix) and whose
+// Content-Transfer-Encoding is base64 must default to
+// application/octet-stream, not the RFC 2045 text/plain default -- so
+// the part is treated as opaque binary (IsText()==false, no Text
+// decoded) rather than having its raw binary bytes charset-converted
+// and exposed as body text (or, under StrictCharset, rejecting the
+// whole message outright because binary bytes don't decode cleanly as
+// us-ascii).
+func TestFallbackContentType_Base64PartDefaultsToOctetStream(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString(pngBytesForFallbackTest())
+	var body strings.Builder
+	body.WriteString("--BOUND\r\n")
+	body.WriteString("Content-Type: image/\r\n") // empty subtype: unparseable
+	body.WriteString("Content-Transfer-Encoding: base64\r\n")
+	body.WriteString("Content-Disposition: inline\r\n")
+	body.WriteString("Content-ID: <img@herold>\r\n")
+	body.WriteString("\r\n")
+	body.WriteString(b64)
+	body.WriteString("\r\n--BOUND--\r\n")
+
+	raw := "From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: malformed image content-type\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/related; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		body.String()
+
+	msg, err := Parse(strings.NewReader(raw), NewParseOptions())
+	if err != nil {
+		t.Fatalf("Parse: %v (pre-fix this fails: RFC2045 text/plain default + StrictCharset rejects binary bytes as invalid us-ascii)", err)
+	}
+	if len(msg.Body.Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(msg.Body.Children))
+	}
+	part := msg.Body.Children[0]
+	if part.ContentType != "application/octet-stream" {
+		t.Errorf("ContentType=%q, want application/octet-stream", part.ContentType)
+	}
+	if part.IsText() {
+		t.Errorf("IsText()=true, want false -- a binary part must not be read as body text")
+	}
+	if part.Text != "" {
+		t.Errorf("Text=%q, want empty -- non-text parts are not decoded into Text", part.Text)
+	}
+}
+
+// TestFallbackContentType_NonBase64PartKeepsRFC2045Default pins the
+// boundary of the issue #324 fallback change: a part with an
+// unparseable Content-Type but a non-base64 (or absent)
+// Content-Transfer-Encoding keeps the existing RFC 2045 §5.2
+// text/plain;charset=us-ascii default -- only a declared base64 body
+// is treated as opaque binary.
+func TestFallbackContentType_NonBase64PartKeepsRFC2045Default(t *testing.T) {
+	raw := "From: alice@example.com\r\n" +
+		"To: bob@example.com\r\n" +
+		"Subject: malformed content-type, plain text body\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: bogus/\r\n" +
+		"\r\n" +
+		"hello there\r\n" +
+		"--BOUND--\r\n"
+
+	msg, err := Parse(strings.NewReader(raw), NewParseOptions())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(msg.Body.Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(msg.Body.Children))
+	}
+	part := msg.Body.Children[0]
+	if part.ContentType != "text/plain" {
+		t.Errorf("ContentType=%q, want text/plain (RFC2045 default preserved for non-base64 bodies)", part.ContentType)
+	}
+	if part.Text != "hello there" {
+		t.Errorf("Text=%q, want %q", part.Text, "hello there")
 	}
 }
 

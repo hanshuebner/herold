@@ -226,9 +226,7 @@ func (w *mimeWalker) parseMessage() (Message, error) {
 	// Parse top-level Content-Type.
 	ct, ctParams, ctErr := parseContentType(hdrs.Get("Content-Type"))
 	if ctErr != nil || ct == "" {
-		// RFC 2045 §5.2: no Content-Type defaults to text/plain; charset=us-ascii.
-		ct = "text/plain"
-		ctParams = map[string]string{"charset": "us-ascii"}
+		ct, ctParams = fallbackContentType(hdrs.Get("Content-Transfer-Encoding"))
 	}
 
 	bodyLen := int64(len(w.raw)) - bodyStart
@@ -399,8 +397,7 @@ func (w *mimeWalker) walkMultipart(bodySlice []byte, bodyBaseOff int64, boundary
 
 		partCT, partCTParams, partCTErr := parseContentType(partHdrs.Get("Content-Type"))
 		if partCTErr != nil || partCT == "" {
-			partCT = "text/plain"
-			partCTParams = map[string]string{"charset": "us-ascii"}
+			partCT, partCTParams = fallbackContentType(partHdrs.Get("Content-Transfer-Encoding"))
 		}
 
 		absBodyOff := bodyBaseOff + sp.bodyStart
@@ -826,6 +823,40 @@ func convertCharset(src []byte, charset string) ([]byte, error) {
 		return nil, fmt.Errorf("charset decode %q: %w", charset, err)
 	}
 	return decoded, nil
+}
+
+// fallbackContentType returns the Content-Type to assume for a part (or
+// the whole message) whose own Content-Type header is missing or fails to
+// parse, given that part's raw Content-Transfer-Encoding value.
+//
+// RFC 2045 §5.2 defaults an absent Content-Type to text/plain;
+// charset=us-ascii, and that remains the default here for anything that
+// isn't declared base64. A base64-encoded body under an invalid Content-
+// Type, though, is virtually never legitimate 7-bit text -- it is the
+// signature of a binary payload whose header got mangled (issue #324: a
+// remote image server answering the malformed "Content-Type: image/"
+// header, which extimg's internalizer wrote onto the rebuilt part
+// unchanged pre-fix). Running such bytes through the text/plain decode
+// path either silently misrepresents an opaque binary payload as body
+// text, or -- under ParseOptions.StrictCharset -- fails the parse
+// outright when the bytes don't happen to decode cleanly as the declared
+// charset. Defaulting to application/octet-stream instead makes the part
+// an opaque binary leaf: no charset conversion runs, and Part.IsText()
+// correctly reports false, so callers that build a message's body
+// preview, extracted text, or classifier excerpt from "the text parts"
+// skip it instead of reading raw image bytes as text.
+//
+// This is a read-time tolerance, not a migration: it changes how a
+// stored message is *parsed* going forward. A message already stored
+// with a mislabelled-and-duplicated part is unaffected by any earlier
+// audit/log entry recorded at ingest time, and needs its own repair pass
+// if one is warranted (see issue #324's analysis comment for the
+// prevention-vs-repair distinction).
+func fallbackContentType(cte string) (mediaType string, params map[string]string) {
+	if strings.EqualFold(strings.TrimSpace(cte), "base64") {
+		return "application/octet-stream", nil
+	}
+	return "text/plain", map[string]string{"charset": "us-ascii"}
 }
 
 // parseContentType parses a Content-Type or Content-Disposition header value.
