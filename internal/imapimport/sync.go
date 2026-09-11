@@ -787,6 +787,15 @@ func (w *accountWorker) ingestMessage(
 	}
 
 	flags := storeFlagsFromIMAP(fm.Flags)
+	// A message imported into the \Sent-role mailbox is mail the principal
+	// sent; it carries no "unread from a correspondent" meaning regardless
+	// of the upstream \Seen flag. Force $seen the same way the
+	// EmailSubmission Sent-copy path does, so a Sent item mirrored back
+	// through IMAP import never renders a thread row bold with the
+	// principal as sender (re #316).
+	if mb.Attributes&store.MailboxAttrSent != 0 {
+		flags |= store.MessageFlagSeen
+	}
 	target := store.MessageMailbox{
 		MailboxID: mb.ID,
 		Flags:     flags,

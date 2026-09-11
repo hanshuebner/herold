@@ -1088,6 +1088,55 @@ func TestFlagsPreservedOnIngest(t *testing.T) {
 	}
 }
 
+// TestOwnSentImportMarkedSeen verifies that a message imported into the
+// \Sent-role herold mailbox is always stored with $seen (re #316), even
+// when the upstream copy carries no \Seen flag. A byte-identical copy the
+// principal sent — arriving back through IMAP import rather than through
+// the EmailSubmission Sent-copy path — has no "unread from a correspondent"
+// meaning; without this, the imported copy renders the thread row bold with
+// the principal as sender in the suite (re #316).
+func TestOwnSentImportMarkedSeen(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("u20", "pw")
+	if err := u.Create("Sent", nil); err != nil {
+		t.Fatalf("Create Sent: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+
+	d := time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)
+	raw := buildRFC822("own-sent-unseen@test", "Own Sent Unseen", d)
+	// Append to the upstream Sent folder with NO \Seen flag -- the
+	// condition the reported bug depends on.
+	appendToServer(t, ts, "u20", "pw", "Sent", raw, nil, d)
+
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u20@example.test",
+		username:            "u20",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	ctx := context.Background()
+	mbID := getMailboxID(t, ha.Store, acc.PrincipalID, "Sent")
+	if mbID == 0 {
+		t.Fatal("Sent mailbox not found")
+	}
+	msgs, err := ha.Store.Meta().ListMessages(ctx, mbID, store.MessageFilter{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Flags&store.MessageFlagSeen == 0 {
+		t.Error("message imported into the Sent mailbox is missing $seen even though upstream lacked \\Seen (re #316)")
+	}
+}
+
 // TestInternalDatePreserved verifies that the upstream INTERNALDATE is
 // used as both InternalDate and ReceivedAt in the herold store.
 func TestInternalDatePreserved(t *testing.T) {
