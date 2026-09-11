@@ -9,13 +9,27 @@ import (
 	"github.com/hanshuebner/herold/internal/store"
 )
 
-// TestDelivery_SeparatedIdentityAlias_RoutesToSubAccount exercises the
-// full REQ-SUBACCT-07 path (issue #312): local SMTP delivery to a
-// hosted alias address equal to a separated identity's email lands in
-// the sub-account's INBOX and is absent from the parent's, and reverts
-// to the parent's INBOX once the sub-account is removed with
-// keep-mail.
-func TestDelivery_SeparatedIdentityAlias_RoutesToSubAccount(t *testing.T) {
+// TestDelivery_SeparatedIdentityCanonicalEmail_RoutesToSubAccount is a
+// regression guard for the REQ-SUBACCT-07 delivery path (issue #312):
+// local SMTP delivery to a hosted address equal to a separated
+// identity's email lands in the sub-account's INBOX and is absent from
+// the parent's, and reverts to the parent's INBOX once the sub-account
+// is removed with keep-mail.
+//
+// This is the canonical-email lookup carrying the delivery, not the
+// alias row: store.SeparateIdentity gives the sub-principal its own
+// canonical email equal to identity.Email, and
+// directory.ResolveAddress checks GetPrincipalByEmail (canonical)
+// before it ever consults an alias row, so the routing this test
+// observes over the wire would hold even for an identity with no alias
+// row at all. The alias row this test also sets up is retargeted by
+// store.SeparateIdentity/RemoveSubAccount as a consistency fix for
+// ResolveAlias, the admin alias views and the audit trail (verified
+// directly in internal/store/storetest); this test additionally reads
+// ResolveAlias after separation so it observes that side effect too,
+// but that read is not what makes the SMTP delivery below land where
+// it does.
+func TestDelivery_SeparatedIdentityCanonicalEmail_RoutesToSubAccount(t *testing.T) {
 	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn})
 	ctx := context.Background()
 
@@ -45,6 +59,12 @@ func TestDelivery_SeparatedIdentityAlias_RoutesToSubAccount(t *testing.T) {
 		t.Fatalf("SeparateIdentity: %v", err)
 	}
 	subID := mig.SubPrincipalID
+
+	// The alias row itself also follows the identity (re #312): checked
+	// here as a side observation, not as what routes the delivery below.
+	if got, err := f.ha.Store.Meta().ResolveAlias(ctx, "board", "example.test"); err != nil || got != subID {
+		t.Fatalf("ResolveAlias after separate = (%d, %v), want (%d, nil)", got, err, subID)
+	}
 
 	deliver := func(subject, body string) {
 		t.Helper()

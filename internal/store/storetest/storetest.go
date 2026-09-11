@@ -97,6 +97,7 @@ func Run(t *testing.T, f Factory) {
 		{"SubAccountMigration_SeparateRetargetsAlias_TwoDomains", testSubAccountMigration_SeparateRetargetsAlias_TwoDomains},
 		{"SubAccountMigration_RemoveKeepRetargetsAliasBack", testSubAccountMigration_RemoveKeepRetargetsAliasBack},
 		{"SubAccountMigration_RemovePurgeRetargetsAliasBack", testSubAccountMigration_RemovePurgeRetargetsAliasBack},
+		{"SubAccountMigration_AliasTargetFollowsLifecycle", testSubAccountMigration_AliasTargetFollowsLifecycle},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
 		{"BlobDedup", testBlobDedup},

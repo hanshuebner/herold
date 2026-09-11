@@ -215,11 +215,27 @@ func SeparateIdentity(ctx context.Context, st Store, parentID PrincipalID, ident
 		return SubAccountMigration{}, err
 	}
 
-	// Retarget any alias row for the identity's own address so local
-	// SMTP delivery to it lands in the sub-account's INBOX rather than
-	// the parent's (REQ-SUBACCT-07). A no-op when no such alias row
-	// exists; re-running against an already-separated identity finds
-	// the rows already pointed at sub.ID and leaves them unchanged.
+	// Retarget any alias row for the identity's own address to the
+	// sub-principal (REQ-SUBACCT-07). This is a consistency fix for the
+	// alias table itself, not the delivery path: local SMTP delivery to
+	// the identity's address already reaches the sub-account through
+	// directory.ResolveAddress's canonical-email check, which runs
+	// before alias resolution and matches the sub-principal's own
+	// canonical email (set to identity.Email above). Without this step,
+	// ResolveAlias, the admin alias views and the audit trail would keep
+	// reporting the parent as the target of an address whose mail the
+	// sub-account now receives.
+	//
+	// This call and the identity/account rebinds below are separate
+	// idempotent steps against the store, not one transaction: each
+	// tolerates being re-applied, so a crash between any two of them is
+	// recovered simply by calling SeparateIdentity again (the early
+	// GetSubAccountMigrationByIdentity check above only short-circuits
+	// once the whole sequence, including this retarget, has completed
+	// and the migration row is recorded at the end of this function; a
+	// partial prior run re-executes every step, each a no-op wherever it
+	// already converged). A no-op when the identity carries no alias row
+	// at all.
 	if local, domain, ok := splitLocalDomain(identity.Email); ok {
 		if err := st.Meta().RetargetAliasesByAddress(ctx, local, domain, sub.ID); err != nil {
 			return SubAccountMigration{}, err
@@ -524,14 +540,22 @@ func RemoveSubAccount(ctx context.Context, st Store, subID PrincipalID, purge bo
 	}
 
 	// Retarget any alias row SeparateIdentity pointed at the sub-account
-	// back to the parent (REQ-SUBACCT-07), before either branch touches
-	// the sub-principal row. This must happen ahead of the purge
+	// back to the parent (REQ-SUBACCT-07): a consistency fix for the
+	// alias table symmetric with SeparateIdentity's own retarget (see
+	// that function's comment for why the delivery path itself does not
+	// depend on this). Runs before either branch touches the
+	// sub-principal row, and specifically ahead of the purge
 	// DeletePrincipal call below: target_principal carries an ON DELETE
 	// CASCADE, so an alias row still pointed at subID would be destroyed
 	// along with the sub-principal rather than preserved and retargeted.
-	// A no-op when no such alias row exists; re-running against an
-	// already-removed sub-account (or one with no matching alias) is
-	// idempotent.
+	//
+	// A separate idempotent step, not part of one transaction with the
+	// deletion/rebind work that follows: a crash partway through is
+	// recovered by calling RemoveSubAccount again, which re-derives
+	// "already done" from current store state at every step (this
+	// retarget included -- re-running it against rows already pointed
+	// at parent.ID is a no-op) rather than from a persisted cursor. A
+	// no-op when no such alias row exists.
 	if local, domain, ok := splitLocalDomain(sub.CanonicalEmail); ok {
 		if err := st.Meta().RetargetAliasesByAddress(ctx, local, domain, parent.ID); err != nil {
 			return err

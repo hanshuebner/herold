@@ -1085,3 +1085,71 @@ func testSubAccountMigration_RemovePurgeRetargetsAliasBack(t *testing.T, s store
 		t.Fatalf("ResolveAlias after repeat purge = (%d, %v), want (%d, nil)", got, err, f.parent.ID)
 	}
 }
+
+// testSubAccountMigration_AliasTargetFollowsLifecycle is the REQ-SUBACCT-07
+// acceptance case (issue #312): ResolveAlias for an address routed by a
+// plain alias row must track the identity across separation and removal
+// -- the sub-principal right after SeparateIdentity, the parent again
+// after RemoveSubAccount, both for keep and for purge.
+//
+// This is a regression guard for store.SeparateIdentity's and
+// store.RemoveSubAccount's RetargetAliasesByAddress calls specifically,
+// not for delivery routing: ResolveAlias's alias-row branch is
+// evaluated before its canonical-email fallback, so as long as the
+// alias row exists it determines the answer regardless of which
+// principal's canonical email happens to match. Without the retarget,
+// this test fails: the alias row keeps target_principal on the parent
+// through separation (ResolveAlias returns the parent instead of the
+// sub-principal) and, after a keep-remove, stays wherever it last was
+// rather than being pointed back at the parent explicitly.
+func testSubAccountMigration_AliasTargetFollowsLifecycle(t *testing.T, s store.Store) {
+	t.Run("Keep", func(t *testing.T) {
+		ctx := ctxT(t)
+		f := newSeparationFixture(t, s, "aliasfollowkeep")
+		if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+			LocalPart: "aliasfollowkeep", Domain: "external.test", TargetPrincipal: f.parent.ID,
+		}); err != nil {
+			t.Fatalf("InsertAlias: %v", err)
+		}
+
+		mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+		if err != nil {
+			t.Fatalf("SeparateIdentity: %v", err)
+		}
+		if got, err := s.Meta().ResolveAlias(ctx, "aliasfollowkeep", "external.test"); err != nil || got != mig.SubPrincipalID {
+			t.Fatalf("ResolveAlias after separate = (%d, %v), want (%d, nil) -- sub-principal", got, err, mig.SubPrincipalID)
+		}
+
+		if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, false); err != nil {
+			t.Fatalf("RemoveSubAccount(keep): %v", err)
+		}
+		if got, err := s.Meta().ResolveAlias(ctx, "aliasfollowkeep", "external.test"); err != nil || got != f.parent.ID {
+			t.Fatalf("ResolveAlias after keep-remove = (%d, %v), want (%d, nil) -- parent", got, err, f.parent.ID)
+		}
+	})
+
+	t.Run("Purge", func(t *testing.T) {
+		ctx := ctxT(t)
+		f := newSeparationFixture(t, s, "aliasfollowpurge")
+		if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+			LocalPart: "aliasfollowpurge", Domain: "external.test", TargetPrincipal: f.parent.ID,
+		}); err != nil {
+			t.Fatalf("InsertAlias: %v", err)
+		}
+
+		mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+		if err != nil {
+			t.Fatalf("SeparateIdentity: %v", err)
+		}
+		if got, err := s.Meta().ResolveAlias(ctx, "aliasfollowpurge", "external.test"); err != nil || got != mig.SubPrincipalID {
+			t.Fatalf("ResolveAlias after separate = (%d, %v), want (%d, nil) -- sub-principal", got, err, mig.SubPrincipalID)
+		}
+
+		if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, true); err != nil {
+			t.Fatalf("RemoveSubAccount(purge): %v", err)
+		}
+		if got, err := s.Meta().ResolveAlias(ctx, "aliasfollowpurge", "external.test"); err != nil || got != f.parent.ID {
+			t.Fatalf("ResolveAlias after purge = (%d, %v), want (%d, nil) -- parent (row survives the cascade)", got, err, f.parent.ID)
+		}
+	})
+}
