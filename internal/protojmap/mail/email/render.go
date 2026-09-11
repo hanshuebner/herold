@@ -337,7 +337,7 @@ func renderFull(
 	out.HTMLBody = htmlParts
 	out.Attachments = attParts
 	out.HasAttachment = hasRealAttachment(attParts)
-	out.Preview = previewFromValues(values, textParts, 256)
+	out.Preview = previewFromValues(values, textParts, htmlParts, 256)
 	return out, nil
 }
 
@@ -697,47 +697,72 @@ func fillMissing(t []bodyPart, h []bodyPart) ([]bodyPart, []bodyPart) {
 	return t, h
 }
 
-// previewFromValues returns the first n runes of the leftmost text body
-// value, used as the JMAP "preview" property. When the leftmost textParts
-// entry's actual type is text/html -- either a genuine text/html leaf, or a
-// text/html leaf promoted into textParts by resolveBodyLists's RFC 8621
-// §4.1.4 symmetric fill (re #258) for a message with no text/plain part --
-// the value is run through mailparse.ExtractTextFromHTML, matching
-// mailparse.BodyPreview's fallback (re #263). A genuine text/plain value is
-// run through mailparse.CollapseWhitespace, the same whitespace policy
-// ExtractTextFromHTML applies, so the preview is a clean single-line
-// snippet and agrees byte-for-byte with mailparse.BodyPreview regardless of
-// the value's line endings (CRLF, LF, or RFC 3676 format=flowed reflow
-// output; re #265).
-func previewFromValues(values map[string]bodyValue, textParts []bodyPart, n int) string {
-	if len(textParts) == 0 {
-		return ""
+// previewFromValues returns the first n runes of the leftmost usable text
+// body value, used as the JMAP "preview" property. It walks textParts in
+// order looking for a genuine text/plain candidate whose decoded content
+// passes mailparse.LooksLikeText (re #325 -- a text/plain-labelled leaf
+// that is actually binary, such as an inline image mislabelled by the #324
+// extimg defect, is skipped in favour of the next candidate) and yields
+// non-empty text once run through mailparse.CollapseWhitespace, the same
+// whitespace policy ExtractTextFromHTML applies, so the preview agrees
+// byte-for-byte with mailparse.BodyPreview regardless of the value's line
+// endings (CRLF, LF, or RFC 3676 format=flowed reflow output; re #265).
+//
+// When no text/plain candidate yields text, it falls back to htmlParts,
+// extracting text from the leftmost text/html leaf (tags stripped, entities
+// decoded, comments/script/style removed) via mailparse.ExtractTextFromHTML
+// -- either a genuine text/html leaf, or a text/html leaf promoted into
+// textParts/htmlParts by resolveBodyLists's RFC 8621 §4.1.4 symmetric fill
+// (re #258) for a message with no text/plain part -- matching
+// mailparse.BodyPreview's fallback (re #263). If nothing yields text, the
+// result is "".
+func previewFromValues(values map[string]bodyValue, textParts, htmlParts []bodyPart, n int) string {
+	for _, part := range textParts {
+		if strings.EqualFold(part.Type, "text/html") {
+			continue
+		}
+		v, ok := previewValueFor(values, part.PartID)
+		if !ok || !mailparse.LooksLikeText(v.Value) {
+			continue
+		}
+		if s := mailparse.CollapseWhitespace(v.Value); s != "" {
+			return truncatePreview(s, n)
+		}
 	}
-	part := textParts[0]
-	partID := part.PartID
+	for _, part := range htmlParts {
+		if !strings.EqualFold(part.Type, "text/html") {
+			continue
+		}
+		v, ok := previewValueFor(values, part.PartID)
+		if !ok {
+			continue
+		}
+		if s := mailparse.ExtractTextFromHTML(v.Value); s != "" {
+			return truncatePreview(s, n)
+		}
+	}
+	return ""
+}
+
+// previewValueFor looks up the bodyValue for partID, reporting false when
+// partID is nil or absent from values.
+func previewValueFor(values map[string]bodyValue, partID *string) (bodyValue, bool) {
 	if partID == nil {
-		return ""
+		return bodyValue{}, false
 	}
 	v, ok := values[*partID]
-	if !ok {
-		return ""
-	}
-	var s string
-	if strings.EqualFold(part.Type, "text/html") {
-		s = mailparse.ExtractTextFromHTML(v.Value)
-	} else {
-		s = mailparse.CollapseWhitespace(v.Value)
-	}
-	if len(s) <= n {
+	return v, ok
+}
+
+// truncatePreview trims s to at most n bytes, walking back to a rune
+// boundary so a multi-byte codepoint is never split.
+func truncatePreview(s string, n int) string {
+	if n <= 0 || len(s) <= n {
 		return s
 	}
-	// Trim at a rune boundary so we never split a multi-byte codepoint.
-	if n > 0 && n < len(s) {
-		s = s[:n]
-		// Walk back to a valid rune boundary.
-		for len(s) > 0 && (s[len(s)-1]&0xC0) == 0x80 {
-			s = s[:len(s)-1]
-		}
+	s = s[:n]
+	for len(s) > 0 && (s[len(s)-1]&0xC0) == 0x80 {
+		s = s[:len(s)-1]
 	}
 	return s
 }

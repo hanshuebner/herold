@@ -186,7 +186,7 @@ func (p *parseHandler) Execute(ctx context.Context, args json.RawMessage) (any, 
 			jm.HTMLBody = htmlParts
 			jm.Attachments = attParts
 			jm.HasAttachment = hasRealAttachment(attParts)
-			jm.Preview = previewFromValues(values, textParts, 256)
+			jm.Preview = previewFromValues(values, textParts, htmlParts, 256)
 		}
 		// Wrap in jmapParsedEmail which renders server-set fields as null.
 		resp.Parsed[blobID] = jmapParsedEmail{jm}

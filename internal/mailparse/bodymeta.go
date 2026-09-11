@@ -5,12 +5,13 @@ import (
 )
 
 // BodyPreview returns the first n runes of the leftmost text/plain body
-// part's decoded text, or -- when the message has no text/plain part at all
-// -- the first n runes of text extracted from the leftmost text/html body
-// part (tags stripped, entities decoded, comments/script/style removed; see
-// ExtractTextFromHTML). This is the canonical computation for the RFC 8621
-// Email.preview field so that ingest, the background body-meta backfill
-// worker, and the metadata-only render path (previewFromValues in
+// part's decoded text, or -- when the message has no text/plain part at all,
+// or every text/plain candidate's decoded content fails LooksLikeText (re
+// #325) -- the first n runes of text extracted from the leftmost text/html
+// body part (tags stripped, entities decoded, comments/script/style
+// removed; see ExtractTextFromHTML). This is the canonical computation for
+// the RFC 8621 Email.preview field so that ingest, the background body-meta
+// backfill worker, and the metadata-only render path (previewFromValues in
 // internal/protojmap/mail/email/render.go) all produce identical values,
 // for both the genuine-text/plain case and the HTML-only case (re #263),
 // and regardless of the source text's line endings (re #265).
@@ -41,14 +42,16 @@ func BodyPreview(m Message, n int) string {
 }
 
 // firstNonAttachmentTextPlain returns the Text of the leftmost text/plain leaf
-// that is not a Content-Disposition: attachment. Returns "" when no such part
-// exists.
+// that is not a Content-Disposition: attachment and whose decoded content
+// passes LooksLikeText. A text/plain-labelled leaf whose content is actually
+// binary (re #325) is skipped in favour of the next candidate, exactly like
+// an empty leaf is skipped today. Returns "" when no such part exists.
 func firstNonAttachmentTextPlain(p Part) string {
 	if len(p.Children) == 0 {
 		if p.Disposition == DispositionAttachment {
 			return ""
 		}
-		if strings.EqualFold(p.ContentType, "text/plain") {
+		if strings.EqualFold(p.ContentType, "text/plain") && LooksLikeText(p.Text) {
 			return p.Text
 		}
 		return ""

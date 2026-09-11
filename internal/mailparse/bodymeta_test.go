@@ -147,6 +147,102 @@ func TestBodyPreview_MultipartAlternative(t *testing.T) {
 	}
 }
 
+// parseLenientTestMsg parses raw with the lenient options the ingest and
+// background body-meta backfill paths use in production
+// (mailparse.NewLenientParseOptions, per internal/bodymeta/worker.go). A
+// declared charset that does not decode cleanly -- as happens when a
+// binary payload is defaulted to "text/plain; charset=us-ascii" per RFC
+// 2045 (re #324) -- is an encoding-problem flag, not a parse error, under
+// these options; parseTestMsg's stricter defaults would reject the fixture
+// before BodyPreview ever saw it.
+func parseLenientTestMsg(t *testing.T, raw string) mailparse.Message {
+	t.Helper()
+	msg, err := mailparse.Parse(strings.NewReader(raw), mailparse.NewLenientParseOptions())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return msg
+}
+
+// pngLeafMsg builds a multipart/related message shaped like herold issue
+// #325's store message 3400: a multipart/alternative whose genuine
+// text/plain part decodes to plainAlt (empty, or whitespace-only) alongside
+// a text/html part, plus a sibling leaf carrying a base64-encoded PNG
+// signature that is mislabelled text/plain (mirroring the #324 extimg
+// defect, which invalidates the Content-Type of an inline image so
+// mailparse defaults it to "text/plain; charset=us-ascii" per RFC 2045).
+// The PNG-labelled leaf precedes the alternative so that, pre-fix, it is
+// the first candidate BOTH mailparse.BodyPreview and
+// protojmap/mail/email.previewFromValues would select.
+func pngLeafMsg(plainAlt string) string {
+	return joinLines(
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: inline image mislabelled text/plain",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/related; boundary=\"rel\"",
+		"",
+		"--rel",
+		"Content-Type: text/plain; charset=us-ascii",
+		"Content-Transfer-Encoding: base64",
+		"Content-ID: <img1>",
+		"Content-Disposition: inline",
+		"",
+		"iVBORw0KGgoAAAANSUhEUg==", // base64 of the PNG signature + start of an IHDR chunk
+		"--rel",
+		"Content-Type: multipart/alternative; boundary=\"alt\"",
+		"",
+		"--alt",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		plainAlt,
+		"--alt",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<p>Reduce tus costos de embalaje desde hoy</p>",
+		"--alt--",
+		"--rel--",
+	)
+}
+
+// TestBodyPreview_SkipsMislabelledBinaryTextPlain verifies that BodyPreview
+// never surfaces the raw bytes of a text/plain-labelled leaf whose decoded
+// content is actually binary (re #325): it skips the PNG-signature leaf,
+// falls through the genuine-but-empty text/plain alternative (already
+// empty, so already skipped by the pre-existing empty-candidate check --
+// this settles the issue's "unverified" question: the genuine alternative
+// is skipped because it decodes to the empty string, not for any other
+// reason), and lands on the HTML-extracted text.
+func TestBodyPreview_SkipsMislabelledBinaryTextPlain(t *testing.T) {
+	msg := parseLenientTestMsg(t, pngLeafMsg(""))
+	got := mailparse.BodyPreview(msg, 256)
+	want := "Reduce tus costos de embalaje desde hoy"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	pngSig := "\x89PNG\r\n\x1a\n"
+	if strings.Contains(got, pngSig) || strings.Contains(got, "\x89PNG") {
+		t.Errorf("preview leaked the PNG signature: %q (bytes % x)", got, []byte(got))
+	}
+}
+
+// TestBodyPreview_SkipsMislabelledBinaryTextPlain_WhitespaceOnlyAlt is the
+// same fixture with a whitespace-only (rather than zero-byte) genuine
+// text/plain alternative, covering the issue's "empty or whitespace-only"
+// wording. CollapseWhitespace reduces the whitespace-only candidate to the
+// empty string, so it falls through exactly like the fully-empty case.
+func TestBodyPreview_SkipsMislabelledBinaryTextPlain_WhitespaceOnlyAlt(t *testing.T) {
+	msg := parseLenientTestMsg(t, pngLeafMsg("   \t  "))
+	got := mailparse.BodyPreview(msg, 256)
+	want := "Reduce tus costos de embalaje desde hoy"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\x89PNG") {
+		t.Errorf("preview leaked the PNG signature: %q (bytes % x)", got, []byte(got))
+	}
+}
+
 // TestBodyPreview_LimitRune verifies that BodyPreview matches the byte-truncation
 // semantics of previewFromValues in render.go: n is a byte limit; the walk-back
 // removes continuation bytes (mask 0x80) but not leading multi-byte bytes.

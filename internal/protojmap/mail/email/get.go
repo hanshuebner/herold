@@ -444,7 +444,7 @@ func renderFullWithProperties(
 	// Compute preview and hasAttachment from the parsed body. We always
 	// compute these so the opportunistic persist path below can call
 	// SetMessageBodyMeta regardless of what properties were requested.
-	computedPreview := previewFromValues(values, textParts, 256)
+	computedPreview := previewFromValues(values, textParts, htmlParts, 256)
 	computedHasAttachment := hasRealAttachment(attParts)
 
 	// Opportunistic persist: if the message has not yet had its body-meta
