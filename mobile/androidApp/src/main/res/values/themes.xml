@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+    The launch theme only carries the window background and system-bar
+    handling; every pixel after that is Compose Material 3 with dynamic
+    colour (ui/theme/Theme.kt).
+    -->
+    <style name="Theme.Herold" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

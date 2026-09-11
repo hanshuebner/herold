@@ -3,154 +3,140 @@ package com.netzhansa.herold.android
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
-import com.netzhansa.herold.shared.auth.InMemoryTokenStore
-import com.netzhansa.herold.shared.createHttpClient
-import com.netzhansa.herold.shared.domain.Mailbox
-import com.netzhansa.herold.shared.jmap.JmapClient
+import androidx.compose.ui.platform.testTag
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.netzhansa.herold.android.ui.common.collectAsStateSafely
+import com.netzhansa.herold.android.ui.inbox.InboxScreen
+import com.netzhansa.herold.android.ui.signin.SignInScreen
+import com.netzhansa.herold.android.ui.theme.HeroldTheme
+import com.netzhansa.herold.android.ui.thread.ThreadScreen
+import com.netzhansa.herold.shared.sync.SyncTypes
 import kotlinx.coroutines.launch
 
 /**
- * Phase 0 entry point (docs/design/android/implementation-plan.md
- * acceptance: "the app authenticates against dev-instance and renders the
- * account's mailbox list"). The base-URL/email/password fields are a plain
- * config surface for this phase, prefilled for the dev-instance emulator
- * path (10.0.2.2 reaches the host's loopback from the emulator); the system-
- * browser OAuth2 sign-in (REQ-AND-AUTH-01/02) and a polished login UX are
- * later increments.
+ * The single activity the whole shell lives in (REQ-AND-NAV-01). Predictive
+ * back comes from the platform: the activity opts into the back-gesture
+ * animation through `android:enableOnBackInvokedCallback` and Navigation
+ * Compose animates the popped destination.
  */
 class MainActivity : ComponentActivity() {
+    private val container: AppContainer by lazy { (application as HeroldApplication).container }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
-            HeroldApp()
+            HeroldTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    HeroldApp(container)
+                }
+            }
         }
     }
 }
 
-private sealed interface SignInState {
-    data object Idle : SignInState
-    data object Loading : SignInState
-    data class Success(val mailboxes: List<Mailbox>) : SignInState
-    data class Failure(val message: String) : SignInState
-}
-
+/**
+ * Sign-in or the mail shell, decided by whether a token is held. The local
+ * store is read either way, so a signed-in cold start paints the inbox
+ * before the first network call (REQ-AND-SYNC-03).
+ */
 @Composable
-fun HeroldApp() {
-    MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            SignInScreen()
-        }
-    }
-}
-
-@Composable
-private fun SignInScreen() {
-    var baseUrl by remember { mutableStateOf("http://10.0.2.2:8080") }
-    var email by remember { mutableStateOf("alice@example.local") }
-    var password by remember { mutableStateOf("testpass123...") }
-    var state by remember { mutableStateOf<SignInState>(SignInState.Idle) }
+fun HeroldApp(container: AppContainer) {
+    val session by container.session.collectAsStateSafely(null)
+    val restored by container.restored.collectAsStateSafely(false)
     val scope = rememberCoroutineScope()
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+    LaunchedEffect(Unit) { container.restore() }
+
+    val current = session
+    when {
+        !restored -> Box(
+            modifier = Modifier.fillMaxSize().testTag("app-restoring"),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(text = "herold", style = MaterialTheme.typography.headlineMedium)
+            CircularProgressIndicator()
+        }
 
-            OutlinedTextField(
-                value = baseUrl,
-                onValueChange = { baseUrl = it },
-                label = { Text("Base URL") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+        current == null -> SignInScreen(container)
 
-            Button(
-                onClick = {
-                    state = SignInState.Loading
-                    scope.launch {
-                        state = try {
-                            val httpClient = createHttpClient()
-                            val tokenStore = InMemoryTokenStore()
-                            val client = JmapClient(httpClient, baseUrl, tokenStore)
-                            client.signIn(email, password)
-                            SignInState.Success(client.fetchMailboxes())
-                        } catch (t: Throwable) {
-                            SignInState.Failure(t.message ?: "sign-in failed")
+        else -> {
+            val navController = rememberNavController()
+            ForegroundSync(session = current)
+            NavHost(navController = navController, startDestination = "inbox") {
+                composable("inbox") {
+                    InboxScreen(
+                        container = container,
+                        session = current,
+                        onOpenThread = { accountId, threadId ->
+                            navController.navigate("thread/$accountId/$threadId")
+                        },
+                        onSignOut = { scope.launch { container.signOut() } },
+                    )
+                }
+                composable(
+                    route = "thread/{accountId}/{threadId}",
+                    arguments = listOf(
+                        navArgument("accountId") { type = NavType.StringType },
+                        navArgument("threadId") { type = NavType.StringType },
+                    ),
+                ) { entry ->
+                    ThreadScreen(
+                        container = container,
+                        session = current,
+                        accountId = entry.arguments?.getString("accountId").orEmpty(),
+                        threadId = entry.arguments?.getString("threadId").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Holds the EventSource connection open while the shell is foregrounded and
+ * reconciles the named account when a `StateChange` arrives; the connection
+ * is dropped on background, where FCM becomes the wake channel
+ * (REQ-AND-SYNC-11, REQ-AND-NAV-21).
+ */
+@Composable
+private fun ForegroundSync(session: SessionScope) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(session) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                runCatching {
+                    session.eventSource.stateChanges().collect { event ->
+                        event.changed.forEach { (accountId, states) ->
+                            session.syncEngine.syncAccount(
+                                accountId,
+                                states.keys.filter { it in SyncTypes.ALL },
+                            )
                         }
                     }
-                },
-            ) {
-                Text("Sign in")
-            }
-
-            when (val current = state) {
-                is SignInState.Idle -> Unit
-                is SignInState.Loading -> CircularProgressIndicator()
-                is SignInState.Failure -> Text(
-                    text = "Error: ${current.message}",
-                    color = Color.Red,
-                )
-                is SignInState.Success -> MailboxList(current.mailboxes)
+                }
+                kotlinx.coroutines.delay(RECONNECT_DELAY_MS)
             }
         }
     }
 }
 
-@Composable
-private fun MailboxList(mailboxes: List<Mailbox>) {
-    LazyColumn {
-        items(mailboxes) { mailbox ->
-            ListItem(
-                headlineContent = { Text(mailbox.name) },
-                supportingContent = { Text("${mailbox.unreadEmails}/${mailbox.totalEmails} unread") },
-            )
-        }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-private fun HeroldAppPreview() {
-    HeroldApp()
-}
+private const val RECONNECT_DELAY_MS = 5_000L

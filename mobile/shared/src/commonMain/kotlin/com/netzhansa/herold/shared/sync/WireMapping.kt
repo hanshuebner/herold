@@ -77,6 +77,13 @@ internal fun WireEmail.toDomain(accountId: String): Email {
 }
 
 /**
+ * The wire-to-store mapping, public so a caller outside the engine - an
+ * instrumented test comparing the screen against the server - maps the same
+ * way the sync engine does.
+ */
+fun WireEmail.toStoreRow(accountId: String): Email = toDomain(accountId)
+
+/**
  * JMAP UTCDate ("2026-09-11T08:30:00Z") to epoch milliseconds. An
  * unparseable or absent value sorts oldest rather than failing the sync.
  */
