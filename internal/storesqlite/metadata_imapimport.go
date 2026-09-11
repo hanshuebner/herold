@@ -26,7 +26,8 @@ const imapImportAccountSelectCols = `
 // stays in sync across them.
 const imapImportMessageStateSelectCols = `
 	account_id, upstream_folder, upstream_uid,
-	herold_message_id, herold_mailbox_id, last_synced_flags, copied_message_id`
+	herold_message_id, herold_mailbox_id, last_synced_flags, copied_message_id,
+	mapped_mailbox_id`
 
 func scanIMAPImportAccount(row rowLike) (store.IMAPImportAccount, error) {
 	var (
@@ -572,9 +573,11 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		heroldMailboxID           int64
 		lastSyncedFlags           int32
 		copiedMessageID           int64
+		mappedMailboxID           int64
 	)
 	err := row.Scan(&accountID, &upstreamFolder, &upstreamUID,
-		&heroldMessageID, &heroldMailboxID, &lastSyncedFlags, &copiedMessageID)
+		&heroldMessageID, &heroldMailboxID, &lastSyncedFlags, &copiedMessageID,
+		&mappedMailboxID)
 	if err != nil {
 		return store.IMAPImportMessageState{}, mapErr(err)
 	}
@@ -586,6 +589,7 @@ func scanIMAPImportMessageState(row rowLike) (store.IMAPImportMessageState, erro
 		HeroldMailboxID: store.MailboxID(heroldMailboxID),
 		LastSyncedFlags: store.IMAPImportSyncedFlags(lastSyncedFlags),
 		CopiedMessageID: store.MessageID(copiedMessageID),
+		MappedMailboxID: store.MailboxID(mappedMailboxID),
 	}, nil
 }
 
@@ -594,15 +598,17 @@ func (m *metadata) UpsertIMAPImportMessageState(ctx context.Context, state store
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO imapimport_message_state
 			  (account_id, upstream_folder, upstream_uid,
-			   herold_message_id, herold_mailbox_id, last_synced_flags)
-			VALUES (?,?,?,?,?,?)
+			   herold_message_id, herold_mailbox_id, last_synced_flags,
+			   mapped_mailbox_id)
+			VALUES (?,?,?,?,?,?,?)
 			ON CONFLICT(account_id, upstream_folder, upstream_uid) DO UPDATE SET
 			  herold_message_id = excluded.herold_message_id,
 			  herold_mailbox_id = excluded.herold_mailbox_id,
-			  last_synced_flags = excluded.last_synced_flags`,
+			  last_synced_flags = excluded.last_synced_flags,
+			  mapped_mailbox_id = excluded.mapped_mailbox_id`,
 			state.AccountID, state.UpstreamFolder, int64(state.UpstreamUID),
 			int64(state.HeroldMessageID), int64(state.HeroldMailboxID),
-			int32(state.LastSyncedFlags),
+			int32(state.LastSyncedFlags), int64(state.MappedMailboxID),
 		)
 		return mapErr(err)
 	})

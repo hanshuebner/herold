@@ -273,8 +273,20 @@ type IMAPImportMessageState struct {
 	// HeroldMessageID is the store MessageID of the mirrored message.
 	HeroldMessageID MessageID
 	// HeroldMailboxID is the store MailboxID into which the message was
-	// placed.
+	// actually placed.
 	HeroldMailboxID MailboxID
+	// MappedMailboxID is the store MailboxID that UpstreamFolder maps to,
+	// independent of where the message was actually placed
+	// (HeroldMailboxID). The two diverge only when spam classification
+	// redirected a fresh INBOX-mapped insert to Junk (REQ-FILT-02, issue
+	// #300): MappedMailboxID keeps the folder's nominal INBOX mapping so
+	// an upstream \Deleted later seen in that same folder
+	// (removeMessageStateMembership, issue #319) knows there is no
+	// mapped-mailbox membership to remove and leaves herold's own Junk
+	// placement alone. Zero means "not recorded" (rows written before
+	// this column, and every writer that has not diverged): callers
+	// treat zero as equal to HeroldMailboxID, i.e. non-divergent.
+	MappedMailboxID MailboxID
 	// LastSyncedFlags is the snapshot of \Seen / \Flagged at the time of
 	// the last successful sync. Used as the "base" in upstream-authoritative
 	// three-way conflict resolution (REQ-IMAP-IMP-42).

@@ -1082,6 +1082,10 @@ type IMAPImportMessageStateRow struct {
 	// marker added by migration 0104 (issue #227, REQ-IMAP-IMP-106). 0
 	// means not copied.
 	CopiedMessageID int64 `json:"copied_message_id"`
+	// MappedMailboxID is the folder-mapped mailbox added by migration
+	// 0106 (issue #319). 0 means "equal to HeroldMailboxID" (the
+	// pre-migration default; non-divergent).
+	MappedMailboxID int64 `json:"mapped_mailbox_id"`
 }
 
 // SubAccountMigrationRow mirrors one row of the subaccount_migrations

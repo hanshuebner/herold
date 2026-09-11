@@ -1,0 +1,24 @@
+-- 0106_imapimport_mapped_mailbox.sql -- separates "the mailbox an upstream
+-- folder maps to" from "the mailbox a message was actually placed in" on
+-- imapimport_message_state (issue #319).
+--
+-- herold_mailbox_id already records the actual placement. A spam verdict
+-- computed at ingest (migration 0058 + issue #300) can redirect a fresh
+-- INBOX-mapped insert to Junk, so the two diverge: the state row for the
+-- INBOX-mapped folder then points herold_mailbox_id at Junk while the
+-- folder itself still nominally maps to INBOX. Before this column existed,
+-- an upstream \Deleted seen in that folder removed whatever
+-- herold_mailbox_id named -- the Junk membership herold's own verdict had
+-- just produced -- because the two concepts shared one column.
+--
+-- mapped_mailbox_id records the folder's nominal target. 0 (the default)
+-- means "not recorded" / "equal to herold_mailbox_id": every row written
+-- before this migration, and every writer that has not diverged.
+-- removeMessageStateMembership (internal/imapimport/sync.go) treats a
+-- divergent row (mapped_mailbox_id != herold_mailbox_id) as "the
+-- folder-mapped membership was never created here" and leaves the actual
+-- placement untouched.
+--
+-- Forward-only. Mirrors storepg 0106.
+
+ALTER TABLE imapimport_message_state ADD COLUMN mapped_mailbox_id INTEGER NOT NULL DEFAULT 0;

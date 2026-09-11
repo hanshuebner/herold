@@ -523,9 +523,36 @@ func (w *accountWorker) fetchAndIngest(
 			if errors.Is(ingestErr, errINBOXSuppressedByJunk) {
 				// Junk wins over inbox (re #303): this folder's mapped
 				// INBOX placement is intentionally suppressed because the
-				// message already carries a Junk-attributed membership.
-				// Not a failure: no message_state row is recorded for this
-				// (folder, uid) since no membership was created here.
+				// message already carries a Junk-attributed membership. No
+				// membership is created here, but a state row is still
+				// recorded for (folder, uid) so this account can keep
+				// addressing the message: HeroldMailboxID is the message's
+				// real (Junk) placement (mbID, from placeExistingMessage);
+				// MappedMailboxID is the suppressed INBOX target. The two
+				// diverge on purpose (re #319) -- a later upstream \Deleted
+				// seen in this folder then finds the divergence in
+				// removeMessageStateMembership and knows there is no
+				// mapped-mailbox membership here to remove, leaving
+				// herold's own Junk placement alone.
+				principalID := store.PrincipalID(account.PrincipalID)
+				if mappedMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox); mbErr == nil {
+					sf := syncedFlagsFromIMAP(fm.Flags)
+					if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+						AccountID:       account.ID,
+						UpstreamFolder:  upstreamFolder,
+						UpstreamUID:     uint32(fm.UID),
+						HeroldMessageID: msgID,
+						HeroldMailboxID: mbID,
+						MappedMailboxID: mappedMB.ID,
+						LastSyncedFlags: sf,
+					}); msErr != nil {
+						w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed (junk-suppressed)",
+							slog.String("account_id", account.ID),
+							slog.Uint64("uid", uid),
+							slog.String("error", msErr.Error()),
+						)
+					}
+				}
 				continue
 			}
 			w.opts.log.Warn("imapimport: ingest failed",
@@ -544,16 +571,30 @@ func (w *accountWorker) fetchAndIngest(
 		}
 
 		// Persist message state (even for dedup hits so write-back can
-		// address the upstream UID). REQ-IMAP-IMP-34.
+		// address the upstream UID). REQ-IMAP-IMP-34. MappedMailboxID
+		// defaults to mbID (non-divergent): finalMailbox differs from
+		// heroldMailbox only when spam classification redirected a fresh
+		// INBOX-mapped insert to Junk (REQ-FILT-02, issue #300), in which
+		// case MappedMailboxID is resolved separately so a later upstream
+		// \Deleted seen in this folder leaves the Junk placement alone
+		// (re #319, see removeMessageStateMembership).
 		sf := syncedFlagsFromIMAP(fm.Flags)
-		if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
+		state := store.IMAPImportMessageState{
 			AccountID:       account.ID,
 			UpstreamFolder:  upstreamFolder,
 			UpstreamUID:     uint32(fm.UID),
 			HeroldMessageID: msgID,
 			HeroldMailboxID: mbID,
+			MappedMailboxID: mbID,
 			LastSyncedFlags: sf,
-		}); msErr != nil {
+		}
+		if !strings.EqualFold(finalMailbox, heroldMailbox) {
+			principalID := store.PrincipalID(account.PrincipalID)
+			if mappedMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox); mbErr == nil {
+				state.MappedMailboxID = mappedMB.ID
+			}
+		}
+		if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, state); msErr != nil {
 			w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed",
 				slog.String("account_id", account.ID),
 				slog.Uint64("uid", uid),
@@ -820,7 +861,12 @@ func (w *accountWorker) placeExistingMessage(
 		attrs := w.mailboxAttrByID(ctx, principalID)
 		for _, mm := range existing.Mailboxes {
 			if attrs[mm.MailboxID]&store.MailboxAttrJunk != 0 {
-				return false, existing.ID, targetMB.ID, errINBOXSuppressedByJunk
+				// mbID here is the message's EXISTING Junk membership, not
+				// the suppressed INBOX target: the caller (fetchAndIngest)
+				// still records a state row for this folder pointing at
+				// where the message actually lives, so a later upstream
+				// \Deleted seen in *this* folder can find it (re #319).
+				return false, existing.ID, mm.MailboxID, errINBOXSuppressedByJunk
 			}
 		}
 	}
@@ -923,7 +969,27 @@ func (w *accountWorker) stripInboxMembershipsForJunk(ctx context.Context, pid st
 // EXPUNGE (re #303). If the message has no other mailbox membership,
 // RemoveMessageFromMailbox's contract destroys it — herold's normal removal
 // path for a message with no mailbox.
+//
+// Divergence guard (re #319): when ms.MappedMailboxID is set and differs
+// from ms.HeroldMailboxID, the folder's nominal mapping was redirected at
+// ingest (a spam verdict routed a fresh INBOX-mapped insert to Junk,
+// REQ-FILT-02 / issue #300) and no membership was ever created in the
+// mapped mailbox -- there is nothing to remove. Removing
+// ms.HeroldMailboxID unconditionally in that case would strip the Junk
+// membership herold's own verdict produced, which is exactly the #319
+// symptom. The divergent row (and the placement it addresses) is left
+// untouched; a zero MappedMailboxID is treated as equal to
+// HeroldMailboxID (non-divergent), matching every writer that predates
+// this column.
 func (w *accountWorker) removeMessageStateMembership(ctx context.Context, ms store.IMAPImportMessageState) {
+	mapped := ms.MappedMailboxID
+	if mapped == 0 {
+		mapped = ms.HeroldMailboxID
+	}
+	if mapped != ms.HeroldMailboxID {
+		return
+	}
+
 	if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, ms.HeroldMessageID, ms.HeroldMailboxID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 		w.opts.log.Warn("imapimport: failed to remove mailbox membership",
 			slog.String("account_id", ms.AccountID),
@@ -938,6 +1004,42 @@ func (w *accountWorker) removeMessageStateMembership(ctx context.Context, ms sto
 			slog.String("upstream_folder", ms.UpstreamFolder),
 			slog.Uint64("uid", uint64(ms.UpstreamUID)),
 			slog.String("error", derr.Error()),
+		)
+	}
+
+	// re #319: when the removal above leaves the message with no folder
+	// membership other than this account's provenance label, drop the
+	// label too so the message follows the store's normal fate for a
+	// message with no mailbox (RemoveMessageFromMailbox's own zero-
+	// membership contract) instead of lingering as a label-only orphan.
+	w.dropOrphanedProvenanceLabel(ctx, ms.HeroldMessageID)
+}
+
+// dropOrphanedProvenanceLabel removes this account's provenance-label
+// membership from msgID when that label is msgID's only remaining
+// mailbox membership (re #319). The store's own RemoveMessageFromMailbox
+// then applies its normal zero-membership contract; nothing here deletes
+// the blob or the classification record explicitly. A no-op when the
+// account has no provenance label yet, msgID is unknown, the message is
+// already gone (its last real membership removal already destroyed it),
+// or the message has any membership other than this account's label.
+func (w *accountWorker) dropOrphanedProvenanceLabel(ctx context.Context, msgID store.MessageID) {
+	provID := w.opts.account.ProvenanceMailboxID
+	if provID == 0 || msgID == 0 {
+		return
+	}
+	msg, err := w.opts.store.Meta().GetMessage(ctx, msgID)
+	if err != nil {
+		return
+	}
+	if len(msg.Mailboxes) != 1 || msg.Mailboxes[0].MailboxID != provID {
+		return
+	}
+	if rerr := w.opts.store.Meta().RemoveMessageFromMailbox(ctx, msgID, provID); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
+		w.opts.log.Warn("imapimport: failed to drop orphaned provenance label",
+			slog.String("account_id", w.opts.account.ID),
+			slog.Uint64("msg_id", uint64(msgID)),
+			slog.String("error", rerr.Error()),
 		)
 	}
 }

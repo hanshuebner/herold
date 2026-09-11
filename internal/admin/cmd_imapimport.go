@@ -9,6 +9,7 @@ package admin
 // REQ-IMAP-IMP-62.
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/cliout"
+	"github.com/hanshuebner/herold/internal/clock"
 )
 
 func newIMAPImportCmd() *cobra.Command {
@@ -24,7 +26,89 @@ func newIMAPImportCmd() *cobra.Command {
 		Short: "IMAP import worker observation",
 	}
 	c.AddCommand(newIMAPImportStatusCmd())
+	c.AddCommand(newIMAPImportRepairOrphansCmd())
 	return c
+}
+
+// newIMAPImportRepairOrphansCmd builds `herold imapimport repair-orphans`
+// (issue #319), a store-backed maintenance command (opens the store from
+// --system-config, like `spam apply-verdicts` / `diag reparse-envelopes`;
+// no admin server needed). See imapimport_repair_orphans.go for the
+// row-level semantics.
+func newIMAPImportRepairOrphansCmd() *cobra.Command {
+	var dryRun bool
+	c := &cobra.Command{
+		Use:   "repair-orphans <email-or-id>",
+		Short: "file label-only IMAP-import orphans into Junk or INBOX (re #319)",
+		Long: `For every IMAP-import account belonging to the given principal, finds
+messages that carry only the account's provenance label (REQ-IMAP-IMP-100)
+and no imapimport_message_state row for that account -- the orphan shape
+issue #319 describes, left behind by a pre-fix upstream \Deleted mirroring
+a message down to its label alone.
+
+Each orphan is filed into the principal's Junk mailbox when it carries a
+recorded "spam" verdict (llm_classifications), or into INBOX otherwise --
+the same split the live import path applies at ingest (REQ-FILT-02). The
+provenance label and message_state history are not restored (the upstream
+folder/UID that produced the orphan is unrecoverable); only the missing
+folder membership is. --dry-run reports the counts without moving
+anything.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			cfg, err := requireConfig(g)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			st, err := openStore(ctx, cfg, discardLogger(), clock.NewReal())
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			p, err := resolveStorePrincipal(ctx, st, args[0])
+			if err != nil {
+				return err
+			}
+
+			sum, err := repairIMAPImportOrphans(ctx, st, p.ID, dryRun)
+			if err != nil {
+				return err
+			}
+			return emitIMAPImportRepairOrphansSummary(cmd.OutOrStdout(), cmd.ErrOrStderr(), g, dryRun, sum)
+		},
+	}
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report counts without moving any message")
+	return c
+}
+
+// emitIMAPImportRepairOrphansSummary prints the repair-orphans run's
+// summary, mirroring emitSpamApplyVerdictsSummary's --json convention.
+func emitIMAPImportRepairOrphansSummary(stdout, stderr io.Writer, g *globalOptions, dryRun bool, sum IMAPImportRepairOrphansSummary) error {
+	mode := "apply"
+	if dryRun {
+		mode = "dry-run"
+	}
+	if g.jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Mode string `json:"mode"`
+			IMAPImportRepairOrphansSummary
+		}{Mode: mode, IMAPImportRepairOrphansSummary: sum})
+	}
+	if g.quiet {
+		return nil
+	}
+	fmt.Fprintf(stderr, "repair-orphans: done (%s)\n", mode)
+	fmt.Fprintf(stderr, "  accounts scanned: %d\n", sum.AccountsScanned)
+	fmt.Fprintf(stderr, "  label members:    %d\n", sum.LabelMembers)
+	fmt.Fprintf(stderr, "  orphans found:    %d\n", sum.Orphans)
+	fmt.Fprintf(stderr, "  filed junk:       %d\n", sum.FiledJunk)
+	fmt.Fprintf(stderr, "  filed inbox:      %d\n", sum.FiledInbox)
+	fmt.Fprintf(stderr, "  errors:           %d\n", sum.Errors)
+	return nil
 }
 
 func newIMAPImportStatusCmd() *cobra.Command {

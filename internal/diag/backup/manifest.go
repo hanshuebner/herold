@@ -828,7 +828,20 @@ const CurrentBackupVersion = 1
 //	account name for imap-import, the list address for
 //	mailing-list-archive). No new table; MessageRow gains the two
 //	fields.
-const CurrentSchemaVersion = 105
+//
+// 106 — 0106_imapimport_mapped_mailbox.sql (issue #319). Adds
+//
+//	imapimport_message_state.mapped_mailbox_id (default 0, meaning
+//	"equal to herold_mailbox_id" / non-divergent): the mailbox an
+//	upstream folder maps to, kept separate from herold_mailbox_id (the
+//	mailbox a message was actually placed in). The two diverge only
+//	when a spam verdict computed at ingest (issue #300) redirects a
+//	fresh INBOX-mapped insert to Junk; removeMessageStateMembership
+//	(internal/imapimport/sync.go) uses the divergence to leave herold's
+//	own Junk placement alone when an upstream \Deleted is later seen in
+//	the folder that nominally mapped to INBOX. No new table;
+//	IMAPImportMessageStateRow gains the one field.
+const CurrentSchemaVersion = 106
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
