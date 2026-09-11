@@ -933,6 +933,13 @@ jobs:
         if: steps.guard.outputs.enabled == 'true'
         run: ./scripts/test-release-post-install.sh
 
+      # deploy.yml's decision logic (status-parsing + the never-downgrade
+      # ordering guard) lives in scripts/deploy-decide.sh precisely so it
+      # can be exercised here, independent of any real deploy (re #323).
+      - name: deploy-decide.sh decision-logic tests
+        if: steps.guard.outputs.enabled == 'true'
+        run: ./scripts/test-deploy-decide.sh
+
       - name: package release assets
         if: steps.guard.outputs.enabled == 'true'
         run: |

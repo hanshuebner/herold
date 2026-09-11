@@ -28,6 +28,20 @@ name: deploy
 # test/lint/build job, "the newest ci-<sha> release" IS "the newest
 # commit whose ci run succeeded" -- this job does not need to inspect
 # ci.yml's run status separately.
+#
+# Caveat: the release object is created non-draft (so the `published`
+# event has something to fire), and its two assets are uploaded in
+# separate API calls afterward, so `published` can fire before, or
+# without, the assets existing (e.g. the `release` job's own run gets
+# cancelled by a newer push between the two). Forgejo's release-edit
+# path (draft -> non-draft) does not help here: it fires the `release`
+# event with action "edited", not "published" (services/release.go's
+# UpdateRelease only calls notify_service.NewRelease when the tag is
+# newly created in that same call), so a create-as-draft-then-publish
+# flow would need `types: [published, edited]` and gains nothing --
+# this workflow instead tolerates an asset-less release directly: the
+# "find newest complete ci- release" step below skips any release
+# missing either asset and falls back to the next-newest complete one.
 on:
   release:
     types: [published]
@@ -66,15 +80,23 @@ jobs:
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           fi
 
+      # Needed for scripts/deploy-decide.sh (the decision logic below) and
+      # for a full history to check with -- the ordering guard walks
+      # ancestry between the target release's commit and whatever commit
+      # is currently live, which can be arbitrarily far back if outpost
+      # has gone a while between deploys, so this is a full clone, not a
+      # shallow one.
+      - name: checkout
+        if: steps.guard.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       # Find the newest ci-<sha> release that has both expected assets
-      # (herold-<ref>.tar.gz, herold-<ref>.sha256) present. ci.yml's
-      # `release` job creates the release object and uploads the two
-      # assets as separate API calls a few seconds apart, and that job's
-      # own concurrency group can cancel it mid-sequence -- so the newest
-      # release by creation time can transiently (or, if that run was
-      # cancelled between creation and asset upload, permanently) be
-      # missing its assets. Skip any such release and fall back to the
-      # next-newest complete one rather than getting stuck on it forever.
+      # (herold-<ref>.tar.gz, herold-<ref>.sha256) present -- see the
+      # header comment on why a release can transiently or permanently
+      # lack them. Also resolves the release's target_commitish, which
+      # scripts/deploy-decide.sh needs for the ordering guard.
       - name: find newest complete ci- release
         id: target
         if: steps.guard.outputs.enabled == 'true'
@@ -113,9 +135,16 @@ jobs:
             exit 0
           fi
 
-          echo "target release: ${found}"
+          sha=$(printf '%s' "${releases}" | jq -r --arg t "${found}" '.[] | select(.tag_name==$t) | .target_commitish')
+          if [ -z "${sha}" ] || [ "${sha}" = "null" ]; then
+            echo "ERROR: release ${found} has no target_commitish" >&2
+            exit 1
+          fi
+
+          echo "target release: ${found} (${sha})"
           echo "found=true" >> "${GITHUB_OUTPUT}"
           echo "ref=${found}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 
       - name: write SSH key
         if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
@@ -132,40 +161,80 @@ jobs:
           echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
 
       # `status` is a read-only forced command (netzhansa-infra
-      # roles/deploy/files/trigger + activate): it prints the basename of
-      # outpost's `current` release symlink and nothing else. A host that
-      # hasn't yet picked up that role change rejects "status" and this
-      # falls back to treating outpost as "not currently deployed" -- the
-      # conservative default, since the worst case is a redundant (but
-      # safe) `deploy <ref>` trigger below.
+      # roles/deploy/files/trigger + activate): on exit 0 it prints
+      # either the basename of outpost's `current` release symlink, or
+      # the sentinel "none" when nothing is live yet. Any other outcome
+      # (nonzero exit, empty stdout) means the answer is unreadable --
+      # captured exactly as observed, with no collapsing into "" here.
+      # scripts/deploy-decide.sh is the only place that interprets it,
+      # and it fails closed on anything but those two readable shapes.
       - name: check outpost's currently active release
         id: current
         if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
         run: |
-          set -euo pipefail
-          cur=$(ssh \
+          set -uo pipefail
+          if output=$(ssh \
             -i "${KEY_FILE}" \
             -p ${{ secrets.DEPLOY_PORT }} \
             -o StrictHostKeyChecking=accept-new \
             -o IdentitiesOnly=yes \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-            "status" || echo "")
-          echo "outpost currently runs: ${cur:-<none>}"
-          echo "ref=${cur}" >> "${GITHUB_OUTPUT}"
+            "status"); then
+            rc=0
+          else
+            rc=$?
+          fi
+          echo "status query: exit=${rc} output=${output:-<empty>}"
+          {
+            echo "exit_code=${rc}"
+            echo "output=${output}"
+          } >> "${GITHUB_OUTPUT}"
 
-      - name: skip if outpost already runs the target release
+      # Resolve the live release's commit for the ordering guard, when
+      # outpost reported a named release that isn't already the target
+      # (nothing to resolve for "none", and an exact ref match skips
+      # without needing ancestry at all -- deploy-decide.sh handles both
+      # without this step's output).
+      - name: resolve currently active release's commit
+        id: current_sha
+        if: >-
+          steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' &&
+          steps.current.outputs.exit_code == '0' &&
+          steps.current.outputs.output != '' && steps.current.outputs.output != 'none' &&
+          steps.current.outputs.output != steps.target.outputs.ref
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -uo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+          ref="${{ steps.current.outputs.output }}"
+
+          sha=$(curl -fsS -H "${AUTH}" "${API}/repos/${REPO}/releases/tags/${ref}" | jq -r '.target_commitish // empty')
+          echo "live release ${ref} resolves to commit: ${sha:-<unresolved>}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: decide
         id: decide
         if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
         run: |
-          if [ "${{ steps.current.outputs.ref }}" = "${{ steps.target.outputs.ref }}" ]; then
-            echo "outpost already runs ${{ steps.target.outputs.ref }}; nothing to do"
-            echo "deploy=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "deploy=true" >> "${GITHUB_OUTPUT}"
+          set -euo pipefail
+          decision=$(./scripts/deploy-decide.sh \
+            "${{ steps.current.outputs.exit_code }}" \
+            "${{ steps.current.outputs.output }}" \
+            "${{ steps.target.outputs.ref }}" \
+            "${{ steps.target.outputs.sha }}" \
+            "${{ steps.current_sha.outputs.sha }}" \
+            "${{ github.workspace }}")
+          echo "decision: ${decision}"
+          echo "decision=${decision}" >> "${GITHUB_OUTPUT}"
+          if [ "${decision}" = "fail" ]; then
+            exit 1
           fi
 
       - name: trigger host activation
-        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.deploy == 'true'
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.decision == 'deploy'
         run: |
           set -euo pipefail
           ssh \
@@ -178,31 +247,35 @@ jobs:
 
       # Verifies the deployed release on outpost matches the commit this
       # run intended to deploy, rather than trusting the SSH command's
-      # exit status alone.
-      # A failure of the "trigger host activation" step above already fails
-      # the job (activate itself exits non-zero on a failed health check,
-      # after rolling the symlink back) -- this step is a second,
-      # independent confirmation on top of that. It only hard-fails on a
-      # confirmed mismatch (a ref it could actually read back that isn't
-      # the target); it cannot tell "outpost's status command isn't
-      # deployed yet" (host-side rollout of the `status` command trails
-      # this workflow, see its header comment) apart from a transient SSH
-      # hiccup, so either of those only warns.
+      # exit status alone. A deploy whose result cannot be confirmed is
+      # not a success, so this fails the job on either an unreadable
+      # status query or a confirmed mismatch -- it does not warn-and-pass.
+      #
+      # `cur=$(...)` bare would abort the whole step on a failing ssh
+      # command before `rc=$?` is ever reached: Forgejo/GitHub Actions
+      # runs each `run:` block as `bash -e ...`, and that -e is already
+      # active before this script's own `set` line runs, so it applies
+      # to the command substitution regardless. `if cur=$(...); then ...
+      # else ...; fi` is the idiom that survives that: a failing command
+      # inside an `if` condition does not trigger -e.
       - name: verify the deployed release matches the target
-        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.deploy == 'true'
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.decision == 'deploy'
         run: |
           set -uo pipefail
-          cur=$(ssh \
+          if cur=$(ssh \
             -i "${KEY_FILE}" \
             -p ${{ secrets.DEPLOY_PORT }} \
             -o StrictHostKeyChecking=accept-new \
             -o IdentitiesOnly=yes \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-            "status")
-          rc=$?
-          if [ "${rc}" -ne 0 ]; then
-            echo "WARNING: could not query outpost's status (exit ${rc}); skipping verification" >&2
-            exit 0
+            "status"); then
+            rc=0
+          else
+            rc=$?
+          fi
+          if [ "${rc}" -ne 0 ] || [ -z "${cur}" ]; then
+            echo "ERROR: could not confirm outpost's status after deploying (exit ${rc}); a deploy that cannot be confirmed is not a success" >&2
+            exit 1
           fi
           echo "outpost now runs: ${cur}"
           if [ "${cur}" != "${{ steps.target.outputs.ref }}" ]; then
