@@ -2,9 +2,12 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -41,6 +44,66 @@ func TestCLIPrincipalShow_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected 'not found' in error: %v", err)
+	}
+}
+
+// TestCLIPrincipalSetPassword_ByEmail is a contract test (re #314): it
+// drives the real cobra `principal set-password` command against the
+// real protoadmin mux (via cliTestEnv's httptest.Server) rather than
+// asserting on the route table or the handler in isolation, so a
+// method/path/body mismatch between the CLI and the route fails here.
+func TestCLIPrincipalSetPassword_ByEmail(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	seedPrincipal(t, env, "setpw@test.local")
+	if _, _, err := env.run("principal", "set-password", "setpw@test.local", "--password", "brand-new-password-1"); err != nil {
+		t.Fatalf("set-password: %v", err)
+	}
+	dir := directory.New(env.store.Meta(), nil, env.clk, nil)
+	if _, err := dir.Authenticate(context.Background(), "setpw@test.local", "brand-new-password-1"); err != nil {
+		t.Fatalf("authenticate with new password: %v", err)
+	}
+}
+
+// TestCLIPrincipalSetPassword_ByNumericID exercises the numeric-id path
+// through resolvePrincipalID (which passes numeric ids through verbatim).
+func TestCLIPrincipalSetPassword_ByNumericID(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	p := seedPrincipal(t, env, "setpwid@test.local")
+	id := fmt.Sprintf("%d", p.ID)
+	if _, _, err := env.run("principal", "set-password", id, "--password", "brand-new-password-2"); err != nil {
+		t.Fatalf("set-password: %v", err)
+	}
+	dir := directory.New(env.store.Meta(), nil, env.clk, nil)
+	if _, err := dir.Authenticate(context.Background(), "setpwid@test.local", "brand-new-password-2"); err != nil {
+		t.Fatalf("authenticate with new password: %v", err)
+	}
+}
+
+// TestCLIPrincipalDelete_ByEmail is the delete-side contract test
+// (re #314): the pre-fix CLI sent args[0] (an email) straight through
+// to DELETE /api/v1/principals/{pid}, which the route rejects as an
+// invalid numeric id.
+func TestCLIPrincipalDelete_ByEmail(t *testing.T) {
+	env := newCLITestEnv(t, nil)
+	p := seedPrincipal(t, env, "delme@test.local")
+	if _, _, err := env.run("principal", "delete", "delme@test.local"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := env.store.Meta().GetPrincipalByID(context.Background(), p.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected principal to be gone; got err=%v", err)
+	}
+}
+
+// TestReadPassword_PreservesWhitespace guards against the regression
+// where fmt.Fscanln truncated an interactively-entered password at the
+// first whitespace character (re #314).
+func TestReadPassword_PreservesWhitespace(t *testing.T) {
+	got, err := readPassword(strings.NewReader("pass with spaces\n"))
+	if err != nil {
+		t.Fatalf("readPassword: %v", err)
+	}
+	if got != "pass with spaces" {
+		t.Fatalf("readPassword: got %q, want %q", got, "pass with spaces")
 	}
 }
 

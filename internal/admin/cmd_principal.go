@@ -1,19 +1,43 @@
 package admin
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // errNotImplementedPendingProtoadmin is the shared sentinel returned by
 // admin subcommands whose REST surface has not yet landed. It keeps the
 // CLI self-describing — operators see one message they can grep for.
 var errNotImplementedPendingProtoadmin = errors.New("admin CLI command not yet implemented in Wave 3 (waiting on protoadmin merge)")
+
+// readPassword reads a password from r without echoing it when r is a
+// terminal (golang.org/x/term ReadPassword). When r is not a terminal
+// (piped/scripted stdin) it reads a full line instead, preserving
+// embedded whitespace — unlike fmt.Fscanln, which stops at the first
+// space and silently truncates a password that contains one.
+func readPassword(r io.Reader) (string, error) {
+	if f, ok := r.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		b, err := term.ReadPassword(int(f.Fd()))
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
 
 func newPrincipalCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -61,7 +85,11 @@ func newPrincipalCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			err = client.do(cmd.Context(), "DELETE", "/api/v1/principals/"+args[0], nil, nil)
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			err = client.do(cmd.Context(), "DELETE", "/api/v1/principals/"+pid, nil, nil)
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
@@ -218,19 +246,23 @@ func newPrincipalCmd() *cobra.Command {
 			}
 			password, _ := cmd.Flags().GetString("password")
 			if password == "" {
-				// Interactive prompt. We intentionally use the stdlib so
-				// the CLI does not pull a terminal-handling dep.
 				fmt.Fprint(cmd.OutOrStdout(), "new password: ")
-				_, err := fmt.Fscanln(cmd.InOrStdin(), &password)
+				pw, err := readPassword(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("read password: %w", err)
 				}
+				fmt.Fprintln(cmd.OutOrStdout())
+				password = pw
 				if password == "" {
 					return errors.New("empty password rejected")
 				}
 			}
-			err = client.do(cmd.Context(), "POST", "/api/v1/principals/"+args[0]+"/password",
-				map[string]string{"password": password}, nil)
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			err = client.do(cmd.Context(), "PUT", "/api/v1/principals/"+pid+"/password",
+				map[string]string{"new_password": password}, nil)
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
