@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Debug-only overlay: plain HTTP so a build under test can reach an ephemeral
+scripts/dev-instance.sh herold at 10.0.2.2:<port> from the emulator. The
+release manifest carries no cleartext permission, so a shipped build talks
+only to a TLS herold.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+
+</manifest>
