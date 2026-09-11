@@ -169,6 +169,72 @@ func TestExtractBodyText_MultipartMixedNestedAlternative(t *testing.T) {
 	}
 }
 
+// pngLeafRawMessage builds a multipart/related message shaped like herold
+// issue #325's store message 3400: a multipart/alternative whose genuine
+// text/plain part decodes to plainAlt (empty, or whitespace-only) alongside
+// a text/html part, plus a sibling leaf carrying a base64-encoded PNG
+// signature that is mislabelled text/plain (mirroring the #324 extimg
+// defect, which invalidates the Content-Type of an inline image so
+// mailparse defaults it to "text/plain; charset=us-ascii" per RFC 2045).
+// The PNG-labelled leaf precedes the alternative so that, pre-fix, it is
+// the first text/plain candidate firstNonEmptyLeaf would select.
+func pngLeafRawMessage(plainAlt string) string {
+	return strings.Join([]string{
+		"From: sender@example.test",
+		"To: rcpt@example.test",
+		"Subject: inline image mislabelled text/plain",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/related; boundary=\"rel\"",
+		"",
+		"--rel",
+		"Content-Type: text/plain; charset=us-ascii",
+		"Content-Transfer-Encoding: base64",
+		"Content-ID: <img1>",
+		"Content-Disposition: inline",
+		"",
+		"iVBORw0KGgoAAAANSUhEUg==", // base64 of the PNG signature + start of an IHDR chunk
+		"--rel",
+		"Content-Type: multipart/alternative; boundary=\"alt\"",
+		"",
+		"--alt",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		plainAlt,
+		"--alt",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<p>Reduce tus costos de embalaje desde hoy</p>",
+		"--alt--",
+		"--rel--",
+	}, "\r\n")
+}
+
+// TestExtractBodyText_SkipsMislabelledBinaryTextPlain verifies that
+// ExtractBodyText never surfaces the raw bytes of a text/plain-labelled
+// leaf whose decoded content is actually binary (re #325): firstNonEmptyLeaf
+// skips the PNG-signature leaf, falls through the genuine-but-empty
+// text/plain alternative, and lands on the HTML-derived text with origin
+// "derived_from_html". This is the same fixture that pins the defect in
+// mailparse.BodyPreview and protojmap/mail/email.previewFromValues.
+func TestExtractBodyText_SkipsMislabelledBinaryTextPlain(t *testing.T) {
+	raw := pngLeafRawMessage("")
+	msg, err := Parse(strings.NewReader(raw), NewLenientParseOptions())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	text, origin := ExtractBodyText(msg)
+	want := "Reduce tus costos de embalaje desde hoy"
+	if text != want {
+		t.Fatalf("text = %q, want %q", text, want)
+	}
+	if origin != BodyTextOriginDerivedFromHTML {
+		t.Fatalf("origin = %q, want %q", origin, BodyTextOriginDerivedFromHTML)
+	}
+	if strings.Contains(text, "\x89PNG") {
+		t.Fatalf("ExtractBodyText leaked the PNG signature: %q (bytes % x)", text, []byte(text))
+	}
+}
+
 // TestHTMLToText_LinksAndEntities exercises the small renderer
 // directly.  Link text rendered as `text (url)`; entities decoded.
 func TestHTMLToText_LinksAndEntities(t *testing.T) {

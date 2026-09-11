@@ -57,15 +57,19 @@ func ExtractBodyText(m Message) (text string, origin BodyTextOrigin) {
 
 // firstNonEmptyLeaf walks the tree depth-first and returns the decoded
 // Text of the first non-attachment leaf whose Content-Type starts with
-// the supplied prefix and which carries a non-empty body.  Returns ""
-// when nothing matches.
+// the supplied prefix, carries a non-empty body, and passes LooksLikeText
+// (re #325): a leaf whose decoded content is actually binary -- e.g. an
+// inline image whose Content-Type was invalidated by the #324 extimg
+// defect and defaulted to text/plain per RFC 2045 -- is skipped in favour
+// of the next candidate, exactly like BodyPreview and previewFromValues.
+// Returns "" when nothing matches.
 func firstNonEmptyLeaf(p Part, ctPrefix string) string {
 	if len(p.Children) == 0 {
 		if p.Disposition == DispositionAttachment {
 			return ""
 		}
 		ct := strings.ToLower(p.ContentType)
-		if strings.HasPrefix(ct, ctPrefix) && p.Text != "" {
+		if strings.HasPrefix(ct, ctPrefix) && p.Text != "" && LooksLikeText(p.Text) {
 			return p.Text
 		}
 		return ""

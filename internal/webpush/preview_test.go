@@ -64,6 +64,86 @@ func TestBuildPayload_Email_IncludesPreview(t *testing.T) {
 	}
 }
 
+// TestBuildPayload_Email_PreviewSkipsMislabelledBinaryTextPlain verifies
+// that a text/plain-labelled leaf whose decoded content is actually
+// binary (re #325 -- e.g. an inline image mislabelled by the #324 extimg
+// defect) never reaches the push payload's preview field: BuildPayload
+// walks the same mailparse.ExtractBodyText path as the webhook extracted
+// body, so the PNG signature bytes observed in the issue's report must not
+// appear in the payload, and the HTML-derived text must appear instead.
+func TestBuildPayload_Email_PreviewSkipsMislabelledBinaryTextPlain(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+
+	// A multipart/related message shaped like issue #325's report: a
+	// text/plain-labelled base64 PNG leaf ahead of a multipart/alternative
+	// whose genuine text/plain part is empty.
+	rfc822 := strings.Join([]string{
+		"From: bob@example.test",
+		"To: alice@example.test",
+		"Subject: Reduce tus costos de embalaje desde hoy",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/related; boundary=\"rel\"",
+		"",
+		"--rel",
+		"Content-Type: text/plain; charset=us-ascii",
+		"Content-Transfer-Encoding: base64",
+		"Content-ID: <img1>",
+		"Content-Disposition: inline",
+		"",
+		"iVBORw0KGgoAAAANSUhEUg==", // base64 of the PNG signature + start of an IHDR chunk
+		"--rel",
+		"Content-Type: multipart/alternative; boundary=\"alt\"",
+		"",
+		"--alt",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"",
+		"--alt",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<p>Reduce tus costos de embalaje desde hoy</p>",
+		"--alt--",
+		"--rel--",
+	}, "\r\n")
+	ref, err := st.Blobs().Put(ctx, strings.NewReader(rfc822))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	mid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob:     ref,
+		Size:     ref.Size,
+		Envelope: store.Envelope{From: "bob@example.test", Subject: "Reduce tus costos de embalaje desde hoy"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	res, err := BuildPayload(ctx, st, store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpCreated,
+	})
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.JSON, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	preview, _ := got["preview"].(string)
+	if strings.Contains(preview, "\x89PNG") {
+		t.Fatalf("push payload preview leaked the PNG signature: %q (bytes % x)", preview, []byte(preview))
+	}
+	if !strings.Contains(preview, "Reduce tus costos") {
+		t.Fatalf("push payload preview = %q, want HTML-derived text", preview)
+	}
+}
+
 // TestBuildPayload_Email_BlobMissingOmitsPreview asserts that when the
 // blob fetch fails (or the message has no blob), BuildPayload omits the
 // preview rather than failing.

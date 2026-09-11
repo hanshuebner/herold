@@ -136,6 +136,63 @@ func TestDispatch_Extracted_DerivedFromHTML(t *testing.T) {
 	}
 }
 
+// TestDispatch_Extracted_SkipsMislabelledBinaryTextPlain verifies that a
+// text/plain-labelled leaf whose decoded content is actually binary (re
+// #325 -- e.g. an inline image mislabelled by the #324 extimg defect)
+// never reaches the webhook's extracted body.text: it is shaped like the
+// issue's report (a multipart/related containing a multipart/alternative
+// with an empty genuine text/plain part and a text/html part, plus a
+// text/plain-labelled base64 PNG leaf) and must yield origin
+// "derived_from_html" with the PNG signature never appearing in body.text.
+func TestDispatch_Extracted_SkipsMislabelledBinaryTextPlain(t *testing.T) {
+	h := newDispatcherHarness(t, dispatcherHarnessOptions{})
+	_, mb := h.seedPrincipalDomain(t, "user@example.com")
+	h.insertExtractedHookForDomain(t, "example.com", false, 0)
+
+	raw := "From: a@example.net\r\n" +
+		"To: user@example.com\r\n" +
+		"Subject: hi\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/related; boundary=\"rel\"\r\n" +
+		"\r\n" +
+		"--rel\r\n" +
+		"Content-Type: text/plain; charset=us-ascii\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"Content-ID: <img1>\r\n" +
+		"Content-Disposition: inline\r\n" +
+		"\r\n" +
+		"iVBORw0KGgoAAAANSUhEUg==\r\n" + // base64 of the PNG signature + start of an IHDR chunk
+		"--rel\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"alt\"\r\n" +
+		"\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>Reduce tus costos de embalaje desde hoy</p>\r\n" +
+		"--alt--\r\n" +
+		"--rel--\r\n"
+	h.deliverMessage(t, mb, "hi", raw)
+
+	req := h.waitForDelivery(t, 2*time.Second)
+	var pl protowebhook.Payload
+	if err := json.Unmarshal(req.body, &pl); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if pl.Body.TextOrigin != "derived_from_html" {
+		t.Fatalf("body.text_origin = %q, want derived_from_html", pl.Body.TextOrigin)
+	}
+	if strings.Contains(pl.Body.Text, "\x89PNG") {
+		t.Fatalf("body.text leaked the PNG signature: %q (bytes % x)", pl.Body.Text, []byte(pl.Body.Text))
+	}
+	if !strings.Contains(pl.Body.Text, "Reduce tus costos") {
+		t.Fatalf("body.text = %q, want HTML-derived text", pl.Body.Text)
+	}
+}
+
 // TestDispatch_Extracted_Truncation: a body longer than the
 // per-subscription cap is truncated with text_truncated=true.
 func TestDispatch_Extracted_Truncation(t *testing.T) {
