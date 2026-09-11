@@ -18,6 +18,12 @@ vi.mock('../jmap/client', () => ({
   strict: vi.fn(),
 }));
 
+vi.mock('../mail/sub-accounts.svelte', () => ({
+  subAccounts: {
+    find: vi.fn().mockReturnValue(null),
+  },
+}));
+
 // Stub mail store so compose.open* paths don't fail.
 vi.mock('../mail/store.svelte', () => ({
   mail: {

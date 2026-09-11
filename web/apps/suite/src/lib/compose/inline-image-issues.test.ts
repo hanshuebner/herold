@@ -24,6 +24,12 @@ vi.mock('../jmap/client', () => ({
   strict: vi.fn(),
 }));
 
+vi.mock('../mail/sub-accounts.svelte', () => ({
+  subAccounts: {
+    find: vi.fn().mockReturnValue(null),
+  },
+}));
+
 vi.mock('../mail/store.svelte', () => ({
   mail: {
     mailAccountId: 'acct1',

@@ -24,6 +24,12 @@ vi.mock('../jmap/client', () => ({
   strict: vi.fn(),
 }));
 
+vi.mock('../mail/sub-accounts.svelte', () => ({
+  subAccounts: {
+    find: vi.fn().mockReturnValue(null),
+  },
+}));
+
 // Stub mail store so compose paths that need an accountId work.
 vi.mock('../mail/store.svelte', () => ({
   mail: {
