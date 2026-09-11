@@ -121,6 +121,31 @@ func TestIMAPImportSpamAdapter_ClassifyNilClassifier(t *testing.T) {
 	}
 }
 
+// TestIMAPImportSpamAdapter_ClassifyEmptyPluginName covers the other
+// "not configured" shape (re #326): a non-nil *spam.Classifier (the
+// real wiring always constructs one) but an empty plugin name -- what
+// internal/admin/server.go's firstPluginOfType returns when no
+// [[plugin]] of type spam/classifier is configured. No RPC attempt is
+// made (the fake invoker would error if called), Verdict is
+// Unclassified with an empty Reason, matching the nil-classifier case
+// above.
+func TestIMAPImportSpamAdapter_ClassifyEmptyPluginName(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"spam","score":0.9}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "", st, clk, slog.Default())
+
+	msg := buildSpamTestMessage(t)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	if got.Verdict != spam.Unclassified {
+		t.Errorf("Verdict = %v, want spam.Unclassified", got.Verdict)
+	}
+	if got.Reason != "" {
+		t.Errorf("Reason = %q, want empty (no attempt made)", got.Reason)
+	}
+}
+
 // TestIMAPImportSpamAdapter_ClassifyNilClassifier_StructuralFallback is
 // the regression test for a defect found while writing the #304
 // acceptance matrix: REQ-FILT-214/ADR-0002 requires the structural
@@ -239,5 +264,8 @@ func TestIMAPImportSpamAdapter_RecordVerdictPersistsUnclassifiedWithReason(t *te
 	}
 	if rec.SpamReason == nil || !strings.HasPrefix(*rec.SpamReason, "timeout: ") {
 		t.Errorf("SpamReason = %v, want a timeout: prefix", rec.SpamReason)
+	}
+	if rec.SpamConfidence != nil {
+		t.Errorf("SpamConfidence = %v, want nil (no score was ever produced)", *rec.SpamConfidence)
 	}
 }

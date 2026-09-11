@@ -784,8 +784,14 @@ func (sess *session) persistLLMRecord(
 	if classification.Verdict != spam.Unclassified || classification.Reason != "" {
 		v := classification.Verdict.String()
 		rec.SpamVerdict = &v
-		score := classification.Score
-		rec.SpamConfidence = &score
+		// SpamConfidence is left nil for an Unclassified outcome (re
+		// #326): the classifier never produced a score, so -1 (the
+		// in-memory Classification.Score sentinel for "no score") is
+		// not a confidence value worth persisting or rendering.
+		if classification.Verdict != spam.Unclassified {
+			score := classification.Score
+			rec.SpamConfidence = &score
+		}
 		if classification.Reason != "" {
 			reason := classification.Reason
 			rec.SpamReason = &reason

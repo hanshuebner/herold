@@ -219,8 +219,13 @@ func (a *testSpamAdapter) RecordVerdict(ctx context.Context, principalID store.P
 		return
 	}
 	v := classification.Verdict.String()
-	score := classification.Score
-	rec := store.LLMClassificationRecord{MessageID: messageID, PrincipalID: principalID, SpamVerdict: &v, SpamConfidence: &score}
+	rec := store.LLMClassificationRecord{MessageID: messageID, PrincipalID: principalID, SpamVerdict: &v}
+	// SpamConfidence left nil for Unclassified (re #326): -1 is not a
+	// confidence value worth persisting.
+	if classification.Verdict != spam.Unclassified {
+		score := classification.Score
+		rec.SpamConfidence = &score
+	}
 	if classification.Reason != "" {
 		reason := classification.Reason
 		rec.SpamReason = &reason

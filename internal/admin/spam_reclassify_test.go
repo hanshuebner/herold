@@ -263,13 +263,13 @@ func testSpamReclassify(t *testing.T, newStore func() store.Store) {
 		// chance.
 		priorVerdict := "unclassified"
 		priorReason := "timeout: json-rpc error -32001: rpc deadline exceeded"
-		priorScore := -1.0
+		// No SpamConfidence (re #326): a real Unclassified outcome
+		// never produced a score.
 		if err := st.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
-			MessageID:      mid,
-			PrincipalID:    pid,
-			SpamVerdict:    &priorVerdict,
-			SpamReason:     &priorReason,
-			SpamConfidence: &priorScore,
+			MessageID:   mid,
+			PrincipalID: pid,
+			SpamVerdict: &priorVerdict,
+			SpamReason:  &priorReason,
 		}); err != nil {
 			t.Fatalf("seed prior unclassified SetLLMClassification: %v", err)
 		}

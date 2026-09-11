@@ -63,13 +63,14 @@ func TestCLI_SpamShow_UnclassifiedWithReason(t *testing.T) {
 
 	unclassified := "unclassified"
 	reason := "timeout: json-rpc error -32001: rpc deadline exceeded"
-	score := -1.0
 	classifiedAt := time.Now()
+	// No SpamConfidence (re #326): an Unclassified outcome never
+	// produced a score, so the write path leaves it nil rather than
+	// persisting -1.
 	if err := st.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
 		MessageID:        msgID,
 		PrincipalID:      p.ID,
 		SpamVerdict:      &unclassified,
-		SpamConfidence:   &score,
 		SpamReason:       &reason,
 		SpamClassifiedAt: &classifiedAt,
 	}); err != nil {
@@ -104,6 +105,9 @@ func TestCLI_SpamShow_UnclassifiedWithReason(t *testing.T) {
 	}
 	if out["message_id"] != float64(msgID) {
 		t.Errorf("message_id = %v, want %d", out["message_id"], msgID)
+	}
+	if _, has := out["spam_confidence"]; has {
+		t.Errorf("spam_confidence must be absent for an unclassified record, got %v", out["spam_confidence"])
 	}
 }
 

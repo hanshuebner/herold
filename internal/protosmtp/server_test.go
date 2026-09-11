@@ -65,6 +65,13 @@ type fixtureOpts struct {
 	// #326's "both store backends" delivery test); nil keeps the
 	// default.
 	store store.Store
+	// noSpamPlugin simulates an install with no [[plugin]] of type
+	// spam/classifier configured (re #326): SpamPluginName is left ""
+	// (the real "not configured" signal, matching
+	// internal/admin/server.go's firstPluginOfType) instead of the
+	// fixture's usual "spam". The fake registry still has a "spam"
+	// plugin registered so a test can assert it was NEVER called.
+	noSpamPlugin bool
 }
 
 func newFixture(t *testing.T, fo fixtureOpts) *fixture {
@@ -103,20 +110,25 @@ func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 
 	scramLk := &scramLookup{pid: pid, email: "alice@example.test", password: password}
 
+	spamPluginName := "spam"
+	if fo.noSpamPlugin {
+		spamPluginName = ""
+	}
 	srv, err := protosmtp.New(protosmtp.Config{
-		Store:       ha.Store,
-		Directory:   dir,
-		DKIM:        dkimV,
-		SPF:         spfV,
-		DMARC:       dmarcV,
-		ARC:         arcV,
-		Spam:        spamCls,
-		Sieve:       interp,
-		TLS:         tlsStore,
-		Resolver:    resolver,
-		Clock:       ha.Clock,
-		Logger:      ha.Logger,
-		SCRAMLookup: scramLk,
+		Store:          ha.Store,
+		Directory:      dir,
+		DKIM:           dkimV,
+		SPF:            spfV,
+		DMARC:          dmarcV,
+		ARC:            arcV,
+		Spam:           spamCls,
+		SpamPluginName: spamPluginName,
+		Sieve:          interp,
+		TLS:            tlsStore,
+		Resolver:       resolver,
+		Clock:          ha.Clock,
+		Logger:         ha.Logger,
+		SCRAMLookup:    scramLk,
 		Options: protosmtp.Options{
 			Hostname:                 "mx.example.test",
 			AuthservID:               "mx.example.test",

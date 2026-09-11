@@ -188,12 +188,18 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 		return
 	}
 	v := classification.Verdict.String()
-	score := classification.Score
 	rec := store.LLMClassificationRecord{
-		MessageID:      messageID,
-		PrincipalID:    principalID,
-		SpamVerdict:    &v,
-		SpamConfidence: &score,
+		MessageID:   messageID,
+		PrincipalID: principalID,
+		SpamVerdict: &v,
+	}
+	// SpamConfidence is left nil for an Unclassified outcome (re #326):
+	// no score was ever produced, so -1 (the in-memory
+	// Classification.Score sentinel for "no score") is not a
+	// confidence value worth persisting or rendering.
+	if classification.Verdict != spam.Unclassified {
+		score := classification.Score
+		rec.SpamConfidence = &score
 	}
 	if classification.Reason != "" {
 		reason := classification.Reason

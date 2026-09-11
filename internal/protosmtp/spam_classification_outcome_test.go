@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -155,6 +156,16 @@ func testDeliverySpamClassificationOutcome(t *testing.T, storeFactory func(t *te
 					t.Errorf("SpamReason = %q, want substring %q", got, tc.wantReasonHas)
 				}
 			}
+			// re #326: an Unclassified row never carries a confidence
+			// (the classifier produced no score); a genuine spam/ham
+			// verdict does.
+			if tc.wantVerdict == "unclassified" {
+				if rec.SpamConfidence != nil {
+					t.Errorf("SpamConfidence = %v, want nil for an unclassified row", *rec.SpamConfidence)
+				}
+			} else if rec.SpamConfidence == nil {
+				t.Errorf("SpamConfidence = nil, want a score for verdict %q", tc.wantVerdict)
+			}
 
 			// message-research renders the same fields the admin surface
 			// reads (internal/protoadmin/message_research.go), re #326.
@@ -162,5 +173,69 @@ func testDeliverySpamClassificationOutcome(t *testing.T, storeFactory func(t *te
 				t.Errorf("AdminMessageHit.SpamVerdict = %v, want %q", hits[0].SpamVerdict, tc.wantVerdict)
 			}
 		})
+	}
+}
+
+// TestDelivery_SpamClassificationOutcome_NotConfigured covers re #326's
+// follow-up: an install with no spam/classifier plugin configured
+// (SpamPluginName == "", matching internal/admin/server.go's
+// firstPluginOfType returning "" and the #301 GET /api/v1/spam/status
+// endpoint's "not configured" state) makes NO classification attempt --
+// no RPC call to the fake "spam" plugin still sitting in the registry,
+// no llm_classifications row -- rather than misreporting the outcome as
+// a plugin_error. protosmtp/server.go used to default an empty
+// SpamPluginName to the literal "spam", which pointed classifyMessage at
+// a plugin name nothing had configured and produced exactly that
+// misreport; this asserts the real wiring end to end via a live SMTP
+// delivery, not just the classifyMessage unit logic.
+func TestDelivery_SpamClassificationOutcome_NotConfigured(t *testing.T) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn, noSpamPlugin: true})
+	var calls atomic.Int64
+	f.spamPlug.Handle("spam.classify", func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		calls.Add(1)
+		return json.RawMessage(`{"verdict":"spam","score":0.99}`), nil
+	})
+
+	cli, closeFn := f.dial(t)
+	defer closeFn()
+	mustOK(t, cli, 220)
+	cli.send(t, "EHLO client.example.test")
+	mustOK(t, cli, 250)
+	cli.send(t, "MAIL FROM:<sender@sender.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "RCPT TO:<alice@example.test>")
+	mustOK(t, cli, 250)
+	cli.send(t, "DATA")
+	mustOK(t, cli, 354)
+	msgID := "outcome-not-configured@sender.test"
+	body := "From: sender@sender.test\r\nTo: alice@example.test\r\n" +
+		"Message-ID: <" + msgID + ">\r\n" +
+		"Subject: outcome test not-configured\r\n\r\nBody text.\r\n.\r\n"
+	cli.sendRaw(t, []byte(body))
+	mustOK(t, cli, 250)
+	cli.send(t, "QUIT")
+	mustOK(t, cli, 221)
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("spam.classify called %d times, want 0 (no plugin configured, no attempt)", got)
+	}
+
+	ctx := context.Background()
+	hits, err := f.ha.Store.Meta().SearchAdminMessages(ctx, store.AdminMessageFilter{MessageID: msgID, Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchAdminMessages: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("SearchAdminMessages(%q) hits = %d, want 1", msgID, len(hits))
+	}
+	mid := hits[0].MessageID
+
+	if _, err := f.ha.Store.Meta().GetLLMClassification(ctx, mid); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetLLMClassification(%d): err = %v, want ErrNotFound (no attempt, no row)", mid, err)
+	}
+	// The message still lands in INBOX (the default for Unclassified,
+	// REQ-FILT-40): "not configured" is not a delivery gate.
+	if hits[0].SpamVerdict != nil {
+		t.Errorf("AdminMessageHit.SpamVerdict = %v, want nil", *hits[0].SpamVerdict)
 	}
 }

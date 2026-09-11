@@ -8160,9 +8160,12 @@ func testLLMClassificationGetNotFound(t *testing.T, s store.Store) {
 // distinguishable, by SpamVerdict alone, from a genuine ham verdict
 // (which also can carry a nil or non-nil SpamReason of its own, the
 // plugin's one-sentence explanation, an entirely different string
-// shape). No schema migration backs this: spam_verdict/spam_reason are
-// pre-existing free-text nullable columns (migration 0027) that already
-// accept any string.
+// shape). SpamConfidence is nil: no score was ever produced, so the
+// callers (internal/protosmtp, internal/admin's IMAP-import adapter)
+// never persist -1 (the in-memory Classification.Score sentinel for
+// "no score") as a confidence value. No schema migration backs this:
+// spam_verdict/spam_reason/spam_confidence are pre-existing nullable
+// columns (migration 0027) that already accept any value or NULL.
 func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "llm-unclassified@example.com")
@@ -8170,7 +8173,6 @@ func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
 	msg := mustInsertMessage(t, s, mb.ID, "llm-unclassified@host")
 
 	verdict := "unclassified"
-	confidence := -1.0
 	reason := "timeout: json-rpc error -32001: rpc deadline exceeded"
 	now := time.Date(2024, 3, 1, 8, 30, 0, 0, time.UTC)
 
@@ -8178,7 +8180,6 @@ func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
 		MessageID:        msg.ID,
 		PrincipalID:      p.ID,
 		SpamVerdict:      &verdict,
-		SpamConfidence:   &confidence,
 		SpamReason:       &reason,
 		SpamClassifiedAt: &now,
 	}
@@ -8195,8 +8196,8 @@ func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
 	if got.SpamReason == nil || *got.SpamReason != reason {
 		t.Fatalf("SpamReason = %v, want %q", got.SpamReason, reason)
 	}
-	if got.SpamConfidence == nil || *got.SpamConfidence != confidence {
-		t.Fatalf("SpamConfidence = %v, want %v", got.SpamConfidence, confidence)
+	if got.SpamConfidence != nil {
+		t.Fatalf("SpamConfidence = %v, want nil", *got.SpamConfidence)
 	}
 
 	// A genuine ham verdict on a second message is a distinct row: the

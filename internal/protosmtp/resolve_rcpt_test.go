@@ -98,6 +98,7 @@ func newRcptFixture(t *testing.T, pluginFirst []string) *rcptFixture {
 		DMARC:                  dmarcV,
 		ARC:                    arcV,
 		Spam:                   spamCls,
+		SpamPluginName:         "spam",
 		Sieve:                  interp,
 		TLS:                    tlsStore,
 		Resolver:               resolverDNS,

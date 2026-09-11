@@ -295,10 +295,17 @@ func New(cfg Config) (*Server, error) {
 	if clk == nil {
 		clk = clock.NewReal()
 	}
+	// cfg.SpamPluginName is passed through verbatim -- empty means no
+	// spam/classifier plugin is configured (re #326). It must NOT
+	// default to a literal "spam": that silently pointed classifyMessage
+	// at a plugin name nothing registered, so an install with no
+	// [[plugin]] block still "attempted" a classification, misreported
+	// as a plugin_error (rather than "not configured") in both the
+	// INFO delivery-outcome log and the persisted llm_classifications
+	// row. internal/admin/server.go's firstPluginOfType and the #301
+	// GET /api/v1/spam/status endpoint already treat "" as "no plugin
+	// configured"; this keeps all three in agreement.
 	plug := cfg.SpamPluginName
-	if plug == "" {
-		plug = "spam"
-	}
 	opts := cfg.Options.Defaults()
 	// Register the SMTP collector set on Server construction. Idempotent
 	// across many Server instances sharing one process Registry (tests).

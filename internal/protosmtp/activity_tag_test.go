@@ -86,19 +86,20 @@ func buildActivityFixture(
 	scramLk := &scramLookup{pid: pid, email: "alice@example.test", password: password}
 
 	srv, err := protosmtp.New(protosmtp.Config{
-		Store:       ha.Store,
-		Directory:   dir,
-		DKIM:        dkimV,
-		SPF:         spfV,
-		DMARC:       dmarcV,
-		ARC:         arcV,
-		Spam:        spamCls,
-		Sieve:       interp,
-		TLS:         tlsStore,
-		Resolver:    resolver,
-		Clock:       ha.Clock,
-		Logger:      log, // recording logger from AssertActivityTagged
-		SCRAMLookup: scramLk,
+		Store:          ha.Store,
+		Directory:      dir,
+		DKIM:           dkimV,
+		SPF:            spfV,
+		DMARC:          dmarcV,
+		ARC:            arcV,
+		Spam:           spamCls,
+		SpamPluginName: "spam",
+		Sieve:          interp,
+		TLS:            tlsStore,
+		Resolver:       resolver,
+		Clock:          ha.Clock,
+		Logger:         log, // recording logger from AssertActivityTagged
+		SCRAMLookup:    scramLk,
 		Options: protosmtp.Options{
 			Hostname:                 "mx.example.test",
 			AuthservID:               "mx.example.test",
