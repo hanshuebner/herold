@@ -1257,6 +1257,14 @@ type Metadata interface {
 	// decoding every Message row — at the scale of a freshly-imported
 	// Gmail archive (100k+ rows in the largest folder) the row-decode
 	// path turns Mailbox/get into a multi-second CPU hog.
+	//
+	// For any mailbox other than one carrying MailboxAttrJunk or
+	// MailboxAttrTrash, a message that also holds a membership in a
+	// Junk- or Trash-attributed mailbox is excluded from both total
+	// and unread (issue #313): a message a user has junked or deleted
+	// should not inflate a label's, or INBOX's, badge. Junk's and
+	// Trash's own counts include every member message regardless of
+	// other memberships.
 	CountMessages(ctx context.Context, mailboxID MailboxID) (total, unread int64, err error)
 
 	// CountThreads returns the total and unread distinct-thread counts
@@ -1270,6 +1278,8 @@ type Metadata interface {
 	// consistent with the collapsed-thread row count the mail list
 	// renders (REQ-PROTO's Mailbox datatype), without per-message
 	// decoding at the 100k+-row scale CountMessages was written for.
+	// Applies the same Junk/Trash membership exclusion as CountMessages
+	// (issue #313).
 	CountThreads(ctx context.Context, mailboxID MailboxID) (totalThreads, unreadThreads int64, err error)
 
 	// SetMailboxSubscribed toggles the MailboxAttrSubscribed bit on the

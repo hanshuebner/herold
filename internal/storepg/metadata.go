@@ -3295,16 +3295,29 @@ func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, 
 }
 
 // CountMessages computes (total, unread) for a mailbox in one SQL
-// aggregate. See store.Metadata for the contract.
+// aggregate. For a mailbox that does not itself carry MailboxAttrJunk
+// or MailboxAttrTrash, a message that also holds a membership in a
+// Junk- or Trash-attributed mailbox is excluded from both total and
+// unread (issue #313); Junk's and Trash's own counts see every
+// member message. See store.Metadata for the contract.
 func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
 	const q = `
 		SELECT
 			COUNT(*) AS total,
-			COALESCE(SUM(CASE WHEN (flags & 1) = 0 THEN 1 ELSE 0 END), 0) AS unread
-		FROM message_mailboxes
-		WHERE mailbox_id = $1`
+			COALESCE(SUM(CASE WHEN (mm.flags & 1) = 0 THEN 1 ELSE 0 END), 0) AS unread
+		FROM message_mailboxes mm
+		WHERE mm.mailbox_id = $1
+		  AND (
+		    (SELECT attributes FROM mailboxes WHERE id = $1) & $2 != 0
+		    OR NOT EXISTS (
+		      SELECT 1 FROM message_mailboxes mm2
+		      JOIN mailboxes mb2 ON mb2.id = mm2.mailbox_id
+		      WHERE mm2.message_id = mm.message_id AND (mb2.attributes & $2) != 0
+		    )
+		  )`
+	mask := int64(store.MailboxAttrTrash | store.MailboxAttrJunk)
 	var total, unread int64
-	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID)).Scan(&total, &unread); err != nil {
+	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID), mask).Scan(&total, &unread); err != nil {
 		return 0, 0, fmt.Errorf("storepg: count messages: %w", err)
 	}
 	return total, unread, nil
@@ -3313,8 +3326,9 @@ func (m *metadata) CountMessages(ctx context.Context, mailboxID store.MailboxID)
 // CountThreads computes (totalThreads, unreadThreads) for a mailbox in
 // one SQL aggregate, joining message_mailboxes to messages for the
 // effective_thread key (thread_id, or the message's own id when
-// thread_id is 0, per migration 0070). See store.Metadata for the
-// contract.
+// thread_id is 0, per migration 0070). Applies the same Junk/Trash
+// membership exclusion as CountMessages (issue #313). See
+// store.Metadata for the contract.
 func (m *metadata) CountThreads(ctx context.Context, mailboxID store.MailboxID) (int64, int64, error) {
 	const q = `
 		SELECT
@@ -3324,9 +3338,18 @@ func (m *metadata) CountThreads(ctx context.Context, mailboxID store.MailboxID) 
 			                END)) AS unread_threads
 		FROM message_mailboxes mm
 		JOIN messages m ON m.id = mm.message_id
-		WHERE mm.mailbox_id = $1`
+		WHERE mm.mailbox_id = $1
+		  AND (
+		    (SELECT attributes FROM mailboxes WHERE id = $1) & $2 != 0
+		    OR NOT EXISTS (
+		      SELECT 1 FROM message_mailboxes mm2
+		      JOIN mailboxes mb2 ON mb2.id = mm2.mailbox_id
+		      WHERE mm2.message_id = mm.message_id AND (mb2.attributes & $2) != 0
+		    )
+		  )`
+	mask := int64(store.MailboxAttrTrash | store.MailboxAttrJunk)
 	var total, unread int64
-	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID)).Scan(&total, &unread); err != nil {
+	if err := m.s.pool.QueryRow(ctx, q, int64(mailboxID), mask).Scan(&total, &unread); err != nil {
 		return 0, 0, fmt.Errorf("storepg: count threads: %w", err)
 	}
 	return total, unread, nil

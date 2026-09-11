@@ -46,6 +46,7 @@ func Run(t *testing.T, f Factory) {
 		{"InsertMessages_Batch", testInsertMessagesBatch},
 		{"CountMessages", testCountMessages},
 		{"CountThreads", testCountThreads},
+		{"CountMessagesAndThreads_ExcludeJunkTrash", testCountMessagesAndThreadsExcludeJunkTrash},
 		{"InsertMessages_SkipThreading", testInsertMessagesSkipThreading},
 		{"RethreadPrincipal", testRethreadPrincipal},
 		// re #88, REQ-STORE-40: duplicate message-id copies share one thread.
@@ -1811,6 +1812,133 @@ func testCountThreads(t *testing.T, s store.Store) {
 	}
 	if unreadThreads != 2 {
 		t.Errorf("unreadThreads = %d, want 2 (threadA + threadC, not %d raw unread messages)", unreadThreads, unread)
+	}
+}
+
+// testCountMessagesAndThreadsExcludeJunkTrash covers issue #313: the
+// counts a mailbox reports (CountMessages' total/unread and
+// CountThreads' totalThreads/unreadThreads) exclude a message that
+// also holds a membership in a Junk- or Trash-attributed mailbox, for
+// every mailbox that does not itself carry MailboxAttrJunk or
+// MailboxAttrTrash -- INBOX included, since it is just another
+// non-Junk/Trash mailbox from the counting rule's point of view. The
+// Junk and Trash mailboxes' own counts are unaffected: they see every
+// member message regardless of other memberships.
+func testCountMessagesAndThreadsExcludeJunkTrash(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "count-junktrash@example.com")
+
+	inbox, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	label := mustInsertMailbox(t, s, p.ID, "Label313")
+	junk, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+	trash, err := s.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Trash", Attributes: store.MailboxAttrTrash,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Trash: %v", err)
+	}
+
+	// labelOnly: member of the label only -- always counted.
+	labelOnlyRef := putBlob(t, s, "count-junktrash-label-only")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: labelOnlyRef, Size: labelOnlyRef.Size,
+		ReceivedAt: time.Unix(5000, 0).UTC(),
+		Envelope:   store.Envelope{MessageID: "cjt-label-only@x"},
+	}, []store.MessageMailbox{{MailboxID: label.ID}}); err != nil {
+		t.Fatalf("InsertMessage labelOnly: %v", err)
+	}
+
+	// labelJunk: member of the label AND Junk -- excluded from the
+	// label's counts, present in Junk's.
+	labelJunkRef := putBlob(t, s, "count-junktrash-label-junk")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: labelJunkRef, Size: labelJunkRef.Size,
+		ReceivedAt: time.Unix(5001, 0).UTC(),
+		Envelope:   store.Envelope{MessageID: "cjt-label-junk@x"},
+	}, []store.MessageMailbox{{MailboxID: label.ID}, {MailboxID: junk.ID}}); err != nil {
+		t.Fatalf("InsertMessage labelJunk: %v", err)
+	}
+
+	// inboxTrash: member of INBOX AND Trash -- excluded from INBOX's
+	// counts (INBOX follows the same non-Junk/Trash rule), present in
+	// Trash's.
+	inboxTrashRef := putBlob(t, s, "count-junktrash-inbox-trash")
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID, Blob: inboxTrashRef, Size: inboxTrashRef.Size,
+		ReceivedAt: time.Unix(5002, 0).UTC(),
+		Envelope:   store.Envelope{MessageID: "cjt-inbox-trash@x"},
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}, {MailboxID: trash.ID}}); err != nil {
+		t.Fatalf("InsertMessage inboxTrash: %v", err)
+	}
+
+	checkCounts := func(name string, mbID store.MailboxID, wantTotal, wantUnread int64) {
+		t.Helper()
+		total, unread, err := s.Meta().CountMessages(ctx, mbID)
+		if err != nil {
+			t.Fatalf("CountMessages(%s): %v", name, err)
+		}
+		if total != wantTotal || unread != wantUnread {
+			t.Errorf("CountMessages(%s) = total=%d unread=%d, want %d/%d", name, total, unread, wantTotal, wantUnread)
+		}
+	}
+	checkCounts("Label313", label.ID, 1, 1) // labelJunk excluded
+	checkCounts("Junk", junk.ID, 1, 1)      // sees labelJunk regardless
+	checkCounts("INBOX", inbox.ID, 0, 0)    // inboxTrash excluded
+	checkCounts("Trash", trash.ID, 1, 1)    // sees inboxTrash regardless
+
+	// Thread-level exclusion, in a mailbox of its own: threadA has two
+	// messages in the label, one label-only (unread) and one also in
+	// Junk (unread) -- the thread still counts once, from the
+	// label-only member. threadB has a single message that is a
+	// member of the label AND Junk; with its only label-membership row
+	// excluded, the thread must not be counted in the label's totals
+	// at all.
+	labelThreads := mustInsertMailbox(t, s, p.ID, "LabelThreads313")
+	threadRef := putBlob(t, s, "count-junktrash-thread-body")
+	insertThreaded := func(msgID, inReplyTo, references string, mailboxIDs ...store.MailboxID) {
+		t.Helper()
+		mms := make([]store.MessageMailbox, len(mailboxIDs))
+		for i, id := range mailboxIDs {
+			mms[i] = store.MessageMailbox{MailboxID: id}
+		}
+		if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+			PrincipalID: p.ID, Blob: threadRef, Size: threadRef.Size,
+			Envelope: store.Envelope{MessageID: msgID, InReplyTo: inReplyTo, References: references},
+		}, mms); err != nil {
+			t.Fatalf("InsertMessage %s: %v", msgID, err)
+		}
+	}
+	insertThreaded("cjt-a1@x", "", "", labelThreads.ID)
+	insertThreaded("cjt-a2@x", "<cjt-a1@x>", "<cjt-a1@x>", labelThreads.ID, junk.ID)
+	insertThreaded("cjt-b1@x", "", "", labelThreads.ID, junk.ID)
+
+	totalThreads, unreadThreads, err := s.Meta().CountThreads(ctx, labelThreads.ID)
+	if err != nil {
+		t.Fatalf("CountThreads(LabelThreads313): %v", err)
+	}
+	if totalThreads != 1 || unreadThreads != 1 {
+		t.Errorf("CountThreads(LabelThreads313) = total=%d unread=%d, want 1/1 (threadA survives via its label-only member, threadB's sole label row is junked and must not count)",
+			totalThreads, unreadThreads)
+	}
+	// Junk's own thread counts are unaffected: it sees threadA (via
+	// cjt-a2), threadB (via cjt-b1), and the earlier labelJunk
+	// standalone message's own thread -- 3 distinct threads.
+	junkTotalThreads, junkUnreadThreads, err := s.Meta().CountThreads(ctx, junk.ID)
+	if err != nil {
+		t.Fatalf("CountThreads(Junk): %v", err)
+	}
+	if junkTotalThreads != 3 || junkUnreadThreads != 3 {
+		t.Errorf("CountThreads(Junk) = total=%d unread=%d, want 3/3", junkTotalThreads, junkUnreadThreads)
 	}
 }
 
