@@ -20,6 +20,8 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+            api(libs.kotlinx.datetime)
+            api(libs.sqldelight.coroutines.extensions)
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
@@ -27,10 +29,13 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.coroutines.test)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.sqldelight.android.driver)
+            implementation(libs.androidx.security.crypto)
+            implementation(libs.kotlinx.coroutines.android)
         }
     }
 }
@@ -53,6 +58,12 @@ sqldelight {
     databases {
         create("HeroldDatabase") {
             packageName.set("com.netzhansa.herold.shared.store")
+            // The generated schema file is the baseline later milestones
+            // migrate from: a schema change adds <version>.sqm next to the
+            // .sq files and bumps this version, and verifyMigrations
+            // replays them against the recorded schema at build time.
+            schemaOutputDirectory.set(file("src/commonMain/sqldelight/databases"))
+            verifyMigrations.set(true)
         }
     }
 }

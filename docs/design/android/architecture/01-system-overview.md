@@ -35,6 +35,23 @@ mobile/
 - **`iosApp`** does not exist at v1. Its later addition adds `iosMain` actuals
   and a SwiftUI layer over the same `shared`.
 
+## Pinned libraries
+
+`mobile/gradle/libs.versions.toml` is the single source of truth for versions.
+The shared core's dependency set:
+
+| Library | Used for |
+|---|---|
+| kotlinx-coroutines | concurrency; `Flow` reads out of the local store |
+| kotlinx-serialization-json | JMAP wire encoding and decoding |
+| kotlinx-datetime | JMAP `UTCDate` parsing and the snooze presets' local-time arithmetic (`REQ-SNZ-01..04`) |
+| Ktor client (OkHttp engine on Android) | JMAP transport, blob download, EventSource |
+| SQLDelight (+ coroutines-extensions) | the local store and its reactive queries |
+
+Android-only additions in `androidApp` and `shared/androidMain`: Jetpack
+Compose with Material 3, Navigation Compose, and androidx.security-crypto for
+the Keystore-backed token store.
+
 ## Layering
 
 ```

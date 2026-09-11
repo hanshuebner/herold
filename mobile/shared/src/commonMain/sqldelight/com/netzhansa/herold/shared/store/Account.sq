@@ -1,0 +1,23 @@
+-- Accounts of the signed-in principal, as advertised by the JMAP session
+-- descriptor: the primary mail account plus every sub-account
+-- (https://netzhansa.com/jmap/sub-accounts). Every other table is keyed by
+-- accountId so the combined inbox can fold them together
+-- (docs/design/android/requirements/02-offline-and-sync.md REQ-AND-SYNC-02).
+
+CREATE TABLE account (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    isPrimary INTEGER NOT NULL DEFAULT 0,
+    isPersonal INTEGER NOT NULL DEFAULT 1,
+    sortOrder INTEGER NOT NULL DEFAULT 0
+);
+
+selectAll:
+SELECT * FROM account ORDER BY sortOrder, name;
+
+upsert:
+INSERT OR REPLACE INTO account(id, name, isPrimary, isPersonal, sortOrder)
+VALUES (?, ?, ?, ?, ?);
+
+deleteAll:
+DELETE FROM account;

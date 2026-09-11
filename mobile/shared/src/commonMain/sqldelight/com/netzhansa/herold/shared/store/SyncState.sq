@@ -1,0 +1,25 @@
+-- Per-account, per-type JMAP state string (REQ-AND-SYNC-02). The sync engine
+-- issues Foo/changes against these, so a cold start fetches a delta rather
+-- than the whole account.
+
+CREATE TABLE sync_state (
+    accountId TEXT NOT NULL,
+    type TEXT NOT NULL,
+    state TEXT NOT NULL,
+    PRIMARY KEY (accountId, type)
+);
+
+get:
+SELECT state FROM sync_state WHERE accountId = ? AND type = ?;
+
+upsert:
+INSERT OR REPLACE INTO sync_state(accountId, type, state) VALUES (?, ?, ?);
+
+delete:
+DELETE FROM sync_state WHERE accountId = ? AND type = ?;
+
+deleteForAccount:
+DELETE FROM sync_state WHERE accountId = ?;
+
+deleteAll:
+DELETE FROM sync_state;

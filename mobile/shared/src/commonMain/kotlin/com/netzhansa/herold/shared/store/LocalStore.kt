@@ -1,0 +1,116 @@
+package com.netzhansa.herold.shared.store
+
+import com.netzhansa.herold.shared.domain.Account
+import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.domain.Identity
+import com.netzhansa.herold.shared.domain.Mailbox
+import com.netzhansa.herold.shared.domain.Thread
+import kotlinx.coroutines.flow.Flow
+
+/** A blob held in the local cache (REQ-AND-SYNC-12). */
+data class CachedBlob(
+    val contentType: String,
+    val bytes: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is CachedBlob && contentType == other.contentType && bytes.contentEquals(other.bytes)
+
+    override fun hashCode(): Int = 31 * contentType.hashCode() + bytes.contentHashCode()
+}
+
+/**
+ * The local source of truth (REQ-AND-SYNC-01). The UI reads it and nothing
+ * else; the sync engine is the only writer of server-derived rows, and
+ * optimistic actions write through it before their `Email/set` is sent.
+ *
+ * It is an interface so screen logic and the reconciler are testable against
+ * an in-memory implementation without a SQLite driver or a network
+ * (docs/design/android/architecture/05-ui-shell.md, "Testing hook").
+ */
+interface LocalStore {
+    fun accounts(): Flow<List<Account>>
+
+    suspend fun accountList(): List<Account>
+
+    suspend fun replaceAccounts(accounts: List<Account>)
+
+    fun mailboxes(): Flow<List<Mailbox>>
+
+    suspend fun mailboxList(): List<Mailbox>
+
+    suspend fun upsertMailboxes(rows: List<Mailbox>)
+
+    suspend fun deleteMailboxes(accountId: String, ids: List<String>)
+
+    suspend fun clearMailboxes(accountId: String)
+
+    /** Every inbox message across accounts, newest first (suite REQ-MAIL-SUB-03). */
+    fun inboxEmails(limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
+
+    fun threadEmails(accountId: String, threadId: String): Flow<List<Email>>
+
+    suspend fun email(accountId: String, id: String): Email?
+
+    suspend fun emailList(): List<Email>
+
+    suspend fun upsertEmails(rows: List<Email>)
+
+    suspend fun deleteEmails(accountId: String, ids: List<String>)
+
+    suspend fun clearEmails(accountId: String)
+
+    /**
+     * Writes the membership an optimistic action produced (star, read,
+     * archive, label, snooze) without touching the cached body.
+     */
+    suspend fun updateMembership(
+        accountId: String,
+        id: String,
+        keywords: Set<String>,
+        mailboxIds: Set<String>,
+        snoozedUntil: String?,
+    )
+
+    suspend fun storeBody(
+        accountId: String,
+        id: String,
+        html: String?,
+        text: String?,
+        attachments: List<Attachment>,
+        fetchedAt: Long,
+    )
+
+    suspend fun thread(accountId: String, id: String): Thread?
+
+    suspend fun upsertThreads(rows: List<Thread>)
+
+    suspend fun deleteThreads(accountId: String, ids: List<String>)
+
+    suspend fun clearThreads(accountId: String)
+
+    fun identities(): Flow<List<Identity>>
+
+    suspend fun upsertIdentities(rows: List<Identity>)
+
+    suspend fun deleteIdentities(accountId: String, ids: List<String>)
+
+    suspend fun clearIdentities(accountId: String)
+
+    suspend fun syncState(accountId: String, type: String): String?
+
+    suspend fun setSyncState(accountId: String, type: String, state: String?)
+
+    suspend fun cachedBlob(accountId: String, blobId: String): CachedBlob?
+
+    suspend fun cacheBlob(accountId: String, blobId: String, contentType: String, bytes: ByteArray)
+
+    suspend fun blobCacheSize(): Long
+
+    /** Drops every row of every account; used on sign-out (REQ-AND-AUTH-21). */
+    suspend fun clearAll()
+
+    companion object {
+        const val DEFAULT_INBOX_LIMIT: Long = 500
+    }
+}

@@ -1,40 +1,38 @@
 package com.netzhansa.herold.shared.jmap
 
+import com.netzhansa.herold.shared.auth.AuthClient
 import com.netzhansa.herold.shared.auth.InMemoryTokenStore
+import com.netzhansa.herold.shared.auth.SignInResult
+import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.fake.FakeLocalStore
+import com.netzhansa.herold.shared.sync.SyncEngine
+import com.netzhansa.herold.shared.sync.SyncStatus
+import com.netzhansa.herold.shared.sync.SyncTypes
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Exercises the real device-token + Mailbox/get path against a LIVE
- * ephemeral herold dev instance -- the deterministic analog of the
- * puppeteer rule for this slice (docs/design/android/implementation-plan.md
- * "Verification model"): it proves the auth bootstrap and a live JMAP read
- * work end to end, without needing an Android emulator.
- *
- * Runs on the host JVM (this is `shared`'s `androidUnitTest` source set, the
- * android-target local-unit-test variant, not an instrumented test), using
- * the same OkHttp Ktor engine the app uses on-device.
- *
- * Start an ephemeral instance first and point this test at it:
+ * Drives the real device-token grant and a full sync pass against a LIVE
+ * ephemeral herold, on the host JVM with the same OkHttp Ktor engine the app
+ * uses on-device. It is the fast counterpart of the emulator acceptance run:
+ * it proves the wire contract (auth, session, Mailbox/get, Email/query +
+ * Email/get, state strings) without an AVD.
  *
  *   scripts/dev-instance.sh start
- *   # note the printed BACKEND_URL=http://127.0.0.1:<port>
  *   HEROLD_DEV_INSTANCE_URL=http://127.0.0.1:<port> \
  *     ./gradlew :shared:testDebugUnitTest --tests '*JmapClientLiveTest*'
  *
- * If HEROLD_DEV_INSTANCE_URL is unset, the test passes trivially (skips the
- * live assertion) so `:shared:build` stays green without a running instance
- * -- wiring dev-instance provisioning into the Gradle test task itself is
- * the CI-gating emulator harness, deferred to that later increment
- * (docs/design/android implementation-plan.md, Phase 0 "Remaining work").
+ * With HEROLD_DEV_INSTANCE_URL unset the test skips its live assertions so
+ * `:shared:build` stays green in CI, which runs no herold.
  */
 class JmapClientLiveTest {
     @Test
-    fun signsInAndFetchesMailboxes() = runBlocking {
+    fun signsInAndSyncsTheSeededAccount() = runBlocking {
         val baseUrl = System.getenv("HEROLD_DEV_INSTANCE_URL")
         if (baseUrl.isNullOrBlank()) {
             println(
@@ -47,16 +45,33 @@ class JmapClientLiveTest {
         val httpClient = HttpClient(OkHttp)
         try {
             val tokenStore = InMemoryTokenStore()
+            val signIn = AuthClient(httpClient, tokenStore)
+                .signIn(baseUrl, "alice@example.local", "testpass123...")
+            assertTrue(signIn is SignInResult.Success, "sign-in failed: $signIn")
+            assertTrue(
+                (signIn as SignInResult.Success).token.startsWith("hk_"),
+                "expected an hk_... bearer token",
+            )
+
             val client = JmapClient(httpClient, baseUrl, tokenStore)
+            val session = client.session()
+            assertTrue(session.mailAccountIds().isNotEmpty(), "session advertised no mail account")
 
-            val token = client.signIn("alice@example.local", "testpass123...")
-            assertTrue(token.startsWith("hk_"), "expected an hk_... bearer token, got: $token")
+            val store = FakeLocalStore()
+            val engine = SyncEngine(client, store)
+            assertEquals(SyncStatus.Idle, engine.syncAll(), "sync pass failed")
 
-            val mailboxes = client.fetchMailboxes()
-            assertTrue(mailboxes.isNotEmpty(), "expected a non-empty mailbox list, got: $mailboxes")
+            val accountId = session.mailAccountId
+            assertNotNull(accountId)
+            assertNotNull(
+                store.mailboxList().firstOrNull { it.role == MailboxRoles.INBOX },
+                "no inbox in ${store.mailboxList()}",
+            )
+            assertNotNull(store.syncState(accountId, SyncTypes.MAILBOX), "no Mailbox state string persisted")
+            assertNotNull(store.syncState(accountId, SyncTypes.EMAIL), "no Email state string persisted")
 
-            val inbox = mailboxes.firstOrNull { it.name == "INBOX" }
-            assertNotNull(inbox, "expected an INBOX mailbox in: $mailboxes")
+            // A second pass must go through Foo/changes and stay green.
+            assertEquals(SyncStatus.Idle, engine.syncAll(), "incremental pass failed")
         } finally {
             httpClient.close()
         }

@@ -1,0 +1,23 @@
+-- Identities per account (RFC 8621 section 6): the from-addresses compose
+-- offers and the "this is me" test the thread list uses for sent mail.
+
+CREATE TABLE identity (
+    accountId TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    mayDelete INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (accountId, id)
+);
+
+upsert:
+INSERT OR REPLACE INTO identity(accountId, id, name, email, mayDelete) VALUES (?, ?, ?, ?, ?);
+
+selectAll:
+SELECT * FROM identity ORDER BY email;
+
+deleteById:
+DELETE FROM identity WHERE accountId = ? AND id = ?;
+
+deleteForAccount:
+DELETE FROM identity WHERE accountId = ?;

@@ -1,0 +1,36 @@
+-- Downloaded blobs (inline images, attachments) under a size budget with LRU
+-- eviction (REQ-AND-SYNC-12).
+
+CREATE TABLE blob_cache (
+    accountId TEXT NOT NULL,
+    blobId TEXT NOT NULL,
+    contentType TEXT NOT NULL DEFAULT '',
+    bytes BLOB NOT NULL,
+    size INTEGER NOT NULL,
+    lastUsedAt INTEGER NOT NULL,
+    PRIMARY KEY (accountId, blobId)
+);
+
+CREATE INDEX blob_cache_lru ON blob_cache(lastUsedAt);
+
+get:
+SELECT * FROM blob_cache WHERE accountId = ? AND blobId = ?;
+
+touch:
+UPDATE blob_cache SET lastUsedAt = ? WHERE accountId = ? AND blobId = ?;
+
+upsert:
+INSERT OR REPLACE INTO blob_cache(accountId, blobId, contentType, bytes, size, lastUsedAt)
+VALUES (?, ?, ?, ?, ?, ?);
+
+totalSize:
+SELECT COALESCE(SUM(size), 0) AS total FROM blob_cache;
+
+oldest:
+SELECT accountId, blobId, size FROM blob_cache ORDER BY lastUsedAt LIMIT ?;
+
+delete:
+DELETE FROM blob_cache WHERE accountId = ? AND blobId = ?;
+
+deleteAll:
+DELETE FROM blob_cache;

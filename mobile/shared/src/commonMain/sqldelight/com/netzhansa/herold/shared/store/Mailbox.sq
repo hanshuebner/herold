@@ -1,17 +1,34 @@
--- Local-store seam for the offline model
--- (docs/design/android/requirements/02-offline-and-sync.md). This is the
--- Phase 0 skeleton table; the sync engine and full schema (threads, emails,
--- outbox) land with Phase 1.
+-- Mailboxes per account (RFC 8621 section 2). A mailbox with no role is a
+-- label in the suite's model (web/apps/suite/src/lib/mail/LabelPicker.svelte
+-- draws its candidates from the custom mailboxes), so the label chips and the
+-- label picker read the same rows.
 
 CREATE TABLE mailbox (
-    id TEXT NOT NULL PRIMARY KEY,
+    accountId TEXT NOT NULL,
+    id TEXT NOT NULL,
     name TEXT NOT NULL,
-    unreadCount INTEGER NOT NULL DEFAULT 0
+    role TEXT,
+    parentId TEXT,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+    totalEmails INTEGER NOT NULL DEFAULT 0,
+    unreadEmails INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (accountId, id)
 );
 
-selectAll:
-SELECT * FROM mailbox;
+CREATE INDEX mailbox_role ON mailbox(role);
 
-insertOrReplace:
-INSERT OR REPLACE INTO mailbox(id, name, unreadCount)
-VALUES (?, ?, ?);
+selectAll:
+SELECT * FROM mailbox ORDER BY sortOrder, name;
+
+selectForAccount:
+SELECT * FROM mailbox WHERE accountId = ? ORDER BY sortOrder, name;
+
+upsert:
+INSERT OR REPLACE INTO mailbox(accountId, id, name, role, parentId, sortOrder, totalEmails, unreadEmails)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteById:
+DELETE FROM mailbox WHERE accountId = ? AND id = ?;
+
+deleteForAccount:
+DELETE FROM mailbox WHERE accountId = ?;

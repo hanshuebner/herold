@@ -1,0 +1,24 @@
+-- Threads (RFC 8621 section 3). emailIds is the server's display order,
+-- space-delimited.
+
+CREATE TABLE thread (
+    accountId TEXT NOT NULL,
+    id TEXT NOT NULL,
+    emailIds TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (accountId, id)
+);
+
+upsert:
+INSERT OR REPLACE INTO thread(accountId, id, emailIds) VALUES (?, ?, ?);
+
+selectById:
+SELECT * FROM thread WHERE accountId = ? AND id = ?;
+
+selectAll:
+SELECT * FROM thread;
+
+deleteById:
+DELETE FROM thread WHERE accountId = ? AND id = ?;
+
+deleteForAccount:
+DELETE FROM thread WHERE accountId = ?;
