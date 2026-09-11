@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeHtml, htmlHasExternalImages } from './sanitize';
 import { INTERNALIZE_PLACEHOLDER_PREFIX } from './internalize-placeholder';
+import { splitQuotedText } from './quoted';
 
 function bodyOf(srcdoc: string): string {
   const m = srcdoc.match(/<body>([\s\S]*?)<\/body>/);
@@ -1049,6 +1050,171 @@ describe('sanitizeHtml — quoted-history collapse', () => {
       expect(body.indexOf('On Mon, Alice wrote:')).toBeLessThan(detailsEnd);
       expect(body.indexOf('Original quoted text')).toBeGreaterThan(detailsStart);
       expect(body.indexOf('My reply.')).toBeLessThan(detailsStart);
+    });
+  });
+
+  // re #292 follow-up (thread t3366): the maintainer reported the symptom
+  // recurring on a top-posted reply from a Thunderbird/Apple-Mail-style
+  // client (attribution line "Am ... um ... schrieb ...:", not a
+  // gmail_quote). These fixtures cover the concrete client shapes named in
+  // the follow-up comment: Thunderbird's moz-cite-prefix as a direct
+  // sibling of the blockquote, Thunderbird's moz-forward-container
+  // wrapping, Apple Mail's bare-div nesting, a trailing-signature variant,
+  // and the text/plain render path -- plus the specific shape that
+  // actually over-folds pre-fix: the attribution + blockquote bundled
+  // together inside one further wrapping <div> that is itself a sibling of
+  // the fresh paragraphs INSIDE the matched candidate.
+  describe('Thunderbird / Apple Mail "Am ... schrieb ...:" attribution shapes (re #292 follow-up, thread t3366)', () => {
+    it('Thunderbird: div.moz-cite-prefix + blockquote as direct siblings, fresh <p>s preceding -- already correct pre-fix', () => {
+      const html =
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<p>Musterstraße 1<br>12345 Musterstadt</p>' +
+        '<p>Mit freundlichen Grüßen<br>Max Mustermann</p>' +
+        '<div class="moz-cite-prefix">Am 10.09.26 um 18:21 schrieb Jane Doe:<br></div>' +
+        '<blockquote type="cite" cite="mid:xxxx@xxx">' +
+        '<div class="moz-cite-prefix">Am 09.09.26 um 12:00 schrieb John Doe:<br></div>' +
+        '<blockquote type="cite" cite="mid:yyyy@yyy">Original original text.</blockquote>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('Max Mustermann')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe')).toBeGreaterThan(detailsStart);
+    });
+
+    it('Thunderbird: fresh <p>s outside a moz-forward-container that wraps the attribution + blockquote -- already correct pre-fix', () => {
+      const html =
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<div class="moz-forward-container">' +
+        '<div class="moz-cite-prefix">Am 10.09.26 um 18:21 schrieb Jane Doe:<br></div>' +
+        '<blockquote type="cite">Original original text.</blockquote>' +
+        '</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('vielen Dank')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe')).toBeGreaterThan(detailsStart);
+    });
+
+    it('Apple Mail: bare unclassed div nests "Am ... schrieb ...:<br><blockquote>", fresh <p>s preceding as siblings -- already correct pre-fix', () => {
+      const html =
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<div>Am 10.09.26 um 18:21 schrieb Jane Doe:<br>' +
+        '<blockquote type="cite">Original original text.</blockquote>' +
+        '</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('vielen Dank')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe')).toBeGreaterThan(detailsStart);
+    });
+
+    it('over-folds pre-fix: attribution + blockquote bundled in an inner unclassed div that is itself a sibling of fresh <p>s inside the outer matched <blockquote>', () => {
+      // The actual over-folding shape: findFirstQuotedRegion matches the
+      // OUTER <blockquote> (tag match). Its direct children are the fresh
+      // <p>s and one further <div> that bundles the attribution text and
+      // the nested <blockquote> together -- neither a BLOCKQUOTE tag nor a
+      // classed DIV at that position, so pre-fix splitLeadingFreshContent
+      // found no boundary and swept the whole thing, fresh text included.
+      const html =
+        '<blockquote type="cite">' +
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<p>Musterstraße 1<br>12345 Musterstadt</p>' +
+        '<p>Mit freundlichen Grüßen<br>Max Mustermann</p>' +
+        '<div>Am 10.09.26 um 18:21 schrieb Jane Doe:<br>' +
+        '<blockquote type="cite">Original original text.</blockquote>' +
+        '</div>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      // Fresh text renders immediately, before <details>.
+      expect(body.indexOf('Hallo Herr Mustermann,')).toBeLessThan(detailsStart);
+      expect(body.indexOf('Max Mustermann')).toBeLessThan(detailsStart);
+      // The attribution and the quote both fold.
+      const attrPos = body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe');
+      const quotePos = body.indexOf('Original original text.');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+      expect(quotePos).toBeGreaterThan(detailsStart);
+      expect(quotePos).toBeLessThan(detailsEnd);
+    });
+
+    it('over-folds pre-fix: same bundled-div shape with a classed div.moz-cite-prefix as the outer matched candidate', () => {
+      const html =
+        '<div class="moz-cite-prefix">' +
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<div>Am 10.09.26 um 18:21 schrieb Jane Doe:<br>' +
+        '<blockquote type="cite">Original original text.</blockquote>' +
+        '</div>' +
+        '</div>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('vielen Dank')).toBeLessThan(detailsStart);
+      const attrPos = body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+    });
+
+    it('a genuine fresh wrapper div (no attribution inside) is not mistaken for a quote wrapper', () => {
+      // Regression guard for isQuoteWrapperNode: an ordinary fresh
+      // paragraph wrapped in its own <div> must not be treated as a quote
+      // marker just because it is a plain element ahead of the real quote.
+      const html =
+        '<blockquote type="cite">' +
+        '<div>Just an ordinary fresh paragraph, no attribution here.</div>' +
+        '<div>Am 10.09.26 um 18:21 schrieb Jane Doe:<br>' +
+        '<blockquote type="cite">Original.</blockquote>' +
+        '</div>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('Just an ordinary fresh paragraph')).toBeLessThan(detailsStart);
+    });
+
+    it('signature block ("-- ") in the fresh content before the attribution does not confuse the split', () => {
+      const html =
+        '<blockquote type="cite">' +
+        '<p>Hallo Herr Mustermann,</p>' +
+        '<p>vielen Dank für Ihr Angebot.</p>' +
+        '<p>-- </p><p>Max Mustermann</p><p>Musterstraße 1, 12345 Musterstadt</p>' +
+        '<div>Am 10.09.26 um 18:21 schrieb Jane Doe:<br>' +
+        '<blockquote type="cite">Original.</blockquote>' +
+        '</div>' +
+        '</blockquote>';
+      const body = bodyOf(sanitizeHtml(html, { loadImages: false }));
+      const detailsStart = body.indexOf('<details class="herold-quoted">');
+      const detailsEnd = body.indexOf('</details>');
+      expect(detailsStart).toBeGreaterThan(0);
+      expect(body.indexOf('Musterstraße 1')).toBeLessThan(detailsStart);
+      const attrPos = body.indexOf('Am 10.09.26 um 18:21 schrieb Jane Doe');
+      expect(attrPos).toBeGreaterThan(detailsStart);
+      expect(attrPos).toBeLessThan(detailsEnd);
+    });
+
+    it('text/plain path: splitQuotedText separates the same attribution shape into head/collapsed -- already correct pre-fix', () => {
+      const text =
+        'Hallo Herr Mustermann,\n\n' +
+        'vielen Dank für Ihr Angebot.\n\n' +
+        'Musterstraße 1\n12345 Musterstadt\n\n' +
+        'Mit freundlichen Grüßen\nMax Mustermann\n\n' +
+        'Am 10.09.26 um 18:21 schrieb Jane Doe:\n' +
+        '> Am 09.09.26 um 12:00 schrieb John Doe:\n' +
+        '> > Original original text.\n';
+      const split = splitQuotedText(text);
+      expect(split.head).toContain('Max Mustermann');
+      expect(split.head).not.toContain('schrieb Jane Doe');
+      expect(split.collapsed).toContain('Am 10.09.26 um 18:21 schrieb Jane Doe:');
+      expect(split.collapsed).toContain('Original original text.');
     });
   });
 });

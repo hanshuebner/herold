@@ -962,12 +962,23 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
  */
 /**
  * True for a node that itself marks the start of quoted material: a nested
- * `<blockquote>`, a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix` div, or
- * an attribution/citation-introducer line. Used by `splitLeadingFreshContent`
- * to find where genuinely quoted content begins among a candidate's own
- * children (re #292) — distinct from `isQuoteOrEmptyNode`, which also
- * matches whitespace/`<br>`/`<hr>` separators that carry no marker value of
- * their own.
+ * `<blockquote>`, a `gmail_quote`/`yahoo_quoted`/`moz-cite-prefix` div, an
+ * attribution/citation-introducer line, or a plain wrapper element whose
+ * own first meaningful child is itself one of those markers. Used by
+ * `splitLeadingFreshContent` to find where genuinely quoted content begins
+ * among a candidate's own children (re #292) — distinct from
+ * `isQuoteOrEmptyNode`, which also matches whitespace/`<br>`/`<hr>`
+ * separators that carry no marker value of their own.
+ *
+ * The wrapper case (re #292 follow-up, thread t3366) covers Thunderbird's
+ * and Apple Mail's `<div>Am ... schrieb ...:<br><blockquote type="cite">
+ * ...</blockquote></div>` shape when that div is itself further wrapped
+ * together with the fresh reply text inside one more containing element
+ * (e.g. a `moz-forward-container` or an unclassed compose-body div) — the
+ * attribution line and the following `<blockquote>` are direct children of
+ * an inner `<div>` that carries no recognized class of its own, so neither
+ * the `BLOCKQUOTE` tag check nor the classed-`DIV` check above sees them
+ * without looking one level inside that inner div.
  */
 function isQuoteStartNode(node: Node): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
@@ -978,7 +989,57 @@ function isQuoteStartNode(node: Node): boolean {
       if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
     }
   }
-  return isAttributionNode(node);
+  if (isAttributionNode(node)) return true;
+  return isQuoteWrapperNode(node);
+}
+
+/**
+ * True when `node` is a plain element (no marker class/tag of its own)
+ * whose first meaningful child — skipping only whitespace-only text and
+ * `<br>`/`<hr>` separators, never a `<blockquote>` or classed quote div,
+ * since those ARE the meaningful content being looked for — is itself a
+ * `<blockquote>`, a classed quote div, or an attribution line. One level
+ * of unwrapping only: this targets the specific "attribution + blockquote
+ * bundled together in one further wrapping div" shape (re #292 follow-up),
+ * not an open-ended recursive search that could mistake an ordinary
+ * fresh-content wrapper for a quote.
+ */
+function isQuoteWrapperNode(node: Node): boolean {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const first = firstMeaningfulChild(node as Element);
+  if (!first) return false;
+  if (first.nodeType === Node.ELEMENT_NODE) {
+    const fe = first as Element;
+    if (fe.tagName === 'BLOCKQUOTE') return true;
+    if (fe.tagName === 'DIV') {
+      const cls = fe.getAttribute('class') ?? '';
+      if (/gmail_quote|yahoo_quoted|moz-cite-prefix/i.test(cls)) return true;
+    }
+  }
+  return isAttributionNode(first);
+}
+
+/**
+ * The first child of `el` that is not a whitespace-only text node and not
+ * a `<br>`/`<hr>` separator, or null when `el` has no such child. Used by
+ * `isQuoteWrapperNode` to find the node whose own identity decides whether
+ * `el` wraps quoted content — unlike `isQuoteOrEmptyNode`, this does NOT
+ * skip a `<blockquote>` or a classed quote div, because those are exactly
+ * the markers being searched for, not separators to skip past.
+ */
+function firstMeaningfulChild(el: Element): Node | null {
+  for (const c of Array.from(el.childNodes)) {
+    if (c.nodeType === Node.TEXT_NODE) {
+      if (!(c.nodeValue?.trim())) continue;
+      return c;
+    }
+    if (c.nodeType === Node.ELEMENT_NODE) {
+      const ce = c as Element;
+      if (ce.tagName === 'BR' || ce.tagName === 'HR') continue;
+      return c;
+    }
+  }
+  return null;
 }
 
 /**
