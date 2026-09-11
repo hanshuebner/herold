@@ -790,11 +790,16 @@ jobs:
           name: herold-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
           # 1 day: these artifacts serve only as an ephemeral handoff to the
-          # deploy job in the same run. The durable record is the Forgejo
-          # release created by the deploy job.
+          # release job in the same run. The durable record is the Forgejo
+          # release that job creates.
           retention-days: 1
 
-  # Deploy to outpost.netzhansa.com via the release-pull framework.
+  # Build + publish the outpost.netzhansa.com release via the
+  # release-pull framework. This job only packages and publishes the
+  # ci-<sha> Forgejo release; it does NOT SSH-trigger outpost. That step
+  # lives in the separate .forgejo/workflows/deploy.yml workflow, which
+  # reacts to this job publishing a release (see the comment at the top
+  # of deploy.yml for why the split exists -- re #323).
   #
   # The activate script on the host fetches a Forgejo release by tag and
   # downloads exactly two assets: herold-<ref>.tar.gz and
@@ -824,17 +829,19 @@ jobs:
   # by the "prune old ci- releases" step below, which keeps only the newest 5
   # after publishing each new release. The host-side activate script prunes the
   # on-disk release dirs separately (KEEP=5).
-  deploy:
-    name: deploy (outpost.netzhansa.com)
-    # The release-pull deploy runs on any standard orchestrator-provisioned
-    # runner (it publishes a release and SSH-triggers `activate` on outpost
-    # -- it does not run on outpost itself). The `herold` label advertised by
-    # no runner left this job perpetually unschedulable and cancelled; use the
-    # same `netzhansa` pool every other job (and html-scrabble's deploy) uses.
+  release:
+    name: release (publish ci-<sha> to code.netzhansa.com)
+    # Runs on any standard orchestrator-provisioned runner (it publishes a
+    # release -- it does not run on outpost itself). The `herold` label
+    # advertised by no runner left this job perpetually unschedulable and
+    # cancelled; use the same `netzhansa` pool every other job uses.
     runs-on: [self-hosted, netzhansa, amd64]
-    # Deploy only after every build, lint, and test job has passed. A failure
-    # in any of them (web-e2e, conformance, jmaptest, docker, ...) blocks the
-    # deploy rather than shipping a binary the suite never validated.
+    # Publish only after every build, lint, and test job has passed. A
+    # failure in any of them (web-e2e, conformance, jmaptest, docker, ...)
+    # blocks the release rather than shipping a binary the suite never
+    # validated. deploy.yml only ever deploys a published ci-<sha> release,
+    # so gating publication here is what makes "a failing commit is never
+    # deployed" hold.
     needs:
       - pre-commit
       - lint
@@ -848,8 +855,8 @@ jobs:
       - docker
       - jmaptest
       - binaries
-    # Deploy from the default branch only, never from PRs or tags. Manual
-    # dispatch counts: re-dispatching ci.yml on main is how a deploy is
+    # Publish from the default branch only, never from PRs or tags. Manual
+    # dispatch counts: re-dispatching ci.yml on main is how a release is
     # recovered after a job fails on an external flake, and the dispatched
     # run validates the same tip through the same gates as a push.
     if: >-
@@ -859,7 +866,7 @@ jobs:
       contents: write
     timeout-minutes: 10
     steps:
-      # Guard: if DEPLOY_SSH_KEY is not configured, skip remaining steps
+      # Guard: if RELEASE_TOKEN is not configured, skip remaining steps
       # rather than failing.  Forgejo/Actions does not permit secrets.*
       # in a job-level `if` condition, so we use a step-output gate
       # instead.  This makes the job a safe no-op until the operator
@@ -867,10 +874,10 @@ jobs:
       - name: check secrets configured
         id: guard
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          if [ -z "${DEPLOY_SSH_KEY}" ]; then
-            echo "DEPLOY_SSH_KEY is not set; skipping deploy"
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "RELEASE_TOKEN is not set; skipping release publish"
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
           else
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
@@ -1073,35 +1080,8 @@ jobs:
           done
           echo "prune complete; kept newest ${KEEP} ci- releases"
 
-      - name: write SSH key
-        if: steps.guard.outputs.enabled == 'true'
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          KEY_FILE="$(mktemp)"
-          chmod 0600 "${KEY_FILE}"
-          # Trailing newline is required: OpenSSH refuses a private key whose
-          # final line is not newline-terminated with "error in libcrypto".
-          # printf '%s' drops it; printf '%s\n' restores it (matches the
-          # proven html-scrabble deploy).
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
-          echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
-
-      - name: trigger host activation
-        if: steps.guard.outputs.enabled == 'true'
-        run: |
-          set -euo pipefail
-          ssh \
-            -i "${KEY_FILE}" \
-            -p ${{ secrets.DEPLOY_PORT }} \
-            -o StrictHostKeyChecking=accept-new \
-            -o IdentitiesOnly=yes \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-            "deploy ${REF}"
-
-      - name: remove SSH key
-        if: always() && steps.guard.outputs.enabled == 'true'
-        run: |
-          if [ -n "${KEY_FILE:-}" ] && [ -f "${KEY_FILE}" ]; then
-            rm -f "${KEY_FILE}"
-          fi
+      # The SSH trigger of outpost's `activate` used to run here. It now
+      # lives in .forgejo/workflows/deploy.yml, which reacts to this job
+      # publishing a non-draft release (the `release` event, action
+      # "published") instead of running inline in the same job -- see
+      # that workflow's header comment (re #323).

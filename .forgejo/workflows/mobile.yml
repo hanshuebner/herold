@@ -4,7 +4,7 @@ name: mobile
 # implementation-plan.md, "Monorepo integration"). Triggered only when
 # mobile/ or its design tree change, so a Go/web-only push never spawns
 # this job. Deliberately its own workflow (not a job inside ci.yml) and
-# NOT referenced by ci.yml's deploy job needs: chain, so a mobile build
+# NOT referenced by ci.yml's release job needs: chain, so a mobile build
 # failure never blocks the server auto-deploy.
 #
 # Builds shared + androidApp and runs their host-JVM unit tests

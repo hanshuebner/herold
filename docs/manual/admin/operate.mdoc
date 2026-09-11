@@ -494,10 +494,13 @@ first invoked and idle out.
 
 ### Release archive layout (release-pull deploy)
 
-The `.forgejo/workflows/ci.yml` `deploy` job's release archive
+The `.forgejo/workflows/ci.yml` `release` job's release archive
 (`herold-<ref>.tar.gz`) carries the first-party plugin binaries
 alongside the server binary, so a deploy always brings server and
-plugins from the same commit:
+plugins from the same commit. `.forgejo/workflows/deploy.yml` (a
+separate workflow, so a busy push queue can't starve it -- see its
+header comment) SSH-triggers outpost to pull and activate the newest
+release this job publishes:
 
 ```
 herold                  server binary, mode 0755, archive root

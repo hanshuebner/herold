@@ -13,7 +13,7 @@
 #   3. re-run idempotence: running the good set twice in a row succeeds
 #      both times and leaves the same binaries in place.
 #
-# Invoked from the deploy job's "package release assets" step so a
+# Invoked from ci.yml's "release" job's "package release assets" step so a
 # regression in release-post-install.sh's atomicity fails CI before an
 # archive reaches outpost.
 

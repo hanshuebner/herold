@@ -1,0 +1,219 @@
+name: deploy
+
+# SSH-triggers outpost.netzhansa.com to pull + activate the newest
+# published ci-<sha> release (docs/ci-driven-deploy.md in
+# netzhansa-infra). Split out of ci.yml (re #323): ci.yml's own
+# concurrency group (ci-${{ github.ref }}, cancel-in-progress: true)
+# cancels a superseded run's `release` job along with its test lanes, so
+# a busy queue of pushes to main could cancel every run before it
+# reached deploy and starve outpost of a deploy for hours. This workflow
+# sits in its own concurrency group that is never cancelled, so it always
+# runs to completion once started.
+#
+# Trigger: this Forgejo instance (code.netzhansa.com, Forgejo 15.0.3) has
+# no `workflow_run` trigger -- verified against its own source
+# (modules/actions/github.go's GithubEvent* constants list `push`,
+# `release`, `schedule`, `workflow_dispatch`, and others, but no
+# `workflow_run`). ci.yml's `release` job publishes a non-draft Forgejo
+# release via the API once every build/lint/test/conformance job has
+# passed; a non-draft release create fires the `release` event with
+# action "published" (services/release.CreateRelease ->
+# notify_service.NewRelease, confirmed in the same source tree), which
+# is the closest available substitute for "on ci success": it fires
+# once per successfully-published release, never for a failing or
+# superseded run, with no polling needed. `schedule` (every 30 minutes)
+# is a backstop for a missed or failed run of this workflow itself.
+#
+# Because ci.yml's `release` job already gates publication on every
+# test/lint/build job, "the newest ci-<sha> release" IS "the newest
+# commit whose ci run succeeded" -- this job does not need to inspect
+# ci.yml's run status separately.
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-outpost
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy (outpost.netzhansa.com)
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 15
+    steps:
+      # Guard: if DEPLOY_SSH_KEY or RELEASE_TOKEN is not configured, skip
+      # remaining steps rather than failing. Forgejo/Actions does not
+      # permit secrets.* in a job-level `if` condition, so we use a
+      # step-output gate instead. This makes the job a safe no-op until
+      # the operator configures the required secrets.
+      - name: check secrets configured
+        id: guard
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "${DEPLOY_SSH_KEY}" ] || [ -z "${RELEASE_TOKEN}" ]; then
+            echo "DEPLOY_SSH_KEY or RELEASE_TOKEN is not set; skipping deploy"
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Find the newest ci-<sha> release that has both expected assets
+      # (herold-<ref>.tar.gz, herold-<ref>.sha256) present. ci.yml's
+      # `release` job creates the release object and uploads the two
+      # assets as separate API calls a few seconds apart, and that job's
+      # own concurrency group can cancel it mid-sequence -- so the newest
+      # release by creation time can transiently (or, if that run was
+      # cancelled between creation and asset upload, permanently) be
+      # missing its assets. Skip any such release and fall back to the
+      # next-newest complete one rather than getting stuck on it forever.
+      - name: find newest complete ci- release
+        id: target
+        if: steps.guard.outputs.enabled == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+
+          releases=$(curl -fsS -H "${AUTH}" "${API}/repos/${REPO}/releases?limit=50")
+          refs=$(printf '%s' "${releases}" \
+            | jq -r '[.[] | select(.tag_name|startswith("ci-"))] | sort_by(.created_at) | reverse | .[].tag_name')
+
+          if [ -z "${refs}" ]; then
+            echo "no ci- release published yet; nothing to deploy"
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          found=""
+          for ref in ${refs}; do
+            assets=$(printf '%s' "${releases}" | jq -r --arg t "${ref}" '.[] | select(.tag_name==$t) | .assets[].name')
+            if printf '%s\n' "${assets}" | grep -qx "herold-${ref}.tar.gz" \
+               && printf '%s\n' "${assets}" | grep -qx "herold-${ref}.sha256"; then
+              found="${ref}"
+              break
+            fi
+            echo "skipping ${ref}: assets not (yet) complete"
+          done
+
+          if [ -z "${found}" ]; then
+            echo "no complete ci- release found; nothing to deploy"
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "target release: ${found}"
+          echo "found=true" >> "${GITHUB_OUTPUT}"
+          echo "ref=${found}" >> "${GITHUB_OUTPUT}"
+
+      - name: write SSH key
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          KEY_FILE="$(mktemp)"
+          chmod 0600 "${KEY_FILE}"
+          # Trailing newline is required: OpenSSH refuses a private key whose
+          # final line is not newline-terminated with "error in libcrypto".
+          # printf '%s' drops it; printf '%s\n' restores it (matches the
+          # proven html-scrabble deploy).
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${KEY_FILE}"
+          echo "KEY_FILE=${KEY_FILE}" >> "${GITHUB_ENV}"
+
+      # `status` is a read-only forced command (netzhansa-infra
+      # roles/deploy/files/trigger + activate): it prints the basename of
+      # outpost's `current` release symlink and nothing else. A host that
+      # hasn't yet picked up that role change rejects "status" and this
+      # falls back to treating outpost as "not currently deployed" -- the
+      # conservative default, since the worst case is a redundant (but
+      # safe) `deploy <ref>` trigger below.
+      - name: check outpost's currently active release
+        id: current
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          cur=$(ssh \
+            -i "${KEY_FILE}" \
+            -p ${{ secrets.DEPLOY_PORT }} \
+            -o StrictHostKeyChecking=accept-new \
+            -o IdentitiesOnly=yes \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "status" || echo "")
+          echo "outpost currently runs: ${cur:-<none>}"
+          echo "ref=${cur}" >> "${GITHUB_OUTPUT}"
+
+      - name: skip if outpost already runs the target release
+        id: decide
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
+        run: |
+          if [ "${{ steps.current.outputs.ref }}" = "${{ steps.target.outputs.ref }}" ]; then
+            echo "outpost already runs ${{ steps.target.outputs.ref }}; nothing to do"
+            echo "deploy=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "deploy=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: trigger host activation
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "${KEY_FILE}" \
+            -p ${{ secrets.DEPLOY_PORT }} \
+            -o StrictHostKeyChecking=accept-new \
+            -o IdentitiesOnly=yes \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "deploy ${{ steps.target.outputs.ref }}"
+
+      # Verifies the deployed release on outpost matches the commit this
+      # run intended to deploy, rather than trusting the SSH command's
+      # exit status alone.
+      # A failure of the "trigger host activation" step above already fails
+      # the job (activate itself exits non-zero on a failed health check,
+      # after rolling the symlink back) -- this step is a second,
+      # independent confirmation on top of that. It only hard-fails on a
+      # confirmed mismatch (a ref it could actually read back that isn't
+      # the target); it cannot tell "outpost's status command isn't
+      # deployed yet" (host-side rollout of the `status` command trails
+      # this workflow, see its header comment) apart from a transient SSH
+      # hiccup, so either of those only warns.
+      - name: verify the deployed release matches the target
+        if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true' && steps.decide.outputs.deploy == 'true'
+        run: |
+          set -uo pipefail
+          cur=$(ssh \
+            -i "${KEY_FILE}" \
+            -p ${{ secrets.DEPLOY_PORT }} \
+            -o StrictHostKeyChecking=accept-new \
+            -o IdentitiesOnly=yes \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "status")
+          rc=$?
+          if [ "${rc}" -ne 0 ]; then
+            echo "WARNING: could not query outpost's status (exit ${rc}); skipping verification" >&2
+            exit 0
+          fi
+          echo "outpost now runs: ${cur}"
+          if [ "${cur}" != "${{ steps.target.outputs.ref }}" ]; then
+            echo "ERROR: outpost runs ${cur}, expected ${{ steps.target.outputs.ref }}" >&2
+            exit 1
+          fi
+          echo "confirmed: outpost runs ${{ steps.target.outputs.ref }}"
+
+      - name: remove SSH key
+        if: always() && steps.guard.outputs.enabled == 'true' && steps.target.outputs.found == 'true'
+        run: |
+          if [ -n "${KEY_FILE:-}" ] && [ -f "${KEY_FILE}" ]; then
+            rm -f "${KEY_FILE}"
+          fi
