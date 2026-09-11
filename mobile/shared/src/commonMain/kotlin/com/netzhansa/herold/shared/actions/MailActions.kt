@@ -47,12 +47,12 @@ class MailActions(
     suspend fun setCategory(emails: List<Email>, category: String): ActionResult {
         val snapshot = ActionSnapshot(emails)
         val optimistic = emails.map { email ->
-            val stripped = email.keywords.filterNot { it.startsWith(Keywords.CATEGORY_PREFIX) }.toSet()
+            val stripped = email.keywords.filterNot { it.startsWith(Keywords.CATEGORY_PREFIX, ignoreCase = true) }.toSet()
             email.copy(keywords = stripped + Keywords.categoryKeyword(category))
         }
         val patches = emails.associate { email ->
             email.id to buildJsonObject {
-                email.keywords.filter { it.startsWith(Keywords.CATEGORY_PREFIX) }.forEach {
+                email.keywords.filter { it.startsWith(Keywords.CATEGORY_PREFIX, ignoreCase = true) }.forEach {
                     put("keywords/$it", JsonPrimitive(null as String?))
                 }
                 put("keywords/${Keywords.categoryKeyword(category)}", true)

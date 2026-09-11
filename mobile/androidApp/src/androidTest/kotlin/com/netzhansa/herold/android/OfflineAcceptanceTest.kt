@@ -1,6 +1,8 @@
 package com.netzhansa.herold.android
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onFirst
@@ -10,21 +12,34 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.netzhansa.herold.shared.auth.SignInResult
+import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 
 /**
- * The offline acceptance bullet of issue #327. The harness signs the app in
- * and syncs it while online, then turns the emulator's radios off and runs
- * this class: a synced thread still opens from the local store
- * (REQ-AND-SYNC-03), and an archive attempt reports no connectivity and
- * leaves the row where it was - milestone 1a queues nothing.
+ * The offline acceptance bullet of issue #327, in two phases the harness
+ * runs around an emulator connectivity toggle:
+ *
+ *   am instrument ... -e class OfflineAcceptanceTest#t1_warmTheCacheWhileOnline
+ *   adb shell svc data disable && adb shell svc wifi disable
+ *   am instrument ... -e class OfflineAcceptanceTest#t2_readOfflineAndRefuseAnArchive
+ *
+ * Phase two asserts what milestone 1a promises with no connectivity: a
+ * synced thread still opens from the local store (REQ-AND-SYNC-03), and an
+ * archive attempt reports the lost connection and leaves the row where it
+ * was, because there is no durable outbox yet.
  */
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class OfflineAcceptanceTest {
 
     @get:Rule
@@ -34,27 +49,42 @@ class OfflineAcceptanceTest {
         .targetContext.applicationContext as HeroldApplication
 
     @Test
-    fun aSyncedThreadOpensOfflineAndAnArchiveAttemptFailsVisibly() = runBlocking {
+    fun t1_warmTheCacheWhileOnline() = runBlocking {
+        if (app.container.session.value == null) {
+            val result = app.container.signIn(
+                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
+            )
+            assertTrue("sign-in failed: $result", result is SignInResult.Success)
+        }
+        app.container.session.value!!.syncEngine.syncAll()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
+            .onFirst().performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodes(isRenderedMessageBody(), useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("thread-back").performClick()
+
+        assertNotNull("nothing was cached to read offline", cachedMessage())
+    }
+
+    @Test
+    fun t2_readOfflineAndRefuseAnArchive() = runBlocking {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
-        val rows = compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
-        assertTrue(
-            "the local store must already hold synced mail before the radios go off",
-            rows.fetchSemanticsNodes().isNotEmpty(),
-        )
         compose.captureScreen("09-offline-inbox-from-local-store")
 
-        val before = app.container.store.inboxEmails().first()
-        val target = before.maxByOrNull { it.receivedAt } ?: error("no synced message")
+        val target = cachedMessage() ?: error("phase one must run online first")
 
-        // Reading works with no connectivity: the body came from the cache.
         compose.onNodeWithTag("thread-row-${target.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodes(hasTestTagStartingWith("message-body-"), useUnmergedTree = true)
+            compose.onAllNodes(isRenderedMessageBody(), useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
         compose.captureScreen("10-offline-thread-read")
@@ -71,14 +101,25 @@ class OfflineAcceptanceTest {
         compose.onNodeWithTag("inbox-snackbar").assertIsDisplayed()
         compose.captureScreen("11-offline-archive-refused")
 
-        // The row is still there and the store still has it in the inbox.
+        // The reverted row is back in the list; the list may have kept its
+        // scroll offset while the row was optimistically gone, so scroll to
+        // it before asserting it is on screen.
+        compose.onNodeWithTag("inbox-list")
+            .performScrollToNode(hasTestTag("thread-row-${target.threadId}"))
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         val after = app.container.store.email(target.accountId, target.id)!!
-        assertTrue(
+        assertEquals(
             "a failed action must leave the local membership untouched",
-            after.mailboxIds == target.mailboxIds,
+            target.mailboxIds,
+            after.mailboxIds,
         )
     }
+
+    /** The newest inbox message whose body the store already holds. */
+    private suspend fun cachedMessage(): Email? =
+        app.container.store.inboxEmails().first()
+            .filter { it.bodyHtml != null || it.bodyText != null }
+            .maxByOrNull { it.receivedAt }
 
     private companion object {
         const val TIMEOUT_MS = 30_000L

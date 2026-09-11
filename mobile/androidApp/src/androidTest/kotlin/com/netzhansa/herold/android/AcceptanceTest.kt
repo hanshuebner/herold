@@ -127,19 +127,32 @@ class AcceptanceTest {
     }
 
     @Test
-    fun t04_openingAThreadRendersItsBody() {
+    fun t04_openingAThreadRendersItsHtmlBodyAndItsInlineImage() = runBlocking {
         signIn()
         syncNow()
         compose.waitUntil(TIMEOUT_MS) { threadRowCount() > 0 }
 
+        val newest = app.container.store.inboxEmails().first().maxByOrNull { it.receivedAt }
+            ?: error("no synced mail to open")
         firstThreadRow().performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
         }
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodes(hasTestTagStartingWith("message-body-"), useUnmergedTree = true)
+            compose.onAllNodes(isRenderedMessageBody(), useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val opened = app.container.store.email(newest.accountId, newest.id)!!
+        assertNotNull("the opened message must have a cached body", opened.bodyHtml ?: opened.bodyText)
+
+        // The inline image is fetched through the JMAP blob endpoint and
+        // lands in the blob cache, which is what makes it render offline.
+        val inline = opened.attachments.firstOrNull { it.isInline }
+        assertNotNull("the seeded message must carry an inline image", inline)
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking { app.container.store.cachedBlob(newest.accountId, inline!!.blobId) } != null
         }
         compose.captureScreen("06-thread-view")
     }
@@ -232,7 +245,9 @@ class AcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
-        const val CATEGORY_A = "Promotions"
-        const val CATEGORY_B = "Updates"
+        // herold case-folds keywords, so the lane's identity - and the tab's
+        // test tag - is the lower-cased name.
+        const val CATEGORY_A = "promotions"
+        const val CATEGORY_B = "updates"
     }
 }

@@ -90,6 +90,7 @@ fun ThreadScreen(
             session.syncEngine.loadBody(accountId, target.id)
             if (target.isUnread) session.actions.setSeen(listOf(target), true)
         }
+        Unit
     }
 
     suspend fun report(result: ActionResult) {

@@ -138,9 +138,9 @@ class MailActionsTest {
 
         actions.setCategory(listOf(seed), "Promotions")
 
-        assertEquals("Promotions", store.email("acct-a", "e1")!!.category)
+        assertEquals("promotions", store.email("acct-a", "e1")!!.category)
         val patch = api.emailSetCalls.single().getValue("e1")
-        assertEquals(JsonNull, patch["keywords/\$category-Primary"])
-        assertEquals(JsonPrimitive(true), patch["keywords/\$category-Promotions"])
+        assertEquals(JsonNull, patch["keywords/\$category-primary"])
+        assertEquals(JsonPrimitive(true), patch["keywords/\$category-promotions"])
     }
 }

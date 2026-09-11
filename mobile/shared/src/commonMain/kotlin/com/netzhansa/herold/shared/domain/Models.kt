@@ -71,9 +71,9 @@ data class Email(
     val bodyText: String? = null,
     val attachments: List<Attachment> = emptyList(),
 ) {
-    val isUnread: Boolean get() = !keywords.contains(Keywords.SEEN)
-    val isFlagged: Boolean get() = keywords.contains(Keywords.FLAGGED)
-    val isSnoozed: Boolean get() = keywords.contains(Keywords.SNOOZED)
+    val isUnread: Boolean get() = keywords.none { it.equals(Keywords.SEEN, ignoreCase = true) }
+    val isFlagged: Boolean get() = keywords.any { it.equals(Keywords.FLAGGED, ignoreCase = true) }
+    val isSnoozed: Boolean get() = keywords.any { it.equals(Keywords.SNOOZED, ignoreCase = true) }
 
     /** The category this message carries, from its `$category-<name>` keyword. */
     val category: String? get() = keywords.firstNotNullOfOrNull { Keywords.categoryName(it) }
@@ -106,12 +106,23 @@ object Keywords {
     const val SNOOZED = "\$snoozed"
     const val CATEGORY_PREFIX = "\$category-"
 
-    /** The category keyword for [name], e.g. `Promotions` -> `$category-Promotions`. */
-    fun categoryKeyword(name: String): String = CATEGORY_PREFIX + name
+    /**
+     * The category keyword for [name]. herold stores keywords case-folded
+     * (IMAP keywords are case-insensitive), so a category's identity on the
+     * client is its lower-cased name and presentation capitalises it.
+     */
+    fun categoryKeyword(name: String): String = CATEGORY_PREFIX + name.lowercase()
 
     /** The category name carried by [keyword], or null when it is not a category keyword. */
     fun categoryName(keyword: String): String? =
-        if (keyword.startsWith(CATEGORY_PREFIX)) keyword.removePrefix(CATEGORY_PREFIX) else null
+        if (keyword.startsWith(CATEGORY_PREFIX, ignoreCase = true)) {
+            keyword.substring(CATEGORY_PREFIX.length).lowercase()
+        } else {
+            null
+        }
+
+    /** A category name as the UI shows it. */
+    fun categoryLabel(name: String): String = name.replaceFirstChar { it.uppercase() }
 }
 
 /** Mailbox roles the client routes on (RFC 8621 section 2, `role`). */

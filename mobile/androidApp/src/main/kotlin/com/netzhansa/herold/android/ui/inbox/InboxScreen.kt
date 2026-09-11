@@ -60,6 +60,7 @@ import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.inbox.CategoryLanes
 import com.netzhansa.herold.shared.inbox.InboxAssembler
 import com.netzhansa.herold.shared.inbox.InboxItem
@@ -182,7 +183,7 @@ fun InboxScreen(
                         Tab(
                             selected = selectedCategory == category,
                             onClick = { selectedCategory = category },
-                            text = { Text(category ?: "All") },
+                            text = { Text(category?.let(Keywords::categoryLabel) ?: "All") },
                             modifier = Modifier.testTag("inbox-tab-${category ?: "all"}"),
                         )
                     }
@@ -494,7 +495,7 @@ private fun BundleRowItem(
         Text(if (expanded) "v" else ">", style = MaterialTheme.typography.titleMedium)
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "${row.category} (${row.threadCount})",
+                text = "${Keywords.categoryLabel(row.category)} (${row.threadCount})",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = if (row.unreadCount > 0) FontWeight.Bold else FontWeight.Normal,
             )

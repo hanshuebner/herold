@@ -261,13 +261,15 @@ class SyncEngine(
 
     /**
      * Fetches and caches a message body on open. Returns the stored message
-     * with its body; offline it returns whatever the cache holds, so a
-     * previously read thread still opens (REQ-AND-SYNC-03).
+     * with its body; with no connectivity it returns whatever the cache
+     * holds, so a previously read thread still opens and an unread one
+     * renders the not-downloaded placeholder (REQ-AND-SYNC-03/12).
      */
     suspend fun loadBody(accountId: String, emailId: String): com.netzhansa.herold.shared.domain.Email? {
         val cached = store.email(accountId, emailId)
         if (cached?.bodyHtml != null || cached?.bodyText != null) return cached
-        val fetched = api.emailGet(accountId, listOf(emailId), withBody = true).list.firstOrNull()
+        val fetched = runCatching { api.emailGet(accountId, listOf(emailId), withBody = true) }
+            .getOrNull()?.list?.firstOrNull()
             ?: return cached
         val mapped = fetched.toDomain(accountId)
         store.upsertEmails(listOf(mapped))
@@ -282,7 +284,10 @@ class SyncEngine(
         return store.email(accountId, emailId)
     }
 
-    /** Downloads a blob through the cache, so a re-opened thread renders offline. */
+    /**
+     * Downloads a blob through the cache, so a re-opened thread renders
+     * offline. Returns null when the blob is neither cached nor reachable.
+     */
     suspend fun blob(accountId: String, blobId: String, type: String, name: String): ByteArray? {
         store.cachedBlob(accountId, blobId)?.let { return it.bytes }
         val downloaded = runCatching { api.downloadBlob(accountId, blobId, type, name) }.getOrNull()

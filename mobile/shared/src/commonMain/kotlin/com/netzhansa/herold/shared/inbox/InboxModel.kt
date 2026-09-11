@@ -63,8 +63,8 @@ data class CategoryLanes(
 
         fun from(derived: List<String>, observed: Collection<String>): CategoryLanes {
             val names = LinkedHashSet<String>()
-            derived.forEach { names.add(it) }
-            observed.sorted().forEach { names.add(it) }
+            derived.forEach { names.add(it.lowercase()) }
+            observed.map { it.lowercase() }.sorted().forEach { names.add(it) }
             val ordered = names.toList()
             return CategoryLanes(
                 pinned = ordered.take(PINNED_LIMIT),

@@ -97,7 +97,7 @@ class InboxAssemblerTest {
         val all = InboxAssembler.stream(rows, lanes, selectedCategory = null)
         assertEquals(3, all.size, "the default stream is complete")
 
-        val promotions = InboxAssembler.stream(rows, lanes, selectedCategory = "Promotions")
+        val promotions = InboxAssembler.stream(rows, lanes, selectedCategory = "promotions")
         assertEquals(
             listOf("t-e2"),
             promotions.filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
@@ -106,7 +106,7 @@ class InboxAssemblerTest {
 
     @Test
     fun aBundledCategoryCollapsesToOneRowPositionedByItsNewestMember() {
-        val lanes = CategoryLanes(pinned = listOf("Primary"), bundled = listOf("Promotions"))
+        val lanes = CategoryLanes(pinned = listOf("primary"), bundled = listOf("promotions"))
         val emails = listOf(
             email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
             email("e2", receivedAt = 2500, keywords = setOf(Keywords.categoryKeyword("Promotions"), Keywords.SEEN)),
@@ -118,7 +118,7 @@ class InboxAssemblerTest {
 
         assertEquals(2, stream.size)
         val bundle = stream.first() as InboxItem.Bundle
-        assertEquals("Promotions", bundle.row.category)
+        assertEquals("promotions", bundle.row.category)
         assertEquals(2, bundle.row.threadCount)
         assertEquals(3000, bundle.row.receivedAt)
         assertTrue(stream[1] is InboxItem.Conversation)
@@ -131,14 +131,14 @@ class InboxAssemblerTest {
             observed = listOf("Hobby"),
         )
 
-        assertEquals(listOf("Primary", "Social", "Promotions", "Updates", "Forums"), lanes.pinned)
-        assertEquals(listOf("Hobby"), lanes.bundled)
+        assertEquals(listOf("primary", "social", "promotions", "updates", "forums"), lanes.pinned)
+        assertEquals(listOf("hobby"), lanes.bundled)
     }
 
     @Test
     fun categoriesCarriedByMessagesAreDiscoveredEvenWithoutClassifierSettings() {
         val emails = listOf(email("e1", receivedAt = 1, keywords = setOf(Keywords.categoryKeyword("Updates"))))
 
-        assertEquals(setOf("Updates"), InboxAssembler.observedCategories(emails))
+        assertEquals(setOf("updates"), InboxAssembler.observedCategories(emails))
     }
 }
