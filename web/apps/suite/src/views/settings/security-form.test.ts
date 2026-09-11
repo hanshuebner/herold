@@ -91,6 +91,14 @@ const PRINCIPAL_NOT_ENROLLED = {
 const PROVISIONING_URI =
   'otpauth://totp/test%40example.local?secret=JBSWY3DPEHPK3PXP&issuer=Herold&algorithm=SHA1&digits=6&period=30';
 
+const PRINCIPAL_ENROLLED = {
+  id: '42',
+  canonical_email: 'test@example.local',
+  display_name: 'Test User',
+  totp_enabled: true,
+  flags: [],
+};
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('SecurityForm — TOTP QR rendering (re #13)', () => {
@@ -169,5 +177,44 @@ describe('SecurityForm — TOTP QR rendering (re #13)', () => {
     // SecurityForm's startEnroll() call-site parameters (re #13).
     expect(qrEl.innerHTML).toContain('width="320"');
     expect(qrEl.innerHTML).toContain('height="320"');
+  });
+});
+
+describe('SecurityForm — password-manager form structure (re #322)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('password-change form carries a hidden username field for password managers', async () => {
+    mockGet.mockResolvedValue(PRINCIPAL_NOT_ENROLLED);
+
+    const { container } = render(SecurityForm);
+
+    await waitFor(() => {
+      expect(container.querySelector('.sec-form')).not.toBeNull();
+    });
+
+    const form = container.querySelector('.sec-form') as HTMLFormElement;
+    const usernameInput = form.querySelector('input[autocomplete="username"]') as HTMLInputElement;
+    expect(usernameInput).not.toBeNull();
+    expect(usernameInput.value).toBe(PRINCIPAL_NOT_ENROLLED.canonical_email);
+    // Every password input in the form is preceded by the username field,
+    // matching the shape Chrome's password-manager heuristics expect.
+    const passwordInputs = form.querySelectorAll('input[type="password"]');
+    expect(passwordInputs.length).toBeGreaterThan(0);
+  });
+
+  it('TOTP-disable password input is wrapped in its own form', async () => {
+    mockGet.mockResolvedValue(PRINCIPAL_ENROLLED);
+
+    const { container } = render(SecurityForm);
+
+    await waitFor(() => {
+      expect(container.querySelector('#sec-totp-disable-pw')).not.toBeNull();
+    });
+
+    const pwInput = container.querySelector('#sec-totp-disable-pw') as HTMLInputElement;
+    expect(pwInput.closest('form')).not.toBeNull();
+    expect(pwInput.closest('form')?.className).toContain('totp-disable-form');
   });
 });

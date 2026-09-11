@@ -253,6 +253,18 @@
   <!-- Change password -->
   <h3>{t('settings.security.changePassword')}</h3>
   <form class="sec-form" onsubmit={changePassword} novalidate>
+    <!-- Hidden username field so password managers associate the new
+         credential with this account (Chrome DOM warning, re #322). -->
+    <input
+      type="text"
+      class="sr-only"
+      autocomplete="username"
+      value={principal?.canonical_email ?? ''}
+      tabindex="-1"
+      aria-hidden="true"
+      readonly
+    />
+
     <div class="field">
       <label for="sec-pw-current" class="label">{t('settings.security.currentPassword')}</label>
       <input
@@ -316,7 +328,14 @@
       {t('settings.security.twoFactorEnabled')}
     </div>
 
-    <div class="field totp-disable-form">
+    <form
+      class="field totp-disable-form"
+      onsubmit={(e: SubmitEvent) => {
+        e.preventDefault();
+        void disableTOTP();
+      }}
+      novalidate
+    >
       <label for="sec-totp-disable-pw" class="label">{t('settings.security.disable2faLabel')}</label>
       <div class="input-row">
         <input
@@ -328,8 +347,8 @@
           disabled={totpLoading}
         />
         <Button
+          type="submit"
           variant="danger"
-          onclick={disableTOTP}
           disabled={totpLoading || !totpDisablePassword}
         >
           {totpLoading ? t('settings.security.disabling') : t('settings.security.disable2fa')}
@@ -338,7 +357,7 @@
       {#if totpDisableError}
         <p class="form-error" role="alert">{totpDisableError}</p>
       {/if}
-    </div>
+    </form>
   {:else}
     <!-- Not enrolled state -->
     <div class="totp-status">
@@ -600,6 +619,18 @@
     color: var(--text-helper);
     font-size: var(--type-body-compact-01-size);
     margin: 0;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
 </style>
