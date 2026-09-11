@@ -1,16 +1,22 @@
 package admin
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/plugin"
+	"github.com/hanshuebner/herold/internal/spam"
+	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
 func newSpamCmd() *cobra.Command {
@@ -89,6 +95,7 @@ func newSpamCmd() *cobra.Command {
 	setCmd.Flags().String("system-prompt-file", "", "path to a file containing a system-prompt override")
 	c.AddCommand(setCmd)
 	c.AddCommand(newSpamApplyVerdictsCmd())
+	c.AddCommand(newSpamReclassifyCmd())
 	return c
 }
 
@@ -276,5 +283,245 @@ func emitSpamUndoVerdictsSummary(stdout, stderr io.Writer, g *globalOptions, dry
 	fmt.Fprintf(stderr, "  restored:                %d\n", sum.Restored)
 	fmt.Fprintf(stderr, "  skipped unknown:         %d\n", sum.SkippedUnknown)
 	fmt.Fprintf(stderr, "  skipped other principal: %d\n", sum.SkippedOtherPrincipal)
+	return nil
+}
+
+// newSpamReclassifyCmd builds `herold spam reclassify`, the online
+// counterpart to `herold spam apply-verdicts` (issue #318): a
+// store-backed maintenance command in the same family (opens the store
+// from --system-config, no admin server needed) that starts the
+// operator's configured classifier plugin itself -- the same way
+// admin.StartServer wires it for SMTP delivery -- and re-runs it over a
+// principal's already-stored mail, for messages that missed
+// classification during a plugin outage or on a freshly enabled
+// classifier. See reclassifySpam in spam_reclassify.go for the
+// row-level semantics; the routing and undo-log format are shared with
+// apply-verdicts.
+func newSpamReclassifyCmd() *cobra.Command {
+	var since, engine, undoLogPath, undoPath string
+	var unclassifiedOnly, dryRun bool
+	var limit int
+	c := &cobra.Command{
+		Use:   "reclassify <email-or-id>",
+		Short: "re-run the configured classifier plugin over a principal's stored mail",
+		Long: `Selects the given principal's messages (every mailbox, deduplicated)
+received at or after --since (an RFC3339 timestamp, or a duration such
+as 24h measured back from now; omitted means no cutoff). By default
+(--unclassified-only=true) a message that already carries a recorded
+spam verdict is skipped; pass --unclassified-only=false to reclassify
+every selected message regardless.
+
+For each processed message: the stored blob is re-parsed, the
+configured classifier plugin is called with the same request projection
+SMTP delivery and IMAP import use (spam.BuildRequest, nil auth results
+-- a re-parsed stored message carries no fresh server-side auth
+verdict), and the verdict is recorded in the message's
+llm_classifications spam sub-record (--engine names the recorded
+engine; defaults to the plugin's configured name). REQ-FILT-02 routing
+then applies: spam moves into the principal's Junk mailbox (unless
+already in a Junk- or Trash-attributed mailbox, dropping every other
+membership except Sent/Drafts); suspect gains the "$Junk" keyword in
+place; ham is left untouched. delivery_disposition is never touched.
+
+--undo-log <path> records, before each move, the message id and its
+previous mailbox ids, in the same format ` + "`spam apply-verdicts --undo-log`" + ` writes;
+pass --undo <path> in a later invocation (of either command) to restore
+those memberships. --dry-run reports the summary without writing the
+classification record, moving anything, or writing --undo-log.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			cfg, err := requireConfig(g)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			clk := clock.NewReal()
+			st, err := openStore(ctx, cfg, discardLogger(), clk)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			p, err := resolveStorePrincipal(ctx, st, args[0])
+			if err != nil {
+				return err
+			}
+
+			if undoPath != "" {
+				f, err := os.Open(undoPath)
+				if err != nil {
+					return fmt.Errorf("open undo log %q: %w", undoPath, err)
+				}
+				defer f.Close()
+				rows, err := parseSpamUndoCSV(f)
+				if err != nil {
+					return fmt.Errorf("parse undo log %q: %w", undoPath, err)
+				}
+				sum, err := undoSpamVerdicts(ctx, st, p.ID, rows, dryRun)
+				if err != nil {
+					return err
+				}
+				return emitSpamUndoVerdictsSummary(cmd.OutOrStdout(), cmd.ErrOrStderr(), g, dryRun, sum)
+			}
+
+			sinceCutoff, err := parseSpamReclassifySince(since, clk.Now())
+			if err != nil {
+				return err
+			}
+
+			pluginName := firstPluginOfType(cfg.Plugin, "spam", "classifier")
+			if pluginName == "" {
+				return errors.New(`spam reclassify: no spam/classifier plugin configured in system.toml; add a [[plugin]] block with type = "classifier"`)
+			}
+			var pluginCfg *sysconfig.PluginConfig
+			for i := range cfg.Plugin {
+				if cfg.Plugin[i].Name == pluginName {
+					pluginCfg = &cfg.Plugin[i]
+					break
+				}
+			}
+			if pluginCfg == nil {
+				return fmt.Errorf("spam reclassify: plugin %q not found among system.toml [[plugin]] blocks", pluginName)
+			}
+			resolvedOpts, err := resolvePluginOptions(pluginCfg.Options)
+			if err != nil {
+				return fmt.Errorf("spam reclassify: plugin %q options: %w", pluginName, err)
+			}
+
+			pluginMgr := plugin.NewManager(plugin.ManagerOptions{
+				Logger:        discardLogger(),
+				Clock:         clk,
+				ServerVersion: "admin-spam-reclassify",
+			})
+			defer func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = pluginMgr.Shutdown(shutdownCtx)
+			}()
+			pl, err := pluginMgr.Start(ctx, plugin.Spec{
+				Name:      pluginCfg.Name,
+				Path:      pluginCfg.Path,
+				Type:      plugin.PluginType(pluginCfg.Type),
+				Lifecycle: plugin.Lifecycle(pluginCfg.Lifecycle),
+				Options:   resolvedOpts,
+			})
+			if err != nil {
+				return fmt.Errorf("spam reclassify: start plugin %q: %w", pluginName, err)
+			}
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) && pl.State() != plugin.StateHealthy {
+				if pl.State() == plugin.StateDisabled || pl.State() == plugin.StateExited {
+					return fmt.Errorf("spam reclassify: plugin %q reached state %s before healthy", pluginName, pl.State())
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if pl.State() != plugin.StateHealthy {
+				return fmt.Errorf("spam reclassify: plugin %q did not reach healthy state in 15s (current=%s)", pluginName, pl.State())
+			}
+
+			spamClassifier := spam.New(pluginInvoker{mgr: pluginMgr}, discardLogger(), clk)
+			if d := cfg.Spam.ClassifyTimeout.AsDuration(); d > 0 {
+				spamClassifier = spamClassifier.WithTimeout(d)
+			}
+
+			var undoWriter *csv.Writer
+			if undoLogPath != "" && !dryRun {
+				undoFile, err := os.Create(undoLogPath)
+				if err != nil {
+					return fmt.Errorf("create undo log %q: %w", undoLogPath, err)
+				}
+				defer undoFile.Close()
+				undoWriter = csv.NewWriter(undoFile)
+				if err := undoWriter.Write([]string{"message_id", "previous_mailbox_ids"}); err != nil {
+					return fmt.Errorf("write undo log header: %w", err)
+				}
+			}
+
+			engineName := engine
+			if engineName == "" {
+				engineName = pluginName
+			}
+
+			sum, err := reclassifySpam(ctx, st, clk, spamClassifier, engineName, p.ID, spamReclassifyOptions{
+				Since:            sinceCutoff,
+				UnclassifiedOnly: unclassifiedOnly,
+				Limit:            limit,
+				DryRun:           dryRun,
+				UndoLog:          undoWriter,
+			})
+			if undoWriter != nil {
+				undoWriter.Flush()
+				if ferr := undoWriter.Error(); ferr != nil && err == nil {
+					err = fmt.Errorf("flush undo log %q: %w", undoLogPath, ferr)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			return emitSpamReclassifySummary(cmd.OutOrStdout(), cmd.ErrOrStderr(), g, dryRun, sum)
+		},
+	}
+	c.Flags().StringVar(&since, "since", "", "only messages received at/after this RFC3339 timestamp or duration (e.g. 24h)")
+	c.Flags().BoolVar(&unclassifiedOnly, "unclassified-only", true, "skip messages that already carry a recorded spam verdict")
+	c.Flags().IntVar(&limit, "limit", 0, "max messages to process (0 = unlimited)")
+	c.Flags().StringVar(&engine, "engine", "", "engine/model name recorded on the llm_classifications row (default: the plugin name)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the summary without writing anything")
+	c.Flags().StringVar(&undoLogPath, "undo-log", "", "write an undo log (message id + previous mailbox ids) before each move")
+	c.Flags().StringVar(&undoPath, "undo", "", "restore memberships from a previously written --undo-log instead of reclassifying")
+	return c
+}
+
+// parseSpamReclassifySince parses --since as either an RFC3339 timestamp
+// or a duration (e.g. "24h") measured back from now. An empty string
+// means no cutoff.
+func parseSpamReclassifySince(s string, now time.Time) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return &t, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return nil, fmt.Errorf("--since %q is neither an RFC3339 timestamp nor a duration (e.g. 24h): %w", s, err)
+	}
+	if d < 0 {
+		return nil, fmt.Errorf("--since duration must be positive, got %q", s)
+	}
+	t := now.Add(-d)
+	return &t, nil
+}
+
+// emitSpamReclassifySummary prints the reclassify run's summary to
+// stdout (JSON, when --json is set) or stderr (human-readable), matching
+// the --json convention used by the apply-verdicts / diag maintenance
+// commands.
+func emitSpamReclassifySummary(stdout, stderr io.Writer, g *globalOptions, dryRun bool, sum SpamReclassifySummary) error {
+	mode := "apply"
+	if dryRun {
+		mode = "dry-run"
+	}
+	if g.jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			Mode string `json:"mode"`
+			SpamReclassifySummary
+		}{Mode: mode, SpamReclassifySummary: sum})
+	}
+	if g.quiet {
+		return nil
+	}
+	fmt.Fprintf(stderr, "reclassify: done (%s)\n", mode)
+	fmt.Fprintf(stderr, "  selected:   %d\n", sum.Selected)
+	fmt.Fprintf(stderr, "  classified: %d\n", sum.Classified)
+	fmt.Fprintf(stderr, "  spam:       %d\n", sum.Spam)
+	fmt.Fprintf(stderr, "  suspect:    %d\n", sum.Suspect)
+	fmt.Fprintf(stderr, "  ham:        %d\n", sum.Ham)
+	fmt.Fprintf(stderr, "  moved:      %d\n", sum.Moved)
+	fmt.Fprintf(stderr, "  errors:     %d\n", sum.Errors)
+	fmt.Fprintf(stderr, "  skipped:    %d\n", sum.Skipped)
 	return nil
 }
