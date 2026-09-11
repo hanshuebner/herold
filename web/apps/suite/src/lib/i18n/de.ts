@@ -989,6 +989,8 @@ export const de = {
   'settings.notifications.desktopAria': 'Desktop-Benachrichtigungen',
   // Konto-Benachrichtigungskanal (Issue #212, REQ-MAIL-SUB-06)
   'notifications.subAccountNewMail': 'Neue E-Mail in {name}',
+  // Ladefehler der kontobezogenen Ansicht (Issue #212, REQ-MAIL-SUB-08)
+  'subAccount.error.loadFailed': 'Dieses Konto konnte nicht geladen werden. Erneut versuchen.',
   'settings.accounts.notifications': 'Benachrichtigungen',
   'settings.accounts.notificationsHint': 'Desktop-Benachrichtigungen für neue E-Mails in diesem Konto',
   'settings.notifications.pushLabel': 'Push-Benachrichtigungen',

@@ -77,6 +77,25 @@ test('separated identity with external submission sends through the sink from it
   await page.locator('.ProseMirror').fill('sub-account e2e body');
   await page.getByTestId('compose-send').click();
 
+  // Send() either closes the compose window (success) or leaves it open
+  // with a visible error banner (e.g. a serverFail from a mis-scoped
+  // identity, re #212 CI flake job 12019, root-caused to the compose
+  // store's identity fallback and now guarded there). Assert this
+  // explicitly, via Playwright's own retrying assertion (bounded, no
+  // fixed sleep), so a regression here fails fast with an attributable
+  // message instead of the opaque "message never arrived at the sink"
+  // timeout below.
+  const composeDialog = page.locator('div.modal[role="dialog"]');
+  try {
+    await expect(composeDialog).toHaveCount(0, { timeout: 10_000 });
+  } catch (err) {
+    const alert = composeDialog.locator('p.error[role="alert"]');
+    if ((await alert.count()) > 0) {
+      throw new Error(`compose send failed: ${await alert.first().innerText()}`);
+    }
+    throw err;
+  }
+
   // Confirm arrival at the fake SMTP sink, sent from the separated
   // identity's own address (not this principal's own primary address --
   // that distinction is the acceptance criterion).

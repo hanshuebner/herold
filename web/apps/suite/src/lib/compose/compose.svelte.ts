@@ -1258,10 +1258,23 @@ class ComposeStore {
     // Prefer the selected identity (set by the reply-identity match)
     // and fall back to primary. The reply-identity match runs once at
     // compose-open per REQ-MAIL-12a; from then on this field is the
-    // authoritative From for the in-progress draft. A scoped compose's
-    // selectedIdentity is always set by openWith (REQ-MAIL-SUB-08), so
-    // the primary-account fallback below only fires unscoped.
-    const identity = this.selectedIdentity ?? mail.primaryIdentity;
+    // authoritative From for the in-progress draft.
+    //
+    // A scoped compose's selectedIdentity is SUPPOSED to always be set by
+    // openWith (REQ-MAIL-SUB-08), but that is an unenforced caller
+    // contract -- SubAccountMailView's own composeFromHere() now guards
+    // it, but nothing stops a future scoped caller from omitting it. The
+    // mail.primaryIdentity fallback must never fire in scoped mode: its
+    // wire id ("default") collides with the sub-account's own synthesized
+    // default identity, so a call scoped to accountId=<sub-account> with
+    // identityId="default" is silently reinterpreted server-side as "the
+    // sub-account's own canonical identity" (internal/protojmap/mail/
+    // identity/store.go's HasExternalSubmission bypasses the ownership
+    // check for id "default"), producing either a confusing serverFail
+    // (no submission config under that id) or, worse, a send under the
+    // wrong identity, instead of the loud, attributable failure below (re
+    // #212 CI flake, job 12019).
+    const identity = this.selectedIdentity ?? (this.scopeAccountId ? null : mail.primaryIdentity);
     const draftsId = this.#draftsMailboxId();
     if (!identity || !draftsId) return false;
 
@@ -1387,15 +1400,20 @@ class ComposeStore {
     // Prefer the selected identity (set by REQ-MAIL-12a's reply match
     // at compose-open) and fall back to primary. The compose's From
     // picker (future work) writes to the same `selectedIdentity`
-    // cell, so this path is the single point that consumes it. A
-    // scoped compose's selectedIdentity is always set by openWith
-    // (REQ-MAIL-SUB-08), so the primary-account fallback only fires
-    // unscoped.
-    const identity = this.selectedIdentity ?? mail.primaryIdentity;
+    // cell, so this path is the single point that consumes it.
+    //
+    // The mail.primaryIdentity fallback must never fire for a scoped
+    // compose (see the matching comment in persistDraft): its wire id
+    // ("default") collides with the sub-account's own synthesized default
+    // identity, silently mis-scoping the send instead of surfacing the
+    // loud errorMessage below (re #212 CI flake, job 12019).
+    const identity = this.selectedIdentity ?? (this.scopeAccountId ? null : mail.primaryIdentity);
     const draftsId = this.#draftsMailboxId();
     const sentMailboxId = this.#sentMailboxId();
     if (!identity) {
-      this.errorMessage = 'No identity available — cannot send';
+      this.errorMessage = this.scopeAccountId
+        ? 'No identity resolved for this account — reload and try again'
+        : 'No identity available — cannot send';
       return;
     }
     if (!draftsId) {

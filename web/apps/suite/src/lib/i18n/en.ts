@@ -974,6 +974,11 @@ export const en = {
   'settings.notifications.desktopAria': 'Desktop notifications',
   // Per-account notification channel (issue #212, REQ-MAIL-SUB-06)
   'notifications.subAccountNewMail': 'New mail in {name}',
+  // Sub-account scoped view load failure (issue #212, REQ-MAIL-SUB-08):
+  // shown instead of the ready layout when Identity/get + Mailbox/get for
+  // the scoped account errored, so a stale/partial entry never silently
+  // offers Compose with no identity resolved.
+  'subAccount.error.loadFailed': 'Could not load this account. Try again.',
   'settings.accounts.notifications': 'Notifications',
   'settings.accounts.notificationsHint': 'Desktop notifications for new mail in this account',
   'settings.notifications.pushLabel': 'Push notifications',

@@ -174,14 +174,31 @@
     subAccounts.closeReading();
   }
 
+  // Only ever called from behind the loadStatus === 'ready' gate below, so
+  // entry.identity is always the resolved separated Identity here -- never
+  // null. Guarded anyway (re #212 CI flake, job 12019): a null identity
+  // must refuse to open compose rather than let compose.svelte.ts's
+  // `selectedIdentity ?? mail.primaryIdentity` fallback silently substitute
+  // the CALLER's own primary identity while still targeting this scoped
+  // sub-account. That fallback exists for the unscoped compose path; here
+  // it would send scoped to accountId with an identityId ("default") that
+  // collides with the sub-account's own synthesized default identity,
+  // which server-side either has no matching submission config (serverFail,
+  // the message never reaches its relay -- reproduced against a forced
+  // Identity/get failure via Playwright route interception) or, worse,
+  // sends as the wrong identity if one happens to exist.
   function composeFromHere(): void {
+    if (!entry?.identity) {
+      toast.show({ message: t('subAccount.error.loadFailed'), kind: 'error', timeoutMs: 5000 });
+      return;
+    }
     compose.openWith({
       to: '',
       cc: '',
       bcc: '',
       subject: '',
       body: '',
-      identity: entry?.identity ?? null,
+      identity: entry.identity,
       scopeAccountId: accountId,
     });
   }
@@ -226,6 +243,21 @@
 <div class="scoped-view">
   {#if !entry}
     <div class="state-msg">{t('common.loading')}</div>
+  {:else if entry.loadStatus === 'error'}
+    <!-- Identity/get + Mailbox/get for this account errored (re #212 CI
+         flake, job 12019): entry still exists (subAccounts.refresh pushes
+         every discovered accountId into entries regardless of per-account
+         outcome), but entry.identity is null here. Rendering the normal
+         layout in this state let Compose silently fall back to the
+         caller's own primary identity while targeting this account's
+         scope -- see composeFromHere's guard above for the failure mode
+         this closes off. -->
+    <div class="state-msg error" role="alert">
+      {t('subAccount.error.loadFailed')}
+      <button type="button" class="retry-btn" onclick={() => void subAccounts.refreshOne(accountId)}>
+        {t('common.retry')}
+      </button>
+    </div>
   {:else}
     <div class="scoped-layout">
       <div class="list-pane" class:hidden-on-narrow={selectedId !== null}>
@@ -340,6 +372,16 @@
   }
   .state-msg.error {
     color: var(--support-error);
+  }
+
+  .retry-btn {
+    margin-left: var(--spacing-03);
+    color: var(--interactive);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: inherit;
   }
 
   .scoped-layout {
