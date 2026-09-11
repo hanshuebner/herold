@@ -251,6 +251,49 @@ func testSpamReclassify(t *testing.T, newStore func() store.Store) {
 		}
 	})
 
+	t.Run("recorded unclassified verdict still selected (re #326)", func(t *testing.T) {
+		st := newStore()
+		pid, msg := spamReclassifyFixture(t, st, "prior-unclassified")
+		mid := msg["prior-unclassified"]
+		// A prior classifier attempt timed out and (re #326) IS now
+		// recorded, verdict "unclassified" with a reason -- unlike a
+		// genuine ham/spam/suspect verdict, this must still count as
+		// missed classification for --unclassified-only, or a message
+		// that hit a transient plugin outage would never get a second
+		// chance.
+		priorVerdict := "unclassified"
+		priorReason := "timeout: json-rpc error -32001: rpc deadline exceeded"
+		priorScore := -1.0
+		if err := st.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+			MessageID:      mid,
+			PrincipalID:    pid,
+			SpamVerdict:    &priorVerdict,
+			SpamReason:     &priorReason,
+			SpamConfidence: &priorScore,
+		}); err != nil {
+			t.Fatalf("seed prior unclassified SetLLMClassification: %v", err)
+		}
+
+		cls, plugName, shutdown := startReclassifyPlugin(t, clk, "spam")
+		defer shutdown()
+
+		sum, err := reclassifySpam(ctx, st, clk, cls, plugName, pid, spamReclassifyOptions{UnclassifiedOnly: true})
+		if err != nil {
+			t.Fatalf("reclassifySpam: %v", err)
+		}
+		want := SpamReclassifySummary{Selected: 1, Classified: 1, Spam: 1, Moved: 1}
+		if sum != want {
+			t.Fatalf("summary = %+v, want %+v (a recorded \"unclassified\" verdict must not be skipped)", sum, want)
+		}
+		rec, err := st.Meta().GetLLMClassification(ctx, mid)
+		if err != nil {
+			t.Fatalf("GetLLMClassification: %v", err)
+		}
+		if rec.SpamVerdict == nil || *rec.SpamVerdict != "spam" {
+			t.Errorf("SpamVerdict after reclassify = %v, want spam", rec.SpamVerdict)
+		}
+	})
+
 	t.Run("dry-run writes nothing", func(t *testing.T) {
 		st := newStore()
 		pid, msg := spamReclassifyFixture(t, st, "dry-run-msg")

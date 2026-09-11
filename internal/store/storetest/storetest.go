@@ -318,6 +318,7 @@ func Run(t *testing.T, f Factory) {
 		{"LLMClassification_Upsert_SpamThenCategory", testLLMClassificationUpsertSpamThenCategory},
 		{"LLMClassification_BatchGet", testLLMClassificationBatchGet},
 		{"LLMClassification_GetNotFound", testLLMClassificationGetNotFound},
+		{"LLMClassification_UnclassifiedWithReason", testLLMClassificationUnclassifiedWithReason},
 		// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) -----------
 		{"Calendar_InsertGet_Roundtrip", testCalendarInsertGetRoundtrip},
 		{"Calendar_List_FilterAndPagination", testCalendarListFilterAndPagination},
@@ -8150,6 +8151,76 @@ func testLLMClassificationGetNotFound(t *testing.T, s store.Store) {
 	_, err := s.Meta().GetLLMClassification(ctx, store.MessageID(999999))
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetLLMClassification for absent id: err = %v, want ErrNotFound", err)
+	}
+}
+
+// testLLMClassificationUnclassifiedWithReason covers re #326: a
+// classifier timeout/error/unparseable-output outcome is recorded with
+// SpamVerdict = "unclassified" and a "<class>: <detail>" SpamReason --
+// distinguishable, by SpamVerdict alone, from a genuine ham verdict
+// (which also can carry a nil or non-nil SpamReason of its own, the
+// plugin's one-sentence explanation, an entirely different string
+// shape). No schema migration backs this: spam_verdict/spam_reason are
+// pre-existing free-text nullable columns (migration 0027) that already
+// accept any string.
+func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-unclassified@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-unclassified@host")
+
+	verdict := "unclassified"
+	confidence := -1.0
+	reason := "timeout: json-rpc error -32001: rpc deadline exceeded"
+	now := time.Date(2024, 3, 1, 8, 30, 0, 0, time.UTC)
+
+	rec := store.LLMClassificationRecord{
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
+		SpamVerdict:      &verdict,
+		SpamConfidence:   &confidence,
+		SpamReason:       &reason,
+		SpamClassifiedAt: &now,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamVerdict == nil || *got.SpamVerdict != "unclassified" {
+		t.Fatalf("SpamVerdict = %v, want \"unclassified\"", got.SpamVerdict)
+	}
+	if got.SpamReason == nil || *got.SpamReason != reason {
+		t.Fatalf("SpamReason = %v, want %q", got.SpamReason, reason)
+	}
+	if got.SpamConfidence == nil || *got.SpamConfidence != confidence {
+		t.Fatalf("SpamConfidence = %v, want %v", got.SpamConfidence, confidence)
+	}
+
+	// A genuine ham verdict on a second message is a distinct row: the
+	// two are never conflated by verdict string alone.
+	msg2 := mustInsertMessage(t, s, mb.ID, "llm-genuine-ham@host")
+	hamVerdict := "ham"
+	hamConfidence := 0.1
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID:      msg2.ID,
+		PrincipalID:    p.ID,
+		SpamVerdict:    &hamVerdict,
+		SpamConfidence: &hamConfidence,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification (ham): %v", err)
+	}
+	gotHam, err := s.Meta().GetLLMClassification(ctx, msg2.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification (ham): %v", err)
+	}
+	if gotHam.SpamVerdict == nil || *gotHam.SpamVerdict != "ham" {
+		t.Fatalf("SpamVerdict = %v, want \"ham\"", gotHam.SpamVerdict)
+	}
+	if gotHam.SpamReason != nil {
+		t.Fatalf("SpamReason = %v, want nil for a genuine ham verdict with no plugin reason", gotHam.SpamReason)
 	}
 }
 

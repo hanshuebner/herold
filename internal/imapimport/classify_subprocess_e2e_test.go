@@ -174,9 +174,13 @@ func (a *testSpamAdapter) Classify(ctx context.Context, principalID store.Princi
 	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
 	if a.cls != nil {
 		var err error
+		// re #326: an attempted-and-failed call keeps cls.Reason (the
+		// "<class>: <detail>" string spam.Classifier.Classify already
+		// set) so RecordVerdict below can persist it, mirroring
+		// internal/admin/imap_import_spam.go's real adapter.
 		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
 		if err != nil {
-			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1}
+			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1, Reason: cls.Reason}
 		}
 	}
 	switch {
@@ -207,12 +211,20 @@ func (a *testSpamAdapter) buildClassifyContext(ctx context.Context, principalID 
 }
 
 func (a *testSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, _ mailparse.Message, classification spam.Classification) {
-	if classification.Verdict == spam.Unclassified || messageID == 0 {
+	// re #326: only the "no plugin configured, no attempt made" case
+	// (Unclassified with no Reason) stays unrecorded; an
+	// attempted-and-failed Unclassified outcome (Reason set) IS
+	// persisted, mirroring internal/admin/imap_import_spam.go.
+	if (classification.Verdict == spam.Unclassified && classification.Reason == "") || messageID == 0 {
 		return
 	}
 	v := classification.Verdict.String()
 	score := classification.Score
 	rec := store.LLMClassificationRecord{MessageID: messageID, PrincipalID: principalID, SpamVerdict: &v, SpamConfidence: &score}
+	if classification.Reason != "" {
+		reason := classification.Reason
+		rec.SpamReason = &reason
+	}
 	_ = a.st.Meta().SetLLMClassification(ctx, rec)
 }
 
@@ -488,8 +500,21 @@ func TestClassifySubprocess_BudgetCutoff_FakeClock(t *testing.T) {
 			if !msgIsMemberOf(msg, inboxMB.ID) {
 				t.Errorf("timed-out classify message not in INBOX (mailboxes=%v)", msg.Mailboxes)
 			}
-			if _, err := ha.Store.Meta().GetLLMClassification(ctx, msg.ID); err == nil {
-				t.Errorf("GetLLMClassification succeeded for a timed-out (unclassified) message; want not-found")
+			// re #326: a classify call that was attempted and cut off by
+			// the budget IS now recorded, verdict "unclassified" with a
+			// timeout reason -- distinguishable from a genuine ham
+			// verdict and from the "no plugin configured" case, which
+			// stays unrecorded (TestIMAPImportSpamAdapter_ClassifyNilClassifier
+			// et al in internal/admin).
+			rec, err := ha.Store.Meta().GetLLMClassification(ctx, msg.ID)
+			if err != nil {
+				t.Fatalf("GetLLMClassification: %v", err)
+			}
+			if rec.SpamVerdict == nil || *rec.SpamVerdict != "unclassified" {
+				t.Errorf("SpamVerdict = %v, want \"unclassified\"", rec.SpamVerdict)
+			}
+			if rec.SpamReason == nil || !strings.HasPrefix(*rec.SpamReason, "timeout: ") {
+				t.Errorf("SpamReason = %v, want a timeout: prefix", rec.SpamReason)
 			}
 		})
 	}

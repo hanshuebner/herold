@@ -26,9 +26,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
+	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -76,17 +78,27 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 	// category is empty OR no classifier plugin is installed, mirroring
 	// protosmtp.classifyMessage.
 	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
-	if a.cls != nil {
-		var err error
+	var attempted bool
+	var clsErr error
+	var elapsed time.Duration
+	if a.cls != nil && a.plugin != "" {
+		attempted = true
+		start := time.Now()
 		// authResults: REQ-IMAP-IMP-33, no re-verification on import.
-		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
-		if err != nil {
+		cls, clsErr = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
+		elapsed = time.Since(start)
+		if clsErr != nil {
 			// spam.Classifier.Classify already logs a warn with the plugin
 			// name and error before returning; logging again here would
-			// duplicate the line at a lower level for no benefit.
-			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1}
+			// duplicate the line at a lower level for no benefit. Reason
+			// survives from cls.Reason (re #326) for the INFO summary
+			// line below and the persisted record.
+			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1, Reason: cls.Reason}
 		}
+	} else {
+		clsErr = spam.ErrNotConfigured
 	}
+	a.logClassifyOutcome(ctx, principalID, msg, cls, attempted, clsErr, elapsed)
 	switch {
 	case cls.Verdict == spam.Spam:
 		cls.Category = "" // ADR-0004
@@ -96,6 +108,35 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 		cls.Category = spam.StructuralCategory(msg) // ADR-0002
 	}
 	return cls
+}
+
+// logClassifyOutcome emits the one INFO-level "spam classification
+// outcome" line per classified message the ticket requires (re #326),
+// mirroring internal/protosmtp/deliver.go's logClassifyOutcome: visible
+// at production log level regardless of whether the classifier ran,
+// succeeded, or was never configured. The import worker calls Classify
+// before InsertMessage, so no store-assigned MessageID exists yet; the
+// Message-ID header is logged instead, the same key RecordVerdict's
+// caller (internal/imapimport) uses to assign the row afterward.
+func (a *imapImportSpamAdapter) logClassifyOutcome(ctx context.Context, principalID store.PrincipalID, msg mailparse.Message, cls spam.Classification, attempted bool, clsErr error, elapsed time.Duration) {
+	attrs := []any{
+		"activity", observe.ActivitySystem,
+		"subsystem", "spam",
+		"msg_id_header", msg.Envelope.MessageID,
+		"principal_id", uint64(principalID),
+		"verdict", cls.Verdict.String(),
+		"score", cls.Score,
+		"category", cls.Category,
+		"attempted", attempted,
+		"elapsed_ms", elapsed.Milliseconds(),
+	}
+	if cls.Verdict == spam.Unclassified {
+		attrs = append(attrs, "reason_class", spam.ReasonClass(clsErr))
+		if clsErr != nil {
+			attrs = append(attrs, "err", clsErr.Error())
+		}
+	}
+	a.logger.InfoContext(ctx, "spam classification outcome", attrs...)
 }
 
 // buildClassifyContext loads principalID's CategorisationConfig
@@ -131,12 +172,19 @@ func (a *imapImportSpamAdapter) buildClassifyContext(ctx context.Context, princi
 }
 
 // RecordVerdict implements imapimport.SpamClassifier. A no-op when
-// classification.Verdict is spam.Unclassified (REQ-FILT-66 records
-// verdicts a classifier actually reached, not "did not run"). Persist
-// failures are logged at warn and otherwise swallowed -- the import must
-// never fail because the transparency record could not be written.
+// classification is a Verdict of Unclassified with no Reason: that is
+// the "no plugin configured, no attempt made" case (re #326), which
+// stays silent per message rather than growing the table on every
+// import for an account with no classifier configured. An Unclassified
+// verdict WITH a Reason means an attempt was made and failed (timeout /
+// plugin error / unparseable output) and IS recorded, verdict
+// "unclassified", so `spam reclassify --unclassified-only` and the
+// message-research surface can see it (REQ-FILT-66 transparency).
+// Persist failures are logged at warn and otherwise swallowed -- the
+// import must never fail because the transparency record could not be
+// written.
 func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID store.PrincipalID, messageID store.MessageID, msg mailparse.Message, classification spam.Classification) {
-	if classification.Verdict == spam.Unclassified || messageID == 0 {
+	if (classification.Verdict == spam.Unclassified && classification.Reason == "") || messageID == 0 {
 		return
 	}
 	v := classification.Verdict.String()
@@ -147,10 +195,15 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 		SpamVerdict:    &v,
 		SpamConfidence: &score,
 	}
-	if raw := classification.RawResponse; raw != nil {
+	if classification.Reason != "" {
+		reason := classification.Reason
+		rec.SpamReason = &reason
+	} else if raw := classification.RawResponse; raw != nil {
 		if reason, ok := raw["reason"].(string); ok && reason != "" {
 			rec.SpamReason = &reason
 		}
+	}
+	if raw := classification.RawResponse; raw != nil {
 		if mdl, ok := raw["model"].(string); ok && mdl != "" {
 			rec.SpamModel = &mdl
 		}

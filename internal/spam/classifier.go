@@ -98,6 +98,67 @@ type PluginInvoker interface {
 // DefaultTimeout is applied when the caller's ctx has no deadline.
 const DefaultTimeout = 5 * time.Second
 
+// Sentinel errors Classify returns so callers can classify an
+// Unclassified outcome's reason without string-matching (re #326). Every
+// non-nil error Classify returns wraps one of these via errors.Is.
+var (
+	// ErrNotConfigured means no plugin invoker was wired at all (the
+	// Classifier was constructed with a nil PluginInvoker) or the
+	// caller chose not to invoke Classify because no spam/classifier
+	// plugin is configured. classifyMessage-style callers that never
+	// call Classify in this situation still report it via ReasonClass
+	// for a consistent operator-facing reason string.
+	ErrNotConfigured = errors.New("spam: no plugin invoker configured")
+	// ErrUnparseableVerdict means the plugin's JSON-RPC call succeeded
+	// but the response carried no verdict Classify recognizes.
+	ErrUnparseableVerdict = errors.New("spam: plugin returned unrecognised verdict")
+	// ErrNilResponse means the plugin's JSON-RPC call succeeded but
+	// returned no result object at all.
+	ErrNilResponse = errors.New("spam: plugin returned nil response")
+)
+
+// rpcTimeoutMarker is the exact message internal/plugin/client.go's
+// Client.Call sets on the *plugin.Error it returns when the caller's ctx
+// deadline fires before a response arrives (ErrCodeTimeout, JSON-RPC code
+// -32001, rendered as "json-rpc error -32001: rpc deadline exceeded").
+// ReasonClass matches on this substring rather than importing
+// internal/plugin: PluginInvoker is deliberately the only coupling this
+// package has to the plugin supervisor (see classifierPluginType above),
+// and every non-test invoker in this codebase routes through
+// internal/plugin, so the substring always appears verbatim on an actual
+// RPC timeout.
+const rpcTimeoutMarker = "rpc deadline exceeded"
+
+// ReasonClass categorizes a Classify error into the small, stable
+// vocabulary surfaced to operators: the INFO delivery-outcome log line
+// (re #326) and the persisted llm_classifications.spam_reason prefix
+// both use these tokens. Returns "" for a nil error.
+func ReasonClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrNotConfigured):
+		return "not_configured"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "timeout"
+	case strings.Contains(err.Error(), rpcTimeoutMarker):
+		return "timeout"
+	case errors.Is(err, ErrUnparseableVerdict), errors.Is(err, ErrNilResponse):
+		return "unparseable"
+	default:
+		return "plugin_error"
+	}
+}
+
+// reasonText renders the "<class>: <error text>" string stored in
+// Classification.Reason for an Unclassified outcome (re #326): the
+// class alone (ReasonClass) is a stable, joinable vocabulary; the error
+// text keeps the specific detail (which plugin, which RPC code, which
+// parse failure) an operator needs to act on.
+func reasonText(err error) string {
+	return ReasonClass(err) + ": " + err.Error()
+}
+
 // DefaultBodyExcerptBytes caps the body excerpt sent to the plugin at
 // ~4 KiB per REQ-FILT-30.
 const DefaultBodyExcerptBytes = 4 * 1024
@@ -215,7 +276,7 @@ func (c *Classifier) WithTimeout(d time.Duration) *Classifier {
 // not by clsCtx being non-zero.
 func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext) (Classification, error) {
 	if c.invoker == nil {
-		return Classification{Verdict: Unclassified, Score: -1}, errors.New("spam: no plugin invoker configured")
+		return Classification{Verdict: Unclassified, Score: -1, Reason: reasonText(ErrNotConfigured)}, ErrNotConfigured
 	}
 	ctx, cancel := c.deadline(ctx)
 	defer cancel()
@@ -247,7 +308,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 	var raw map[string]any
 	err := c.invoker.Call(ctx, pluginName, method, req, &raw)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if ReasonClass(err) == "timeout" {
 			log.WarnContext(ctx, "spam classifier timeout",
 				"activity", observe.ActivitySystem,
 				"err", err)
@@ -256,7 +317,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 				"activity", observe.ActivitySystem,
 				"err", err)
 		}
-		return Classification{Verdict: Unclassified, Score: -1}, err
+		return Classification{Verdict: Unclassified, Score: -1, Reason: reasonText(err)}, err
 	}
 
 	cl, err := parseClassification(raw)
@@ -264,6 +325,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 		log.WarnContext(ctx, "spam classifier unparseable verdict",
 			"activity", observe.ActivitySystem,
 			"err", err)
+		cl.Reason = reasonText(err)
 		return cl, err
 	}
 	if !useClassifier {
@@ -352,7 +414,7 @@ func (c *Classifier) deadline(ctx context.Context) (context.Context, context.Can
 func parseClassification(raw map[string]any) (Classification, error) {
 	out := Classification{Verdict: Unclassified, Score: -1, RawResponse: raw}
 	if raw == nil {
-		return out, errors.New("spam: plugin returned nil response")
+		return out, ErrNilResponse
 	}
 	if v, ok := raw["verdict"].(string); ok {
 		out.Verdict = parseVerdict(v)
@@ -369,7 +431,7 @@ func parseClassification(raw map[string]any) (Classification, error) {
 		out.Category = strings.TrimSpace(cat)
 	}
 	if out.Verdict == Unclassified {
-		return out, errors.New("spam: plugin returned unrecognised verdict")
+		return out, ErrUnparseableVerdict
 	}
 	return out, nil
 }

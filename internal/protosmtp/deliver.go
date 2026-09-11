@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net/mail"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/extimg"
@@ -86,7 +88,8 @@ func (sess *session) finishMessage(spill *os.File) {
 		return
 	}
 
-	classification := sess.classify(ctx, msg, authResults)
+	clsAttempt := sess.classify(ctx, msg, authResults)
+	classification := clsAttempt.Classification
 	listenerLabel := sess.mode.String()
 	// Track inbound DATA bytes (best-effort; counts the body bytes the
 	// session received, not framing or commands).
@@ -697,10 +700,16 @@ func (sess *session) deliverOne(
 			return false, ierr
 		}
 		// Persist the LLM classification record for transparency (REQ-FILT-66 /
-		// REQ-FILT-216 / G14). Only when at least one LLM was invoked.
-		// The record is fire-and-forget: a failure here is logged but never
-		// blocks delivery (REQ-FILT-230 / REQ-FILT-40).
-		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "") {
+		// REQ-FILT-216 / G14). Only when at least one LLM was invoked, OR
+		// (re #326) the invocation was attempted and failed:
+		// classification.Reason is non-empty exactly in that case --
+		// classifyMessage leaves it empty for the "no plugin configured"
+		// no-attempt case, so that (silent, expected) outcome does not
+		// grow the table for every message on an install that has no
+		// spam plugin at all. The record is fire-and-forget: a failure
+		// here is logged but never blocks delivery (REQ-FILT-230 /
+		// REQ-FILT-40).
+		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "" || classification.Reason != "") {
 			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification)
 		}
 
@@ -767,8 +776,12 @@ func (sess *session) persistLLMRecord(
 		MessageID:   m.ID,
 		PrincipalID: principalID,
 	}
-	// Spam sub-record.
-	if classification.Verdict != spam.Unclassified {
+	// Spam sub-record. classification.Reason is non-empty for an
+	// Unclassified outcome exactly when a classifier invocation was
+	// attempted and failed (timeout/plugin-error/unparseable-output, re
+	// #326); the caller's gate (deliverOne) already excludes the
+	// "no plugin configured, no attempt made" case from reaching here.
+	if classification.Verdict != spam.Unclassified || classification.Reason != "" {
 		v := classification.Verdict.String()
 		rec.SpamVerdict = &v
 		score := classification.Score
@@ -1003,12 +1016,29 @@ func sanitizeHeaderValue(s string) string {
 // resolved onto the envelope by RCPT TO. On any error (plugin missing,
 // timeout, parse failure) we collapse to Unclassified and continue —
 // the filter step is not a gate for accept/reject by itself.
-func (sess *session) classify(ctx context.Context, msg mailparse.Message, authResults mailauth.AuthResults) spam.Classification {
+func (sess *session) classify(ctx context.Context, msg mailparse.Message, authResults mailauth.AuthResults) classifyAttempt {
 	recipients := make([]recipientRef, len(sess.envelope.rcpts))
 	for i, rc := range sess.envelope.rcpts {
 		recipients[i] = recipientRef{addr: rc.addr, principalID: rc.principalID}
 	}
 	return classifyMessage(ctx, sess.srv, msg, &authResults, recipients)
+}
+
+// classifyAttempt bundles one classifyMessage call's Classification with
+// the plugin-call context the INFO delivery-outcome log line and the
+// persisted llm_classifications row need (re #326): whether the
+// configured classifier plugin was actually invoked (Attempted), the
+// error that invocation returned (nil on success or when no attempt was
+// made -- no [[plugin]] of type spam/classifier configured), and how
+// long the attempt took. Classification.Verdict alone cannot distinguish
+// "no plugin configured" from "plugin invoked and failed": both collapse
+// to Unclassified, but only the latter is a fact worth persisting per
+// message.
+type classifyAttempt struct {
+	Classification spam.Classification
+	Attempted      bool
+	Err            error
+	Elapsed        time.Duration
 }
 
 // recipientRef is the minimal recipient shape classifyMessage needs to
@@ -1038,7 +1068,7 @@ type recipientRef struct {
 // invoked once per message, not once per recipient, and there is no way
 // to honour that AND a second principal's distinct vocabulary in the
 // same call.
-func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) spam.Classification {
+func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) classifyAttempt {
 	var clsCtx spam.ClassifyContext
 	var categorisationEnabled bool
 	for _, r := range recipients {
@@ -1059,17 +1089,26 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 	// behaviour) silently dropped the fallback -- and therefore the tab
 	// strip -- for every herold with no spam plugin configured at all.
 	cls := spam.Classification{Verdict: spam.Unclassified, Score: -1}
-	if srv.spam != nil {
-		var err error
-		cls, err = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
-		if err != nil {
+	var attempted bool
+	var clsErr error
+	var elapsed time.Duration
+	if srv.spam != nil && srv.spamPlug != "" {
+		attempted = true
+		start := time.Now()
+		cls, clsErr = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
+		elapsed = time.Since(start)
+		if clsErr != nil {
 			// Classifier.Classify already emits a warn-level
-			// "spam classifier error" with the plugin name and err
-			// before returning. Logging again here would duplicate the
-			// same record at INFO; let the classifier own that line.
-			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1}
+			// "spam classifier error"/"spam classifier timeout" with the
+			// plugin name and err before returning; the reason survives
+			// on cls.Reason for the INFO summary line below and the
+			// persisted record (re #326).
+			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1, Reason: cls.Reason}
 		}
+	} else {
+		clsErr = spam.ErrNotConfigured
 	}
+	logClassifyOutcome(ctx, srv, msg, recipients, cls, attempted, clsErr, elapsed)
 	switch {
 	case cls.Verdict == spam.Spam:
 		// ADR-0004: \Junk is exempt from categorisation even when the
@@ -1083,7 +1122,44 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 		// case, since Category is already "" on that path too).
 		cls.Category = spam.StructuralCategory(msg)
 	}
-	return cls
+	return classifyAttempt{Classification: cls, Attempted: attempted, Err: clsErr, Elapsed: elapsed}
+}
+
+// logClassifyOutcome emits the one INFO-level "spam classification
+// outcome" line per classified message the ticket requires (re #326):
+// unlike internal/spam.Classifier's own DEBUG request/verdict lines and
+// WARN error/timeout lines (kept as-is), this line is visible at
+// production log level regardless of whether the classifier ran,
+// succeeded, or was never configured, so an operator can answer "what
+// happened to this message" from the journal alone. msg carries no
+// store-assigned MessageID yet at this point in the pipeline (classify
+// runs before InsertMessage); the Message-ID header is logged instead,
+// the same key persistLLMRecord uses afterward to find the row.
+func logClassifyOutcome(ctx context.Context, srv *Server, msg mailparse.Message, recipients []recipientRef, cls spam.Classification, attempted bool, clsErr error, elapsed time.Duration) {
+	principals := make([]string, 0, len(recipients))
+	for _, r := range recipients {
+		if r.principalID != 0 {
+			principals = append(principals, strconv.FormatUint(uint64(r.principalID), 10))
+		}
+	}
+	attrs := []any{
+		"activity", observe.ActivitySystem,
+		"subsystem", "spam",
+		"msg_id_header", msg.Envelope.MessageID,
+		"principal_ids", strings.Join(principals, ","),
+		"verdict", cls.Verdict.String(),
+		"score", cls.Score,
+		"category", cls.Category,
+		"attempted", attempted,
+		"elapsed_ms", elapsed.Milliseconds(),
+	}
+	if cls.Verdict == spam.Unclassified {
+		attrs = append(attrs, "reason_class", spam.ReasonClass(clsErr))
+		if clsErr != nil {
+			attrs = append(attrs, "err", clsErr.Error())
+		}
+	}
+	srv.log.InfoContext(ctx, "spam classification outcome", attrs...)
 }
 
 // buildClassifyContext loads principalID's CategorisationConfig

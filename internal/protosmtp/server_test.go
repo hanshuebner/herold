@@ -61,12 +61,17 @@ type fixture struct {
 type fixtureOpts struct {
 	mode           protosmtp.ListenerMode
 	allowPlainAuth bool
+	// store overrides the harness's default in-memory SQLite store (re
+	// #326's "both store backends" delivery test); nil keeps the
+	// default.
+	store store.Store
 }
 
 func newFixture(t *testing.T, fo fixtureOpts) *fixture {
 	t.Helper()
 	proto, name := protoNameFor(fo.mode)
 	ha, _ := testharness.Start(t, testharness.Options{
+		Store:     fo.store,
 		Listeners: []testharness.ListenerSpec{{Name: name, Protocol: proto}},
 	})
 	ctx := context.Background()

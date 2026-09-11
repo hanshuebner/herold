@@ -103,6 +103,7 @@ func (m *metadata) SearchAdminMessages(ctx context.Context, filter store.AdminMe
 		    m.env_date_us,
 		    lc.spam_verdict,
 		    lc.spam_confidence,
+		    lc.spam_reason,
 		    m.delivery_disposition,
 		    m.ingest_source,
 		    m.ingest_source_ref
@@ -202,6 +203,7 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 	var id, pid, rcvUs, envDateUs int64
 	var spamVerdict *string
 	var spamConfidence *float64
+	var spamReason *string
 	var envCc, envBcc, envReplyTo, envInReplyTo, envReferences string
 	var disposition string
 	var ingestSource string
@@ -215,6 +217,7 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 		&envDateUs,
 		&spamVerdict,
 		&spamConfidence,
+		&spamReason,
 		&disposition,
 		&ingestSource,
 		&hit.IngestSourceRef,
@@ -235,5 +238,6 @@ func scanAdminMessageHitPG(row pgx.Row) (store.AdminMessageHit, error) {
 	hit.IngestSource = store.MessageIngestSource(ingestSource)
 	hit.SpamVerdict = spamVerdict
 	hit.SpamConfidence = spamConfidence
+	hit.SpamReason = spamReason
 	return hit, nil
 }

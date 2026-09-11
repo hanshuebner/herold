@@ -154,7 +154,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 		for i, rc := range req.Recipients {
 			recipients[i] = recipientRef{addr: rc.Addr, principalID: rc.PrincipalID}
 		}
-		classification = classifyMessage(ctx, s, msg, &authResults, recipients)
+		classification = classifyMessage(ctx, s, msg, &authResults, recipients).Classification
 		// Stamp spam verdict onto authResults for audit consistency.
 		authResults.Spam = &mailauth.SpamResult{
 			Verdict: classification.Verdict.String(),

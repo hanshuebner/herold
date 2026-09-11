@@ -114,7 +114,12 @@ func reclassifySpam(
 		sum.Selected++
 
 		if opts.UnclassifiedOnly {
-			if rec, ok := existing[mid]; ok && rec.SpamVerdict != nil {
+			// A recorded verdict of "unclassified" (re #326: a timeout /
+			// plugin-error / unparseable-output outcome, now persisted
+			// instead of leaving no row at all) counts as missed, same
+			// as no row: --unclassified-only exists to catch exactly
+			// these, so only a genuine ham/spam/suspect verdict skips.
+			if rec, ok := existing[mid]; ok && rec.SpamVerdict != nil && *rec.SpamVerdict != spam.Unclassified.String() {
 				sum.Skipped++
 				continue
 			}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/plugin"
 	"github.com/hanshuebner/herold/internal/spam"
+	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -96,7 +98,96 @@ func newSpamCmd() *cobra.Command {
 	c.AddCommand(setCmd)
 	c.AddCommand(newSpamApplyVerdictsCmd())
 	c.AddCommand(newSpamReclassifyCmd())
+	c.AddCommand(newSpamShowCmd())
 	return c
+}
+
+// newSpamShowCmd builds `herold spam show <message-id>`, a store-backed
+// read command (opens the store from --system-config, like `spam
+// reclassify` / `diag reparse-envelopes`; no admin server needed) that
+// prints one message's recorded llm_classifications outcome (re #326):
+// the observability gap this command closes is that a classifier
+// timeout, error, or unparseable-output outcome used to leave no
+// record at all, indistinguishable after the fact from a genuine ham
+// verdict.
+func newSpamShowCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "show <message-id>",
+		Short: "print the recorded spam-classification outcome for one message",
+		Long: `Looks up the numeric store message id's llm_classifications row
+(the same id shown by ` + "`message-research`" + ` and stored-message listings)
+and prints verdict, confidence, reason, model, and when it ran.
+
+reason is the plugin's own one-sentence explanation for a genuine
+ham/spam/suspect verdict, or a "<class>: <detail>" string when verdict is
+"unclassified" and the classifier was actually invoked and failed
+(class one of timeout, plugin_error, unparseable, not_configured).
+"unclassified" with no reason and no recorded row at all both mean the
+classifier was never invoked for this message.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g := globals(cmd.Context())
+			cfg, err := requireConfig(g)
+			if err != nil {
+				return err
+			}
+			mid, err := strconv.ParseUint(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("spam show: invalid message id %q: %w", args[0], err)
+			}
+			ctx := cmd.Context()
+			st, err := openStore(ctx, cfg, discardLogger(), clock.NewReal())
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+
+			rec, err := st.Meta().GetLLMClassification(ctx, store.MessageID(mid))
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return fmt.Errorf("spam show: no classification record for message %d (the classifier was never invoked for it, or the message id does not exist)", mid)
+				}
+				return fmt.Errorf("spam show: %w", err)
+			}
+			return writeResult(cmd.OutOrStdout(), g, llmClassificationRecordToMap(rec))
+		},
+	}
+	return c
+}
+
+// llmClassificationRecordToMap renders rec as the flat map writeResult
+// expects (JSON when --json/non-terminal, aligned key/value lines
+// otherwise). Nil fields are omitted rather than rendered as null/empty.
+func llmClassificationRecordToMap(rec store.LLMClassificationRecord) map[string]any {
+	out := map[string]any{
+		"message_id":   uint64(rec.MessageID),
+		"principal_id": uint64(rec.PrincipalID),
+	}
+	if rec.SpamVerdict != nil {
+		out["spam_verdict"] = *rec.SpamVerdict
+	}
+	if rec.SpamConfidence != nil {
+		out["spam_confidence"] = *rec.SpamConfidence
+	}
+	if rec.SpamReason != nil {
+		out["spam_reason"] = *rec.SpamReason
+	}
+	if rec.SpamModel != nil {
+		out["spam_model"] = *rec.SpamModel
+	}
+	if rec.SpamClassifiedAt != nil {
+		out["spam_classified_at"] = rec.SpamClassifiedAt.UTC().Format(time.RFC3339)
+	}
+	if rec.CategoryAssigned != nil {
+		out["category_assigned"] = *rec.CategoryAssigned
+	}
+	if rec.CategoryModel != nil {
+		out["category_model"] = *rec.CategoryModel
+	}
+	if rec.CategoryClassifiedAt != nil {
+		out["category_classified_at"] = rec.CategoryClassifiedAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 // newSpamApplyVerdictsCmd builds `herold spam apply-verdicts`, a

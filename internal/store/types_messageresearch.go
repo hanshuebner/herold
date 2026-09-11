@@ -182,4 +182,12 @@ type AdminMessageHit struct {
 	// SpamConfidence is the [0,1] confidence score from the spam
 	// classifier; nil when the classifier was not run.
 	SpamConfidence *float64
+	// SpamReason is llm_classifications.spam_reason: for a genuine
+	// ham/spam/suspect verdict, the plugin's own one-sentence
+	// explanation; for SpamVerdict == "unclassified" (re #326), the
+	// "<class>: <detail>" string recorded at classification time
+	// (spam.ReasonClass tokens: timeout, not_configured, unparseable,
+	// plugin_error). Nil when the classifier was not run or returned no
+	// reason.
+	SpamReason *string
 }

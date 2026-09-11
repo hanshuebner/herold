@@ -1244,3 +1244,113 @@ func TestMessageResearch_SMTPEventCarriesRcptTo(t *testing.T) {
 		t.Fatalf("smtp_event entry not found; items=%+v", out.Items)
 	}
 }
+
+// TestMessageResearch_SpamReasonUnclassified covers re #326: an
+// Unclassified verdict caused by a classifier timeout/error/unparseable
+// output (Store.SetLLMClassification's spam_verdict="unclassified" with
+// a "<class>: <detail>" spam_reason, distinct from a genuine ham
+// verdict) renders on the received entry's spam_reason field.
+func TestMessageResearch_SpamReasonUnclassified(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.h.Store
+
+	_, adminKey := h.bootstrap("superadmin2@example.com")
+	admin, err := s.Meta().GetPrincipalByEmail(ctx, "superadmin2@example.com")
+	if err != nil {
+		t.Fatalf("GetPrincipalByEmail: %v", err)
+	}
+	admin.Flags |= store.PrincipalFlagSuperAdmin
+	if err := s.Meta().UpdatePrincipal(ctx, admin); err != nil {
+		t.Fatalf("UpdatePrincipal super-admin: %v", err)
+	}
+	if res, buf := h.doRequest("POST", "/api/v1/domains", adminKey, map[string]any{"name": "gamma.test"}); res.StatusCode != http.StatusCreated {
+		t.Fatalf("create domain: %d: %s", res.StatusCode, buf)
+	}
+	pid := h.createPrincipal(adminKey, "dave@gamma.test")
+	p, err := s.Meta().GetPrincipalByID(ctx, store.PrincipalID(pid))
+	if err != nil {
+		t.Fatalf("GetPrincipalByID: %v", err)
+	}
+	allMbs, err := s.Meta().ListMailboxes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	var inbox store.Mailbox
+	for _, mb := range allMbs {
+		if mb.Name == "INBOX" {
+			inbox = mb
+			break
+		}
+	}
+	if inbox.ID == 0 {
+		t.Fatalf("INBOX not provisioned for dave")
+	}
+
+	blobRef, err := s.Blobs().Put(ctx, strings.NewReader("unclassified test body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	rcv := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	if _, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Blob:         blobRef,
+		Size:         blobRef.Size,
+		ReceivedAt:   rcv,
+		InternalDate: rcv,
+		Envelope: store.Envelope{
+			Subject:   "Timed out at classify",
+			From:      "sender@outside.test",
+			To:        "dave@gamma.test",
+			MessageID: "research-unclassified-msg-1@outside.test",
+		},
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	insertedMsgs, err := s.Meta().ListMessages(ctx, inbox.ID, store.MessageFilter{Limit: 1})
+	if err != nil || len(insertedMsgs) == 0 {
+		t.Fatalf("ListMessages inbox: %v (len=%d)", err, len(insertedMsgs))
+	}
+	msgID := insertedMsgs[0].ID
+
+	verdict := "unclassified"
+	reason := "timeout: json-rpc error -32001: rpc deadline exceeded"
+	conf := -1.0
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID:      msgID,
+		PrincipalID:    p.ID,
+		SpamVerdict:    &verdict,
+		SpamConfidence: &conf,
+		SpamReason:     &reason,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+
+	res, buf := h.doRequest("GET", "/api/v1/admin/message-research?message_id=research-unclassified-msg-1%40outside.test", adminKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, buf)
+	}
+	var found bool
+	for _, item := range out.Items {
+		if item["source"] != "received" {
+			continue
+		}
+		found = true
+		if item["spam_verdict"] != "unclassified" {
+			t.Errorf("spam_verdict: got %v, want \"unclassified\"", item["spam_verdict"])
+		}
+		got, ok := item["spam_reason"].(string)
+		if !ok || got != reason {
+			t.Errorf("spam_reason: got %v, want %q", item["spam_reason"], reason)
+		}
+	}
+	if !found {
+		t.Fatalf("no 'received' entry found; items=%+v", out.Items)
+	}
+}

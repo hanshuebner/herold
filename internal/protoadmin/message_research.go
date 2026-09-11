@@ -326,6 +326,15 @@ func (s *Server) handleMessageResearch(w http.ResponseWriter, r *http.Request) {
 		if m.SpamConfidence != nil {
 			e["spam_confidence"] = *m.SpamConfidence
 		}
+		// spam_reason (re #326): the plugin's own explanation for a
+		// genuine ham/spam/suspect verdict, or the "<class>: <detail>"
+		// string recorded when SpamVerdict is "unclassified" (a
+		// classifier error/timeout/unparseable-output/not-configured
+		// outcome) -- the operator surface for the ticket's "classifier
+		// errors deliver silently" gap.
+		if m.SpamReason != nil {
+			e["spam_reason"] = *m.SpamReason
+		}
 		timeline = append(timeline, entry{at: m.ReceivedAt, data: e})
 	}
 
