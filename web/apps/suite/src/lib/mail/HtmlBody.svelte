@@ -59,6 +59,7 @@
   import { findScrollParent } from './scroll-parent';
   import { t } from '../i18n/i18n.svelte';
   import { inlineImageDecodeStatus } from './image-decode';
+  import { overlayButtonRect } from './overlay-position';
 
   interface Props {
     html: string;
@@ -209,8 +210,7 @@
     }
     const wrapperRect = wrapper.getBoundingClientRect();
     const frameRect = frame.getBoundingClientRect();
-    const frameOffsetTop = frameRect.top - wrapperRect.top;
-    const frameOffsetLeft = frameRect.left - wrapperRect.left;
+    const scrollY = frame.contentWindow?.scrollY ?? 0;
 
     const buttons: OverlayButton[] = [];
     for (const img of doc.querySelectorAll<HTMLImageElement>('img[src]')) {
@@ -220,11 +220,9 @@
       if (!meta) continue;
       const imgRect = img.getBoundingClientRect();
       if (imgRect.width === 0 || imgRect.height === 0) continue;
+      const rect = overlayButtonRect(wrapperRect, frameRect, imgRect, scrollY);
       buttons.push({
-        top: frameOffsetTop + imgRect.top - frameRect.top + (frame.contentWindow?.scrollY ?? 0),
-        left: frameOffsetLeft + imgRect.left - frameRect.left,
-        width: imgRect.width,
-        height: imgRect.height,
+        ...rect,
         downloadUrl: meta.downloadUrl,
         name: meta.name,
       });
