@@ -27,8 +27,11 @@ object DevInstance {
     val email: String get() = argument("heroldEmail") ?: "alice@example.local"
     val password: String get() = argument("heroldPassword") ?: "testpass123..."
 
-    /** A principal with TOTP enrolled, used for the rejected-code check. */
+    /** A principal with TOTP enrolled, used for the two-factor checks. */
     val totpEmail: String get() = argument("heroldTotpEmail") ?: "admin@example.local"
+
+    /** The TOTP secret scripts/dev-instance.sh prints as ADMIN_TOTP_SECRET. */
+    val totpSecret: String? get() = argument("heroldTotpSecret")
 
     /**
      * An independent JMAP client signed in as [email], for asserting server

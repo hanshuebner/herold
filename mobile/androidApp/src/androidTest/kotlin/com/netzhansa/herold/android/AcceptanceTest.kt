@@ -106,6 +106,28 @@ class AcceptanceTest {
     }
 
     @Test
+    fun t02b_aCorrectTotpCodeIsAccepted() {
+        val secret = DevInstance.totpSecret
+        if (secret == null) {
+            // The harness passes the dev instance's printed ADMIN_TOTP_SECRET;
+            // without it this check cannot run.
+            return
+        }
+        compose.onNodeWithTag("signin-base-url").performTextClearance()
+        compose.onNodeWithTag("signin-base-url").performTextInput(DevInstance.baseUrl)
+        compose.onNodeWithTag("signin-email").performTextInput(DevInstance.totpEmail)
+        compose.onNodeWithTag("signin-password").performTextInput(DevInstance.password)
+        compose.onNodeWithTag("signin-totp").performTextInput(Totp.code(secret))
+        compose.onNodeWithTag("signin-submit").performClick()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("inbox-title").assertIsDisplayed()
+        compose.captureScreen("03b-correct-totp-accepted")
+    }
+
+    @Test
     fun t03_theInboxShowsSeededThreadsWithCategoryTabsThatFilterTheList() {
         signIn()
         categoriseTwoSeededThreads()
