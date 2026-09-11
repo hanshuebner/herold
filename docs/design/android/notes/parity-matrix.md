@@ -25,20 +25,23 @@ presentation-level and not yet built.
 | Suite REQ / feature | Kind | Status | Ticket |
 |---|---|---|---|
 | `02-mail-basics` — thread model, read/unread, star | protocol | n/a | — |
-| `02-mail-basics` — reading-pane HTML render + inline images | presentation | in-progress | — |
-| `02-mail-basics` — sub-account combined inbox + scope switcher (`REQ-MAIL-SUB-01..09`) | presentation | in-progress | — |
+| `02-mail-basics` — reading-pane HTML render + inline images | presentation | done (milestone 1a) | #327 |
+| `02-mail-basics` — sub-account combined inbox + scope switcher (`REQ-MAIL-SUB-01..09`) | presentation | done (milestone 1a) | #327 |
 | `02-mail-basics` — emoji reactions (`Email.reactions`) | protocol | n/a | — |
 | `03-labels` — label CRUD, apply/remove | protocol | n/a | — |
+| `03-labels` — label chips and apply/remove picker | presentation | done (milestone 1a) | #327 |
 | `03-labels` — sidebar label tree UI | presentation | todo | — |
 | `04-filters` — Sieve filter model | protocol | n/a | — |
 | `04-filters` — filter editor UI | presentation | todo | — |
 | `05-categorisation` — `$category-*` keywords | protocol | n/a | — |
-| `05-categorisation` — category chips / display | presentation | todo | — |
+| `05-categorisation` — pinned tabs and bundled rows | presentation | done (milestone 1a) | #327 |
+| `05-categorisation` — category editing and disposition settings | presentation | todo | — |
 | `06-snooze` — snooze data model | protocol | n/a | — |
-| `06-snooze` — snooze picker UI | presentation | todo | — |
+| `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
+| `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | todo | — |
 | `07-search` — JMAP `Email/query` + FTS | protocol | n/a | — |
 | `07-search` — search UI + suggestions | presentation | todo | — |
-| `11-optimistic-ui` — optimistic action semantics | presentation | todo | — |
+| `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 1a, online only) | #327 |
 | `14-unsubscribe` — List-Unsubscribe handling | presentation | todo | — |
 | `17-attachments` — inline-vs-attach (suite G8) | presentation | todo | — |
 | `19-drafts` — draft model | protocol | n/a | — |
@@ -70,10 +73,17 @@ matrix is a complete picture of mobile scope.
 
 | Feature | REQ | Status |
 |---|---|---|
-| Bearer-token auth (device-token grant, Keystore storage) | REQ-AND-AUTH-03/04/10 | in-progress |
+| Bearer-token auth (device-token grant, Keystore storage) | REQ-AND-AUTH-03/04/10 | done (milestone 1a) |
 | OAuth2 Custom Tab sign-in + biometric unlock | REQ-AND-AUTH-01/02/11 | deferred (milestone 2) |
-| Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | in-progress |
+| Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | done (milestone 1a); offline search is milestone 1c |
 | Durable offline outbox | REQ-AND-SYNC-20..25 | deferred (milestone 2) |
 | FCM notifications (direct-reply, shortcuts, Bubbles) | REQ-AND-03x | todo |
 | System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
-| Native navigation shell + predictive back | REQ-AND-05x | todo |
+| Native navigation shell + predictive back | REQ-AND-05x | done (milestone 1a, phone single-pane) |
+
+## Server gaps the client hit
+
+| Gap | Effect on the client | Owner |
+|---|---|---|
+| `/proxy/image` authenticates by session cookie only (`internal/admin/server.go` wires it to `authsession.ResolveSession`); a bearer token gets a `401`. | Remote images in the reading pane cannot be proxied, so they stay blocked. Inline `cid:` images are unaffected: they come from `/jmap/download`, which accepts the bearer token. | server (`http-api-implementor`) |
+| No disposition property on a category. `CategorySettings` exposes `derivedCategories` names only, so pinned-vs-bundled (suite `REQ-CAT-04/05/11`) has no wire surface. | The client splits lanes itself: the first five names are tabs, the rest bundles. It reads a server disposition as soon as one exists. | server + suite |
