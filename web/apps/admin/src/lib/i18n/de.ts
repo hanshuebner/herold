@@ -693,6 +693,7 @@ export const de = {
   'messageResearch.field.mailboxes': 'Postfächer',
   'messageResearch.field.junk': 'Junk',
   'messageResearch.field.spamVerdict': 'Spam-Bewertung',
+  'messageResearch.field.spamReason': 'Grund',
   'messageResearch.field.messageId': 'Message-ID',
   'messageResearch.field.action': 'Aktion',
   'messageResearch.field.recipient': 'Empfänger',

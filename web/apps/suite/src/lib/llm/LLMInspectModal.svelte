@@ -53,8 +53,20 @@
     if (e.key === 'Escape') onClose();
   }
 
-  function confidencePct(c: number): string {
-    return `${Math.round(c * 100)}%`;
+  /**
+   * Percentage text for a [0,1] confidence score, or null when there is
+   * none to show: the classifier produced no score (verdict
+   * "unclassified", the value is then absent/null on the wire) or the
+   * value is out of range. Callers fall back to the reason text.
+   */
+  function confidencePct(
+    confidence: number | null | undefined,
+    verdict?: string,
+  ): string | null {
+    if (verdict === 'unclassified') return null;
+    if (typeof confidence !== 'number' || !Number.isFinite(confidence)) return null;
+    if (confidence < 0 || confidence > 1) return null;
+    return `${Math.round(confidence * 100)}%`;
   }
 </script>
 
@@ -84,16 +96,19 @@
         <p class="empty-state">{t('mail.llm.notClassified')}</p>
       {:else}
         {#if result.category}
+          {@const categoryConf = confidencePct(result.category.confidence)}
           <section class="inspect-section">
             <h3>{t('mail.llm.category')}</h3>
             <div class="row">
               <span class="label">{t('mail.llm.assigned')}</span>
               <span class="value">{result.category.assigned}</span>
             </div>
-            <div class="row">
-              <span class="label">{t('mail.llm.confidence')}</span>
-              <span class="value">{confidencePct(result.category.confidence)}</span>
-            </div>
+            {#if categoryConf}
+              <div class="row">
+                <span class="label">{t('mail.llm.confidence')}</span>
+                <span class="value">{categoryConf}</span>
+              </div>
+            {/if}
             <div class="row">
               <span class="label">{t('mail.llm.reason')}</span>
               <span class="value">{result.category.reason}</span>
@@ -114,16 +129,19 @@
         {/if}
 
         {#if result.spam}
+          {@const spamConf = confidencePct(result.spam.confidence, result.spam.verdict)}
           <section class="inspect-section">
             <h3>{t('mail.llm.spamClassification')}</h3>
             <div class="row">
               <span class="label">{t('mail.llm.verdict')}</span>
               <span class="value verdict-{result.spam.verdict}">{result.spam.verdict}</span>
             </div>
-            <div class="row">
-              <span class="label">{t('mail.llm.confidence')}</span>
-              <span class="value">{confidencePct(result.spam.confidence)}</span>
-            </div>
+            {#if spamConf}
+              <div class="row">
+                <span class="label">{t('mail.llm.confidence')}</span>
+                <span class="value">{spamConf}</span>
+              </div>
+            {/if}
             <div class="row">
               <span class="label">{t('mail.llm.reason')}</span>
               <span class="value">{result.spam.reason}</span>

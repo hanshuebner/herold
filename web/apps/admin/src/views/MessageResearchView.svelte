@@ -106,6 +106,16 @@
     }
   }
 
+  /** Percentage text for a classified verdict, or null when the verdict is
+   * "unclassified" (a reason, not a score, is shown for those) or the
+   * confidence is missing/out of range. */
+  function confidencePercent(hit: ReceivedHit): string | null {
+    if (hit.spam_verdict === 'unclassified') return null;
+    const c = hit.spam_confidence;
+    if (typeof c !== 'number' || !Number.isFinite(c) || c < 0 || c > 1) return null;
+    return `${Math.round(c * 100)}%`;
+  }
+
   function truncate(s: string, max = 80): string {
     if (!s || s.length <= max) return s;
     return s.slice(0, max) + '...';
@@ -315,13 +325,20 @@
                   </div>
                 {/if}
                 {#if hit.spam_verdict}
+                  {@const conf = confidencePercent(hit)}
                   <div class="entry-row">
                     <span class="entry-key">{t('messageResearch.field.spamVerdict')}</span>
                     <span class="chip {verdictChipClass(hit.spam_verdict)}">{hit.spam_verdict}</span>
-                    {#if hit.spam_confidence !== undefined && hit.spam_confidence !== null}
-                      <span class="confidence">({Math.round(hit.spam_confidence * 100)}%)</span>
+                    {#if conf}
+                      <span class="confidence">({conf})</span>
                     {/if}
                   </div>
+                  {#if hit.spam_verdict === 'unclassified' && hit.spam_reason}
+                    <div class="entry-row">
+                      <span class="entry-key">{t('messageResearch.field.spamReason')}</span>
+                      <span class="entry-val">{hit.spam_reason}</span>
+                    </div>
+                  {/if}
                 {/if}
                 {#if hit.envelope.message_id}
                   <div class="entry-row">

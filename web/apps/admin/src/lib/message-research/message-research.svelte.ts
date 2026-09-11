@@ -62,6 +62,10 @@ export interface ReceivedHit {
   is_junk: boolean;
   spam_verdict?: string;
   spam_confidence?: number;
+  /** Classifier explanation. Always present when spam_verdict is
+   * "unclassified" (the classifier-failure reason); may also be set
+   * for a genuine verdict. */
+  spam_reason?: string;
   envelope: {
     from: string;
     to: string;

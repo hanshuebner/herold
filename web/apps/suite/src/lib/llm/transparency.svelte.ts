@@ -27,7 +27,10 @@ export interface MessageLLMInspect {
   emailId: string;
   spam?: {
     verdict: string;
-    confidence: number;
+    /** [0,1] confidence, or absent/null when the classifier failed to
+     * produce a score (verdict "unclassified", REQ-FILT-66); reason then
+     * carries the failure explanation instead. */
+    confidence?: number | null;
     reason: string;
     promptApplied: string;
     model: string;
@@ -35,7 +38,7 @@ export interface MessageLLMInspect {
   };
   category?: {
     assigned: string;
-    confidence: number;
+    confidence?: number | null;
     reason: string;
     promptApplied: string;
     model: string;

@@ -686,6 +686,7 @@ export const en = {
   'messageResearch.field.mailboxes': 'Mailboxes',
   'messageResearch.field.junk': 'Junk',
   'messageResearch.field.spamVerdict': 'Spam verdict',
+  'messageResearch.field.spamReason': 'Reason',
   'messageResearch.field.messageId': 'Message ID',
   'messageResearch.field.action': 'Action',
   'messageResearch.field.recipient': 'Recipient',
