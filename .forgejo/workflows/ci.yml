@@ -200,10 +200,20 @@ jobs:
           docker logs postgres 2>&1 | tail -40 >&2 || true
           exit 1
       - name: postgres smoke + e2e happy path
+        # internal/store/storetest does not honour testing.Short(), so
+        # this runs the same full compliance suite as the dedicated
+        # test (arm64 / postgres) lane, not an abbreviated one. That
+        # suite alone now takes ~4m50s-5m on this runner (run #1144,
+        # job 11917: storepg 284s + diag/migrate 8s + e2e 13s), so the
+        # 5m budget here is no longer a safety margin, just the median
+        # -- run #1144's confidence job (job 11913) hit the wall with
+        # TestCompliance still in flight at 4m58s. 8m keeps headroom
+        # under the job's 10-minute timeout-minutes without shrinking
+        # the suite.
         env:
           HEROLD_PG_DSN: postgres://herold:herold@localhost:5432/herold?sslmode=disable
         run: |
-          go test -count=1 -timeout 5m -p 1 \
+          go test -count=1 -timeout 8m -p 1 \
             ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
       - name: stop postgres
         if: always()
