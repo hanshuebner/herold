@@ -37,7 +37,11 @@
 //     a message pointing at api_key, which is the correct option for a
 //     resolved secret.
 //   - timeout_sec (integer, default 5, range 1..300): per-request LLM
-//     call deadline.
+//     call deadline. The server also propagates its own remaining
+//     classify budget on the wire (Request.TimeoutMs, issue #331); the
+//     upstream call is bounded by whichever of the two is tighter, minus
+//     a fixed margin on the propagated budget (see withBoundedDeadline),
+//     so the plugin always gives up before the server does.
 //   - spam_threshold (number, default 0.7, range 0..1): score at/above
 //     which the verdict is "spam".
 //   - system_prompt_override (string): replaces the built-in spam.classify
@@ -942,19 +946,51 @@ func truncateForError(s string) string {
 	return s
 }
 
-// withBoundedDeadline returns a context whose deadline is the sooner of
-// the inherited ctx deadline and now+timeout. The returned cancel must
-// always be called.
+// pluginTimeoutMargin is subtracted from the caller's propagated budget
+// (the server's Request.TimeoutMs, wired into parent's ctx.Deadline() by
+// the SDK's extractTimeout -- see plugins/sdk/sdk.go) before
+// withBoundedDeadline bounds the upstream chat-completions call (issue
+// #331). The round trip back to the server after the model responds --
+// JSON-RPC encoding, the write to stdout, the supervisor's own read loop
+// -- still costs time the plugin's own timer does not see; ending the
+// model call this much early keeps a verdict the plugin *does* complete
+// from arriving after the server's own deadline already expired and
+// discarded the pending call (the "plugin response without pending
+// request" condition internal/plugin/client.go now logs at debug).
+const pluginTimeoutMargin = 250 * time.Millisecond
+
+// minPluginTimeout is the floor applied to the propagated budget after
+// subtracting pluginTimeoutMargin, so a very tight budget never
+// collapses the upstream call's own timeout to zero or negative --
+// which would cancel it before it even starts. The parent ctx's real
+// deadline still bounds the call to what the server actually granted
+// (context.WithTimeout never extends past a parent's own deadline); this
+// floor only keeps the client-side timer value itself sane.
+const minPluginTimeout = 500 * time.Millisecond
+
+// withBoundedDeadline returns a context bounded by the smaller of the
+// plugin's own configured timeout and the caller's propagated budget
+// minus pluginTimeoutMargin, floored at minPluginTimeout (issue #331):
+// the plugin gives up on its upstream call before the server's own
+// classify deadline fires, rather than running a timer that starts only
+// once this handler began and knows nothing about time already spent on
+// queueing or JSON-RPC framing. The returned cancel must always be
+// called.
 func withBoundedDeadline(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
+	budget := timeout
+	if dl, ok := parent.Deadline(); ok {
+		remaining := time.Until(dl) - pluginTimeoutMargin
+		if remaining < minPluginTimeout {
+			remaining = minPluginTimeout
+		}
+		if budget <= 0 || remaining < budget {
+			budget = remaining
+		}
+	}
+	if budget <= 0 {
 		return context.WithCancel(parent)
 	}
-	deadline := time.Now().Add(timeout)
-	if dl, ok := parent.Deadline(); ok && dl.Before(deadline) {
-		// Parent deadline is tighter; honor it directly.
-		return context.WithCancel(parent)
-	}
-	return context.WithDeadline(parent, deadline)
+	return context.WithTimeout(parent, budget)
 }
 
 // asString coerces a JSON-decoded value to string. Every documented

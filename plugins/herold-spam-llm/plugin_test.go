@@ -19,6 +19,7 @@ import (
 	"time"
 
 	plug "github.com/hanshuebner/herold/internal/plugin"
+	"github.com/hanshuebner/herold/internal/spam"
 )
 
 // fakeLLM is a stand-in for an OpenAI-compatible endpoint. Tests set the
@@ -633,6 +634,72 @@ func TestClassify_ContextDeadlineWins(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("call took %s, want <3s (ctx deadline ignored)", elapsed)
+	}
+}
+
+// TestClassify_HonorsPropagatedTimeoutMs covers issue #331: when the
+// spam.classify params carry "timeout_ms" (the SDK's generic
+// extractTimeout wires it into the handler's ctx deadline; see
+// plugins/sdk/sdk.go), the plugin must bound its upstream chat-
+// completions call to somewhat less than that budget -- via
+// withBoundedDeadline's margin/floor -- rather than only the much larger
+// configured timeout_sec or the even larger client-side ctx. Both of
+// those are deliberately generous here so that an abort inside a couple
+// of seconds can only be explained by timeout_ms having been honored.
+// The returned error must also classify as a timeout on the server side
+// (internal/spam.ReasonClass), the same class a genuine RPC-level
+// deadline produces, so the delivery path's reason bookkeeping does not
+// need to special-case a plugin-side timeout.
+func TestClassify_HonorsPropagatedTimeoutMs(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		// Stall well past the propagated budget; only the plugin's own
+		// bounded ctx (derived from timeout_ms) should end this. Kept
+		// short (not 30s like the client-side ctx it dwarfs) because
+		// httptest.Server.Close's cleanup blocks until this handler
+		// returns, which only happens once r.Context() observes the
+		// client's abort or this timer fires.
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			replyJSON(w, `{"verdict":"ham","score":0.0,"reason":"late"}`)
+		}
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":    llm.endpoint(),
+		"model":       "fake",
+		"timeout_sec": 30, // deliberately not the binding constraint
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("x")
+	payload["timeout_ms"] = 600 // below minPluginTimeout + pluginTimeoutMargin: exercises the floor too
+
+	// Deliberately generous client-side ctx: proves the abort is driven
+	// by timeout_ms, not by the supervisor's own Call deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	_, err := p.classify(ctx, payload)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatalf("expected an error when the plugin's upstream call exceeds the propagated budget")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("call took %s, want well under the 10s client ctx / 30s timeout_sec (timeout_ms ignored)", elapsed)
+	}
+	if class := spam.ReasonClass(err); class != "timeout" {
+		t.Fatalf("ReasonClass(%v) = %q, want %q", err, class, "timeout")
 	}
 }
 

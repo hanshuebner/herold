@@ -181,7 +181,12 @@ func TestClientDispatch_MalformedFrame_ActivityInternal(t *testing.T) {
 }
 
 // TestClientDispatch_OrphanResponse_ActivityInternal verifies that a
-// response arriving for an unknown request ID is logged as internal/warn.
+// response arriving for an unknown request ID is logged as
+// internal/debug. This is the ordinary shape of a late plugin answer
+// arriving after Call's own ctx deadline already freed the pending slot
+// (issue #331, e.g. a classifier plugin racing the server's classify
+// budget) -- not a plugin bug -- so it must not be logged at warn/error
+// where an operator scanning for real problems would see it.
 func TestClientDispatch_OrphanResponse_ActivityInternal(t *testing.T) {
 	h := newShared()
 	log := slog.New(h)
@@ -204,15 +209,15 @@ func TestClientDispatch_OrphanResponse_ActivityInternal(t *testing.T) {
 	evs := h.snapshot()
 	found := findEvents(evs, "without pending request")
 	if len(found) == 0 {
-		t.Fatal("expected orphan-response warn; got none")
+		t.Fatal("expected orphan-response log line; got none")
 	}
 	assertAllTagged(t, evs)
 	for _, e := range found {
 		if e.attrs["activity"] != actInternal {
 			t.Errorf("orphan response record: want activity=internal, got %q", e.attrs["activity"])
 		}
-		if e.level != slog.LevelWarn {
-			t.Errorf("orphan response record: want level=warn, got %v", e.level)
+		if e.level != slog.LevelDebug {
+			t.Errorf("orphan response record: want level=debug, got %v", e.level)
 		}
 	}
 }

@@ -246,6 +246,16 @@ type SpamClassifyParams struct {
 	DMARCPass       bool     `json:"dmarc_pass"`
 	FromDomain      string   `json:"from_domain,omitempty"`
 	BodyExcerpt     string   `json:"body_excerpt"`
+	// TimeoutMs is the caller's remaining time budget for this call, in
+	// milliseconds, as of when the server built the request (issue #331).
+	// Run's per-request context wiring (extractTimeout) already reads
+	// this generically off every RPC's params and bounds the handler's
+	// ctx to it before SpamClassify/MailClassify ever runs, so a handler
+	// normally just needs ctx.Deadline(); the field is declared here too
+	// so the value is visible on the typed params without redecoding the
+	// raw JSON. Zero (absent on the wire) when the caller had no
+	// deadline.
+	TimeoutMs int64 `json:"timeout_ms,omitempty"`
 }
 
 // SpamClassifyResult is the verdict for one message.

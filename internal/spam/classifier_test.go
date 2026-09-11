@@ -224,6 +224,99 @@ func TestClassify_UnparseableVerdict(t *testing.T) {
 	}
 }
 
+// TestClassify_PropagatesTimeoutMsFromDeadline covers issue #331: the
+// server's own classify budget must travel with the spam.classify call
+// as Request.TimeoutMs, computed against the injected clock so the
+// assertion is exact rather than a real-time-tolerant approximation.
+func TestClassify_PropagatesTimeoutMsFromDeadline(t *testing.T) {
+	invoker := newFakeInvoker()
+	var gotReq Request
+	var gotOK bool
+	invoker.handle("my-spam", ClassifyMethod, func(_ context.Context, params any) (json.RawMessage, error) {
+		gotReq, gotOK = params.(Request)
+		return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
+	})
+	fc := clock.NewFake(time.Now())
+	c := New(invoker, silentLogger(), fc).WithTimeout(5 * time.Second)
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if !gotOK {
+		t.Fatalf("plugin did not receive a Request-typed params")
+	}
+	// No time has elapsed on the fake clock between the classifier
+	// attaching the deadline and BuildRequest computing TimeoutMs against
+	// it, so the wire value must equal the configured budget exactly.
+	const want = int64(5 * time.Second / time.Millisecond)
+	if gotReq.TimeoutMs != want {
+		t.Fatalf("TimeoutMs = %d, want %d", gotReq.TimeoutMs, want)
+	}
+}
+
+// TestClassify_PropagatesTimeoutMsFromCallerDeadline covers the same
+// wire propagation (issue #331) when the caller already supplies a ctx
+// deadline (rather than falling back to the classifier's own configured
+// timeout): the remaining budget at Classify time must still ride along
+// as Request.TimeoutMs, within a small real-clock tolerance since the
+// caller's ctx.WithTimeout is clocked by the real runtime, not the
+// injected FakeClock.
+func TestClassify_PropagatesTimeoutMsFromCallerDeadline(t *testing.T) {
+	invoker := newFakeInvoker()
+	var gotReq Request
+	invoker.handle("my-spam", ClassifyMethod, func(_ context.Context, params any) (json.RawMessage, error) {
+		gotReq, _ = params.(Request)
+		return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewReal())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Classify(ctx, buildMessage(t, canonMsg), nil, "my-spam", ClassifyContext{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	const want = int64(2 * time.Second / time.Millisecond)
+	const tolerance = int64(500)
+	if gotReq.TimeoutMs <= want-tolerance || gotReq.TimeoutMs > want {
+		t.Fatalf("TimeoutMs = %d, want within %dms of %d (never above it)", gotReq.TimeoutMs, tolerance, want)
+	}
+}
+
+// TestClassify_MailClassifyPropagatesTimeoutMs covers the same
+// propagation (issue #331) on the mail.classify wire contract (Wave
+// 4.3): MailClassifyRequest embeds Request, so its fields -- including
+// TimeoutMs -- marshal at the top level alongside "context".
+func TestClassify_MailClassifyPropagatesTimeoutMs(t *testing.T) {
+	invoker := &classifierTypeInvoker{fakeInvoker: newFakeInvoker(), kind: classifierPluginType}
+	var gotReq MailClassifyRequest
+	invoker.handle("my-classifier", MailClassifyMethod, func(_ context.Context, params any) (json.RawMessage, error) {
+		gotReq, _ = params.(MailClassifyRequest)
+		return json.RawMessage(`{"verdict":"ham","score":0.1}`), nil
+	})
+	fc := clock.NewFake(time.Now())
+	c := New(invoker, silentLogger(), fc).WithTimeout(3 * time.Second)
+	_, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "my-classifier", ClassifyContext{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	const want = int64(3 * time.Second / time.Millisecond)
+	if gotReq.TimeoutMs != want {
+		t.Fatalf("TimeoutMs = %d, want %d", gotReq.TimeoutMs, want)
+	}
+}
+
+// classifierTypeInvoker wraps fakeInvoker to also implement
+// PluginTypeResolver, reporting every plugin as kind for tests that need
+// Classify to take the mail.classify branch.
+type classifierTypeInvoker struct {
+	*fakeInvoker
+	kind string
+}
+
+func (c *classifierTypeInvoker) PluginType(name string) (string, bool) {
+	return c.kind, true
+}
+
 func TestBuildRequest_Snapshot(t *testing.T) {
 	msg := buildMessage(t, canonMsg)
 	req := BuildRequest(msg, newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthFail, mailauth.AuthNone, "example.com"))

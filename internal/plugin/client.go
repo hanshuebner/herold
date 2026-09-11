@@ -201,7 +201,15 @@ func (c *Client) deliverResponse(resp *Response) {
 	}
 	c.mu.Unlock()
 	if !ok {
-		c.logger.Warn("plugin response without pending request",
+		// This is the ordinary shape of a late answer: Call's ctx deadline
+		// fired first, freed the pending slot, and returned ErrCodeTimeout
+		// to its caller; the plugin's in-flight work then completes anyway
+		// and its response lands here with nothing left to deliver it to
+		// (issue #331). That is expected under the server's own classify
+		// budget — not a plugin bug — so it logs at debug, not warn/error;
+		// an operator scanning the journal for real problems should not
+		// see a completed, merely-late verdict flagged alongside them.
+		c.logger.Debug("plugin response without pending request",
 			"activity", observe.ActivityInternal,
 			"id", key)
 		return

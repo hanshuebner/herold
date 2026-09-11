@@ -45,6 +45,17 @@ of what leaves the machine):
 No `message.raw`, no attachments, no full body. The grant is a projection the server
 builds, not a promise the plugin makes.
 
+**The call also carries the server's remaining time budget**, as `timeout_ms` alongside
+the data grant fields: the caller's classify deadline (REQ-FILT-40/42), converted to
+milliseconds as of the moment the request was built. The plugin SDK reads this generically
+off every RPC (`extractTimeout` in `plugins/sdk`) and bounds the handler's context to it
+before the handler ever runs, so `ctx.Deadline()` inside `mail.classify` already reflects
+what the server actually has left -- not the plugin's own `timeout_sec`-style option
+clocked from when its handler started. A plugin's own upstream model call should bound
+itself to somewhat less than this budget (a fixed margin covering the JSON-RPC return
+trip), so it gives up and returns `unknown` before the server's deadline discards the
+call outright.
+
 ---
 
 ## The pipeline

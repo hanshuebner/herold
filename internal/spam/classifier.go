@@ -117,17 +117,28 @@ var (
 	ErrNilResponse = errors.New("spam: plugin returned nil response")
 )
 
-// rpcTimeoutMarker is the exact message internal/plugin/client.go's
-// Client.Call sets on the *plugin.Error it returns when the caller's ctx
-// deadline fires before a response arrives (ErrCodeTimeout, JSON-RPC code
-// -32001, rendered as "json-rpc error -32001: rpc deadline exceeded").
-// ReasonClass matches on this substring rather than importing
-// internal/plugin: PluginInvoker is deliberately the only coupling this
-// package has to the plugin supervisor (see classifierPluginType above),
-// and every non-test invoker in this codebase routes through
-// internal/plugin, so the substring always appears verbatim on an actual
-// RPC timeout.
-const rpcTimeoutMarker = "rpc deadline exceeded"
+// deadlineExceededMarker matches two distinct on-wire renderings of a
+// timeout, both ending up as plain text inside the *plugin.Error this
+// package sees (ReasonClass matches on the substring rather than
+// importing internal/plugin: PluginInvoker is deliberately the only
+// coupling this package has to the plugin supervisor, see
+// classifierPluginType above):
+//
+//   - internal/plugin/client.go's Client.Call sets it when the caller's
+//     ctx deadline fires client-side before a response arrives
+//     (ErrCodeTimeout, JSON-RPC code -32001, rendered as "json-rpc error
+//     -32001: rpc deadline exceeded").
+//   - a classifier plugin that honors the propagated Request.TimeoutMs
+//     (issue #331) bounds its own upstream call with a context whose
+//     Err() is context.DeadlineExceeded; Go's net/http surfaces that as
+//     "...: context deadline exceeded", which plugins/sdk's writeErr
+//     forwards verbatim as the JSON-RPC error message.
+//
+// Both cases mean the same thing to a caller of Classify: the verdict
+// did not arrive inside the budget. Every non-test invoker in this
+// codebase routes through internal/plugin, so one of these two renderings
+// always appears verbatim on an actual timeout.
+const deadlineExceededMarker = "deadline exceeded"
 
 // ReasonClass categorizes a Classify error into the small, stable
 // vocabulary surfaced to operators: the INFO delivery-outcome log line
@@ -141,7 +152,7 @@ func ReasonClass(err error) string {
 		return "not_configured"
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return "timeout"
-	case strings.Contains(err.Error(), rpcTimeoutMarker):
+	case strings.Contains(err.Error(), deadlineExceededMarker):
 		return "timeout"
 	case errors.Is(err, ErrUnparseableVerdict), errors.Is(err, ErrNilResponse):
 		return "unparseable"
@@ -292,12 +303,15 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 		}
 	}
 
+	built := BuildRequest(msg, auth)
+	built.TimeoutMs = c.remainingBudgetMs(ctx)
+
 	method := ClassifyMethod
-	var req any = BuildRequest(msg, auth)
+	var req any = built
 	if useClassifier {
 		method = MailClassifyMethod
 		req = MailClassifyRequest{
-			Request: BuildRequest(msg, auth),
+			Request: built,
 			Context: requestContextFrom(clsCtx),
 		}
 	}
@@ -408,6 +422,28 @@ func (c *Classifier) deadline(ctx context.Context) (context.Context, context.Can
 	return cctx, cancel
 }
 
+// remainingBudgetMs computes, as of c.clock.Now(), how many milliseconds
+// remain on ctx's deadline, for propagation as Request.TimeoutMs (issue
+// #331): the server's own classify budget travels with the RPC so the
+// plugin bounds its own upstream call inside the server's deadline
+// instead of running an independent timer that starts only once its
+// handler begins -- dropping queueing and JSON-RPC framing time off the
+// top of what it thinks it has. deadline (called before this, on every
+// Classify path) guarantees ctx already carries a deadline. Returns 0
+// (omitted on the wire via omitempty) when the deadline has already
+// passed, so the plugin sees no obligation rather than a negative one.
+func (c *Classifier) remainingBudgetMs(ctx context.Context) int64 {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	remaining := dl.Sub(c.clock.Now())
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining.Milliseconds()
+}
+
 // parseClassification distills the plugin's JSON object into a
 // Classification. It is lenient: unrecognised fields are preserved in
 // RawResponse.
@@ -444,6 +480,8 @@ func parseClassification(raw map[string]any) (Classification, error) {
 // Return-Path, List-Id, List-Unsubscribe, Precedence and
 // Auto-Submitted, the server's own Authentication-Results verdict, and
 // a body excerpt. No message.raw, no attachments, no full body.
+// TimeoutMs (issue #331) is set by Classify, not BuildRequest -- it is
+// derived from the call's ctx deadline, not the message.
 type Request struct {
 	From            []string `json:"from"`
 	To              []string `json:"to"`
@@ -462,6 +500,19 @@ type Request struct {
 	DMARCPass       bool     `json:"dmarc_pass"`
 	FromDomain      string   `json:"from_domain,omitempty"`
 	BodyExcerpt     string   `json:"body_excerpt"`
+	// TimeoutMs is the caller's remaining time budget for this RPC, in
+	// milliseconds, as of the moment the request was built (issue #331).
+	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's
+	// extractTimeout) already reads a "timeout_ms" key generically off
+	// every RPC's params and bounds the handler's ctx to it; this field
+	// puts the server's own classify budget (REQ-FILT-40/42) on the wire
+	// under that same key so a classifier plugin's own timer -- which
+	// used to start counting only once its handler began, after
+	// queueing and JSON-RPC framing had already spent part of the
+	// server's budget -- can bound itself inside what the server
+	// actually has left. Zero (omitted on the wire) when the caller's
+	// context carried no deadline.
+	TimeoutMs int64 `json:"timeout_ms,omitempty"`
 }
 
 // BuildRequest assembles the Request from a parsed message + auth
