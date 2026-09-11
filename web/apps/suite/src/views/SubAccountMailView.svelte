@@ -13,6 +13,7 @@
    * Compose button defaults the From identity to this account's own
    * Identity (REQ-MAIL-SUB-05).
    */
+  import { untrack } from 'svelte';
   import { subAccounts } from '../lib/mail/sub-accounts.svelte';
   import { mail } from '../lib/mail/store.svelte';
   import { movePicker } from '../lib/mail/move-picker.svelte';
@@ -61,11 +62,26 @@
   // second action implementation. subAccounts.emails / .reading stay the
   // source of truth for this view's OWN rendering -- this is purely
   // additive glue, not a rework of the list-loading mechanism.
+  //
+  // untrack() around the write is required, not cosmetic:
+  // mirrorScopedEmails() reads mail.emails (`new Map(this.emails)`)
+  // before writing it back, and since that read happens synchronously
+  // inside this effect's callback, Svelte attributes it to this effect's
+  // own dependency set right alongside subAccounts.emails -- so the
+  // following write reruns this SAME effect, which reads mail.emails
+  // again (now changed) and writes again, forever
+  // (effect_update_depth_exceeded, reproduced live via puppeteer against
+  // an ephemeral instance: the whole Suite renders blank on a fresh
+  // load of /account/<id>). See web/CLAUDE.md "Patterns to avoid" -- the
+  // same footgun, just across a function-call boundary instead of
+  // inline in the effect body.
   $effect(() => {
-    if (subAccounts.emails.length > 0) mail.mirrorScopedEmails(accountId, subAccounts.emails);
+    const emails = subAccounts.emails;
+    if (emails.length > 0) untrack(() => mail.mirrorScopedEmails(accountId, emails));
   });
   $effect(() => {
-    if (subAccounts.reading) mail.mirrorScopedEmails(accountId, [subAccounts.reading]);
+    const reading = subAccounts.reading;
+    if (reading) untrack(() => mail.mirrorScopedEmails(accountId, [reading]));
   });
 
   async function openEmail(id: string): Promise<void> {
@@ -99,7 +115,15 @@
   // calls mail.bulkMoveToMailbox/moveEmailToMailbox directly and has no
   // per-caller completion hook, so the reload is driven by watching
   // movePicker close while it was scoped to this account.
-  let wasMovePickerOpenForThisAccount = $state(false);
+  //
+  // Plain (non-$state) bookkeeping variable, deliberately: this effect
+  // only READS movePicker.isOpen/accountId (its intended dependencies);
+  // if the "was it open" flag were itself $state, reading AND writing
+  // it inside the same effect is the exact self-triggering footgun
+  // documented in web/CLAUDE.md "Patterns to avoid" (and reproduced
+  // live in the sibling mirror effects above) -- a plain variable never
+  // registers as a dependency, so there is nothing to self-trigger on.
+  let wasMovePickerOpenForThisAccount = false;
   $effect(() => {
     if (movePicker.isOpen && movePicker.accountId === accountId) {
       wasMovePickerOpenForThisAccount = true;
@@ -158,6 +182,7 @@
       subject: '',
       body: '',
       identity: entry?.identity ?? null,
+      scopeAccountId: accountId,
     });
   }
 

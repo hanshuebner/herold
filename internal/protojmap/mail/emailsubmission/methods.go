@@ -78,19 +78,33 @@ func accountIDForPrincipal(p store.Principal) string {
 	return string(protojmap.AccountIDForPrincipal(p.ID))
 }
 
-// validateAccountID checks the inbound accountId against the
-// authenticated principal. An absent accountId is rejected with
-// "invalidArguments" per RFC 8620 §5.1; a mismatched one returns
-// "accountNotFound".
-func validateAccountID(p store.Principal, requested jmapID) *protojmap.MethodError {
+// resolveTargetPrincipal resolves the requested accountId to the
+// principal whose EmailSubmission set the request addresses: the
+// caller's own account, or one of the caller's own separated
+// sub-accounts (REQ-SUBACCT-03/04, REQ-MAIL-SUB-08). It never honours
+// a mailbox-ACL grant (protojmap.ResolveOwnAccount, not
+// ResolveAccount) -- sharing a mailbox never exposes another
+// principal's submission surface. Mirrors
+// mail/identity.resolveTargetPrincipal; an absent accountId is
+// rejected with "invalidArguments" per RFC 8620 Sec 5.1, a mismatched
+// or inaccessible one with "accountNotFound".
+func (h *handlerSet) resolveTargetPrincipal(ctx context.Context, caller store.Principal, requested jmapID) (store.Principal, *protojmap.MethodError) {
 	if requested == "" {
-		return protojmap.NewMethodError("invalidArguments", "accountId is required")
+		return store.Principal{}, protojmap.NewMethodError("invalidArguments", "accountId is required")
 	}
-	if requested != accountIDForPrincipal(p) {
-		return protojmap.NewMethodError("accountNotFound",
+	pid, merr := protojmap.ResolveOwnAccount(ctx, h.store.Meta(), caller.ID, requested)
+	if merr != nil {
+		return store.Principal{}, merr
+	}
+	if pid == caller.ID {
+		return caller, nil
+	}
+	target, err := h.store.Meta().GetPrincipalByID(ctx, pid)
+	if err != nil {
+		return store.Principal{}, protojmap.NewMethodError("accountNotFound",
 			"requested account is not accessible to the caller")
 	}
-	return nil
+	return target, nil
 }
 
 // listSubmissions returns every EmailSubmission row for the principal
@@ -162,9 +176,11 @@ func (g getHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := g.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
+	p = target
 	st, err := g.h.store.Meta().GetJMAPStates(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
@@ -229,9 +245,11 @@ func (c changesHandler) Execute(ctx context.Context, args json.RawMessage) (any,
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := c.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
+	p = target
 	st, err := c.h.store.Meta().GetJMAPStates(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
@@ -305,9 +323,11 @@ func (q queryHandler) Execute(ctx context.Context, args json.RawMessage) (any, *
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := q.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
+	p = target
 	st, err := q.h.store.Meta().GetJMAPStates(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
@@ -449,9 +469,11 @@ func (q queryChangesHandler) Execute(ctx context.Context, args json.RawMessage) 
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := q.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
+	p = target
 	st, err := q.h.store.Meta().GetJMAPStates(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())
@@ -516,9 +538,11 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	if !ok {
 		return nil, protojmap.NewMethodError("forbidden", "no authenticated principal")
 	}
-	if e := validateAccountID(p, req.AccountID); e != nil {
+	target, e := s.h.resolveTargetPrincipal(ctx, p, req.AccountID)
+	if e != nil {
 		return nil, e
 	}
+	p = target
 	st, err := s.h.store.Meta().GetJMAPStates(ctx, p.ID)
 	if err != nil {
 		return nil, protojmap.NewMethodError("serverFail", err.Error())

@@ -502,6 +502,7 @@
 
 <svelte:boundary
   onerror={(err) => {
+    console.error('svelte:boundary caught a fatal render error', err);
     void getClientlog().logFatal(err);
   }}
 >

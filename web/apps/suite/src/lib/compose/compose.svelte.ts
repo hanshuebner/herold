@@ -24,6 +24,7 @@
 import { jmap, strict } from '../jmap/client';
 import { Capability, type Invocation } from '../jmap/types';
 import { mail } from '../mail/store.svelte';
+import { subAccounts } from '../mail/sub-accounts.svelte';
 import { settings } from '../settings/settings.svelte';
 import { toast } from '../toast/toast.svelte';
 import { localeTag } from '../i18n/i18n.svelte';
@@ -257,6 +258,19 @@ class ComposeStore {
   selectedIdentity = $state<Identity | null>(null);
 
   /**
+   * The sub-account whose scope this compose was opened from (e.g. from
+   * SubAccountMailView's "Compose"), or null for the primary account.
+   * Set by openWith's scopeAccountId arg; reset by close(). REQ-MAIL-SUB-08:
+   * a separated identity's own accountId owns its Identity/Mailbox rows
+   * server-side, so every JMAP call this store issues (draft save, blob
+   * upload, EmailSubmission/set) must target this account rather than
+   * mail.mailAccountId once a compose is scoped -- otherwise identityId
+   * lookups fail server-side with "no such identity" because the
+   * identity was moved off the primary account by separation.
+   */
+  scopeAccountId = $state<string | null>(null);
+
+  /**
    * Attachments queued for the in-progress message. Each entry tracks
    * its own upload state so the UI can render uploading / failed / ready
    * affordances without blocking the rest of the compose.
@@ -416,6 +430,12 @@ class ComposeStore {
      * draft.attachments, not plumbed through here) all start empty.
      */
     attachments?: ComposeAttachment[];
+    /**
+     * The sub-account this compose is scoped to (REQ-MAIL-SUB-08), e.g.
+     * opened from SubAccountMailView. null/omitted means the primary
+     * account -- matches every pre-existing caller.
+     */
+    scopeAccountId?: string | null;
   }): void {
     if (!args.skipHook && !this.#runBeforeOpen()) return;
     this.to = args.to;
@@ -427,6 +447,7 @@ class ComposeStore {
     this.bccRecipients = parseStringToRecipients(this.bcc);
     this.subject = args.subject;
     this.selectedIdentity = args.identity ?? null;
+    this.scopeAccountId = args.scopeAccountId ?? null;
     // The signature comes from the matched identity (when provided)
     // so a reply / forward picks up the From identity's sig, not the
     // primary identity's. Fresh compose paths still get the primary
@@ -680,7 +701,7 @@ class ComposeStore {
    * #offloadOfferFn before deciding whether to upload or offload.
    */
   async addAttachments(files: File[] | FileList): Promise<void> {
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     if (!accountId) return;
     const list = Array.from(files);
     if (list.length === 0) return;
@@ -800,7 +821,7 @@ class ComposeStore {
   startInlineImage(
     file: File,
   ): { key: string; cid: string; objectURL: string } | null {
-    if (!mail.mailAccountId) return null;
+    if (!this.#accountId()) return null;
     const maxSize = jmap.maxUploadSize;
     if (maxSize !== null && file.size > maxSize) return null;
     const key = `att-${++this.#attachmentSeq}`;
@@ -867,7 +888,7 @@ class ComposeStore {
    * or null on success.
    */
   async uploadInlineImage(key: string, file: File): Promise<string | null> {
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     if (!accountId) return 'No mail account';
     const att = this.attachments.find((a) => a.key === key);
     if (!att) return 'Attachment not found';
@@ -972,7 +993,7 @@ class ComposeStore {
 
   /** Retry a failed upload. */
   async retryAttachment(key: string, file: File): Promise<void> {
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     if (!accountId) return;
     this.#patchAttachment(key, { status: 'uploading', error: null, blobId: null });
     await this.#uploadOne(key, file, accountId);
@@ -1163,6 +1184,7 @@ class ComposeStore {
     this.attachments = [];
     this.shares = [];
     this.selectedIdentity = null;
+    this.scopeAccountId = null;
     this.#snapshot = null;
   }
 
@@ -1178,7 +1200,7 @@ class ComposeStore {
    */
   async discard(): Promise<void> {
     const draftId = this.editingDraftId;
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     const pendingShareIds = this.shares.map((s) => s.shareId);
 
     if (draftId && accountId) {
@@ -1228,18 +1250,20 @@ class ComposeStore {
   async persistDraft(): Promise<boolean> {
     if (this.status !== 'editing') return false;
     if (!this.hasContent) return false;
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     if (!accountId) return false;
-    if (!mail.primaryIdentity || !mail.drafts) {
+    if (!this.scopeAccountId && (!mail.primaryIdentity || !mail.drafts)) {
       await this.#ensureAccountReady();
     }
     // Prefer the selected identity (set by the reply-identity match)
     // and fall back to primary. The reply-identity match runs once at
     // compose-open per REQ-MAIL-12a; from then on this field is the
-    // authoritative From for the in-progress draft.
+    // authoritative From for the in-progress draft. A scoped compose's
+    // selectedIdentity is always set by openWith (REQ-MAIL-SUB-08), so
+    // the primary-account fallback below only fires unscoped.
     const identity = this.selectedIdentity ?? mail.primaryIdentity;
-    const drafts = mail.drafts;
-    if (!identity || !drafts) return false;
+    const draftsId = this.#draftsMailboxId();
+    if (!identity || !draftsId) return false;
 
     // Use structured recipient arrays (preserves display names). Fall back to
     // parsing the string form for any field whose array is empty but the
@@ -1316,7 +1340,7 @@ class ComposeStore {
       } else {
         const create = {
           ...fields,
-          mailboxIds: { [drafts.id]: true },
+          mailboxIds: { [draftsId]: true },
           keywords: { $draft: true, $seen: true },
         };
         const { responses } = await jmap.batch((b) => {
@@ -1352,26 +1376,29 @@ class ComposeStore {
 
   async send(): Promise<void> {
     if (this.status === 'sending') return;
-    const accountId = mail.mailAccountId;
+    const accountId = this.#accountId();
     if (!accountId) {
       this.errorMessage = 'No Mail account on this session';
       return;
     }
-    if (!mail.primaryIdentity || !mail.drafts) {
+    if (!this.scopeAccountId && (!mail.primaryIdentity || !mail.drafts)) {
       await this.#ensureAccountReady();
     }
     // Prefer the selected identity (set by REQ-MAIL-12a's reply match
     // at compose-open) and fall back to primary. The compose's From
     // picker (future work) writes to the same `selectedIdentity`
-    // cell, so this path is the single point that consumes it.
+    // cell, so this path is the single point that consumes it. A
+    // scoped compose's selectedIdentity is always set by openWith
+    // (REQ-MAIL-SUB-08), so the primary-account fallback only fires
+    // unscoped.
     const identity = this.selectedIdentity ?? mail.primaryIdentity;
-    const drafts = mail.drafts;
-    const sentMailbox = mail.sent;
+    const draftsId = this.#draftsMailboxId();
+    const sentMailboxId = this.#sentMailboxId();
     if (!identity) {
       this.errorMessage = 'No identity available — cannot send';
       return;
     }
-    if (!drafts) {
+    if (!draftsId) {
       this.errorMessage = 'No drafts mailbox — cannot send';
       return;
     }
@@ -1428,8 +1455,8 @@ class ComposeStore {
         : null;
 
     const onSuccessUpdate: Record<string, true | null> = {};
-    onSuccessUpdate[`mailboxIds/${drafts.id}`] = null;
-    if (sentMailbox) onSuccessUpdate[`mailboxIds/${sentMailbox.id}`] = true;
+    onSuccessUpdate[`mailboxIds/${draftsId}`] = null;
+    if (sentMailboxId) onSuccessUpdate[`mailboxIds/${sentMailboxId}`] = true;
     onSuccessUpdate['keywords/$draft'] = null;
     onSuccessUpdate['keywords/$seen'] = true;
 
@@ -1444,7 +1471,7 @@ class ComposeStore {
     );
     const readyAttachments = [...baseReadyAttachments, ...dataImageAttachments];
     const draftEmail: Record<string, unknown> = {
-      mailboxIds: { [drafts.id]: true },
+      mailboxIds: { [draftsId]: true },
       keywords: { $draft: true, $seen: true },
       from: [{ name: identity.name, email: identity.email }],
       to: toRecipients.map((r) => ({ email: r.email, name: r.name ?? null })),
@@ -1679,6 +1706,23 @@ class ComposeStore {
    * (e.g. after a logout/login or an explicit identities refresh).
    */
   #warmup: Promise<void> | null = null;
+
+  /** The account a scoped or primary compose issues its JMAP calls under. */
+  #accountId(): string | null {
+    return this.scopeAccountId ?? mail.mailAccountId;
+  }
+
+  /** The drafts mailbox to save into: the scoped sub-account's when set. */
+  #draftsMailboxId(): string | null {
+    if (!this.scopeAccountId) return mail.drafts?.id ?? null;
+    return subAccounts.find(this.scopeAccountId)?.mailboxes.find((m) => m.role === 'drafts')?.id ?? null;
+  }
+
+  /** The sent mailbox EmailSubmission/set moves the sent copy into. */
+  #sentMailboxId(): string | null {
+    if (!this.scopeAccountId) return mail.sent?.id ?? null;
+    return subAccounts.find(this.scopeAccountId)?.mailboxes.find((m) => m.role === 'sent')?.id ?? null;
+  }
 
   #ensureAccountReady(): Promise<void> {
     if (mail.primaryIdentity && mail.drafts) {

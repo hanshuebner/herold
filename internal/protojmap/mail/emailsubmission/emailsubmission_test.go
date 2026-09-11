@@ -1009,3 +1009,129 @@ func TestEmailSubmission_Set_ReplyJoinsParentThread_Postgres(t *testing.T) {
 	st := openPostgresStore(t)
 	testEmailSubmissionThreadID(t, st)
 }
+
+// TestEmailSubmission_Set_FromSubAccount exercises REQ-MAIL-SUB-08: a
+// parent principal who has separated an Identity into a sub-account
+// (store.SeparateIdentity) can submit mail scoped to that sub-account's
+// own accountId, and the queue submission is attributed to the
+// sub-account's principal, not the parent's. Regression test for the
+// bug where EmailSubmission/set rejected any accountId other than the
+// caller's own with "accountNotFound", making the separated identity's
+// scoped compose view unable to send at all.
+func TestEmailSubmission_Set_FromSubAccount(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	parent, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal parent: %v", err)
+	}
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: "id1", PrincipalID: parent.ID, Name: "Alice Work",
+		Email: "alice-work@example.test", MayDelete: true,
+		VerifiedAtUs: 1,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	mig, err := store.SeparateIdentity(ctx, st, parent.ID, "id1")
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	sub, err := st.Meta().GetPrincipalByID(ctx, mig.SubPrincipalID)
+	if err != nil {
+		t.Fatalf("GetPrincipalByID sub: %v", err)
+	}
+	mbs, err := st.Meta().ListMailboxes(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("ListMailboxes sub: %v", err)
+	}
+	var draftsMB store.Mailbox
+	for _, mb := range mbs {
+		if mb.Attributes&store.MailboxAttrDrafts != 0 {
+			draftsMB = mb
+			break
+		}
+	}
+	if draftsMB.ID == 0 {
+		t.Fatalf("sub-account has no provisioned Drafts mailbox")
+	}
+	body := "From: alice-work@example.test\r\nTo: bob@example.test\r\nSubject: hi\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs().Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref,
+		Size: int64(len(body)),
+		Envelope: store.Envelope{
+			Subject: "hi",
+			From:    "alice-work@example.test",
+			To:      "bob@example.test",
+		},
+	}, []store.MessageMailbox{{MailboxID: draftsMB.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := st.Meta().ListMessages(ctx, draftsMB.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+	if mid == 0 {
+		t.Fatalf("could not find inserted message by uid %d", uid)
+	}
+
+	fs := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:    st,
+		queue:    fs,
+		clk:      clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity: stubResolver{email: "alice-work@example.test"},
+	}
+	t.Cleanup(func() { h.Wait(); _ = st.Close() })
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(sub.ID),
+		"create": map[string]any{
+			"k1": map[string]any{
+				"identityId": "default",
+				"emailId":    renderEmailID(mid),
+			},
+		},
+	})
+	// executeAs's caller principal is the PARENT -- the whole point of
+	// the test is that the parent reaches its own sub-account's
+	// EmailSubmission surface by addressing the sub-account's accountId,
+	// exactly as a compose window scoped into the sub-account does.
+	resp, mErr := setHandler{h: h}.executeAs(parent, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set from sub-account scope: %v", mErr)
+	}
+	js, _ := json.Marshal(resp)
+	if !strings.Contains(string(js), `"created"`) {
+		t.Fatalf("expected created: %s", js)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 queue submit, got %d", len(fs.calls))
+	}
+	got := fs.calls[0]
+	if got.PrincipalID == nil || *got.PrincipalID != sub.ID {
+		t.Fatalf("submission PrincipalID = %v, want the sub-account's own id %d", got.PrincipalID, sub.ID)
+	}
+	if got.MailFrom != "alice-work@example.test" {
+		t.Fatalf("MailFrom: got %q want alice-work@example.test", got.MailFrom)
+	}
+}

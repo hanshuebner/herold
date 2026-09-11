@@ -4737,12 +4737,21 @@ class MailStore {
   /**
    * Issue an `Email/set { update }` for one email and surface per-id
    * errors as throws. Caller is responsible for revert on failure.
+   *
+   * Resolves the target account the same way #emailSetUpdateBulk does:
+   * emailAccountId's tag for this id when the row was folded in from a
+   * combined-inbox merge or a scoped sub-account view (REQ-MAIL-SUB-03/
+   * 04/08), falling back to this principal's own account for every
+   * pre-#212 caller. Every single-message action (star, archive, snooze,
+   * label, move, single mark read/unread -- the callers of this method)
+   * shares this one choke point, so tagging it here covers all of them
+   * without touching each call site.
    */
   async #emailSetUpdate(
     emailId: string,
     patches: Record<string, unknown>,
   ): Promise<void> {
-    const accountId = this.mailAccountId;
+    const accountId = this.emailAccountId.get(emailId) ?? this.mailAccountId;
     if (!accountId) throw new Error('No Mail account on this session');
     const { responses } = await jmap.batch((b) => {
       b.call(
@@ -4760,7 +4769,11 @@ class MailStore {
       updated?: Record<string, unknown> | null;
       notUpdated?: Record<string, { type: string; description?: string }>;
     }>(responses[0]);
-    this.#captureEmailSetNewState(result);
+    // The store's own emailState/newState tracking only covers this
+    // principal's own account -- a sub-account's state string is its own
+    // concern (lib/mail/sub-accounts.svelte.ts's per-account EventSource
+    // handling), not this store's, matching #emailSetUpdateBulk.
+    if (accountId === this.mailAccountId) this.#captureEmailSetNewState(result);
     const failure = result.notUpdated?.[emailId];
     if (failure) {
       throw new Error(setErrorToUserMessage(failure));
