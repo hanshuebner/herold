@@ -462,10 +462,21 @@ seed_instance() {
     # itself is always advertised (no sysconfig gate); this flag only
     # controls whether the seed data exists.
     if [ -n "${HEROLD_DEV_SUB_ACCOUNTS:-}" ]; then
-        log "seeding separable identity for alice@$SEED_DOMAIN"
+        log "seeding separable identity for alice@$SEED_DOMAIN (sink=$sink_addr)"
+        # When external-submission is also enabled (HEROLD_DEV_EXTERNAL_
+        # SUBMISSION=1, sink_addr non-empty here), --sink-addr points the
+        # separable identity's own external SMTP submission config at the
+        # live fake SMTP sink, so separating it and composing from its
+        # scoped view (issue #212 acceptance bullet 4: "A separated
+        # identity configured for external SMTP submission sends through
+        # that endpoint from within its sub-account scope") can be
+        # exercised end-to-end without a real external mail server.
+        local subaccount_sink_flag=()
+        [ -n "$sink_addr" ] && subaccount_sink_flag=(--sink-addr "$sink_addr")
         "$HEROLD_BIN" dev seed-separable-identity \
             --system-config "$dir/system.toml" \
             --principal "alice@$SEED_DOMAIN" \
+            "${subaccount_sink_flag[@]}" \
             >"$dir/logs/dev-seed-subaccount.log" 2>&1 \
             || { cat "$dir/logs/dev-seed-subaccount.log" >&2; die "dev seed-separable-identity failed"; }
         cat "$dir/logs/dev-seed-subaccount.log" >&2
@@ -731,6 +742,12 @@ SMTP_ADDR=$smtp_addr
 SMTP_SUBMISSION_ADDR=$smtp_sub_addr
 ADMIN_TOTP_SECRET=$admin_totp_secret
 EOF
+    # Only present when HEROLD_DEV_EXTERNAL_SUBMISSION=1 started the fake
+    # SMTP sink: its HTTP status API (GET /messages, GET /count) is how a
+    # caller confirms a message actually arrived there.
+    if [ -n "${FAKESMTP_HTTP_ADDR:-}" ]; then
+        echo "FAKESMTP_HTTP_ADDR=$FAKESMTP_HTTP_ADDR"
+    fi
 
     if [ "$detach" = "1" ]; then
         log "instance $id detached; supervisor pid $$ exiting"

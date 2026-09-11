@@ -376,7 +376,14 @@ jobs:
       - name: run suite e2e-live Playwright specs against an ephemeral instance
         run: |
           set -uo pipefail
-          scripts/dev-instance.sh start > dev-instance.out 2> dev-instance.log &
+          # HEROLD_DEV_SUB_ACCOUNTS seeds a separable identity (issue #212);
+          # HEROLD_DEV_EXTERNAL_SUBMISSION starts heroldfakesmtp and, via
+          # --sink-addr, points that identity's external SMTP submission
+          # config at it -- sub-account-external-submission.spec.ts needs
+          # both. Every other e2e-live spec ignores this seed data, so
+          # enabling it here is additive, not a behaviour change for them.
+          HEROLD_DEV_SUB_ACCOUNTS=1 HEROLD_DEV_EXTERNAL_SUBMISSION=1 \
+              scripts/dev-instance.sh start > dev-instance.out 2> dev-instance.log &
           DEV_PID=$!
           trap 'kill -TERM "$DEV_PID" 2>/dev/null || true; wait "$DEV_PID" 2>/dev/null || true' EXIT
 
@@ -399,7 +406,8 @@ jobs:
 
           export SUITE_URL=$(awk -F= '/^SUITE_URL=/{print $2}' dev-instance.out)
           export SMTP_ADDR=$(awk -F= '/^SMTP_ADDR=/{print $2}' dev-instance.out)
-          echo "instance ready: SUITE_URL=$SUITE_URL SMTP_ADDR=$SMTP_ADDR"
+          export FAKESMTP_HTTP_ADDR=$(awk -F= '/^FAKESMTP_HTTP_ADDR=/{print $2}' dev-instance.out)
+          echo "instance ready: SUITE_URL=$SUITE_URL SMTP_ADDR=$SMTP_ADDR FAKESMTP_HTTP_ADDR=$FAKESMTP_HTTP_ADDR"
 
           pnpm --filter @herold/suite exec playwright test --config=playwright.live.config.ts
       # The HTML report (playwright.live.config.ts enables it under CI) and

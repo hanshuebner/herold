@@ -436,6 +436,7 @@ func newDevSeedSeparableIdentityCmd() *cobra.Command {
 	var principalEmail string
 	var identityEmail string
 	var messageCount int
+	var sinkAddr string
 	c := &cobra.Command{
 		Use:   "seed-separable-identity",
 		Short: "seed an identity with imported mail ready to separate (not for production)",
@@ -448,11 +449,19 @@ func newDevSeedSeparableIdentityCmd() *cobra.Command {
 			"to exercise for real: the confirm dialog shows the seeded message\n" +
 			"count, and confirming drives the actual Identity/set{separated:true}\n" +
 			"call and background migration sweep against the seeded messages.\n\n" +
+			"When --sink-addr is set (host:port of a running heroldfakesmtp), the\n" +
+			"identity's external SMTP submission config is seeded pointing at that\n" +
+			"address with submit_security=none and state=ok, so composing from\n" +
+			"within its sub-account scope after separation actually sends through\n" +
+			"the sink (issue #212 acceptance: a separated identity configured for\n" +
+			"external SMTP submission sends through that endpoint from within its\n" +
+			"sub-account scope). Requires [server.secrets].data_key_ref to be\n" +
+			"configured so the placeholder credential can be AEAD-sealed.\n\n" +
 			"The principal must already exist. Requires the sub-accounts capability\n" +
 			"to be built in (it always is; there is no sysconfig gate).",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDevSeedSeparableIdentity(cmd, principalEmail, identityEmail, messageCount)
+			return runDevSeedSeparableIdentity(cmd, principalEmail, identityEmail, messageCount, sinkAddr)
 		},
 	}
 	c.Flags().StringVar(&principalEmail, "principal", "alice@example.local",
@@ -461,10 +470,12 @@ func newDevSeedSeparableIdentityCmd() *cobra.Command {
 		"email address of the seeded, separable identity")
 	c.Flags().IntVar(&messageCount, "message-count", 3,
 		"number of already-imported messages to seed for the identity")
+	c.Flags().StringVar(&sinkAddr, "sink-addr", "",
+		"host:port of a running heroldfakesmtp sink; when set, seeds the identity's external SMTP submission config pointing at it")
 	return c
 }
 
-func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEmail string, messageCount int) error {
+func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEmail string, messageCount int, sinkAddr string) error {
 	g := globals(cmd.Context())
 	cfg, err := requireConfig(g)
 	if err != nil {
@@ -498,6 +509,40 @@ func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEma
 		VerifiedAtUs: now.UnixMicro(),
 	}); err != nil {
 		return fmt.Errorf("dev seed-separable-identity: insert identity: %w", err)
+	}
+
+	if sinkAddr != "" {
+		dataKey, err := secrets.LoadDataKey(cfg.Server.Secrets)
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: load data key: %w (configure [server.secrets].data_key_ref)", err)
+		}
+		host, portStr, err := net.SplitHostPort(sinkAddr)
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: --sink-addr %q: %w", sinkAddr, err)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: --sink-addr %q: port not numeric: %w", sinkAddr, err)
+		}
+		pwCT, err := secrets.Seal(dataKey, []byte("dev-placeholder-password"))
+		if err != nil {
+			return fmt.Errorf("dev seed-separable-identity: seal placeholder: %w", err)
+		}
+		if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+			IdentityID:       devSeparableIdentityID,
+			SubmitHost:       host,
+			SubmitPort:       port,
+			SubmitSecurity:   "none",
+			SubmitAuthMethod: "password",
+			PasswordCT:       pwCT,
+			OAuthClientID:    identityEmail,
+			State:            store.IdentitySubmissionStateOK,
+			StateAt:          now,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}); err != nil {
+			return fmt.Errorf("dev seed-separable-identity: upsert submission: %w", err)
+		}
 	}
 
 	acc, err := st.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
@@ -603,5 +648,8 @@ func runDevSeedSeparableIdentity(cmd *cobra.Command, principalEmail, identityEma
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "dev-seed: identity_id=%s email=%s principal=%s messages=%d\n",
 		devSeparableIdentityID, identityEmail, principalEmail, messageCount)
+	if sinkAddr != "" {
+		fmt.Fprintf(w, "  external submission sink: %s (security=none)\n", sinkAddr)
+	}
 	return nil
 }
