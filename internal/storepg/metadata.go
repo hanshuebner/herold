@@ -544,6 +544,21 @@ func (m *metadata) DeleteAlias(ctx context.Context, id store.AliasID) error {
 	})
 }
 
+func (m *metadata) RetargetAliasesByAddress(ctx context.Context, localPart, domain string, newTargetPrincipal store.PrincipalID) error {
+	lp := strings.ToLower(strings.TrimSpace(localPart))
+	dom := strings.ToLower(strings.TrimSpace(domain))
+	return m.runTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE aliases SET target_principal = $1
+			 WHERE local_part = $2 AND domain = $3 AND target_principal IS NOT NULL`,
+			int64(newTargetPrincipal), lp, dom)
+		if err != nil {
+			return mapErr(err)
+		}
+		return nil
+	})
+}
+
 // -- OIDC -------------------------------------------------------------
 
 func (m *metadata) InsertOIDCProvider(ctx context.Context, p store.OIDCProvider) error {

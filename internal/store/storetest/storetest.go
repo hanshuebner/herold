@@ -35,6 +35,7 @@ func Run(t *testing.T, f Factory) {
 		{"DomainsCRUD", testDomainsCRUD},
 		{"DomainConflict_ErrorStringIsClean", testDomainConflictErrorStringIsClean},
 		{"AliasesCRUDAndResolve", testAliases},
+		{"RetargetAliasesByAddress", testRetargetAliasesByAddress},
 		{"OIDCProviderAndLinks", testOIDC},
 		{"APIKeys", testAPIKeys},
 		{"MailboxesCRUD", testMailboxesCRUD},
@@ -90,6 +91,11 @@ func Run(t *testing.T, f Factory) {
 		{"SubAccountMigration_RunIsCrashSafe", testSubAccountMigration_RunIsCrashSafe},
 		{"SubAccountMigration_RemoveKeep", testSubAccountMigration_RemoveKeep},
 		{"SubAccountMigration_RemovePurge", testSubAccountMigration_RemovePurge},
+		// Alias retargeting on separation/removal (issue #312, REQ-SUBACCT-07).
+		{"SubAccountMigration_SeparateRetargetsAlias_NoAliasRow", testSubAccountMigration_SeparateRetargetsAlias_NoAliasRow},
+		{"SubAccountMigration_SeparateRetargetsAlias_TwoDomains", testSubAccountMigration_SeparateRetargetsAlias_TwoDomains},
+		{"SubAccountMigration_RemoveKeepRetargetsAliasBack", testSubAccountMigration_RemoveKeepRetargetsAliasBack},
+		{"SubAccountMigration_RemovePurgeRetargetsAliasBack", testSubAccountMigration_RemovePurgeRetargetsAliasBack},
 		{"DeleteMailboxCascades", testDeleteMailboxCascades},
 		{"BlobRoundTrip", testBlobRoundTrip},
 		{"BlobDedup", testBlobDedup},
@@ -891,6 +897,90 @@ func testAliases(t *testing.T, s store.Store) {
 	if !foundExternal {
 		t.Fatalf("ListAliases: external-target alias %d not found", extAlias.ID)
 	}
+}
+
+// testRetargetAliasesByAddress exercises the store primitive
+// SeparateIdentity / RemoveSubAccount use to keep an alias-routed
+// address following a separated identity between principals (issue
+// #312, REQ-SUBACCT-07): it repoints every internal-target alias row at
+// (local_part, domain), leaves external-target rows and rows for a
+// different address untouched, and is a no-op when nothing matches.
+func testRetargetAliasesByAddress(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p1 := mustInsertPrincipal(t, s, "retarget-p1@example.com")
+	p2 := mustInsertPrincipal(t, s, "retarget-p2@example.com")
+
+	matching, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "team", Domain: "example.com", TargetPrincipal: p1.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertAlias(matching): %v", err)
+	}
+	other, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "team", Domain: "other.example.com", TargetPrincipal: p1.ID,
+	})
+	if err != nil {
+		t.Fatalf("InsertAlias(other domain): %v", err)
+	}
+
+	// No matching row: a no-op, not an error.
+	if err := s.Meta().RetargetAliasesByAddress(ctx, "ghost", "example.com", p2.ID); err != nil {
+		t.Fatalf("RetargetAliasesByAddress(no match): %v", err)
+	}
+
+	if err := s.Meta().RetargetAliasesByAddress(ctx, "TEAM", "Example.COM", p2.ID); err != nil {
+		t.Fatalf("RetargetAliasesByAddress: %v", err)
+	}
+	got, err := s.Meta().ResolveAlias(ctx, "team", "example.com")
+	if err != nil {
+		t.Fatalf("ResolveAlias after retarget: %v", err)
+	}
+	if got != p2.ID {
+		t.Fatalf("ResolveAlias after retarget = %d, want %d", got, p2.ID)
+	}
+	// The other-domain row for the same local part is untouched.
+	gotOther, err := s.Meta().ResolveAlias(ctx, "team", "other.example.com")
+	if err != nil {
+		t.Fatalf("ResolveAlias(other domain): %v", err)
+	}
+	if gotOther != p1.ID {
+		t.Fatalf("ResolveAlias(other domain) = %d, want unchanged %d", gotOther, p1.ID)
+	}
+
+	// External-target aliases are out of scope (re #181): a row whose
+	// target is an address, not a principal, must not be picked up by a
+	// retarget call for its (local_part, domain), and ResolveAlias must
+	// still report it as not internally routable.
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "sales-retarget", Domain: "example.com", TargetAddress: "sales@external.example",
+	}); err != nil {
+		t.Fatalf("InsertAlias(external target): %v", err)
+	}
+	if err := s.Meta().RetargetAliasesByAddress(ctx, "sales-retarget", "example.com", p2.ID); err != nil {
+		t.Fatalf("RetargetAliasesByAddress(external target row present): %v", err)
+	}
+	if _, err := s.Meta().ResolveAlias(ctx, "sales-retarget", "example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveAlias(external target) after retarget call = %v, want ErrNotFound (untouched)", err)
+	}
+	stillExternal, err := s.Meta().ResolveAliasExternalTarget(ctx, "sales-retarget", "example.com")
+	if err != nil {
+		t.Fatalf("ResolveAliasExternalTarget after retarget call: %v", err)
+	}
+	if stillExternal != "sales@external.example" {
+		t.Fatalf("ResolveAliasExternalTarget after retarget call = %q, want unchanged", stillExternal)
+	}
+
+	// Idempotent: repeating an already-applied retarget is a no-op.
+	if err := s.Meta().RetargetAliasesByAddress(ctx, "team", "example.com", p2.ID); err != nil {
+		t.Fatalf("RetargetAliasesByAddress (repeat): %v", err)
+	}
+	got2, err := s.Meta().ResolveAlias(ctx, "team", "example.com")
+	if err != nil || got2 != p2.ID {
+		t.Fatalf("ResolveAlias after repeat retarget = (%d, %v), want (%d, nil)", got2, err, p2.ID)
+	}
+
+	_ = matching
+	_ = other
 }
 
 func testOIDC(t *testing.T, s store.Store) {

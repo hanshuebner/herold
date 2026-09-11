@@ -633,6 +633,20 @@ type Metadata interface {
 	// ErrNotFound if no such row exists.
 	DeleteAlias(ctx context.Context, id AliasID) error
 
+	// RetargetAliasesByAddress repoints every internal-target alias row
+	// whose (local_part, domain) equals (localPart, domain),
+	// case-insensitively, to newTargetPrincipal. Rows whose target is an
+	// external address (Alias.TargetAddress) are left untouched — they
+	// never matched ResolveAlias's internal-principal lookup and are out
+	// of scope here. A no-op (nil error, zero rows) when no matching
+	// alias row exists, so callers can invoke it unconditionally and
+	// stay idempotent across a re-run. Used by store.SeparateIdentity
+	// (parent -> sub) and store.RemoveSubAccount (sub -> parent, both
+	// keep and purge) to keep an alias-routed address following a
+	// separated identity between the two principals (re #312,
+	// REQ-SUBACCT-07).
+	RetargetAliasesByAddress(ctx context.Context, localPart, domain string, newTargetPrincipal PrincipalID) error
+
 	// InsertDomain records a local domain. Returns ErrConflict on
 	// duplicate Name.
 	InsertDomain(ctx context.Context, d Domain) error

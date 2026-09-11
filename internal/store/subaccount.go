@@ -13,7 +13,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
+
+// splitLocalDomain lowercases addr and splits it into its local-part and
+// domain, mirroring internal/directory's splitAddress. Returns ok=false
+// for anything that is not a single-@ addr-spec (defensive: a persisted
+// JMAPIdentity.Email is expected to always parse, but this package has
+// no address-validation dependency of its own to lean on).
+func splitLocalDomain(addr string) (local, domain string, ok bool) {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	at := strings.LastIndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 {
+		return "", "", false
+	}
+	return addr[:at], addr[at+1:], true
+}
 
 // subAccountMigrationBatchSize bounds how many messages
 // RunSubAccountMigration processes before persisting progress and
@@ -198,6 +213,17 @@ func SeparateIdentity(ctx context.Context, st Store, parentID PrincipalID, ident
 
 	if err := provisionSubAccountSystemMailboxes(ctx, st, sub.ID); err != nil {
 		return SubAccountMigration{}, err
+	}
+
+	// Retarget any alias row for the identity's own address so local
+	// SMTP delivery to it lands in the sub-account's INBOX rather than
+	// the parent's (REQ-SUBACCT-07). A no-op when no such alias row
+	// exists; re-running against an already-separated identity finds
+	// the rows already pointed at sub.ID and leaves them unchanged.
+	if local, domain, ok := splitLocalDomain(identity.Email); ok {
+		if err := st.Meta().RetargetAliasesByAddress(ctx, local, domain, sub.ID); err != nil {
+			return SubAccountMigration{}, err
+		}
 	}
 
 	if err := st.Meta().RebindJMAPIdentityPrincipal(ctx, identityID, sub.ID); err != nil {
@@ -492,16 +518,31 @@ func RemoveSubAccount(ctx context.Context, st Store, subID PrincipalID, purge bo
 		return fmt.Errorf("%w: %d is not a sub-account", ErrInvalidArgument, subID)
 	}
 
+	parent, err := st.Meta().GetSubPrincipalParent(ctx, subID)
+	if err != nil {
+		return err
+	}
+
+	// Retarget any alias row SeparateIdentity pointed at the sub-account
+	// back to the parent (REQ-SUBACCT-07), before either branch touches
+	// the sub-principal row. This must happen ahead of the purge
+	// DeletePrincipal call below: target_principal carries an ON DELETE
+	// CASCADE, so an alias row still pointed at subID would be destroyed
+	// along with the sub-principal rather than preserved and retargeted.
+	// A no-op when no such alias row exists; re-running against an
+	// already-removed sub-account (or one with no matching alias) is
+	// idempotent.
+	if local, domain, ok := splitLocalDomain(sub.CanonicalEmail); ok {
+		if err := st.Meta().RetargetAliasesByAddress(ctx, local, domain, parent.ID); err != nil {
+			return err
+		}
+	}
+
 	if purge {
 		if err := st.Meta().DeletePrincipal(ctx, subID); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		return nil
-	}
-
-	parent, err := st.Meta().GetSubPrincipalParent(ctx, subID)
-	if err != nil {
-		return err
 	}
 
 	mig, migErr := st.Meta().GetSubAccountMigrationBySubPrincipal(ctx, subID)

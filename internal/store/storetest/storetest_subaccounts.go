@@ -904,3 +904,184 @@ func testSubAccountMigration_RemovePurge(t *testing.T, s store.Store) {
 		t.Fatalf("RemoveSubAccount(purge, second call) = %v; want nil", err)
 	}
 }
+
+// -- Alias retargeting on separation and removal (issue #312,
+// REQ-SUBACCT-07): local SMTP delivery to a hosted alias address equal
+// to a separated identity's email must land in the sub-account, and
+// move back to the parent when the sub-account is removed. -----------
+
+func testSubAccountMigration_SeparateRetargetsAlias_NoAliasRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "sepaliasnone")
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if mig.SubPrincipalID == 0 {
+		t.Fatalf("SeparateIdentity: sub principal unset")
+	}
+
+	// No alias row existed for the identity's address; SeparateIdentity
+	// must not fabricate one. The address still routes correctly, via
+	// the sub-principal's own canonical email.
+	aliases, err := s.Meta().ListAliases(ctx, "external.test")
+	if err != nil {
+		t.Fatalf("ListAliases: %v", err)
+	}
+	if len(aliases) != 0 {
+		t.Fatalf("ListAliases after separate with no alias row = %d rows, want 0", len(aliases))
+	}
+}
+
+func testSubAccountMigration_SeparateRetargetsAlias_TwoDomains(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "sepaliastwo")
+
+	// An alias row exactly matching the identity's address, and a
+	// second row with the same local part but a different hosted
+	// domain -- it must not be retargeted.
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "sepaliastwo", Domain: "external.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(matching): %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "sepaliastwo", Domain: "other.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(other domain): %v", err)
+	}
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+
+	got, err := s.Meta().ResolveAlias(ctx, "sepaliastwo", "external.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(identity domain) after separate: %v", err)
+	}
+	if got != mig.SubPrincipalID {
+		t.Fatalf("ResolveAlias(identity domain) after separate = %d, want sub %d", got, mig.SubPrincipalID)
+	}
+	gotOther, err := s.Meta().ResolveAlias(ctx, "sepaliastwo", "other.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(other domain) after separate: %v", err)
+	}
+	if gotOther != f.parent.ID {
+		t.Fatalf("ResolveAlias(other domain) after separate = %d, want unchanged parent %d", gotOther, f.parent.ID)
+	}
+}
+
+func testSubAccountMigration_RemoveKeepRetargetsAliasBack(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "removekeepalias")
+
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "removekeepalias", Domain: "external.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(matching): %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "removekeepalias", Domain: "other.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(other domain): %v", err)
+	}
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if _, err := store.RunSubAccountMigration(ctx, s, mig.ID); err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+	if got, err := s.Meta().ResolveAlias(ctx, "removekeepalias", "external.test"); err != nil || got != mig.SubPrincipalID {
+		t.Fatalf("ResolveAlias after separate = (%d, %v), want (%d, nil)", got, err, mig.SubPrincipalID)
+	}
+
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, false); err != nil {
+		t.Fatalf("RemoveSubAccount(keep): %v", err)
+	}
+
+	got, err := s.Meta().ResolveAlias(ctx, "removekeepalias", "external.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(identity domain) after keep-remove: %v", err)
+	}
+	if got != f.parent.ID {
+		t.Fatalf("ResolveAlias(identity domain) after keep-remove = %d, want parent %d", got, f.parent.ID)
+	}
+	gotOther, err := s.Meta().ResolveAlias(ctx, "removekeepalias", "other.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(other domain) after keep-remove: %v", err)
+	}
+	if gotOther != f.parent.ID {
+		t.Fatalf("ResolveAlias(other domain) after keep-remove = %d, want unchanged parent %d", gotOther, f.parent.ID)
+	}
+
+	// Idempotent: a second keep-remove leaves the alias alone.
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, false); err != nil {
+		t.Fatalf("RemoveSubAccount(keep, second call) = %v; want nil", err)
+	}
+	if got, err := s.Meta().ResolveAlias(ctx, "removekeepalias", "external.test"); err != nil || got != f.parent.ID {
+		t.Fatalf("ResolveAlias after repeat keep-remove = (%d, %v), want (%d, nil)", got, err, f.parent.ID)
+	}
+}
+
+func testSubAccountMigration_RemovePurgeRetargetsAliasBack(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	f := newSeparationFixture(t, s, "removepurgealias")
+
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "removepurgealias", Domain: "external.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(matching): %v", err)
+	}
+	if _, err := s.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart: "removepurgealias", Domain: "other.test", TargetPrincipal: f.parent.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias(other domain): %v", err)
+	}
+
+	mig, err := store.SeparateIdentity(ctx, s, f.parent.ID, f.identityID)
+	if err != nil {
+		t.Fatalf("SeparateIdentity: %v", err)
+	}
+	if _, err := store.RunSubAccountMigration(ctx, s, mig.ID); err != nil {
+		t.Fatalf("RunSubAccountMigration: %v", err)
+	}
+	if got, err := s.Meta().ResolveAlias(ctx, "removepurgealias", "external.test"); err != nil || got != mig.SubPrincipalID {
+		t.Fatalf("ResolveAlias after separate = (%d, %v), want (%d, nil)", got, err, mig.SubPrincipalID)
+	}
+
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, true); err != nil {
+		t.Fatalf("RemoveSubAccount(purge): %v", err)
+	}
+
+	// The alias row survives the purge -- it is not owned by the
+	// sub-principal, it only pointed at it -- and now routes to the
+	// parent again rather than being cascade-deleted along with the
+	// sub-principal it used to target.
+	got, err := s.Meta().ResolveAlias(ctx, "removepurgealias", "external.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(identity domain) after purge: %v", err)
+	}
+	if got != f.parent.ID {
+		t.Fatalf("ResolveAlias(identity domain) after purge = %d, want parent %d", got, f.parent.ID)
+	}
+	gotOther, err := s.Meta().ResolveAlias(ctx, "removepurgealias", "other.test")
+	if err != nil {
+		t.Fatalf("ResolveAlias(other domain) after purge: %v", err)
+	}
+	if gotOther != f.parent.ID {
+		t.Fatalf("ResolveAlias(other domain) after purge = %d, want unchanged parent %d", gotOther, f.parent.ID)
+	}
+
+	// Idempotent: a second purge (a no-op, the sub-principal is already
+	// gone) leaves the alias alone.
+	if err := store.RemoveSubAccount(ctx, s, mig.SubPrincipalID, true); err != nil {
+		t.Fatalf("RemoveSubAccount(purge, second call) = %v; want nil", err)
+	}
+	if got, err := s.Meta().ResolveAlias(ctx, "removepurgealias", "external.test"); err != nil || got != f.parent.ID {
+		t.Fatalf("ResolveAlias after repeat purge = (%d, %v), want (%d, nil)", got, err, f.parent.ID)
+	}
+}
