@@ -262,6 +262,13 @@ func (w *Worker) sweepByAge(ctx context.Context, mbID store.MailboxID, cutoff ti
 // without AfterUID returns ascending-UID order, and every archive
 // message is appended (never reordered), so ascending UID is ascending
 // post age.
+//
+// CountMessages excludes a message that also holds a membership in a
+// Junk- or Trash-attributed mailbox (issue #313), so an archive
+// mailbox with junked or trashed members physically holds more
+// messages than maxMessages until that message's own Junk/Trash
+// retention sweep removes it -- this sweep will not count or expunge
+// it on the archive mailbox's behalf.
 func (w *Worker) sweepByCount(ctx context.Context, mbID store.MailboxID, maxMessages int64, deleted *int) error {
 	for {
 		if err := ctx.Err(); err != nil {
