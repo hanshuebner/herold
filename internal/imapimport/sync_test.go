@@ -1137,6 +1137,124 @@ func TestOwnSentImportMarkedSeen(t *testing.T) {
 	}
 }
 
+// TestOwnSentImportSeenDurableAcrossDownSync verifies that the $seen forced
+// onto a \Sent-role import (TestOwnSentImportMarkedSeen) survives a later
+// down-sync round that mirrors an unrelated upstream flag change (re #316).
+// Before LastSyncedFlags was recorded to match what herold actually stored,
+// the forced $seen looked like an unaccounted-for herold-side change against
+// a stale (raw-upstream, unseen) baseline; the next down-sync misread that
+// as a conflict and let "upstream wins" clear $seen right back the moment
+// any other upstream flag (here \Flagged) changed.
+func TestOwnSentImportSeenDurableAcrossDownSync(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("u21", "pw")
+	if err := u.Create("Sent", nil); err != nil {
+		t.Fatalf("Create Sent: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u21@example.test",
+		username:            "u21",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// Import a message into Sent with no \Seen flag upstream -- the herold
+	// copy is forced $seen regardless (re #316).
+	uid, ms := setupSyncedMessage(t, ha, ts, acc, "Sent", "own-sent-durable@test", nil)
+	ctx := context.Background()
+
+	if ms2flags(t, ha, ms.HeroldMessageID)&store.MessageFlagSeen == 0 {
+		t.Fatal("precondition: herold message should be $seen right after import into Sent")
+	}
+
+	// An unrelated flag changes upstream -- e.g. the user flags their own
+	// sent mail for follow-up in the upstream webmail.
+	setUpstreamFlag(t, ts, "u21", "pw", "Sent", uid, imap.FlagFlagged)
+
+	if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	flags := ms2flags(t, ha, ms.HeroldMessageID)
+	if flags&store.MessageFlagSeen == 0 {
+		t.Error("herold message lost $seen after an unrelated upstream flag change (re #316 durability)")
+	}
+	if flags&store.MessageFlagFlagged == 0 {
+		t.Error("herold message did not pick up the mirrored upstream \\Flagged")
+	}
+
+	ms2, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Sent", uint32(uid))
+	if err != nil || !found {
+		t.Fatalf("GetIMAPImportMessageState: found=%v err=%v", found, err)
+	}
+	if !ms2.LastSyncedFlags.HasSeen() {
+		t.Error("LastSyncedFlags should record \\Seen for a \\Sent-role message")
+	}
+	if !ms2.LastSyncedFlags.HasFlagged() {
+		t.Error("LastSyncedFlags should record the mirrored \\Flagged")
+	}
+}
+
+// TestOwnSentImportProvenanceLabelMirrorsSeen verifies that the provenance
+// label membership REQ-IMAP-IMP-100 adds alongside a \Sent-role placement is
+// itself $seen, not just the Sent membership (re #316). Flags are stored
+// per-(message, mailbox); a mailbox-scoped query (a label view's
+// collapsed-thread representative, per internal/protojmap/mail/email
+// fastquery.go) reads the provenance label's OWN membership row, which
+// AddMessageToMailbox always starts unseen. Without mirroring $seen onto it,
+// the label view renders the message unread and the principal as sender
+// exactly as reported, even though the Sent copy is correctly $seen.
+func TestOwnSentImportProvenanceLabelMirrorsSeen(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	u := ts.addUser("u22", "pw")
+	if err := u.Create("Sent", nil); err != nil {
+		t.Fatalf("Create Sent: %v", err)
+	}
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "u22@example.test",
+		username:            "u22",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	// Wire up the provenance label the way account-enable does in
+	// production (ensureProvenanceMailbox), before the first ingest.
+	ctx := context.Background()
+	prov, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: acc.PrincipalID,
+		Name:        acc.AccountName,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox (provenance): %v", err)
+	}
+	if err := ha.Store.Meta().SetIMAPImportProvenanceMailbox(ctx, acc.ID, prov.ID); err != nil {
+		t.Fatalf("SetIMAPImportProvenanceMailbox: %v", err)
+	}
+	acc, err = ha.Store.Meta().GetIMAPImportAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("GetIMAPImportAccount: %v", err)
+	}
+
+	// Import a message into Sent with no \Seen flag upstream.
+	uid, ms := setupSyncedMessage(t, ha, ts, acc, "Sent", "own-sent-prov@test", nil)
+	_ = uid
+
+	msg, err := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if len(msg.Mailboxes) != 2 {
+		t.Fatalf("want 2 memberships (Sent + provenance label), got %d: %+v", len(msg.Mailboxes), msg.Mailboxes)
+	}
+	for _, mm := range msg.Mailboxes {
+		if mm.Flags&store.MessageFlagSeen == 0 {
+			t.Errorf("membership in mailbox %d is not $seen (re #316): %+v", mm.MailboxID, mm)
+		}
+	}
+}
+
 // TestInternalDatePreserved verifies that the upstream INTERNALDATE is
 // used as both InternalDate and ReceivedAt in the herold store.
 func TestInternalDatePreserved(t *testing.T) {

@@ -318,9 +318,11 @@ func (w *accountWorker) writeBackFlags(ctx context.Context, conn Conn, ms store.
 		w.status.incPropagated(1)
 
 	case heroldSynced == lastSynced:
-		// Only upstream changed → apply upstream to herold.
-		w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-		ms.LastSyncedFlags = upstreamSynced
+		// Only upstream changed → apply upstream to herold. The applied
+		// value (not the raw upstream one) is recorded as LastSyncedFlags
+		// -- see applyUpstreamFlagsToHerold's \Sent-role exception (re #316).
+		applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
+		ms.LastSyncedFlags = applied
 		w.upsertMessageState(ctx, ms)
 
 	default:
@@ -329,8 +331,8 @@ func (w *accountWorker) writeBackFlags(ctx context.Context, conn Conn, ms store.
 			slog.String("account_id", account.ID),
 			slog.Uint64("uid", uint64(ms.UpstreamUID)),
 		)
-		w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-		ms.LastSyncedFlags = upstreamSynced
+		applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
+		ms.LastSyncedFlags = applied
 		w.upsertMessageState(ctx, ms)
 		observe.IMAPImportConflictsTotal.WithLabelValues(account.ID, "flag").Inc()
 	}
@@ -480,9 +482,23 @@ func (w *accountWorker) pushFlagsToUpstream(ctx context.Context, conn Conn, ms s
 // applyUpstreamFlagsToHerold updates the herold-side \Seen / \Flagged to
 // match the upstream value. Called on conflict-upstream-wins and on
 // upstream-only-changed paths. REQ-IMAP-IMP-42.
-func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store.IMAPImportMessageState, upstreamSynced store.IMAPImportSyncedFlags, heroldMsg store.Message) {
+//
+// Returns the synced-flags value actually applied, which the caller must
+// record as LastSyncedFlags: a message in the \Sent-role mailbox never has
+// its $seen cleared by an upstream reconcile (re #316, own-sent mail has no
+// "unread from a correspondent" meaning; herold's $seen is authoritative for
+// it), so the effective value can diverge from the raw upstreamSynced the
+// caller fetched. Recording anything other than the effective value would
+// reintroduce the durability bug: the next reconcile would see herold's
+// forced $seen as a spurious conflict against a stale upstream-only
+// baseline and clear it right back.
+func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store.IMAPImportMessageState, upstreamSynced store.IMAPImportSyncedFlags, heroldMsg store.Message) store.IMAPImportSyncedFlags {
 	log := w.opts.log
 	account := w.opts.account
+
+	if mb, mbErr := w.opts.store.Meta().GetMailboxByID(ctx, ms.HeroldMailboxID); mbErr == nil && mb.Attributes&store.MailboxAttrSent != 0 {
+		upstreamSynced |= store.IMAPImportFlagSeen
+	}
 
 	var flagAdd, flagClear store.MessageFlags
 
@@ -499,7 +515,7 @@ func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store
 
 	// Nothing to do when both herold-now and upstream agree (no-op delta).
 	if flagAdd == 0 && flagClear == 0 {
-		return
+		return upstreamSynced
 	}
 	// Compute actual delta against herold-current flags to avoid spurious writes.
 	currentSeen := heroldMsg.Flags&store.MessageFlagSeen != 0
@@ -519,7 +535,7 @@ func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store
 		realClear |= store.MessageFlagFlagged
 	}
 	if realAdd == 0 && realClear == 0 {
-		return
+		return upstreamSynced
 	}
 
 	if _, err := w.opts.store.Meta().UpdateMessageFlags(
@@ -536,6 +552,7 @@ func (w *accountWorker) applyUpstreamFlagsToHerold(ctx context.Context, ms store
 			slog.String("error", err.Error()),
 		)
 	}
+	return upstreamSynced
 }
 
 // upsertMessageState updates the persisted message state.

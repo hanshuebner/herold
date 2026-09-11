@@ -115,6 +115,14 @@ type accountWorker struct {
 	// successful enabled session alongside the consecutive counter. Capped at
 	// maxRateLimitBackoffShift.
 	rateLimitBackoffShift int
+
+	// seenBackfillDone is set once runSeenBackfill (seenbackfill.go, re
+	// #316) has run for this worker's process lifetime, the same
+	// once-and-sticky posture as forceSingleConn: cheap and idempotent to
+	// repeat, but there is no need to re-scan this account's message_state
+	// rows every reconnect. Accessed only from the worker's supervising
+	// goroutine.
+	seenBackfillDone bool
 }
 
 func newAccountWorker(opts accountWorkerOpts) *accountWorker {
@@ -508,6 +516,11 @@ func (w *accountWorker) attempt(ctx context.Context) error {
 			slog.String("account_id", account.ID),
 			slog.String("error", err.Error()))
 	}
+
+	// Correct any pre-existing rows the $seen fixes of re #316 could not
+	// reach when they landed (seenbackfill.go). Runs once per worker
+	// process lifetime; best-effort.
+	w.runSeenBackfill(ctx)
 
 	// 3b: drive a full sync pass for all mapped folders.
 	w.status.setPhase(PhaseSyncing, w.opts.clk.Now())

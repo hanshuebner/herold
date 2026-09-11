@@ -473,7 +473,7 @@ func (w *accountWorker) fetchAndIngestLabels(
 		// Record import state on the All Mail folder so write-back can address
 		// this upstream UID (REQ-IMAP-IMP-34). The primary (first) mailbox is
 		// recorded as the herold anchor.
-		sf := syncedFlagsFromIMAP(lm.Flags)
+		sf := w.ingestedSyncedFlags(ctx, lm.Flags, primaryMsgID)
 		if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 			AccountID:       account.ID,
 			UpstreamFolder:  gmailAllMail,

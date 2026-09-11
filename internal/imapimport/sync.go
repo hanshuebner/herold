@@ -536,7 +536,7 @@ func (w *accountWorker) fetchAndIngest(
 				// herold's own Junk placement alone.
 				principalID := store.PrincipalID(account.PrincipalID)
 				if mappedMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox); mbErr == nil {
-					sf := syncedFlagsFromIMAP(fm.Flags)
+					sf := w.ingestedSyncedFlags(ctx, fm.Flags, msgID)
 					if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 						AccountID:       account.ID,
 						UpstreamFolder:  upstreamFolder,
@@ -578,7 +578,7 @@ func (w *accountWorker) fetchAndIngest(
 		// case MappedMailboxID is resolved separately so a later upstream
 		// \Deleted seen in this folder leaves the Junk placement alone
 		// (re #319, see removeMessageStateMembership).
-		sf := syncedFlagsFromIMAP(fm.Flags)
+		sf := w.ingestedSyncedFlags(ctx, fm.Flags, msgID)
 		state := store.IMAPImportMessageState{
 			AccountID:       account.ID,
 			UpstreamFolder:  upstreamFolder,
@@ -1230,6 +1230,17 @@ func (w *accountWorker) ensureProvenanceMailbox(ctx context.Context) error {
 // ignored, so backfilled and re-synced mail converge on a single membership.
 // A no-op when the provenance label has not been created yet (id zero) or the
 // message id is unknown.
+//
+// Flags are per-(message, mailbox) in the store, and AddMessageToMailbox
+// always starts a fresh membership unseen -- so without the mirror below, a
+// message already $seen via its other (e.g. Sent-role) membership would
+// render unread the moment a mailbox-scoped query (a label view's
+// collapsed-thread representative, or an unscoped Email/get that happens to
+// pick the label's membership as "first") reads the provenance label's own
+// row (re #316). The provenance label exists to make the import channel
+// browsable (REQ-IMAP-IMP-100), not to carry independent read/unread
+// semantics, so it mirrors $seen from whatever other membership the message
+// already carries at the moment the label is attached.
 func (w *accountWorker) addProvenanceLabel(ctx context.Context, msgID store.MessageID) {
 	provID := w.opts.account.ProvenanceMailboxID
 	if provID == 0 || msgID == 0 {
@@ -1240,6 +1251,23 @@ func (w *accountWorker) addProvenanceLabel(ctx context.Context, msgID store.Mess
 			w.opts.log.Warn("imapimport: failed to add provenance label",
 				slog.String("account_id", w.opts.account.ID),
 				slog.String("error", err.Error()))
+		}
+		return
+	}
+	if msg, gerr := w.opts.store.Meta().GetMessage(ctx, msgID); gerr == nil {
+		seen := false
+		for _, mm := range msg.Mailboxes {
+			if mm.MailboxID != provID && mm.Flags&store.MessageFlagSeen != 0 {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			if _, uerr := w.opts.store.Meta().UpdateMessageFlags(ctx, msgID, provID, store.MessageFlagSeen, 0, nil, nil, 0); uerr != nil {
+				w.opts.log.Warn("imapimport: failed to mirror $seen onto provenance label",
+					slog.String("account_id", w.opts.account.ID),
+					slog.String("error", uerr.Error()))
+			}
 		}
 	}
 }
@@ -1308,6 +1336,24 @@ func syncedFlagsFromIMAP(flags []imap.Flag) store.IMAPImportSyncedFlags {
 		}
 	}
 	return sf
+}
+
+// ingestedSyncedFlags returns the IMAPImportSyncedFlags baseline to record
+// as LastSyncedFlags right after a message lands in msgID/mailboxID via this
+// sync round. It reads the message back from the store rather than
+// recomputing from the raw upstream flags so it always matches what herold
+// actually holds -- including the \Seen force insertNewMessage applies to a
+// \Sent-role mailbox (re #316). Recording anything else would reintroduce
+// the durability bug: a later down-sync/write-back reconcile would see
+// herold's forced $seen as a spurious conflict against a stale
+// upstream-only baseline and clear it right back (REQ-IMAP-IMP-42). Falls
+// back to the raw upstream flags on a read error (best-effort, matches the
+// pre-existing behaviour).
+func (w *accountWorker) ingestedSyncedFlags(ctx context.Context, upstream []imap.Flag, msgID store.MessageID) store.IMAPImportSyncedFlags {
+	if msg, err := w.opts.store.Meta().GetMessage(ctx, msgID); err == nil {
+		return syncedFlagsFromStoreFlags(msg.Flags)
+	}
+	return syncedFlagsFromIMAP(upstream)
 }
 
 // hasAttr reports whether attrs contains the given attribute.

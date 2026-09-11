@@ -582,7 +582,7 @@ func (w *accountWorker) syncFolderGmailAllMailEnvelopeDedup(ctx context.Context,
 				// this All Mail UID (D5). Writing 0/0 here left the row
 				// unaddressable, so flag changes to archived mail never
 				// propagated upstream. REQ-IMAP-IMP-34.
-				sf := syncedFlagsFromIMAP(env.Flags)
+				sf := w.ingestedSyncedFlags(ctx, env.Flags, existing.ID)
 				if msErr := w.opts.store.Meta().UpsertIMAPImportMessageState(ctx, store.IMAPImportMessageState{
 					AccountID:       accountID,
 					UpstreamFolder:  gmailAllMail,

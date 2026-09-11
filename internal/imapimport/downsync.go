@@ -131,9 +131,12 @@ func (w *accountWorker) applyUpstreamFlagChange(ctx context.Context, upstreamFol
 	conflict := heroldSynced != ms.LastSyncedFlags
 
 	// Upstream-authoritative: apply the upstream value to herold in both the
-	// only-upstream-changed case and the both-changed (conflict) case.
-	w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
-	ms.LastSyncedFlags = upstreamSynced
+	// only-upstream-changed case and the both-changed (conflict) case. The
+	// applied value (not the raw upstream one) is what gets recorded as
+	// LastSyncedFlags -- see applyUpstreamFlagsToHerold's \Sent-role
+	// exception (re #316).
+	applied := w.applyUpstreamFlagsToHerold(ctx, ms, upstreamSynced, heroldMsg)
+	ms.LastSyncedFlags = applied
 	w.upsertMessageState(ctx, ms)
 	observe.IMAPImportFlagsPropagatedTotal.WithLabelValues(account.ID, "down").Inc()
 
