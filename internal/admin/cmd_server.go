@@ -170,20 +170,62 @@ func writePIDFile(path string) error {
 // clientFromGlobals builds an admin-client configured from the global
 // flags, with a helpful error if neither a URL nor a credential file is
 // available.
+//
+// When --server-url is passed explicitly it always wins outright -- no
+// fallback is wired, since the operator made the choice directly. Absent
+// that flag, the stored credentials.toml server_url is used, and
+// --system-config (when it names a config with a "kind = \"admin\""
+// listener) is consulted purely as a fallback candidate: if the stored
+// URL differs from the config-derived one, the client retries against
+// the derived URL on a connection failure, warns once, and rewrites the
+// credentials file (re #315). This is deliberately the opposite
+// precedence from saveCredentials' bootstrap-time write, where an
+// incoming URL always overwrites the stored one -- here the stored value
+// is what every call actually uses; the config only supplies a rescue
+// path for a listener that moved out from under it.
 func clientFromGlobals(g *globalOptions) (*Client, error) {
-	base := g.serverURL
-	if base == "" {
-		if bURL, ok := loadCredentialsServerURL(); ok {
-			base = bURL
+	if g.serverURL != "" {
+		return NewClient(ClientOptions{BaseURL: g.serverURL, APIKey: g.apiKey})
+	}
+	storedURL, storedOK := loadCredentialsServerURL()
+	derivedURL := adminRESTURLFromConfig(g.configPath)
+
+	base := storedURL
+	opts := ClientOptions{APIKey: g.apiKey}
+	if storedOK {
+		opts.CredentialsPath = DefaultCredentialsPath()
+		if derivedURL != "" && derivedURL != storedURL {
+			opts.FallbackURL = derivedURL
+			opts.WarnW = os.Stderr
 		}
+	} else if derivedURL != "" {
+		base = derivedURL
 	}
 	if base == "" {
 		return nil, errors.New("no admin REST URL (set --server-url or add server_url to ~/.herold/credentials.toml)")
 	}
-	return NewClient(ClientOptions{
-		BaseURL: base,
-		APIKey:  g.apiKey,
-	})
+	opts.BaseURL = base
+	return NewClient(opts)
+}
+
+// adminRESTURLFromConfig best-effort derives the admin REST base URL from
+// the system config at path, returning "" when the path is unset, the
+// file cannot be parsed, or it has no "kind = \"admin\"" listener. A
+// derivation failure here must never fail the CLI call outright -- it
+// only disables the stale-server_url fallback (re #315).
+func adminRESTURLFromConfig(path string) string {
+	if path == "" {
+		return ""
+	}
+	cfg, err := sysconfig.Load(path)
+	if err != nil {
+		return ""
+	}
+	url, _, ok := sysconfig.AdminRESTURL(cfg)
+	if !ok {
+		return ""
+	}
+	return url
 }
 
 func loadCredentialsServerURL() (string, bool) {

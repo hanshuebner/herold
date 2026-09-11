@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,10 +24,24 @@ import (
 // public method is a thin wrapper around an HTTP call returning a typed
 // error (RFC 7807 problem+json).
 type Client struct {
-	base    string
 	apiKey  string
 	timeout time.Duration
 	http    *http.Client
+
+	// mu guards base and fallbackURL, which can mutate after a
+	// successful fallback (see switchToFallback).
+	mu          sync.Mutex
+	base        string
+	fallbackURL string
+
+	// credentialsPath is the credentials.toml that supplied base (empty
+	// when base came from --server-url). It powers both the fallback
+	// rewrite and the "may be stale" hint on a connection error.
+	credentialsPath string
+	// warnW receives the one-line fallback warning; defaults to
+	// io.Discard.
+	warnW    io.Writer
+	warnOnce sync.Once
 }
 
 // ClientOptions configures a Client.
@@ -41,6 +56,23 @@ type ClientOptions struct {
 	// HTTPClient replaces the default client (tests use this to attach
 	// fake transports or self-signed trust roots).
 	HTTPClient *http.Client
+
+	// FallbackURL, when non-empty and different from BaseURL, is retried
+	// once if a request to BaseURL fails at the connection level
+	// (refused / dial timeout). CredentialsPath should also be set: on a
+	// successful fallback the client emits one warning to WarnW naming
+	// both URLs and the credentials file, rewrites the file with
+	// FallbackURL, and uses FallbackURL for the rest of its calls.
+	// re #315.
+	FallbackURL string
+	// CredentialsPath is the credentials.toml path that supplied
+	// BaseURL (empty when BaseURL came from --server-url). It names the
+	// file in both the fallback warning and in a connection error when
+	// no fallback is available.
+	CredentialsPath string
+	// WarnW receives the one-line fallback warning. Defaults to
+	// io.Discard.
+	WarnW io.Writer
 }
 
 // NewClient constructs a Client. If opts.APIKey is empty, the env var
@@ -73,11 +105,23 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if hc == nil {
 		hc = &http.Client{Timeout: timeout}
 	}
+	warnW := opts.WarnW
+	if warnW == nil {
+		warnW = io.Discard
+	}
+	fallback := strings.TrimRight(opts.FallbackURL, "/")
+	base := strings.TrimRight(opts.BaseURL, "/")
+	if fallback == base {
+		fallback = ""
+	}
 	return &Client{
-		base:    strings.TrimRight(opts.BaseURL, "/"),
-		apiKey:  key,
-		timeout: timeout,
-		http:    hc,
+		apiKey:          key,
+		timeout:         timeout,
+		http:            hc,
+		base:            base,
+		fallbackURL:     fallback,
+		credentialsPath: opts.CredentialsPath,
+		warnW:           warnW,
 	}, nil
 }
 
@@ -108,33 +152,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, into any
 	if c == nil {
 		return errors.New("admin-client: nil client")
 	}
-	var reqBody io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("admin-client: marshal: %w", err)
-		}
-		reqBody = bytes.NewReader(buf)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reqBody)
+	resp, raw, err := c.execute(ctx, method, path, body, true)
 	if err != nil {
-		return fmt.Errorf("admin-client: request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("admin-client: %s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("admin-client: read body: %w", err)
+		return err
 	}
 	if resp.StatusCode >= 400 {
 		var pd ProblemDetails
@@ -160,32 +180,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, body any) ([]by
 	if c == nil {
 		return nil, errors.New("admin-client: nil client")
 	}
-	var reqBody io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("admin-client: marshal: %w", err)
-		}
-		reqBody = bytes.NewReader(buf)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reqBody)
+	resp, raw, err := c.execute(ctx, method, path, body, false)
 	if err != nil {
-		return nil, fmt.Errorf("admin-client: request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("admin-client: %s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("admin-client: read body: %w", err)
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		var pd ProblemDetails
@@ -195,6 +192,109 @@ func (c *Client) doRaw(ctx context.Context, method, path string, body any) ([]by
 		return nil, &pd
 	}
 	return raw, nil
+}
+
+// execute issues an HTTP request against the client's base URL and
+// returns the response with its body fully read. If the request fails at
+// the connection level (refused / dial timeout) and a differing
+// fallbackURL is configured (re #315: --system-config names a listener
+// the stored credentials.toml server_url has drifted from), it retries
+// once against the fallback. A successful retry emits one warning naming
+// both URLs and the credentials file, rewrites the file with the
+// fallback URL, and switches the client to it for subsequent calls. With
+// no usable fallback, the returned error names the credentials file (when
+// one supplied the base URL) and the --server-url override.
+func (c *Client) execute(ctx context.Context, method, path string, body any, wantAccept bool) (*http.Response, []byte, error) {
+	c.mu.Lock()
+	base := c.base
+	fallback := c.fallbackURL
+	c.mu.Unlock()
+
+	resp, err := c.sendRequest(ctx, method, base, path, body, wantAccept)
+	if err != nil && fallback != "" && fallback != base {
+		fbResp, fbErr := c.sendRequest(ctx, method, fallback, path, body, wantAccept)
+		if fbErr == nil {
+			c.switchToFallback(base, fallback)
+			resp, err = fbResp, nil
+		} else {
+			return nil, nil, fmt.Errorf("admin-client: %s %s: %s unreachable (%v); fallback %s also unreachable: %w",
+				method, path, base, err, fallback, fbErr)
+		}
+	}
+	if err != nil {
+		return nil, nil, c.connError(method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("admin-client: read body: %w", err)
+	}
+	return resp, raw, nil
+}
+
+// sendRequest builds and issues a single HTTP request against base+path.
+// A non-nil error here is a transport-level failure (dial/connection
+// refused/timeout, etc.) -- HTTP status codes are reported on the
+// returned *http.Response, not as an error.
+func (c *Client) sendRequest(ctx context.Context, method, base, path string, body any, wantAccept bool) (*http.Response, error) {
+	var reqBody io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("admin-client: marshal: %w", err)
+		}
+		reqBody = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("admin-client: request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if wantAccept {
+		req.Header.Set("Accept", "application/json")
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return c.http.Do(req)
+}
+
+// switchToFallback records that base is unreachable and fallback isn't:
+// it warns once, best-effort rewrites credentialsPath with fallback, and
+// moves the client onto fallback for the rest of its calls.
+func (c *Client) switchToFallback(stale, fallback string) {
+	c.warnOnce.Do(func() {
+		w := c.warnW
+		if w == nil {
+			w = io.Discard
+		}
+		if c.credentialsPath != "" {
+			fmt.Fprintf(w, "admin: server_url %s in %s is unreachable; using %s derived from --system-config instead and updating the file\n",
+				stale, c.credentialsPath, fallback)
+			if err := rewriteCredentialsServerURL(c.credentialsPath, fallback); err != nil {
+				fmt.Fprintf(w, "admin: warn: could not update %s: %v\n", c.credentialsPath, err)
+			}
+		} else {
+			fmt.Fprintf(w, "admin: %s is unreachable; using %s derived from --system-config instead\n", stale, fallback)
+		}
+	})
+	c.mu.Lock()
+	c.base = fallback
+	c.fallbackURL = ""
+	c.mu.Unlock()
+}
+
+// connError wraps a transport-level failure with a hint naming the
+// credentials file and the --server-url override, when the failing base
+// URL came from a credentials file (re #315).
+func (c *Client) connError(method, path string, err error) error {
+	if c.credentialsPath != "" {
+		return fmt.Errorf("admin-client: %s %s: %w (server_url in %s may be stale; override with --server-url or edit the file)",
+			method, path, err, c.credentialsPath)
+	}
+	return fmt.Errorf("admin-client: %s %s: %w", method, path, err)
 }
 
 // credentialsFile is the CLI's on-disk store of the API key. It lives
@@ -293,25 +393,50 @@ func saveCredentials(apiKey, serverURL string, warnW io.Writer) (string, string,
 			existing.ServerURL, serverURL, p,
 		)
 	}
-	raw, err := toml.Marshal(credentialsFile{APIKey: apiKey, ServerURL: effectiveURL})
-	if err != nil {
-		return "", "", fmt.Errorf("admin-client: marshal credentials: %w", err)
+	if err := writeCredentialsFile(p, credentialsFile{APIKey: apiKey, ServerURL: effectiveURL}); err != nil {
+		return "", "", err
 	}
-	// Write atomically: temp file in the same directory, then rename.
-	// This ensures the final inode has 0600 permissions even if the
-	// file already existed with looser permissions (O_TRUNC on an
-	// existing file does not reset mode bits).
+	return p, effectiveURL, nil
+}
+
+// writeCredentialsFile marshals f as TOML and writes it to p atomically:
+// a temp file in the same directory, chmod 0600, then rename. The rename
+// ensures the final inode has 0600 permissions even if p already existed
+// with looser permissions (O_TRUNC on an existing file does not reset
+// mode bits).
+func writeCredentialsFile(p string, f credentialsFile) error {
+	raw, err := toml.Marshal(f)
+	if err != nil {
+		return fmt.Errorf("admin-client: marshal credentials: %w", err)
+	}
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return "", "", fmt.Errorf("admin-client: write credentials tmp: %w", err)
+		return fmt.Errorf("admin-client: write credentials tmp: %w", err)
 	}
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		_ = os.Remove(tmp)
-		return "", "", fmt.Errorf("admin-client: chmod credentials tmp: %w", err)
+		return fmt.Errorf("admin-client: chmod credentials tmp: %w", err)
 	}
 	if err := os.Rename(tmp, p); err != nil {
 		_ = os.Remove(tmp)
-		return "", "", fmt.Errorf("admin-client: rename credentials: %w", err)
+		return fmt.Errorf("admin-client: rename credentials: %w", err)
 	}
-	return p, effectiveURL, nil
+	return nil
+}
+
+// rewriteCredentialsServerURL updates only the server_url field of the
+// credentials file at p, preserving its api_key and file permissions
+// (re #315: called after a successful fallback to a --system-config-
+// derived admin URL, so the next invocation needs no retry).
+func rewriteCredentialsServerURL(p, newURL string) error {
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("admin-client: read credentials: %w", err)
+	}
+	var f credentialsFile
+	if err := toml.Unmarshal(raw, &f); err != nil {
+		return fmt.Errorf("admin-client: parse credentials: %w", err)
+	}
+	f.ServerURL = newURL
+	return writeCredentialsFile(p, f)
 }
