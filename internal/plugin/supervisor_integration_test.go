@@ -155,7 +155,7 @@ func buildEcho(t *testing.T) string {
 //
 // Manager.Start's returned error is non-nil only for a malformed Spec
 // (see its doc comment); a bad manifest is instead surfaced as a
-// logged "plugin manifest invalid" diagnostic and the plugin cycling
+// logged "plugin manifest rejected" diagnostic and the plugin cycling
 // through its crash-restart loop into StateDisabled once its (tightly
 // bounded, for this test) crash budget is exhausted — the same failure
 // mode as any other handshake rejection (REQ-PLUG-05).
@@ -264,12 +264,30 @@ func testSpamFixtureRefused(t *testing.T, bin string, env []string) {
 	if p.State() == plugin.StateHealthy {
 		t.Fatal("plugin reached StateHealthy despite an unpinned temperature")
 	}
+	// LastError is what internal/admin's spamStatusProvider reports as the
+	// GET /api/v1/spam/status "reason" field (issue #317): it must name the
+	// rejection, not just the raw validation detail, so an operator reading
+	// the admin API sees the same "plugin manifest rejected" wording as the
+	// log line.
+	if got := p.LastError(); !strings.Contains(got, "plugin manifest rejected") {
+		t.Fatalf("LastError should surface the manifest rejection, got %q", got)
+	}
 	logs := logBuf.String()
-	if !strings.Contains(logs, "plugin manifest invalid") {
-		t.Fatalf("expected a manifest-invalid log line; got:\n%s", logs)
+	if !strings.Contains(logs, "plugin manifest rejected") {
+		t.Fatalf("expected a manifest-rejected log line; got:\n%s", logs)
 	}
 	if !strings.Contains(logs, "temperature") || !strings.Contains(logs, "spamfixture") {
 		t.Fatalf("log should name the plugin and mention temperature:\n%s", logs)
+	}
+	if !strings.Contains(logs, "path=") || !strings.Contains(logs, "server_version=test") {
+		t.Fatalf("log should name the plugin path and server version:\n%s", logs)
+	}
+	// The rejection recurs in every restart's "plugin run ended" error
+	// text (expected -- each restart cycle genuinely failed), but the
+	// dedicated error-level diagnostic must appear exactly once across
+	// the whole crash-restart loop (issue #317).
+	if n := strings.Count(logs, `msg="plugin manifest rejected"`); n != 1 {
+		t.Fatalf("expected exactly one error-level manifest-rejected log line across the crash-restart loop, got %d:\n%s", n, logs)
 	}
 }
 

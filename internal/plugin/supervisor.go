@@ -232,6 +232,13 @@ type Plugin struct {
 	// configured plugin is not serving (REQ-FILT §Wave 4.1 spam status).
 	lastErr atomic.Pointer[string]
 
+	// manifestRejectLogged guards the error-level "plugin manifest
+	// rejected" diagnostic so a crash-restart loop against a plugin whose
+	// manifest never becomes valid logs the operator-actionable detail
+	// once per process lifetime instead of once per backoff cycle (issue
+	// #317: a six-hour reject loop must not also flood the log sink).
+	manifestRejectLogged sync.Once
+
 	mu           sync.Mutex
 	cmd          *exec.Cmd
 	client       *Client
@@ -543,11 +550,23 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 		return err
 	}
 	if err := initRes.Manifest.Validate(); err != nil {
-		p.logger.Error("plugin manifest invalid", "activity", actSystem, "err", err)
+		// Wrapped (not just logged) so the admin spam status endpoint's
+		// LastError-derived reason text names the rejection explicitly
+		// rather than only carrying the underlying "invalid manifest:
+		// ..." detail (REQ-FILT Wave 4.1 spam status, issue #317).
+		rejectErr := fmt.Errorf("plugin manifest rejected: %w", err)
+		p.manifestRejectLogged.Do(func() {
+			p.logger.Error("plugin manifest rejected",
+				"activity", actSystem,
+				"path", p.spec.Path,
+				"plugin_version", initRes.Manifest.Version,
+				"server_version", p.mgr.opts.ServerVersion,
+				"err", err)
+		})
 		p.teardown(cmd, client)
 		<-stderrDone
 		<-clientErr
-		return err
+		return rejectErr
 	}
 	if p.spec.Type != "" && !compatiblePluginType(p.spec.Type, initRes.Manifest.Type) {
 		err := fmt.Errorf("plugin: type mismatch want=%s got=%s", p.spec.Type, initRes.Manifest.Type)

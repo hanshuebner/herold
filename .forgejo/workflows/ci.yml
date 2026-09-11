@@ -788,9 +788,27 @@ jobs:
   #
   # The activate script on the host fetches a Forgejo release by tag and
   # downloads exactly two assets: herold-<ref>.tar.gz and
-  # herold-<ref>.sha256.  It verifies the checksum, extracts the tarball
-  # (which must contain only `herold` at the archive root, mode 0755),
-  # swaps current -> releases/<ref>, and restarts the herold systemd unit.
+  # herold-<ref>.sha256.  It verifies the checksum and extracts the
+  # tarball into releases/<ref>/, which contains:
+  #
+  #   herold                    server binary, mode 0755, archive root
+  #                             (unchanged location -- the existing
+  #                             extraction step keeps working unmodified)
+  #   plugins/<name>            one first-party plugin binary per
+  #                             plugins/herold-* directory in this repo,
+  #                             mode 0755 (linux/amd64 only)
+  #   plugins/MANIFEST          "<sha256>  <name>" per plugin binary,
+  #                             sha256sum(1) format
+  #   post-install.sh           scripts/release-post-install.sh, mode 0755
+  #
+  # Before swapping current -> releases/<ref> and restarting the herold
+  # systemd unit, activate runs `sh releases/<ref>/post-install.sh` as
+  # root with the release directory as cwd, and aborts the deploy on a
+  # non-zero exit. That script verifies plugins/MANIFEST and installs
+  # each plugin binary into $HEROLD_PLUGIN_DIR (default
+  # /usr/local/lib/herold/plugins) atomically, so a deploy that changes
+  # the plugin contract never leaves a server binary running against a
+  # stale plugin build (issue #317).
   #
   # NOTE: ci-<sha> release objects, their tags, and asset binaries are pruned
   # by the "prune old ci- releases" step below, which keeps only the newest 5
@@ -848,15 +866,46 @@ jobs:
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           fi
 
+      # Needed for the plugins/herold-* directory listing (to check every
+      # first-party plugin got a built binary) and for
+      # scripts/release-post-install.sh, which is shipped inside the
+      # archive.
+      - name: checkout
+        if: steps.guard.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
       # Download the linux/amd64 binary produced by the binaries job.
       # Artifact name is herold-linux-amd64; it contains the file
-      # dist/herold-linux-amd64 (and any co-built plugin binaries).
+      # dist/herold-linux-amd64 and dist/<plugin>-linux-amd64 for every
+      # plugins/herold-* directory.
       - name: download linux/amd64 binary
         if: steps.guard.outputs.enabled == 'true'
         uses: actions/download-artifact@v3
         with:
           name: herold-linux-amd64
           path: downloaded/
+
+      # Fails the deploy rather than shipping a server without a plugin
+      # the source tree declares (issue #317's root cause: a plugin
+      # binary silently missing from what gets installed).
+      - name: verify every first-party plugin binary was built
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          missing=0
+          for p in plugins/herold-*; do
+            [ -d "$p" ] || continue
+            name=$(basename "$p")
+            if [ ! -f "downloaded/${name}-linux-amd64" ]; then
+              echo "ERROR: ${p} has no built binary downloaded/${name}-linux-amd64" >&2
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "one or more first-party plugin binaries are missing from the binaries-job artifact" >&2
+            exit 1
+          fi
+          echo "all first-party plugin binaries present"
 
       - name: package release assets
         if: steps.guard.outputs.enabled == 'true'
@@ -865,15 +914,54 @@ jobs:
           REF="ci-${GITHUB_SHA::10}"
           echo "REF=${REF}" >> "${GITHUB_ENV}"
 
-          # Lay out a bare `herold` binary at the archive root so that
-          # `tar -C releases/<ref> -xzf herold-<ref>.tar.gz` produces
-          # releases/<ref>/herold directly (no subdirectory).
-          install -m 0755 downloaded/herold-linux-amd64 herold
+          # Stage the archive contents in pkgroot/ so `tar -C pkgroot ...`
+          # produces the exact archive-root layout documented above:
+          # herold stays a bare file at the archive root (unchanged
+          # location, so the host-side extraction step needs no change),
+          # plugins/ and post-install.sh sit alongside it.
+          rm -rf pkgroot
+          mkdir -p pkgroot/plugins
+          install -m 0755 downloaded/herold-linux-amd64 pkgroot/herold
+          install -m 0755 scripts/release-post-install.sh pkgroot/post-install.sh
 
-          tar -czf "herold-${REF}.tar.gz" herold
+          for p in plugins/herold-*; do
+            [ -d "$p" ] || continue
+            name=$(basename "$p")
+            install -m 0755 "downloaded/${name}-linux-amd64" "pkgroot/plugins/${name}"
+          done
+          ( cd pkgroot/plugins && for f in *; do
+              [ -f "$f" ] || continue
+              [ "$f" = "MANIFEST" ] && continue
+              sha256sum "$f"
+            done ) > pkgroot/plugins/MANIFEST
+
+          # Smoke-test scripts/release-post-install.sh against the just-built
+          # archive contents before it ever reaches outpost: run it in a
+          # scratch directory with HEROLD_PLUGIN_DIR pointed at a temp
+          # install root and assert every plugin binary landed there
+          # (issue #317).
+          smoketest=$(mktemp -d)
+          cp -r pkgroot/plugins "${smoketest}/plugins"
+          cp pkgroot/post-install.sh "${smoketest}/post-install.sh"
+          chmod +x "${smoketest}/post-install.sh"
+          plugin_install_dir="${smoketest}/installed-plugins"
+          HEROLD_PLUGIN_DIR="${plugin_install_dir}" "${smoketest}/post-install.sh"
+          for p in plugins/herold-*; do
+            [ -d "$p" ] || continue
+            name=$(basename "$p")
+            if [ ! -x "${plugin_install_dir}/${name}" ]; then
+              echo "ERROR: release-post-install.sh smoke test: ${name} did not land executable in ${plugin_install_dir}" >&2
+              exit 1
+            fi
+          done
+          echo "release-post-install.sh smoke test: all plugin binaries installed"
+          rm -rf "${smoketest}"
+
+          tar -czf "herold-${REF}.tar.gz" -C pkgroot herold plugins post-install.sh
           sha256sum "herold-${REF}.tar.gz" > "herold-${REF}.sha256"
 
           echo "Packaged herold-${REF}.tar.gz"
+          tar -tvzf "herold-${REF}.tar.gz"
           cat "herold-${REF}.sha256"
 
       - name: create Forgejo release and upload assets

@@ -492,6 +492,32 @@ stdio (STANDARDS section 1.2). The supervisor in
 crash (with backoff). `lifecycle = "on-demand"` plugins start when
 first invoked and idle out.
 
+### Release archive layout (release-pull deploy)
+
+The `.forgejo/workflows/ci.yml` `deploy` job's release archive
+(`herold-<ref>.tar.gz`) carries the first-party plugin binaries
+alongside the server binary, so a deploy always brings server and
+plugins from the same commit:
+
+```
+herold                  server binary, mode 0755, archive root
+plugins/<name>           one binary per plugins/herold-* build, mode 0755
+plugins/MANIFEST         "<sha256>  <name>" per plugin binary
+post-install.sh           scripts/release-post-install.sh, mode 0755
+```
+
+The host-side activate script runs `post-install.sh` as root, with
+the release directory as its working directory, before it swaps the
+`current` symlink and restarts the `herold` systemd unit; a non-zero
+exit aborts the deploy. `post-install.sh` verifies every
+`plugins/<name>` binary against `plugins/MANIFEST` and installs it
+into `$HEROLD_PLUGIN_DIR` (default `/usr/local/lib/herold/plugins`)
+atomically, via a temp file plus rename. A `[[plugin]] path` pointing
+outside that directory (as for a Docker or `.deb`/`.rpm` install,
+which place plugins under `/usr/lib/herold/plugins` instead) is
+unaffected -- this mechanism only provisions the binaries at
+`$HEROLD_PLUGIN_DIR`, it never rewrites `system.toml`.
+
 ### Inspect plugin state
 
 `herold_plugin_up{name}` on `/metrics` gives the live state: 1 when
