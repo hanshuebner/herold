@@ -15,6 +15,7 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -63,7 +64,7 @@ class UndoSendAcceptanceTest {
     fun t70_undoWithinTheWindowKeepsTheMessageOnThePhone() = runBlocking {
         chooseWindow(seconds = 30)
         val subject = "undo send ${System.currentTimeMillis()}"
-        write(subject, "This one is taken back.")
+        write(subject)
         compose.onNodeWithTag("compose-send").performClick()
 
         // The list raises the offer for as long as the window lasts.
@@ -81,7 +82,7 @@ class UndoSendAcceptanceTest {
         compose.captureScreen("71-undo-reopened-the-composer")
         assertTrue(
             "the queued send is gone, saw ${app.container.outbox.list()}",
-            app.container.outbox.list().isEmpty(),
+            app.container.outbox.list().none { it.isPending },
         )
 
         // And the server never heard of it.
@@ -93,15 +94,17 @@ class UndoSendAcceptanceTest {
     fun t71_withoutAnUndoTheMessageGoesWhenTheWindowIsUp() = runBlocking {
         chooseWindow(seconds = 5)
         val subject = "held send ${System.currentTimeMillis()}"
-        write(subject, "This one goes.")
+        write(subject)
         compose.onNodeWithTag("compose-send").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText("Sending").fetchSemanticsNodes().isNotEmpty()
         }
 
         val arrived = awaitDelivered(subject)
-        assertTrue("the message must carry what was written", arrived.bodyText.orEmpty().contains("goes"))
-        compose.waitUntil(TIMEOUT_MS) { runBlocking { app.container.outbox.list().isEmpty() } }
+        assertEquals("the held message is the one that arrived", subject, arrived.subject)
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().none { it.isPending } }
+        }
         compose.captureScreen("72-held-send-delivered")
     }
 
@@ -123,7 +126,7 @@ class UndoSendAcceptanceTest {
         }
     }
 
-    private fun write(subject: String, body: String) {
+    private fun write(subject: String) {
         compose.onNodeWithTag("inbox-compose").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()

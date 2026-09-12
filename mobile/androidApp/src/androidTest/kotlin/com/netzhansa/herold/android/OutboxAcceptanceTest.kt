@@ -155,9 +155,9 @@ class OutboxAcceptanceTest {
             compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
         }
 
-        compose.waitUntil(TIMEOUT_MS) { runBlocking { app.container.outbox.list().size >= 3 } }
-        val queued = app.container.outbox.list()
-        assertEquals("three things are waiting", 3, queued.size)
+        compose.waitUntil(TIMEOUT_MS) { runBlocking { app.container.outbox.list().count { it.isPending } >= 3 } }
+        val queued = app.container.outbox.list().filter { it.isPending }
+        assertEquals("three things are waiting, saw ${queued.map { it.label }}", 3, queued.size)
         assertTrue(
             "the send is one of them, saw ${queued.map { it.kind to it.label }}",
             queued.any { it.kind == OutboxKind.SEND },
@@ -180,7 +180,7 @@ class OutboxAcceptanceTest {
     @Test
     fun t62_theQueueSurvivesProcessDeath() = runBlocking {
         compose.waitUntil(TIMEOUT_MS) { app.container.session.value != null }
-        val queued = app.container.outbox.list()
+        val queued = app.container.outbox.list().filter { it.isPending }
         assertEquals("the queue survived the process, saw $queued", 3, queued.size)
 
         compose.waitUntil(TIMEOUT_MS) {
@@ -209,7 +209,9 @@ class OutboxAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) { app.container.session.value != null }
         val stamp = markerFile().readText().trim()
 
-        compose.waitUntil(DRAIN_TIMEOUT_MS) { runBlocking { app.container.outbox.list().isEmpty() } }
+        compose.waitUntil(DRAIN_TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().none { it.isPending } }
+        }
         compose.captureScreen("64-outbox-drained")
 
         val client = DevInstance.serverClient()
@@ -253,14 +255,15 @@ class OutboxAcceptanceTest {
         compose.onNodeWithTag("compose-from").performClick()
         compose.onNodeWithTag("from-option-${foreign.accountId}-${foreign.id}", useUnmergedTree = true)
             .performClick()
+        val subject = "refused send ${System.currentTimeMillis()}"
         compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
-        compose.onNodeWithTag("compose-subject").performTextInput("refused send ${System.currentTimeMillis()}")
+        compose.onNodeWithTag("compose-subject").performTextInput(subject)
         compose.onNodeWithTag("compose-send").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
         }
 
-        val failed = awaitEntry { it.state == OutboxState.FAILED }
+        val failed = awaitEntry { it.label.endsWith(subject) && it.state == OutboxState.FAILED }
         assertTrue("the entry keeps the server's reason, saw ${failed.lastError}", failed.permanent)
         assertNotNull("a refusal must say why", failed.lastError)
 
@@ -279,6 +282,36 @@ class OutboxAcceptanceTest {
         }
         assertTrue("the retry submitted again", retried.attempts > failed.attempts)
         compose.captureScreen("66-refused-send-after-retry")
+    }
+
+    /**
+     * Radios off: queue a send and leave. The harness then force-stops
+     * the app and turns the radios back on; the WorkManager job is what
+     * puts the message on the wire with nothing open (REQ-AND-SYNC-31),
+     * which the harness confirms against the recipient's account.
+     */
+    @Test
+    fun t65_queueASendToLeaveWithTheAppClosed() = runBlocking {
+        compose.waitUntil(TIMEOUT_MS) { app.container.session.value != null }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        val subject = "workmanager send ${System.currentTimeMillis()}"
+        compose.onNodeWithTag("inbox-compose").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
+        compose.onNodeWithTag("compose-subject").performTextInput(subject)
+        compose.onNodeWithTag("compose-send").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().any { it.label.endsWith(subject) } }
+        }
+        markerFile().writeText(subject)
+        compose.captureScreen("67-queued-for-the-background-drain")
     }
 
     // ---- helpers ------------------------------------------------------

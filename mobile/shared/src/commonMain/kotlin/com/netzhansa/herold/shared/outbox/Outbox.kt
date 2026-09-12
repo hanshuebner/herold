@@ -110,13 +110,18 @@ class Outbox(
     /** Drops an entry outright, whatever its state; the outbox screen's discard. */
     suspend fun remove(id: Long) = store.deleteOutbox(id)
 
-    /** Puts a failed entry back in the queue for the next drain (REQ-AND-SYNC-25). */
+    /**
+     * Puts a failed entry back in the queue for the next drain
+     * (REQ-AND-SYNC-25). It goes out at once - a retry the user asked
+     * for waits for nothing - and keeps its attempt count, which is what
+     * says how often this entry has been tried.
+     */
     suspend fun retry(id: Long) {
         val entry = store.outboxEntry(id) ?: return
         store.updateOutboxState(
             id = entry.id,
             state = OutboxState.QUEUED,
-            attempts = 0,
+            attempts = entry.attempts,
             lastError = entry.lastError,
             permanent = false,
             nextAttemptAt = 0,
