@@ -30,6 +30,9 @@
 #           SMTP_ADDR=127.0.0.1:<port>
 #           SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
 #           ADMIN_TOTP_SECRET=<base32>  (admin TOTP secret for step-up elevation)
+#           OAUTH2_CLIENT_ID=<client_id>  (the native-client OAuth2 registration
+#               the Android app signs in with; redirect
+#               com.netzhansa.herold:/oauth2/callback)
 #           FAKESMTP_HTTP_ADDR=127.0.0.1:<port>  (only with HEROLD_DEV_EXTERNAL_SUBMISSION=1;
 #               the fake SMTP sink's GET /messages, GET /count, GET
 #               /messages/{n}/raw, GET /messages?raw=1 status API)
@@ -69,6 +72,11 @@ INSTANCES_DIR="${HEROLD_INSTANCES_DIR:-/tmp/herold-instances}"
 HEROLD_BIN="${HEROLD_BIN:-$REPO_ROOT/bin/herold}"
 SEED_PASSWORD="${HEROLD_SEED_PASSWORD:-testpass123...}"
 SEED_DOMAIN="${HEROLD_SEED_DOMAIN:-example.local}"
+# The native-client OAuth2 registration the Android app signs in with
+# (issue #199 registry, REQ-AND-AUTH-01/02). Same client_id and redirect
+# an operator registers on a production instance.
+OAUTH2_CLIENT_ID="${HEROLD_OAUTH2_CLIENT_ID:-herold-android}"
+OAUTH2_REDIRECT_URI="${HEROLD_OAUTH2_REDIRECT_URI:-com.netzhansa.herold:/oauth2/callback}"
 # Principals to provision: "<localpart>:<flag>" where flag is "admin"
 # or "user". The first listed admin is created via `bootstrap`; the
 # rest go through `principal create`.
@@ -221,6 +229,17 @@ tls = "none"
 # never load BACKEND_URL/ in the browser, so the placeholder is fine.
 [server.suite]
 enabled = true
+
+# The instance answers over plain HTTP. A browser treats
+# http://localhost as a secure origin and returns Secure cookies there,
+# but the Android emulator reaches the host as 10.0.2.2, which is not a
+# localhost origin: Chrome drops a Secure cookie set over that
+# connection, and the /oauth2/authorize login form's double-submit CSRF
+# cookie never comes back. Clearing the flag here keeps the
+# authorization-code flow drivable from the emulator; production serves
+# over TLS and keeps the secure-by-default policy.
+[server.ui]
+secure_cookies = false
 
 # Snooze wakes are swept every 5 s (the configuration floor) so a snooze
 # flow completes inside one verification session. HEROLD_DEV_SNOOZE_POLL
@@ -472,6 +491,33 @@ register_fake_oidc_provider() {
     [ "$status" = "201" ] \
         || { cat "$dir/logs/oidc-provider-register.json" >&2; die "register fakeoidc provider: HTTP $status"; }
     log "fakeoidc provider registered with auto_provision=true (see $dir/logs/oidc-provider-register.json)"
+}
+
+# register_oauth2_client DIR ADMIN_URL API_KEY — registers the native
+# Android client in the DB-backed OAuth2 client registry (issue #199) so
+# the app's authorization-code + PKCE sign-in works against this
+# instance. Public client: no secret, PKCE is what secures it (RFC
+# 8252). The redirect URI is the app's private-use scheme, matched
+# byte-for-byte by the server, and is the same string an operator
+# registers on production
+# (docs/design/android/notes/server-contract.md).
+register_oauth2_client() {
+    local dir="$1" admin_url="$2" api_key="$3"
+    log "registering OAuth2 native client $OAUTH2_CLIENT_ID"
+    local body
+    body=$(jq -n \
+        --arg cid "$OAUTH2_CLIENT_ID" \
+        --arg redirect "$OAUTH2_REDIRECT_URI" \
+        '{client_id: $cid, name: "herold Android", redirect_uris: [$redirect]}')
+    local status
+    status=$(curl -sS -o "$dir/logs/oauth2-client-register.json" -w '%{http_code}' \
+        -X POST "$admin_url/api/v1/oauth2/clients" \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        -d "$body") \
+        || die "register oauth2 client: curl failed"
+    [ "$status" = "201" ] \
+        || { cat "$dir/logs/oauth2-client-register.json" >&2; die "register oauth2 client: HTTP $status"; }
 }
 
 # Seed the domain + non-admin principals via the admin REST surface.
@@ -748,6 +794,10 @@ EOF
     # working-external identity's submission row points at the live fake sink.
     seed_instance "$dir" "$backend_url" "$api_key" "${FAKESMTP_SMTP_ADDR:-}"
 
+    # Register the Android client in the OAuth2 client registry: the
+    # registry is DB state, only writable through the running server.
+    register_oauth2_client "$dir" "$admin_url" "$api_key"
+
     # Register the OIDC first-login auto-provisioning fake IdP now that
     # the admin REST API is reachable (oidc_providers is DB state, only
     # writable through the running server).
@@ -810,6 +860,7 @@ IMAP_ADDR=$imap_addr
 SMTP_ADDR=$smtp_addr
 SMTP_SUBMISSION_ADDR=$smtp_sub_addr
 ADMIN_TOTP_SECRET=$admin_totp_secret
+OAUTH2_CLIENT_ID=$OAUTH2_CLIENT_ID
 STARTED_AT=$(date +%s)
 EOF
 
@@ -825,6 +876,7 @@ IMAP_ADDR=$imap_addr
 SMTP_ADDR=$smtp_addr
 SMTP_SUBMISSION_ADDR=$smtp_sub_addr
 ADMIN_TOTP_SECRET=$admin_totp_secret
+OAUTH2_CLIENT_ID=$OAUTH2_CLIENT_ID
 EOF
     # Only present when HEROLD_DEV_EXTERNAL_SUBMISSION=1 started the fake
     # SMTP sink: its HTTP status API (GET /messages, GET /count, GET
