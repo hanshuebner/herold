@@ -35,10 +35,13 @@ presentation-level and not yet built.
 | `03-labels` — label chips and apply/remove picker | presentation | done (milestone 1a) | #327 |
 | `03-labels` — sidebar label tree UI | presentation | todo; the navigation drawer carries the Inbox and Snoozed destinations (#353), the label tree is still to come | — |
 | `04-filters` — Sieve filter model | protocol | n/a | — |
-| `04-filters` — filter editor UI | presentation | todo | — |
+| `04-filters` — filter editor UI | presentation | done (milestone 3a, #361); the Filters drawer destination lists the account's `ManagedRule` set in execution order with enable, reorder and delete, over a structured editor; "Create filter from this message" seeds the sender and the reply-stripped subject (`REQ-FLT-32`). The hand-written Sieve script is read-only on the phone with a pointer to the suite | #361 |
+| `04-filters` — mute thread and blocked senders (`Thread/mute`, `BlockedSender/set`) | presentation | done (milestone 3a, #361); both live in the thread overflow and go out through the outbox like every other write | #361 |
+| `04-filters` — test a filter against existing mail (`REQ-FLT-21`) | presentation | todo; the suite's "apply to matching conversations" count has no phone counterpart yet | — |
 | `05-categorisation` — `$category-*` keywords | protocol | n/a | — |
 | `05-categorisation` — pinned tabs and bundled rows | presentation | done (milestone 1a) | #327 |
 | `05-categorisation` — category editing and disposition settings | presentation | todo | — |
+| `05-categorisation` — LLM transparency (suite G7, `REQ-FILT-65..68`) | presentation | done (milestone 3a, #361); "How herold sorts your mail" in Settings renders `LLMTransparency/get` verbatim, and "Why is this here?" in the thread overflow shows `Email/llmInspect` for the open message | #361 |
 | `06-snooze` — snooze data model | protocol | n/a | — |
 | `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
 | `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | done (#350); the Material date picker then time picker, opening on the next full hour | #350 |
@@ -49,7 +52,8 @@ presentation-level and not yet built.
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |
 | `07-search` — in-thread find (`REQ-SRC-50..53`) | presentation | todo | — |
 | `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 2a); every action writes the store and queues a durable outbox entry, so it holds with no connectivity (suite `REQ-OPT-33` drops its queue on reload; the phone's survives process death) | #351 |
-| `14-unsubscribe` — List-Unsubscribe handling | presentation | todo | — |
+| `14-unsubscribe` — List-Unsubscribe handling | presentation | done (milestone 3a, #361); the thread header carries the button when a mechanism is advertised, one-click POSTs the RFC 8058 body with no cookie, referrer or bearer token, a plain HTTPS URL goes to the browser, a `mailto:` opens a prefilled compose, and a cleartext `http:` URL surfaces the suite's refusal wording | #361 |
+| `14-unsubscribe` — the "previously unsubscribed" badge and the unsubscribed-from set (`REQ-UNS-50..52`) | presentation | todo; the suite keeps the set in `localStorage` per account, the phone has no store for it yet | — |
 | `17-attachments` — inline-vs-attach (suite G8), upload progress, `maxSizeUpload` (`REQ-ATT-01..06`) | presentation | done (milestone 1c) | #329 |
 | `17-attachments` — attachment chips with image thumbnails in the reading pane (`REQ-ATT-20/21`) | presentation | done (#341); the mobile client decodes at display size and adds the Gmail-style size choice on attach (`REQ-AND-SYS-33/34`), which the suite has no counterpart for | #341 |
 | `17-attachments` — drag-and-drop targets, disposition flip after adding (`REQ-ATT-07`) | presentation | todo (no drag surface on phone; the flip needs a chip affordance) | — |
@@ -65,7 +69,7 @@ presentation-level and not yet built.
 | `25-push-notifications` — transport selection (FCM or UnifiedPush) | presentation | done (milestone 2c); Automatic prefers FCM where Play Services carries it and falls back to a UnifiedPush distributor, and settings pins either. The suite has one transport (Web Push) and no such choice. | #229 |
 | `02-mail-basics` / `REQ-MAIL-44` — sender avatar (hosted principal's picture, initials fallback) | presentation | done in notifications (#348); the message list and reading pane still show no avatar | #348 |
 | G7 — LLM transparency contract | protocol | n/a | — |
-| G7 — per-message "the LLM was asked ..." inspect view | presentation | todo | — |
+| G7 — per-message "the LLM was asked ..." inspect view | presentation | done (milestone 3a, #361); "Why is this here?" in the thread overflow over `Email/llmInspect`, with the prompt as applied to the message | #361 |
 
 ## Sibling apps (Phase 4+)
 

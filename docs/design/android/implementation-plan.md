@@ -180,8 +180,27 @@ Milestone 1 closes with one real-world session on the maintainer's phone.
 
 ### Milestone 3 — organise and system integration
 
-Filter editor (Sieve), LLM transparency inspect view (suite G7), List-
-Unsubscribe, share intents, widgets, tiles, deep links
+**3a — filters, LLM transparency, List-Unsubscribe (#361).** `ManagedRule`
+joins the synced types with its own state string, and rule writes go out
+through the durable outbox as their own entry kind; on success the drain
+reads the account's rule set back, which is what gives a create its
+server-assigned id and lets the server keep ownership of the shapes it
+composes for `Thread/mute` and `BlockedSender/set`. Filters is a drawer
+destination over that rule set, with a structured editor over the server's
+closed condition and action vocabularies and the hand-written Sieve script
+shown read-only. The thread overflow carries mute, block, "Create filter
+from this message" and "Why is this here?"; Settings carries "How herold
+sorts your mail". The Unsubscribe affordance follows the suite's mechanism
+priority, and the one-click POST goes out on the plain HTTP client so it
+carries no bearer token and no cookie. Acceptance: on the emulator against
+`scripts/dev-instance.sh`, a filter created on the phone read back through
+`ManagedRule/get` and filing a delivered message under its label and out of
+the inbox, a reorder and a disable round-tripping, a mute writing the
+server's thread-id rule, the transparency page rendering the instance's
+prompts, and the one-click POST recorded by an in-process TLS sink with no
+`Cookie`, `Referer` or `Authorization` header.
+
+**3b — system integration.** Share intents, widgets, tiles, deep links
 (`requirements/04-system-integration.md`).
 
 ### Milestone 4+ — sibling apps
