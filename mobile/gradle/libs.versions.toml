@@ -27,6 +27,10 @@ androidx-fragment = "1.8.9"
 androidx-datastore = "1.1.2"
 androidx-test-runner = "1.6.2"
 androidx-work = "2.10.0"
+# The home-screen widget's toolkit (REQ-AND-SYS-20): Compose-style
+# declarations compiled to RemoteViews, so the widget renders from the
+# local store with the app's own code.
+glance = "1.1.1"
 firebase-bom = "33.7.0"
 # The UnifiedPush connector's v2 API hands the app the distributor's bytes
 # unchanged, so the RFC 8291 keys and the envelope decryption stay in the
@@ -55,6 +59,8 @@ androidx-browser = { module = "androidx.browser:browser", version.ref = "android
 androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "androidx-biometric" }
 androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidx-fragment" }
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "androidx-work" }
+androidx-glance-appwidget = { module = "androidx.glance:glance-appwidget", version.ref = "glance" }
+androidx-glance-material3 = { module = "androidx.glance:glance-material3", version.ref = "glance" }
 androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "androidx-work" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
 firebase-messaging = { module = "com.google.firebase:firebase-messaging" }

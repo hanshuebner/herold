@@ -106,6 +106,8 @@ fun SettingsScreen(
 
             PushTransportSection()
 
+            TileActionSection()
+
             Text(
                 text = "Unlock",
                 style = MaterialTheme.typography.titleSmall,
@@ -289,4 +291,42 @@ private fun transportSummary(resolved: String?, distributorLabel: String?): Stri
         ?.let { "Pushes arrive through $it, your UnifiedPush distributor." }
         ?: "Pushes arrive through your UnifiedPush distributor."
     else -> "No transport on this device: install a UnifiedPush distributor to receive push."
+}
+
+/**
+ * What the Quick Settings tile does when it is tapped: open the composer,
+ * or quieten mail notifications for an hour (REQ-AND-SYS-21).
+ */
+@Composable
+private fun TileActionSection() {
+    val context = LocalContext.current
+    var action by remember { mutableStateOf(TileActionPreference.current(context)) }
+
+    Text(
+        text = "Quick Settings tile",
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+    Text(
+        text = "What the tile in the notification shade does.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp),
+    )
+    TileAction.entries.forEach { option ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    action = option
+                    TileActionPreference.remember(context, option)
+                }
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .testTag("tile-action-${option.name}"),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = action == option, onClick = null)
+            Text(text = option.label, modifier = Modifier.padding(start = 12.dp))
+        }
+    }
 }

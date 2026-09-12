@@ -12,6 +12,8 @@ import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.LocusIdCompat
+import com.netzhansa.herold.android.home.ConversationShortcuts
 import com.netzhansa.herold.android.MainActivity
 import com.netzhansa.herold.android.R
 import com.netzhansa.herold.shared.push.MailNotification
@@ -48,6 +50,10 @@ object MailNotifier {
     fun post(context: Context, notification: MailNotification, presentation: MailPresentation = MailPresentation()) {
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
+        // The tile's quiet period silences the shade without touching the
+        // subscription: the push still reconciles, the mail is simply
+        // waiting when the mute ends (REQ-AND-SYS-21).
+        if (NotificationMute.isMuted(context)) return
         manager.notify(notification.tag, CHILD_ID, build(context, notification, presentation))
         manager.notify(
             notification.groupKey,
@@ -84,6 +90,21 @@ object MailNotifier {
         notification: MailNotification,
         presentation: MailPresentation,
     ): android.app.Notification {
+        // The conversation the mail belongs to is published as a
+        // long-lived shortcut and named by the notification, which is what
+        // ties the two together in the shade and puts the conversation in
+        // the launcher's long-press menu (REQ-AND-PUSH-22, REQ-AND-SYS-22).
+        val shortcutId = runCatching {
+            ConversationShortcuts.publishFor(
+                context = context,
+                accountId = notification.accountId,
+                threadId = notification.threadId,
+                senderName = notification.senderName,
+                senderAddress = notification.senderAddress,
+                subject = notification.body,
+            )
+        }.getOrNull()
+
         val builder = NotificationCompat.Builder(context, PushChannels.MAIL)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(ContextCompat.getColor(context, R.color.ic_launcher_background))
@@ -98,6 +119,9 @@ object MailNotifier {
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setAutoCancel(true)
             .setContentIntent(openThreadIntent(context, notification))
+        if (shortcutId != null) {
+            builder.setShortcutId(shortcutId).setLocusId(LocusIdCompat(shortcutId))
+        }
 
         if (presentation.attachments.isEmpty()) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(notification.expandedBody))

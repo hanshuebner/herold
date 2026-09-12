@@ -37,6 +37,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- The static Compose shortcut of the launcher's long-press
+                 menu (REQ-AND-SYS-22). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
             <!-- Share target: text and files open compose with the text
                  in the body and the files attached (REQ-AND-SYS-01). -->
             <intent-filter android:label="@string/share_target_label">
@@ -131,6 +137,33 @@
         <receiver
             android:name=".push.NotificationActionReceiver"
             android:exported="false" />
+
+        <!-- The home-screen widget, rendered from the local store
+             (REQ-AND-SYS-20). -->
+        <receiver
+            android:name=".home.InboxWidgetReceiver"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/inbox_widget_info" />
+        </receiver>
+
+        <!-- The Quick Settings tile, carrying the action the user chose
+             (REQ-AND-SYS-21). -->
+        <service
+            android:name=".home.HeroldTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
     </application>
 

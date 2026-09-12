@@ -298,6 +298,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.work.runtime.ktx)
+    // The home-screen widget (REQ-AND-SYS-20).
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.glance.material3)
     // The system browser the OAuth2 authorization-code flow runs in, and
     // the unlock prompt that gates releasing the token (REQ-AND-AUTH-01/11).
     implementation(libs.androidx.browser)

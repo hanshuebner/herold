@@ -1,8 +1,12 @@
 package com.netzhansa.herold.android
 
 import android.app.Application
+import com.netzhansa.herold.android.home.HomeSurfaces
 import com.netzhansa.herold.android.push.FirebaseSetup
 import com.netzhansa.herold.android.push.NotificationChannels
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Owns the process-wide object graph. The local store and the Keystore-backed
@@ -22,5 +26,9 @@ class HeroldApplication : Application() {
         // than by the google-services plugin, so a build without
         // credentials runs with push switched off.
         FirebaseSetup.initialise(this)
+        // The widget and the launcher's conversation shortcuts follow the
+        // local store, so a push, a sync or an action the user took is
+        // reflected on the home screen (REQ-AND-SYS-20/22).
+        HomeSurfaces(this, container, CoroutineScope(SupervisorJob() + Dispatchers.Default)).start()
     }
 }

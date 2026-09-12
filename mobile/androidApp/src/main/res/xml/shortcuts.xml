@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher's long-press menu (REQ-AND-SYS-22). Compose is static;
+     the recent conversations are pushed as dynamic conversation shortcuts
+     by ConversationShortcuts, shared with the notifications. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="compose"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_compose"
+        android:shortcutShortLabel="@string/shortcut_compose_short"
+        android:shortcutLongLabel="@string/shortcut_compose_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.netzhansa.herold.android"
+            android:targetClass="com.netzhansa.herold.android.MainActivity"
+            android:data="herold://compose" />
+    </shortcut>
+</shortcuts>
