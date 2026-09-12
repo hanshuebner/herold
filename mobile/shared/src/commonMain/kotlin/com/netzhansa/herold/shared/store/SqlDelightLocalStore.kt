@@ -386,6 +386,7 @@ class SqlDelightLocalStore(
                 deviceClientId = it.deviceClientId,
                 tokenFingerprint = it.tokenFingerprint,
                 registeredAt = it.registeredAt,
+                transport = it.transport,
             )
         }
     }
@@ -399,6 +400,7 @@ class SqlDelightLocalStore(
                 deviceClientId = registration.deviceClientId,
                 tokenFingerprint = registration.tokenFingerprint,
                 registeredAt = registration.registeredAt,
+                transport = registration.transport,
             )
         }
     }

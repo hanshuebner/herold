@@ -206,7 +206,7 @@ class JmapClient(
      * the authenticated principal and covers every account of the session.
      */
     override suspend fun pushSubscriptionSet(
-        create: FcmSubscriptionCreate?,
+        create: PushSubscriptionCreate?,
         update: Map<String, JsonObject>,
         destroy: List<String>,
     ): PushSetOutcome {

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.netzhansa.herold.shared.push.PushKeyStore
+import com.netzhansa.herold.shared.push.WebPushKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -24,7 +26,7 @@ import kotlinx.coroutines.withContext
 class KeystoreTokenStore(
     context: Context,
     fileName: String = "herold-credentials",
-) : TokenStore, PendingAuthorizationStore {
+) : TokenStore, PendingAuthorizationStore, PushKeyStore {
 
     private val appContext = context.applicationContext
 
@@ -147,6 +149,37 @@ class KeystoreTokenStore(
         Unit
     }
 
+    /**
+     * The push subscription's RFC 8291 key pair and auth secret
+     * (REQ-AND-PUSH-04). They decrypt what herold pushes, so they sit
+     * beside the bearer token rather than in the local database.
+     */
+    override suspend fun pushKeys(): WebPushKeys? = withContext(Dispatchers.IO) {
+        WebPushKeys.fromStored(
+            p256dh = preferences.getString(KEY_PUSH_PUBLIC, null),
+            privateKey = preferences.getString(KEY_PUSH_PRIVATE, null),
+            auth = preferences.getString(KEY_PUSH_AUTH, null),
+        )
+    }
+
+    override suspend fun storePushKeys(keys: WebPushKeys) = withContext(Dispatchers.IO) {
+        preferences.edit()
+            .putString(KEY_PUSH_PUBLIC, keys.p256dh)
+            .putString(KEY_PUSH_PRIVATE, keys.storedPrivateKey)
+            .putString(KEY_PUSH_AUTH, keys.auth)
+            .commit()
+        Unit
+    }
+
+    override suspend fun clearPushKeys() = withContext(Dispatchers.IO) {
+        preferences.edit()
+            .remove(KEY_PUSH_PUBLIC)
+            .remove(KEY_PUSH_PRIVATE)
+            .remove(KEY_PUSH_AUTH)
+            .commit()
+        Unit
+    }
+
     private companion object {
         const val KEY_TOKEN = "bearer_token"
         const val KEY_REFRESH_TOKEN = "refresh_token"
@@ -158,5 +191,8 @@ class KeystoreTokenStore(
         const val KEY_PENDING_REDIRECT = "pending_redirect_uri"
         const val KEY_GRANT_ID = "grant_family_id"
         const val KEY_PRINCIPAL = "principal_email"
+        const val KEY_PUSH_PUBLIC = "push_p256dh"
+        const val KEY_PUSH_PRIVATE = "push_private_key"
+        const val KEY_PUSH_AUTH = "push_auth_secret"
     }
 }

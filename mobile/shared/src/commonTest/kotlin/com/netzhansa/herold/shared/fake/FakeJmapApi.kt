@@ -4,7 +4,7 @@ import com.netzhansa.herold.shared.jmap.ChangesOutcome
 import com.netzhansa.herold.shared.jmap.EmailWriteOutcome
 import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.DownloadedBlob
-import com.netzhansa.herold.shared.jmap.FcmSubscriptionCreate
+import com.netzhansa.herold.shared.jmap.PushSubscriptionCreate
 import com.netzhansa.herold.shared.jmap.GetResult
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
@@ -109,7 +109,7 @@ class FakeJmapApi(
     }
 
     /** Every `PushSubscription/set` the client made, in order. */
-    val pushSetCalls = mutableListOf<Pair<FcmSubscriptionCreate?, List<String>>>()
+    val pushSetCalls = mutableListOf<Pair<PushSubscriptionCreate?, List<String>>>()
 
     /** Every `PushSubscription/set { update }` patch, by subscription id. */
     val pushUpdateCalls = mutableListOf<Map<String, JsonObject>>()
@@ -127,7 +127,7 @@ class FakeJmapApi(
     var pushFailure: Throwable? = null
 
     override suspend fun pushSubscriptionSet(
-        create: FcmSubscriptionCreate?,
+        create: PushSubscriptionCreate?,
         update: Map<String, JsonObject>,
         destroy: List<String>,
     ): PushSetOutcome {

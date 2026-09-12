@@ -114,7 +114,7 @@ interface JmapApi {
      * drops the stale one in a single round trip (REQ-AND-PUSH-02).
      */
     suspend fun pushSubscriptionSet(
-        create: FcmSubscriptionCreate? = null,
+        create: PushSubscriptionCreate? = null,
         update: Map<String, JsonObject> = emptyMap(),
         destroy: List<String> = emptyList(),
     ): PushSetOutcome

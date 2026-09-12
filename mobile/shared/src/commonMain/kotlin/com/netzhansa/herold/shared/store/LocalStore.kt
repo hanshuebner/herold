@@ -23,16 +23,19 @@ data class CachedBlob(
 }
 
 /**
- * The FCM push subscription this install holds with herold
- * (REQ-AND-PUSH-01). [tokenFingerprint] is a stable hash of the
- * registration token, so a rotation is detected without the token being
- * written anywhere.
+ * The push subscription this install holds with herold
+ * (REQ-AND-PUSH-01/04). [tokenFingerprint] is a stable hash of what
+ * identifies the registration - the FCM token or the distributor endpoint
+ * - so a rotation is detected without either being written anywhere.
+ * [transport] is the wire `kind` it was registered under, so switching
+ * transports registers anew even when the identity happens to match.
  */
 data class PushRegistration(
     val subscriptionId: String,
     val deviceClientId: String,
     val tokenFingerprint: String,
     val registeredAt: Long,
+    val transport: String = "fcm",
 )
 
 /**

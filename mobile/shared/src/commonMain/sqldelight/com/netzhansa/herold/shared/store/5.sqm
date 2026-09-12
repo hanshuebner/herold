@@ -1,0 +1,5 @@
+-- Schema 5 -> 6: the push registration records its transport (issue #229,
+-- REQ-AND-PUSH-04). Additive: an install registered over FCM keeps its
+-- row and reads back as the FCM transport.
+
+ALTER TABLE push_registration ADD COLUMN transport TEXT NOT NULL DEFAULT 'fcm';
