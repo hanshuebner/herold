@@ -138,10 +138,20 @@ Milestone 1 closes with one real-world session on the maintainer's phone.
 
 ### Milestone 2 — offline, second push transport, hardened auth
 
-Durable outbox for offline sends and actions (`requirements/02-offline-and-sync.md`
-REQ-AND-SYNC-20..25); UnifiedPush client for the de-Googled device (#229);
-Custom Tab OAuth2 code + PKCE sign-in with refresh tokens
-(REQ-AND-AUTH-01/02); biometric unlock; active-sessions surface.
+- **2a — durable outbox (#351, #354).** On branch `android-m2a`: a SQLDelight
+  `outbox` table holding actions, drafts and sends; the sync engine as the
+  sole drainer, in order per account, with backoff on transient failures and
+  revert-and-retain on a refusal; attachments spooled into app-private
+  storage; a WorkManager drain under a network constraint; the outbox screen
+  and the connectivity chip; the undo window after Send
+  (`requirements/02-offline-and-sync.md` REQ-AND-SYNC-20..26, 30, 31).
+  Acceptance: three things queued with the radios off, found intact after
+  the process is killed, drained on reconnect and confirmed through an
+  independent JMAP client; a refused send retained with its reason; an
+  undone send that never reaches the server.
+- **2b — the rest.** UnifiedPush client for the de-Googled device (#229);
+  Custom Tab OAuth2 code + PKCE sign-in with refresh tokens
+  (REQ-AND-AUTH-01/02); biometric unlock; active-sessions surface.
 
 ### Milestone 3 — organise and system integration
 

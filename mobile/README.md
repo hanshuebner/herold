@@ -37,6 +37,26 @@ Seed what the suite expects beyond its own deliveries:
   primary account, with the sub-accounts capability in `using`. The seed
   leaves it separable, not separated.
 
+`OutboxAcceptanceTest` runs in phases around the radios and a kill of the
+app process, one `am instrument` invocation each:
+
+    #60 online: seeds the two conversations the offline phase acts on
+    adb shell svc data disable && adb shell svc wifi disable
+    #61 offline: archive, star, send with an attachment - three entries
+    adb shell am kill com.netzhansa.herold.android
+    #62 the queue is still there in a fresh process
+    adb shell svc data enable && adb shell svc wifi enable
+    #63 the drain, asserted through an independent JMAP client
+    #64 a send herold refuses, retained with its reason and retried
+    #65 queues a send to leave with the app closed: kill the app (`am
+        kill`, not `am force-stop` - a force-stopped package gets no
+        background work until the user opens it again), turn the radios
+        back on, and read the recipient's account to see it arrive
+
+`UndoSendAcceptanceTest` runs online and needs no phases.
+`t64` needs the foreign-identity seed, so start the instance with
+`HEROLD_DEV_EXTERNAL_SUBMISSION=1`.
+
 Then run the online phase, the offline phase, and collect the screenshots:
 
     adb shell am instrument -w -r \

@@ -60,6 +60,27 @@ Optimistic write path (Suite architecture § Optimistic writes, extended):
 5. On permanent rejection: revert to the pre-change snapshot; mark the entry
    `failed`; notify (Suite `REQ-OPT-02`).
 
+What counts as permanent is the server having answered: a `notUpdated` /
+`notCreated` entry, or a 4xx other than 408 and 429. Everything else - no
+route to the host, a 5xx, a timeout - is transient: the entry stays queued
+with an exponential backoff (5 s doubling to 5 min, six attempts) and the
+entries behind it on that account wait, so the queue keeps its order. A
+failed entry is skipped rather than blocking, and a manual retry submits it
+at once.
+
+A composed message is one entry with three steps - upload each attachment,
+`Email/set` the draft, `EmailSubmission/set` - and the entry's payload is
+rewritten as each step takes, so a pass interrupted between two of them
+resumes at the one that did not finish rather than uploading or creating
+twice. Attachment bytes live in an app-private spool directory, outside the
+blob cache's budget, because the picker's grant on a chosen URI is long gone
+by the time a queue built offline drains.
+
+A send's entry carries a not-before time: the undo window
+(`../requirements/02-offline-and-sync.md` REQ-AND-SYNC-26). The drain skips
+an entry whose time has not come and carries on with the ones behind it,
+which is what distinguishes a hold from a backoff.
+
 Cross-update precedence: if reconciliation delivers a server state for an entity
 that is ahead of a pending optimistic write on that entity, the server truth
 wins and the optimistic version is discarded (Suite architecture § Optimistic

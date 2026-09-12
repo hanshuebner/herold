@@ -28,7 +28,7 @@ presentation-level and not yet built.
 | `02-mail-basics` — reading-pane HTML render + inline images | presentation | done (milestone 1a) | #327 |
 | `02-mail-basics` — sub-account combined inbox + scope switcher (`REQ-MAIL-SUB-01..09`) | presentation | done (milestone 1a) | #327 |
 | `02-mail-basics` — emoji reactions (`Email.reactions`) | protocol | n/a | — |
-| `02-mail-basics` — undo-send window (`REQ-MAIL-14`, `REQ-SET-06`) | presentation | todo (the client sends with `sendAt: null`) | — |
+| `02-mail-basics` — undo-send window (`REQ-MAIL-14`, `REQ-SET-06`) | presentation | done (milestone 2a, #354); the phone holds the message in its own outbox for the window instead of the suite's server-side `sendAt`, so an undo costs no round trip and works offline | #354 |
 | `02-mail-basics` — signature on compose (`REQ-MAIL-100/101`) | presentation | todo | — |
 | `02-mail-basics` — Bcc field and the From-picker verification gating (`REQ-IDENT-60`) | presentation | todo (the model carries Bcc; no field yet) | — |
 | `03-labels` — label CRUD, apply/remove | protocol | n/a | — |
@@ -48,7 +48,7 @@ presentation-level and not yet built.
 | `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c); a result outside the synced set is fetched on open and the search screen is restored on back (#339, #340) | #329 |
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |
 | `07-search` — in-thread find (`REQ-SRC-50..53`) | presentation | todo | — |
-| `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 1a, online only); the archive undo is offered with the local write rather than after the round trip (#338) | #327 |
+| `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 2a); every action writes the store and queues a durable outbox entry, so it holds with no connectivity (suite `REQ-OPT-33` drops its queue on reload; the phone's survives process death) | #351 |
 | `14-unsubscribe` — List-Unsubscribe handling | presentation | todo | — |
 | `17-attachments` — inline-vs-attach (suite G8), upload progress, `maxSizeUpload` (`REQ-ATT-01..06`) | presentation | done (milestone 1c) | #329 |
 | `17-attachments` — attachment chips with image thumbnails in the reading pane (`REQ-ATT-20/21`) | presentation | done (#341); the mobile client decodes at display size and adds the Gmail-style size choice on attach (`REQ-AND-SYS-33/34`), which the suite has no counterpart for | #341 |
@@ -56,7 +56,7 @@ presentation-level and not yet built.
 | `17-attachments` — share-link offload (`REQ-ATT-60..73`) | presentation | todo | — |
 | `19-drafts` — draft model | protocol | n/a | — |
 | `19-drafts` — compose UI: new / reply / reply-all / forward, rich text, From picker, drafts (`REQ-MAIL-05/12/12a/30/33`, `REQ-DFT-02`) | presentation | done (milestone 1c) | #329 |
-| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | todo | — |
+| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | todo; a draft written with no connection is queued and reaches the server's Drafts mailbox on reconnect (#351), but there is no local drafts list yet | — |
 | `19-drafts` — multi-device conflict banner (`REQ-DFT-30..33`) | presentation | todo | — |
 | `20-settings` — settings model | protocol | n/a | — |
 | `20-settings` — settings UI | presentation | todo | — |
@@ -89,7 +89,8 @@ matrix is a complete picture of mobile scope.
 | Bearer-token auth (device-token grant, Keystore storage) | REQ-AND-AUTH-03/04/10 | done (milestone 1a) |
 | OAuth2 Custom Tab sign-in + biometric unlock | REQ-AND-AUTH-01/02/11 | deferred (milestone 2) |
 | Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | done (milestone 1a); offline search under a "cached results only" banner done (milestone 1c) |
-| Durable offline outbox | REQ-AND-SYNC-20..25 | deferred (milestone 2) |
+| Durable offline outbox | REQ-AND-SYNC-20..25 | done (milestone 2a, #351); actions, drafts and sends queue in SQLite, drain in order on reconnect and through a WorkManager job with the app closed |
+| Undo-send window held on the device | REQ-AND-SYNC-26 | done (milestone 2a, #354) |
 | FCM registration, channels, thread notifications, Archive / Mark Read, tap-through | REQ-AND-PUSH-01..03, 10..13, 20 | done (milestone 1b) |
 | Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | the deep-link Reply action is done (#348): it opens the composer on the message with the quote prepared. The shade's inline `RemoteInput` reply and conversation shortcuts / Bubbles stay milestone 3 |
 | System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
@@ -110,7 +111,7 @@ matrix is a complete picture of mobile scope.
 | Push subscription registration | `web/apps/suite/src/lib/push/push-subscription.svelte.ts` sends `deviceClientId`, the endpoint, and `types: ["Email", "Message", "Conversation"]`; it sends no `notificationRules` and no `quietHours`, so herold's REQ-PUSH-81 defaults apply. | `PushRegistrar` sends the same `types` with `kind: "fcm"` and an `fcmToken`. Rules and quiet hours are typed and optional; a settings surface on either client fills them in and the other follows. |
 | Reply recipients, subject markers, quoting | `web/apps/suite/src/lib/compose/compose.svelte.ts` derives To from the parent (its recipients for an own-sent message), Cc from To-then-Cc minus the user's own addresses, collapses `Re:`/`Fwd:` marker chains over the same localized vocabulary, and lays the quote out as two empty paragraphs, an attribution line and a `<blockquote>`. | `ReplyBuilder` in `mobile/shared`, same rules and same vocabulary, unit-tested against the suite's cases. A divergence in either must move both. |
 | Search filter shape | `applyTrashJunkExclusion` splices `inMailboxOtherThan` into a flat `FilterCondition` so the server's fast-query gate recognises it (`REQ-SRC-06`). | `MailSearch.filter` builds the same flat object with `text` and `inMailboxOtherThan` as sibling keys. |
-| Draft and submission shape | `Email/set` writes the draft into Drafts with `$draft`, then `EmailSubmission/set` with `onSuccessUpdateEmail` clears `$draft` and moves it to Sent. | `Composer.send` issues the same two-call batch; the mobile client sends with `sendAt: null` because it has no undo-send window yet. |
+| Draft and submission shape | `Email/set` writes the draft into Drafts with `$draft`, then `EmailSubmission/set` with `onSuccessUpdateEmail` clears `$draft` and moves it to Sent. | The outbox drain issues the same two calls, split so an interrupted send resumes at the step that failed, and sends with `sendAt: null`: the undo window is the entry's not-before time on the device, which the suite realises server-side with `sendAt` (`REQ-OPT-11`). |
 | Notification content | The service worker renders sender as title, subject as body, thread as the tag, with Archive / Mark Read / Reply. | The same payload fields: sender as title, subject as the body line, the server's 80-byte preview on the expanded line, thread as the tag, Archive / Mark read / Reply as actions. The phone adds what a shade shows and a browser notification cannot: the sender's avatar as the large icon, chips for the message's attachments with a thumbnail for an image part, and the account's address as the bundle's header (#348). |
 | Sender avatar | `avatar-resolver.svelte.ts` resolves own identity, then the hosted principal's `avatarBlobId` through the blob download URL, then Face / Gravatar, then a letter on the one interactive colour. | The notification's large icon resolves the hosted principal's `avatarBlobId` through the same `Principal/query` + `Principal/get` pair, downloaded with the bearer token and kept in the blob cache. Face and Gravatar are not used on the phone. The fallback initials sit on a colour derived from the address, because a shade full of identical circles distinguishes nothing; the suite's single interactive colour works there because the name is beside it. |
 | Sender display name | The service worker prints `payload.from` as it arrives. | `SenderLine` splits the header form and decodes RFC 2047 encoded words, so a payload from a server without the decoded-sender change (#347) still renders a name rather than `=?UTF-8?B?...?=`. |
