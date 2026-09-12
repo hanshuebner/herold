@@ -1,0 +1,4 @@
+-- Schema 3 -> 4: which identity an account sends from by default
+-- (issue #329, suite REQ-MAIL-12). Additive.
+
+ALTER TABLE identity ADD COLUMN isDefault INTEGER NOT NULL DEFAULT 0;

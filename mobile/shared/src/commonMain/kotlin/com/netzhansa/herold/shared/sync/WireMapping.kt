@@ -41,6 +41,7 @@ internal fun WireIdentity.toDomain(accountId: String) = Identity(
     name = name,
     email = email,
     mayDelete = mayDelete,
+    isDefault = isDefault,
 )
 
 internal fun WireAddress.toDomain() = MailAddress(name?.takeIf { it.isNotBlank() }, email)

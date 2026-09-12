@@ -122,6 +122,8 @@ data class Identity(
     val name: String = "",
     val email: String = "",
     val mayDelete: Boolean = false,
+    /** The account's default sending address; compose starts on it. */
+    val isDefault: Boolean = false,
 )
 
 /** IMAP/JMAP keywords the client reads and writes. */

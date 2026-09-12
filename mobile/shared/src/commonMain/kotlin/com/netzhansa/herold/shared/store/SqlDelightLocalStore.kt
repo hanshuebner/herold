@@ -247,6 +247,7 @@ class SqlDelightLocalStore(
                     name = it.name,
                     email = it.email,
                     mayDelete = if (it.mayDelete) 1L else 0L,
+                    isDefault = if (it.isDefault) 1L else 0L,
                 )
             }
         }
@@ -433,6 +434,7 @@ private fun Identity.toDomain() = DomainIdentity(
     name = name,
     email = email,
     mayDelete = mayDelete != 0L,
+    isDefault = isDefault != 0L,
 )
 
 private fun String.splitTokens(): Set<String> =

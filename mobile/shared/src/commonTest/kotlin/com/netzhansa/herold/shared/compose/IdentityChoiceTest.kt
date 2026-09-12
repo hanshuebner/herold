@@ -16,17 +16,25 @@ class IdentityChoiceTest {
     )
 
     private val identities = listOf(
-        Identity("a5", "default", "Vorsitz", "vorsitz@classic-computing.example"),
-        Identity("a2", "default", "Alice", "alice@example.local"),
+        Identity("a5", "default", "Vorsitz", "vorsitz@classic-computing.example", isDefault = true),
+        Identity("a2", "default", "Alice", "alice@example.local", isDefault = true),
         Identity("a2", "800001", "Alice elsewhere", "alice@foreign.example"),
+        Identity("a2", "800003", "Alice broken", "alice-broken@foreign.example"),
     )
 
     @Test
     fun thePickerListsEveryIdentityOfEveryAccount() {
         val options = IdentityChoice.options(identities, accounts, accountInScope = null)
-        assertEquals(3, options.size)
+        assertEquals(4, options.size)
+        // The account's default address heads its group, then the rest
+        // alphabetically; the sub-account's identities follow.
         assertEquals(
-            listOf("alice@example.local", "alice@foreign.example", "vorsitz@classic-computing.example"),
+            listOf(
+                "alice@example.local",
+                "alice-broken@foreign.example",
+                "alice@foreign.example",
+                "vorsitz@classic-computing.example",
+            ),
             options.map { it.identity.email },
         )
         assertEquals("Classic Computing", options.last().accountName)

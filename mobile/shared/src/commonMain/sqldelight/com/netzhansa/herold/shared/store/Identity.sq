@@ -7,14 +7,18 @@ CREATE TABLE identity (
     name TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
     mayDelete INTEGER NOT NULL DEFAULT 0,
+    -- Appended by migration 3.sqm; keep it last so the generated schema
+    -- and the migrated database agree on column order.
+    isDefault INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (accountId, id)
 );
 
 upsert:
-INSERT OR REPLACE INTO identity(accountId, id, name, email, mayDelete) VALUES (?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO identity(accountId, id, name, email, mayDelete, isDefault)
+VALUES (?, ?, ?, ?, ?, ?);
 
 selectAll:
-SELECT * FROM identity ORDER BY email;
+SELECT * FROM identity ORDER BY isDefault DESC, email;
 
 deleteById:
 DELETE FROM identity WHERE accountId = ? AND id = ?;

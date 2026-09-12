@@ -50,6 +50,9 @@ object IdentityChoice {
                     { if (it.identity.accountId == accountInScope) 0 else 1 },
                     { if (it.isPrimaryAccount) 0 else 1 },
                     { byId[it.identity.accountId]?.sortOrder ?: 0 },
+                    // The account's default address heads its group
+                    // (suite REQ-MAIL-12 ordering).
+                    { if (it.identity.isDefault) 0 else 1 },
                     { it.identity.email },
                 ),
             )

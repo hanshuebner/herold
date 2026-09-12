@@ -143,6 +143,8 @@ data class WireIdentity(
     val name: String = "",
     val email: String = "",
     val mayDelete: Boolean = false,
+    /** The account's default sending address (suite REQ-MAIL-12). */
+    val isDefault: Boolean = false,
 )
 
 /** Result of a `Foo/get` call. */
