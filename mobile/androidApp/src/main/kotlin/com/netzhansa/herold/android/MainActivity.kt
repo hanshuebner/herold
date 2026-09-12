@@ -34,6 +34,7 @@ import androidx.navigation.navArgument
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.inbox.InboxScreen
+import com.netzhansa.herold.android.ui.outbox.OutboxScreen
 import com.netzhansa.herold.android.ui.search.SearchScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.push.MailNotifier
@@ -165,7 +166,15 @@ fun HeroldApp(
                         },
                         onCompose = { navController.navigate("compose/NEW/-/-") },
                         onSearch = { navController.navigate("search") },
+                        onOutbox = { navController.navigate("outbox") },
                         onSignOut = { scope.launch { container.signOut() } },
+                    )
+                }
+                composable("outbox") {
+                    OutboxScreen(
+                        container = container,
+                        session = current,
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable("search") {

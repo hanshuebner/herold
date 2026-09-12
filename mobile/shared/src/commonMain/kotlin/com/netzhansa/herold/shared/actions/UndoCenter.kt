@@ -1,28 +1,27 @@
 package com.netzhansa.herold.shared.actions
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 
 /**
- * An action whose optimistic write is in the local store, whose
- * `Email/set` is in flight, and whose undo has not been offered yet.
+ * An offer to take back what just happened: an action whose optimistic
+ * write is in the store and whose outbox entry is queued, or a send
+ * waiting out its undo window (issues #345, #354).
  *
- * [commit] is the server half, started when the offer was made; a screen
- * that shows the offer awaits it to learn whether the change held.
+ * [undo] is what taking it back does. A queued entry the drain has not
+ * reached is simply dropped; one the server already has is followed by
+ * its inverse.
  */
 class UndoOffer internal constructor(
-    /** What the snackbar says, "Archived" or "Snoozed". */
+    /** What the snackbar says, "Archived", "Snoozed" or "Sending". */
     val message: String,
-    private val pending: PendingAction,
-    val commit: Deferred<ActionResult>,
+    /** How long the offer stands, in milliseconds; null for the default. */
+    val windowMs: Long?,
+    private val action: suspend () -> Unit,
 ) {
-    /** What an undo restores: the messages as they were before the action. */
-    val snapshot: ActionSnapshot get() = pending.snapshot
+    suspend fun undo() = action()
 }
 
 /**
@@ -32,6 +31,7 @@ class UndoOffer internal constructor(
 object UndoMessages {
     const val ARCHIVED = "Archived"
     const val SNOOZED = "Snoozed"
+    const val SENDING = "Sending"
 }
 
 /**
@@ -40,12 +40,8 @@ object UndoMessages {
  * so the offer outlives the screen the user invoked it on: the thread view
  * writes the change and leaves the offer here, and the list picks it up
  * when it is returned to.
- *
- * The commit runs in this object's scope rather than a composable's, so
- * leaving the screen does not cancel the `Email/set` half of an action the
- * user already saw take effect.
  */
-class UndoCenter(private val scope: CoroutineScope) {
+class UndoCenter {
 
     private val _pending = MutableStateFlow<UndoOffer?>(null)
 
@@ -53,13 +49,21 @@ class UndoCenter(private val scope: CoroutineScope) {
     val pending: StateFlow<UndoOffer?> = _pending.asStateFlow()
 
     /**
-     * Commits [action] and parks its undo offer. Returns null, and sends
+     * Queues [action] and parks its undo offer. Returns null, and queues
      * nothing, when the action changed nothing - a settling swipe can ask
      * twice, and the second pass has nothing to offer an undo for.
      */
-    fun offer(message: String, action: PendingAction, actions: MailActions): UndoOffer? {
+    suspend fun offer(message: String, action: PendingAction, actions: MailActions): UndoOffer? {
         if (action.isEmpty) return null
-        val offer = UndoOffer(message, action, scope.async { actions.commit(action) })
+        actions.commit(action)
+        val offer = UndoOffer(message, null) { actions.undo(action) }
+        _pending.value = offer
+        return offer
+    }
+
+    /** Parks an offer whose undo is something other than a mail action. */
+    fun offer(message: String, windowMs: Long?, undo: suspend () -> Unit): UndoOffer {
+        val offer = UndoOffer(message, windowMs, undo)
         _pending.value = offer
         return offer
     }

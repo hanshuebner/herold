@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import com.netzhansa.herold.android.HeroldApplication
-import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,10 +13,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Archive and Mark Read from the shade (REQ-AND-PUSH-20). Both run the same
- * optimistic action path the inbox uses, so the local store reflects the
- * change immediately and an `Email/set` carries it to the server; the
- * notification is withdrawn either way, and a rejected change reverts in the
- * store as it does on screen.
+ * optimistic action path the inbox uses: the local store reflects the
+ * change immediately, the outbox carries it, and the drain the receiver
+ * runs puts it on the wire. With no connection the change waits in the
+ * queue rather than being lost; the notification is withdrawn either way.
  */
 class NotificationActionReceiver : BroadcastReceiver() {
 
@@ -50,18 +49,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
         container.restore()
         val session = container.session.value ?: return
         val email = container.store.email(accountId, emailId) ?: return
-        val result = when (action) {
-            ACTION_ARCHIVE -> session.actions.archive(
-                listOf(email),
-                container.store.mailboxList(),
-            ).first
-
+        when (action) {
+            ACTION_ARCHIVE -> session.actions.archive(listOf(email), container.store.mailboxList())
             ACTION_MARK_READ -> session.actions.setSeen(listOf(email), true)
             else -> return
         }
-        if (result is ActionResult.Reverted) {
-            Log.w(TAG, "notification action $action reverted: ${result.message}")
-        }
+        // The action is in the store and in the outbox; the drain here is
+        // what carries it to the server while the receiver is still alive.
+        val outcome = session.syncEngine.drainOutbox()
+        if (outcome.rejected > 0) Log.w(TAG, "notification action $action was refused")
     }
 
     companion object {

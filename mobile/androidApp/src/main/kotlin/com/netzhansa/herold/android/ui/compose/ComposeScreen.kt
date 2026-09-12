@@ -178,8 +178,10 @@ fun ComposeScreen(
     suspend fun saveDraft(target: ComposeState) {
         when (val result = session.composer.saveDraft(withBody(target), mailboxes)) {
             is ComposeResult.Saved -> state = (state ?: target).copy(draftId = result.draftId)
+            // With no connection the draft is in the outbox; it reaches
+            // the server's Drafts mailbox on the next drain.
+            is ComposeResult.Queued -> state = (state ?: target).copy(draftEntryId = result.entryId)
             is ComposeResult.Failed -> snackbar.showSnackbar(result.message)
-            else -> Unit
         }
     }
 
@@ -267,8 +269,11 @@ fun ComposeScreen(
                                 editor.publish()
                                 val toSend = withBody(state ?: target)
                                 when (val result = session.composer.send(toSend, mailboxes)) {
-                                    is ComposeResult.Sent -> {
-                                        session.syncEngine.syncAccount(toSend.accountId)
+                                    is ComposeResult.Queued -> {
+                                        // The message is durable now: the
+                                        // drain carries it, with or
+                                        // without a connection.
+                                        session.requestDrain()
                                         close()
                                     }
 
@@ -586,6 +591,12 @@ private fun AttachmentStrip(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.testTag("attachment-failed-${attachment.name}"),
+                    )
+
+                    AttachmentStatus.PENDING -> Text(
+                        text = "Waits for a connection",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.testTag("attachment-pending-${attachment.name}"),
                     )
 
                     AttachmentStatus.READY -> Text(

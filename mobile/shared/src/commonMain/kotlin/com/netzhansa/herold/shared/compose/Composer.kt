@@ -10,6 +10,13 @@ import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
+import com.netzhansa.herold.shared.outbox.BlobSpool
+import com.netzhansa.herold.shared.outbox.ComposePayload
+import com.netzhansa.herold.shared.outbox.InMemoryBlobSpool
+import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.OutboxAddress
+import com.netzhansa.herold.shared.outbox.OutboxAttachment
+import com.netzhansa.herold.shared.outbox.OutboxKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -24,9 +31,17 @@ import kotlinx.serialization.json.putJsonObject
 sealed interface ComposeResult {
     data class Saved(val draftId: String) : ComposeResult
 
-    data class Sent(val emailId: String?) : ComposeResult
+    /**
+     * The message is in the durable outbox and will leave when the drain
+     * reaches it: at once when connected and the hold has passed, later
+     * otherwise (REQ-AND-SYNC-21).
+     *
+     * @param heldUntilMs the instant the drain may first submit it, which
+     *   is the end of the undo window after Send (issue #354)
+     */
+    data class Queued(val entryId: Long, val heldUntilMs: Long = 0) : ComposeResult
 
-    /** The server refused, or it could not be reached; the compose stays open. */
+    /** The compose cannot be sent as it stands; it stays open. */
     data class Failed(val message: String, val offline: Boolean = false) : ComposeResult
 }
 
@@ -38,16 +53,22 @@ sealed interface AttachResult {
 }
 
 /**
- * Compose's server side: it opens a compose from a parent message, uploads
- * attachments, writes the draft into the account's Drafts mailbox and
- * sends through `EmailSubmission/set`.
+ * Compose's server side: it opens a compose from a parent message, takes
+ * attachments in, writes the draft into the account's Drafts mailbox and
+ * hands a send to the durable outbox.
  *
- * Milestone 1c sends online only. A send without connectivity fails
- * visibly rather than queueing; the durable outbox is milestone 2
- * (REQ-AND-SYNC-21).
+ * A send is one outbox entry that drains as uploads, `Email/set` and
+ * `EmailSubmission/set` in that order (REQ-AND-SYNC-21), so composing and
+ * sending work with no connectivity and the message leaves when there is
+ * some. Attachments are copied into app-private storage as they are
+ * picked, because the picker's grant on the chosen URI does not outlive
+ * the compose.
  */
 class Composer(
     private val api: JmapApi,
+    private val outbox: Outbox? = null,
+    private val spool: BlobSpool = InMemoryBlobSpool(),
+    private val now: () -> Long = { 0L },
     private val newCid: () -> String = { "inl-" + randomToken() + "@herold.local" },
 ) {
 
@@ -143,12 +164,29 @@ class Composer(
                 "$name is ${formatSize(bytes.size.toLong())}; this server accepts at most ${formatSize(limit)}",
             )
         }
+        // The copy comes first: the picker's grant on the chosen URI is
+        // gone by the time a queued send drains.
+        val handle = runCatching { spool.put(bytes, name) }.getOrNull()
+        val cid = if (inline) newCid() else null
         val uploaded = try {
             api.uploadBlob(accountId, bytes, type, name)
         } catch (e: JmapException) {
             return AttachResult.Rejected(e.message ?: "the upload was rejected")
         } catch (t: Throwable) {
-            return AttachResult.Rejected("No connection - $name was not uploaded")
+            if (handle == null) return AttachResult.Rejected("$name could not be kept for sending")
+            return AttachResult.Added(
+                ComposeAttachment(
+                    key = handle,
+                    name = name,
+                    type = type,
+                    size = bytes.size.toLong(),
+                    status = AttachmentStatus.PENDING,
+                    inline = inline,
+                    cid = cid,
+                    bytes = if (inline) bytes else null,
+                    spool = handle,
+                ),
+            )
         }
         return AttachResult.Added(
             ComposeAttachment(
@@ -159,8 +197,9 @@ class Composer(
                 blobId = uploaded.blobId,
                 status = AttachmentStatus.READY,
                 inline = inline,
-                cid = if (inline) newCid() else null,
+                cid = cid,
                 bytes = if (inline) bytes else null,
+                spool = handle,
             ),
         )
     }
@@ -168,11 +207,16 @@ class Composer(
     /**
      * Writes the compose into the account's Drafts mailbox: a create the
      * first time, an update of the same message after that (suite
-     * REQ-DFT-02).
+     * REQ-DFT-02). With no connection the draft is queued instead, so what
+     * was typed reaches the server's Drafts mailbox on reconnect rather
+     * than being lost (REQ-AND-SYNC-21).
      */
     suspend fun saveDraft(state: ComposeState, mailboxes: List<Mailbox>): ComposeResult {
         val draftsId = roleMailbox(mailboxes, state.accountId, MailboxRoles.DRAFTS)
             ?: return ComposeResult.Failed("This account has no Drafts mailbox")
+        if (state.attachments.any { it.status == AttachmentStatus.PENDING }) {
+            return queueCompose(state, mailboxes, OutboxKind.DRAFT, draftLabel(state), 0)
+        }
         val email = buildEmail(state, draftsId)
         return try {
             val outcome = if (state.draftId == null) {
@@ -189,7 +233,7 @@ class Composer(
         } catch (e: JmapException) {
             ComposeResult.Failed(e.message ?: "the draft was not saved")
         } catch (t: Throwable) {
-            ComposeResult.Failed("No connection - the draft was not saved", offline = true)
+            queueCompose(state, mailboxes, OutboxKind.DRAFT, draftLabel(state), 0)
         }
     }
 
@@ -199,50 +243,86 @@ class Composer(
     }
 
     /**
-     * Sends: `Email/set` writes the draft and `EmailSubmission/set` hands
-     * it to the queue, with `onSuccessUpdateEmail` moving it into Sent and
-     * clearing `$draft` in the same round trip.
+     * Hands the message to the durable outbox. It leaves as soon as the
+     * drain reaches it - after [holdMs], the undo window the user can take
+     * the send back in (issue #354), and once there is a connection.
      */
-    suspend fun send(state: ComposeState, mailboxes: List<Mailbox>): ComposeResult {
+    suspend fun send(state: ComposeState, mailboxes: List<Mailbox>, holdMs: Long = 0): ComposeResult {
         if (state.identity == null) return ComposeResult.Failed("Choose an address to send from")
         if (!state.hasRecipient) return ComposeResult.Failed("Add at least one recipient")
         if (state.uploading) return ComposeResult.Failed("Wait for the attachments to finish uploading")
+        return queueCompose(state, mailboxes, OutboxKind.SEND, sendLabel(state), holdMs)
+    }
+
+    /** The one path a draft save and a send both queue through. */
+    private suspend fun queueCompose(
+        state: ComposeState,
+        mailboxes: List<Mailbox>,
+        kind: OutboxKind,
+        label: String,
+        holdMs: Long,
+    ): ComposeResult {
+        val queue = outbox ?: return ComposeResult.Failed("No connection - the message was not sent", offline = true)
+        val identity = state.identity ?: return ComposeResult.Failed("Choose an address to send from")
         val draftsId = roleMailbox(mailboxes, state.accountId, MailboxRoles.DRAFTS)
             ?: return ComposeResult.Failed("This account has no Drafts mailbox")
-        val sentId = roleMailbox(mailboxes, state.accountId, MailboxRoles.SENT)
-
-        val onSuccessUpdate = buildJsonObject {
-            put("mailboxIds/$draftsId", JsonPrimitive(null as String?))
-            if (sentId != null) put("mailboxIds/$sentId", true)
-            put("keywords/${Keywords.DRAFT}", JsonPrimitive(null as String?))
-            put("keywords/${Keywords.SEEN}", true)
-        }
-        val parent = state.replyContext?.takeIf { it.accountId == state.accountId }
-        return try {
-            val outcome = api.sendEmail(
-                accountId = state.accountId,
-                email = buildEmail(state, draftsId),
-                draftId = state.draftId,
-                identityId = state.identity.id,
-                envelope = Envelope(
-                    mailFrom = state.identity.email,
-                    rcptTo = state.recipients.map { it.email }.filter { it.isNotBlank() }.distinct(),
-                ),
-                onSuccessUpdate = onSuccessUpdate,
-                parentId = parent?.parentId,
-                parentKeyword = parent?.parentKeyword,
-            )
-            if (outcome.error != null) {
-                ComposeResult.Failed(outcome.error)
-            } else {
-                ComposeResult.Sent(outcome.emailId)
-            }
-        } catch (e: JmapException) {
-            ComposeResult.Failed(e.message ?: "the message was not sent")
-        } catch (t: Throwable) {
-            ComposeResult.Failed("No connection - the message was not sent", offline = true)
-        }
+        // A send supersedes the draft save this compose queued earlier, so
+        // the two do not each create their own message.
+        state.draftEntryId?.let { queue.cancelIfQueued(it) }
+        val heldUntil = if (holdMs > 0) now() + holdMs else 0
+        val entryId = queue.enqueueCompose(
+            kind = kind,
+            label = label,
+            payload = payloadOf(state, identity, draftsId, roleMailbox(mailboxes, state.accountId, MailboxRoles.SENT)),
+            holdUntilMs = heldUntil,
+        )
+        return ComposeResult.Queued(entryId, heldUntil)
     }
+
+    /** The compose as the outbox entry carries it. */
+    fun payloadOf(
+        state: ComposeState,
+        identity: Identity,
+        draftsMailboxId: String,
+        sentMailboxId: String?,
+    ): ComposePayload {
+        val parent = state.replyContext?.takeIf { it.accountId == state.accountId }
+        return ComposePayload(
+            accountId = state.accountId,
+            identityId = identity.id,
+            identityName = identity.name,
+            identityEmail = identity.email,
+            to = state.to.map { OutboxAddress(it.name, it.email) },
+            cc = state.cc.map { OutboxAddress(it.name, it.email) },
+            bcc = state.bcc.map { OutboxAddress(it.name, it.email) },
+            subject = state.subject,
+            bodyHtml = state.bodyHtml,
+            attachments = state.attachments.filter { it.isCarried }.map {
+                OutboxAttachment(
+                    name = it.name,
+                    type = it.type,
+                    size = it.size,
+                    inline = it.inline,
+                    cid = it.cid,
+                    blobId = it.blobId,
+                    spool = it.spool,
+                )
+            },
+            draftsMailboxId = draftsMailboxId,
+            sentMailboxId = sentMailboxId,
+            draftId = state.draftId,
+            parentId = parent?.parentId,
+            parentKeyword = parent?.parentKeyword,
+            inReplyTo = parent?.inReplyTo ?: emptyList(),
+            references = parent?.references ?: emptyList(),
+        )
+    }
+
+    private fun sendLabel(state: ComposeState): String =
+        "Send: " + state.subject.ifBlank { "(no subject)" }
+
+    private fun draftLabel(state: ComposeState): String =
+        "Draft: " + state.subject.ifBlank { "(no subject)" }
 
     /**
      * The `Email` object a draft and a send both write (RFC 8621 section

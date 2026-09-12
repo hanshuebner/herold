@@ -70,7 +70,6 @@ import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
-import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.actions.PendingAction
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.actions.UndoMessages
@@ -163,10 +162,6 @@ fun ThreadScreen(
         Unit
     }
 
-    suspend fun report(result: ActionResult) {
-        if (result is ActionResult.Reverted) snackbar.showSnackbar(result.message)
-    }
-
     /**
      * An action that takes the conversation off this screen: the local
      * write is already in the store, the offer is parked for the list, and
@@ -204,7 +199,7 @@ fun ThreadScreen(
                 actions = {
                     val flagged = messages.any { it.isFlagged }
                     IconButton(
-                        onClick = { scope.launch { report(session.actions.setFlagged(messages, !flagged)) } },
+                        onClick = { scope.launch { session.actions.setFlagged(messages, !flagged) } },
                         modifier = Modifier.testTag("thread-star"),
                     ) {
                         Icon(
@@ -267,7 +262,7 @@ fun ThreadScreen(
                         if (expandedId == message.id) {
                             scope.launch {
                                 session.syncEngine.loadBody(accountId, message.id)
-                                if (message.isUnread) report(session.actions.setSeen(listOf(message), true))
+                                if (message.isUnread) session.actions.setSeen(listOf(message), true)
                             }
                         }
                     },

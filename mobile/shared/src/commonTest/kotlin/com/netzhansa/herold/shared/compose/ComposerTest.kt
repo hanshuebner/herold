@@ -7,7 +7,11 @@ import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.fake.FakeJmapApi
+import com.netzhansa.herold.shared.fake.FakeLocalStore
 import com.netzhansa.herold.shared.jmap.JmapSession
+import com.netzhansa.herold.shared.outbox.InMemoryBlobSpool
+import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -57,7 +61,24 @@ class ComposerTest {
         bodyText = "The original body.",
     )
 
-    private fun composer(api: FakeJmapApi) = Composer(api, newCid = { "inline-1@herold.local" })
+    /**
+     * A composer with the outbox behind it, as the app wires it: a send
+     * queues an entry and [Wiring.drain] is what puts it on the wire.
+     */
+    private class Wiring(val api: FakeJmapApi) {
+        var clock = 1_000_000L
+        val store = FakeLocalStore()
+        val spool = InMemoryBlobSpool()
+        val outbox = Outbox(store) { clock }
+        val composer = Composer(api, outbox, spool, { clock }, { "inline-1@herold.local" })
+        private val drainer = OutboxDrainer(api, store, outbox, spool, composer, { clock })
+
+        suspend fun drain() = drainer.drain()
+    }
+
+    private fun wiring(api: FakeJmapApi) = Wiring(api)
+
+    private fun composer(api: FakeJmapApi) = Wiring(api).composer
 
     private fun api(): FakeJmapApi = FakeJmapApi(
         session = JmapSession(
@@ -139,11 +160,13 @@ class ComposerTest {
     @Test
     fun sendWritesBothBodyAlternativesAndMovesTheMessageOutOfDrafts() = runTest {
         val api = api()
-        val composer = composer(api)
+        val wiring = wiring(api)
+        val composer = wiring.composer
         val state = composer.openFrom(ComposeMode.REPLY, parent, identities, accounts, "today")
             .let { it.copy(bodyHtml = "<p>My <b>answer</b>.</p>" + it.bodyHtml) }
         val result = composer.send(state, mailboxes)
-        assertIs<ComposeResult.Sent>(result)
+        assertIs<ComposeResult.Queued>(result)
+        wiring.drain()
 
         val call = api.sendCalls.single()
         assertEquals("a2", call.accountId)
@@ -168,7 +191,8 @@ class ComposerTest {
     @Test
     fun inlineImagesAndAttachmentsAreDistinguishedOnTheWire() = runTest {
         val api = api()
-        val composer = composer(api)
+        val wiring = wiring(api)
+        val composer = wiring.composer
         val inline = ComposeAttachment(
             key = "i", name = "chart.png", type = "image/png", size = 12,
             blobId = "blob-inline", status = AttachmentStatus.READY, inline = true, cid = "inline-1@herold.local",
@@ -187,6 +211,7 @@ class ComposerTest {
             attachments = listOf(inline, attached),
         )
         composer.send(state, mailboxes)
+        wiring.drain()
         val email = api.sendCalls.single().email
 
         // The body references the image as cid:, not as the editor's scheme.
@@ -220,26 +245,38 @@ class ComposerTest {
             to = listOf(MailAddress(null, "bob@example.local")),
             bodyHtml = "<p>hello</p>",
         )
-        composer(api).send(state, mailboxes)
+        val wiring = wiring(api)
+        wiring.composer.send(state, mailboxes)
+        wiring.drain()
         val structure = api.sendCalls.single().email["bodyStructure"]!!.jsonObject
         assertEquals("multipart/alternative", structure["type"]?.jsonPrimitive?.content)
         assertNull(api.sendCalls.single().email["attachments"])
     }
 
     @Test
-    fun sendWithoutConnectivityFailsVisibly() = runTest {
+    fun sendWithoutConnectivityWaitsInTheOutbox() = runTest {
         val api = api()
         api.composeFailure = RuntimeException("connection refused")
+        val wiring = wiring(api)
         val state = ComposeState(
             mode = ComposeMode.NEW,
             accountId = "a2",
             identity = identities[0],
             to = listOf(MailAddress(null, "bob@example.local")),
         )
-        val result = composer(api).send(state, mailboxes)
-        assertIs<ComposeResult.Failed>(result)
-        assertTrue(result.offline)
-        assertContains(result.message, "No connection")
+        val result = wiring.composer.send(state, mailboxes)
+        assertIs<ComposeResult.Queued>(result)
+
+        wiring.drain()
+        assertTrue(api.sendCalls.isEmpty())
+        assertEquals(1, wiring.outbox.list().size, "the message waits for a connection (REQ-AND-SYNC-21)")
+
+        api.composeFailure = null
+        // The failed attempt set a backoff; the next pass runs after it.
+        wiring.clock += 60_000
+        wiring.drain()
+        assertEquals(1, api.sendCalls.size)
+        assertTrue(wiring.outbox.list().isEmpty())
     }
 
     @Test
@@ -259,7 +296,9 @@ class ComposerTest {
             identity = identities[1],
             to = listOf(MailAddress(null, "bob@example.local")),
         )
-        composer(api).send(state, mailboxes)
+        val wiring = wiring(api)
+        wiring.composer.send(state, mailboxes)
+        wiring.drain()
         val call = api.sendCalls.single()
         assertEquals("a5", call.accountId)
         assertEquals(true, call.email["mailboxIds"]?.jsonObject?.get("28")?.jsonPrimitive?.booleanOrNull)

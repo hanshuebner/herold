@@ -1,0 +1,59 @@
+-- The durable outbox (docs/design/android/requirements/02-offline-and-sync.md
+-- REQ-AND-SYNC-20..25). One row per pending mutation: the optimistic
+-- `Email/set` patch of an action, a draft save, or a whole send. Rows
+-- survive process death and are deleted only when the server has taken the
+-- change; the blob cache's eviction never touches them.
+--
+-- `payload` is the JSON the drainer submits, rewritten as a multi-step
+-- entry advances (an upload records its blobId, an `Email/set` create
+-- records the draft id), so a partial failure resumes from the step that
+-- failed. `revertJson` is the pre-change snapshot a permanent rejection
+-- restores. `entityIds` names the messages the entry touches, so a
+-- reconciliation that delivers server truth for one of them discards the
+-- pending write (REQ-AND-SYNC-24).
+
+CREATE TABLE outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    accountId TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL,
+    revertJson TEXT,
+    entityIds TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    lastError TEXT,
+    permanent INTEGER NOT NULL DEFAULT 0,
+    nextAttemptAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX outbox_account ON outbox(accountId, id);
+
+insert:
+INSERT INTO outbox(accountId, kind, label, payload, revertJson, entityIds, createdAt, state, attempts, lastError, permanent, nextAttemptAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, NULL, 0, 0);
+
+lastInsertedId:
+SELECT last_insert_rowid();
+
+selectAll:
+SELECT * FROM outbox ORDER BY id;
+
+selectById:
+SELECT * FROM outbox WHERE id = ?;
+
+selectForAccount:
+SELECT * FROM outbox WHERE accountId = ? ORDER BY id;
+
+updateState:
+UPDATE outbox SET state = ?, attempts = ?, lastError = ?, permanent = ?, nextAttemptAt = ? WHERE id = ?;
+
+updatePayload:
+UPDATE outbox SET payload = ? WHERE id = ?;
+
+delete:
+DELETE FROM outbox WHERE id = ?;
+
+deleteAll:
+DELETE FROM outbox;

@@ -6,11 +6,18 @@ import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.fake.FakeJmapApi
 import com.netzhansa.herold.shared.fake.FakeLocalStore
+import com.netzhansa.herold.shared.outbox.ActionPayload
+import com.netzhansa.herold.shared.outbox.InMemoryBlobSpool
+import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.OutboxDrainer
+import com.netzhansa.herold.shared.outbox.OutboxState
+import com.netzhansa.herold.shared.outbox.outboxJson
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val mailboxes = listOf(
@@ -29,151 +36,180 @@ private fun seeded() = Email(
     mailboxIds = setOf("inbox-1"),
 )
 
+/**
+ * The action layer after the outbox landed: every action writes the store
+ * and queues its `Email/set`, and only a drain talks to the server
+ * (REQ-AND-SYNC-20).
+ */
 class MailActionsTest {
 
-    private suspend fun store(email: Email = seeded()): FakeLocalStore =
-        FakeLocalStore().apply {
+    private class Harness(val store: FakeLocalStore, val api: FakeJmapApi) {
+        val outbox = Outbox(store)
+        val drainer = OutboxDrainer(api, store, outbox, InMemoryBlobSpool())
+        val actions = MailActions(store, outbox)
+    }
+
+    private suspend fun harness(email: Email = seeded()): Harness {
+        val store = FakeLocalStore().apply {
             upsertMailboxes(mailboxes)
             upsertEmails(listOf(email))
         }
-
-    @Test
-    fun starWritesTheLocalStoreFirstAndSendsTheKeywordPatch() = runTest {
-        val api = FakeJmapApi()
-        val store = store()
-        val actions = MailActions(api, store)
-
-        val result = actions.setFlagged(listOf(seeded()), true)
-
-        assertEquals(ActionResult.Applied, result)
-        assertTrue(store.email("acct-a", "e1")!!.isFlagged)
-        assertEquals(JsonPrimitive(true), api.emailSetCalls.single()["e1"]!!["keywords/\$flagged"])
+        return Harness(store, FakeJmapApi())
     }
 
     @Test
-    fun archiveMovesOutOfInboxIntoArchiveAndUndoPutsItBack() = runTest {
-        val api = FakeJmapApi()
-        val store = store()
-        val actions = MailActions(api, store)
-        val before = store.email("acct-a", "e1")!!
+    fun starWritesTheLocalStoreAndQueuesTheKeywordPatch() = runTest {
+        val h = harness()
 
-        val (result, snapshot) = actions.archive(listOf(before), mailboxes)
+        h.actions.setFlagged(listOf(seeded()), true)
 
-        assertEquals(ActionResult.Applied, result)
-        assertEquals(setOf("archive-1"), store.email("acct-a", "e1")!!.mailboxIds)
-        val patch = api.emailSetCalls.single().getValue("e1")
+        assertTrue(h.store.email("acct-a", "e1")!!.isFlagged)
+        assertTrue(h.api.emailSetCalls.isEmpty(), "an action sends nothing itself")
+        val entry = h.outbox.list().single()
+        val patches = outboxJson.decodeFromString<ActionPayload>(entry.payload).patches
+        assertEquals(JsonPrimitive(true), patches.getValue("e1")["keywords/\$flagged"])
+
+        h.drainer.drain()
+        assertEquals(JsonPrimitive(true), h.api.emailSetCalls.single()["e1"]!!["keywords/\$flagged"])
+        assertTrue(h.outbox.list().isEmpty(), "a drained entry leaves the queue")
+    }
+
+    @Test
+    fun archiveMovesOutOfInboxIntoArchiveAndRestorePutsItBack() = runTest {
+        val h = harness()
+        val before = h.store.email("acct-a", "e1")!!
+
+        val snapshot = h.actions.archive(listOf(before), mailboxes)
+        h.drainer.drain()
+
+        assertEquals(setOf("archive-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        val patch = h.api.emailSetCalls.single().getValue("e1")
         assertEquals(JsonNull, patch["mailboxIds/inbox-1"])
         assertEquals(JsonPrimitive(true), patch["mailboxIds/archive-1"])
 
-        assertEquals(ActionResult.Applied, actions.restore(snapshot))
-        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
-        val undoPatch = api.emailSetCalls.last().getValue("e1")
+        h.actions.restore(snapshot)
+        h.drainer.drain()
+        assertEquals(setOf("inbox-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        val undoPatch = h.api.emailSetCalls.last().getValue("e1")
         assertEquals(JsonPrimitive(true), undoPatch["mailboxIds/inbox-1"])
         assertEquals(JsonNull, undoPatch["mailboxIds/archive-1"])
     }
 
     @Test
-    fun archiveLocallyMovesTheRowsBeforeAnythingIsSent() = runTest {
-        val api = FakeJmapApi()
-        val store = store()
-        val actions = MailActions(api, store)
+    fun archiveLocallyMovesTheRowsBeforeAnythingIsQueued() = runTest {
+        val h = harness()
 
-        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
+        val pending = h.actions.archiveLocally(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
 
         // The undo affordance rides on this: the row is out of the inbox
-        // with no request made yet (issue #338).
-        assertEquals(setOf("archive-1"), store.email("acct-a", "e1")!!.mailboxIds)
-        assertTrue(api.emailSetCalls.isEmpty(), "archiveLocally must not send anything")
+        // with nothing queued yet (issue #338).
+        assertEquals(setOf("archive-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        assertTrue(h.outbox.list().isEmpty(), "archiveLocally must not queue anything")
 
-        assertEquals(ActionResult.Applied, actions.commit(pending))
-        assertEquals(JsonNull, api.emailSetCalls.single().getValue("e1")["mailboxIds/inbox-1"])
-
-        assertEquals(ActionResult.Applied, actions.restore(pending.snapshot))
-        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        h.actions.commit(pending)
+        assertEquals(1, h.outbox.list().size)
+        h.drainer.drain()
+        assertEquals(JsonNull, h.api.emailSetCalls.single().getValue("e1")["mailboxIds/inbox-1"])
     }
 
     @Test
-    fun aRejectedCommitPutsTheRowsBackAfterTheUndoWasAlreadyOffered() = runTest {
-        val api = FakeJmapApi().apply { setFailure = kotlinx.io.IOException("network unreachable") }
-        val store = store()
-        val actions = MailActions(api, store)
+    fun anUndoBeforeTheDrainDropsTheEntryAndSendsNothing() = runTest {
+        val h = harness()
 
-        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
-        assertEquals(setOf("archive-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        val pending = h.actions.archiveLocally(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
+        h.actions.commit(pending)
+        h.actions.undo(pending)
 
-        val result = actions.commit(pending)
-
-        assertTrue(result is ActionResult.Reverted && result.offline)
-        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        assertTrue(h.outbox.list().isEmpty(), "the queued archive is gone")
+        assertEquals(setOf("inbox-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        h.drainer.drain()
+        assertTrue(h.api.emailSetCalls.isEmpty(), "an undone action never reaches the server")
     }
 
     @Test
-    fun archivingAnAlreadyArchivedRowHasNothingToCommit() = runTest {
-        val api = FakeJmapApi()
-        val store = store(seeded().copy(mailboxIds = setOf("archive-1")))
-        val actions = MailActions(api, store)
+    fun anUndoAfterTheDrainQueuesTheInverse() = runTest {
+        val h = harness()
 
-        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
+        val pending = h.actions.archiveLocally(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
+        h.actions.commit(pending)
+        h.drainer.drain()
+        h.actions.undo(pending)
+        h.drainer.drain()
+
+        assertEquals(setOf("inbox-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
+        assertEquals(2, h.api.emailSetCalls.size)
+        assertEquals(JsonPrimitive(true), h.api.emailSetCalls.last().getValue("e1")["mailboxIds/inbox-1"])
+    }
+
+    @Test
+    fun anActionTakenWithNoConnectionStaysAppliedAndQueued() = runTest {
+        val h = harness()
+        h.api.setFailure = kotlinx.io.IOException("network unreachable")
+
+        h.actions.archive(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
+        h.drainer.drain()
+
+        assertEquals(
+            setOf("archive-1"),
+            h.store.email("acct-a", "e1")!!.mailboxIds,
+            "the optimistic state survives a failed drain (REQ-AND-SYNC-20)",
+        )
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.QUEUED, entry.state)
+        assertEquals(1, entry.attempts)
+    }
+
+    @Test
+    fun archivingAnAlreadyArchivedRowHasNothingToQueue() = runTest {
+        val h = harness(seeded().copy(mailboxIds = setOf("archive-1")))
+
+        val pending = h.actions.archiveLocally(listOf(h.store.email("acct-a", "e1")!!), mailboxes)
 
         assertTrue(pending.isEmpty)
-        assertEquals(ActionResult.Applied, actions.commit(pending))
-        assertTrue(api.emailSetCalls.isEmpty())
+        h.actions.commit(pending)
+        assertTrue(h.outbox.list().isEmpty())
     }
 
     @Test
-    fun anUnreachableServerRevertsTheOptimisticStateAndReportsOffline() = runTest {
-        val api = FakeJmapApi().apply { setFailure = kotlinx.io.IOException("network unreachable") }
-        val store = store()
-        val actions = MailActions(api, store)
+    fun aServerRejectionRevertsAndKeepsTheEntryWithItsReason() = runTest {
+        val h = harness()
+        h.api.setRejections = mapOf("e1" to "mailbox is read-only")
 
-        val (result, _) = actions.archive(listOf(store.email("acct-a", "e1")!!), mailboxes)
+        h.actions.setSeen(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.drainer.drain()
 
-        assertTrue(result is ActionResult.Reverted)
-        assertTrue((result as ActionResult.Reverted).offline)
-        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds, "the row is put back")
-    }
-
-    @Test
-    fun aServerRejectionRevertsAndSurfacesTheServersReason() = runTest {
-        val api = FakeJmapApi().apply { setRejections = mapOf("e1" to "mailbox is read-only") }
-        val store = store()
-        val actions = MailActions(api, store)
-
-        val result = actions.setSeen(listOf(store.email("acct-a", "e1")!!), true)
-
-        assertTrue(result is ActionResult.Reverted)
-        assertEquals("mailbox is read-only", (result as ActionResult.Reverted).message)
-        assertTrue(store.email("acct-a", "e1")!!.isUnread)
+        assertTrue(h.store.email("acct-a", "e1")!!.isUnread, "the optimistic read mark is reverted")
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.FAILED, entry.state)
+        assertTrue(entry.permanent)
+        assertEquals("mailbox is read-only", entry.lastError)
     }
 
     @Test
     fun labellingTogglesTheCustomMailboxMembership() = runTest {
-        val api = FakeJmapApi()
-        val store = store()
-        val actions = MailActions(api, store)
+        val h = harness()
         val label = mailboxes.first { it.id == "label-1" }
 
-        actions.setLabel(listOf(store.email("acct-a", "e1")!!), label, applied = true)
-        assertEquals(setOf("inbox-1", "label-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        h.actions.setLabel(listOf(h.store.email("acct-a", "e1")!!), label, applied = true)
+        assertEquals(setOf("inbox-1", "label-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
 
-        actions.setLabel(listOf(store.email("acct-a", "e1")!!), label, applied = false)
-        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        h.actions.setLabel(listOf(h.store.email("acct-a", "e1")!!), label, applied = false)
+        assertEquals(setOf("inbox-1"), h.store.email("acct-a", "e1")!!.mailboxIds)
     }
 
     @Test
-    fun snoozeSendsSnoozedUntilAndMarksTheMessageSnoozedLocally() = runTest {
-        val api = FakeJmapApi()
-        val store = store()
-        val actions = MailActions(api, store)
+    fun snoozeQueuesSnoozedUntilAndMarksTheMessageSnoozedLocally() = runTest {
+        val h = harness()
 
-        actions.snooze(listOf(store.email("acct-a", "e1")!!), "2026-09-12T06:00:00Z")
+        h.actions.snooze(listOf(h.store.email("acct-a", "e1")!!), "2026-09-12T06:00:00Z")
+        h.drainer.drain()
 
-        val stored = store.email("acct-a", "e1")!!
+        val stored = h.store.email("acct-a", "e1")!!
         assertEquals("2026-09-12T06:00:00Z", stored.snoozedUntil)
         assertTrue(stored.isSnoozed)
         assertEquals(
             JsonPrimitive("2026-09-12T06:00:00Z"),
-            api.emailSetCalls.single().getValue("e1")["snoozedUntil"],
+            h.api.emailSetCalls.single().getValue("e1")["snoozedUntil"],
         )
     }
 
@@ -193,16 +229,45 @@ class MailActionsTest {
 
     @Test
     fun recategorisingReplacesTheCategoryKeyword() = runTest {
-        val api = FakeJmapApi()
         val seed = seeded().copy(keywords = setOf(Keywords.categoryKeyword("Primary")))
-        val store = store(seed)
-        val actions = MailActions(api, store)
+        val h = harness(seed)
 
-        actions.setCategory(listOf(seed), "Promotions")
+        h.actions.setCategory(listOf(seed), "Promotions")
+        h.drainer.drain()
 
-        assertEquals("promotions", store.email("acct-a", "e1")!!.category)
-        val patch = api.emailSetCalls.single().getValue("e1")
+        assertEquals("promotions", h.store.email("acct-a", "e1")!!.category)
+        val patch = h.api.emailSetCalls.single().getValue("e1")
         assertEquals(JsonNull, patch["keywords/\$category-primary"])
         assertEquals(JsonPrimitive(true), patch["keywords/\$category-promotions"])
+    }
+
+    @Test
+    fun aQueuedActionIsDiscardedWhenTheServerVersionArrivesFirst() = runTest {
+        val h = harness()
+
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        val discarded = h.outbox.discardSupersededBy("acct-a", listOf("e1"))
+
+        assertEquals(1, discarded.size)
+        assertTrue(h.outbox.list().isEmpty(), "server truth wins (REQ-AND-SYNC-24)")
+        h.drainer.drain()
+        assertTrue(h.api.emailSetCalls.isEmpty())
+    }
+
+    @Test
+    fun theQueueSurvivesAnActionOnAMessageOfAnotherAccount() = runTest {
+        val h = harness()
+        h.store.upsertMailboxes(
+            listOf(Mailbox(accountId = "acct-b", id = "inbox-2", name = "Inbox", role = MailboxRoles.INBOX)),
+        )
+        h.store.upsertEmails(
+            listOf(seeded().copy(accountId = "acct-b", id = "e2", mailboxIds = setOf("inbox-2"))),
+        )
+
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.actions.setFlagged(listOf(h.store.email("acct-b", "e2")!!), true)
+
+        assertEquals(listOf("acct-a", "acct-b"), h.outbox.list().map { it.accountId })
+        assertNull(h.outbox.list().first().lastError)
     }
 }

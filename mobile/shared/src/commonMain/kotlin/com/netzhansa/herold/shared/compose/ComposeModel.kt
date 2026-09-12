@@ -3,8 +3,12 @@ package com.netzhansa.herold.shared.compose
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.MailAddress
 
-/** Where an attachment is in its upload (suite REQ-ATT-03). */
-enum class AttachmentStatus { UPLOADING, READY, FAILED }
+/**
+ * Where an attachment is in its upload (suite REQ-ATT-03). `PENDING` is
+ * the offline state: the file is spooled in app-private storage and goes
+ * up when the send drains (REQ-AND-SYNC-21).
+ */
+enum class AttachmentStatus { UPLOADING, PENDING, READY, FAILED }
 
 /**
  * One file or inline image on the compose. [inline] is the user's choice,
@@ -25,8 +29,13 @@ data class ComposeAttachment(
     val error: String? = null,
     /** Bytes held until the upload finishes, so an inline image can render at once. */
     val bytes: ByteArray? = null,
+    /** The app-private copy the outbox uploads from when the send drains. */
+    val spool: String? = null,
 ) {
     val isReady: Boolean get() = status == AttachmentStatus.READY && blobId != null
+
+    /** True when the file is on the server or on the device, so a send carries it. */
+    val isCarried: Boolean get() = isReady || (status == AttachmentStatus.PENDING && spool != null)
 
     override fun equals(other: Any?): Boolean =
         other is ComposeAttachment &&
@@ -36,6 +45,7 @@ data class ComposeAttachment(
             size == other.size &&
             blobId == other.blobId &&
             status == other.status &&
+            spool == other.spool &&
             inline == other.inline &&
             cid == other.cid &&
             error == other.error
@@ -81,6 +91,8 @@ data class ComposeState(
     val replyContext: ReplyContext? = null,
     /** The server-side draft this compose is saved as, once it has been. */
     val draftId: String? = null,
+    /** The queued draft save this compose left in the outbox, if any. */
+    val draftEntryId: Long? = null,
     val showCc: Boolean = false,
 ) {
     val recipients: List<MailAddress> get() = to + cc + bcc

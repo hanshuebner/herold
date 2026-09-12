@@ -1,0 +1,21 @@
+-- Schema 4 -> 5: the durable outbox (issue #351, REQ-AND-SYNC-20..25).
+-- Additive; an install that already holds synced mail keeps it and gains
+-- an empty queue.
+
+CREATE TABLE outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    accountId TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL,
+    revertJson TEXT,
+    entityIds TEXT NOT NULL DEFAULT '',
+    createdAt INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    lastError TEXT,
+    permanent INTEGER NOT NULL DEFAULT 0,
+    nextAttemptAt INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX outbox_account ON outbox(accountId, id);

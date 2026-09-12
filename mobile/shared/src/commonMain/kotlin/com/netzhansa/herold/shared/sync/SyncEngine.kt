@@ -5,6 +5,9 @@ import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.jmap.ChangesOutcome
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
+import com.netzhansa.herold.shared.outbox.DrainOutcome
+import com.netzhansa.herold.shared.outbox.Outbox
+import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import com.netzhansa.herold.shared.store.LocalStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +51,9 @@ object SyncTypes {
 class SyncEngine(
     private val api: JmapApi,
     private val store: LocalStore,
+    private val outbox: Outbox = Outbox(store),
+    /** The outbox's submitter; null in tests that only exercise reconciliation. */
+    private val drainer: OutboxDrainer? = null,
     private val inboxFetchLimit: Int = DEFAULT_INBOX_FETCH,
     private val now: () -> Long = { 0L },
 ) {
@@ -65,6 +71,10 @@ class SyncEngine(
      */
     suspend fun syncAll(): SyncStatus = mutex.withLock {
         _status.value = SyncStatus.Syncing
+        // The queue goes out before the fold: our own writes reach the
+        // server first, so the changes we then read already contain them
+        // rather than superseding them (REQ-AND-SYNC-24).
+        drainOutbox()
         try {
             val session = api.session()
             val accountIds = session.mailAccountIds()
@@ -92,6 +102,14 @@ class SyncEngine(
         }
         _status.value
     }
+
+    /**
+     * Submits what the outbox holds (REQ-AND-SYNC-22). The engine owns
+     * the drain because it is the only component that talks to the
+     * server on the store's behalf; the UI asks for one, it never
+     * submits itself.
+     */
+    suspend fun drainOutbox(): DrainOutcome = drainer?.drain() ?: DrainOutcome()
 
     /** Reconciles one account, for an EventSource `StateChange` naming it. */
     suspend fun syncAccount(accountId: String, types: List<String> = SyncTypes.ALL): SyncStatus =
@@ -164,6 +182,10 @@ class SyncEngine(
                 if (outcome.destroyed.isNotEmpty()) store.deleteEmails(accountId, outcome.destroyed)
                 val touched = (outcome.created + outcome.updated).distinct()
                 if (touched.isNotEmpty()) {
+                    // Server truth for a message with a queued optimistic
+                    // write on it wins; the queued write is discarded
+                    // (REQ-AND-SYNC-24).
+                    outbox.discardSupersededBy(accountId, touched)
                     val fetched = api.emailGet(accountId, touched)
                     store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
                     if (fetched.notFound.isNotEmpty()) store.deleteEmails(accountId, fetched.notFound)

@@ -3,8 +3,8 @@ package com.netzhansa.herold.shared.actions
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
-import com.netzhansa.herold.shared.fake.FakeJmapApi
 import com.netzhansa.herold.shared.fake.FakeLocalStore
+import com.netzhansa.herold.shared.outbox.Outbox
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,8 +36,9 @@ class UndoCenterTest {
     @Test
     fun anOfferIsParkedWithTheLocalWriteAndTakenOnce() = runTest {
         val store = store(message("e1"))
-        val actions = MailActions(FakeJmapApi(), store)
-        val centre = UndoCenter(this)
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter()
 
         val offered = centre.offer(
             UndoMessages.ARCHIVED,
@@ -46,40 +47,41 @@ class UndoCenterTest {
         )
 
         assertNotNull(offered)
-        // The row is out of the inbox before anything is sent, which is
+        // The row is out of the inbox and the change is queued, which is
         // what the offer is offered alongside.
         assertTrue(store.email("acct-a", "e1")!!.mailboxIds.contains("archive-1"))
+        assertEquals(1, outbox.list().size)
 
         val taken = centre.take()
         assertEquals(offered, taken)
         assertNull(centre.take(), "an offer is shown once, however many lists are watching")
-        assertEquals(ActionResult.Applied, taken!!.commit.await())
     }
 
     @Test
     fun theUndoOfAParkedOfferRestoresTheMessage() = runTest {
         val store = store(message("e1"))
-        val actions = MailActions(FakeJmapApi(), store)
-        val centre = UndoCenter(this)
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter()
 
         val offer = centre.offer(
             UndoMessages.ARCHIVED,
             actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), boxes),
             actions,
         )!!
-        offer.commit.await()
+        offer.undo()
 
-        assertEquals(ActionResult.Applied, actions.restore(offer.snapshot))
         assertTrue(store.email("acct-a", "e1")!!.mailboxIds.contains("inbox-1"))
         assertTrue(!store.email("acct-a", "e1")!!.mailboxIds.contains("archive-1"))
+        assertTrue(outbox.list().isEmpty(), "the undone archive leaves nothing queued")
     }
 
     @Test
-    fun anActionThatChangesNothingIsNotOfferedAndSendsNothing() = runTest {
+    fun anActionThatChangesNothingIsNotOfferedAndQueuesNothing() = runTest {
         val store = store(message("e1").copy(mailboxIds = setOf("archive-1")))
-        val api = FakeJmapApi()
-        val actions = MailActions(api, store)
-        val centre = UndoCenter(this)
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter()
 
         val offered = centre.offer(
             UndoMessages.ARCHIVED,
@@ -89,14 +91,15 @@ class UndoCenterTest {
 
         assertNull(offered)
         assertNull(centre.take())
-        assertTrue(api.emailSetCalls.isEmpty())
+        assertTrue(outbox.list().isEmpty())
     }
 
     @Test
     fun aSnoozeIsOfferedTheSameWayAndCarriesItsWakeTime() = runTest {
         val store = store(message("e1"))
-        val actions = MailActions(FakeJmapApi(), store)
-        val centre = UndoCenter(this)
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter()
 
         val offer = centre.offer(
             UndoMessages.SNOOZED,
@@ -105,8 +108,19 @@ class UndoCenterTest {
         )!!
 
         assertEquals("2026-09-13T08:00:00Z", store.email("acct-a", "e1")!!.snoozedUntil)
-        assertEquals(ActionResult.Applied, offer.commit.await())
-        assertEquals(ActionResult.Applied, actions.restore(offer.snapshot))
+        offer.undo()
         assertNull(store.email("acct-a", "e1")!!.snoozedUntil)
+    }
+
+    @Test
+    fun anOfferWithItsOwnUndoRunsThatUndo() = runTest {
+        val centre = UndoCenter()
+        var taken = false
+
+        val offer = centre.offer(UndoMessages.SENDING, windowMs = 5_000) { taken = true }
+        assertEquals(5_000L, offer.windowMs)
+        centre.take()!!.undo()
+
+        assertTrue(taken)
     }
 }

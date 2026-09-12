@@ -6,6 +6,9 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.Thread
+import com.netzhansa.herold.shared.outbox.NewOutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxState
 import kotlinx.coroutines.flow.Flow
 
 /** A blob held in the local cache (REQ-AND-SYNC-12). */
@@ -133,6 +136,34 @@ interface LocalStore {
     suspend fun cachedBlob(accountId: String, blobId: String): CachedBlob?
 
     suspend fun cacheBlob(accountId: String, blobId: String, contentType: String, bytes: ByteArray)
+
+    /**
+     * Every outbox entry, oldest first: the order the drain submits them
+     * in (REQ-AND-SYNC-22). Outbox rows are never evicted by cache
+     * pressure; only a completed or discarded drain deletes one.
+     */
+    fun outbox(): Flow<List<OutboxEntry>>
+
+    suspend fun outboxList(): List<OutboxEntry>
+
+    suspend fun outboxEntry(id: Long): OutboxEntry?
+
+    /** Appends an entry and returns its id. */
+    suspend fun enqueueOutbox(entry: NewOutboxEntry): Long
+
+    suspend fun updateOutboxState(
+        id: Long,
+        state: OutboxState,
+        attempts: Int,
+        lastError: String?,
+        permanent: Boolean,
+        nextAttemptAt: Long,
+    )
+
+    /** Records the progress a multi-step entry made (uploaded blob, created draft). */
+    suspend fun updateOutboxPayload(id: Long, payload: String)
+
+    suspend fun deleteOutbox(id: Long)
 
     suspend fun pushRegistration(): PushRegistration?
 

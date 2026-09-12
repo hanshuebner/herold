@@ -7,6 +7,9 @@ import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.domain.Thread
+import com.netzhansa.herold.shared.outbox.NewOutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.store.CachedBlob
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.PushRegistration
@@ -194,6 +197,66 @@ class FakeLocalStore : LocalStore {
         blobs[accountId to blobId] = CachedBlob(contentType, bytes)
     }
 
+    private val outboxRows = MutableStateFlow<List<OutboxEntry>>(emptyList())
+    private var nextOutboxId = 1L
+
+    override fun outbox(): Flow<List<OutboxEntry>> = outboxRows
+
+    override suspend fun outboxList(): List<OutboxEntry> = outboxRows.value
+
+    override suspend fun outboxEntry(id: Long): OutboxEntry? = outboxRows.value.firstOrNull { it.id == id }
+
+    override suspend fun enqueueOutbox(entry: NewOutboxEntry): Long {
+        val id = nextOutboxId++
+        outboxRows.value = outboxRows.value + OutboxEntry(
+            id = id,
+            accountId = entry.accountId,
+            kind = entry.kind,
+            label = entry.label,
+            payload = entry.payload,
+            revertJson = entry.revertJson,
+            entityIds = entry.entityIds,
+            createdAt = entry.createdAt,
+            state = OutboxState.QUEUED,
+            attempts = 0,
+            lastError = null,
+            permanent = false,
+            nextAttemptAt = 0,
+        )
+        return id
+    }
+
+    override suspend fun updateOutboxState(
+        id: Long,
+        state: OutboxState,
+        attempts: Int,
+        lastError: String?,
+        permanent: Boolean,
+        nextAttemptAt: Long,
+    ) {
+        outboxRows.value = outboxRows.value.map { row ->
+            if (row.id != id) {
+                row
+            } else {
+                row.copy(
+                    state = state,
+                    attempts = attempts,
+                    lastError = lastError,
+                    permanent = permanent,
+                    nextAttemptAt = nextAttemptAt,
+                )
+            }
+        }
+    }
+
+    override suspend fun updateOutboxPayload(id: Long, payload: String) {
+        outboxRows.value = outboxRows.value.map { if (it.id == id) it.copy(payload = payload) else it }
+    }
+
+    override suspend fun deleteOutbox(id: Long) {
+        outboxRows.value = outboxRows.value.filterNot { it.id == id }
+    }
+
     var pushRow: PushRegistration? = null
 
     override suspend fun pushRegistration(): PushRegistration? = pushRow
@@ -212,6 +275,7 @@ class FakeLocalStore : LocalStore {
         identityRows.value = emptyList()
         states.clear()
         blobs.clear()
+        outboxRows.value = emptyList()
         pushRow = null
     }
 }

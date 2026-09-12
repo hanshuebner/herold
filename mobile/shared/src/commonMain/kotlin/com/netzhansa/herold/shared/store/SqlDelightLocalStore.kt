@@ -4,6 +4,10 @@ import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.MailAddress
+import com.netzhansa.herold.shared.outbox.NewOutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxEntry
+import com.netzhansa.herold.shared.outbox.OutboxKind
+import com.netzhansa.herold.shared.outbox.OutboxState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -319,6 +323,62 @@ class SqlDelightLocalStore(
         }
     }
 
+    override fun outbox(): Flow<List<OutboxEntry>> =
+        database.outboxQueries.selectAll().asFlow().mapToList(dispatcher)
+            .mapList { it.toDomain() }
+
+    override suspend fun outboxList(): List<OutboxEntry> = withContext(dispatcher) {
+        database.outboxQueries.selectAll().executeAsList().map { it.toDomain() }
+    }
+
+    override suspend fun outboxEntry(id: Long): OutboxEntry? = withContext(dispatcher) {
+        database.outboxQueries.selectById(id).executeAsOneOrNull()?.toDomain()
+    }
+
+    override suspend fun enqueueOutbox(entry: NewOutboxEntry): Long = withContext(dispatcher) {
+        database.transactionWithResult {
+            database.outboxQueries.insert(
+                accountId = entry.accountId,
+                kind = entry.kind.name,
+                label = entry.label,
+                payload = entry.payload,
+                revertJson = entry.revertJson,
+                entityIds = entry.entityIds.joinToString(" "),
+                createdAt = entry.createdAt,
+            )
+            database.outboxQueries.lastInsertedId().executeAsOne()
+        }
+    }
+
+    override suspend fun updateOutboxState(
+        id: Long,
+        state: OutboxState,
+        attempts: Int,
+        lastError: String?,
+        permanent: Boolean,
+        nextAttemptAt: Long,
+    ) = withContext(dispatcher) {
+        database.outboxQueries.updateState(
+            state = state.wire,
+            attempts = attempts.toLong(),
+            lastError = lastError,
+            permanent = if (permanent) 1L else 0L,
+            nextAttemptAt = nextAttemptAt,
+            id = id,
+        )
+        Unit
+    }
+
+    override suspend fun updateOutboxPayload(id: Long, payload: String) = withContext(dispatcher) {
+        database.outboxQueries.updatePayload(payload, id)
+        Unit
+    }
+
+    override suspend fun deleteOutbox(id: Long) = withContext(dispatcher) {
+        database.outboxQueries.delete(id)
+        Unit
+    }
+
     override suspend fun pushRegistration(): PushRegistration? = withContext(dispatcher) {
         database.pushRegistrationQueries.get().executeAsOneOrNull()?.let {
             PushRegistration(
@@ -358,6 +418,7 @@ class SqlDelightLocalStore(
             }
             database.syncStateQueries.deleteAll()
             database.blobCacheQueries.deleteAll()
+            database.outboxQueries.deleteAll()
             database.pushRegistrationQueries.deleteAll()
             database.accountQueries.deleteAll()
         }
@@ -429,6 +490,22 @@ private fun Email.toDomain() = DomainEmail(
             .getOrDefault(emptyList())
             .map { it.toDomain() }
     } ?: emptyList(),
+)
+
+private fun Outbox.toDomain() = OutboxEntry(
+    id = id,
+    accountId = accountId,
+    kind = OutboxKind.from(kind),
+    label = label,
+    payload = payload,
+    revertJson = revertJson,
+    entityIds = entityIds.split(" ").filter { it.isNotBlank() },
+    createdAt = createdAt,
+    state = OutboxState.from(state),
+    attempts = attempts.toInt(),
+    lastError = lastError,
+    permanent = permanent != 0L,
+    nextAttemptAt = nextAttemptAt,
 )
 
 private fun Thread.toDomain() = DomainThread(

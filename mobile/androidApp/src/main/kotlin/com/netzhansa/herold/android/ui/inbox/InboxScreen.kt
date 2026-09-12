@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -66,12 +67,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.android.ui.common.ConnectivityChip
 import com.netzhansa.herold.android.ui.common.LabelSheet
 import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
-import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
@@ -102,6 +103,7 @@ fun InboxScreen(
     onOpenThread: (accountId: String, threadId: String) -> Unit,
     onCompose: () -> Unit,
     onSearch: () -> Unit,
+    onOutbox: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
@@ -110,6 +112,8 @@ fun InboxScreen(
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
     val categories by session.syncEngine.categories.collectAsStateSafely(emptyList())
     val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
+    val offline by container.offline.collectAsStateSafely(false)
+    val pending by container.outbox.pendingCount.collectAsStateSafely(0)
 
     val accountScope by container.accountScope.collectAsStateSafely(null)
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
@@ -138,10 +142,6 @@ fun InboxScreen(
     suspend fun emailsOf(row: ThreadRow): List<Email> =
         row.emailIds.mapNotNull { container.store.email(row.accountId, it) }
 
-    suspend fun report(result: ActionResult) {
-        if (result is ActionResult.Reverted) snackbar.showSnackbar(result.message)
-    }
-
     /**
      * Archive with undo. The rows leave the list on the optimistic write and
      * the offer is parked with them, while the `Email/set` runs underneath:
@@ -157,7 +157,15 @@ fun InboxScreen(
         )
     }
 
-    UndoOffers(container = container, session = session, snackbar = snackbar)
+    UndoOffers(container = container, snackbar = snackbar)
+
+    // A refusal the drain met is the user's to see: the entry stays in
+    // the outbox, and this is what tells them to look (REQ-AND-SYNC-23).
+    LaunchedEffect(session) {
+        session.drainer.failures.collect { failure ->
+            snackbar.showSnackbar("${failure.label} failed: ${failure.message}")
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawer,
@@ -188,6 +196,17 @@ fun InboxScreen(
                         scope.launch { drawer.close() }
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-snoozed"),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Outbox") },
+                    selected = false,
+                    icon = { Icon(Icons.Filled.Outbox, contentDescription = null) },
+                    badge = { if (pending > 0) Text("$pending") },
+                    onClick = {
+                        scope.launch { drawer.close() }
+                        onOutbox()
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-outbox"),
                 )
             }
         },
@@ -239,6 +258,7 @@ fun InboxScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            ConnectivityChip(offline = offline, pending = pending, onOpenOutbox = onOutbox)
             if (syncStatus is SyncStatus.Syncing) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("inbox-syncing"))
             }
@@ -293,12 +313,12 @@ fun InboxScreen(
                             onArchive = { scope.launch { archive(item.row) } },
                             onToggleStar = {
                                 scope.launch {
-                                    report(session.actions.setFlagged(emailsOf(item.row), !item.row.isFlagged))
+                                    session.actions.setFlagged(emailsOf(item.row), !item.row.isFlagged)
                                 }
                             },
                             onToggleRead = {
                                 scope.launch {
-                                    report(session.actions.setSeen(emailsOf(item.row), item.row.isUnread))
+                                    session.actions.setSeen(emailsOf(item.row), item.row.isUnread)
                                 }
                             },
                             onSnooze = { snoozeTarget = item.row },
@@ -327,12 +347,12 @@ fun InboxScreen(
                                         onArchive = { scope.launch { archive(thread) } },
                                         onToggleStar = {
                                             scope.launch {
-                                                report(session.actions.setFlagged(emailsOf(thread), !thread.isFlagged))
+                                                session.actions.setFlagged(emailsOf(thread), !thread.isFlagged)
                                             }
                                         },
                                         onToggleRead = {
                                             scope.launch {
-                                                report(session.actions.setSeen(emailsOf(thread), thread.isUnread))
+                                                session.actions.setSeen(emailsOf(thread), thread.isUnread)
                                             }
                                         },
                                         onSnooze = { snoozeTarget = thread },
@@ -356,7 +376,7 @@ fun InboxScreen(
             onDismiss = { snoozeTarget = null },
             onPick = { wakeAt ->
                 snoozeTarget = null
-                scope.launch { report(session.actions.snooze(emailsOf(row), wakeAt)) }
+                scope.launch { session.actions.snooze(emailsOf(row), wakeAt) }
             },
         )
     }
@@ -367,7 +387,7 @@ fun InboxScreen(
             applied = row.labels.toSet(),
             onDismiss = { labelTarget = null },
             onToggle = { label, applied ->
-                scope.launch { report(session.actions.setLabel(emailsOf(row), label, applied)) }
+                scope.launch { session.actions.setLabel(emailsOf(row), label, applied) }
             },
         )
     }
