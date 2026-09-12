@@ -252,7 +252,7 @@ fun InboxScreen(
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                     }
-                    OverflowMenu(onSignOut = onSignOut)
+                    OverflowMenu(onOutbox = onOutbox, onSignOut = onSignOut)
                 },
             )
         },
@@ -504,12 +504,17 @@ private fun AccountScopeSwitcher(
 }
 
 @Composable
-private fun OverflowMenu(onSignOut: () -> Unit) {
+private fun OverflowMenu(onOutbox: () -> Unit, onSignOut: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }, modifier = Modifier.testTag("inbox-overflow")) {
         Icon(Icons.Filled.MoreVert, contentDescription = "More")
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenuItem(
+            text = { Text("Outbox") },
+            onClick = { open = false; onOutbox() },
+            modifier = Modifier.testTag("menu-outbox"),
+        )
         DropdownMenuItem(
             text = { Text("Sign out") },
             onClick = { open = false; onSignOut() },

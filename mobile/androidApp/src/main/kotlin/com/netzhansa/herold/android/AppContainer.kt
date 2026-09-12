@@ -23,14 +23,18 @@ import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
 import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
+import com.netzhansa.herold.shared.sync.AndroidConnectivityMonitor
 import com.netzhansa.herold.shared.sync.SyncEngine
+import com.netzhansa.herold.shared.sync.offlineIndication
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** The default herold deployment; editable on the sign-in screen. */
@@ -98,6 +102,17 @@ class AppContainer(context: Context) {
      */
     val composeResume = MutableStateFlow<ComposePayload?>(null)
 
+    /** The platform's connectivity, which drives the drain and the chip. */
+    private val connectivity = AndroidConnectivityMonitor(context.applicationContext, appScope)
+
+    /**
+     * Whether the shell says the phone is offline. It lags the radio by
+     * the grace period, so a drop the user would not have noticed does
+     * not flash a chip at them (REQ-AND-SYNC-30).
+     */
+    val offline: StateFlow<Boolean> =
+        connectivity.online.offlineIndication().stateIn(appScope, SharingStarted.Eagerly, false)
+
     private val authClient = AuthClient(httpClient, tokenStore)
 
     /** Push registration and the memory of a declined permission (REQ-AND-PUSH-01/03). */
@@ -116,6 +131,15 @@ class AppContainer(context: Context) {
     /** True once [restore] has run, so the shell does not flash the sign-in screen. */
     private val _restored = MutableStateFlow(false)
     val restored: StateFlow<Boolean> = _restored.asStateFlow()
+
+    init {
+        // A connection returning is what the queue has been waiting for
+        // (REQ-AND-SYNC-22); the drain follows it without the user
+        // having to open anything.
+        appScope.launch {
+            connectivity.online.collect { up -> if (up) session.value?.requestDrain?.invoke() }
+        }
+    }
 
     /** Re-opens the session a stored token already authorises (token survives process death). */
     suspend fun restore() {
