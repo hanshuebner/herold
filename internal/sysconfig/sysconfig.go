@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1522,7 +1523,44 @@ type UIConfig struct {
 	// operator is. Default 8 hours ("8h"). Values outside [15m, 24h] are
 	// rejected by Validate.
 	ElevationAbsoluteTTL Duration `toml:"elevation_absolute_ttl,omitempty"`
+	// AndroidAppLinks registers the signing certificates of Android
+	// apps that should verify as the deployment's App Links target
+	// (REQ-AND-SYS-11, issue #365). Each entry becomes one statement in
+	// the Digital Asset Links document served at
+	// `/.well-known/assetlinks.json` on the public listener. An empty
+	// (the default) list means the route is not served at all (404):
+	// operators who do not ship an Android client need not think about
+	// this key.
+	AndroidAppLinks []AndroidAppLinkConfig `toml:"android_app_links,omitempty"`
 }
+
+// AndroidAppLinkConfig identifies one Android app allowed to verify as
+// the deployment's App Links handler, via a Digital Asset Links
+// statement (REQ-AND-SYS-11, issue #365).
+//
+// Example:
+//
+//	[server.ui]
+//	android_app_links = [
+//	  { package = "com.netzhansa.herold.android",
+//	    sha256_cert_fingerprints = ["AA:BB:...:FF"] },
+//	]
+type AndroidAppLinkConfig struct {
+	// Package is the Android application ID, e.g.
+	// "com.netzhansa.herold.android".
+	Package string `toml:"package"`
+	// SHA256CertFingerprints lists the app signing certificate's
+	// SHA-256 fingerprint(s) as colon-separated upper-case hex byte
+	// pairs, the format `keytool -list` and the Play Console print
+	// (e.g. "AA:BB:CC:...:FF", 32 pairs). Multiple entries cover key
+	// rotation or Play App Signing plus a local upload key.
+	SHA256CertFingerprints []string `toml:"sha256_cert_fingerprints"`
+}
+
+// sha256FingerprintPattern matches a SHA-256 fingerprint in the
+// colon-separated upper-case hex form `keytool`/Play Console print:
+// 32 byte pairs, e.g. "AA:BB:CC:...:FF".
+var sha256FingerprintPattern = regexp.MustCompile(`^[0-9A-F]{2}(:[0-9A-F]{2}){31}$`)
 
 // QueueConfig exposes operator-facing knobs for the outbound delivery queue.
 // Zero values fall back to the queue package's built-in defaults
@@ -3013,6 +3051,25 @@ func Validate(c *Config) error {
 	}
 	if idle, abs := c.Server.UI.ElevationIdleTTL.AsDuration(), c.Server.UI.ElevationAbsoluteTTL.AsDuration(); idle > abs {
 		return fmt.Errorf("sysconfig: [server.ui] elevation_idle_ttl %s exceeds elevation_absolute_ttl %s", idle, abs)
+	}
+	// Android App Links (REQ-AND-SYS-11, issue #365). Each entry needs a
+	// package name and at least one fingerprint; the fingerprint is
+	// checked against the SHA-256 colon-hex shape `keytool`/Play Console
+	// print so a copy-paste mistake (wrong hash, missing colons, an MD5
+	// fingerprint from an older keytool output) is caught at load time
+	// rather than producing a document Android silently refuses to verify.
+	for i, link := range c.Server.UI.AndroidAppLinks {
+		if link.Package == "" {
+			return fmt.Errorf("sysconfig: [server.ui] android_app_links[%d] package is required", i)
+		}
+		if len(link.SHA256CertFingerprints) == 0 {
+			return fmt.Errorf("sysconfig: [server.ui] android_app_links[%d] (%s) requires at least one sha256_cert_fingerprints entry", i, link.Package)
+		}
+		for _, fp := range link.SHA256CertFingerprints {
+			if !sha256FingerprintPattern.MatchString(fp) {
+				return fmt.Errorf("sysconfig: [server.ui] android_app_links[%d] (%s) sha256_cert_fingerprints entry %q is not 32 colon-separated upper-case hex byte pairs", i, link.Package, fp)
+			}
+		}
 	}
 	// Image proxy (REQ-SEND-70..78). Catch operator typos that would
 	// otherwise produce a silently-disabled feature: negative budgets

@@ -3184,6 +3184,14 @@ func composeAdminAndUI(
 	jmapHandler := jmapSrv.Handler()
 	publicMux.Handle("/.well-known/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.session", jmapHandler))
+	// Android App Links verification (REQ-AND-SYS-11, issue #365).
+	// Unmounted (absent, 404) unless [server.ui] android_app_links is
+	// configured -- an operator running no Android client sees nothing
+	// under /.well-known/assetlinks.json.
+	if assetLinksHandler := newAssetLinksHandler(cfg.Server.UI.AndroidAppLinks); assetLinksHandler != nil {
+		publicMux.Handle(assetLinksPath,
+			withPanicRecover(logger.With("subsystem", "assetlinks"), "assetlinks", assetLinksHandler))
+	}
 	publicMux.Handle("/jmap",
 		withPanicRecover(logger.With("subsystem", "jmap"), "jmap.api", jmapHandler))
 	publicMux.Handle("/jmap/",

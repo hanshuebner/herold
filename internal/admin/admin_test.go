@@ -113,6 +113,16 @@ metrics_bind = ""
 func startTestServer(t *testing.T) (cfg *sysconfig.Config, addrs map[string]string, doneCh <-chan struct{}, cancel func()) {
 	t.Helper()
 	_, cfg = minimalConfigFixture(t)
+	addrs, doneCh, cancel = startTestServerWithConfig(t, cfg)
+	return cfg, addrs, doneCh, cancel
+}
+
+// startTestServerWithConfig boots the full server against a caller-supplied
+// *sysconfig.Config (typically minimalConfigFixture's result, mutated by
+// the caller before boot) and returns the listener addresses plus a
+// teardown. The caller cancels ctx and waits for doneCh to close.
+func startTestServerWithConfig(t *testing.T, cfg *sysconfig.Config) (addrs map[string]string, doneCh <-chan struct{}, cancel func()) {
+	t.Helper()
 	ctx, cancelFn := context.WithCancel(context.Background())
 	addrs = make(map[string]string)
 	addrsMu := &sync.Mutex{}
@@ -136,7 +146,7 @@ func startTestServer(t *testing.T) (cfg *sysconfig.Config, addrs map[string]stri
 		cancelFn()
 		t.Fatalf("server did not become ready within timeout")
 	}
-	return cfg, addrs, done, cancelFn
+	return addrs, done, cancelFn
 }
 
 func TestStartServer_BootsAndServesAdminStatus(t *testing.T) {

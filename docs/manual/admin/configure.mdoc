@@ -602,6 +602,30 @@ mandates its own naming). Most operators leave it unset and just set
 `secure_cookies = true` is the production policy; only override
 during local development behind a trusted localhost reverse proxy.
 
+**Android App Links.** `android_app_links` registers the Android
+client's signing certificate so `GET /.well-known/assetlinks.json` on
+the public listener serves a Digital Asset Links document and Android
+verifies the deployment's App Links (REQ-AND-SYS-11, issue #365):
+
+```toml
+[server.ui]
+android_app_links = [
+  { package = "com.netzhansa.herold.android",
+    sha256_cert_fingerprints = [
+      "DF:1D:E8:CA:0B:62:34:FB:34:2F:49:32:F5:60:56:23:38:B7:A9:EC:A8:9D:CC:AE:A4:8F:3A:D1:B9:26:E3:72",
+    ] },
+]
+```
+
+`sha256_cert_fingerprints` takes the SHA-256 fingerprint(s) of the
+app's signing certificate(s) in the colon-separated upper-case hex
+form `keytool -list` and the Play Console print (32 byte pairs);
+Validate rejects any other shape at config load. List more than one
+fingerprint to cover key rotation or a Play App Signing key alongside
+a local upload key. The list is empty by default, in which case the
+route is not served at all (404) -- operators who do not ship an
+Android client need not think about this key.
+
 ### `[server.directory_autocomplete]` - compose To-field autocomplete
 
 ```toml
