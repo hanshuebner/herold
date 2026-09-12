@@ -50,13 +50,24 @@ type mailboxCreateInput struct {
 	// Color is the JMAP-only extension property (REQ-PROTO-56 /
 	// REQ-STORE-34). Hex literal "#RRGGBB"; null/absent means unset.
 	Color *string `json:"color,omitempty"`
+	// Disposition is the category-label extension property (issue
+	// #333); absent defaults to "none". Must satisfy
+	// store.ValidMailboxDisposition.
+	Disposition *string `json:"disposition,omitempty"`
+	// Priority is this mailbox's initial rank in the principal's
+	// ranked label list (issue #333); absent/null leaves it unranked.
+	// Applied through Metadata.ReorderMailboxPriority so the ranked
+	// set stays dense.
+	Priority *int `json:"priority,omitempty"`
 }
 
 // mailboxUpdateInput uses json.RawMessage for fields where we must
 // distinguish "absent" (no change) from explicit null (clear) per
 // JMAP /set update semantics.
-// - Color: null clears the colour; absent means no change.
-// - ParentID: null moves to top-level; absent means no change.
+//   - Color: null clears the colour; absent means no change.
+//   - ParentID: null moves to top-level; absent means no change.
+//   - Priority: null unranks the mailbox; absent means no change; a
+//     number sets the rank via Metadata.ReorderMailboxPriority.
 type mailboxUpdateInput struct {
 	Name         *string         `json:"name"`
 	ParentID     json.RawMessage `json:"parentId"`
@@ -64,6 +75,8 @@ type mailboxUpdateInput struct {
 	IsSubscribed *bool           `json:"isSubscribed"`
 	SortOrder    *int            `json:"sortOrder"`
 	Color        json.RawMessage `json:"color"`
+	Disposition  *string         `json:"disposition"`
+	Priority     json.RawMessage `json:"priority"`
 }
 
 // setHandler implements Mailbox/set.
@@ -415,6 +428,46 @@ func (h *handlerSet) createMailbox(
 		color = &v
 	}
 
+	// Disposition / priority (issue #333): refused on a system mailbox,
+	// validated against the enum, and the five-pinned limit enforced
+	// before the insert.
+	if (in.Disposition != nil || in.Priority != nil) && isSystemMailbox(attrs) {
+		var props []string
+		if in.Disposition != nil {
+			props = append(props, "disposition")
+		}
+		if in.Priority != nil {
+			props = append(props, "priority")
+		}
+		return store.Mailbox{}, &setError{
+			Type: "invalidProperties", Properties: props,
+			Description: "disposition and priority are not settable on a mailbox with a role",
+		}, nil
+	}
+	disposition := store.MailboxDispositionNone
+	if in.Disposition != nil {
+		d := store.MailboxDisposition(*in.Disposition)
+		if !store.ValidMailboxDisposition(d) {
+			return store.Mailbox{}, &setError{
+				Type: "invalidProperties", Properties: []string{"disposition"},
+				Description: "unknown disposition",
+			}, nil
+		}
+		disposition = d
+	}
+	if disposition == store.MailboxDispositionPinned {
+		n, err := h.store.Meta().CountPinnedMailboxes(ctx, ownerPID)
+		if err != nil {
+			return store.Mailbox{}, nil, fmt.Errorf("mailbox: count pinned: %w", err)
+		}
+		if n >= 5 {
+			return store.Mailbox{}, &setError{
+				Type:        "tooManyPinned",
+				Description: "at most 5 mailboxes may be pinned",
+			}, nil
+		}
+	}
+
 	sortOrder := uint32(0)
 	if in.SortOrder != nil {
 		sortOrder = uint32(*in.SortOrder)
@@ -427,6 +480,7 @@ func (h *handlerSet) createMailbox(
 		Attributes:  attrs,
 		Color:       color,
 		SortOrder:   sortOrder,
+		Disposition: disposition,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -437,6 +491,15 @@ func (h *handlerSet) createMailbox(
 			}, nil
 		}
 		return store.Mailbox{}, nil, fmt.Errorf("mailbox: insert: %w", err)
+	}
+	if in.Priority != nil {
+		if err := h.store.Meta().ReorderMailboxPriority(ctx, ownerPID, mb.ID, in.Priority); err != nil {
+			return store.Mailbox{}, nil, fmt.Errorf("mailbox: reorder priority: %w", err)
+		}
+		mb, err = h.store.Meta().GetMailboxByID(ctx, mb.ID)
+		if err != nil {
+			return store.Mailbox{}, nil, fmt.Errorf("mailbox: reload after reorder: %w", err)
+		}
 	}
 	if _, err := h.store.Meta().IncrementJMAPState(ctx, ownerPID, store.JMAPStateKindMailbox); err != nil {
 		return store.Mailbox{}, nil, fmt.Errorf("mailbox: bump state: %w", err)
@@ -633,6 +696,82 @@ func (h *handlerSet) updateMailbox(
 				}, nil
 			}
 			return nil, fmt.Errorf("mailbox: set color: %w", err)
+		}
+	}
+
+	// Disposition / priority (issue #333): refused on a system mailbox,
+	// validated against the enum, and the five-pinned limit enforced
+	// before the mutation. mb.Attributes / mb.Disposition are the
+	// pre-update values loaded above; role changes are not supported in
+	// v1 (see the Role check above), so mb.Attributes still reflects
+	// the mailbox's current role.
+	if (in.Disposition != nil || len(in.Priority) > 0) && isSystemMailbox(mb.Attributes) {
+		var props []string
+		if in.Disposition != nil {
+			props = append(props, "disposition")
+		}
+		if len(in.Priority) > 0 {
+			props = append(props, "priority")
+		}
+		return &setError{
+			Type: "invalidProperties", Properties: props,
+			Description: "disposition and priority are not settable on a mailbox with a role",
+		}, nil
+	}
+
+	if in.Disposition != nil {
+		d := store.MailboxDisposition(*in.Disposition)
+		if !store.ValidMailboxDisposition(d) {
+			return &setError{
+				Type: "invalidProperties", Properties: []string{"disposition"},
+				Description: "unknown disposition",
+			}, nil
+		}
+		if d == store.MailboxDispositionPinned && mb.Disposition != store.MailboxDispositionPinned {
+			n, err := h.store.Meta().CountPinnedMailboxes(ctx, ownerPID)
+			if err != nil {
+				return nil, fmt.Errorf("mailbox: count pinned: %w", err)
+			}
+			if n >= 5 {
+				return &setError{
+					Type:        "tooManyPinned",
+					Description: "at most 5 mailboxes may be pinned",
+				}, nil
+			}
+		}
+		if err := h.store.Meta().SetMailboxDisposition(ctx, mb.ID, d); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"disposition"},
+					Description: err.Error(),
+				}, nil
+			}
+			return nil, fmt.Errorf("mailbox: set disposition: %w", err)
+		}
+	}
+
+	// Priority is json.RawMessage so we can distinguish absent (no
+	// change) from JSON null (unrank) from a number (set rank).
+	if len(in.Priority) > 0 {
+		var newRank *int
+		if strings.TrimSpace(string(in.Priority)) != "null" {
+			var v int
+			if err := json.Unmarshal(in.Priority, &v); err != nil {
+				return &setError{
+					Type: "invalidProperties", Properties: []string{"priority"},
+					Description: "priority must be an integer or null",
+				}, nil
+			}
+			newRank = &v
+		}
+		if err := h.store.Meta().ReorderMailboxPriority(ctx, ownerPID, mb.ID, newRank); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return &setError{Type: "notFound"}, nil
+			}
+			return nil, fmt.Errorf("mailbox: reorder priority: %w", err)
 		}
 	}
 

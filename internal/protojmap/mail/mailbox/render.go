@@ -50,6 +50,17 @@ func renderMailbox(
 		v := *mb.Color
 		color = &v
 	}
+
+	disposition := string(mb.Disposition)
+	if disposition == "" {
+		disposition = string(store.MailboxDispositionNone)
+	}
+	var priority *int
+	if mb.Priority != nil {
+		v := *mb.Priority
+		priority = &v
+	}
+
 	return jmapMailbox{
 		ID:            jmapIDFromMailbox(mb.ID),
 		Name:          mb.Name,
@@ -63,6 +74,8 @@ func renderMailbox(
 		MyRights:      rights,
 		IsSubscribed:  mb.Attributes&store.MailboxAttrSubscribed != 0,
 		Color:         color,
+		Disposition:   disposition,
+		Priority:      priority,
 	}, nil
 }
 

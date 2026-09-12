@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protoadmin"
@@ -33,14 +34,25 @@ type fixture struct {
 
 func setupFixture(t *testing.T) *fixture {
 	t.Helper()
+	return setupFixtureWithStore(t, nil)
+}
+
+// setupFixtureWithStore is setupFixture with an injectable backing
+// store, so a Postgres-backed compliance test (see disposition_test.go)
+// can drive the same wiring against HEROLD_PG_DSN instead of the
+// default in-memory SQLite. A nil st leaves testharness.Start's default
+// (SQLite) in place.
+func setupFixtureWithStore(t *testing.T, st store.Store) *fixture {
+	t.Helper()
 	srv, _ := testharness.Start(t, testharness.Options{
+		Store:     st,
 		Listeners: []testharness.ListenerSpec{{Name: "jmap", Protocol: "jmap"}},
 	})
 
 	ctx := context.Background()
 	p, err := srv.Store.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
-		CanonicalEmail: "alice@example.test",
+		CanonicalEmail: fmt.Sprintf("alice-%d@example.test", time.Now().UnixNano()),
 	})
 	if err != nil {
 		t.Fatalf("InsertPrincipal: %v", err)

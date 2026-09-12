@@ -79,8 +79,12 @@ func rightsFromACL(r store.ACLRights) myRights {
 }
 
 // jmapMailbox is the wire-form Mailbox object (RFC 8621 §2.1) plus the
-// "color" extension property defined by REQ-PROTO-56 / REQ-STORE-34. The
-// color is null when unset; clients render their own default.
+// "color" extension property defined by REQ-PROTO-56 / REQ-STORE-34 and
+// the "disposition" / "priority" category properties defined by issue
+// #333 (ADR-0004, docs/design/web/requirements/05-categorisation.md
+// REQ-CAT-01/04/05/10/11). The color is null when unset; clients render
+// their own default. Disposition defaults to "none"; priority is null
+// when the mailbox is not part of the principal's ranked label list.
 type jmapMailbox struct {
 	ID            jmapID   `json:"id"`
 	Name          string   `json:"name"`
@@ -94,6 +98,8 @@ type jmapMailbox struct {
 	MyRights      myRights `json:"myRights"`
 	IsSubscribed  bool     `json:"isSubscribed"`
 	Color         *string  `json:"color"`
+	Disposition   string   `json:"disposition"`
+	Priority      *int     `json:"priority"`
 }
 
 // roleFromAttributes maps the SPECIAL-USE attribute bits to the JMAP
@@ -149,4 +155,19 @@ func attributesFromRole(role string) (store.MailboxAttributes, bool) {
 		return store.MailboxAttrFlagged, true
 	}
 	return 0, false
+}
+
+// systemMailboxAttrs is every SPECIAL-USE / role attribute bit — the
+// set that marks a mailbox as system-owned rather than a user label.
+// MailboxAttrSubscribed is excluded: subscription state carries no
+// role semantics.
+const systemMailboxAttrs = store.MailboxAttrInbox | store.MailboxAttrSent |
+	store.MailboxAttrDrafts | store.MailboxAttrTrash | store.MailboxAttrJunk |
+	store.MailboxAttrArchive | store.MailboxAttrFlagged
+
+// isSystemMailbox reports whether attrs carries a role, per issue
+// #333: disposition and priority are category-label properties and are
+// refused on INBOX, Sent, Drafts, Trash, Junk, Archive, and Flagged.
+func isSystemMailbox(attrs store.MailboxAttributes) bool {
+	return attrs&systemMailboxAttrs != 0
 }

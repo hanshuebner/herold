@@ -163,6 +163,12 @@ func filterMailboxProperties(mb jmapMailbox, propSet map[string]struct{}) map[st
 	if _, ok := propSet["color"]; ok {
 		m["color"] = mb.Color
 	}
+	if _, ok := propSet["disposition"]; ok {
+		m["disposition"] = mb.Disposition
+	}
+	if _, ok := propSet["priority"]; ok {
+		m["priority"] = mb.Priority
+	}
 	return m
 }
 
