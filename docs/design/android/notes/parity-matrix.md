@@ -41,7 +41,8 @@ presentation-level and not yet built.
 | `05-categorisation` — category editing and disposition settings | presentation | todo | — |
 | `06-snooze` — snooze data model | protocol | n/a | — |
 | `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
-| `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | todo | — |
+| `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | done (#350); the Material date picker then time picker, opening on the next full hour | #350 |
+| `06-snooze` — the open conversation states its wake time, with edit and cancel (`REQ-SNZ-12`) | presentation | done (#350) | #350 |
 | `06-snooze` — snoozed threads leave the inbox and list under a Snoozed destination with their wake time (`REQ-SNZ-10/11/14`) | presentation | done (#353) | #353 |
 | `07-search` — JMAP `Email/query` + FTS | protocol | n/a | — |
 | `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c); a result outside the synced set is fetched on open and the search screen is restored on back (#339, #340) | #329 |

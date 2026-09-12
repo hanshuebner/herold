@@ -176,6 +176,10 @@ class MailActions(
      * Snooze: `snoozedUntil` plus the `$snoozed` keyword, which herold keeps
      * as an atomic pair (`internal/protojmap/mail/email/set.go`), so the
      * client sends only `snoozedUntil`.
+     *
+     * The wake destination is left to the server, which resolves the
+     * account's inbox at snooze time (`snoozeWakeMailboxId`, issue #274) -
+     * the same destination the suite's picker preselects.
      */
     suspend fun snooze(emails: List<Email>, wakeAt: String): ActionResult = commit(snoozeLocally(emails, wakeAt))
 
@@ -195,6 +199,27 @@ class MailActions(
         }
         optimistic.forEach { write(it) }
         return PendingAction(snapshot, optimistic, patches)
+    }
+
+    /**
+     * Cancels a snooze: the wake time goes, and herold clears the `$snoozed`
+     * keyword with it, so the conversation is back in the inbox at once
+     * (suite REQ-SNZ-12).
+     */
+    suspend fun unsnooze(emails: List<Email>): ActionResult {
+        val target = emails.filter { it.snoozedUntil != null || it.isSnoozed }
+        if (target.isEmpty()) return ActionResult.Applied
+        val snapshot = ActionSnapshot(target)
+        val optimistic = target.map { email ->
+            email.copy(
+                snoozedUntil = null,
+                keywords = email.keywords.filterNot { it.equals(Keywords.SNOOZED, ignoreCase = true) }.toSet(),
+            )
+        }
+        val patches = target.associate { email ->
+            email.id to buildJsonObject { put("snoozedUntil", JsonPrimitive(null as String?)) }
+        }
+        return apply(snapshot, optimistic, patches)
     }
 
     private suspend fun keywordAction(emails: List<Email>, keyword: String, present: Boolean): ActionResult {

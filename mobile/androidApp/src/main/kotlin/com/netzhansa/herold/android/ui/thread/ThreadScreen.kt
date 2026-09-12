@@ -36,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -71,6 +72,7 @@ import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.actions.PendingAction
+import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.domain.Attachment
@@ -79,6 +81,8 @@ import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -142,6 +146,11 @@ fun ThreadScreen(
         MailNotifier.cancel(context, MailNotification.tagFor(accountId, threadId))
         onDispose { ActiveThread.left(accountId, threadId) }
     }
+
+    // The conversation's wake time, when the server holds one for it
+    // (suite REQ-SNZ-12): the indicator states it and offers the edit and
+    // the cancel.
+    val snoozedUntil = messages.firstNotNullOfOrNull { it.snoozedUntil }
 
     val newest = messages.lastOrNull()
     LaunchedEffect(newest?.id) {
@@ -217,6 +226,13 @@ fun ThreadScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        snoozedUntil?.let { wakeAt ->
+            SnoozedIndicator(
+                wakeAt = wakeAt,
+                onEdit = { snoozing = true },
+                onCancel = { scope.launch { report(session.actions.unsnooze(messages)) } },
+            )
+        }
         ReplyBar(
             enabled = messages.isNotEmpty(),
             onReply = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
@@ -299,9 +315,59 @@ fun ThreadScreen(
             onDismiss = { snoozing = false },
             onPick = { wakeAt ->
                 snoozing = false
-                scope.launch { leaveWith(session.actions.snoozeLocally(messages, wakeAt), UndoMessages.SNOOZED) }
+                scope.launch {
+                    if (snoozedUntil != null) {
+                        // Editing the wake time of a conversation that is
+                        // already snoozed keeps it on screen: it is not in
+                        // the list this view would return to.
+                        report(session.actions.snooze(messages, wakeAt))
+                    } else {
+                        leaveWith(session.actions.snoozeLocally(messages, wakeAt), UndoMessages.SNOOZED)
+                    }
+                }
             },
         )
+    }
+}
+
+/**
+ * The snoozed banner: when the conversation wakes, with the edit and the
+ * cancel next to it (suite REQ-SNZ-12). Cancelling clears `snoozedUntil`,
+ * which herold pairs with the `$snoozed` keyword, so the conversation is
+ * back in the inbox at once.
+ */
+@Composable
+private fun SnoozedIndicator(
+    wakeAt: String,
+    onEdit: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val zone = TimeZone.currentSystemDefault()
+    val wakeLabel = SnoozeClock.parseWake(wakeAt)
+        ?.let { SnoozeClock.describe(it, Clock.System.now(), zone) }
+        ?: wakeAt
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth().testTag("thread-snoozed"),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Filled.Schedule, contentDescription = null)
+            Text(
+                text = "Snoozed until $wakeLabel",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f).testTag("thread-snoozed-until"),
+            )
+            TextButton(onClick = onEdit, modifier = Modifier.testTag("thread-snooze-edit")) {
+                Text("Edit")
+            }
+            TextButton(onClick = onCancel, modifier = Modifier.testTag("thread-snooze-cancel")) {
+                Text("Cancel")
+            }
+        }
     }
 }
 

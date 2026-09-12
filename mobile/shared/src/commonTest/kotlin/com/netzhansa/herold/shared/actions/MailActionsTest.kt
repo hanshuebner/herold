@@ -178,6 +178,20 @@ class MailActionsTest {
     }
 
     @Test
+    fun cancellingASnoozeClearsTheWakeTimeAndTheKeyword() = runTest {
+        val api = FakeJmapApi()
+        val store = store(seeded().copy(snoozedUntil = "2026-09-12T06:00:00Z", keywords = setOf(Keywords.SNOOZED)))
+        val actions = MailActions(api, store)
+
+        actions.unsnooze(listOf(store.email("acct-a", "e1")!!))
+
+        val stored = store.email("acct-a", "e1")!!
+        assertEquals(null, stored.snoozedUntil)
+        assertTrue(!stored.isSnoozed)
+        assertEquals(JsonNull, api.emailSetCalls.single().getValue("e1")["snoozedUntil"])
+    }
+
+    @Test
     fun recategorisingReplacesTheCategoryKeyword() = runTest {
         val api = FakeJmapApi()
         val seed = seeded().copy(keywords = setOf(Keywords.categoryKeyword("Primary")))

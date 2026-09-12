@@ -3,15 +3,17 @@ package com.netzhansa.herold.shared.actions
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
+import kotlinx.datetime.Month
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.isoDayNumber
 import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 
-/** The suite's snooze presets (docs/design/web/requirements/06-snooze.md REQ-SNZ-01..05). */
+/** The suite's snooze presets (docs/design/web/requirements/06-snooze.md REQ-SNZ-01..04). */
 enum class SnoozePreset {
     LATER_TODAY,
     TOMORROW_MORNING,
@@ -56,6 +58,51 @@ object SnoozeClock {
         }
     }
 
+    /**
+     * What a custom pick opens on (REQ-SNZ-05): the next full hour in the
+     * device's zone, so the common "later today" edit is one dial turn away.
+     */
+    fun nextFullHour(now: Instant, zone: TimeZone): Instant {
+        val local = now.toLocalDateTime(zone)
+        return LocalDateTime(local.date, LocalTime(local.hour, 0)).toInstant(zone)
+            .plus(1, DateTimeUnit.HOUR)
+    }
+
+    /** The instant a picked local date and clock time name in [zone] (REQ-SNZ-05). */
+    fun customWakeTime(date: LocalDate, hour: Int, minute: Int, zone: TimeZone): Instant =
+        LocalDateTime(date, LocalTime(hour, minute)).toInstant(zone)
+
     /** The `snoozedUntil` value `Email/set` takes: a UTC date-time string. */
     fun wireValue(instant: Instant): String = instant.toString()
+
+    /** The wire value back, or null when the server sent something unparseable. */
+    fun parseWake(value: String): Instant? = try {
+        Instant.parse(value)
+    } catch (e: IllegalArgumentException) {
+        null
+    }
+
+    /**
+     * A wake time as the snoozed indicator states it, following the suite's
+     * relative phrasing (`formatSnoozeTarget`): the clock time alone today,
+     * "tomorrow" the next day, the weekday within the week, and the date
+     * beyond it.
+     */
+    fun describe(wakeAt: Instant, now: Instant, zone: TimeZone): String {
+        val target = wakeAt.toLocalDateTime(zone)
+        val time = target.hour.toString().padStart(2, '0') + ":" + target.minute.toString().padStart(2, '0')
+        return when (target.date.toEpochDays() - now.toLocalDateTime(zone).date.toEpochDays()) {
+            0 -> time
+            1 -> "$time tomorrow"
+            in 2..6 -> "${weekdayName(target.date.dayOfWeek)}, $time"
+            else -> "${monthAbbreviation(target.date.month)} ${target.date.dayOfMonth}, $time"
+        }
+    }
+
+    private fun weekdayName(day: DayOfWeek): String = titleCase(day.name)
+
+    private fun monthAbbreviation(month: Month): String = titleCase(month.name).take(3)
+
+    private fun titleCase(name: String): String =
+        name.take(1) + name.drop(1).lowercase()
 }
