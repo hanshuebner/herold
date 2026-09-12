@@ -465,10 +465,18 @@ func (c *Client) deliverToMX(
 	}
 
 	// Body bytes followed by ".\r\n" terminator. We dot-stuff inline.
-	if err := writeDotStuffed(sess.writer, req.Message); err != nil {
+	endedAtLineStart, werr := writeDotStuffed(sess.writer, req.Message)
+	if werr != nil {
 		out.Status = DeliveryTransient
-		out.Diagnostic = fmt.Sprintf("data body write: %s", err.Error())
+		out.Diagnostic = fmt.Sprintf("data body write: %s", werr.Error())
 		return out
+	}
+	if !endedAtLineStart {
+		if _, err := sess.writer.WriteString("\r\n"); err != nil {
+			out.Status = DeliveryTransient
+			out.Diagnostic = fmt.Sprintf("data body terminator CRLF write: %s", err.Error())
+			return out
+		}
 	}
 	if _, err := sess.writer.WriteString(".\r\n"); err != nil {
 		out.Status = DeliveryTransient
@@ -622,8 +630,13 @@ func buildRcptToLine(req DeliveryRequest, sess *outboundSession) string {
 // the next byte will be the first on a new line.
 //
 // The caller is responsible for writing the ".\r\n" DATA terminator after
-// this function returns.
-func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
+// this function returns; when the returned endedAtLineStart is false the
+// body's last line carried no trailing CRLF/LF, and the caller must write
+// a CRLF first so the terminator lands on its own line rather than
+// concatenating onto that line (re #336: without it, the remote never
+// recognizes the RFC 5321 <CRLF>.<CRLF> end-of-DATA marker and the
+// session hangs until the remote's read deadline closes the connection).
+func writeDotStuffed(w *bufio.Writer, body io.Reader) (endedAtLineStart bool, err error) {
 	buf := make([]byte, dotStuffBufSize)
 	// The DATA body starts immediately after the 354 reply; by RFC 5321
 	// §4.5.2 transparency applies from the first byte of the body, which
@@ -637,8 +650,8 @@ func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
 			// Dot-stuff: if we are at the start of a line and the next
 			// byte is '.', emit an extra '.' before it.
 			if atLineStart && chunk[i] == '.' {
-				if err := w.WriteByte('.'); err != nil {
-					return err
+				if werr := w.WriteByte('.'); werr != nil {
+					return false, werr
 				}
 			}
 			// Advance to the next '\n' (which marks the end of the
@@ -647,26 +660,26 @@ func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
 			if j < 0 {
 				// No newline in the remaining slice: write it all out;
 				// we are still mid-line after this chunk.
-				if _, err := w.Write(chunk[i:]); err != nil {
-					return err
+				if _, werr := w.Write(chunk[i:]); werr != nil {
+					return false, werr
 				}
 				atLineStart = false
 				i = len(chunk)
 			} else {
 				// Write up to and including the '\n'; the byte after it
 				// is the start of the next line.
-				if _, err := w.Write(chunk[i : i+j+1]); err != nil {
-					return err
+				if _, werr := w.Write(chunk[i : i+j+1]); werr != nil {
+					return false, werr
 				}
 				atLineStart = true
 				i += j + 1
 			}
 		}
 		if readErr == io.EOF {
-			return nil
+			return atLineStart, nil
 		}
 		if readErr != nil {
-			return readErr
+			return false, readErr
 		}
 	}
 }

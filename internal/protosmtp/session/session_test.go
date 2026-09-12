@@ -376,6 +376,63 @@ func TestDotStuffing(t *testing.T) {
 	}
 }
 
+// TestData_BodyWithoutTrailingCRLF verifies that a body whose last line
+// carries no trailing CRLF still terminates DATA correctly: the ".\r\n"
+// terminator must land on its own line rather than concatenating onto
+// the body's last line (re #336). A JMAP-composed single-part text
+// message (internal/protojmap/mail/email/bodybuild.go's writeTextPart,
+// which quoted-printable-encodes the body without appending a trailing
+// CRLF) is exactly such a body; without the fix the fake server here
+// never sees a line consisting of only ".", so its DATA loop never
+// terminates and the exchange hangs until read deadlines expire.
+func TestData_BodyWithoutTrailingCRLF(t *testing.T) {
+	var receivedLines []string
+	sess := dialFakeSMTP(t, func(srv net.Conn) {
+		r := bufio.NewReader(srv)
+		w := bufio.NewWriter(srv)
+		srvWriteln(w, "220 smtp.test")
+		srvReadline(r) // EHLO
+		srvWriteln(w, "250 smtp.test")
+		srvReadline(r) // MAIL FROM
+		srvWriteln(w, "250 ok")
+		srvReadline(r) // RCPT TO
+		srvWriteln(w, "250 ok")
+		srvReadline(r) // DATA
+		srvWriteln(w, "354 send")
+		deadline := time.Now().Add(5 * time.Second)
+		_ = srv.SetReadDeadline(deadline)
+		for {
+			line := srvReadline(r)
+			if line == "." {
+				break
+			}
+			receivedLines = append(receivedLines, line)
+		}
+		srvWriteln(w, "250 2.0.0 queued as no-trailing-crlf")
+	})
+	if _, err := sess.ReadGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Ehlo("client.test"); err != nil {
+		t.Fatal(err)
+	}
+	sess.MailFrom("a@a.test")
+	sess.RcptTo("b@b.test")
+	// No trailing "\r\n" after "hello three" -- the exact shape
+	// writeTextPart produces for a plain-text draft.
+	body := strings.NewReader("Subject: x\r\n\r\nhello three")
+	mtaID, err := sess.Data(body)
+	if err != nil {
+		t.Fatalf("Data: %v (received lines so far: %v)", err, receivedLines)
+	}
+	if !strings.Contains(mtaID, "no-trailing-crlf") {
+		t.Errorf("mtaID = %q; want to contain no-trailing-crlf", mtaID)
+	}
+	if len(receivedLines) == 0 || receivedLines[len(receivedLines)-1] != "hello three" {
+		t.Errorf("received lines = %v; want the last line to be exactly %q", receivedLines, "hello three")
+	}
+}
+
 // TestParseReply_EnhancedStatus verifies that enhanced status codes are
 // extracted from reply text when enhancedCodes is true.
 func TestParseReply_EnhancedStatus(t *testing.T) {

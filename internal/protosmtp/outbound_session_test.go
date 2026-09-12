@@ -42,15 +42,24 @@ func dotStuffRef(body []byte) []byte {
 // the complete output.
 func runDotStuff(t *testing.T, input []byte) []byte {
 	t.Helper()
+	out, _ := runDotStuffReportEnd(t, input)
+	return out
+}
+
+// runDotStuffReportEnd is runDotStuff plus the endedAtLineStart flag, for
+// tests that assert on it directly.
+func runDotStuffReportEnd(t *testing.T, input []byte) ([]byte, bool) {
+	t.Helper()
 	var dst bytes.Buffer
 	bw := bufio.NewWriterSize(&dst, 4096)
-	if err := protosmtp.WriteDotStuffedForTest(bw, bytes.NewReader(input)); err != nil {
+	endedAtLineStart, err := protosmtp.WriteDotStuffedForTest(bw, bytes.NewReader(input))
+	if err != nil {
 		t.Fatalf("writeDotStuffed: %v", err)
 	}
 	if err := bw.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	return dst.Bytes()
+	return dst.Bytes(), endedAtLineStart
 }
 
 // TestWriteDotStuffed_AgainstReference feeds tricky inputs through both
@@ -151,9 +160,37 @@ func TestWriteDotStuffed_ReaderError(t *testing.T) {
 	errReader := &errAfterN{n: 10, err: io.ErrUnexpectedEOF}
 	var dst bytes.Buffer
 	bw := bufio.NewWriter(&dst)
-	err := protosmtp.WriteDotStuffedForTest(bw, errReader)
+	_, err := protosmtp.WriteDotStuffedForTest(bw, errReader)
 	if err == nil {
 		t.Fatal("expected error from reader, got nil")
+	}
+}
+
+// TestWriteDotStuffed_EndedAtLineStart verifies the returned
+// endedAtLineStart flag: true when the body's last byte was a line
+// terminator, false when the body ends mid-line (re #336 -- callers rely
+// on this to decide whether a CRLF must precede the ".\r\n" DATA
+// terminator so it lands on its own line).
+func TestWriteDotStuffed_EndedAtLineStart(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty", "", true},
+		{"ends_with_crlf", "Subject: x\r\n\r\nbody\r\n", true},
+		{"ends_with_bare_lf", "line1\nline2\n", true},
+		{"ends_without_newline", "Subject: x\r\n\r\nbody without trailing newline", false},
+		{"only_partial_line", "no newline at all", false},
+		{"dot_only_no_newline", ".", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := runDotStuffReportEnd(t, []byte(tc.input))
+			if got != tc.want {
+				t.Errorf("endedAtLineStart(%q) = %v; want %v", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

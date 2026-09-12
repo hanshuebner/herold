@@ -294,8 +294,18 @@ func (s *Session) Data(payload io.Reader) (mtaID string, err error) {
 		return "", fmt.Errorf("DATA: %d %s", r.Code, strings.TrimSpace(r.Text))
 	}
 	// Dot-stuff and stream the body.
-	if err := writeDotStuffed(s.writer, payload); err != nil {
+	endedAtLineStart, err := writeDotStuffed(s.writer, payload)
+	if err != nil {
 		return "", fmt.Errorf("DATA body write: %w", err)
+	}
+	// The terminator must land on its own line. When the body's last line
+	// carried no trailing CRLF/LF, writeDotStuffed left the cursor mid-line
+	// (re #336): without this CRLF, ".\r\n" concatenates onto that line and
+	// the remote never sees the RFC 5321 <CRLF>.<CRLF> end-of-DATA marker.
+	if !endedAtLineStart {
+		if _, err := s.writer.WriteString("\r\n"); err != nil {
+			return "", fmt.Errorf("DATA body terminator CRLF write: %w", err)
+		}
 	}
 	if _, err := s.writer.WriteString(".\r\n"); err != nil {
 		return "", fmt.Errorf("DATA terminator write: %w", err)
@@ -444,12 +454,20 @@ func (s *Session) sendLine(line string) error {
 }
 
 // writeDotStuffed copies body to w with RFC 5321 §4.5.2 transparency: a
-// line beginning with '.' is escaped to "..".
-func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
+// line beginning with '.' is escaped to "..". It reports whether the last
+// byte written was a line terminator ('\n'); when it is not (the body's
+// final line has no trailing CRLF/LF), the caller must write a CRLF before
+// the ".\r\n" DATA terminator, or that terminator concatenates onto the
+// body's last line instead of standing on its own line, and the remote
+// never recognizes end-of-DATA (re #336: a JMAP-composed single-part
+// text body has no trailing CRLF, so an unpatched caller's session hangs
+// until the remote's read deadline closes the connection, surfacing as
+// "DATA: EOF").
+func writeDotStuffed(w *bufio.Writer, body io.Reader) (endedAtLineStart bool, err error) {
 	buf := make([]byte, 32*1024)
 	var pending []byte
 	for {
-		n, err := body.Read(buf)
+		n, rerr := body.Read(buf)
 		if n > 0 {
 			pending = append(pending, buf[:n]...)
 		}
@@ -469,30 +487,31 @@ func writeDotStuffed(w *bufio.Writer, body io.Reader) error {
 			pending = pending[nl+1:]
 			if len(line) > 0 && line[0] == '.' {
 				if werr := w.WriteByte('.'); werr != nil {
-					return werr
+					return false, werr
 				}
 			}
 			if _, werr := w.Write(line); werr != nil {
-				return werr
+				return false, werr
 			}
 		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
 				break
 			}
-			return err
+			return false, rerr
 		}
 	}
 	// Flush any remaining bytes that did not end with a newline.
 	if len(pending) > 0 {
-		if len(pending) > 0 && pending[0] == '.' {
+		if pending[0] == '.' {
 			if werr := w.WriteByte('.'); werr != nil {
-				return werr
+				return false, werr
 			}
 		}
 		if _, werr := w.Write(pending); werr != nil {
-			return werr
+			return false, werr
 		}
+		return false, nil
 	}
-	return nil
+	return true, nil
 }

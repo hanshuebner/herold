@@ -415,10 +415,18 @@ func (c *Client) deliverViaSmartHost(
 	if dc != 354 {
 		return mapReplyOutcome(out, dc, de, dt, "smart-host data")
 	}
-	if werr := writeDotStuffed(sess.writer, req.Message); werr != nil {
+	endedAtLineStart, werr := writeDotStuffed(sess.writer, req.Message)
+	if werr != nil {
 		out.Status = DeliveryTransient
 		out.Diagnostic = fmt.Sprintf("smart-host data body: %s", werr.Error())
 		return out
+	}
+	if !endedAtLineStart {
+		if _, werr := sess.writer.WriteString("\r\n"); werr != nil {
+			out.Status = DeliveryTransient
+			out.Diagnostic = fmt.Sprintf("smart-host data body terminator CRLF: %s", werr.Error())
+			return out
+		}
 	}
 	if _, werr := sess.writer.WriteString(".\r\n"); werr != nil {
 		out.Status = DeliveryTransient
