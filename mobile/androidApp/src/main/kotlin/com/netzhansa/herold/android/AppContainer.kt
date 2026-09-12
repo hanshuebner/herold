@@ -8,7 +8,9 @@ import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.createHttpClient
 import com.netzhansa.herold.shared.jmap.EventSourceClient
 import com.netzhansa.herold.shared.jmap.ImageProxyClient
+import com.netzhansa.herold.android.push.PushController
 import com.netzhansa.herold.shared.jmap.JmapClient
+import com.netzhansa.herold.shared.push.PushRegistrar
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
 import com.netzhansa.herold.shared.store.createDatabase
@@ -35,6 +37,7 @@ class SessionScope(
     val actions: MailActions,
     val eventSource: EventSourceClient,
     val imageProxy: ImageProxyClient,
+    val pushRegistrar: PushRegistrar,
 )
 
 /**
@@ -57,8 +60,27 @@ class AppContainer(context: Context) {
 
     private val authClient = AuthClient(httpClient, tokenStore)
 
+    /** Push registration and the memory of a declined permission (REQ-AND-PUSH-01/03). */
+    val push: PushController = PushController(context.applicationContext, this)
+
     private val _session = MutableStateFlow<SessionScope?>(null)
     val session: StateFlow<SessionScope?> = _session.asStateFlow()
+
+    /**
+     * The thread a notification tap asked for (REQ-AND-PUSH-13). The shell
+     * navigates to it once and clears it with [threadOpened], so a
+     * configuration change does not re-open it.
+     */
+    private val _threadTarget = MutableStateFlow<Pair<String, String>?>(null)
+    val threadTarget: StateFlow<Pair<String, String>?> = _threadTarget.asStateFlow()
+
+    fun openThread(accountId: String, threadId: String) {
+        _threadTarget.value = accountId to threadId
+    }
+
+    fun threadOpened() {
+        _threadTarget.value = null
+    }
 
     /** True once [restore] has run, so the shell does not flash the sign-in screen. */
     private val _restored = MutableStateFlow(false)
@@ -86,6 +108,9 @@ class AppContainer(context: Context) {
 
     /** Clears the token and every server-derived row for the account. */
     suspend fun signOut() {
+        // Drop the push subscription first: it is bound to the principal
+        // whose token is about to be forgotten (REQ-AND-PUSH-02).
+        runCatching { push.unregister() }
         _session.value = null
         authClient.signOut()
         store.clearAll()
@@ -100,6 +125,12 @@ class AppContainer(context: Context) {
             actions = MailActions(client, store),
             eventSource = EventSourceClient(httpClient, client),
             imageProxy = ImageProxyClient(httpClient, client),
+            pushRegistrar = PushRegistrar(
+                api = client,
+                store = store,
+                now = { System.currentTimeMillis() },
+                newDeviceClientId = { "herold-android-" + java.util.UUID.randomUUID() },
+            ),
         )
     }
 }

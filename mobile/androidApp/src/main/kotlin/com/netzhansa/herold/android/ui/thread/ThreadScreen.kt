@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,17 +43,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.android.push.ActiveThread
+import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
+import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -76,11 +81,21 @@ fun ThreadScreen(
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     var expandedId by remember { mutableStateOf<String?>(null) }
     var loadRemoteImages by remember { mutableStateOf(false) }
     var snoozing by remember { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
+
+    // A push for the thread on screen reconciles but posts no notification,
+    // and any notification already in the shade for it is withdrawn
+    // (architecture 04-push.md).
+    DisposableEffect(accountId, threadId) {
+        ActiveThread.entered(accountId, threadId)
+        MailNotifier.cancel(context, MailNotification.tagFor(accountId, threadId))
+        onDispose { ActiveThread.left(accountId, threadId) }
+    }
 
     val newest = messages.lastOrNull()
     LaunchedEffect(newest?.id) {

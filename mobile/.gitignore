@@ -17,3 +17,15 @@ captures/
 # a numbered .sqm against, so it is checked in and regenerated with
 # ./gradlew :shared:generateCommonMainHeroldDatabaseSchema.
 !shared/src/commonMain/sqldelight/databases/*.db
+
+# Firebase project credentials (issue #328). The values are read at build
+# time and initialised programmatically; the files themselves are the
+# maintainer's, dropped at ~/.config/herold-android/ or here, never committed.
+androidApp/firebase.properties
+androidApp/google-services.json
+
+# Release signing material. The keystore and its passwords reach the build
+# through the environment (Forgejo repository secrets in CI).
+*.keystore
+*.jks
+release-secrets.env

@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Requested contextually after the first successful sync, not at
+         launch (REQ-AND-PUSH-03). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".HeroldApplication"
@@ -22,6 +25,23 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Data-only FCM messages wake this service, which reconciles and
+             posts the notification (REQ-AND-PUSH-10..13). -->
+        <service
+            android:name=".push.HeroldMessagingService"
+            android:exported="false"
+            android:directBootAware="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Archive and Mark Read from the shade, applied without opening
+             the app (REQ-AND-PUSH-20). -->
+        <receiver
+            android:name=".push.NotificationActionReceiver"
+            android:exported="false" />
 
     </application>
 
