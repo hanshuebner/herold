@@ -131,8 +131,12 @@ fun ComposeScreen(
     // The compose opens once its inputs have arrived from the local store.
     LaunchedEffect(identities, accounts, parentEmailId, mode) {
         if (state != null || identities.isEmpty()) return@LaunchedEffect
+        // The quote needs the parent's body, which a message opened from
+        // the shade's Reply action has not been read with yet; loadBody
+        // returns the cached copy when there is one (issue #348).
         val parent = if (parentEmailId != null && accountId != null) {
-            container.store.email(accountId, parentEmailId)
+            session.syncEngine.loadBody(accountId, parentEmailId)
+                ?: container.store.email(accountId, parentEmailId)
         } else {
             null
         }

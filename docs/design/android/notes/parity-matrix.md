@@ -59,7 +59,8 @@ presentation-level and not yet built.
 | `20-settings` — settings model | protocol | n/a | — |
 | `20-settings` — settings UI | presentation | todo | — |
 | `25-push-notifications` — enriched push payload | protocol | n/a | — |
-| `25-push-notifications` — notification presentation (FCM) | presentation | done (milestone 1b) | #328 |
+| `25-push-notifications` — notification presentation (FCM) | presentation | done (milestone 1b); Gmail-grade presentation - app icon, decoded sender, avatar, subject and preview, attachment chips, Reply (#348) | #328 |
+| `02-mail-basics` / `REQ-MAIL-44` — sender avatar (hosted principal's picture, initials fallback) | presentation | done in notifications (#348); the message list and reading pane still show no avatar | #348 |
 | G7 — LLM transparency contract | protocol | n/a | — |
 | G7 — per-message "the LLM was asked ..." inspect view | presentation | todo | — |
 
@@ -88,7 +89,7 @@ matrix is a complete picture of mobile scope.
 | Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | done (milestone 1a); offline search under a "cached results only" banner done (milestone 1c) |
 | Durable offline outbox | REQ-AND-SYNC-20..25 | deferred (milestone 2) |
 | FCM registration, channels, thread notifications, Archive / Mark Read, tap-through | REQ-AND-PUSH-01..03, 10..13, 20 | done (milestone 1b) |
-| Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | todo (compose landed in milestone 1c; the shade's reply action is milestone 3) |
+| Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | the deep-link Reply action is done (#348): it opens the composer on the message with the quote prepared. The shade's inline `RemoteInput` reply and conversation shortcuts / Bubbles stay milestone 3 |
 | System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
 | Native navigation shell + predictive back | REQ-AND-05x | done (milestone 1a, phone single-pane) |
 
@@ -108,4 +109,6 @@ matrix is a complete picture of mobile scope.
 | Reply recipients, subject markers, quoting | `web/apps/suite/src/lib/compose/compose.svelte.ts` derives To from the parent (its recipients for an own-sent message), Cc from To-then-Cc minus the user's own addresses, collapses `Re:`/`Fwd:` marker chains over the same localized vocabulary, and lays the quote out as two empty paragraphs, an attribution line and a `<blockquote>`. | `ReplyBuilder` in `mobile/shared`, same rules and same vocabulary, unit-tested against the suite's cases. A divergence in either must move both. |
 | Search filter shape | `applyTrashJunkExclusion` splices `inMailboxOtherThan` into a flat `FilterCondition` so the server's fast-query gate recognises it (`REQ-SRC-06`). | `MailSearch.filter` builds the same flat object with `text` and `inMailboxOtherThan` as sibling keys. |
 | Draft and submission shape | `Email/set` writes the draft into Drafts with `$draft`, then `EmailSubmission/set` with `onSuccessUpdateEmail` clears `$draft` and moves it to Sent. | `Composer.send` issues the same two-call batch; the mobile client sends with `sendAt: null` because it has no undo-send window yet. |
-| Notification content | The service worker renders sender as title, subject as body, thread as the tag, with Archive / Mark Read / Reply. | The same payload fields, with the server's 80-byte preview appended to the body and Archive / Mark Read as actions; the shade's inline reply is milestone 3. |
+| Notification content | The service worker renders sender as title, subject as body, thread as the tag, with Archive / Mark Read / Reply. | The same payload fields: sender as title, subject as the body line, the server's 80-byte preview on the expanded line, thread as the tag, Archive / Mark read / Reply as actions. The phone adds what a shade shows and a browser notification cannot: the sender's avatar as the large icon, chips for the message's attachments with a thumbnail for an image part, and the account's address as the bundle's header (#348). |
+| Sender avatar | `avatar-resolver.svelte.ts` resolves own identity, then the hosted principal's `avatarBlobId` through the blob download URL, then Face / Gravatar, then a letter on the one interactive colour. | The notification's large icon resolves the hosted principal's `avatarBlobId` through the same `Principal/query` + `Principal/get` pair, downloaded with the bearer token and kept in the blob cache. Face and Gravatar are not used on the phone. The fallback initials sit on a colour derived from the address, because a shade full of identical circles distinguishes nothing; the suite's single interactive colour works there because the name is beside it. |
+| Sender display name | The service worker prints `payload.from` as it arrives. | `SenderLine` splits the header form and decodes RFC 2047 encoded words, so a payload from a server without the decoded-sender change (#347) still renders a name rather than `=?UTF-8?B?...?=`. |

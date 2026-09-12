@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launcher icon's background, and the tint of the fallback avatar's
+         frame; the UI itself follows the platform's dynamic colour. -->
+    <color name="ic_launcher_background">#FF1A4C8B</color>
+</resources>

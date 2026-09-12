@@ -276,4 +276,10 @@ class FakeJmapApi(
         type: String,
         name: String,
     ): DownloadedBlob = throw JmapException("no blob $blobId in the fake", status = 404)
+
+    /** Avatar blob ids by address, for the sender-picture lookup. */
+    var principalAvatars: Map<String, String> = emptyMap()
+
+    override suspend fun principalAvatarBlobId(accountId: String, email: String): String? =
+        principalAvatars[email.lowercase()]
 }

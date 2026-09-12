@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+The launcher foreground: the horn drawn inside the adaptive icon's 72dp
+safe zone of the 108dp canvas.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:scaleX="2.6"
+        android:scaleY="2.6"
+        android:translateX="22.8"
+        android:translateY="22.8">
+
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M11.2,12.8 L14.3,1.8 A9,9 0 0,1 22.2,9.7 Z" />
+
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="2.2"
+            android:strokeLineCap="round"
+            android:pathData="M5.6,18.4 L11.6,12.4" />
+
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M5.2,18.8 m-2.3,0 a2.3,2.3 0 1,0 4.6,0 a2.3,2.3 0 1,0 -4.6,0" />
+    </group>
+</vector>

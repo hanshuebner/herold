@@ -47,6 +47,12 @@ token** as a push subscription and receives via FCM
 contract (`notificationRules`, enriched-vs-minimal, coalescing by thread) is
 unchanged; only the transport and the encryption/visibility properties differ.
 
+The mail payload's sender arrives as `from`, the decoded display name, plus
+`fromAddress`, the bare address (server issue #347). The client reads
+`fromAddress` for the avatar lookup and falls back to splitting `from` as a
+raw `From` header - decoding its RFC 2047 encoded words - when the field is
+absent, so a payload from a server without that change still renders a name.
+
 ### Categorisation (no divergence from § Mailbox disposition and priority)
 
 The mobile client reads `Mailbox.disposition` and `Mailbox.priority` from the

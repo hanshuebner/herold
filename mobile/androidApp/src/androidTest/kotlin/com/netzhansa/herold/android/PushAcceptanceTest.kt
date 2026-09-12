@@ -89,13 +89,18 @@ class PushAcceptanceTest {
 
         val title = posted.extras.getString(Notification.EXTRA_TITLE).orEmpty()
         val body = posted.extras.getString(Notification.EXTRA_TEXT).orEmpty()
-        assertEquals("the sender is the title", target.senderDisplay, title)
-        assertTrue("the subject is in the body: $body", body.contains(target.subject))
-        assertTrue("the preview is in the body: $body", body.contains(target.preview.take(20)))
+        val expanded = posted.extras.getString(Notification.EXTRA_BIG_TEXT).orEmpty()
+        assertEquals("the sender's display name is the title", target.senderDisplay, title)
+        assertEquals("the subject is the body", target.subject, body)
+        assertTrue("the preview is on the expanded line: $expanded", expanded.contains(target.preview.take(20)))
         assertEquals("mail", posted.channelId)
+        assertNotNull("the sender's avatar is the large icon", posted.getLargeIcon())
 
         val actions = posted.actions.orEmpty().map { it.title.toString() }
-        assertEquals(listOf(MailNotifier.ARCHIVE_TITLE, MailNotifier.MARK_READ_TITLE), actions)
+        assertEquals(
+            listOf(MailNotifier.ARCHIVE_TITLE, MailNotifier.MARK_READ_TITLE, MailNotifier.REPLY_TITLE),
+            actions,
+        )
 
         // Grouped under a per-account summary (REQ-AND-PUSH-12).
         assertEquals(MailNotification.groupFor(target.accountId), posted.group)
@@ -103,6 +108,11 @@ class PushAcceptanceTest {
             it.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
         }
         assertNotNull("the account's notifications must have a summary", summary)
+        assertEquals(
+            "the bundle is headed by the account the mail arrived for",
+            DevInstance.email,
+            summary!!.notification.extras.getString(Notification.EXTRA_TITLE),
+        )
 
         showShade("10-push-notification")
     }
@@ -185,6 +195,25 @@ class PushAcceptanceTest {
                 it.tag == MailNotification.tagFor(target.accountId, target.threadId)
             }
         }
+    }
+
+    @Test
+    fun t06_twoThreadsBundleUnderTheAccountsHeader() {
+        val target = deliveredMessage()
+        deliver(payloadFor(target))
+        deliver(
+            payloadFor(
+                target,
+                subject = "Second thread " + System.currentTimeMillis(),
+                emailId = target.id + "1",
+            ).replace("\"${target.threadId}\"", "\"${target.threadId}x\""),
+        )
+
+        val children = activeNotifications().filter {
+            it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0
+        }
+        assertEquals("two threads, two notifications", 2, children.size)
+        showShade("17-account-group-header")
     }
 
     // ---- helpers -------------------------------------------------------

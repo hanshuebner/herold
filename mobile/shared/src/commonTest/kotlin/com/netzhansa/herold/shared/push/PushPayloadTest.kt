@@ -35,16 +35,53 @@ class PushPayloadTest {
     }
 
     @Test
-    fun aMailPayloadRendersSenderAsTitleAndSubjectPlusPreviewAsBody() {
+    fun aMailPayloadRendersSenderAsTitleSubjectAsBodyAndThePreviewWhenExpanded() {
         val notification = PushEnvelope.parse(MAIL_PAYLOAD)!!.mailNotification()!!
 
-        assertEquals("Bob Example <bob@example.local>", notification.title)
-        assertEquals("Lunch on Friday - Are you free at noon? The place on the corner", notification.body)
+        assertEquals("Bob Example", notification.title)
+        assertEquals("bob@example.local", notification.senderAddress)
+        assertEquals("Lunch on Friday", notification.body)
+        assertEquals(
+            "Lunch on Friday\nAre you free at noon? The place on the corner",
+            notification.expandedBody,
+        )
         assertEquals("t17", notification.threadId)
         assertEquals("41", notification.emailId)
         assertEquals("3", notification.inboxMailboxId)
         assertEquals("thread:a2:t17", notification.tag)
         assertEquals("account:a2", notification.groupKey)
+    }
+
+    @Test
+    fun theDecodedSenderAndAddressTheServerSendsAreUsedAsTheyArrive() {
+        val payload = """{"@type":"StateChange","changed":{"a2":{"Email":"9"}},"kind":"mail",
+            |"from":"Hans Huebner","fromAddress":"hans@example.local","subject":"Hello",
+            |"emailId":"7","threadId":"t7"}""".trimMargin()
+        val notification = PushEnvelope.parse(payload)!!.mailNotification()!!
+
+        assertEquals("Hans Huebner", notification.title)
+        assertEquals("hans@example.local", notification.senderAddress)
+    }
+
+    @Test
+    fun anEncodedWordInAnOlderPayloadsSenderIsDecodedOnTheClient() {
+        val payload = """{"@type":"StateChange","changed":{"a2":{"Email":"9"}},"kind":"mail",
+            |"from":"=?utf-8?q?Hans_H=C3=BCbner?= <hans@example.local>","subject":"Hello",
+            |"emailId":"7","threadId":"t7"}""".trimMargin()
+        val notification = PushEnvelope.parse(payload)!!.mailNotification()!!
+
+        assertEquals("Hans H\u00FCbner", notification.title)
+        assertEquals("hans@example.local", notification.senderAddress)
+    }
+
+    @Test
+    fun aSenderWithNoDisplayNameFallsBackToTheAddress() {
+        val payload = """{"@type":"StateChange","changed":{"a2":{"Email":"9"}},"kind":"mail",
+            |"from":"bob@example.local","subject":"Hello","emailId":"7","threadId":"t7"}""".trimMargin()
+        val notification = PushEnvelope.parse(payload)!!.mailNotification()!!
+
+        assertEquals("bob@example.local", notification.title)
+        assertEquals("bob@example.local", notification.senderAddress)
     }
 
     @Test

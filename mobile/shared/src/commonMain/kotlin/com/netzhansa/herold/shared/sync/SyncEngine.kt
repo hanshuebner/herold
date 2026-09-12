@@ -318,6 +318,18 @@ class SyncEngine(
         return downloaded.bytes
     }
 
+    /**
+     * The sender's picture, where herold hosts a principal for the
+     * address and that principal has one (issue #348). It goes through
+     * the same blob cache as an attachment, so a repeat notification from
+     * the same sender costs no download.
+     */
+    suspend fun senderAvatar(accountId: String, address: String): ByteArray? {
+        if (address.isBlank()) return null
+        val blobId = runCatching { api.principalAvatarBlobId(accountId, address) }.getOrNull() ?: return null
+        return blob(accountId, blobId, "image/*", "avatar")
+    }
+
     private suspend fun inboxIdFor(accountId: String): String? =
         store.mailboxList().firstOrNull { it.accountId == accountId && it.role == MailboxRoles.INBOX }?.id
 

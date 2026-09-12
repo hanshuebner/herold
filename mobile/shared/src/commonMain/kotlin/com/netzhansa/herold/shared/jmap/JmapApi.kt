@@ -125,6 +125,15 @@ interface JmapApi {
         type: String,
         name: String,
     ): DownloadedBlob
+
+    /**
+     * The avatar blob of the hosted principal owning [email], null when
+     * the address belongs to no principal here, the principal has no
+     * picture, or the server does not serve principals at all. The suite
+     * resolves sender avatars the same way (`avatar-resolver.svelte.ts`,
+     * `REQ-MAIL-44` tier 2).
+     */
+    suspend fun principalAvatarBlobId(accountId: String, email: String): String?
 }
 
 /**

@@ -41,6 +41,12 @@ data class PushEnvelope(
     val accountId: String?,
     val changedTypes: List<String>,
     val from: String = "",
+    /**
+     * The sender's bare address, which herold sends alongside the decoded
+     * display name in `from` (issue #347). Absent from an older server's
+     * payload, where `from` is the raw header.
+     */
+    val fromAddress: String = "",
     val subject: String = "",
     val preview: String = "",
     val emailId: String? = null,
@@ -67,6 +73,7 @@ data class PushEnvelope(
                 accountId = accountId,
                 changedTypes = changedTypes,
                 from = root.string("from").orEmpty(),
+                fromAddress = root.string("fromAddress").orEmpty(),
                 subject = root.string("subject") ?: root.string("body").orEmpty(),
                 preview = root.string("preview").orEmpty(),
                 emailId = root.string("emailId") ?: root.string("msgid"),

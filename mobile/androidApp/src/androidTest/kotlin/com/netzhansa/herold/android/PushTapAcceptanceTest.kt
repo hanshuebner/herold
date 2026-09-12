@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import kotlinx.coroutines.flow.first
@@ -95,6 +96,35 @@ class PushTapAcceptanceTest {
             device.wait(Until.hasObject(By.desc("Back")), TIMEOUT_MS),
         )
         captureDeviceScreen("12-notification-tap-opens-thread")
+    }
+
+    /**
+     * The shade's Reply action (REQ-AND-PUSH-21): the composer opens on
+     * the message, addressed to its sender, with the quote in the body.
+     */
+    @Test
+    fun theReplyActionOpensTheComposerOnTheMessage() {
+        val target = runBlocking {
+            app.container.store.inboxEmails().first().first { it.subject == subject }
+        }
+
+        injectPush(instrumentation.targetContext.applicationContext, payloadFor(target))
+        val posted = waitForNotification()
+        assertNotNull("no notification was posted for the push", posted)
+
+        posted!!.notification.actions.orEmpty()
+            .first { it.title.toString() == MailNotifier.REPLY_TITLE }
+            .actionIntent.send()
+
+        assertTrue(
+            "the composer must open on a reply to the message",
+            device.wait(Until.hasObject(By.textContains("Re: " + target.subject)), TIMEOUT_MS),
+        )
+        assertTrue(
+            "the quote must be prepared in the body",
+            device.wait(Until.hasObject(By.textContains("wrote:")), TIMEOUT_MS),
+        )
+        captureDeviceScreen("14-notification-reply-opens-compose")
     }
 
     private fun waitForNotification(): android.service.notification.StatusBarNotification? {

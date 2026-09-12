@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One attachment chip: an image part's thumbnail and the file's name. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/chip_three"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/notification_chip"
+    android:paddingStart="6dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="4dp"
+    android:layout_marginEnd="6dp"
+    android:visibility="gone">
+
+    <ImageView
+        android:id="@+id/chip_three_thumbnail"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:layout_marginEnd="6dp"
+        android:scaleType="centerCrop"
+        android:contentDescription="@null"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/chip_three_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="middle"
+        android:maxEms="10"
+        android:textAppearance="@style/TextAppearance.Compat.Notification" />
+</LinearLayout>

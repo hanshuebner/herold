@@ -15,6 +15,49 @@ The instrumented acceptance suite runs against an ephemeral herold from
     ./gradlew :androidApp:connectedDebugAndroidTest \
       -Pandroid.testInstrumentationRunnerArguments.heroldBaseUrl=http://10.0.2.2:<port>
 
+## The instrumented acceptance harness
+
+The suite runs against one ephemeral instance and a headless emulator, in
+phases, because two of its checks need the radios off and three need seed
+data the instance does not create on its own.
+
+    # the instance: the sub-account seed is what gives alice a second account
+    HEROLD_DEV_SUB_ACCOUNTS=1 scripts/dev-instance.sh start
+
+    # a fresh install, so no earlier run's state is in the store
+    adb shell pm clear com.netzhansa.herold.android
+    ./gradlew :androidApp:installDebug :androidApp:installDebugAndroidTest
+
+Seed what the suite expects beyond its own deliveries:
+
+- `SearchAcceptanceTest` searches for messages whose subject starts with
+  `seed message`; deliver two or three over the instance's SMTP listener.
+- `ComposeAcceptanceTest#t22` needs two accounts, which means separating
+  the seeded identity: `Identity/set {"<id>": {"separated": true}}` on the
+  primary account, with the sub-accounts capability in `using`. The seed
+  leaves it separable, not separated.
+
+Then run the online phase, the offline phase, and collect the screenshots:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.AcceptanceTest,... \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      -e heroldFakeFcmAddr 10.0.2.2:<fakefcm-port> \
+      -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+    adb shell svc data disable && adb shell svc wifi disable
+    # OfflineAcceptanceTest#t2..., ComposeOfflineAcceptanceTest,
+    # SearchAcceptanceTest#t31... - the phase-one runs above warm their caches
+    adb shell svc data enable && adb shell svc wifi enable
+
+    adb pull /sdcard/herold-shots
+
+Run the classes in a few invocations rather than one: a single invocation of
+the whole suite loads the emulator enough that a delivery wait or the
+editor's readiness check can exceed its 30 s budget.
+
 ## Firebase (push)
 
 Push needs a Firebase project. The build reads its values and the app

@@ -24,6 +24,7 @@ import kotlinx.serialization.json.addJsonArray
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -434,6 +435,53 @@ class JmapClient(
         }
         val contentType = response.headers[HttpHeaders.ContentType] ?: type
         return DownloadedBlob(contentType = contentType, bytes = response.bodyAsBytes())
+    }
+
+    override suspend fun principalAvatarBlobId(accountId: String, email: String): String? {
+        if (email.isBlank()) return null
+        val using = listOf(Capability.CORE, Capability.CHAT)
+        val responses = try {
+            batch(
+                listOf(
+                    MethodCall(
+                        "Principal/query",
+                        buildJsonObject {
+                            put("accountId", accountId)
+                            putJsonObject("filter") { put("emailExact", email) }
+                        },
+                        "p0",
+                    ),
+                    MethodCall(
+                        "Principal/get",
+                        buildJsonObject {
+                            put("accountId", accountId)
+                            // RFC 8620 section 3.7: the ids of the query
+                            // above, so the lookup is one round trip.
+                            putJsonObject("#ids") {
+                                put("resultOf", "p0")
+                                put("name", "Principal/query")
+                                put("path", "/ids")
+                            }
+                            putJsonArray("properties") {
+                                add("id")
+                                add("email")
+                                add("avatarBlobId")
+                            }
+                        },
+                        "p1",
+                    ),
+                ),
+                using,
+            )
+        } catch (t: Throwable) {
+            // No chat capability, no principal directory, no connection -
+            // the caller falls back to the initials avatar.
+            return null
+        }
+        val list = responses.firstOrNull { it.id == "p1" }?.args?.get("list") as? JsonArray
+        return list?.firstNotNullOfOrNull { element ->
+            (element as? JsonObject)?.get("avatarBlobId")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        }
     }
 
     /** The bearer token for the EventSource connection and other streamed reads. */

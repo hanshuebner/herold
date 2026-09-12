@@ -61,6 +61,12 @@ class MainActivity : ComponentActivity() {
      */
     private val threadTarget = MutableStateFlow<Pair<String, String>?>(null)
 
+    /**
+     * The message a notification's Reply action named, if the launch
+     * intent carried one (REQ-AND-PUSH-21).
+     */
+    private val replyTarget = MutableStateFlow<Pair<String, String>?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -68,7 +74,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             HeroldTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HeroldApp(container, threadTarget)
+                    HeroldApp(container, threadTarget, replyTarget)
                 }
             }
         }
@@ -88,6 +94,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun routeNotificationTap(intent: Intent?) {
         val accountId = intent?.getStringExtra(MailNotifier.EXTRA_ACCOUNT_ID) ?: return
+        val replyTo = intent.getStringExtra(MailNotifier.EXTRA_REPLY_EMAIL_ID)
+        if (replyTo != null) {
+            replyTarget.value = accountId to replyTo
+            return
+        }
         val threadId = intent.getStringExtra(MailNotifier.EXTRA_THREAD_ID) ?: return
         threadTarget.value = accountId to threadId
     }
@@ -102,6 +113,7 @@ class MainActivity : ComponentActivity() {
 fun HeroldApp(
     container: AppContainer,
     threadTarget: MutableStateFlow<Pair<String, String>?> = MutableStateFlow(null),
+    replyTarget: MutableStateFlow<Pair<String, String>?> = MutableStateFlow(null),
 ) {
     val session by container.session.collectAsStateSafely(null)
     val restored by container.restored.collectAsStateSafely(false)
@@ -131,6 +143,16 @@ fun HeroldApp(
                 target?.let { (accountId, threadId) ->
                     navController.navigate("thread/$accountId/$threadId")
                     threadTarget.value = null
+                }
+            }
+
+            // The shade's Reply action names a message; open the composer
+            // on it, quote prepared (REQ-AND-PUSH-21).
+            val reply by replyTarget.collectAsStateSafely(null)
+            LaunchedEffect(reply) {
+                reply?.let { (accountId, emailId) ->
+                    navController.navigate("compose/${ComposeMode.REPLY.name}/$accountId/$emailId")
+                    replyTarget.value = null
                 }
             }
             NavHost(navController = navController, startDestination = "inbox") {

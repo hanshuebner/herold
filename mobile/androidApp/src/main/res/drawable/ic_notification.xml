@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+The status-bar icon. The system draws it from the alpha channel, so it is
+the horn alone with no background (REQ-AND-PUSH-11).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.2,12.8 L14.3,1.8 A9,9 0 0,1 22.2,9.7 Z" />
+
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M5.6,18.4 L11.6,12.4" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5.2,18.8 m-2.3,0 a2.3,2.3 0 1,0 4.6,0 a2.3,2.3 0 1,0 -4.6,0" />
+</vector>
