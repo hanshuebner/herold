@@ -1,0 +1,10 @@
+-- Schema 1 -> 2: the FCM push subscription this install holds
+-- (issue #328, REQ-AND-PUSH-01). Additive; no existing row is touched.
+
+CREATE TABLE push_registration (
+    id INTEGER NOT NULL PRIMARY KEY,
+    subscriptionId TEXT NOT NULL,
+    deviceClientId TEXT NOT NULL,
+    tokenFingerprint TEXT NOT NULL,
+    registeredAt INTEGER NOT NULL
+);

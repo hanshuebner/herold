@@ -9,6 +9,7 @@ import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.domain.Thread
 import com.netzhansa.herold.shared.store.CachedBlob
 import com.netzhansa.herold.shared.store.LocalStore
+import com.netzhansa.herold.shared.store.PushRegistration
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -170,6 +171,14 @@ class FakeLocalStore : LocalStore {
         blobs[accountId to blobId] = CachedBlob(contentType, bytes)
     }
 
+    var pushRow: PushRegistration? = null
+
+    override suspend fun pushRegistration(): PushRegistration? = pushRow
+
+    override suspend fun setPushRegistration(registration: PushRegistration?) {
+        pushRow = registration
+    }
+
     override suspend fun blobCacheSize(): Long = blobs.values.sumOf { it.bytes.size.toLong() }
 
     override suspend fun clearAll() {
@@ -180,5 +189,6 @@ class FakeLocalStore : LocalStore {
         identityRows.value = emptyList()
         states.clear()
         blobs.clear()
+        pushRow = null
     }
 }

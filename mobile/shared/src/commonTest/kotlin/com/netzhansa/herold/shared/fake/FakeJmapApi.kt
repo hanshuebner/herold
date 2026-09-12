@@ -2,10 +2,12 @@ package com.netzhansa.herold.shared.fake
 
 import com.netzhansa.herold.shared.jmap.ChangesOutcome
 import com.netzhansa.herold.shared.jmap.DownloadedBlob
+import com.netzhansa.herold.shared.jmap.FcmSubscriptionCreate
 import com.netzhansa.herold.shared.jmap.GetResult
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
 import com.netzhansa.herold.shared.jmap.JmapSession
+import com.netzhansa.herold.shared.jmap.PushSetOutcome
 import com.netzhansa.herold.shared.jmap.SetOutcome
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireIdentity
@@ -97,6 +99,34 @@ class FakeJmapApi(
             newState = emailState,
             updated = update.keys - rejected.toSet(),
             notUpdated = rejected.associateWith { setRejections.getValue(it) },
+        )
+    }
+
+    /** Every `PushSubscription/set` the client made, in order. */
+    val pushSetCalls = mutableListOf<Pair<FcmSubscriptionCreate?, List<String>>>()
+
+    /** The id the next create is answered with. */
+    var pushSubscriptionId: String = "1"
+
+    /** When set, the create comes back rejected with this description. */
+    var pushRejection: String? = null
+
+    /** When set, every `PushSubscription/set` throws it. */
+    var pushFailure: Throwable? = null
+
+    override suspend fun pushSubscriptionSet(
+        create: FcmSubscriptionCreate?,
+        destroy: List<String>,
+    ): PushSetOutcome {
+        pushSetCalls.add(create to destroy)
+        pushFailure?.let { throw it }
+        pushRejection?.let {
+            return PushSetOutcome(createdId = null, notCreated = it, destroyed = destroy)
+        }
+        return PushSetOutcome(
+            createdId = if (create == null) null else pushSubscriptionId,
+            notCreated = null,
+            destroyed = destroy,
         )
     }
 

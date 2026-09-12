@@ -1,0 +1,24 @@
+-- The FCM push subscription this install holds with herold
+-- (docs/design/android/requirements/03-notifications.md REQ-AND-PUSH-01/02).
+-- One row at most: the id herold assigned, the device client id the
+-- registration was made under, and a fingerprint of the registration token
+-- so a rotation is detected without the token itself ever reaching the
+-- database.
+
+CREATE TABLE push_registration (
+    id INTEGER NOT NULL PRIMARY KEY,
+    subscriptionId TEXT NOT NULL,
+    deviceClientId TEXT NOT NULL,
+    tokenFingerprint TEXT NOT NULL,
+    registeredAt INTEGER NOT NULL
+);
+
+get:
+SELECT * FROM push_registration WHERE id = 1;
+
+upsert:
+INSERT OR REPLACE INTO push_registration(id, subscriptionId, deviceClientId, tokenFingerprint, registeredAt)
+VALUES (1, ?, ?, ?, ?);
+
+deleteAll:
+DELETE FROM push_registration;

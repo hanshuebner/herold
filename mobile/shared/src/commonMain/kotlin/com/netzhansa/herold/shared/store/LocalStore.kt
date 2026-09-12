@@ -20,6 +20,19 @@ data class CachedBlob(
 }
 
 /**
+ * The FCM push subscription this install holds with herold
+ * (REQ-AND-PUSH-01). [tokenFingerprint] is a stable hash of the
+ * registration token, so a rotation is detected without the token being
+ * written anywhere.
+ */
+data class PushRegistration(
+    val subscriptionId: String,
+    val deviceClientId: String,
+    val tokenFingerprint: String,
+    val registeredAt: Long,
+)
+
+/**
  * The local source of truth (REQ-AND-SYNC-01). The UI reads it and nothing
  * else; the sync engine is the only writer of server-derived rows, and
  * optimistic actions write through it before their `Email/set` is sent.
@@ -104,6 +117,11 @@ interface LocalStore {
     suspend fun cachedBlob(accountId: String, blobId: String): CachedBlob?
 
     suspend fun cacheBlob(accountId: String, blobId: String, contentType: String, bytes: ByteArray)
+
+    suspend fun pushRegistration(): PushRegistration?
+
+    /** Records the subscription herold created, or clears it with null. */
+    suspend fun setPushRegistration(registration: PushRegistration?)
 
     suspend fun blobCacheSize(): Long
 

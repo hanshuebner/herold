@@ -44,6 +44,17 @@ interface JmapApi {
      */
     suspend fun derivedCategories(accountId: String): List<String>
 
+    /**
+     * `PushSubscription/set` (RFC 8620 section 7.2 with herold's `kind`
+     * extension). One call carries the create and the destroys, so a token
+     * rotation registers the new subscription and drops the stale one in a
+     * single round trip (REQ-AND-PUSH-02).
+     */
+    suspend fun pushSubscriptionSet(
+        create: FcmSubscriptionCreate? = null,
+        destroy: List<String> = emptyList(),
+    ): PushSetOutcome
+
     suspend fun downloadBlob(
         accountId: String,
         blobId: String,

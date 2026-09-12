@@ -192,6 +192,37 @@ class JmapClient(
         return row["derivedCategories"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
     }
 
+    /**
+     * `PushSubscription/set`. The method is session-scoped (RFC 8620
+     * section 7.2), so it carries no `accountId`: a subscription belongs to
+     * the authenticated principal and covers every account of the session.
+     */
+    override suspend fun pushSubscriptionSet(
+        create: FcmSubscriptionCreate?,
+        destroy: List<String>,
+    ): PushSetOutcome {
+        val args = buildJsonObject {
+            if (create != null) {
+                putJsonObject("create") { put(PUSH_CREATE_KEY, create.toWire(wireJson)) }
+            }
+            if (destroy.isNotEmpty()) {
+                putJsonArray("destroy") { destroy.forEach { add(it) } }
+            }
+        }
+        val result = call("PushSubscription/set", args, listOf(Capability.CORE))
+        val created = (result["created"] as? JsonObject)?.get(PUSH_CREATE_KEY)?.jsonObject
+        val notCreated = (result["notCreated"] as? JsonObject)?.get(PUSH_CREATE_KEY)?.jsonObject
+        return PushSetOutcome(
+            createdId = created?.get("id")?.jsonPrimitive?.content,
+            notCreated = notCreated?.let {
+                it["description"]?.jsonPrimitive?.content
+                    ?: it["type"]?.jsonPrimitive?.content
+                    ?: "push registration rejected"
+            },
+            destroyed = result.idList("destroyed"),
+        )
+    }
+
     override suspend fun downloadBlob(
         accountId: String,
         blobId: String,
@@ -329,6 +360,8 @@ class JmapClient(
         (this[key] as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
 
     companion object {
+        /** The creation key the create/notCreated maps are routed back by. */
+        private const val PUSH_CREATE_KEY = "push0"
         private const val MAX_CHANGES = 256
         private const val MAX_BODY_VALUE_BYTES = 512 * 1024
 

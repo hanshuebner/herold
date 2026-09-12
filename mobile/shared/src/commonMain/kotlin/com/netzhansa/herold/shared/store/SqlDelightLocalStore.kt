@@ -293,6 +293,30 @@ class SqlDelightLocalStore(
         }
     }
 
+    override suspend fun pushRegistration(): PushRegistration? = withContext(dispatcher) {
+        database.pushRegistrationQueries.get().executeAsOneOrNull()?.let {
+            PushRegistration(
+                subscriptionId = it.subscriptionId,
+                deviceClientId = it.deviceClientId,
+                tokenFingerprint = it.tokenFingerprint,
+                registeredAt = it.registeredAt,
+            )
+        }
+    }
+
+    override suspend fun setPushRegistration(registration: PushRegistration?): Unit = withContext(dispatcher) {
+        if (registration == null) {
+            database.pushRegistrationQueries.deleteAll()
+        } else {
+            database.pushRegistrationQueries.upsert(
+                subscriptionId = registration.subscriptionId,
+                deviceClientId = registration.deviceClientId,
+                tokenFingerprint = registration.tokenFingerprint,
+                registeredAt = registration.registeredAt,
+            )
+        }
+    }
+
     override suspend fun blobCacheSize(): Long = withContext(dispatcher) {
         database.blobCacheQueries.totalSize().executeAsOne()
     }
@@ -308,6 +332,7 @@ class SqlDelightLocalStore(
             }
             database.syncStateQueries.deleteAll()
             database.blobCacheQueries.deleteAll()
+            database.pushRegistrationQueries.deleteAll()
             database.accountQueries.deleteAll()
         }
     }
