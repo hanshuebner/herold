@@ -30,6 +30,12 @@
 #           SMTP_ADDR=127.0.0.1:<port>
 #           SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
 #           ADMIN_TOTP_SECRET=<base32>  (admin TOTP secret for step-up elevation)
+#           FAKESMTP_HTTP_ADDR=127.0.0.1:<port>  (only with HEROLD_DEV_EXTERNAL_SUBMISSION=1;
+#               the fake SMTP sink's GET /messages, GET /count, GET
+#               /messages/{n}/raw, GET /messages?raw=1 status API)
+#           FAKESMTP_SUBMITTING_IDENTITIES=<email>  (only with HEROLD_DEV_EXTERNAL_SUBMISSION=1;
+#               the seeded identity whose external-submission config
+#               points at the sink above)
 #           FAKEFCM_HTTP_ADDR=127.0.0.1:<port>  (fake FCM's GET/DELETE /messages status API)
 #
 #       After that line block the script keeps running (so the EXIT
@@ -815,10 +821,17 @@ SMTP_SUBMISSION_ADDR=$smtp_sub_addr
 ADMIN_TOTP_SECRET=$admin_totp_secret
 EOF
     # Only present when HEROLD_DEV_EXTERNAL_SUBMISSION=1 started the fake
-    # SMTP sink: its HTTP status API (GET /messages, GET /count) is how a
-    # caller confirms a message actually arrived there.
+    # SMTP sink: its HTTP status API (GET /messages, GET /count, GET
+    # /messages/{n}/raw, GET /messages?raw=1) is how a caller confirms a
+    # message actually arrived there and inspects its raw bytes (re #336).
+    # FAKESMTP_SUBMITTING_IDENTITIES names the seeded identity whose
+    # external-submission config points at that sink -- see `herold dev
+    # seed-external-identities` (internal/admin/cmd_dev.go), invoked above
+    # with --sink-addr -- so a caller knows which From address to drive
+    # EmailSubmission/set with.
     if [ -n "${FAKESMTP_HTTP_ADDR:-}" ]; then
         echo "FAKESMTP_HTTP_ADDR=$FAKESMTP_HTTP_ADDR"
+        echo "FAKESMTP_SUBMITTING_IDENTITIES=alice-work@foreign.example"
     fi
     # Fake FCM endpoint's status API (GET/DELETE /messages) — how a
     # caller confirms a push reached the fake for a given registration

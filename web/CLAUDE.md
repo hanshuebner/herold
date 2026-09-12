@@ -237,6 +237,49 @@ The seed always provisions:
 These are dev-only credentials in an ephemeral SQLite store; not
 secrets, not deployed, never persisted between runs.
 
+### Optional flags: external submission and sub-accounts
+
+Two environment variables, set before `scripts/dev-instance.sh start`,
+gate additional seeding for flows that need an external SMTP smart
+host or a separated identity:
+
+- **`HEROLD_DEV_EXTERNAL_SUBMISSION=1`** builds and starts
+  `heroldfakesmtp` (a fake SMTP submission sink,
+  `internal/testfakes/fakesmtp`) and `heroldfakeidp` (a fake OAuth2
+  token endpoint), enables `[server.external_submission]`, registers
+  `gmail`/`m365`/`fakeidp` OAuth providers pointed at the fake IdP, and
+  seeds four foreign-domain (`foreign.example`) JMAP identities for
+  alice via `herold dev seed-external-identities --sink-addr`
+  (`internal/admin/cmd_dev.go`). Of those, **`alice-work@foreign.example`**
+  (identity id `800002`) carries external-submission configuration
+  pointing at the live sink, so `EmailSubmission/set` from that
+  identity — as plain non-admin alice, no separation needed — relays
+  through the sink. The start output prints:
+  - `FAKESMTP_HTTP_ADDR=127.0.0.1:<port>` — the sink's status API:
+    - `GET /messages` — JSON array of envelope records (`mail_from`,
+      `rcpt_to`, `auth_mechanism`, `auth_identity`, `over_tls`); add
+      `?raw=1` for a base64 `raw` field per record.
+    - `GET /messages/{n}/raw` — the nth recorded message's raw RFC 5322
+      bytes verbatim (`n` is 1-based, in recording order; 404 out of
+      range), for asserting on headers, MIME structure and attachments
+      rather than just the envelope.
+    - `GET /count` — `{"count": N}`.
+  - `FAKESMTP_SUBMITTING_IDENTITIES=alice-work@foreign.example` — the
+    identity to drive `EmailSubmission/set` with.
+- **`HEROLD_DEV_SUB_ACCOUNTS=1`** additionally seeds a separable
+  identity for alice (`vorsitz@classic-computing.example`, id `800101`)
+  ready to exercise the Suite's "Separate this identity" action via
+  `herold dev seed-separable-identity`. Combined with
+  `HEROLD_DEV_EXTERNAL_SUBMISSION=1` (so `--sink-addr` is passed), the
+  separated identity's own external-submission config also points at
+  the live sink — see
+  `web/apps/suite/tests/e2e-live/sub-account-external-submission.spec.ts`.
+
+On an instance started without `HEROLD_DEV_EXTERNAL_SUBMISSION=1`,
+`EmailSubmission/set` from any foreign-domain identity is refused
+(`forbiddenFrom`) — no submission path is configured, which is the
+expected default.
+
 Cleanup discipline:
 
 - `scripts/dev-instance.sh list` shows every live instance.
