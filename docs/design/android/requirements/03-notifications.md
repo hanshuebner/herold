@@ -3,8 +3,9 @@
 Native push notifications for new mail (and, in later phases, chat / calls /
 invites). The *what-gets-pushed*, rules, quiet hours, and payload contract are
 the Suite's `docs/design/web/requirements/25-push-notifications.md`, evaluated
-server-side; this file records the native delivery and rendering. Server
-prerequisite: the FCM transport, `../notes/server-prerequisites.md` (#200).
+server-side; this file records the native delivery and rendering. Two
+transports carry it: FCM (`../notes/server-prerequisites.md` #200) and
+UnifiedPush (#236), which serves a device without Google Play Services.
 
 ## Registration
 
@@ -12,6 +13,8 @@ prerequisite: the FCM transport, `../notes/server-prerequisites.md` (#200).
 |----|-------------|
 | REQ-AND-PUSH-01 | The client registers with FCM, obtains a device registration token, and registers it with herold as an FCM push subscription (`../notes/server-contract.md` § Push). The subscription carries the same `notificationRules` and `quietHours` extension properties the Suite sends (Suite `REQ-PUSH-32`, server-contract § Web Push subscription). |
 | REQ-AND-PUSH-02 | On an FCM token rotation the client re-registers the new token and the server destroys the stale subscription (mirrors Suite `REQ-PUSH-34`). |
+| REQ-AND-PUSH-04 | Where Google Play Services is absent the client registers over UnifiedPush (#229, server #236): it discovers the installed distributors through the connector, takes the user's pick when there is more than one, mints an RFC 8291 P-256 key pair and a 16-byte auth secret on the device, and registers the distributor's endpoint with `kind: "unifiedpush"` plus `keys.p256dh` / `keys.auth` and the same `types` the FCM registration sends. The private key and the auth secret live in Keystore-backed storage, never in the local database. An endpoint rotation re-registers; a distributor that is uninstalled or gives the endpoint back costs the subscription, and herold drops it on the 404/410 its next delivery gets. The delivered `aes128gcm` envelope (RFC 8188 + 8291) is decrypted on the device and the `StateChange` renders through the same path the FCM transport feeds. |
+| REQ-AND-PUSH-05 | The transport is visible and overridable in settings: "Push transport: Automatic / FCM / UnifiedPush". Automatic prefers FCM where Play Services carries it and the build has a Firebase project, and falls back to UnifiedPush where a distributor is installed. Switching registers anew and destroys the subscription held over the previous transport, so herold never pushes to a target the device has stopped listening on. |
 | REQ-AND-PUSH-03 | The Android 13+ runtime notification permission (`POST_NOTIFICATIONS`) is requested contextually, not on first launch — after the user has engaged, matching the Suite's deferred-prompt principle (Suite `REQ-PUSH-30`). A denial is remembered and re-offered from settings. |
 
 ## Rendering

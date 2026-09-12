@@ -130,6 +130,37 @@ Run the classes in a few invocations rather than one: a single invocation of
 the whole suite loads the emulator enough that a delivery wait or the
 editor's readiness check can exceed its 30 s budget.
 
+### UnifiedPush (issue #229)
+
+`UnifiedPushAcceptanceTest` and `PushTransportSettingsTest` need a
+distributor on the device and a way for the host-side instance to reach
+it. `mobile/fakeDistributor` is that distributor: it serves its endpoint
+on device port 19280, and `adb forward` publishes the same port on the
+host, which is what `scripts/dev-instance.sh` allowlists in
+`[server.push.network]` (override with `HEROLD_DEV_UNIFIEDPUSH_PORT`).
+
+    ./gradlew :fakeDistributor:installDebug
+    adb shell am start -n com.netzhansa.herold.fakedistributor/.MainActivity
+    adb forward tcp:19280 tcp:19280
+    curl -X POST http://127.0.0.1:19280/control/state   # {"delivered":0,"gone":false}
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.UnifiedPushAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+Run the four methods in two or three invocations: `t92` waits for the
+dispatcher to retry against a 410 and `t93` fetches an FCM token.
+
+A real device uses a real distributor (ntfy, NextPush): install it, pick
+it under Settings -> Push transport, and the endpoint it hands out is
+registered the same way. The fake exists because the emulator has Play
+Services and no distributor, and a distributor pointed at a self-hosted
+ntfy would hand out an endpoint naming the host as the emulator sees it
+(`10.0.2.2`), which the herold instance running on that host cannot POST
+to.
+
 ## Firebase (push)
 
 Push needs a Firebase project. The build reads its values and the app

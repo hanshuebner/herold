@@ -163,7 +163,20 @@ Milestone 1 closes with one real-world session on the maintainer's phone.
   revoked grant landing back on sign-in; the sessions screen marking this
   device and a second session's revoke signing the app out; the app locked on
   a fresh process and released by the device credential.
-- **2c — UnifiedPush.** The de-Googled device's push transport (#229).
+- **2c — UnifiedPush (#229).** On branch `android-m2c`: the second push
+  transport, so a phone without Google Play Services is served. The
+  UnifiedPush connector discovers the installed distributors and takes the
+  user's pick; the client mints its own RFC 8291 key pair and auth secret,
+  registers the distributor's endpoint as `kind: "unifiedpush"` (#236), and
+  decrypts the aes128gcm envelope in the shared module, which routes the
+  `StateChange` into the same notification seam FCM feeds. Settings carries
+  "Push transport: Automatic / FCM / UnifiedPush"; a switch destroys the
+  subscription held over the old transport before registering the new one
+  (`requirements/03-notifications.md` REQ-AND-PUSH-04/05). Acceptance: on
+  the emulator, against the in-tree distributor of `mobile/fakeDistributor`,
+  the registration read back from the server as kind unifiedpush, a mail
+  delivered over SMTP arriving as a decrypted notification, a 410 costing
+  the subscription, and a transport switch leaving no stale subscription.
 
 ### Milestone 3 — organise and system integration
 
