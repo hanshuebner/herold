@@ -21,7 +21,9 @@ import androidx.glance.ExperimentalGlanceApi
 import androidx.glance.appwidget.compose
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import com.netzhansa.herold.android.home.ConversationShortcuts
 import com.netzhansa.herold.android.home.InboxWidget
 import com.netzhansa.herold.android.push.NotificationMute
@@ -303,9 +305,18 @@ class SystemIntegrationAcceptanceTest {
         walk(view)
     }
 
+    /**
+     * Waits for a tag of the shell the intent started. The app's window
+     * has to be up before the Compose tree can be read at all - reading it
+     * earlier raises "no compose hierarchies found" rather than returning
+     * empty - so the wait is on the window first and the tree second.
+     */
     private fun awaitTag(tag: String) {
+        device.wait(Until.hasObject(By.pkg(packageName).depth(0)), TIMEOUT_MS)
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+            runCatching {
+                compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+            }.getOrDefault(false)
         }
     }
 
