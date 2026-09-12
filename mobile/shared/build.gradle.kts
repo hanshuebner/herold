@@ -30,6 +30,10 @@ kotlin {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
+            // Drives the OAuth2 token endpoint's client half without a
+            // server: the auth tests assert what goes on the wire.
+            implementation(libs.ktor.client.mock)
+            implementation(libs.ktor.client.core)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)

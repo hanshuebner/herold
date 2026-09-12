@@ -1,26 +1,36 @@
 package com.netzhansa.herold.shared.auth
 
 /**
- * Process-memory [TokenStore] for Phase 0's single foreground session
- * (used by the androidApp sign-in screen and by shared's own live-instance
- * test). It satisfies REQ-AND-AUTH-10's "never plaintext preferences or the
- * local database" constraint by never persisting the token at all -- it
- * lives only as long as the process does. A Keystore-backed durable actual
- * (EncryptedSharedPreferences, surviving process death and app restart) is
- * Phase 1 work, alongside the rest of the local store persistence
- * (docs/design/android/requirements/01-auth-and-token.md REQ-AND-AUTH-10).
+ * Process-memory [TokenStore], used by tests and by short-lived tooling
+ * clients. It satisfies REQ-AND-AUTH-10's "never plaintext preferences or
+ * the local database" constraint by never persisting anything -- the
+ * tokens live only as long as the process does. The app itself uses the
+ * Keystore-backed store.
  */
-class InMemoryTokenStore : TokenStore {
+class InMemoryTokenStore : TokenStore, PendingAuthorizationStore {
     @Volatile
-    private var token: String? = null
+    private var held: TokenSet? = null
 
-    override suspend fun currentToken(): String? = token
+    @Volatile
+    private var pendingAuth: PendingAuthorization? = null
 
-    override suspend fun store(token: String) {
-        this.token = token
+    override suspend fun tokens(): TokenSet? = held
+
+    override suspend fun store(tokens: TokenSet) {
+        held = tokens
     }
 
     override suspend fun clear() {
-        token = null
+        held = null
+    }
+
+    override suspend fun savePending(pending: PendingAuthorization) {
+        pendingAuth = pending
+    }
+
+    override suspend fun pending(): PendingAuthorization? = pendingAuth
+
+    override suspend fun clearPending() {
+        pendingAuth = null
     }
 }

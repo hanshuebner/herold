@@ -1,5 +1,8 @@
 package com.netzhansa.herold.shared.jmap
 
+import com.netzhansa.herold.shared.auth.SessionExpiredException
+import com.netzhansa.herold.shared.auth.StoredTokenProvider
+import com.netzhansa.herold.shared.auth.TokenProvider
 import com.netzhansa.herold.shared.auth.TokenStore
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -52,8 +55,12 @@ private val wireJson = Json {
 class JmapClient(
     private val httpClient: HttpClient,
     val baseUrl: String,
-    private val tokenStore: TokenStore,
+    private val tokens: TokenProvider,
 ) : JmapApi {
+
+    /** A client over a token that cannot be refreshed (tooling, tests). */
+    constructor(httpClient: HttpClient, baseUrl: String, tokenStore: TokenStore) :
+        this(httpClient, baseUrl, StoredTokenProvider(tokenStore))
 
     private val sessionMutex = Mutex()
     private var cachedSession: JmapSession? = null
@@ -291,11 +298,12 @@ class JmapClient(
             "${baseUrl.trimEnd('/')}/jmap/upload/{accountId}"
         }
         val url = template.replace("{accountId}", accountId.urlEncode())
-        val token = bearerToken()
-        val response = httpClient.post(url) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.ContentType, type.ifBlank { "application/octet-stream" })
-            setBody(bytes)
+        val response = authorized { token ->
+            httpClient.post(url) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                header(HttpHeaders.ContentType, type.ifBlank { "application/octet-stream" })
+                setBody(bytes)
+            }
         }
         val text = response.bodyAsText()
         requireSuccess(response, text, "blob upload")
@@ -485,8 +493,29 @@ class JmapClient(
     }
 
     /** The bearer token for the EventSource connection and other streamed reads. */
-    suspend fun bearerToken(): String =
-        tokenStore.currentToken() ?: throw JmapException("no bearer token stored", status = 401)
+    suspend fun bearerToken(): String = try {
+        tokens.accessToken()
+    } catch (expired: SessionExpiredException) {
+        throw JmapException(expired.message ?: "no bearer token stored", status = 401)
+    }
+
+    /**
+     * Sends [request] with a bearer token and, if the server refuses it,
+     * refreshes once and sends it again (REQ-AND-AUTH-04). One retry: a
+     * 401 on the refreshed token means the session is gone, not that
+     * another refresh would help.
+     */
+    private suspend fun authorized(request: suspend (String) -> HttpResponse): HttpResponse {
+        val token = bearerToken()
+        val response = request(token)
+        if (response.status.value != UNAUTHORIZED) return response
+        val refreshed = try {
+            tokens.refreshAfterUnauthorized(token)
+        } catch (expired: SessionExpiredException) {
+            return response
+        } ?: return response
+        return request(refreshed)
+    }
 
     private suspend fun changes(
         method: String,
@@ -547,11 +576,12 @@ class JmapClient(
                 },
             )
         }
-        val token = bearerToken()
-        val response = httpClient.post(apiUrl) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            contentType(ContentType.Application.Json)
-            setBody(wireJson.encodeToString(JsonObject.serializer(), body))
+        val response = authorized { token ->
+            httpClient.post(apiUrl) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(wireJson.encodeToString(JsonObject.serializer(), body))
+            }
         }
         val text = response.bodyAsText()
         requireSuccess(response, text, "JMAP request")
@@ -576,9 +606,8 @@ class JmapClient(
         return parsed
     }
 
-    private suspend fun authorizedGet(url: String): HttpResponse {
-        val token = bearerToken()
-        return httpClient.get(url) { header(HttpHeaders.Authorization, "Bearer $token") }
+    private suspend fun authorizedGet(url: String): HttpResponse = authorized { token ->
+        httpClient.get(url) { header(HttpHeaders.Authorization, "Bearer $token") }
     }
 
     private fun requireSuccess(response: HttpResponse, body: String, what: String) {
@@ -614,6 +643,7 @@ class JmapClient(
         private const val DRAFT_CREATE_KEY = "draft1"
         private const val SUBMISSION_CREATE_KEY = "sub1"
         private const val MAX_CHANGES = 256
+        private const val UNAUTHORIZED = 401
         private const val MAX_BODY_VALUE_BYTES = 512 * 1024
 
         private val METADATA_PROPERTIES = listOf(
