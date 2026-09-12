@@ -237,6 +237,26 @@ The seed always provisions:
 These are dev-only credentials in an ephemeral SQLite store; not
 secrets, not deployed, never persisted between runs.
 
+### Deterministic classifier fake (categorisation, LLM transparency)
+
+Every dev instance builds `heroldfakeclassify`
+(`internal/testfakes/fakeclassify`) and wires it into the generated
+`system.toml` as a `[[plugin]]` of type `classifier` — no LLM endpoint,
+no Ollama, no operator opt-in needed. The herold server spawns it over
+stdio JSON-RPC like any real plugin. It answers `mail.classify` from
+fixed, case-insensitive subject-substring rules, first match wins:
+
+- `+spam` — verdict spam, confidence 0.97, no category.
+- `+promo` — verdict ham, category `promotions`.
+- `+updates` — verdict ham, category `updates`.
+- anything else — verdict ham, category `primary`.
+
+A delivered mail with `+promo` in the subject therefore lands with the
+`$category-promotions` keyword, and `Email/llmInspect` (see
+`internal/protojmap/llmtransparency`) returns a non-empty record for it —
+enough to exercise the Suite/Android "why is this here" transparency view
+against a fresh instance without a real LLM.
+
 ### Optional flags: external submission and sub-accounts
 
 Two environment variables, set before `scripts/dev-instance.sh start`,

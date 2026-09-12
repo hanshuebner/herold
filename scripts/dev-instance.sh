@@ -408,6 +408,37 @@ start_fake_fcm() {
     log "fake FCM running: http=$FAKEFCM_HTTP_ADDR send_url=$FAKEFCM_SEND_URL"
 }
 
+# build_fake_classifier DIR — build heroldfakeclassify into DIR/bin/ and
+# append a [[plugin]] block of type "classifier" to DIR/system.toml
+# pointing at it (re #364). Unlike the network-server fakes above, this
+# binary is not started by dev-instance.sh: the herold server itself
+# spawns it over stdio JSON-RPC once [[plugin]] names it, exactly like a
+# real first-party plugin (internal/plugin.Manager.Start). Built and
+# wired unconditionally so every dev instance writes classification
+# records without a real LLM endpoint -- see
+# internal/testfakes/fakeclassify for the deterministic subject-substring
+# rules ("+spam" / "+promo" / "+updates", default "primary").
+build_fake_classifier() {
+    local dir="$1"
+    local bin="$dir/bin/heroldfakeclassify"
+    mkdir -p "$dir/bin"
+
+    log "building heroldfakeclassify"
+    ( cd "$REPO_ROOT" && go build -o "$bin" ./cmd/heroldfakeclassify ) \
+        >"$dir/logs/build-fakeclassify.log" 2>&1 \
+        || { cat "$dir/logs/build-fakeclassify.log" >&2; die "go build ./cmd/heroldfakeclassify failed"; }
+
+    cat >> "$dir/system.toml" <<EOF
+
+[[plugin]]
+name = "fakeclassify"
+path = "$bin"
+type = "classifier"
+lifecycle = "long-running"
+EOF
+    log "appended [[plugin]] fakeclassify (type=classifier) to system.toml"
+}
+
 # ── OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230) ──
 #
 # Gated by HEROLD_DEV_OIDC_AUTOPROVISION so the default dev-instance
@@ -638,6 +669,11 @@ cmd_start() {
         || die "make-self-signed-cert.sh failed; see $dir/logs/cert.log"
 
     write_system_toml "$dir"
+
+    # Deterministic classifier plugin (re #364): built and configured
+    # unconditionally, before bootstrap, so system.toml already names it
+    # when the server starts.
+    build_fake_classifier "$dir"
 
     # Fake FCM endpoint (re #334, re #200): started unconditionally so
     # every dev instance advertises FCM as configured, for the Android

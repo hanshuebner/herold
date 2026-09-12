@@ -47,13 +47,14 @@ func classifyMatrixBackends() []string {
 }
 
 // classifyMatrixHarness bundles everything one acceptance scenario needs:
-// the SMTP address to dial, the seeded principal, and a way to reopen the
-// store for verification after delivery.
+// the SMTP and public HTTP addresses to dial, the seeded principal, and a
+// way to reopen the store for verification after delivery.
 type classifyMatrixHarness struct {
-	smtpAddr string
-	domain   string
-	pid      store.PrincipalID
-	logBuf   *syncBuffer
+	smtpAddr   string
+	publicAddr string
+	domain     string
+	pid        store.PrincipalID
+	logBuf     *syncBuffer
 	// openVerifyStore reopens the store backing the running server for
 	// read-only verification; it must not truncate (the server is still
 	// running against it).
@@ -242,16 +243,21 @@ metrics_bind = ""
 	}
 	addrsMu.Lock()
 	smtpAddr := addrs["smtp"]
+	publicAddr := addrs["public"]
 	addrsMu.Unlock()
 	if smtpAddr == "" {
 		t.Fatalf("smtp listener not bound; addrs=%+v", addrs)
 	}
+	if publicAddr == "" {
+		t.Fatalf("public listener not bound; addrs=%+v", addrs)
+	}
 
 	return &classifyMatrixHarness{
-		smtpAddr: smtpAddr,
-		domain:   domain,
-		pid:      pid,
-		logBuf:   logBuf,
+		smtpAddr:   smtpAddr,
+		publicAddr: publicAddr,
+		domain:     domain,
+		pid:        pid,
+		logBuf:     logBuf,
 		openVerifyStore: func(t *testing.T) store.Store {
 			t.Helper()
 			return openStore(false)
