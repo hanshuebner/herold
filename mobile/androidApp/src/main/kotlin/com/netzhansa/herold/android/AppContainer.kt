@@ -23,6 +23,7 @@ import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
 import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.jmap.JmapClient
+import com.netzhansa.herold.shared.links.ComposePrefill
 import com.netzhansa.herold.shared.llm.Transparency
 import com.netzhansa.herold.shared.outbox.ComposePayload
 import com.netzhansa.herold.shared.outbox.FileBlobSpool
@@ -92,10 +93,16 @@ class SessionScope(
 )
 
 /**
- * Recipient, subject and body a caller hands the composer: what a
- * `mailto:` unsubscribe URI names (REQ-UNS-22).
+
+ * A compose a share, a `mailto:` link, an unsubscribe or a shortcut asked
+ * for (REQ-AND-SYS-01/03/22, REQ-UNS-22), waiting for the shell to open
+ * the composer on it. [attachments] are the shared files' content URIs;
+ * they go up the composer's own attachment path once it is on screen.
  */
-data class ComposePrefill(val to: String, val subject: String, val body: String)
+data class ComposeHandoff(
+    val prefill: ComposePrefill,
+    val attachments: List<String> = emptyList(),
+)
 
 /**
  * The message "Create filter from this message" was invoked on, waiting
@@ -159,10 +166,10 @@ class AppContainer(context: Context) {
     val composeResume = MutableStateFlow<ComposePayload?>(null)
 
     /**
-     * A compose a `mailto:` unsubscribe asked for, waiting for the shell
-     * to open the composer on it (REQ-UNS-22).
+     * What a share, a mailto: link, an unsubscribe or a shortcut opens
+     * the composer on (REQ-AND-SYS-01/03, REQ-UNS-22).
      */
-    val composePrefill = MutableStateFlow<ComposePrefill?>(null)
+    val composeHandoff = MutableStateFlow<ComposeHandoff?>(null)
 
     /** What the filter editor opens with when a message seeded it. */
     val filterSeed = MutableStateFlow<FilterSeed?>(null)
@@ -223,6 +230,21 @@ class AppContainer(context: Context) {
         appScope.launch {
             connectivity.online.collect { up -> if (up) session.value?.requestDrain?.invoke(0) }
         }
+    }
+
+    /**
+     * The account whose cached mail holds [threadId]. A link that carries
+     * only the Suite's thread id - an App Link, a shared thread URL - does
+     * not name an account, and the store is what knows which one it is.
+     * With nothing cached the first account answers, and its sync engine
+     * fetches the thread when the screen opens (issue #339).
+     */
+    suspend fun accountHolding(threadId: String): String? {
+        val accounts = store.accountList()
+        accounts.forEach { account ->
+            if (store.threadEmailList(account.id, threadId).isNotEmpty()) return account.id
+        }
+        return accounts.firstOrNull()?.id
     }
 
     /** The server the last sign-in was against, offered again on the sign-in screen. */

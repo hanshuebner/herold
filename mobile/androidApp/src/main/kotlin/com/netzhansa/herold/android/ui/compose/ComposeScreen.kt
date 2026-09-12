@@ -65,7 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.netzhansa.herold.android.AppContainer
-import com.netzhansa.herold.android.ComposePrefill
+import com.netzhansa.herold.android.ComposeHandoff
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.media.ImageSize
@@ -80,6 +80,7 @@ import com.netzhansa.herold.shared.compose.ComposeState
 import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
+import com.netzhansa.herold.shared.compose.withPrefill
 import com.netzhansa.herold.android.ui.settings.UndoSendPreference
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.domain.MailAddress
@@ -113,8 +114,11 @@ fun ComposeScreen(
     onClose: () -> Unit,
     /** A send taken back within its undo window, reopened as it was (issue #354). */
     resume: ComposePayload? = null,
-    /** Recipient, subject and body a caller chose, as a `mailto:` names them. */
-    prefill: ComposePrefill? = null,
+    /**
+     * What a share, a mailto: link, an unsubscribe or a shortcut opens
+     * the composer on (REQ-AND-SYS-01/03, REQ-UNS-22).
+     */
+    handoff: ComposeHandoff? = null,
 ) {
     val identities by container.store.identities().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
@@ -163,17 +167,17 @@ fun ComposeScreen(
         } else {
             session.composer.openNew(identities, accounts, accountScope ?: accountId)
         }
-        state = if (prefill == null) {
-            opened
-        } else {
-            toText = prefill.to
-            opened.copy(
-                to = listOf(MailAddress(email = prefill.to)),
-                subject = prefill.subject,
-                bodyHtml = HtmlText.toHtml(prefill.body),
-            )
+        state = handoff?.let { opened.withPrefill(it.prefill) } ?: opened
+        if (handoff != null) {
+            // Taken: a recomposition must not fold the same handoff in twice.
+            container.composeHandoff.value = null
         }
     }
+
+    // The shared files go up the composer's own attachment path, one at a
+    // time so an image large enough to need the size choice gets its
+    // dialog before the next file starts (REQ-AND-SYS-01, issue #341).
+    var shared by remember { mutableStateOf(handoff?.attachments.orEmpty()) }
 
     // Navigation runs on the main thread; a coroutine that resumed off it
     // after a network call must hop back before popping the back stack.
@@ -253,6 +257,13 @@ fun ComposeScreen(
             return
         }
         upload(file, inline)
+    }
+
+    LaunchedEffect(shared, sizeChoice, current) {
+        if (sizeChoice != null) return@LaunchedEffect
+        val next = shared.firstOrNull() ?: return@LaunchedEffect
+        shared = shared.drop(1)
+        offerOrUpload(Uri.parse(next), inline = false)
     }
 
     val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->

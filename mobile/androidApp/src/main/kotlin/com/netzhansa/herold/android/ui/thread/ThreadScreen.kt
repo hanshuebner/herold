@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android.ui.thread
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
@@ -79,6 +81,7 @@ import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.links.AppLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
@@ -232,6 +235,31 @@ fun ThreadScreen(
                             imageVector = if (flagged) Icons.Filled.Star else Icons.Outlined.StarBorder,
                             contentDescription = if (flagged) "Unstar" else "Star",
                         )
+                    }
+                    // Share the conversation: the subject and the Suite's
+                    // URL for the thread, through the system sheet
+                    // (REQ-AND-SYS-02).
+                    IconButton(
+                        onClick = {
+                            val subject = messages.firstOrNull { it.subject.isNotBlank() }?.subject
+                                ?: "(no subject)"
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, subject)
+                                        putExtra(
+                                            Intent.EXTRA_TEXT,
+                                            AppLinks.suiteThreadUrl(session.baseUrl, threadId),
+                                        )
+                                    },
+                                    "Share conversation",
+                                ),
+                            )
+                        },
+                        modifier = Modifier.testTag("thread-share"),
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = "Share")
                     }
                     IconButton(onClick = { snoozing = true }, modifier = Modifier.testTag("thread-snooze")) {
                         Icon(Icons.Filled.Schedule, contentDescription = "Snooze")

@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">herold</string>
+    <!-- What the system share sheet lists this app as (REQ-AND-SYS-01). -->
+    <string name="share_target_label">Send as mail</string>
+    <!-- The launcher long-press shortcut and the widget's button (REQ-AND-SYS-20/22). -->
+    <string name="shortcut_compose_short">Compose</string>
+    <string name="shortcut_compose_long">Write a message</string>
+    <string name="widget_description">Unread mail and the latest conversations</string>
+    <!-- The Quick Settings tile (REQ-AND-SYS-21). -->
+    <string name="tile_label">herold</string>
 </resources>

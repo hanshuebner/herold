@@ -43,7 +43,10 @@ import com.netzhansa.herold.android.ui.settings.SessionsScreen
 import com.netzhansa.herold.android.ui.settings.SettingsScreen
 import com.netzhansa.herold.android.ui.settings.TransparencyScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
-import com.netzhansa.herold.android.push.MailNotifier
+import com.netzhansa.herold.android.links.IntentRouting
+import com.netzhansa.herold.android.links.LaunchRequest
+import com.netzhansa.herold.shared.links.AppDestination
+import com.netzhansa.herold.shared.links.ComposePrefill
 import com.netzhansa.herold.android.ui.theme.HeroldTheme
 import com.netzhansa.herold.android.ui.thread.ThreadScreen
 import com.netzhansa.herold.shared.compose.ComposeMode
@@ -65,26 +68,21 @@ class MainActivity : FragmentActivity() {
     private val container: AppContainer by lazy { (application as HeroldApplication).container }
 
     /**
-     * The thread this activity's launch intent named, if it came from a
-     * notification tap. Held per activity, so the instance that received
-     * the tap is the one that opens the thread.
+     * What the intent this activity was started with asks for: a
+     * notification's thread or reply target, a share, a mailto:, or a
+     * deep link. Held per activity, so the instance that received the
+     * intent is the one that acts on it.
      */
-    private val threadTarget = MutableStateFlow<Pair<String, String>?>(null)
-
-    /**
-     * The message a notification's Reply action named, if the launch
-     * intent carried one (REQ-AND-PUSH-21).
-     */
-    private val replyTarget = MutableStateFlow<Pair<String, String>?>(null)
+    private val launchRequest = MutableStateFlow<LaunchRequest?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        routeNotificationTap(intent)
+        launchRequest.value = IntentRouting.resolve(intent)
         setContent {
             HeroldTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HeroldApp(container, threadTarget, replyTarget)
+                    HeroldApp(container, launchRequest)
                 }
             }
         }
@@ -100,27 +98,14 @@ class MainActivity : FragmentActivity() {
         container.unlock.onBackgrounded(System.currentTimeMillis())
     }
 
-    /** A tap on a notification while the shell is already running. */
+    /**
+     * A notification tap, a share or a deep link arriving while the shell
+     * is already running (REQ-AND-PUSH-13, REQ-AND-SYS-01/10).
+     */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        routeNotificationTap(intent)
-    }
-
-    /**
-     * Takes the thread a notification names and hands it to the shell
-     * (REQ-AND-PUSH-13). The thread renders from the local store, which the
-     * push's reconcile pass has already filled.
-     */
-    private fun routeNotificationTap(intent: Intent?) {
-        val accountId = intent?.getStringExtra(MailNotifier.EXTRA_ACCOUNT_ID) ?: return
-        val replyTo = intent.getStringExtra(MailNotifier.EXTRA_REPLY_EMAIL_ID)
-        if (replyTo != null) {
-            replyTarget.value = accountId to replyTo
-            return
-        }
-        val threadId = intent.getStringExtra(MailNotifier.EXTRA_THREAD_ID) ?: return
-        threadTarget.value = accountId to threadId
+        IntentRouting.resolve(intent)?.let { launchRequest.value = it }
     }
 }
 
@@ -132,8 +117,7 @@ class MainActivity : FragmentActivity() {
 @Composable
 fun HeroldApp(
     container: AppContainer,
-    threadTarget: MutableStateFlow<Pair<String, String>?> = MutableStateFlow(null),
-    replyTarget: MutableStateFlow<Pair<String, String>?> = MutableStateFlow(null),
+    launchRequest: MutableStateFlow<LaunchRequest?> = MutableStateFlow(null),
 ) {
     val session by container.session.collectAsStateSafely(null)
     val restored by container.restored.collectAsStateSafely(false)
@@ -169,13 +153,39 @@ fun HeroldApp(
             ForegroundSync(session = current)
             PushEngagement(container = container, session = current)
 
-            // A notification tap names a thread; open it once the shell is up.
-            val target by threadTarget.collectAsStateSafely(null)
-            LaunchedEffect(target) {
-                target?.let { (accountId, threadId) ->
-                    navController.navigate("thread/$accountId/$threadId")
-                    threadTarget.value = null
+            // A notification tap, a share, a mailto: or a deep link names
+            // a destination; open it once the shell is up
+            // (REQ-AND-SYS-10, REQ-AND-PUSH-13/21).
+            val request by launchRequest.collectAsStateSafely(null)
+            LaunchedEffect(request) {
+                val pending = request ?: return@LaunchedEffect
+                when (val destination = pending.destination) {
+                    is AppDestination.Thread -> {
+                        val account = destination.accountId
+                            ?: container.accountHolding(destination.threadId)
+                        if (account != null) {
+                            navController.navigate("thread/$account/${destination.threadId}")
+                        }
+                    }
+
+                    is AppDestination.Reply ->
+                        navController.navigate(
+                            "compose/${ComposeMode.REPLY.name}/${destination.accountId}/${destination.emailId}",
+                        )
+
+                    is AppDestination.Compose -> {
+                        container.composeHandoff.value = ComposeHandoff(
+                            prefill = destination.prefill,
+                            attachments = pending.attachments.map { it.toString() },
+                        )
+                        navController.navigate("compose-handoff")
+                    }
+
+                    is AppDestination.Settings -> navController.navigate("settings")
+
+                    AppDestination.Inbox -> navController.popBackStack("inbox", inclusive = false)
                 }
+                launchRequest.value = null
             }
 
             // A send taken back inside its undo window comes back as the
@@ -185,15 +195,6 @@ fun HeroldApp(
                 if (resumed != null) navController.navigate("compose-resume")
             }
 
-            // The shade's Reply action names a message; open the composer
-            // on it, quote prepared (REQ-AND-PUSH-21).
-            val reply by replyTarget.collectAsStateSafely(null)
-            LaunchedEffect(reply) {
-                reply?.let { (accountId, emailId) ->
-                    navController.navigate("compose/${ComposeMode.REPLY.name}/$accountId/$emailId")
-                    replyTarget.value = null
-                }
-            }
             NavHost(navController = navController, startDestination = "inbox") {
                 composable("inbox") {
                     InboxScreen(
@@ -235,6 +236,20 @@ fun HeroldApp(
                         accountScope = container.accountScope.value,
                         onClose = { navController.popBackStack() },
                         resume = resumed,
+                    )
+                }
+                // A share, a mailto: or a compose shortcut, opened on
+                // what it handed over (REQ-AND-SYS-01/03/22).
+                composable("compose-handoff") {
+                    ComposeScreen(
+                        container = container,
+                        session = current,
+                        mode = ComposeMode.NEW,
+                        accountId = null,
+                        parentEmailId = null,
+                        accountScope = container.accountScope.value,
+                        onClose = { navController.popBackStack() },
+                        handoff = container.composeHandoff.value,
                     )
                 }
                 composable("outbox") {
@@ -299,7 +314,9 @@ fun HeroldApp(
                             navController.navigate("filter-new/$account")
                         },
                         onComposeTo = { to, subject, body ->
-                            container.composePrefill.value = ComposePrefill(to, subject, body)
+                            container.composeHandoff.value = ComposeHandoff(
+                                ComposePrefill(to = listOf(to), subject = subject, body = body),
+                            )
                             navController.navigate("compose-unsubscribe")
                         },
                         onBack = { navController.popBackStack() },
@@ -372,10 +389,10 @@ fun HeroldApp(
                         parentEmailId = null,
                         accountScope = container.accountScope.value,
                         onClose = {
-                            container.composePrefill.value = null
+                            container.composeHandoff.value = null
                             navController.popBackStack()
                         },
-                        prefill = container.composePrefill.value,
+                        handoff = container.composeHandoff.value,
                     )
                 }
             }
