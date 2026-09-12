@@ -63,6 +63,12 @@ class FakeLocalStore : LocalStore {
             .take(limit.toInt())
     }
 
+    override fun snoozedEmails(limit: Long): Flow<List<Email>> = emailRows.map { rows ->
+        rows.filter { it.snoozedUntil != null }
+            .sortedBy { it.snoozedUntil }
+            .take(limit.toInt())
+    }
+
     override fun threadEmails(accountId: String, threadId: String): Flow<List<Email>> = emailRows.map { rows ->
         rows.filter { it.accountId == accountId && it.threadId == threadId }.sortedBy { it.receivedAt }
     }

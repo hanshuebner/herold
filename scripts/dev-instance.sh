@@ -222,6 +222,12 @@ tls = "none"
 [server.suite]
 enabled = true
 
+# Snooze wakes are swept every 5 s (the configuration floor) so a snooze
+# flow completes inside one verification session. HEROLD_DEV_SNOOZE_POLL
+# overrides it.
+[server.snooze]
+poll_interval = "${HEROLD_DEV_SNOOZE_POLL:-5s}"
+
 [observability]
 metrics_bind = "127.0.0.1:0"
 

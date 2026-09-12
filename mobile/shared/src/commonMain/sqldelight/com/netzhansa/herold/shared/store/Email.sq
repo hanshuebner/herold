@@ -97,6 +97,14 @@ WHERE mailbox.role = 'inbox'
 ORDER BY email.receivedAt DESC
 LIMIT ?;
 
+-- The snoozed set (suite REQ-SNZ-14): every message the server holds a
+-- wake time for, next to wake first.
+selectSnoozed:
+SELECT * FROM email
+WHERE COALESCE(snoozedUntil, '') <> ''
+ORDER BY snoozedUntil ASC
+LIMIT ?;
+
 selectAll:
 SELECT * FROM email ORDER BY receivedAt DESC;
 

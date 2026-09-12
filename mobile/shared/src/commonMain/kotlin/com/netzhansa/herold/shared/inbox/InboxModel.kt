@@ -20,6 +20,8 @@ data class ThreadRow(
     val labels: List<String>,
     val category: String?,
     val emailIds: List<String>,
+    /** The wake time the server holds for the conversation, when it sleeps. */
+    val wakeAt: String? = null,
 )
 
 /** A bundled category collapsed to one row, positioned by its newest member (REQ-CAT-10). */
@@ -90,6 +92,33 @@ object InboxAssembler {
         accounts: List<Account>,
         mailboxes: List<Mailbox>,
         accountScope: String? = null,
+    ): List<ThreadRow> =
+        // A snoozed message is out of the stream until its wake time
+        // (suite REQ-SNZ-10); a conversation whose every message sleeps
+        // leaves the list with them, and the Snoozed destination lists it
+        // instead (issue #353).
+        fold(emails.filter { !it.isSnoozed }, accounts, mailboxes, accountScope)
+            .sortedByDescending { it.receivedAt }
+
+    /**
+     * The Snoozed destination's rows: the conversations with a wake time,
+     * next to wake first (suite REQ-SNZ-14).
+     */
+    fun snoozedRows(
+        emails: List<Email>,
+        accounts: List<Account>,
+        mailboxes: List<Mailbox>,
+        accountScope: String? = null,
+    ): List<ThreadRow> =
+        fold(emails.filter { it.isSnoozed || it.snoozedUntil != null }, accounts, mailboxes, accountScope)
+            .sortedBy { it.wakeAt ?: "" }
+
+    /** One row per conversation, whichever set of messages it is given. */
+    private fun fold(
+        emails: List<Email>,
+        accounts: List<Account>,
+        mailboxes: List<Mailbox>,
+        accountScope: String?,
     ): List<ThreadRow> {
         val accountNames = accounts.associate { it.id to it.name }
         val labelNames = mailboxes.filter { it.role == null }
@@ -118,9 +147,9 @@ object InboxAssembler {
                     }.distinct(),
                     category = ordered.firstNotNullOfOrNull { it.category },
                     emailIds = ordered.map { it.id },
+                    wakeAt = ordered.firstNotNullOfOrNull { it.snoozedUntil },
                 )
             }
-            .sortedByDescending { it.receivedAt }
     }
 
     /**

@@ -17,7 +17,9 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
@@ -31,6 +33,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -65,6 +72,7 @@ import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
+import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.inbox.CategoryLanes
@@ -76,6 +84,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
 
 /**
  * The combined inbox: every account's inbox in one date-ordered stream
@@ -95,6 +105,7 @@ fun InboxScreen(
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
+    val snoozedEmails by container.store.snoozedEmails().collectAsStateSafely(emptyList())
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
     val categories by session.syncEngine.categories.collectAsStateSafely(emptyList())
@@ -103,6 +114,8 @@ fun InboxScreen(
     val accountScope by container.accountScope.collectAsStateSafely(null)
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var expandedBundles by remember { mutableStateOf(setOf<String>()) }
+    var snoozedView by rememberSaveable { mutableStateOf(false) }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
     var snoozeTarget by remember { mutableStateOf<ThreadRow?>(null) }
     var labelTarget by remember { mutableStateOf<ThreadRow?>(null) }
 
@@ -117,6 +130,9 @@ fun InboxScreen(
     }
     val stream = remember(rows, lanes, selectedCategory) {
         InboxAssembler.stream(rows, lanes, selectedCategory)
+    }
+    val snoozedRows = remember(snoozedEmails, accounts, mailboxes, accountScope) {
+        InboxAssembler.snoozedRows(snoozedEmails, accounts, mailboxes, accountScope)
     }
 
     suspend fun emailsOf(row: ThreadRow): List<Email> =
@@ -143,6 +159,39 @@ fun InboxScreen(
 
     UndoOffers(container = container, session = session, snackbar = snackbar)
 
+    ModalNavigationDrawer(
+        drawerState = drawer,
+        drawerContent = {
+            ModalDrawerSheet(modifier = Modifier.testTag("inbox-drawer")) {
+                Text(
+                    text = "Mail",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(16.dp),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Inbox") },
+                    selected = !snoozedView,
+                    icon = { Icon(Icons.Filled.Archive, contentDescription = null) },
+                    onClick = {
+                        snoozedView = false
+                        scope.launch { drawer.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-inbox"),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Snoozed") },
+                    selected = snoozedView,
+                    icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
+                    badge = { if (snoozedRows.isNotEmpty()) Text("${snoozedRows.size}") },
+                    onClick = {
+                        snoozedView = true
+                        scope.launch { drawer.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-snoozed"),
+                )
+            }
+        },
+    ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("inbox-snackbar")) },
         floatingActionButton = {
@@ -152,9 +201,20 @@ fun InboxScreen(
         },
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    IconButton(
+                        onClick = { scope.launch { drawer.open() } },
+                        modifier = Modifier.testTag("inbox-drawer-open"),
+                    ) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Destinations")
+                    }
+                },
                 title = {
                     Text(
-                        text = accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox",
+                        text = when {
+                            snoozedView -> "Snoozed"
+                            else -> accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox"
+                        },
                         modifier = Modifier.testTag("inbox-title"),
                     )
                 },
@@ -191,6 +251,15 @@ fun InboxScreen(
                 )
             }
 
+            if (snoozedView) {
+                SnoozedList(
+                    rows = snoozedRows,
+                    showAccount = accountScope == null && accounts.size > 1,
+                    onOpen = { row -> onOpenThread(row.accountId, row.threadId) },
+                )
+            }
+
+            if (!snoozedView) {
             if (lanes.pinned.isNotEmpty()) {
                 val tabs = listOf<String?>(null) + lanes.pinned
                 ScrollableTabRow(
@@ -277,7 +346,9 @@ fun InboxScreen(
                     HorizontalDivider()
                 }
             }
+            }
         }
+    }
     }
 
     snoozeTarget?.let { row ->
@@ -303,6 +374,85 @@ fun InboxScreen(
 
     LaunchedEffect(session) {
         session.syncEngine.syncAll()
+    }
+}
+
+/**
+ * The Snoozed destination (suite REQ-SNZ-10/14, issue #353): the
+ * conversations the server holds a wake time for, next to wake first,
+ * each stating when it comes back. Opening one lands on the thread view,
+ * where the wake time can be edited or cancelled.
+ */
+@Composable
+private fun SnoozedList(
+    rows: List<ThreadRow>,
+    showAccount: Boolean,
+    onOpen: (ThreadRow) -> Unit,
+) {
+    if (rows.isEmpty()) {
+        Text(
+            text = "Nothing is snoozed.",
+            modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("snoozed-empty"),
+        )
+        return
+    }
+    LazyColumn(modifier = Modifier.fillMaxSize().testTag("snoozed-list")) {
+        items(rows, key = { "snoozed:${it.accountId}:${it.threadId}" }) { row ->
+            SnoozedRowItem(row = row, showAccount = showAccount, onOpen = { onOpen(row) })
+            HorizontalDivider()
+        }
+    }
+}
+
+@Composable
+private fun SnoozedRowItem(
+    row: ThreadRow,
+    showAccount: Boolean,
+    onOpen: () -> Unit,
+) {
+    val zone = TimeZone.currentSystemDefault()
+    val wake = row.wakeAt
+        ?.let { SnoozeClock.parseWake(it) }
+        ?.let { SnoozeClock.describe(it, Clock.System.now(), zone) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onOpen)
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
+            .testTag("thread-row-${row.threadId}"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = row.senders.ifBlank { "(unknown sender)" },
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = row.subject,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("thread-subject-${row.threadId}"),
+            )
+            if (wake != null) {
+                Text(
+                    text = "Wakes $wake",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("thread-wake-${row.threadId}"),
+                )
+            }
+            if (showAccount) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(row.accountName, style = MaterialTheme.typography.labelSmall) },
+                )
+            }
+        }
+        Icon(Icons.Filled.Schedule, contentDescription = null)
     }
 }
 

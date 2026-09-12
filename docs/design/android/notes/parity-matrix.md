@@ -33,7 +33,7 @@ presentation-level and not yet built.
 | `02-mail-basics` — Bcc field and the From-picker verification gating (`REQ-IDENT-60`) | presentation | todo (the model carries Bcc; no field yet) | — |
 | `03-labels` — label CRUD, apply/remove | protocol | n/a | — |
 | `03-labels` — label chips and apply/remove picker | presentation | done (milestone 1a) | #327 |
-| `03-labels` — sidebar label tree UI | presentation | todo | — |
+| `03-labels` — sidebar label tree UI | presentation | todo; the navigation drawer carries the Inbox and Snoozed destinations (#353), the label tree is still to come | — |
 | `04-filters` — Sieve filter model | protocol | n/a | — |
 | `04-filters` — filter editor UI | presentation | todo | — |
 | `05-categorisation` — `$category-*` keywords | protocol | n/a | — |
@@ -42,6 +42,7 @@ presentation-level and not yet built.
 | `06-snooze` — snooze data model | protocol | n/a | — |
 | `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
 | `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | todo | — |
+| `06-snooze` — snoozed threads leave the inbox and list under a Snoozed destination with their wake time (`REQ-SNZ-10/11/14`) | presentation | done (#353) | #353 |
 | `07-search` — JMAP `Email/query` + FTS | protocol | n/a | — |
 | `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c); a result outside the synced set is fetched on open and the search screen is restored on back (#339, #340) | #329 |
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |

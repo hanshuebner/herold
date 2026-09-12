@@ -29,6 +29,7 @@ private fun email(
     keywords: Set<String> = setOf(Keywords.SEEN),
     mailboxIds: Set<String> = setOf("inbox-1"),
     sender: String = "Sender $id",
+    snoozedUntil: String? = null,
 ) = Email(
     accountId = accountId,
     id = id,
@@ -40,9 +41,47 @@ private fun email(
     receivedAt = receivedAt,
     keywords = keywords,
     mailboxIds = mailboxIds,
+    snoozedUntil = snoozedUntil,
 )
 
 class InboxAssemblerTest {
+
+    @Test
+    fun theSnoozedRowsCarryTheirWakeTimeNextToWakeFirst() {
+        val emails = listOf(
+            email(
+                "e1",
+                receivedAt = 1000,
+                threadId = "t1",
+                keywords = setOf(Keywords.SNOOZED),
+                snoozedUntil = "2026-09-14T06:00:00Z",
+            ),
+            email(
+                "e2",
+                receivedAt = 3000,
+                threadId = "t2",
+                keywords = setOf(Keywords.SNOOZED),
+                snoozedUntil = "2026-09-12T06:00:00Z",
+            ),
+        )
+
+        val rows = InboxAssembler.snoozedRows(emails, accounts, mailboxes)
+
+        assertEquals(listOf("t2", "t1"), rows.map { it.threadId })
+        assertEquals("2026-09-12T06:00:00Z", rows.first().wakeAt)
+    }
+
+    @Test
+    fun aSnoozedMessageLeavesTheStreamUntilItWakes() {
+        val emails = listOf(
+            email("e1", receivedAt = 1000, threadId = "t1"),
+            email("e2", receivedAt = 3000, threadId = "t2", keywords = setOf(Keywords.SNOOZED)),
+        )
+
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals(listOf("t1"), rows.map { it.threadId })
+    }
 
     @Test
     fun collapsesMessagesIntoThreadRowsNewestFirstAcrossAccounts() {
