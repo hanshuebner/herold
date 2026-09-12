@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -38,9 +39,22 @@ object MailNotifier {
         manager.notify(notification.groupKey, SUMMARY_ID, buildSummary(context, notification))
     }
 
-    /** Withdraws a thread's notification, after an action resolved it. */
+    /**
+     * Withdraws a thread's notification, after an action resolved it or the
+     * user opened the thread, and takes the account's summary with it once
+     * it has no children left - a summary alone in the shade is noise.
+     */
     fun cancel(context: Context, tag: String) {
-        NotificationManagerCompat.from(context).cancel(tag, CHILD_ID)
+        val manager = NotificationManagerCompat.from(context)
+        manager.cancel(tag, CHILD_ID)
+        val system = context.getSystemService(NotificationManager::class.java) ?: return
+        val childrenLeft = system.activeNotifications.any {
+            it.id == CHILD_ID && it.tag != tag
+        }
+        if (!childrenLeft) {
+            system.activeNotifications.filter { it.id == SUMMARY_ID }
+                .forEach { manager.cancel(it.tag, SUMMARY_ID) }
+        }
     }
 
     private fun build(context: Context, notification: MailNotification): android.app.Notification =
@@ -52,6 +66,9 @@ object MailNotifier {
             .setCategory(NotificationCompat.CATEGORY_EMAIL)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setGroup(notification.groupKey)
+            // The children alert; the summary is only the bundle's header,
+            // so it must not raise a second heads-up of its own.
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setAutoCancel(true)
             .setContentIntent(openThreadIntent(context, notification))
             .addAction(
@@ -76,6 +93,7 @@ object MailNotifier {
             .setContentTitle(SUMMARY_TITLE)
             .setGroup(notification.groupKey)
             .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setAutoCancel(true)
             .setStyle(NotificationCompat.InboxStyle().setSummaryText(SUMMARY_TITLE))
             .build()

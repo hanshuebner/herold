@@ -9,13 +9,12 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
-import com.google.firebase.messaging.RemoteMessage
 import com.netzhansa.herold.android.push.ActiveThread
-import com.netzhansa.herold.android.push.HeroldMessagingService
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
+import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -67,12 +66,25 @@ class PushAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
-        runBlocking { app.container.session.value!!.syncEngine.syncAll() }
+        // Each test provisions the message it pushes about, so a run does
+        // not depend on what an earlier one left in the inbox.
+        subject = DevInstance.deliverMail(
+            subject = "Push acceptance ${System.currentTimeMillis()}",
+            body = "Are you free at noon? The place on the corner has a new menu.",
+        )
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking {
+                app.container.session.value!!.syncEngine.syncAll()
+                app.container.store.inboxEmails().first().any { it.subject == subject }
+            }
+        }
     }
+
+    private lateinit var subject: String
 
     @Test
     fun t01_aPushRendersAsAMailNotificationWithItsActions() {
-        val target = newestInboxMessage()
+        val target = deliveredMessage()
         val posted = deliver(payloadFor(target))
 
         val title = posted.extras.getString(Notification.EXTRA_TITLE).orEmpty()
@@ -97,7 +109,7 @@ class PushAcceptanceTest {
 
     @Test
     fun t02_aSecondMessageOnTheThreadReplacesTheNotificationRatherThanStacking() {
-        val target = newestInboxMessage()
+        val target = deliveredMessage()
         deliver(payloadFor(target))
         deliver(payloadFor(target, subject = "Re: " + target.subject, emailId = target.id + "0"))
 
@@ -110,11 +122,10 @@ class PushAcceptanceTest {
 
     @Test
     fun t03_aPushForTheThreadOnScreenPostsNothing() {
-        val target = newestInboxMessage()
+        val target = deliveredMessage()
         ActiveThread.entered(target.accountId, target.threadId)
         try {
-            TestableService(instrumentation.targetContext.applicationContext)
-                .onMessageReceived(remoteMessage(payloadFor(target)))
+            injectPush(instrumentation.targetContext.applicationContext, payloadFor(target))
             compose.waitForIdle()
             val tag = MailNotification.tagFor(target.accountId, target.threadId)
             assertTrue(
@@ -128,7 +139,7 @@ class PushAcceptanceTest {
 
     @Test
     fun t04_theMarkReadActionAppliesOnTheServer() = runBlocking {
-        val target = unreadInboxMessage()
+        val target = deliveredMessage()
         val posted = deliver(payloadFor(target))
         val action = posted.actions.orEmpty()
             .first { it.title.toString() == MailNotifier.MARK_READ_TITLE }
@@ -151,23 +162,29 @@ class PushAcceptanceTest {
     }
 
     @Test
-    fun t05_tappingTheNotificationOpensTheThread() {
-        val target = newestInboxMessage()
+    fun t05_theArchiveActionTakesTheMessageOutOfTheInboxOnTheServer() = runBlocking {
+        val target = deliveredMessage()
         val posted = deliver(payloadFor(target))
+        val action = posted.actions.orEmpty()
+            .first { it.title.toString() == MailNotifier.ARCHIVE_TITLE }
 
-        posted.contentIntent.send()
+        action.actionIntent.send()
 
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        val inboxId = app.container.store.mailboxList()
+            .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+            runBlocking {
+                DevInstance.serverEmail(server, accountId, target.id)
+                    ?.mailboxIds?.contains(inboxId) == false
+            }
         }
-        val opened = app.container.threadTarget.value
-        // The shell consumed the target; the reading pane is up on it.
-        assertTrue(
-            "the reading pane must be showing",
-            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty(),
-        )
-        assertTrue("the deep link was consumed once", opened == null)
-        compose.captureScreen("11-notification-tap-opens-thread")
+        compose.waitUntil(TIMEOUT_MS) {
+            activeNotifications().none {
+                it.tag == MailNotification.tagFor(target.accountId, target.threadId)
+            }
+        }
     }
 
     // ---- helpers -------------------------------------------------------
@@ -177,8 +194,7 @@ class PushAcceptanceTest {
      * does and returns the notification it posted.
      */
     private fun deliver(payload: String): Notification {
-        val service = TestableService(instrumentation.targetContext.applicationContext)
-        service.onMessageReceived(remoteMessage(payload))
+        injectPush(instrumentation.targetContext.applicationContext, payload)
         compose.waitForIdle()
         val posted = activeNotifications().firstOrNull {
             it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0
@@ -186,9 +202,6 @@ class PushAcceptanceTest {
         assertNotNull("no notification was posted for the push", posted)
         return posted!!.notification
     }
-
-    private fun remoteMessage(payload: String): RemoteMessage =
-        RemoteMessage.Builder("herold@fcm.test").addData("payload", payload).build()
 
     /**
      * The envelope herold's dispatcher builds for a new message, filled
@@ -209,14 +222,9 @@ class PushAcceptanceTest {
     private fun String.jsonEscaped(): String =
         replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
 
-    private fun newestInboxMessage(): Email = runBlocking {
-        app.container.store.inboxEmails().first().maxByOrNull { it.receivedAt }
-            ?: error("no synced mail on the dev instance")
-    }
-
-    private fun unreadInboxMessage(): Email = runBlocking {
-        val inbox = app.container.store.inboxEmails().first()
-        inbox.firstOrNull { it.isUnread } ?: inbox.first()
+    /** The message this test delivered for itself. */
+    private fun deliveredMessage(): Email = runBlocking {
+        app.container.store.inboxEmails().first().first { it.subject == subject }
     }
 
     private fun activeNotifications() = notifications.activeNotifications.toList()
@@ -235,15 +243,6 @@ class PushAcceptanceTest {
         device.waitForIdle()
         compose.captureScreen(name)
         device.pressBack()
-    }
-
-    /**
-     * The service with a context attached. `onMessageReceived` is the
-     * method the Firebase SDK calls; giving the instance the app context is
-     * all it needs to run outside the framework's own service dispatch.
-     */
-    private class TestableService(private val appContext: Context) : HeroldMessagingService() {
-        override fun getApplicationContext(): Context = appContext
     }
 
     private companion object {

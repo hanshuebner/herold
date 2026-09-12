@@ -39,6 +39,7 @@ import com.netzhansa.herold.android.ui.theme.HeroldTheme
 import com.netzhansa.herold.android.ui.thread.ThreadScreen
 import com.netzhansa.herold.shared.sync.SyncStatus
 import com.netzhansa.herold.shared.sync.SyncTypes
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -50,6 +51,13 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val container: AppContainer by lazy { (application as HeroldApplication).container }
 
+    /**
+     * The thread this activity's launch intent named, if it came from a
+     * notification tap. Held per activity, so the instance that received
+     * the tap is the one that opens the thread.
+     */
+    private val threadTarget = MutableStateFlow<Pair<String, String>?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -57,7 +65,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             HeroldTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HeroldApp(container)
+                    HeroldApp(container, threadTarget)
                 }
             }
         }
@@ -78,7 +86,7 @@ class MainActivity : ComponentActivity() {
     private fun routeNotificationTap(intent: Intent?) {
         val accountId = intent?.getStringExtra(MailNotifier.EXTRA_ACCOUNT_ID) ?: return
         val threadId = intent.getStringExtra(MailNotifier.EXTRA_THREAD_ID) ?: return
-        container.openThread(accountId, threadId)
+        threadTarget.value = accountId to threadId
     }
 }
 
@@ -88,7 +96,10 @@ class MainActivity : ComponentActivity() {
  * before the first network call (REQ-AND-SYNC-03).
  */
 @Composable
-fun HeroldApp(container: AppContainer) {
+fun HeroldApp(
+    container: AppContainer,
+    threadTarget: MutableStateFlow<Pair<String, String>?> = MutableStateFlow(null),
+) {
     val session by container.session.collectAsStateSafely(null)
     val restored by container.restored.collectAsStateSafely(false)
     val scope = rememberCoroutineScope()
@@ -112,11 +123,11 @@ fun HeroldApp(container: AppContainer) {
             PushEngagement(container = container, session = current)
 
             // A notification tap names a thread; open it once the shell is up.
-            val target by container.threadTarget.collectAsStateSafely(null)
+            val target by threadTarget.collectAsStateSafely(null)
             LaunchedEffect(target) {
                 target?.let { (accountId, threadId) ->
                     navController.navigate("thread/$accountId/$threadId")
-                    container.threadOpened()
+                    threadTarget.value = null
                 }
             }
             NavHost(navController = navController, startDestination = "inbox") {

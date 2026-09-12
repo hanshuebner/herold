@@ -66,22 +66,6 @@ class AppContainer(context: Context) {
     private val _session = MutableStateFlow<SessionScope?>(null)
     val session: StateFlow<SessionScope?> = _session.asStateFlow()
 
-    /**
-     * The thread a notification tap asked for (REQ-AND-PUSH-13). The shell
-     * navigates to it once and clears it with [threadOpened], so a
-     * configuration change does not re-open it.
-     */
-    private val _threadTarget = MutableStateFlow<Pair<String, String>?>(null)
-    val threadTarget: StateFlow<Pair<String, String>?> = _threadTarget.asStateFlow()
-
-    fun openThread(accountId: String, threadId: String) {
-        _threadTarget.value = accountId to threadId
-    }
-
-    fun threadOpened() {
-        _threadTarget.value = null
-    }
-
     /** True once [restore] has run, so the shell does not flash the sign-in screen. */
     private val _restored = MutableStateFlow(false)
     val restored: StateFlow<Boolean> = _restored.asStateFlow()
