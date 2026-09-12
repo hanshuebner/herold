@@ -100,8 +100,11 @@ matrix is a complete picture of mobile scope.
 | Durable offline outbox | REQ-AND-SYNC-20..25 | done (milestone 2a, #351); actions, drafts and sends queue in SQLite, drain in order on reconnect and through a WorkManager job with the app closed |
 | Undo-send window held on the device | REQ-AND-SYNC-26 | done (milestone 2a, #354) |
 | FCM registration, channels, thread notifications, Archive / Mark Read, tap-through | REQ-AND-PUSH-01..03, 10..13, 20 | done (milestone 1b) |
-| Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | the deep-link Reply action is done (#348): it opens the composer on the message with the quote prepared. The shade's inline `RemoteInput` reply and conversation shortcuts / Bubbles stay milestone 3 |
-| System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
+| Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | the deep-link Reply action is done (#348): it opens the composer on the message with the quote prepared. Conversation shortcuts are done (milestone 3b, #362): a mail notification publishes its conversation as a long-lived shortcut and names it, which also fills the launcher's long-press menu. The shade's inline `RemoteInput` reply and Bubbles stay open |
+| Share target, share a message, `mailto:` | REQ-AND-SYS-01/02/03 | done (milestone 3b, #362); a shared photo goes through the composer's own attachment path, size choice included |
+| Deep links and App Links | REQ-AND-SYS-10/11 | done (milestone 3b, #362); `herold://` internally, and the deployment origin's root for the Suite's `/#/mail/thread/<id>` URLs. Verification needs the origin to serve `/.well-known/assetlinks.json` (`server-contract.md` § Digital Asset Links), which is server work |
+| Home-screen widget, Quick Settings tile, app shortcuts | REQ-AND-SYS-20/21/22 | done (milestone 3b, #362); all three render from the local store |
+| Attachments through SAF and the photo picker | REQ-AND-SYS-30..34 | done (milestones 1c and 2a) |
 | Native navigation shell + predictive back | REQ-AND-05x | done (milestone 1a, phone single-pane) |
 
 ## Server gaps the client hit

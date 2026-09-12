@@ -109,6 +109,46 @@ the OS closes the connection and FCM is the wake channel; on foreground the
 client reopens EventSource and reconciles via `Foo/changes`
 (`../architecture/03-sync-and-state.md`).
 
+### Digital Asset Links (App Links)
+
+Android verifies an App Link by fetching `https://<origin>/.well-known/assetlinks.json`
+over HTTPS with no redirect, as `application/json`, unauthenticated. herold does
+not serve that path today - the public mux registers `/.well-known/jmap` and
+nothing else under `/.well-known/` (`internal/admin/server.go`) - so the
+client's `autoVerify` filter for `mail.netzhansa.com` cannot pass until the
+server serves this file verbatim:
+
+```json
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.netzhansa.herold.android",
+      "sha256_cert_fingerprints": [
+        "DF:1D:E8:CA:0B:62:34:FB:34:2F:49:32:F5:60:56:23:38:B7:A9:EC:A8:9D:CC:AE:A4:8F:3A:D1:B9:26:E3:72"
+      ]
+    }
+  }
+]
+```
+
+The fingerprint is the release signing certificate the mobile CI lane signs
+with. A debug-signed build carries a different certificate and is driven with
+an explicit package instead of verification.
+
+What the client matches: the Suite routes a conversation on the fragment
+(`https://<origin>/#/mail/thread/<threadId>`,
+`web/apps/suite/src/lib/router/router.svelte.ts`), and an Android intent filter
+matches on the path, which for such a URL is `/`. The client therefore
+registers the origin's root and reads the fragment itself
+(`requirements/04-system-integration.md` REQ-AND-SYS-11). Serving the file
+under the root of the deployment origin covers every Suite link.
+
+Owner: server (`http-api-implementor`); this is not mobile work.
+
 ## Cross-reference
 
 Base contract and herold-side coverage: `docs/design/web/notes/server-contract.md`

@@ -200,8 +200,24 @@ server's thread-id rule, the transparency page rendering the instance's
 prompts, and the one-click POST recorded by an in-process TLS sink with no
 `Cookie`, `Referer` or `Authorization` header.
 
-**3b — system integration.** Share intents, widgets, tiles, deep links
-(`requirements/04-system-integration.md`).
+**3b — platform surfaces (#362).** On branch `android-m3b`: the share target
+for text and files, a Share action on a conversation carrying the Suite's
+thread URL, `mailto:` handling, the internal `herold://` deep-link scheme
+every entry point routes through, verified App Links for the deployment
+origin, a Glance home-screen widget with the unread count and the newest
+conversations, a Quick Settings tile carrying the user's choice of compose
+or a one-hour notification mute, and the launcher's static Compose shortcut
+plus dynamic conversation shortcuts shared with the notifications
+(`requirements/04-system-integration.md`
+REQ-AND-SYS-01/02/03/10/11/20/21/22, `03-notifications.md`
+REQ-AND-PUSH-22). Acceptance: on the emulator against
+`scripts/dev-instance.sh`, a shared text and image opening compose with the
+attachment and going out together, a `mailto:` and both link forms landing
+on their destination, the widget showing the seeded mail and following a new
+message, and the tile and the shortcuts present and acting. App Link
+verification waits on the origin serving `/.well-known/assetlinks.json`
+(`notes/server-contract.md`), so the emulator drives the https VIEW intent
+with the package set.
 
 ### Milestone 4+ — sibling apps
 
