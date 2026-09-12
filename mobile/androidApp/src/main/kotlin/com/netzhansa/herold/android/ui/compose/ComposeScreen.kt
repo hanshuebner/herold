@@ -181,7 +181,8 @@ fun ComposeScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch { addFile(context, session, current.accountId, uri, inline = true, snackbar = snackbar) { added ->
             state = state?.let { it.copy(attachments = it.attachments + added) }
-            added.cid?.let { editor.insertInlineImage(it) }
+            val bytes = added.bytes
+            if (added.cid != null && bytes != null) editor.insertInlineImage(added.cid!!, added.type, bytes)
         } }
     }
 

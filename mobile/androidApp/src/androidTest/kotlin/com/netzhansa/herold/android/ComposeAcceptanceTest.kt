@@ -310,9 +310,12 @@ class ComposeAcceptanceTest {
         const val DELIVERY_POLLS = 30
         const val DELIVERY_POLL_MS = 1_000L
 
-        /** An 8x8 PNG, small enough to paste into a test. */
+        /** A 64x64 solid PNG, big enough to be visible in a screenshot. */
         val PNG_BYTES: ByteArray = android.util.Base64.decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=",
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwBfHTCY2" +
+                "liH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSg" +
+                "BQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYBWQmhLScUAZAAAAAA" +
+                "SUVORK5CYII=",
             android.util.Base64.DEFAULT,
         )
     }

@@ -48,6 +48,35 @@ object DevInstance {
     val smtpAddr: String get() = argument("heroldSmtpAddr") ?: "10.0.2.2:2525"
 
     /**
+     * An HTML message carrying an inline PNG, for the reading pane's
+     * `cid:` path. Delivered like any other mail, so the client sees the
+     * same shape a real sender produces.
+     */
+    fun deliverMailWithInlineImage(
+        subject: String,
+        from: String = "Bob Example <bob@example.local>",
+        cid: String = "inline-" + System.nanoTime() + "@acceptance.test",
+    ): String {
+        val boundary = "herold-acceptance-" + System.nanoTime()
+        val headers = "MIME-Version: 1.0\r\n" +
+            "Content-Type: multipart/related; boundary=\"$boundary\"\r\n"
+        val body = buildString {
+            append("--$boundary\r\n")
+            append("Content-Type: text/html; charset=utf-8\r\n\r\n")
+            append("<html><body><p>Inline image below.</p>")
+            append("<p><img src=\"cid:$cid\" alt=\"dot\"></p></body></html>\r\n")
+            append("--$boundary\r\n")
+            append("Content-Type: image/png\r\n")
+            append("Content-Transfer-Encoding: base64\r\n")
+            append("Content-ID: <$cid>\r\n")
+            append("Content-Disposition: inline; filename=dot.png\r\n\r\n")
+            append(INLINE_PNG_BASE64)
+            append("\r\n--$boundary--\r\n")
+        }
+        return deliverRaw(subject, from, body, extraHeaders = headers)
+    }
+
+    /**
      * Delivers one message to [email] over the instance's SMTP listener, so
      * a test provisions the mail it needs instead of depending on what an
      * earlier run left behind. Returns the subject it used.
@@ -57,6 +86,15 @@ object DevInstance {
         from: String = "Bob Example <bob@example.local>",
         body: String,
         messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
+    ): String = deliverRaw(subject, from, body, messageId)
+
+    /** The SMTP conversation both seeding helpers share. */
+    private fun deliverRaw(
+        subject: String,
+        from: String,
+        body: String,
+        messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
+        extraHeaders: String = "",
     ): String {
         val (host, port) = smtpAddr.split(":")
         Socket(host, port.toInt()).use { socket ->
@@ -83,7 +121,7 @@ object DevInstance {
             send("DATA", "354")
             writer.write(
                 "From: $from\r\nTo: $email\r\nSubject: $subject\r\n" +
-                    "Message-ID: <$messageId>\r\n\r\n$body\r\n.\r\n",
+                    "Message-ID: <$messageId>\r\n" + extraHeaders + "\r\n$body\r\n.\r\n",
             )
             writer.flush()
             expect("250")
@@ -94,6 +132,10 @@ object DevInstance {
 
     /** The principal a composed message is addressed to and read back from. */
     val recipientEmail: String get() = argument("heroldRecipient") ?: "bob@example.local"
+
+    /** A 1x1 PNG, base64 as a MIME part carries it. */
+    private const val INLINE_PNG_BASE64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII="
 
     /**
      * An independent JMAP client signed in as [email], for asserting server

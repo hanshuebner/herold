@@ -8,7 +8,6 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.netzhansa.herold.shared.compose.ComposeAttachment
@@ -39,6 +38,14 @@ class EditorHandle {
     internal var webView: WebView? = null
     internal var onHtml: ((String) -> Unit)? = null
 
+    /**
+     * The bytes of the inline images the body references, which the
+     * WebView's request interceptor serves. They live on the handle rather
+     * than in composition state because an image must resolve the instant
+     * it is inserted, before the next recomposition.
+     */
+    internal val inlineImages = mutableMapOf<String, Pair<String, ByteArray>>()
+
     /** Applies a formatting command to the selection. */
     fun run(command: EditorCommand) = evaluate(command.js + ";herold.publish();")
 
@@ -49,7 +56,8 @@ class EditorHandle {
     }
 
     /** Places an inline image at the cursor, referenced by its Content-ID. */
-    fun insertInlineImage(cid: String) {
+    fun insertInlineImage(cid: String, type: String, bytes: ByteArray) {
+        inlineImages[cid] = type to bytes
         val src = HtmlSanitizer.INLINE_SCHEME + cid
         evaluate("document.execCommand('insertHTML', false, '<img src=\"$src\">');herold.publish();")
     }
@@ -81,13 +89,10 @@ fun RichTextEditor(
     onHtmlChanged: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // The inline images the body references, resolvable while their bytes
-    // are still in memory - the message has not been sent, so there is no
-    // blob to download yet.
-    val inlineBytes = remember(attachments) {
-        attachments.filter { it.inline && it.cid != null && it.bytes != null }
-            .associate { it.cid!! to (it.type to it.bytes!!) }
-    }
+    // An image the compose already carries - a restored draft, a second
+    // visit to the screen - resolves the same way as a freshly inserted one.
+    attachments.filter { it.inline && it.cid != null && it.bytes != null }
+        .forEach { handle.inlineImages[it.cid!!] = it.type to it.bytes!! }
     handle.onHtml = onHtmlChanged
 
     AndroidView(
@@ -115,7 +120,7 @@ fun RichTextEditor(
                         val url = request?.url?.toString() ?: return null
                         if (url.startsWith(HtmlSanitizer.INLINE_SCHEME)) {
                             val cid = url.removePrefix(HtmlSanitizer.INLINE_SCHEME)
-                            val resolved = inlineBytes[cid] ?: return blocked()
+                            val resolved = handle.inlineImages[cid] ?: return blocked()
                             return WebResourceResponse(
                                 resolved.first.substringBefore(';'),
                                 null,

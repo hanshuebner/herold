@@ -4,7 +4,6 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithText
@@ -157,12 +156,15 @@ class AcceptanceTest {
     @Test
     fun t04_openingAThreadRendersItsHtmlBodyAndItsInlineImage() = runBlocking {
         signIn()
-        syncNow()
+        // The check seeds the message it opens, so it does not depend on
+        // which of the instance's mail happens to carry an inline image.
+        val subject = "inline image ${System.currentTimeMillis()}"
+        DevInstance.deliverMailWithInlineImage(subject)
+        val newest = awaitInbox(subject)
         compose.waitUntil(TIMEOUT_MS) { threadRowCount() > 0 }
 
-        val newest = app.container.store.inboxEmails().first().maxByOrNull { it.receivedAt }
-            ?: error("no synced mail to open")
-        firstThreadRow().performClick()
+        scrollInboxToThread(newest.threadId)
+        compose.onNodeWithTag("thread-row-${newest.threadId}").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
@@ -234,6 +236,17 @@ class AcceptanceTest {
         }
     }
 
+    /** Syncs until the message with [subject] is in the local inbox. */
+    private fun awaitInbox(subject: String): com.netzhansa.herold.shared.domain.Email = runBlocking {
+        repeat(30) {
+            app.container.session.value!!.syncEngine.syncAll()
+            app.container.store.inboxEmails().first().firstOrNull { it.subject == subject }
+                ?.let { return@runBlocking it }
+            Thread.sleep(500)
+        }
+        error("the seeded message \"$subject\" never reached the inbox")
+    }
+
     private fun syncNow() {
         runBlocking { app.container.session.value!!.syncEngine.syncAll() }
         compose.waitForIdle()
@@ -284,9 +297,6 @@ class AcceptanceTest {
     private fun threadRowCount(): Int =
         compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
             .fetchSemanticsNodes().size
-
-    private fun firstThreadRow() =
-        compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true).onFirst()
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
