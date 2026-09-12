@@ -5,6 +5,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -44,30 +46,39 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.push.ActiveThread
 import com.netzhansa.herold.android.push.MailNotifier
+import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
 import com.netzhansa.herold.shared.compose.ComposeMode
+import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 
 /**
@@ -96,7 +107,18 @@ fun ThreadScreen(
     var snoozing by remember { mutableStateOf(false) }
     var fetching by remember { mutableStateOf(false) }
     var unavailable by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<Attachment?>(null) }
     val darkTheme = isSystemInDarkTheme()
+
+    // What an image is decoded for: the column it is drawn in, never its
+    // own resolution (issue #341).
+    val displayWidthPx = with(LocalDensity.current) {
+        LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
+    }
+
+    /** The attachment's bytes from the blob cache, downloading them once. */
+    suspend fun blobOf(attachment: Attachment): ByteArray? =
+        session.syncEngine.blob(accountId, attachment.blobId, attachment.type, attachment.name)
 
     // A thread reached from search or a notification can be outside the
     // synced set; the store is still the source of truth, so the sync
@@ -240,16 +262,31 @@ fun ThreadScreen(
                         }
                         attachment?.let {
                             runBlocking(Dispatchers.IO) {
-                                session.syncEngine.blob(accountId, it.blobId, it.type, it.name)
-                                    ?.let { bytes -> it.type to bytes }
+                                blobOf(it)?.let { bytes ->
+                                    // Inline images keep their place in the
+                                    // body and are handed to the WebView at
+                                    // the width it will draw them at.
+                                    it.type to ImageScaling.forDisplay(bytes, displayWidthPx)
+                                }
                             }
                         }
                     },
+                    loadBlob = { attachment -> blobOf(attachment) },
+                    onOpenAttachment = { attachment -> viewing = attachment },
                 )
                 HorizontalDivider()
             }
         }
         }
+    }
+
+    viewing?.let { attachment ->
+        AttachmentViewer(
+            attachment = attachment,
+            maxEdgePx = displayWidthPx,
+            loadBlob = { blobOf(it) },
+            onDismiss = { viewing = null },
+        )
     }
 
     if (snoozing) {
@@ -306,6 +343,8 @@ private fun MessageCard(
     onShowRemoteImages: () -> Unit,
     resolveRemoteImage: (String) -> Pair<String, ByteArray>?,
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
+    loadBlob: suspend (Attachment) -> ByteArray?,
+    onOpenAttachment: (Attachment) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().testTag("message-${message.id}")) {
         Row(
@@ -376,10 +415,10 @@ private fun MessageCard(
                     modifier = Modifier.padding(start = 12.dp, top = 8.dp),
                 )
                 message.attachments.filter { !it.isInline }.forEach { attachment ->
-                    ListItem(
-                        headlineContent = { Text(attachment.name) },
-                        supportingContent = { Text("${attachment.type} - ${attachment.size} bytes") },
-                        modifier = Modifier.testTag("attachment-${attachment.name}"),
+                    AttachmentRow(
+                        attachment = attachment,
+                        loadBlob = loadBlob,
+                        onOpen = { onOpenAttachment(attachment) },
                     )
                 }
             }
@@ -445,3 +484,86 @@ private fun MessageBodyWebView(
         },
     )
 }
+
+/**
+ * One attachment: name, type and size, with a bounded thumbnail for an
+ * image. The thumbnail comes from a sampled decode of the cached blob, so
+ * a camera photo costs a few hundred kilobytes of bitmap rather than its
+ * full resolution (issue #341, suite REQ-ATT-20/21). Tapping opens it.
+ */
+@Composable
+private fun AttachmentRow(
+    attachment: Attachment,
+    loadBlob: suspend (Attachment) -> ByteArray?,
+    onOpen: () -> Unit,
+) {
+    val isImage = ImageScaling.isImage(attachment.type)
+    val thumbnail by produceState<ImageBitmap?>(null, attachment.blobId) {
+        if (!isImage) return@produceState
+        value = withContext(Dispatchers.IO) {
+            loadBlob(attachment)?.let { ImageScaling.thumbnail(it, THUMBNAIL_PX) }
+        }
+    }
+    ListItem(
+        leadingContent = {
+            thumbnail?.let { bitmap ->
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = attachment.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(THUMBNAIL_DP.dp)
+                        .testTag("attachment-thumbnail-${attachment.name}"),
+                )
+            }
+        },
+        headlineContent = { Text(attachment.name) },
+        supportingContent = { Text("${attachment.type} - ${formatBytes(attachment.size)}") },
+        modifier = Modifier
+            .clickable(enabled = isImage, onClick = onOpen)
+            .testTag("attachment-${attachment.name}"),
+    )
+}
+
+/** The full image, decoded at the screen's width rather than its own. */
+@Composable
+private fun AttachmentViewer(
+    attachment: Attachment,
+    maxEdgePx: Int,
+    loadBlob: suspend (Attachment) -> ByteArray?,
+    onDismiss: () -> Unit,
+) {
+    val image by produceState<ImageBitmap?>(null, attachment.blobId) {
+        value = withContext(Dispatchers.IO) {
+            loadBlob(attachment)?.let { ImageScaling.thumbnail(it, maxEdgePx) }
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onDismiss)
+                .testTag("attachment-viewer"),
+            contentAlignment = Alignment.Center,
+        ) {
+            image?.let { bitmap ->
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = attachment.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } ?: CircularProgressIndicator()
+        }
+    }
+}
+
+private fun formatBytes(size: Long): String = when {
+    size >= 1_000_000 -> "${(size / 100_000) / 10.0} MB"
+    size >= 1_000 -> "${size / 1_000} kB"
+    else -> "$size B"
+}
+
+/** A chip's thumbnail: 56 dp on screen, decoded to a little more than that. */
+private const val THUMBNAIL_DP = 56
+private const val THUMBNAIL_PX = 256

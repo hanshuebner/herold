@@ -77,6 +77,42 @@ object DevInstance {
     }
 
     /**
+     * An HTML message carrying [bytes] as an image, inline or attached, so
+     * the reading pane's handling of a camera-sized photo can be driven
+     * from a seeded message (issue #341).
+     */
+    fun deliverMailWithImage(
+        subject: String,
+        bytes: ByteArray,
+        name: String,
+        inline: Boolean,
+        from: String = "Bob Example <bob@example.local>",
+    ): String {
+        val cid = "image-" + System.nanoTime() + "@acceptance.test"
+        val boundary = "herold-acceptance-" + System.nanoTime()
+        val headers = "MIME-Version: 1.0\r\n" +
+            "Content-Type: multipart/related; boundary=\"$boundary\"\r\n"
+        val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+        val body = buildString {
+            append("--$boundary\r\n")
+            append("Content-Type: text/html; charset=utf-8\r\n\r\n")
+            if (inline) {
+                append("<html><body><p>Photo below.</p><p><img src=\"cid:$cid\" alt=\"photo\"></p></body></html>\r\n")
+            } else {
+                append("<html><body><p>Photo attached.</p></body></html>\r\n")
+            }
+            append("--$boundary\r\n")
+            append("Content-Type: image/jpeg\r\n")
+            append("Content-Transfer-Encoding: base64\r\n")
+            if (inline) append("Content-ID: <$cid>\r\n")
+            append("Content-Disposition: ${if (inline) "inline" else "attachment"}; filename=$name\r\n\r\n")
+            append(encoded)
+            append("\r\n--$boundary--\r\n")
+        }
+        return deliverRaw(subject, from, body, extraHeaders = headers)
+    }
+
+    /**
      * Delivers one message to [email] over the instance's SMTP listener, so
      * a test provisions the mail it needs instead of depending on what an
      * earlier run left behind. Returns the subject it used.

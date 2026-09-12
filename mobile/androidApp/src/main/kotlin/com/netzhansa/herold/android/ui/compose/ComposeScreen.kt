@@ -3,6 +3,7 @@ package com.netzhansa.herold.android.ui.compose
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -40,6 +41,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -64,6 +66,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.android.media.ImageScaling
+import com.netzhansa.herold.android.media.ImageSize
+import com.netzhansa.herold.android.media.ImageSizePreference
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.compose.AttachResult
 import com.netzhansa.herold.shared.compose.AttachmentStatus
@@ -116,6 +121,8 @@ fun ComposeScreen(
     var ccText by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
+    /** A picked image waiting for its size choice (issue #341). */
+    var sizeChoice by remember { mutableStateOf<PendingImage?>(null) }
     var suggestions by remember { mutableStateOf<List<MailAddress>>(emptyList()) }
     // The editor's document loads asynchronously; it publishes its body
     // once it is up, which is also what tells a caller it can be typed in.
@@ -180,19 +187,45 @@ fun ComposeScreen(
         }
     }
 
+    /** Adds a file that is ready to go up, inline or as an attachment. */
+    suspend fun upload(file: PickedFile, inline: Boolean) {
+        when (val result = session.composer.attach(current.accountId, file.name, file.type, file.bytes, inline)) {
+            is AttachResult.Added -> {
+                val added = result.attachment
+                state = state?.let { it.copy(attachments = it.attachments + added) }
+                val bytes = added.bytes
+                if (inline && added.cid != null && bytes != null) {
+                    editor.insertInlineImage(added.cid!!, added.type, bytes)
+                }
+            }
+
+            is AttachResult.Rejected -> snackbar.showSnackbar(result.message)
+        }
+    }
+
+    /**
+     * A picked file goes up as it is, unless it is an image big enough to
+     * be a camera photo - then the size choice comes first (issue #341).
+     */
+    suspend fun offerOrUpload(uri: Uri, inline: Boolean) {
+        val file = withContext(Dispatchers.IO) { readFile(context, uri) } ?: run {
+            snackbar.showSnackbar("That file could not be read")
+            return
+        }
+        if (ImageScaling.isImage(file.type) && file.bytes.size >= ImageScaling.OFFER_THRESHOLD_BYTES) {
+            sizeChoice = PendingImage(file, inline)
+            return
+        }
+        upload(file, inline)
+    }
+
     val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch { addFile(context, session, current.accountId, uri, inline = false, snackbar = snackbar) { added ->
-            state = state?.let { it.copy(attachments = it.attachments + added) }
-        } }
+        scope.launch { offerOrUpload(uri, inline = false) }
     }
     val inlineLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch { addFile(context, session, current.accountId, uri, inline = true, snackbar = snackbar) { added ->
-            state = state?.let { it.copy(attachments = it.attachments + added) }
-            val bytes = added.bytes
-            if (added.cid != null && bytes != null) editor.insertInlineImage(added.cid!!, added.type, bytes)
-        } }
+        scope.launch { offerOrUpload(uri, inline = true) }
     }
 
     Scaffold(
@@ -361,6 +394,24 @@ fun ComposeScreen(
                 },
             )
         }
+    }
+
+    sizeChoice?.let { pending ->
+        ImageSizeDialog(
+            file = pending.file,
+            initial = ImageSizePreference.last(context),
+            onDismiss = { sizeChoice = null },
+            onPick = { size ->
+                sizeChoice = null
+                ImageSizePreference.remember(context, size)
+                scope.launch {
+                    val scaled = withContext(Dispatchers.Default) {
+                        ImageScaling.scale(pending.file.name, pending.file.type, pending.file.bytes, size)
+                    }
+                    upload(PickedFile(scaled.name, scaled.type, scaled.bytes), pending.inline)
+                }
+            },
+        )
     }
 
     if (linkDialog) {
@@ -568,40 +619,113 @@ private fun LinkDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     )
 }
 
-/**
- * Reads the picked file and hands it to the shared uploader. The chip
- * shows its progress: the placeholder goes in immediately and is replaced
- * when the upload answers (suite REQ-ATT-03).
- */
-private suspend fun addFile(
-    context: Context,
-    session: SessionScope,
-    accountId: String,
-    uri: Uri,
-    inline: Boolean,
-    snackbar: SnackbarHostState,
-    onAdded: (ComposeAttachment) -> Unit,
-) {
-    val (name, type, bytes) = withContext(Dispatchers.IO) { readFile(context, uri) } ?: run {
-        snackbar.showSnackbar("That file could not be read")
-        return
-    }
-    when (val result = session.composer.attach(accountId, name, type, bytes, inline)) {
-        is AttachResult.Added -> onAdded(result.attachment)
-        is AttachResult.Rejected -> snackbar.showSnackbar(result.message)
-    }
-}
+/** A file the picker returned, read into memory. */
+private class PickedFile(val name: String, val type: String, val bytes: ByteArray)
 
-private fun readFile(context: Context, uri: Uri): Triple<String, String, ByteArray>? {
+/** A picked image held while the user chooses what size to send it at. */
+private class PendingImage(val file: PickedFile, val inline: Boolean)
+
+private fun readFile(context: Context, uri: Uri): PickedFile? {
     val resolver = context.contentResolver
-    val type = resolver.getType(uri) ?: "application/octet-stream"
     var name = uri.lastPathSegment?.substringAfterLast('/') ?: "attachment"
     resolver.query(uri, null, null, null, null)?.use { cursor ->
         val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
         if (index >= 0 && cursor.moveToFirst()) name = cursor.getString(index) ?: name
     }
     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-    return Triple(name, type, bytes)
+    return PickedFile(name, typeOf(resolver, uri, name), bytes)
+}
+
+/**
+ * The file's media type. A `content:` provider reports one; anything else
+ * (a `file:` URI from a share, for instance) is typed from its name, so a
+ * photo is recognised as a photo rather than going out as octet-stream.
+ */
+private fun typeOf(resolver: android.content.ContentResolver, uri: Uri, name: String): String {
+    resolver.getType(uri)?.takeIf { it.isNotBlank() && it != FALLBACK_TYPE }?.let { return it }
+    val extension = name.substringAfterLast('.', "").lowercase()
+    return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: FALLBACK_TYPE
+}
+
+private const val FALLBACK_TYPE = "application/octet-stream"
+
+/**
+ * The size choice for an outgoing photo (issue #341): Small, Medium, Large
+ * or Original, defaulting to the last choice made and to Large before
+ * there is one. Each option reports what the image would weigh, computed
+ * in the background so the dialog is usable the moment it appears.
+ */
+@Composable
+private fun ImageSizeDialog(
+    file: PickedFile,
+    initial: ImageSize,
+    onDismiss: () -> Unit,
+    onPick: (ImageSize) -> Unit,
+) {
+    var selected by remember { mutableStateOf(initial) }
+    var sizes by remember { mutableStateOf<Map<ImageSize, Int>>(emptyMap()) }
+    val dimensions = remember(file) { ImageScaling.dimensions(file.bytes) }
+
+    LaunchedEffect(file) {
+        // The estimates are informational; the options answer taps while
+        // they are still being computed.
+        ImageSize.entries.forEach { size ->
+            val bytes = withContext(Dispatchers.Default) {
+                ImageScaling.scale(file.name, file.type, file.bytes, size).bytes.size
+            }
+            sizes = sizes + (size to bytes)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Image size") },
+        text = {
+            Column {
+                dimensions?.let { (width, height) ->
+                    Text(
+                        text = "${file.name} - $width x $height",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+                ImageSize.entries.forEach { size ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = size }
+                            .padding(vertical = 8.dp)
+                            .testTag("image-size-${size.name.lowercase()}"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        RadioButton(selected = selected == size, onClick = { selected = size })
+                        Text(size.label)
+                        sizes[size]?.let { bytes ->
+                            Text(
+                                text = formatSize(bytes),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPick(selected) }, modifier = Modifier.testTag("image-size-confirm")) {
+                Text("Attach")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        modifier = Modifier.testTag("image-size-dialog"),
+    )
+}
+
+private fun formatSize(bytes: Int): String = when {
+    bytes >= 1_000_000 -> "${(bytes / 100_000) / 10.0} MB"
+    bytes >= 1_000 -> "${bytes / 1_000} kB"
+    else -> "$bytes B"
 }
 
 private fun titleFor(mode: ComposeMode): String = when (mode) {

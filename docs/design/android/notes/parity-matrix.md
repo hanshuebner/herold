@@ -43,12 +43,13 @@ presentation-level and not yet built.
 | `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
 | `06-snooze` — custom date-and-time preset (`REQ-SNZ-05`) | presentation | todo | — |
 | `07-search` — JMAP `Email/query` + FTS | protocol | n/a | — |
-| `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c) | #329 |
+| `07-search` — search field, thread results, `SearchSnippet` highlights (`REQ-SRC-01..06`, `30..32`) | presentation | done (milestone 1c); a result outside the synced set is fetched on open and the search screen is restored on back (#339, #340) | #329 |
 | `07-search` — fielded operators, autocomplete, recent searches (`REQ-SRC-10/11/22`) | presentation | todo | — |
 | `07-search` — in-thread find (`REQ-SRC-50..53`) | presentation | todo | — |
-| `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 1a, online only) | #327 |
+| `11-optimistic-ui` — optimistic action semantics | presentation | done (milestone 1a, online only); the archive undo is offered with the local write rather than after the round trip (#338) | #327 |
 | `14-unsubscribe` — List-Unsubscribe handling | presentation | todo | — |
 | `17-attachments` — inline-vs-attach (suite G8), upload progress, `maxSizeUpload` (`REQ-ATT-01..06`) | presentation | done (milestone 1c) | #329 |
+| `17-attachments` — attachment chips with image thumbnails in the reading pane (`REQ-ATT-20/21`) | presentation | done (#341); the mobile client decodes at display size and adds the Gmail-style size choice on attach (`REQ-AND-SYS-33/34`), which the suite has no counterpart for | #341 |
 | `17-attachments` — drag-and-drop targets, disposition flip after adding (`REQ-ATT-07`) | presentation | todo (no drag surface on phone; the flip needs a chip affordance) | — |
 | `17-attachments` — share-link offload (`REQ-ATT-60..73`) | presentation | todo | — |
 | `19-drafts` — draft model | protocol | n/a | — |

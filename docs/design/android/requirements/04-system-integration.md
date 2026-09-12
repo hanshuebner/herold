@@ -35,6 +35,8 @@ web-platform integrations in `docs/design/web/requirements/24-mobile-and-touch.m
 | REQ-AND-SYS-30 | Attachments are picked via the Storage Access Framework (document picker) and, for images, the photo picker; camera capture uses the platform capture intent. This parallels Suite `REQ-MOB-52`. |
 | REQ-AND-SYS-31 | Saving an attachment or an inline image writes through SAF to a user-chosen location; "Download all attachments" includes inline images by default (`../00-scope.md`, Suite G16). |
 | REQ-AND-SYS-32 | Pasting an image into compose inlines it in the body; the document/photo picker attaches (Suite G15 / `REQ-MOB-52/53`). |
+| REQ-AND-SYS-33 | An image attached to a compose that is larger than 1 MB is offered at four sizes - Small (1024 px), Medium (1600 px), Large (2048 px) and Original - bounding the longer edge. Large is the default and the last choice is remembered. The client downscales and re-encodes on the device before the upload, so the message carries the chosen size and not the camera's original (issue #341). |
+| REQ-AND-SYS-34 | An image in a received message is decoded at the size it is drawn: an attachment gets a bounded thumbnail from a sampled decode of the cached blob and opens full-screen on tap, and an inline `cid:` image is handed to the reading pane's WebView re-encoded at the display width. A full-resolution decode is never used to paint a phone-sized view (Suite `REQ-ATT-20/21`, issue #341). |
 
 ## Platform conventions
 
