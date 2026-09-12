@@ -112,7 +112,11 @@ internal object Sha256 {
     )
 }
 
-/** Unpadded base64url (RFC 4648 section 5), the encoding PKCE and OAuth2 state use. */
+/**
+ * Unpadded base64url (RFC 4648 section 5): the encoding PKCE and the
+ * OAuth2 `state` use, and the one the push subscription's RFC 8291 keys
+ * go on the wire in.
+ */
 internal object Base64Url {
     private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
@@ -143,5 +147,29 @@ internal object Base64Url {
             }
         }
         return out.toString()
+    }
+
+    /**
+     * Decodes unpadded (or padded) base64url. Throws on a character
+     * outside the alphabet, so a malformed stored key is a failure rather
+     * than silently wrong bytes.
+     */
+    fun decode(text: String): ByteArray {
+        val trimmed = text.trimEnd('=')
+        val out = ByteArray(trimmed.length * 3 / 4)
+        var buffer = 0
+        var bits = 0
+        var written = 0
+        for (ch in trimmed) {
+            val value = ALPHABET.indexOf(ch)
+            require(value >= 0) { "not base64url: $ch" }
+            buffer = (buffer shl 6) or value
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out[written++] = ((buffer ushr bits) and 0xFF).toByte()
+            }
+        }
+        return if (written == out.size) out else out.copyOfRange(0, written)
     }
 }
