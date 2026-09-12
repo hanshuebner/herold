@@ -31,8 +31,9 @@ object SyncTypes {
     const val EMAIL = "Email"
     const val THREAD = "Thread"
     const val IDENTITY = "Identity"
+    const val MANAGED_RULE = "ManagedRule"
 
-    val ALL = listOf(MAILBOX, EMAIL, THREAD, IDENTITY)
+    val ALL = listOf(MAILBOX, EMAIL, THREAD, IDENTITY, MANAGED_RULE)
 }
 
 /**
@@ -131,6 +132,7 @@ class SyncEngine(
         if (types.contains(SyncTypes.EMAIL)) syncEmails(accountId)
         if (types.contains(SyncTypes.THREAD)) syncThreads(accountId)
         if (types.contains(SyncTypes.IDENTITY)) syncIdentities(accountId)
+        if (types.contains(SyncTypes.MANAGED_RULE)) syncManagedRules(accountId)
     }
 
     private suspend fun syncMailboxes(accountId: String) {
@@ -279,6 +281,53 @@ class SyncEngine(
         val result = runCatching { api.identityGet(accountId) }.getOrNull() ?: return
         store.upsertIdentities(result.list.map { it.toDomain(accountId) })
         if (result.state.isNotBlank()) store.setSyncState(accountId, SyncTypes.IDENTITY, result.state)
+    }
+
+    /**
+     * The account's filter rules (suite REQ-FLT-20). They fold like every
+     * other type, so the filters screen renders store rows and a rule
+     * written in the suite reaches the phone through `ManagedRule/changes`
+     * rather than a screen-level fetch.
+     */
+    private suspend fun syncManagedRules(accountId: String) {
+        val since = store.syncState(accountId, SyncTypes.MANAGED_RULE)
+        if (since == null) {
+            fillManagedRules(accountId)
+            return
+        }
+        when (val outcome = api.managedRuleChanges(accountId, since)) {
+            is ChangesOutcome.CannotCalculate -> {
+                store.clearManagedRules(accountId)
+                store.setSyncState(accountId, SyncTypes.MANAGED_RULE, null)
+                fillManagedRules(accountId)
+            }
+
+            is ChangesOutcome.Changed -> {
+                if (outcome.destroyed.isNotEmpty()) store.deleteManagedRules(accountId, outcome.destroyed)
+                val touched = (outcome.created + outcome.updated).distinct()
+                if (touched.isNotEmpty()) {
+                    val fetched = api.managedRuleGet(accountId, touched)
+                    store.upsertManagedRules(fetched.list.map { it.toDomain(accountId) })
+                    if (fetched.notFound.isNotEmpty()) {
+                        store.deleteManagedRules(accountId, fetched.notFound)
+                    }
+                }
+                store.setSyncState(accountId, SyncTypes.MANAGED_RULE, outcome.newState)
+                if (outcome.hasMoreChanges) syncManagedRules(accountId)
+            }
+        }
+    }
+
+    /**
+     * The whole rule set. A rule destroyed while the client was away is
+     * gone from the fetch, so the account's rows are replaced rather than
+     * merged.
+     */
+    private suspend fun fillManagedRules(accountId: String) {
+        val result = runCatching { api.managedRuleGet(accountId, null) }.getOrNull() ?: return
+        store.clearManagedRules(accountId)
+        store.upsertManagedRules(result.list.map { it.toDomain(accountId) })
+        if (result.state.isNotBlank()) store.setSyncState(accountId, SyncTypes.MANAGED_RULE, result.state)
     }
 
     /**

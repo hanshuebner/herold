@@ -48,6 +48,25 @@ class Outbox(
     )
 
     /**
+     * Queues a filter-rule write (suite REQ-FLT-20). It carries no
+     * membership snapshot: the rows a rule write touches are the account's
+     * rules, which the drain reads back from the server on success.
+     */
+    suspend fun enqueueRule(
+        accountId: String,
+        label: String,
+        payload: RulePayload,
+    ): Long = store.enqueueOutbox(
+        NewOutboxEntry(
+            accountId = accountId,
+            kind = OutboxKind.RULE,
+            label = label,
+            payload = outboxJson.encodeToString(payload),
+            createdAt = now(),
+        ),
+    )
+
+    /**
      * Queues a composed message. [holdUntilMs] is the instant the drain may
      * first submit it, which is how the undo window after Send is realised
      * (issue #354): until then the entry sits in the queue and an undo

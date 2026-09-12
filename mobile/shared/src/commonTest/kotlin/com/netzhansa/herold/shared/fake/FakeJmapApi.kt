@@ -15,7 +15,11 @@ import com.netzhansa.herold.shared.jmap.SubmissionOutcome
 import com.netzhansa.herold.shared.jmap.UploadedBlob
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireIdentity
+import com.netzhansa.herold.shared.jmap.RuleSetOutcome
+import com.netzhansa.herold.shared.jmap.WireLlmInspect
+import com.netzhansa.herold.shared.jmap.WireLlmTransparency
 import com.netzhansa.herold.shared.jmap.WireMailbox
+import com.netzhansa.herold.shared.jmap.WireManagedRule
 import com.netzhansa.herold.shared.jmap.WireSeenAddress
 import com.netzhansa.herold.shared.jmap.WireSnippet
 import com.netzhansa.herold.shared.jmap.WireThread
@@ -49,6 +53,21 @@ class FakeJmapApi(
 
     var categories: List<String> = emptyList()
 
+    var rules: List<WireManagedRule> = emptyList()
+    var ruleState: String = "rule-1"
+    var ruleChanges: ChangesOutcome = ChangesOutcome.Changed("rule-1", emptyList(), emptyList(), emptyList(), false)
+
+    /** What a `ManagedRule/set` answers; refusals go in its `errors`. */
+    var ruleSetOutcome: RuleSetOutcome = RuleSetOutcome()
+
+    var transparency: WireLlmTransparency? = null
+    var inspect: List<WireLlmInspect> = emptyList()
+
+    val ruleSetCalls = mutableListOf<Triple<Map<String, JsonObject>, Map<String, JsonObject>, List<String>>>()
+    val threadMuteCalls = mutableListOf<Pair<String, Boolean>>()
+    val blockedSenderCalls = mutableListOf<String>()
+    var ruleGetCalls = 0
+
     /** When set, every `Email/set` throws it - the offline and rejection paths. */
     var setFailure: Throwable? = null
 
@@ -64,6 +83,41 @@ class FakeJmapApi(
     var inboxQueryCalls = 0
 
     override suspend fun session(): JmapSession = session
+
+    override suspend fun managedRuleGet(accountId: String, ids: List<String>?): GetResult<WireManagedRule> {
+        readFailure?.let { throw it }
+        ruleGetCalls++
+        val list = if (ids == null) rules else rules.filter { it.id in ids }
+        return GetResult(ruleState, list, notFound = ids.orEmpty().filter { id -> rules.none { it.id == id } })
+    }
+
+    override suspend fun managedRuleChanges(accountId: String, sinceState: String): ChangesOutcome = ruleChanges
+
+    override suspend fun managedRuleSet(
+        accountId: String,
+        create: Map<String, JsonObject>,
+        update: Map<String, JsonObject>,
+        destroy: List<String>,
+    ): RuleSetOutcome {
+        setFailure?.let { throw it }
+        ruleSetCalls.add(Triple(create, update, destroy))
+        return ruleSetOutcome
+    }
+
+    override suspend fun threadMute(accountId: String, threadId: String, muted: Boolean) {
+        setFailure?.let { throw it }
+        threadMuteCalls.add(threadId to muted)
+    }
+
+    override suspend fun blockedSenderSet(accountId: String, address: String) {
+        setFailure?.let { throw it }
+        blockedSenderCalls.add(address)
+    }
+
+    override suspend fun llmTransparency(accountId: String): WireLlmTransparency? = transparency
+
+    override suspend fun llmInspect(accountId: String, ids: List<String>): List<WireLlmInspect> =
+        inspect.filter { it.id in ids }
 
     override suspend fun mailboxGet(accountId: String, ids: List<String>?): GetResult<WireMailbox> {
         readFailure?.let { throw it }

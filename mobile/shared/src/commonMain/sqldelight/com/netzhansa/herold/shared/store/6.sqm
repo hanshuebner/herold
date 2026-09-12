@@ -1,0 +1,18 @@
+-- Schema 6 -> 7: the managed-rule mirror and the List-Unsubscribe headers
+-- (issue #361, suite REQ-FLT-01..31 and REQ-UNS-01/02). Additive: an
+-- install keeps its synced mail and gains an empty rule set; the two
+-- header columns fill on the next Email/get.
+
+CREATE TABLE managed_rule (
+    accountId TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+    conditionsJson TEXT NOT NULL DEFAULT '[]',
+    actionsJson TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (accountId, id)
+);
+
+ALTER TABLE email ADD COLUMN listUnsubscribe TEXT;
+ALTER TABLE email ADD COLUMN listUnsubscribePost TEXT;

@@ -119,6 +119,12 @@ data class WireEmail(
      * To/Cc (suite REQ-MAIL-12a step 3).
      */
     @SerialName("header:X-Herold-Recipient:asText") val deliveredTo: String? = null,
+    /**
+     * The RFC 2369 / RFC 8058 unsubscribe headers, which drive the thread
+     * view's Unsubscribe affordance (suite REQ-UNS-01/02).
+     */
+    @SerialName("header:List-Unsubscribe:asText") val listUnsubscribe: String? = null,
+    @SerialName("header:List-Unsubscribe-Post:asText") val listUnsubscribePost: String? = null,
     val subject: String? = null,
     val receivedAt: String? = null,
     val size: Long = 0,
@@ -243,3 +249,104 @@ data class SubmissionOutcome(
 ) {
     val isSuccess: Boolean get() = error == null
 }
+
+/** One condition of a `ManagedRule` (suite REQ-FLT-01/02). */
+@Serializable
+data class WireRuleCondition(
+    val field: String = "",
+    val op: String = "",
+    val value: String = "",
+)
+
+/**
+ * One action of a `ManagedRule` (suite REQ-FLT-10..15). The server types
+ * `params` as a free map; the kinds the client writes carry string values
+ * (`label`, `to`), and a non-string value is rendered as its JSON text so
+ * a rule written elsewhere survives a round trip through the store.
+ */
+@Serializable
+data class WireRuleAction(
+    val kind: String = "",
+    val params: Map<String, JsonElement> = emptyMap(),
+)
+
+/** A `ManagedRule` (`https://netzhansa.com/jmap/managed-rules`). */
+@Serializable
+data class WireManagedRule(
+    val id: String,
+    val name: String = "",
+    val enabled: Boolean = true,
+    val order: Int = 0,
+    val conditions: List<WireRuleCondition> = emptyList(),
+    val actions: List<WireRuleAction> = emptyList(),
+)
+
+/** What a `ManagedRule/set` did, keyed by the creation key or the rule id. */
+data class RuleSetOutcome(
+    val created: Map<String, WireManagedRule> = emptyMap(),
+    val updated: Set<String> = emptySet(),
+    val destroyed: List<String> = emptyList(),
+    /** Why an entry was refused, by creation key or rule id. */
+    val errors: Map<String, String> = emptyMap(),
+) {
+    val error: String? get() = errors.values.firstOrNull()
+}
+
+/** An endpoint and model name as `LLMTransparency/get` reports them. */
+@Serializable
+data class WireModelInfo(
+    val endpoint: String = "",
+    val modelName: String = "",
+) {
+    /** The one-line form the transparency page shows. */
+    val display: String
+        get() = listOf(modelName, endpoint).filter { it.isNotBlank() }.joinToString(" at ")
+}
+
+/**
+ * The `LLMTransparency` singleton: the prompts in effect, the derived
+ * category set, the models, and the server's disclosure note
+ * (suite REQ-FILT-65..68). Operator guardrails are not part of it.
+ */
+@Serializable
+data class WireLlmTransparency(
+    val id: String = "singleton",
+    val spamPrompt: String = "",
+    val spamModel: WireModelInfo = WireModelInfo(),
+    val categoriserPrompt: String = "",
+    val derivedCategories: List<String> = emptyList(),
+    val categoriserModel: WireModelInfo = WireModelInfo(),
+    val disclosureNote: String = "",
+)
+
+/** The spam half of an `Email/llmInspect` entry. */
+@Serializable
+data class WireSpamDetail(
+    val verdict: String = "",
+    val confidence: Double? = null,
+    val reason: String = "",
+    val promptApplied: String = "",
+    val model: String = "",
+    val classifiedAt: String = "",
+)
+
+/** The categorisation half of an `Email/llmInspect` entry. */
+@Serializable
+data class WireCategoryDetail(
+    val assigned: String = "",
+    val promptApplied: String = "",
+    val model: String = "",
+    val classifiedAt: String = "",
+)
+
+/**
+ * What the classifier was asked and answered for one message
+ * (`Email/llmInspect`, suite REQ-FILT-66). A half the classifier never ran
+ * is absent rather than empty.
+ */
+@Serializable
+data class WireLlmInspect(
+    val id: String,
+    val spam: WireSpamDetail? = null,
+    val category: WireCategoryDetail? = null,
+)

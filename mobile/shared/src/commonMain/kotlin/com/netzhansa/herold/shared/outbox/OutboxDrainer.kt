@@ -13,6 +13,7 @@ import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
 import com.netzhansa.herold.shared.store.LocalStore
+import com.netzhansa.herold.shared.sync.toRuleRow
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -156,6 +157,66 @@ class OutboxDrainer(
         OutboxKind.ACTION -> submitAction(entry)
         OutboxKind.DRAFT -> submitCompose(entry, submitToQueue = false)
         OutboxKind.SEND -> submitCompose(entry, submitToQueue = true)
+        OutboxKind.RULE -> submitRule(entry)
+    }
+
+    /**
+     * A filter-rule write. The server owns the rule set's shape - a mute
+     * and a block are its own compositions - so on success the account's
+     * rules are read back rather than patched locally, which is also what
+     * gives a create its server-assigned id (suite REQ-FLT-20).
+     */
+    private suspend fun submitRule(entry: OutboxEntry): StepResult {
+        val payload = runCatching {
+            outboxJson.decodeFromString<RulePayload>(entry.payload)
+        }.getOrNull() ?: return StepResult.Rejected("the queued filter change could not be read")
+        val outcome = try {
+            when (payload.op) {
+                RuleOp.CREATE -> api.managedRuleSet(
+                    payload.accountId,
+                    create = mapOf(RULE_CREATE_KEY to (payload.rule ?: JsonObject(emptyMap()))),
+                )
+
+                RuleOp.UPDATE -> {
+                    if (payload.updates.isEmpty()) return StepResult.Done
+                    api.managedRuleSet(payload.accountId, update = payload.updates)
+                }
+
+                RuleOp.DESTROY -> api.managedRuleSet(
+                    payload.accountId,
+                    destroy = listOf(payload.ruleId ?: return StepResult.Rejected("the rule is gone")),
+                )
+
+                RuleOp.MUTE, RuleOp.UNMUTE -> {
+                    api.threadMute(
+                        payload.accountId,
+                        payload.threadId ?: return StepResult.Rejected("the conversation is gone"),
+                        muted = payload.op == RuleOp.MUTE,
+                    )
+                    null
+                }
+
+                RuleOp.BLOCK -> {
+                    api.blockedSenderSet(
+                        payload.accountId,
+                        payload.address ?: return StepResult.Rejected("the sender is gone"),
+                    )
+                    null
+                }
+            }
+        } catch (t: Throwable) {
+            return failureOf(t)
+        }
+        outcome?.error?.let { return StepResult.Rejected(it) }
+        refreshRules(payload.accountId)
+        return StepResult.Done
+    }
+
+    /** Takes the server's rule set into the store after a rule write. */
+    private suspend fun refreshRules(accountId: String) {
+        val fetched = runCatching { api.managedRuleGet(accountId, null) }.getOrNull() ?: return
+        store.clearManagedRules(accountId)
+        store.upsertManagedRules(fetched.list.map { it.toRuleRow(accountId) })
     }
 
     private suspend fun submitAction(entry: OutboxEntry): StepResult {
@@ -327,6 +388,9 @@ class OutboxDrainer(
     }
 
     private companion object {
+        /** The creation key a `ManagedRule/set` create is routed back by. */
+        private const val RULE_CREATE_KEY = "rule1"
+
         const val DEFAULT_MAX_ATTEMPTS = 6
         const val DEFAULT_BACKOFF_BASE_MS = 5_000L
         const val DEFAULT_BACKOFF_CAP_MS = 5 * 60_000L

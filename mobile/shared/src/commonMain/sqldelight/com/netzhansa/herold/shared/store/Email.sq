@@ -35,6 +35,9 @@ CREATE TABLE email (
     inReplyToJson TEXT,
     referencesJson TEXT,
     deliveredTo TEXT,
+    -- Appended by migration 6.sqm.
+    listUnsubscribe TEXT,
+    listUnsubscribePost TEXT,
     PRIMARY KEY (accountId, id)
 );
 
@@ -66,6 +69,8 @@ UPDATE email SET
     inReplyToJson = ?,
     referencesJson = ?,
     deliveredTo = ?,
+    listUnsubscribe = ?,
+    listUnsubscribePost = ?,
     subject = ?,
     preview = ?,
     receivedAt = ?,

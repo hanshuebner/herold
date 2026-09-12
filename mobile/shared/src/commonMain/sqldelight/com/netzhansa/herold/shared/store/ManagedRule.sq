@@ -1,0 +1,34 @@
+-- Server-side filter rules (`https://netzhansa.com/jmap/managed-rules`,
+-- suite REQ-FLT-01..31). The conditions and actions are held as the JSON
+-- the wire carries, so a field the server adds survives a round trip
+-- through the store unchanged.
+
+CREATE TABLE managed_rule (
+    accountId TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sortOrder INTEGER NOT NULL DEFAULT 0,
+    conditionsJson TEXT NOT NULL DEFAULT '[]',
+    actionsJson TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (accountId, id)
+);
+
+upsert:
+INSERT OR REPLACE INTO managed_rule(accountId, id, name, enabled, sortOrder, conditionsJson, actionsJson)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+selectAll:
+SELECT * FROM managed_rule ORDER BY sortOrder ASC, id ASC;
+
+selectById:
+SELECT * FROM managed_rule WHERE accountId = ? AND id = ?;
+
+deleteById:
+DELETE FROM managed_rule WHERE accountId = ? AND id = ?;
+
+deleteForAccount:
+DELETE FROM managed_rule WHERE accountId = ?;
+
+deleteAll:
+DELETE FROM managed_rule;

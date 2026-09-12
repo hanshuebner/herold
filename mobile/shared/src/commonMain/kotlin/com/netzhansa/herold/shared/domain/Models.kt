@@ -93,6 +93,10 @@ data class Email(
     val bodyHtml: String? = null,
     val bodyText: String? = null,
     val attachments: List<Attachment> = emptyList(),
+    /** RFC 2369 `List-Unsubscribe`, as the message carries it (suite REQ-UNS-01). */
+    val listUnsubscribe: String? = null,
+    /** RFC 8058 `List-Unsubscribe-Post` (suite REQ-UNS-02). */
+    val listUnsubscribePost: String? = null,
 ) {
     val isUnread: Boolean get() = keywords.none { it.equals(Keywords.SEEN, ignoreCase = true) }
     val isFlagged: Boolean get() = keywords.any { it.equals(Keywords.FLAGGED, ignoreCase = true) }
@@ -162,4 +166,73 @@ object MailboxRoles {
     const val DRAFTS = "drafts"
     const val TRASH = "trash"
     const val JUNK = "junk"
+}
+
+/**
+ * One condition of a managed rule. The field and op vocabularies are the
+ * server's closed sets (`internal/sieve/compile_managed.go`): field is one
+ * of [RuleFields], op one of [RuleOps]. Conditions AND together.
+ */
+data class RuleCondition(
+    val field: String,
+    val op: String,
+    val value: String = "",
+)
+
+/**
+ * One action of a managed rule. [kind] is one of [RuleActions]; [params]
+ * carries `label` for `apply-label` and `to` for `forward`.
+ */
+data class RuleAction(
+    val kind: String,
+    val params: Map<String, String> = emptyMap(),
+)
+
+/**
+ * A server-side filter rule (`https://netzhansa.com/jmap/managed-rules`,
+ * suite REQ-FLT-01..31). herold compiles the enabled rules, in [order], into
+ * a Sieve preamble ahead of the user's hand-written script; the phone edits
+ * the structured rule and never the Sieve.
+ */
+data class ManagedRule(
+    val accountId: String,
+    val id: String,
+    val name: String = "",
+    val enabled: Boolean = true,
+    val order: Int = 0,
+    val conditions: List<RuleCondition> = emptyList(),
+    val actions: List<RuleAction> = emptyList(),
+)
+
+/** Condition fields the server accepts. */
+object RuleFields {
+    const val FROM = "from"
+    const val FROM_DOMAIN = "from-domain"
+    const val TO = "to"
+    const val SUBJECT = "subject"
+    const val HAS_ATTACHMENT = "has-attachment"
+    const val THREAD_ID = "thread-id"
+
+    /** The fields the editor offers, in the order it lists them. */
+    val EDITABLE = listOf(FROM, FROM_DOMAIN, TO, SUBJECT, HAS_ATTACHMENT)
+}
+
+/** Condition operators the server accepts. */
+object RuleOps {
+    const val CONTAINS = "contains"
+    const val EQUALS = "equals"
+    const val WILDCARD = "wildcard-match"
+
+    val EDITABLE = listOf(CONTAINS, EQUALS, WILDCARD)
+}
+
+/** Action kinds the server accepts. */
+object RuleActions {
+    const val APPLY_LABEL = "apply-label"
+    const val SKIP_INBOX = "skip-inbox"
+    const val MARK_READ = "mark-read"
+    const val DELETE = "delete"
+    const val FORWARD = "forward"
+
+    val EDITABLE = listOf(APPLY_LABEL, SKIP_INBOX, MARK_READ, DELETE, FORWARD)
 }

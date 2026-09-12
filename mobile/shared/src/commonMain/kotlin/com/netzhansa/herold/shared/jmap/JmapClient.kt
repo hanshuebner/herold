@@ -200,6 +200,115 @@ class JmapClient(
         return row["derivedCategories"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
     }
 
+    override suspend fun managedRuleGet(accountId: String, ids: List<String>?): GetResult<WireManagedRule> {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            if (ids == null) {
+                put("ids", JsonPrimitive(null as String?))
+            } else {
+                putJsonArray("ids") { ids.forEach { add(it) } }
+            }
+        }
+        val result = call("ManagedRule/get", args, listOf(Capability.CORE, Capability.MANAGED_RULES))
+        return result.toGetResult(WireManagedRule.serializer())
+    }
+
+    override suspend fun managedRuleChanges(accountId: String, sinceState: String): ChangesOutcome =
+        changes(
+            "ManagedRule/changes",
+            accountId,
+            sinceState,
+            listOf(Capability.CORE, Capability.MANAGED_RULES),
+        )
+
+    override suspend fun managedRuleSet(
+        accountId: String,
+        create: Map<String, JsonObject>,
+        update: Map<String, JsonObject>,
+        destroy: List<String>,
+    ): RuleSetOutcome {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            if (create.isNotEmpty()) {
+                putJsonObject("create") { create.forEach { (key, rule) -> put(key, rule) } }
+            }
+            if (update.isNotEmpty()) {
+                putJsonObject("update") { update.forEach { (id, patch) -> put(id, patch) } }
+            }
+            if (destroy.isNotEmpty()) {
+                putJsonArray("destroy") { destroy.forEach { add(it) } }
+            }
+        }
+        val result = call("ManagedRule/set", args, listOf(Capability.CORE, Capability.MANAGED_RULES))
+        val created = (result["created"] as? JsonObject)?.mapValues { (_, value) ->
+            wireJson.decodeFromJsonElement(WireManagedRule.serializer(), value)
+        } ?: emptyMap()
+        val errors = buildMap {
+            listOf("notCreated", "notUpdated").forEach { key ->
+                (result[key] as? JsonObject)?.forEach { (id, value) ->
+                    put(id, (value as? JsonObject).describe() ?: "rejected")
+                }
+            }
+            (result["notDestroyed"] as? JsonObject)?.forEach { (id, value) ->
+                put(id, (value as? JsonObject).describe() ?: "rejected")
+            }
+        }
+        return RuleSetOutcome(
+            created = created,
+            updated = (result["updated"] as? JsonObject)?.keys ?: emptySet(),
+            destroyed = result.idList("destroyed"),
+            errors = errors,
+        )
+    }
+
+    override suspend fun threadMute(accountId: String, threadId: String, muted: Boolean) {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("threadId", threadId)
+        }
+        call(
+            if (muted) "Thread/mute" else "Thread/unmute",
+            args,
+            listOf(Capability.CORE, Capability.MANAGED_RULES),
+        )
+    }
+
+    override suspend fun blockedSenderSet(accountId: String, address: String) {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("address", address)
+        }
+        call("BlockedSender/set", args, listOf(Capability.CORE, Capability.MANAGED_RULES))
+    }
+
+    override suspend fun llmTransparency(accountId: String): WireLlmTransparency? {
+        if (!session().hasCapability(Capability.LLM_TRANSPARENCY)) return null
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonArray("ids") { add("singleton") }
+        }
+        val result = call(
+            "LLMTransparency/get",
+            args,
+            listOf(Capability.CORE, Capability.LLM_TRANSPARENCY),
+        )
+        val row = (result["list"] as? JsonArray)?.firstOrNull() ?: return null
+        return wireJson.decodeFromJsonElement(WireLlmTransparency.serializer(), row)
+    }
+
+    override suspend fun llmInspect(accountId: String, ids: List<String>): List<WireLlmInspect> {
+        if (ids.isEmpty()) return emptyList()
+        if (!session().hasCapability(Capability.LLM_TRANSPARENCY)) return emptyList()
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonArray("ids") { ids.forEach { add(it) } }
+        }
+        val result = call("Email/llmInspect", args, listOf(Capability.CORE, Capability.LLM_TRANSPARENCY))
+        return (result["list"] as? JsonArray)?.map {
+            wireJson.decodeFromJsonElement(WireLlmInspect.serializer(), it)
+        } ?: emptyList()
+    }
+
     /**
      * `PushSubscription/set`. The method is session-scoped (RFC 8620
      * section 7.2), so it carries no `accountId`: a subscription belongs to
@@ -650,6 +759,8 @@ class JmapClient(
             "id", "blobId", "threadId", "mailboxIds", "keywords", "from", "to", "cc",
             "replyTo", "messageId", "inReplyTo", "references", "sentAt",
             "header:X-Herold-Recipient:asText",
+            "header:List-Unsubscribe:asText",
+            "header:List-Unsubscribe-Post:asText",
             "subject", "receivedAt", "size", "preview", "hasAttachment", "snoozedUntil",
         )
         private val BODY_PROPERTIES = listOf("htmlBody", "textBody", "attachments", "bodyValues")

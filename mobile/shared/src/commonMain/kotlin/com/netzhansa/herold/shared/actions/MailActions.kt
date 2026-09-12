@@ -306,5 +306,14 @@ class MailActions(
         const val LABEL = "Labels"
         const val CATEGORISE = "Category"
         const val UNDO = "Undo"
+        const val FILTER_CREATE = "New filter"
+        const val FILTER_UPDATE = "Filter"
+        const val FILTER_ENABLE = "Enable filter"
+        const val FILTER_DISABLE = "Disable filter"
+        const val FILTER_REORDER = "Filter order"
+        const val FILTER_DELETE = "Delete filter"
+        const val MUTE = "Mute conversation"
+        const val UNMUTE = "Unmute conversation"
+        const val BLOCK = "Block sender"
     }
 }

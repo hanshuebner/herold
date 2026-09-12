@@ -5,6 +5,7 @@ import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Mailbox
+import com.netzhansa.herold.shared.domain.ManagedRule
 import com.netzhansa.herold.shared.domain.Thread
 import com.netzhansa.herold.shared.outbox.NewOutboxEntry
 import com.netzhansa.herold.shared.outbox.OutboxEntry
@@ -131,6 +132,21 @@ interface LocalStore {
     suspend fun deleteIdentities(accountId: String, ids: List<String>)
 
     suspend fun clearIdentities(accountId: String)
+
+    /**
+     * The account's filter rules in the order the server runs them
+     * (suite REQ-FLT-20/31). Like every other type they are synced rows:
+     * the filters screen renders these and never `ManagedRule/get`.
+     */
+    fun managedRules(): Flow<List<ManagedRule>>
+
+    suspend fun managedRuleList(): List<ManagedRule>
+
+    suspend fun upsertManagedRules(rows: List<ManagedRule>)
+
+    suspend fun deleteManagedRules(accountId: String, ids: List<String>)
+
+    suspend fun clearManagedRules(accountId: String)
 
     suspend fun syncState(accountId: String, type: String): String?
 

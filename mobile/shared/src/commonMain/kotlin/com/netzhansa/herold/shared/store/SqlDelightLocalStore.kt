@@ -19,6 +19,9 @@ import com.netzhansa.herold.shared.domain.Account as DomainAccount
 import com.netzhansa.herold.shared.domain.Email as DomainEmail
 import com.netzhansa.herold.shared.domain.Identity as DomainIdentity
 import com.netzhansa.herold.shared.domain.Mailbox as DomainMailbox
+import com.netzhansa.herold.shared.domain.ManagedRule as DomainManagedRule
+import com.netzhansa.herold.shared.domain.RuleAction as DomainRuleAction
+import com.netzhansa.herold.shared.domain.RuleCondition as DomainRuleCondition
 import com.netzhansa.herold.shared.domain.Thread as DomainThread
 
 @Serializable
@@ -33,6 +36,12 @@ private data class AttachmentDto(
 
 @Serializable
 private data class AddressDto(val name: String? = null, val email: String)
+
+@Serializable
+private data class ConditionDto(val field: String, val op: String, val value: String = "")
+
+@Serializable
+private data class ActionDto(val kind: String, val params: Map<String, String> = emptyMap())
 
 private val attachmentJson = Json { ignoreUnknownKeys = true }
 
@@ -156,6 +165,8 @@ class SqlDelightLocalStore(
                     inReplyToJson = email.inReplyTo.encodeStrings(),
                     referencesJson = email.references.encodeStrings(),
                     deliveredTo = email.deliveredTo,
+                    listUnsubscribe = email.listUnsubscribe,
+                    listUnsubscribePost = email.listUnsubscribePost,
                     subject = email.subject,
                     preview = email.preview,
                     receivedAt = email.receivedAt,
@@ -272,6 +283,39 @@ class SqlDelightLocalStore(
 
     override suspend fun clearIdentities(accountId: String) = withContext(dispatcher) {
         database.identityQueries.deleteForAccount(accountId)
+        Unit
+    }
+
+    override fun managedRules(): Flow<List<DomainManagedRule>> =
+        database.managedRuleQueries.selectAll().asFlow().mapToList(dispatcher)
+            .mapList { it.toDomain() }
+
+    override suspend fun managedRuleList(): List<DomainManagedRule> = withContext(dispatcher) {
+        database.managedRuleQueries.selectAll().executeAsList().map { it.toDomain() }
+    }
+
+    override suspend fun upsertManagedRules(rows: List<DomainManagedRule>) = withContext(dispatcher) {
+        database.transaction {
+            rows.forEach { rule ->
+                database.managedRuleQueries.upsert(
+                    accountId = rule.accountId,
+                    id = rule.id,
+                    name = rule.name,
+                    enabled = if (rule.enabled) 1L else 0L,
+                    sortOrder = rule.order.toLong(),
+                    conditionsJson = rule.conditions.encodeConditions(),
+                    actionsJson = rule.actions.encodeActions(),
+                )
+            }
+        }
+    }
+
+    override suspend fun deleteManagedRules(accountId: String, ids: List<String>) = withContext(dispatcher) {
+        database.transaction { ids.forEach { database.managedRuleQueries.deleteById(accountId, it) } }
+    }
+
+    override suspend fun clearManagedRules(accountId: String) = withContext(dispatcher) {
+        database.managedRuleQueries.deleteForAccount(accountId)
         Unit
     }
 
@@ -393,6 +437,7 @@ class SqlDelightLocalStore(
 
     override suspend fun setPushRegistration(registration: PushRegistration?): Unit = withContext(dispatcher) {
         if (registration == null) {
+            database.managedRuleQueries.deleteAll()
             database.pushRegistrationQueries.deleteAll()
         } else {
             database.pushRegistrationQueries.upsert(
@@ -417,10 +462,12 @@ class SqlDelightLocalStore(
                 database.emailQueries.deleteMembershipForAccount(accountId)
                 database.threadQueries.deleteForAccount(accountId)
                 database.identityQueries.deleteForAccount(accountId)
+                database.managedRuleQueries.deleteForAccount(accountId)
             }
             database.syncStateQueries.deleteAll()
             database.blobCacheQueries.deleteAll()
             database.outboxQueries.deleteAll()
+            database.managedRuleQueries.deleteAll()
             database.pushRegistrationQueries.deleteAll()
             database.accountQueries.deleteAll()
         }
@@ -477,6 +524,8 @@ private fun Email.toDomain() = DomainEmail(
     inReplyTo = inReplyToJson.decodeStrings(),
     references = referencesJson.decodeStrings(),
     deliveredTo = deliveredTo,
+    listUnsubscribe = listUnsubscribe,
+    listUnsubscribePost = listUnsubscribePost,
     subject = subject,
     preview = preview,
     receivedAt = receivedAt,
@@ -493,6 +542,32 @@ private fun Email.toDomain() = DomainEmail(
             .map { it.toDomain() }
     } ?: emptyList(),
 )
+
+private fun Managed_rule.toDomain() = DomainManagedRule(
+    accountId = accountId,
+    id = id,
+    name = name,
+    enabled = enabled != 0L,
+    order = sortOrder.toInt(),
+    conditions = conditionsJson.decodeConditions(),
+    actions = actionsJson.decodeActions(),
+)
+
+private fun List<DomainRuleCondition>.encodeConditions(): String =
+    attachmentJson.encodeToString(map { ConditionDto(it.field, it.op, it.value) })
+
+private fun String.decodeConditions(): List<DomainRuleCondition> =
+    runCatching { attachmentJson.decodeFromString<List<ConditionDto>>(this) }
+        .getOrDefault(emptyList())
+        .map { DomainRuleCondition(it.field, it.op, it.value) }
+
+private fun List<DomainRuleAction>.encodeActions(): String =
+    attachmentJson.encodeToString(map { ActionDto(it.kind, it.params) })
+
+private fun String.decodeActions(): List<DomainRuleAction> =
+    runCatching { attachmentJson.decodeFromString<List<ActionDto>>(this) }
+        .getOrDefault(emptyList())
+        .map { DomainRuleAction(it.kind, it.params) }
 
 private fun Outbox.toDomain() = OutboxEntry(
     id = id,

@@ -328,4 +328,55 @@ class OutboxDrainerTest {
         assertEquals(OutboxState.QUEUED, h.outbox.list().single().state)
         assertTrue(!h.outbox.list().single().permanent)
     }
+
+    @Test
+    fun aRuleEntryDrainsAndTakesTheServerSRuleSetIntoTheStore() = runTest {
+        val h = Harness()
+        val filters = com.netzhansa.herold.shared.actions.FilterActions(h.store, h.outbox)
+        h.api.ruleSetOutcome = com.netzhansa.herold.shared.jmap.RuleSetOutcome(
+            created = mapOf("rule1" to com.netzhansa.herold.shared.jmap.WireManagedRule(id = "9", name = "Acme")),
+        )
+        h.api.rules = listOf(com.netzhansa.herold.shared.jmap.WireManagedRule(id = "9", name = "Acme"))
+
+        filters.create(
+            accountId = "acct-a",
+            name = "Acme",
+            conditions = listOf(
+                com.netzhansa.herold.shared.domain.RuleCondition("from", "equals", "bob@example.local"),
+            ),
+            actions = listOf(com.netzhansa.herold.shared.domain.RuleAction("skip-inbox")),
+            order = 0,
+        )
+        val outcome = h.drainer.drain()
+
+        assertEquals(1, outcome.submitted)
+        assertEquals(1, h.api.ruleSetCalls.size)
+        assertEquals("9", h.store.managedRuleList().single().id)
+        assertTrue(h.outbox.list().isEmpty())
+    }
+
+    @Test
+    fun aMuteEntryCallsThreadMuteAndARefusedRuleStaysListed() = runTest {
+        val h = Harness()
+        val filters = com.netzhansa.herold.shared.actions.FilterActions(h.store, h.outbox)
+        filters.setMuted("acct-a", "t-1", muted = true)
+        h.drainer.drain()
+        assertEquals(listOf("t-1" to true), h.api.threadMuteCalls)
+
+        h.api.ruleSetOutcome = com.netzhansa.herold.shared.jmap.RuleSetOutcome(
+            errors = mapOf("rule1" to "unknown condition field"),
+        )
+        filters.create(
+            accountId = "acct-a",
+            name = "Bad",
+            conditions = listOf(com.netzhansa.herold.shared.domain.RuleCondition("nope", "equals", "x")),
+            actions = listOf(com.netzhansa.herold.shared.domain.RuleAction("skip-inbox")),
+            order = 0,
+        )
+        val outcome = h.drainer.drain()
+        assertEquals(1, outcome.rejected)
+        val failed = h.outbox.list().single()
+        assertEquals(OutboxState.FAILED, failed.state)
+        assertEquals("unknown condition field", failed.lastError)
+    }
 }

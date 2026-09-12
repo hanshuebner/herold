@@ -10,6 +10,9 @@ import com.netzhansa.herold.shared.jmap.JmapSession
 import com.netzhansa.herold.shared.jmap.WireAddress
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireMailbox
+import com.netzhansa.herold.shared.jmap.WireManagedRule
+import com.netzhansa.herold.shared.jmap.WireRuleAction
+import com.netzhansa.herold.shared.jmap.WireRuleCondition
 import com.netzhansa.herold.shared.jmap.WireThread
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -226,5 +229,49 @@ class SyncEngineTest {
         api.emailChanges = ChangesOutcome.Changed("email-3", emptyList(), listOf("e1"), emptyList(), false)
         engine.syncAll()
         assertEquals("<p>hello</p>", store.email("acct-a", "e1")?.bodyHtml)
+    }
+
+    @Test
+    fun managedRulesFoldLikeEveryOtherTypeAndReachTheStore() = runTest {
+        val api = api()
+        api.rules = listOf(
+            WireManagedRule(
+                id = "1",
+                name = "Acme",
+                order = 0,
+                conditions = listOf(WireRuleCondition("from", "equals", "bob@example.local")),
+                actions = listOf(WireRuleAction("skip-inbox")),
+            ),
+        )
+        api.ruleState = "rule-7"
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+
+        val stored = store.managedRuleList().single()
+        assertEquals("Acme", stored.name)
+        assertEquals("bob@example.local", stored.conditions.single().value)
+        assertEquals("skip-inbox", stored.actions.single().kind)
+        assertEquals("rule-7", store.syncState("acct-a", SyncTypes.MANAGED_RULE))
+
+        // A rule destroyed server-side leaves through Foo/changes.
+        api.ruleChanges = ChangesOutcome.Changed("rule-8", emptyList(), emptyList(), listOf("1"), false)
+        engine.syncAll()
+        assertTrue(store.managedRuleList().isEmpty())
+        assertEquals("rule-8", store.syncState("acct-a", SyncTypes.MANAGED_RULE))
+    }
+
+    @Test
+    fun aRuleSetThatCannotCalculateChangesIsRefetched() = runTest {
+        val api = api()
+        api.rules = listOf(WireManagedRule(id = "1", name = "Acme"))
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+
+        api.ruleChanges = ChangesOutcome.CannotCalculate
+        api.rules = listOf(WireManagedRule(id = "2", name = "Replacement"))
+        engine.syncAll()
+        assertEquals(listOf("2"), store.managedRuleList().map { it.id })
     }
 }

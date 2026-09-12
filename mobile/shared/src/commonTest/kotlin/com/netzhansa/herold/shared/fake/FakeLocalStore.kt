@@ -6,6 +6,7 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.domain.ManagedRule
 import com.netzhansa.herold.shared.domain.Thread
 import com.netzhansa.herold.shared.outbox.NewOutboxEntry
 import com.netzhansa.herold.shared.outbox.OutboxEntry
@@ -29,6 +30,7 @@ class FakeLocalStore : LocalStore {
     private val emailRows = MutableStateFlow<List<Email>>(emptyList())
     private val threadRows = MutableStateFlow<List<Thread>>(emptyList())
     private val identityRows = MutableStateFlow<List<Identity>>(emptyList())
+    private val ruleRows = MutableStateFlow<List<ManagedRule>>(emptyList())
     private val states = mutableMapOf<Pair<String, String>, String>()
     private val blobs = mutableMapOf<Pair<String, String>, CachedBlob>()
 
@@ -185,6 +187,27 @@ class FakeLocalStore : LocalStore {
         identityRows.value = identityRows.value.filterNot { it.accountId == accountId }
     }
 
+    override fun managedRules(): Flow<List<ManagedRule>> = ruleRows.map { rows ->
+        rows.sortedWith(compareBy({ it.order }, { it.id }))
+    }
+
+    override suspend fun managedRuleList(): List<ManagedRule> =
+        ruleRows.value.sortedWith(compareBy({ it.order }, { it.id }))
+
+    override suspend fun upsertManagedRules(rows: List<ManagedRule>) {
+        val byKey = ruleRows.value.associateBy { it.accountId to it.id }.toMutableMap()
+        rows.forEach { byKey[it.accountId to it.id] = it }
+        ruleRows.value = byKey.values.toList()
+    }
+
+    override suspend fun deleteManagedRules(accountId: String, ids: List<String>) {
+        ruleRows.value = ruleRows.value.filterNot { it.accountId == accountId && it.id in ids }
+    }
+
+    override suspend fun clearManagedRules(accountId: String) {
+        ruleRows.value = ruleRows.value.filterNot { it.accountId == accountId }
+    }
+
     override suspend fun syncState(accountId: String, type: String): String? = states[accountId to type]
 
     override suspend fun setSyncState(accountId: String, type: String, state: String?) {
@@ -273,6 +296,7 @@ class FakeLocalStore : LocalStore {
         emailRows.value = emptyList()
         threadRows.value = emptyList()
         identityRows.value = emptyList()
+        ruleRows.value = emptyList()
         states.clear()
         blobs.clear()
         outboxRows.value = emptyList()

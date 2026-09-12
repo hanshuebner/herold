@@ -5,13 +5,18 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.domain.Mailbox
+import com.netzhansa.herold.shared.domain.ManagedRule
+import com.netzhansa.herold.shared.domain.RuleAction
+import com.netzhansa.herold.shared.domain.RuleCondition
 import com.netzhansa.herold.shared.domain.Thread
 import com.netzhansa.herold.shared.jmap.WireAddress
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireIdentity
 import com.netzhansa.herold.shared.jmap.WireMailbox
+import com.netzhansa.herold.shared.jmap.WireManagedRule
 import com.netzhansa.herold.shared.jmap.WireThread
 import kotlinx.datetime.Instant
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Mapping from the JMAP wire objects onto the local store's rows. The sync
@@ -44,6 +49,23 @@ internal fun WireIdentity.toDomain(accountId: String) = Identity(
     isDefault = isDefault,
 )
 
+internal fun WireManagedRule.toDomain(accountId: String) = ManagedRule(
+    accountId = accountId,
+    id = id,
+    name = name,
+    enabled = enabled,
+    order = order,
+    conditions = conditions.map { RuleCondition(it.field, it.op, it.value) },
+    actions = actions.map { action ->
+        RuleAction(
+            kind = action.kind,
+            params = action.params.mapValues { (_, value) ->
+                (value as? JsonPrimitive)?.content ?: value.toString()
+            },
+        )
+    },
+)
+
 internal fun WireAddress.toDomain() = MailAddress(name?.takeIf { it.isNotBlank() }, email)
 
 /**
@@ -70,6 +92,8 @@ internal fun WireEmail.toDomain(accountId: String): Email {
         inReplyTo = inReplyTo.orEmpty().map { it.normaliseMessageId() },
         references = references.orEmpty().map { it.normaliseMessageId() },
         deliveredTo = deliveredTo,
+        listUnsubscribe = listUnsubscribe,
+        listUnsubscribePost = listUnsubscribePost,
         subject = subject.orEmpty(),
         preview = preview.orEmpty(),
         receivedAt = parseJmapDate(receivedAt),
@@ -100,6 +124,9 @@ internal fun WireEmail.toDomain(accountId: String): Email {
  * way the sync engine does.
  */
 fun WireEmail.toStoreRow(accountId: String): Email = toDomain(accountId)
+
+/** The same for a filter rule, for the outbox drain and for tests. */
+fun WireManagedRule.toRuleRow(accountId: String): ManagedRule = toDomain(accountId)
 
 /**
  * JMAP UTCDate ("2026-09-11T08:30:00Z") to epoch milliseconds. An

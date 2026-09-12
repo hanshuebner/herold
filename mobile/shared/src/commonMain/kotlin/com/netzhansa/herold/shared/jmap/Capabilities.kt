@@ -20,6 +20,12 @@ object Capability {
     const val EMAIL_REACTIONS = "https://netzhansa.com/jmap/email-reactions"
     const val CHAT = "https://netzhansa.com/jmap/chat"
 
+    /** Server-side filter rules, thread mute and blocked senders (suite `04-filters.md`). */
+    const val MANAGED_RULES = "https://netzhansa.com/jmap/managed-rules"
+
+    /** The prompts, models and per-message classifier detail (suite G7). */
+    const val LLM_TRANSPARENCY = "https://netzhansa.com/jmap/llm-transparency"
+
     /**
      * Keyboard-shortcut coaching is not used on phone
      * (docs/design/android/notes/server-contract.md, capabilities divergence).

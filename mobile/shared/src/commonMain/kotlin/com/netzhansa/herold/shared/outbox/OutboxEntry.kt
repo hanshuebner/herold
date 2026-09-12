@@ -14,6 +14,9 @@ enum class OutboxKind {
 
     /** A composed message to upload, write and submit, in that order. */
     SEND,
+
+    /** A filter-rule write: `ManagedRule/set`, `Thread/mute` or `BlockedSender/set`. */
+    RULE,
     ;
 
     companion object {
@@ -89,6 +92,40 @@ data class MembershipSnapshot(
     val keywords: List<String> = emptyList(),
     val mailboxIds: List<String> = emptyList(),
     val snoozedUntil: String? = null,
+)
+
+/** What a [OutboxKind.RULE] entry does (suite REQ-FLT-20, REQ-MAIL-136). */
+enum class RuleOp {
+    CREATE,
+    UPDATE,
+    DESTROY,
+    MUTE,
+    UNMUTE,
+    BLOCK,
+}
+
+/**
+ * A filter-rule write waiting to go out. It carries the wire body rather
+ * than a domain rule so the drain submits exactly what the editor built,
+ * and so an entry queued by an older build still drains after an update.
+ */
+@Serializable
+data class RulePayload(
+    val op: RuleOp,
+    val accountId: String,
+    /** The rule the update or the destroy names. */
+    val ruleId: String? = null,
+    /** The conversation a mute or an unmute names. */
+    val threadId: String? = null,
+    /** The sender a block names. */
+    val address: String? = null,
+    /** The create body. */
+    val rule: JsonObject? = null,
+    /**
+     * The patches an update carries, by rule id. A reorder moves several
+     * rules at once, so they go out as one `ManagedRule/set`.
+     */
+    val updates: Map<String, JsonObject> = emptyMap(),
 )
 
 /** The `Email/set` patches an action entry submits, by message id. */

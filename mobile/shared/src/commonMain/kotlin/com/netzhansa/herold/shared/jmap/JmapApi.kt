@@ -108,6 +108,44 @@ interface JmapApi {
     suspend fun derivedCategories(accountId: String): List<String>
 
     /**
+     * `ManagedRule/get` (`https://netzhansa.com/jmap/managed-rules`). A
+     * null [ids] asks for the whole rule set.
+     */
+    suspend fun managedRuleGet(accountId: String, ids: List<String>? = null): GetResult<WireManagedRule>
+
+    suspend fun managedRuleChanges(accountId: String, sinceState: String): ChangesOutcome
+
+    /**
+     * `ManagedRule/set`. One call carries the creates, the patches and the
+     * destroys, so a reorder that moves two rules costs one round trip.
+     */
+    suspend fun managedRuleSet(
+        accountId: String,
+        create: Map<String, JsonObject> = emptyMap(),
+        update: Map<String, JsonObject> = emptyMap(),
+        destroy: List<String> = emptyList(),
+    ): RuleSetOutcome
+
+    /**
+     * `Thread/mute` / `Thread/unmute`: the server writes the managed rule
+     * that keeps the conversation out of the inbox, so the client does not
+     * assemble it (suite REQ-MAIL-136).
+     */
+    suspend fun threadMute(accountId: String, threadId: String, muted: Boolean)
+
+    /** `BlockedSender/set`: the server's delete rule for [address]. */
+    suspend fun blockedSenderSet(accountId: String, address: String)
+
+    /**
+     * `LLMTransparency/get`, the account's singleton; null when the server
+     * does not advertise the capability.
+     */
+    suspend fun llmTransparency(accountId: String): WireLlmTransparency?
+
+    /** `Email/llmInspect` for the messages of one conversation. */
+    suspend fun llmInspect(accountId: String, ids: List<String>): List<WireLlmInspect>
+
+    /**
      * `PushSubscription/set` (RFC 8620 section 7.2 with herold's `kind`
      * extension). One call carries the create, the patches and the
      * destroys, so a token rotation registers the new subscription and
