@@ -37,7 +37,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -202,10 +201,10 @@ class SnoozeAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-snoozed").fetchSemanticsNodes().isEmpty()
         }
-        assertNull(
-            "the server must hold no wake time after the cancel",
-            DevInstance.serverEmail(server, accountId, target.id)!!.snoozedUntil,
-        )
+        // The cancel is written locally and queued; the outbox carries it to
+        // the server behind the screen (REQ-AND-SYNC-20), so the check is
+        // that the wake time is gone once the queue has drained.
+        awaitServerUnsnoozed(server, accountId, target.id)
         compose.captureScreen("43-snooze-cancelled")
 
         // REQ-SNZ-10 in reverse: the conversation is on the list again.
@@ -302,6 +301,16 @@ class SnoozeAcceptanceTest {
             Thread.sleep(POLL_MS)
         }
         error("the server never took the snooze for $id")
+    }
+
+    /** Waits until the queued cancel has cleared the wake time on the server. */
+    private suspend fun awaitServerUnsnoozed(client: JmapClient, accountId: String, id: String) {
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (DevInstance.serverEmail(client, accountId, id)?.snoozedUntil == null) return
+            Thread.sleep(POLL_MS)
+        }
+        error("the cancel never reached the server for $id")
     }
 
     /** Waits until the worker has released the snooze (REQ-SNZ-11). */
