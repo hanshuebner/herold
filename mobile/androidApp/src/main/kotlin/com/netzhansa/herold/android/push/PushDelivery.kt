@@ -11,6 +11,7 @@ import com.netzhansa.herold.shared.push.MailNotification
 import com.netzhansa.herold.shared.push.PushEnvelope
 import com.netzhansa.herold.shared.push.PushVerification
 import com.netzhansa.herold.shared.push.mailNotification
+import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.sync.SyncTypes
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -47,6 +48,10 @@ class PushDelivery(private val context: Context) {
             registrar.confirmVerification(handshake.subscriptionId, handshake.code)
             return null
         }
+
+        // The wake is also the queue's chance to go out with the app
+        // closed (REQ-AND-SYNC-31).
+        if (session != null) OutboxWorker.schedule(context)
 
         val envelope = PushEnvelope.fromData(data) ?: return null
         val notification = envelope.mailNotification()

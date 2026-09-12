@@ -12,6 +12,7 @@ import com.netzhansa.herold.shared.createHttpClient
 import com.netzhansa.herold.shared.jmap.EventSourceClient
 import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
+import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.jmap.JmapClient
 import com.netzhansa.herold.shared.outbox.ComposePayload
 import com.netzhansa.herold.shared.outbox.FileBlobSpool
@@ -69,6 +70,8 @@ class SessionScope(
  * chosen there.
  */
 class AppContainer(context: Context) {
+
+    private val appContext: Context = context.applicationContext
 
     private val httpClient: HttpClient = createHttpClient()
 
@@ -178,6 +181,9 @@ class AppContainer(context: Context) {
      * what the user expects to see next.
      */
     private fun drain(syncEngine: SyncEngine) {
+        // The background job covers what this pass cannot: the app being
+        // closed or killed before the queue is empty (REQ-AND-SYNC-31).
+        OutboxWorker.schedule(appContext)
         appScope.launch {
             val outcome = syncEngine.drainOutbox()
             if (outcome.submitted > 0) syncEngine.syncAll()

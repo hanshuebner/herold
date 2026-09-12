@@ -240,6 +240,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.kotlinx.coroutines.core)
     // Needed on this module's own compile classpath because MainActivity
     // wires shared's HttpClient-typed factory directly into JmapClient
@@ -276,6 +277,7 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.test.uiautomator)
+    androidTestImplementation(libs.androidx.work.testing)
     androidTestImplementation(platform(libs.firebase.bom))
     androidTestImplementation(libs.firebase.messaging)
     androidTestImplementation(libs.kotlinx.coroutines.core)
