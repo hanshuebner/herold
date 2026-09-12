@@ -325,28 +325,6 @@ func runDevSeedExternalIdentities(cmd *cobra.Command, principalEmail, sinkAddr s
 		return fmt.Errorf("dev seed-external-identities: upsert working submission: %w", err)
 	}
 
-	// Alias the working-external address to the principal (re #336). The
-	// JMAP send path already confirms the caller owns the Identity row
-	// (identity.IdentityEmail), but auth/sendpolicy.CheckFrom applies a
-	// second, independent ownership gate (REQ-SEND-12) that only ever
-	// passes for a CanonicalEmail match or an alias row -- never for a
-	// foreign-domain Identity alone. Without this alias, only an admin
-	// principal (which bypasses CheckFrom's ownership gate entirely)
-	// could ever submit from a verified external-submission identity,
-	// so the dev-seeded alice -- deliberately a plain non-admin user --
-	// would see every EmailSubmission/set from this identity refused
-	// with forbiddenFrom. devSeedForeignDomain is never a registered
-	// local domain and is never MX-delegated to this server in any real
-	// deployment, so this alias is only ever consulted by the outbound
-	// ownership check, not by inbound RCPT TO acceptance.
-	if _, err := st.Meta().InsertAlias(ctx, store.Alias{
-		LocalPart:       "alice-work",
-		Domain:          devSeedForeignDomain,
-		TargetPrincipal: principal.ID,
-	}); err != nil && !errors.Is(err, store.ErrConflict) {
-		return fmt.Errorf("dev seed-external-identities: alias working-external address: %w", err)
-	}
-
 	// Broken external identity: state auth-failed. Direct-store insertion
 	// bypasses the probe that the REST PUT enforces (the probe would need to
 	// reach a real SMTP server to return ok), allowing this unreachable state

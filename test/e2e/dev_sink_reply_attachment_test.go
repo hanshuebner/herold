@@ -407,20 +407,6 @@ func seedDevSinkStore(
 		t.Fatalf("upsert identity submission: %v", err)
 	}
 
-	// Alias the working-external address to alice, mirroring the fix in
-	// internal/admin/cmd_dev.go's runDevSeedExternalIdentities (re #336):
-	// auth/sendpolicy.CheckFrom's ownership gate only ever passes for a
-	// CanonicalEmail match or an alias row, never for a foreign-domain
-	// Identity alone, so without this alias only an admin principal could
-	// submit from this identity.
-	if _, err := st.Meta().InsertAlias(ctx, store.Alias{
-		LocalPart:       "alice-work",
-		Domain:          devSinkForeignDomain,
-		TargetPrincipal: alice.ID,
-	}); err != nil {
-		t.Fatalf("insert alias: %v", err)
-	}
-
 	// The draft reply: In-Reply-To / References set to the (unstored)
 	// original message's Message-ID, multipart/mixed with a text part and
 	// a file attachment.
