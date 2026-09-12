@@ -55,6 +55,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -87,6 +88,7 @@ import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.outbox.ComposePayload
 import com.netzhansa.herold.shared.outbox.toComposeState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -174,10 +176,6 @@ fun ComposeScreen(
         }
     }
 
-    // The shared files go up the composer's own attachment path, one at a
-    // time so an image large enough to need the size choice gets its
-    // dialog before the next file starts (REQ-AND-SYS-01, issue #341).
-    var shared by remember { mutableStateOf(handoff?.attachments.orEmpty()) }
 
     // Navigation runs on the main thread; a coroutine that resumed off it
     // after a network call must hop back before popping the back stack.
@@ -259,11 +257,15 @@ fun ComposeScreen(
         upload(file, inline)
     }
 
-    LaunchedEffect(shared, sizeChoice, current) {
-        if (sizeChoice != null) return@LaunchedEffect
-        val next = shared.firstOrNull() ?: return@LaunchedEffect
-        shared = shared.drop(1)
-        offerOrUpload(Uri.parse(next), inline = false)
+    // The shared files go up the composer's own attachment path, one at a
+    // time: a file waits for the image size choice the file before it
+    // raised, so one dialog is answered before the next appears
+    // (REQ-AND-SYS-01, issue #341).
+    LaunchedEffect(Unit) {
+        handoff?.attachments.orEmpty()?.forEach { uri ->
+            snapshotFlow { sizeChoice }.first { it == null }
+            offerOrUpload(Uri.parse(uri), inline = false)
+        }
     }
 
     val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
