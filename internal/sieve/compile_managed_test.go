@@ -87,8 +87,48 @@ func TestCompileRules_FromContains(t *testing.T) {
 	if !strings.Contains(script, `:contains`) {
 		t.Errorf("script missing :contains match type; got:\n%s", script)
 	}
-	if !strings.Contains(script, `fileinto "Newsletters"`) {
-		t.Errorf("script missing fileinto Newsletters; got:\n%s", script)
+	// re #363: apply-label with no skip-inbox uses :copy (RFC 3894) so the
+	// implicit keep survives and the message also lands in Inbox.
+	if !strings.Contains(script, `fileinto :copy "Newsletters"`) {
+		t.Errorf("script missing fileinto :copy Newsletters; got:\n%s", script)
+	}
+	if !strings.Contains(script, `"copy"`) {
+		t.Errorf("script require line missing copy extension; got:\n%s", script)
+	}
+}
+
+// TestCompileRules_ApplyLabelAndSkipInbox is the compiler-level regression
+// test for re #363: "apply-label" + "skip-inbox" on one rule must compile
+// to a single plain `fileinto "<label>"` (no :copy, so the implicit keep is
+// cancelled) and must NOT also file into Archive -- the label mailbox is
+// the message's only destination, matching the store's one-message,
+// one-membership-set model (docs/design/web/requirements/03-labels.md).
+func TestCompileRules_ApplyLabelAndSkipInbox(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "subject", Op: "contains", Value: "widget"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "apply-label", Params: map[string]any{"label": "Widgets"}},
+				{Kind: "skip-inbox"},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, `fileinto "Widgets"`) {
+		t.Errorf("script missing plain fileinto Widgets; got:\n%s", script)
+	}
+	if strings.Contains(script, `:copy`) {
+		t.Errorf("apply-label + skip-inbox must not use :copy (implicit keep must be cancelled); got:\n%s", script)
+	}
+	if strings.Contains(script, `"Archive"`) {
+		t.Errorf("apply-label + skip-inbox must not also file into Archive; got:\n%s", script)
 	}
 }
 

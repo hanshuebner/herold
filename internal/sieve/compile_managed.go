@@ -55,12 +55,24 @@ func CompileRules(rules []store.ManagedRule) (string, error) {
 			continue
 		}
 		enabled = append(enabled, r)
+		hasApplyLabel, hasSkipInbox := actionFlags(r.Actions)
 		for _, a := range r.Actions {
 			switch a.Kind {
 			case "apply-label":
 				required["fileinto"] = true
+				// re #363: a label with no skip-inbox compiles to
+				// `fileinto :copy` so the implicit keep survives
+				// (message stays in Inbox too).
+				if !hasSkipInbox {
+					required["copy"] = true
+				}
 			case "skip-inbox":
-				required["fileinto"] = true
+				// When apply-label is also present, skip-inbox
+				// contributes no Sieve action of its own (see
+				// compileSingleAction) so it needs no extension here.
+				if !hasApplyLabel {
+					required["fileinto"] = true
+				}
 			case "mark-read":
 				required["imap4flags"] = true
 			case "delete":
@@ -199,17 +211,37 @@ func compileMatchOp(op string) string {
 	}
 }
 
+// actionFlags reports whether an action list carries an "apply-label" and/or
+// a "skip-inbox" action. compileActions and the pass-1 extension scan both
+// need this to decide how "apply-label" and "skip-inbox" compile when they
+// co-occur (re #363).
+func actionFlags(actions []store.RuleAction) (hasApplyLabel, hasSkipInbox bool) {
+	for _, a := range actions {
+		switch a.Kind {
+		case "apply-label":
+			hasApplyLabel = true
+		case "skip-inbox":
+			hasSkipInbox = true
+		}
+	}
+	return hasApplyLabel, hasSkipInbox
+}
+
 // compileActions converts the action list into a Sieve block body (indented
 // lines terminated with semicolons). The caller wraps the result in braces.
 func compileActions(actions []store.RuleAction) (string, error) {
 	if err := validateActions(actions); err != nil {
 		return "", err
 	}
+	hasApplyLabel, hasSkipInbox := actionFlags(actions)
 	var sb strings.Builder
 	for _, a := range actions {
-		line, err := compileSingleAction(a)
+		line, emit, err := compileSingleAction(a, hasApplyLabel, hasSkipInbox)
 		if err != nil {
 			return "", err
+		}
+		if !emit {
+			continue
 		}
 		fmt.Fprintf(&sb, "  %s;\n", line)
 	}
@@ -217,32 +249,58 @@ func compileActions(actions []store.RuleAction) (string, error) {
 }
 
 // compileSingleAction converts one RuleAction into a Sieve command string
-// (without trailing semicolon).
-func compileSingleAction(a store.RuleAction) (string, error) {
+// (without trailing semicolon). emit is false when the action contributes
+// no Sieve command of its own given its siblings in the same rule (the
+// "skip-inbox" no-op case below).
+//
+// The store's message model is a single row with a mailboxIds membership
+// set (docs/design/web/requirements/03-labels.md: "a message is never
+// stored twice"), so "apply-label" and "skip-inbox" are compiled as a pair
+// rather than independently (re #363):
+//
+//   - apply-label alone: `fileinto :copy "<label>"`. RFC 3894's :copy keeps
+//     the implicit keep alive, so the message is filed into both the label
+//     mailbox and Inbox.
+//   - apply-label + skip-inbox: `fileinto "<label>"` with no :copy, which
+//     cancels the implicit keep (RFC 5228 §2.10.6). The label mailbox is
+//     the message's only destination; skip-inbox emits nothing further.
+//   - skip-inbox alone: `fileinto "Archive"`, no :copy — the message is
+//     archived instead of landing in Inbox.
+func compileSingleAction(a store.RuleAction, hasApplyLabel, hasSkipInbox bool) (string, bool, error) {
 	switch a.Kind {
 	case "apply-label":
 		label, ok := actionStringParam(a.Params, "label")
 		if !ok || label == "" {
-			return "", fmt.Errorf("apply-label action requires a non-empty label param")
+			return "", false, fmt.Errorf("apply-label action requires a non-empty label param")
 		}
-		return fmt.Sprintf("fileinto %s", sieveQuote(label)), nil
+		if hasSkipInbox {
+			return fmt.Sprintf("fileinto %s", sieveQuote(label)), true, nil
+		}
+		return fmt.Sprintf("fileinto :copy %s", sieveQuote(label)), true, nil
 	case "skip-inbox":
-		return fmt.Sprintf("fileinto %s", sieveQuote("Archive")), nil
+		if hasApplyLabel {
+			// The paired apply-label action above already cancels the
+			// implicit keep and names the label mailbox as the sole
+			// destination; a separate Archive filing would be a second
+			// mailbox membership contradicting "one message" (re #363).
+			return "", false, nil
+		}
+		return fmt.Sprintf("fileinto %s", sieveQuote("Archive")), true, nil
 	case "mark-read":
-		return "addflag \"\\\\Seen\"", nil
+		return "addflag \"\\\\Seen\"", true, nil
 	case "delete":
-		return fmt.Sprintf("fileinto %s", sieveQuote("Trash")), nil
+		return fmt.Sprintf("fileinto %s", sieveQuote("Trash")), true, nil
 	case "forward":
 		to, ok := actionStringParam(a.Params, "to")
 		if !ok || to == "" {
-			return "", fmt.Errorf("forward action requires a non-empty to param")
+			return "", false, fmt.Errorf("forward action requires a non-empty to param")
 		}
 		if err := validateForwardAddress(to); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return fmt.Sprintf("redirect %s", sieveQuote(to)), nil
+		return fmt.Sprintf("redirect %s", sieveQuote(to)), true, nil
 	default:
-		return "", fmt.Errorf("unknown action kind %q", a.Kind)
+		return "", false, fmt.Errorf("unknown action kind %q", a.Kind)
 	}
 }
 

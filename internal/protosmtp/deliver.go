@@ -608,43 +608,27 @@ func (sess *session) deliverOne(
 		}
 	}
 
-	// Resolve / create each target mailbox and insert the message.
+	// Resolve every target mailbox and insert ONE message row whose
+	// membership set is the union of the resolved targets (re #363): a
+	// managed rule's "apply-label" + "skip-inbox" (or any Sieve script
+	// naming several fileinto folders) must produce one message that is
+	// a member of every target mailbox, never one message copy per
+	// mailbox. docs/design/web/requirements/03-labels.md: "a message is
+	// never stored twice".
+	messageMailboxes := make([]store.MessageMailbox, 0, len(targets))
+	// re #143: record the delivery disposition once, at ingest, from
+	// whichever target mailbox carries the Junk attribute -- never
+	// recomputed later from live mailbox membership (a subsequent
+	// move/refile must not rewrite what message research reports for
+	// this delivery).
+	disposition := store.DeliveryDispositionInbox
 	for _, mbName := range targets {
 		mb, err := sess.ensureMailbox(ctx, rc.principalID, mbName)
 		if err != nil {
 			return false, fmt.Errorf("ensure mailbox %q: %w", mbName, err)
 		}
-		// re #143: record the delivery disposition once, at ingest, on
-		// the resolved target mailbox -- never recomputed later from
-		// live mailbox membership (a subsequent move/refile must not
-		// rewrite what message research reports for this delivery).
-		disposition := store.DeliveryDispositionInbox
 		if mb.Attributes&store.MailboxAttrJunk != 0 {
 			disposition = store.DeliveryDispositionJunk
-		}
-		storeMsg := store.Message{
-			PrincipalID:  rc.principalID,
-			Size:         blobRef.Size,
-			Blob:         blobRef,
-			ReceivedAt:   sess.srv.clk.Now(),
-			InternalDate: sess.srv.clk.Now(),
-			Envelope:     envelopeFromParsed(msg),
-			// issue #162: every recipient of this delivery shares the
-			// same blob content, so the same retained failed-image
-			// state (computed once in finishMessage) applies to each
-			// recipient's message row.
-			FailedImageCount:          sess.envelope.failedImageCount,
-			FailedImageState:          sess.envelope.failedImageState,
-			RetryableFailedImageCount: sess.envelope.retryableFailedImageCount,
-			FailedImageReason:         sess.envelope.failedImageReason,
-			DeliveryDisposition:       disposition,
-			// re #143 (maintainer finding #2): live SMTP DATA and the
-			// IngestBytes ingest paths (SES inbound, loopback) share
-			// this deliverOne call. sess.ingestSourceRef is empty for a
-			// live connection and carries the IngestRequest source
-			// label for the ingest paths.
-			IngestSource:    store.IngestSourceSMTP,
-			IngestSourceRef: sess.ingestSourceRef,
 		}
 		// Propagate sieve-added flags onto system flags where possible.
 		msgFlags := sieveFlagsFromOutcome(outcome)
@@ -673,61 +657,85 @@ func (sess *session) deliverOne(
 				msgKeywords = append(msgKeywords, "$category-"+classification.Category)
 			}
 		}
-		target := store.MessageMailbox{
+		messageMailboxes = append(messageMailboxes, store.MessageMailbox{
 			MailboxID: mb.ID,
 			Flags:     msgFlags,
 			Keywords:  msgKeywords,
 			// REQ-FLOW-33: record the envelope RCPT TO that produced
-			// this fan-out row, in the canonical lower-cased form
+			// this delivery, in the canonical lower-cased form
 			// (matching directory.canonicalizeEmail). Render-time
 			// consumers (REQ-FLOW-34) read this to inject the
 			// X-Herold-Recipient header.
 			ReceivedTo: strings.ToLower(rc.addr),
-		}
-		insertTimer := observe.StartStoreOp("insert_message")
-		_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
-		insertTimer.Done()
-		if ierr != nil {
-			if errors.Is(ierr, store.ErrQuotaExceeded) {
-				sess.log.InfoContext(ctx, "delivery over quota",
-					slog.String("activity", observe.ActivitySystem),
-					slog.String("recipient", rc.addr))
-				// REQ-FLOW-11 default behaviour: defer (4.2.2). We
-				// already emitted 354; re-emit 452 for the whole
-				// message (simpler: return failure).
-				return false, ierr
-			}
+		})
+	}
+	storeMsg := store.Message{
+		PrincipalID:  rc.principalID,
+		Size:         blobRef.Size,
+		Blob:         blobRef,
+		ReceivedAt:   sess.srv.clk.Now(),
+		InternalDate: sess.srv.clk.Now(),
+		Envelope:     envelopeFromParsed(msg),
+		// issue #162: every recipient of this delivery shares the
+		// same blob content, so the same retained failed-image
+		// state (computed once in finishMessage) applies to each
+		// recipient's message row.
+		FailedImageCount:          sess.envelope.failedImageCount,
+		FailedImageState:          sess.envelope.failedImageState,
+		RetryableFailedImageCount: sess.envelope.retryableFailedImageCount,
+		FailedImageReason:         sess.envelope.failedImageReason,
+		DeliveryDisposition:       disposition,
+		// re #143 (maintainer finding #2): live SMTP DATA and the
+		// IngestBytes ingest paths (SES inbound, loopback) share
+		// this deliverOne call. sess.ingestSourceRef is empty for a
+		// live connection and carries the IngestRequest source
+		// label for the ingest paths.
+		IngestSource:    store.IngestSourceSMTP,
+		IngestSourceRef: sess.ingestSourceRef,
+	}
+	insertTimer := observe.StartStoreOp("insert_message")
+	_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, messageMailboxes)
+	insertTimer.Done()
+	if ierr != nil {
+		if errors.Is(ierr, store.ErrQuotaExceeded) {
+			sess.log.InfoContext(ctx, "delivery over quota",
+				slog.String("activity", observe.ActivitySystem),
+				slog.String("recipient", rc.addr))
+			// REQ-FLOW-11 default behaviour: defer (4.2.2). We
+			// already emitted 354; re-emit 452 for the whole
+			// message (simpler: return failure).
 			return false, ierr
 		}
-		// Persist the LLM classification record for transparency (REQ-FILT-66 /
-		// REQ-FILT-216 / G14). Only when at least one LLM was invoked, OR
-		// (re #326) the invocation was attempted and failed:
-		// classification.Reason is non-empty exactly in that case --
-		// classifyMessage leaves it empty for the "no plugin configured"
-		// no-attempt case, so that (silent, expected) outcome does not
-		// grow the table for every message on an install that has no
-		// spam plugin at all. The record is fire-and-forget: a failure
-		// here is logged but never blocks delivery (REQ-FILT-230 /
-		// REQ-FILT-40).
-		if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "" || classification.Reason != "") {
-			sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification)
-		}
+		return false, ierr
+	}
+	// Persist the LLM classification record for transparency (REQ-FILT-66 /
+	// REQ-FILT-216 / G14). Only when at least one LLM was invoked, OR
+	// (re #326) the invocation was attempted and failed:
+	// classification.Reason is non-empty exactly in that case --
+	// classifyMessage leaves it empty for the "no plugin configured"
+	// no-attempt case, so that (silent, expected) outcome does not
+	// grow the table for every message on an install that has no
+	// spam plugin at all. The record is fire-and-forget: a failure
+	// here is logged but never blocks delivery (REQ-FILT-230 /
+	// REQ-FILT-40).
+	if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "" || classification.Reason != "") {
+		sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification)
+	}
 
-		// Seed-on-receive (REQ-MAIL-11h): record the From address in the
-		// principal's SeenAddress history when the sender is not spam,
-		// not a mailing list, not an identity or contact of the principal,
-		// and the principal has seen_addresses_enabled = true.
-		// Synchronous, on the session ctx -- the prior `go ... context.
-		// Background()` variant outlived the session, kept SQLite handles
-		// open into t.TempDir cleanup, and panicked the test logger when
-		// it tried to warn on a closing store (issue #10). The lookup is
-		// 3-4 fast SQLite queries and the function returns early when
-		// the principal has the feature off, so the per-DATA cost is
-		// invisible in practice.
-		if rc.principalID != 0 && classification.Verdict != spam.Spam {
-			seedFromAddress(ctx, sess.srv.store, sess.srv.log,
-				rc.principalID, sess.envelope.mailFrom, msg)
-		}
+	// Seed-on-receive (REQ-MAIL-11h): record the From address in the
+	// principal's SeenAddress history when the sender is not spam,
+	// not a mailing list, not an identity or contact of the principal,
+	// and the principal has seen_addresses_enabled = true.
+	// Synchronous, on the session ctx -- the prior `go ... context.
+	// Background()` variant outlived the session, kept SQLite handles
+	// open into t.TempDir cleanup, and panicked the test logger when
+	// it tried to warn on a closing store (issue #10). The lookup is
+	// 3-4 fast SQLite queries and the function returns early when
+	// the principal has the feature off, so the per-DATA cost is
+	// invisible in practice.
+	if rc.principalID != 0 && classification.Verdict != spam.Spam {
+		seedFromAddress(ctx, sess.srv.store, sess.srv.log,
+			rc.principalID, sess.envelope.mailFrom, msg)
 	}
 	return true, nil
 }

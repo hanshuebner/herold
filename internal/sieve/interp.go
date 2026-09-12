@@ -677,9 +677,16 @@ func (s *state) appendAction(a Action) error {
 	if err := s.sandbox.recordAction(); err != nil {
 		return err
 	}
-	// fileinto / redirect-without-copy / discard clear the implicit keep.
+	// fileinto/redirect-without-:copy and discard clear the implicit
+	// keep. RFC 3894 :copy on fileinto or redirect files the extra copy
+	// but leaves the implicit keep (and therefore any other disposition)
+	// untouched.
 	switch a.Kind {
-	case ActionFileInto, ActionDiscard, ActionReject:
+	case ActionFileInto:
+		if !a.Copy {
+			s.outcome.ImplicitKeep = false
+		}
+	case ActionDiscard, ActionReject:
 		s.outcome.ImplicitKeep = false
 	case ActionRedirect:
 		if !a.Copy {

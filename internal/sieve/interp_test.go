@@ -268,6 +268,29 @@ func TestInterp_RedirectCopyKeepsImplicitKeep(t *testing.T) {
 	}
 }
 
+// TestInterp_FileIntoCopyKeepsImplicitKeep is the RFC 3894 counterpart of
+// TestInterp_RedirectCopyKeepsImplicitKeep: `fileinto :copy` files an extra
+// copy without cancelling the implicit keep. Plain `fileinto` (no :copy)
+// still cancels it (re #363's managed-rule fix relies on this contrast).
+func TestInterp_FileIntoCopyKeepsImplicitKeep(t *testing.T) {
+	src := `require ["fileinto", "copy"]; fileinto :copy "Widgets";`
+	out := runScript(t, src, Environment{}, sampleMsg)
+	if !out.ImplicitKeep {
+		t.Fatalf("fileinto :copy must not clear implicit keep")
+	}
+	if len(out.Actions) != 1 || out.Actions[0].Kind != ActionFileInto || !out.Actions[0].Copy {
+		t.Fatalf("actions: %+v", out.Actions)
+	}
+}
+
+func TestInterp_FileIntoWithoutCopyClearsImplicitKeep(t *testing.T) {
+	src := `require "fileinto"; fileinto "Widgets";`
+	out := runScript(t, src, Environment{}, sampleMsg)
+	if out.ImplicitKeep {
+		t.Fatalf("plain fileinto must clear implicit keep")
+	}
+}
+
 // ------ Sandbox bounds -------------------------------------------------------
 
 func TestSandbox_InfiniteLoopBounded(t *testing.T) {
