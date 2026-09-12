@@ -5,6 +5,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -116,8 +117,11 @@ class OfflineAcceptanceTest {
         }
         compose.onNodeWithTag("thread-swipe-${target.threadId}").performTouchInput { swipeRight() }
 
+        // The undo offer goes up with the optimistic write (issue #338);
+        // with no connection the `Email/set` then fails, which takes the
+        // offer down, reports the lost connection and puts the row back.
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("inbox-snackbar").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("No connection", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("inbox-snackbar").assertIsDisplayed()
         compose.captureScreen("11-offline-archive-refused")

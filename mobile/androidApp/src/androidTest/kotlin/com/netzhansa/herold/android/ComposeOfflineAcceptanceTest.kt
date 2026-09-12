@@ -40,7 +40,10 @@ class ComposeOfflineAcceptanceTest {
 
     @Test
     fun t33_sendingWithoutAConnectionSaysSoAndKeepsTheCompose() = runBlocking {
-        check(app.container.session.value != null) { "the app must already be signed in" }
+        // A cold start restores the stored token asynchronously; the check
+        // needs the session the previous online phase left behind, not the
+        // instant after launch.
+        compose.waitUntil(TIMEOUT_MS) { app.container.session.value != null }
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
