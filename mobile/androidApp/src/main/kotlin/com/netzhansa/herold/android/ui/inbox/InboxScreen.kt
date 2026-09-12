@@ -16,13 +16,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +84,8 @@ fun InboxScreen(
     container: AppContainer,
     session: SessionScope,
     onOpenThread: (accountId: String, threadId: String) -> Unit,
+    onCompose: () -> Unit,
+    onSearch: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
@@ -89,7 +94,7 @@ fun InboxScreen(
     val categories by session.syncEngine.categories.collectAsStateSafely(emptyList())
     val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
 
-    var accountScope by rememberSaveable { mutableStateOf<String?>(null) }
+    val accountScope by container.accountScope.collectAsStateSafely(null)
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var expandedBundles by remember { mutableStateOf(setOf<String>()) }
     var snoozeTarget by remember { mutableStateOf<ThreadRow?>(null) }
@@ -134,6 +139,11 @@ fun InboxScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("inbox-snackbar")) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = onCompose, modifier = Modifier.testTag("inbox-compose")) {
+                Icon(Icons.Filled.Edit, contentDescription = "Compose")
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -146,8 +156,11 @@ fun InboxScreen(
                     AccountScopeSwitcher(
                         accounts = accounts.map { it.id to it.name },
                         selected = accountScope,
-                        onSelect = { accountScope = it },
+                        onSelect = { container.accountScope.value = it },
                     )
+                    IconButton(onClick = onSearch, modifier = Modifier.testTag("inbox-search")) {
+                        Icon(Icons.Filled.Search, contentDescription = "Search")
+                    }
                     IconButton(
                         onClick = { scope.launch { session.syncEngine.syncAll() } },
                         modifier = Modifier.testTag("inbox-refresh"),

@@ -32,11 +32,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
+import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.inbox.InboxScreen
+import com.netzhansa.herold.android.ui.search.SearchScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.ui.theme.HeroldTheme
 import com.netzhansa.herold.android.ui.thread.ThreadScreen
+import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.sync.SyncStatus
 import com.netzhansa.herold.shared.sync.SyncTypes
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -138,7 +141,42 @@ fun HeroldApp(
                         onOpenThread = { accountId, threadId ->
                             navController.navigate("thread/$accountId/$threadId")
                         },
+                        onCompose = { navController.navigate("compose/NEW/-/-") },
+                        onSearch = { navController.navigate("search") },
                         onSignOut = { scope.launch { container.signOut() } },
+                    )
+                }
+                composable("search") {
+                    SearchScreen(
+                        container = container,
+                        session = current,
+                        accountScope = container.accountScope.value,
+                        onOpenThread = { accountId, threadId ->
+                            navController.navigate("thread/$accountId/$threadId")
+                        },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    route = "compose/{mode}/{accountId}/{emailId}",
+                    arguments = listOf(
+                        navArgument("mode") { type = NavType.StringType },
+                        navArgument("accountId") { type = NavType.StringType },
+                        navArgument("emailId") { type = NavType.StringType },
+                    ),
+                ) { entry ->
+                    val accountId = entry.arguments?.getString("accountId")?.takeIf { it != "-" }
+                    val emailId = entry.arguments?.getString("emailId")?.takeIf { it != "-" }
+                    ComposeScreen(
+                        container = container,
+                        session = current,
+                        mode = runCatching {
+                            ComposeMode.valueOf(entry.arguments?.getString("mode").orEmpty())
+                        }.getOrDefault(ComposeMode.NEW),
+                        accountId = accountId,
+                        parentEmailId = emailId,
+                        accountScope = container.accountScope.value,
+                        onClose = { navController.popBackStack() },
                     )
                 }
                 composable(
@@ -153,6 +191,10 @@ fun HeroldApp(
                         session = current,
                         accountId = entry.arguments?.getString("accountId").orEmpty(),
                         threadId = entry.arguments?.getString("threadId").orEmpty(),
+                        onCompose = { mode, emailId ->
+                            val account = entry.arguments?.getString("accountId").orEmpty()
+                            navController.navigate("compose/${mode.name}/$account/$emailId")
+                        },
                         onBack = { navController.popBackStack() },
                     )
                 }

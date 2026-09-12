@@ -17,6 +17,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Star
@@ -55,6 +58,7 @@ import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
+import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.push.MailNotification
@@ -76,6 +80,7 @@ fun ThreadScreen(
     session: SessionScope,
     accountId: String,
     threadId: String,
+    onCompose: (mode: ComposeMode, emailId: String) -> Unit,
     onBack: () -> Unit,
 ) {
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
@@ -161,8 +166,15 @@ fun ThreadScreen(
             )
         },
     ) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        ReplyBar(
+            enabled = messages.isNotEmpty(),
+            onReply = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
+            onReplyAll = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
+            onForward = { messages.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
+        )
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).testTag("thread-messages"),
+            modifier = Modifier.fillMaxSize().testTag("thread-messages"),
         ) {
             items(messages, key = { it.id }) { message ->
                 MessageCard(
@@ -200,6 +212,7 @@ fun ThreadScreen(
                 HorizontalDivider()
             }
         }
+        }
     }
 
     if (snoozing) {
@@ -213,6 +226,36 @@ fun ThreadScreen(
                 }
             },
         )
+    }
+}
+
+/**
+ * Reply, reply-all and forward for the conversation, acting on its newest
+ * message - the one a reply answers (suite REQ-MAIL-30).
+ */
+@Composable
+private fun ReplyBar(
+    enabled: Boolean,
+    onReply: () -> Unit,
+    onReplyAll: () -> Unit,
+    onForward: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("thread-reply-bar"),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        TextButton(onClick = onReply, enabled = enabled, modifier = Modifier.testTag("thread-reply")) {
+            Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null)
+            Text("Reply")
+        }
+        TextButton(onClick = onReplyAll, enabled = enabled, modifier = Modifier.testTag("thread-reply-all")) {
+            Icon(Icons.AutoMirrored.Filled.ReplyAll, contentDescription = null)
+            Text("Reply all")
+        }
+        TextButton(onClick = onForward, enabled = enabled, modifier = Modifier.testTag("thread-forward")) {
+            Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = null)
+            Text("Forward")
+        }
     }
 }
 

@@ -54,6 +54,7 @@ androidx-test-rules = { module = "androidx.test:rules", version = "1.6.1" }
 androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test-runner" }
 androidx-espresso-core = { module = "androidx.test.espresso:espresso-core", version = "3.6.1" }
+androidx-espresso-intents = { module = "androidx.test.espresso:espresso-intents", version = "3.6.1" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }

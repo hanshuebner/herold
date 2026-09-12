@@ -269,6 +269,9 @@ dependencies {
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    // Stubs the system file picker so the attachment path runs without
+    // driving the Storage Access Framework UI.
+    androidTestImplementation(libs.androidx.espresso.intents)
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)

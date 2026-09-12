@@ -52,7 +52,12 @@ object DevInstance {
      * a test provisions the mail it needs instead of depending on what an
      * earlier run left behind. Returns the subject it used.
      */
-    fun deliverMail(subject: String, from: String = "Bob Example <bob@example.local>", body: String): String {
+    fun deliverMail(
+        subject: String,
+        from: String = "Bob Example <bob@example.local>",
+        body: String,
+        messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
+    ): String {
         val (host, port) = smtpAddr.split(":")
         Socket(host, port.toInt()).use { socket ->
             socket.soTimeout = 20_000
@@ -77,7 +82,8 @@ object DevInstance {
             send("RCPT TO:<$email>", "250")
             send("DATA", "354")
             writer.write(
-                "From: $from\r\nTo: $email\r\nSubject: $subject\r\n\r\n$body\r\n.\r\n",
+                "From: $from\r\nTo: $email\r\nSubject: $subject\r\n" +
+                    "Message-ID: <$messageId>\r\n\r\n$body\r\n.\r\n",
             )
             writer.flush()
             expect("250")
@@ -86,15 +92,23 @@ object DevInstance {
         return subject
     }
 
+    /** The principal a composed message is addressed to and read back from. */
+    val recipientEmail: String get() = argument("heroldRecipient") ?: "bob@example.local"
+
     /**
      * An independent JMAP client signed in as [email], for asserting server
      * state directly rather than trusting the screen.
      */
-    suspend fun serverClient(): JmapClient {
+    suspend fun serverClient(): JmapClient = clientFor(email)
+
+    /** The same, signed in as the recipient, for reading a sent message back. */
+    suspend fun recipientClient(): JmapClient = clientFor(recipientEmail)
+
+    private suspend fun clientFor(principal: String): JmapClient {
         val httpClient = createHttpClient()
         val tokenStore = InMemoryTokenStore()
-        val result = AuthClient(httpClient, tokenStore).signIn(baseUrl, email, password)
-        check(result is SignInResult.Success) { "dev-instance sign-in failed: $result" }
+        val result = AuthClient(httpClient, tokenStore).signIn(baseUrl, principal, password)
+        check(result is SignInResult.Success) { "dev-instance sign-in as $principal failed: $result" }
         return JmapClient(httpClient, baseUrl, tokenStore)
     }
 

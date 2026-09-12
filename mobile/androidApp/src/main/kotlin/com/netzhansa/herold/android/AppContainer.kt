@@ -2,6 +2,8 @@ package com.netzhansa.herold.android
 
 import android.content.Context
 import com.netzhansa.herold.shared.actions.MailActions
+import com.netzhansa.herold.shared.compose.AddressBook
+import com.netzhansa.herold.shared.compose.Composer
 import com.netzhansa.herold.shared.auth.AuthClient
 import com.netzhansa.herold.shared.auth.KeystoreTokenStore
 import com.netzhansa.herold.shared.auth.SignInResult
@@ -11,6 +13,7 @@ import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
 import com.netzhansa.herold.shared.jmap.JmapClient
 import com.netzhansa.herold.shared.push.PushRegistrar
+import com.netzhansa.herold.shared.search.MailSearch
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
 import com.netzhansa.herold.shared.store.createDatabase
@@ -38,6 +41,9 @@ class SessionScope(
     val eventSource: EventSourceClient,
     val imageProxy: ImageProxyClient,
     val pushRegistrar: PushRegistrar,
+    val composer: Composer,
+    val addressBook: AddressBook,
+    val search: MailSearch,
 )
 
 /**
@@ -65,6 +71,13 @@ class AppContainer(context: Context) {
 
     private val _session = MutableStateFlow<SessionScope?>(null)
     val session: StateFlow<SessionScope?> = _session.asStateFlow()
+
+    /**
+     * The account the shell is scoped to, null for the combined view
+     * (suite REQ-MAIL-SUB-02). It is held here because compose and search
+     * are scoped by it as well, not only the message list.
+     */
+    val accountScope = MutableStateFlow<String?>(null)
 
     /** True once [restore] has run, so the shell does not flash the sign-in screen. */
     private val _restored = MutableStateFlow(false)
@@ -96,6 +109,7 @@ class AppContainer(context: Context) {
         // whose token is about to be forgotten (REQ-AND-PUSH-02).
         runCatching { push.unregister() }
         _session.value = null
+        accountScope.value = null
         authClient.signOut()
         store.clearAll()
     }
@@ -115,6 +129,9 @@ class AppContainer(context: Context) {
                 now = { System.currentTimeMillis() },
                 newDeviceClientId = { "herold-android-" + java.util.UUID.randomUUID() },
             ),
+            composer = Composer(client),
+            addressBook = AddressBook(client),
+            search = MailSearch(client, store),
         )
     }
 }
