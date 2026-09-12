@@ -30,6 +30,7 @@
 #           SMTP_ADDR=127.0.0.1:<port>
 #           SMTP_SUBMISSION_ADDR=127.0.0.1:<port>
 #           ADMIN_TOTP_SECRET=<base32>  (admin TOTP secret for step-up elevation)
+#           FAKEFCM_HTTP_ADDR=127.0.0.1:<port>  (fake FCM's GET/DELETE /messages status API)
 #
 #       After that line block the script keeps running (so the EXIT
 #       trap can clean up); kill the script to tear down.
@@ -339,6 +340,43 @@ start_fake_servers() {
     log "fake SMTP running: smtp=$FAKESMTP_SMTP_ADDR status=http://$FAKESMTP_HTTP_ADDR"
 }
 
+# start_fake_fcm DIR — build heroldfakefcm into DIR/bin/, start it, and wait
+# for its report file. Sets these globals for the caller:
+#   FAKEFCM_PID  FAKEFCM_HTTP_ADDR  FAKEFCM_SEND_URL
+#
+# Started unconditionally (re #334) — the fake is cheap to run and
+# gives every dev instance a working FCM transport for the Android
+# client's push milestone (#328) without a real Firebase project.
+FAKEFCM_PID=""
+FAKEFCM_HTTP_ADDR=""
+FAKEFCM_SEND_URL=""
+
+start_fake_fcm() {
+    local dir="$1"
+    local fakefcm_bin="$dir/bin/heroldfakefcm"
+    mkdir -p "$dir/bin"
+
+    log "building heroldfakefcm"
+    ( cd "$REPO_ROOT" && go build -o "$fakefcm_bin" ./cmd/heroldfakefcm ) \
+        >"$dir/logs/build-fakefcm.log" 2>&1 \
+        || { cat "$dir/logs/build-fakefcm.log" >&2; die "go build ./cmd/heroldfakefcm failed"; }
+
+    local fakefcm_report="$dir/fakefcm.report"
+    log "starting heroldfakefcm"
+    "$fakefcm_bin" --report-file "$fakefcm_report" \
+        >>"$dir/logs/fakefcm.log" 2>&1 &
+    FAKEFCM_PID=$!
+
+    if ! wait_for_file "$fakefcm_report" 10; then
+        kill "$FAKEFCM_PID" 2>/dev/null || true
+        die "fake FCM did not write report within 10s; see $dir/logs/fakefcm.log"
+    fi
+    FAKEFCM_HTTP_ADDR=$(read_report_key "$fakefcm_report" http_addr)
+    FAKEFCM_SEND_URL=$(read_report_key "$fakefcm_report" send_url)
+
+    log "fake FCM running: http=$FAKEFCM_HTTP_ADDR send_url=$FAKEFCM_SEND_URL"
+}
+
 # ── OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230) ──
 #
 # Gated by HEROLD_DEV_OIDC_AUTOPROVISION so the default dev-instance
@@ -543,6 +581,38 @@ cmd_start() {
 
     write_system_toml "$dir"
 
+    # Fake FCM endpoint (re #334, re #200): started unconditionally so
+    # every dev instance advertises FCM as configured, for the Android
+    # client's push milestone (#328). fcm_base_url points the real FCM
+    # transport at the fake's messages:send endpoint; the placeholder
+    # service-account credential below only needs to satisfy the
+    # "is FCM configured" gate — its content is never parsed once
+    # fcm_base_url is set (internal/admin/server.go substitutes a
+    # static bearer token instead of running the service-account
+    # JWT/OAuth flow).
+    start_fake_fcm "$dir"
+    printf '{"type":"service_account","project_id":"devfake"}' \
+        > "$dir/data/fakefcm-service-account.json"
+    chmod 600 "$dir/data/fakefcm-service-account.json"
+    # The dispatcher's outbound HTTP client is behind a netguard SSRF
+    # guard that refuses loopback destinations and non-{80,443} ports by
+    # default; [server.push.network] allowlists the fake's own
+    # 127.0.0.1:<port> the same way a self-hosted UnifiedPush distributor
+    # would be allowlisted in production.
+    local fakefcm_port="${FAKEFCM_HTTP_ADDR##*:}"
+    cat >> "$dir/system.toml" <<EOF
+
+[server.push]
+fcm_service_account_json_file = "$dir/data/fakefcm-service-account.json"
+fcm_base_url = "$FAKEFCM_SEND_URL"
+
+[server.push.network]
+allow_insecure = true
+allowed_hosts = ["127.0.0.1"]
+allowed_ports = [$fakefcm_port]
+EOF
+    log "appended [server.push] (fake FCM) to system.toml"
+
     # OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230):
     # build and start heroldfakeoidc now (no system.toml dependency, unlike
     # the external-submission fakes below); it is registered as an
@@ -717,6 +787,8 @@ VITE_PID=$vite_pid
 FAKEIDP_PID=${FAKEIDP_PID:-}
 FAKESMTP_PID=${FAKESMTP_PID:-}
 FAKESMTP_HTTP_ADDR=${FAKESMTP_HTTP_ADDR:-}
+FAKEFCM_PID=${FAKEFCM_PID:-}
+FAKEFCM_HTTP_ADDR=${FAKEFCM_HTTP_ADDR:-}
 FAKEOIDC_PID=${FAKEOIDC_PID:-}
 STATE_DIR=$dir
 BACKEND_URL=$backend_url
@@ -748,6 +820,10 @@ EOF
     if [ -n "${FAKESMTP_HTTP_ADDR:-}" ]; then
         echo "FAKESMTP_HTTP_ADDR=$FAKESMTP_HTTP_ADDR"
     fi
+    # Fake FCM endpoint's status API (GET/DELETE /messages) — how a
+    # caller confirms a push reached the fake for a given registration
+    # token (re #334).
+    echo "FAKEFCM_HTTP_ADDR=$FAKEFCM_HTTP_ADDR"
 
     if [ "$detach" = "1" ]; then
         log "instance $id detached; supervisor pid $$ exiting"
@@ -755,6 +831,7 @@ EOF
         local disown_pids="$herold_pid $vite_pid"
         [ -n "${FAKEIDP_PID:-}" ] && disown_pids="$disown_pids $FAKEIDP_PID"
         [ -n "${FAKESMTP_PID:-}" ] && disown_pids="$disown_pids $FAKESMTP_PID"
+        [ -n "${FAKEFCM_PID:-}" ] && disown_pids="$disown_pids $FAKEFCM_PID"
         [ -n "${FAKEOIDC_PID:-}" ] && disown_pids="$disown_pids $FAKEOIDC_PID"
         # shellcheck disable=SC2086
         disown $disown_pids 2>/dev/null || true
@@ -763,19 +840,21 @@ EOF
 
     # Foreground mode: register cleanup, then block.
     # Capture fake PIDs into local vars so the cleanup closure sees them.
-    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
+    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakefcm_pid="${FAKEFCM_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
     cleanup() {
         log "tearing down instance $id"
         kill_tree "$vite_pid" TERM
         kill_tree "$herold_pid" TERM
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" TERM
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" TERM
+        [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" TERM
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" TERM
         sleep 1
         kill_tree "$vite_pid" KILL
         kill_tree "$herold_pid" KILL
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" KILL
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" KILL
+        [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" KILL
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" KILL
         rm -rf "$dir"
     }
@@ -787,6 +866,7 @@ EOF
     local wait_pids="$herold_pid $vite_pid"
     [ -n "$_fakeidp_pid" ] && wait_pids="$wait_pids $_fakeidp_pid"
     [ -n "$_fakesmtp_pid" ] && wait_pids="$wait_pids $_fakesmtp_pid"
+    [ -n "$_fakefcm_pid" ] && wait_pids="$wait_pids $_fakefcm_pid"
     [ -n "$_fakeoidc_pid" ] && wait_pids="$wait_pids $_fakeoidc_pid"
     # shellcheck disable=SC2086
     wait $wait_pids
@@ -822,6 +902,7 @@ cmd_stop() {
     kill_tree "$HEROLD_PID" TERM
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" TERM
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" TERM
+    [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" TERM
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -830,6 +911,7 @@ cmd_stop() {
         kill -0 "$HEROLD_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEIDP_PID:-}" ] && kill -0 "$FAKEIDP_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKESMTP_PID:-}" ] && kill -0 "$FAKESMTP_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKEFCM_PID:-}" ] && kill -0 "$FAKEFCM_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEOIDC_PID:-}" ] && kill -0 "$FAKEOIDC_PID" 2>/dev/null && all_dead=0
         [ "$all_dead" = "1" ] && break
         sleep 0.2
@@ -838,6 +920,7 @@ cmd_stop() {
     kill_tree "$HEROLD_PID" KILL
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" KILL
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" KILL
+    [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" KILL
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" KILL
     rm -rf "$dir"
 }
