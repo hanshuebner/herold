@@ -6,6 +6,9 @@
     <!-- Requested contextually after the first successful sync, not at
          launch (REQ-AND-PUSH-03). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Unlock before the token is released to the network layer, when the
+         user has turned it on (REQ-AND-AUTH-11). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <application
         android:name=".HeroldApplication"
@@ -24,6 +27,25 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Where herold's authorization endpoint redirects the system
+             browser back to (REQ-AND-AUTH-01/02). The private-use scheme is
+             this app's alone (RFC 8252 section 7.1); the activity finishes
+             the code exchange and hands control back to the shell. -->
+        <activity
+            android:name=".auth.OAuthCallbackActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.netzhansa.herold" />
             </intent-filter>
         </activity>
 

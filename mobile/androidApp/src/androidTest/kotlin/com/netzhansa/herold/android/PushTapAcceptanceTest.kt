@@ -48,7 +48,7 @@ class PushTapAcceptanceTest {
         notifications.cancelAll()
         device.pressHome()
         val result = runBlocking {
-            app.container.signIn(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
+            app.container.signInWithPassword(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
         }
         assertTrue("sign-in failed: $result", result is SignInResult.Success)
         subject = DevInstance.deliverMail(

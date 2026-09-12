@@ -241,6 +241,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.work.runtime.ktx)
+    // The system browser the OAuth2 authorization-code flow runs in, and
+    // the unlock prompt that gates releasing the token (REQ-AND-AUTH-01/11).
+    implementation(libs.androidx.browser)
+    implementation(libs.androidx.biometric)
     implementation(libs.kotlinx.coroutines.core)
     // Needed on this module's own compile classpath because MainActivity
     // wires shared's HttpClient-typed factory directly into JmapClient

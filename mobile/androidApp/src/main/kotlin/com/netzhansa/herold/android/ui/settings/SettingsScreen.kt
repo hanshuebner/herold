@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -14,6 +16,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -26,17 +29,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.netzhansa.herold.android.auth.IdlePeriod
+import com.netzhansa.herold.android.auth.UnlockController
 
 /**
- * The app's settings. It starts with the one the send path reads: how
- * long a message waits before it goes, which is the window the "Sending"
- * snackbar offers an undo in (issue #354).
+ * The app's settings: how long a message waits before it goes (issue
+ * #354), whether the app locks behind the device's unlock
+ * (REQ-AND-AUTH-11), and the way through to the account's active
+ * sessions (REQ-AND-AUTH-22).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    unlock: UnlockController,
+    onSessions: () -> Unit,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
     var window by remember { mutableStateOf(UndoSendPreference.current(context)) }
+    var unlockEnabled by remember { mutableStateOf(unlock.enabled) }
+    var idlePeriod by remember { mutableStateOf(unlock.idlePeriod) }
+    val unlockAvailable = remember { unlock.available() }
 
     Scaffold(
         topBar = {
@@ -50,7 +63,13 @@ fun SettingsScreen(onBack: () -> Unit) {
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).testTag("settings-screen")) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .testTag("settings-screen"),
+        ) {
             Text(
                 text = "Undo send",
                 style = MaterialTheme.typography.titleSmall,
@@ -77,6 +96,79 @@ fun SettingsScreen(onBack: () -> Unit) {
                     RadioButton(selected = window == option, onClick = null)
                     Text(text = option.label, modifier = Modifier.padding(start = 12.dp))
                 }
+            }
+
+            Text(
+                text = "Unlock",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+            Text(
+                text = if (unlockAvailable) {
+                    "Ask for your fingerprint, face or screen lock before the app reaches your mail."
+                } else {
+                    "Set a screen lock on this device to use it."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .testTag("unlock-toggle-row"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Require unlock", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = unlockEnabled,
+                    enabled = unlockAvailable,
+                    onCheckedChange = {
+                        unlockEnabled = it
+                        unlock.enabled = it
+                    },
+                    modifier = Modifier.testTag("unlock-toggle"),
+                )
+            }
+            if (unlockEnabled) {
+                IdlePeriod.entries.forEach { option ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                idlePeriod = option
+                                unlock.idlePeriod = option
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .testTag("unlock-idle-${option.minutes}"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = idlePeriod == option, onClick = null)
+                        Text(text = option.label, modifier = Modifier.padding(start = 12.dp))
+                    }
+                }
+            }
+
+            Text(
+                text = "Account",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onSessions)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .testTag("settings-sessions"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Sessions", modifier = Modifier.weight(1f))
+                Text(
+                    text = "Where this account is signed in",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

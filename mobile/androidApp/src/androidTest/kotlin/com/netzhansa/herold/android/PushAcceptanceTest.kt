@@ -60,7 +60,7 @@ class PushAcceptanceTest {
         notifications.cancelAll()
         ActiveThread.left("", "")
         val result = runBlocking {
-            app.container.signIn(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
+            app.container.signInWithPassword(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
         }
         assertTrue("sign-in failed: $result", result is SignInResult.Success)
         compose.waitUntil(TIMEOUT_MS) {

@@ -63,7 +63,7 @@ class AttachmentAcceptanceTest {
         Intents.init()
         runBlocking {
             if (app.container.session.value == null) {
-                val result = app.container.signIn(
+                val result = app.container.signInWithPassword(
                     DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
                 )
                 assertTrue("sign-in failed: $result", result is SignInResult.Success)

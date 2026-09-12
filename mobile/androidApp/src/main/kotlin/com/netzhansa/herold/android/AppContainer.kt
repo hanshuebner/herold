@@ -5,8 +5,16 @@ import com.netzhansa.herold.shared.actions.MailActions
 import com.netzhansa.herold.shared.actions.UndoCenter
 import com.netzhansa.herold.shared.compose.AddressBook
 import com.netzhansa.herold.shared.compose.Composer
+import com.netzhansa.herold.android.auth.UnlockController
 import com.netzhansa.herold.shared.auth.AuthClient
+import com.netzhansa.herold.shared.auth.Credential
+import com.netzhansa.herold.shared.auth.CredentialsClient
 import com.netzhansa.herold.shared.auth.KeystoreTokenStore
+import com.netzhansa.herold.shared.auth.OAuthClient
+import com.netzhansa.herold.shared.auth.OAuthClientConfig
+import com.netzhansa.herold.shared.auth.OAuthSignIn
+import com.netzhansa.herold.shared.auth.OAuthSignInResult
+import com.netzhansa.herold.shared.auth.SessionAuthenticator
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.createHttpClient
 import com.netzhansa.herold.shared.jmap.EventSourceClient
@@ -66,7 +74,22 @@ class SessionScope(
     val composer: Composer,
     val addressBook: AddressBook,
     val search: MailSearch,
+    /** The account's active sessions and grants (REQ-AND-AUTH-22). */
+    val credentials: CredentialsClient,
 )
+
+/** Where the sign-in screen is in the authorization-code flow. */
+sealed interface SignInState {
+    data object Idle : SignInState
+
+    /** The Custom Tab has the foreground; the app is waiting for the redirect. */
+    data object AwaitingBrowser : SignInState
+
+    /** The callback arrived; the code is being exchanged for tokens. */
+    data object Exchanging : SignInState
+
+    data class Failed(val message: String) : SignInState
+}
 
 /**
  * The app's object graph. The local store outlives a session so the inbox
@@ -123,6 +146,25 @@ class AppContainer(context: Context) {
 
     private val authClient = AuthClient(httpClient, tokenStore)
 
+    /** The unlock the token release waits on when the user turned it on. */
+    val unlock = UnlockController(context)
+
+    private val oauthConfig = OAuthClientConfig.DEFAULT
+
+    private val oauthClient = OAuthClient(httpClient, oauthConfig)
+
+    /** The authorization-code flow's two halves, either side of the browser. */
+    private val oauthSignIn = OAuthSignIn(
+        oauth = oauthClient,
+        tokens = tokenStore,
+        pending = tokenStore,
+        config = oauthConfig,
+        now = { System.currentTimeMillis() },
+    )
+
+    private val _signInState = MutableStateFlow<SignInState>(SignInState.Idle)
+    val signInState: StateFlow<SignInState> = _signInState.asStateFlow()
+
     /** Push registration and the memory of a declined permission (REQ-AND-PUSH-01/03). */
     val push: PushController = PushController(context.applicationContext, this)
 
@@ -151,32 +193,131 @@ class AppContainer(context: Context) {
 
     /** Re-opens the session a stored token already authorises (token survives process death). */
     suspend fun restore() {
-        val token = tokenStore.currentToken()
-        val baseUrl = tokenStore.baseUrl()
-        if (!token.isNullOrBlank() && !baseUrl.isNullOrBlank()) {
-            _session.value = buildSession(baseUrl)
+        if (_session.value == null) {
+            val token = tokenStore.currentToken()
+            val baseUrl = tokenStore.baseUrl()
+            if (!token.isNullOrBlank() && !baseUrl.isNullOrBlank()) {
+                unlock.lockIfEnabled()
+                _session.value = buildSession(baseUrl)
+            }
         }
         _restored.value = true
     }
 
-    suspend fun signIn(baseUrl: String, email: String, password: String, totpCode: String?): SignInResult {
+    /**
+     * Mints an authorization request against [baseUrl] and returns the
+     * URL for the Custom Tab (REQ-AND-AUTH-01). The PKCE verifier is in
+     * Keystore-backed storage before the browser opens, so the exchange
+     * survives this process being killed behind it.
+     */
+    suspend fun beginSignIn(baseUrl: String): String {
+        val normalised = baseUrl.trim().trimEnd('/')
+        val url = oauthSignIn.begin(normalised)
+        _signInState.value = SignInState.AwaitingBrowser
+        return url
+    }
+
+    /**
+     * Takes the redirect the browser came back on and finishes the
+     * exchange (REQ-AND-AUTH-02). Runs on the container's scope so the
+     * callback activity can finish immediately.
+     */
+    fun completeSignIn(callbackUri: String) {
+        _signInState.value = SignInState.Exchanging
+        appScope.launch {
+            when (val result = oauthSignIn.complete(callbackUri)) {
+                is OAuthSignInResult.Success -> openSession(result.baseUrl)
+                is OAuthSignInResult.Failed -> _signInState.value = SignInState.Failed(result.message)
+            }
+        }
+    }
+
+    /** The user left the Custom Tab without authorising. */
+    suspend fun abandonSignIn() {
+        oauthSignIn.abandon()
+        _signInState.value = SignInState.Idle
+    }
+
+    /** Clears a message the sign-in screen has shown. */
+    fun clearSignInError() {
+        if (_signInState.value is SignInState.Failed) _signInState.value = SignInState.Idle
+    }
+
+    /**
+     * The debug-build fallback onto the device-token grant, for the
+     * emulator harness and for a device with no browser. The release
+     * sign-in is the Custom Tab flow above.
+     */
+    suspend fun signInWithPassword(
+        baseUrl: String,
+        email: String,
+        password: String,
+        totpCode: String?,
+    ): SignInResult {
         val normalised = baseUrl.trim().trimEnd('/')
         val result = authClient.signIn(normalised, email.trim(), password, totpCode)
-        if (result is SignInResult.Success) {
-            tokenStore.setBaseUrl(normalised)
-            _session.value = buildSession(normalised)
-        }
+        if (result is SignInResult.Success) openSession(normalised)
         return result
     }
 
-    /** Clears the token and every server-derived row for the account. */
+    /**
+     * Opens the session the freshly stored token authorises: notes which
+     * principal it belongs to, drops another principal's cached mail,
+     * and records this device's own grant so the sessions screen can
+     * mark and revoke it (REQ-AND-AUTH-21/22).
+     */
+    private suspend fun openSession(baseUrl: String) {
+        tokenStore.setBaseUrl(baseUrl)
+        val session = buildSession(baseUrl)
+        val username = runCatching { session.client.session().username }.getOrNull()
+        val previous = tokenStore.principal()
+        if (!username.isNullOrBlank() && !previous.isNullOrBlank() && previous != username) {
+            // A different account on the same install: the cached mail
+            // of the previous one does not carry over (REQ-AND-AUTH-21).
+            store.clearAll()
+        }
+        if (!username.isNullOrBlank()) tokenStore.setPrincipal(username)
+        tokenStore.setGrantId(
+            runCatching { session.credentials.ownGrantId(oauthConfig.clientId) }.getOrNull(),
+        )
+        _signInState.value = SignInState.Idle
+        _session.value = session
+    }
+
+    /**
+     * The session ended server-side - the grant revoked, the refresh
+     * token reused or expired. The credential is already gone; the
+     * cached mail stays until a different principal signs in
+     * (REQ-AND-AUTH-04/20).
+     */
+    private suspend fun sessionLost() {
+        _session.value = null
+        accountScope.value = null
+        tokenStore.setGrantId(null)
+        _signInState.value = SignInState.Failed("Your session ended. Sign in again.")
+    }
+
+    /** Revokes this device's grant server-side and clears the account's local rows. */
     suspend fun signOut() {
+        val current = _session.value
         // Drop the push subscription first: it is bound to the principal
         // whose token is about to be forgotten (REQ-AND-PUSH-02).
         runCatching { push.unregister() }
+        // Then the grant itself, which is what makes the token stop
+        // working everywhere rather than only on this device
+        // (REQ-AND-AUTH-21).
+        val grantId = tokenStore.grantId()
+        if (current != null && grantId != null) {
+            runCatching { current.credentials.revoke(Credential.KIND_OAUTH2_GRANT, grantId) }
+        }
         _session.value = null
         accountScope.value = null
+        tokenStore.setGrantId(null)
+        tokenStore.setPrincipal(null)
         authClient.signOut()
+        oauthSignIn.abandon()
+        unlock.unlocked()
+        _signInState.value = SignInState.Idle
         store.clearAll()
     }
 
@@ -198,7 +339,18 @@ class AppContainer(context: Context) {
     }
 
     private fun buildSession(baseUrl: String): SessionScope {
-        val client = JmapClient(httpClient, baseUrl, tokenStore)
+        // Every network caller takes its token from here, so one
+        // refresh serves them all and a refused refresh ends the
+        // session once (REQ-AND-AUTH-04).
+        val authenticator = SessionAuthenticator(
+            store = tokenStore,
+            oauth = oauthClient,
+            baseUrl = baseUrl,
+            now = { System.currentTimeMillis() },
+            unlockGate = unlock,
+            onSessionLost = { sessionLost() },
+        )
+        val client = JmapClient(httpClient, baseUrl, authenticator)
         val composer = Composer(client, outbox, spool, { System.currentTimeMillis() })
         val drainer = OutboxDrainer(
             api = client,
@@ -234,6 +386,7 @@ class AppContainer(context: Context) {
             composer = composer,
             addressBook = AddressBook(client),
             search = MailSearch(client, store),
+            credentials = CredentialsClient(httpClient, baseUrl, authenticator),
         )
     }
 }

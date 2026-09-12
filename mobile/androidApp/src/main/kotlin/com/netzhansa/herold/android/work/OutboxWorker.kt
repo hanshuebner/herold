@@ -34,6 +34,10 @@ class OutboxWorker(
         val container = (applicationContext as HeroldApplication).container
         container.restore()
         val session = container.session.value ?: return Result.success()
+        // With unlock on, the token is not released until the user has
+        // authenticated; the queue waits for the next foreground rather
+        // than draining behind a locked app (REQ-AND-AUTH-11).
+        if (!container.unlock.isUnlocked()) return Result.retry()
         return try {
             val outcome = session.syncEngine.drainOutbox()
             if (outcome.submitted > 0) session.syncEngine.syncAll()

@@ -66,7 +66,7 @@ class ComposeAcceptanceTest {
         Intents.init()
         runBlocking {
             app.container.signOut()
-            val result = app.container.signIn(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
+            val result = app.container.signInWithPassword(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
             assertTrue("sign-in failed: $result", result is SignInResult.Success)
             app.container.session.value!!.syncEngine.syncAll()
         }

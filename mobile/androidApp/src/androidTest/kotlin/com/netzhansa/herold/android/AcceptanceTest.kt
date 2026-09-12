@@ -65,12 +65,11 @@ class AcceptanceTest {
 
     @Test
     fun t01_signInWithTheDeviceTokenGrantAndKeepTheTokenAcrossRestart() {
-        compose.onNodeWithTag("signin-base-url").performTextClearance()
-        compose.onNodeWithTag("signin-base-url").performTextInput(DevInstance.baseUrl)
+        openPasswordFallback()
         compose.onNodeWithTag("signin-email").performTextInput(DevInstance.email)
         compose.onNodeWithTag("signin-password").performTextInput(DevInstance.password)
         compose.captureScreen("01-sign-in")
-        compose.onNodeWithTag("signin-submit").performClick()
+        compose.onNodeWithTag("signin-password-submit").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
@@ -96,17 +95,23 @@ class AcceptanceTest {
 
     @Test
     fun t02_aWrongTotpCodeIsRejectedWithAMessage() {
-        compose.onNodeWithTag("signin-base-url").performTextClearance()
-        compose.onNodeWithTag("signin-base-url").performTextInput(DevInstance.baseUrl)
+        openPasswordFallback()
         compose.onNodeWithTag("signin-email").performTextInput(DevInstance.totpEmail)
         compose.onNodeWithTag("signin-password").performTextInput(DevInstance.password)
+        // The principal has TOTP enrolled, so the first submission comes
+        // back step_up_required and the six-digit field appears
+        // (REQ-AND-AUTH-20).
+        compose.onNodeWithTag("signin-password-submit").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("signin-totp").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithTag("signin-totp").performTextInput("000000")
-        compose.onNodeWithTag("signin-submit").performClick()
+        compose.onNodeWithTag("signin-password-submit").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("signin-error").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("signin-password-error").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("signin-error").assertIsDisplayed()
+        compose.onNodeWithTag("signin-password-error").assertIsDisplayed()
         compose.onAllNodesWithTag("inbox-list").assertCountEquals(0)
         compose.captureScreen("03-wrong-totp-rejected")
     }
@@ -119,18 +124,31 @@ class AcceptanceTest {
             // without it this check cannot run.
             return
         }
-        compose.onNodeWithTag("signin-base-url").performTextClearance()
-        compose.onNodeWithTag("signin-base-url").performTextInput(DevInstance.baseUrl)
+        openPasswordFallback()
         compose.onNodeWithTag("signin-email").performTextInput(DevInstance.totpEmail)
         compose.onNodeWithTag("signin-password").performTextInput(DevInstance.password)
+        compose.onNodeWithTag("signin-password-submit").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("signin-totp").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithTag("signin-totp").performTextInput(Totp.code(secret))
-        compose.onNodeWithTag("signin-submit").performClick()
+        compose.onNodeWithTag("signin-password-submit").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("inbox-title").assertIsDisplayed()
         compose.captureScreen("03b-correct-totp-accepted")
+    }
+
+    /** Reveals the debug build's device-token form under the Custom Tab button. */
+    private fun openPasswordFallback() {
+        compose.onNodeWithTag("signin-base-url").performTextClearance()
+        compose.onNodeWithTag("signin-base-url").performTextInput(DevInstance.baseUrl)
+        compose.onNodeWithTag("signin-password-toggle").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("signin-email").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     @Test
@@ -313,7 +331,7 @@ class AcceptanceTest {
 
     private fun signIn() {
         val result = runBlocking {
-            app.container.signIn(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
+            app.container.signInWithPassword(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
         }
         assertTrue("sign-in failed: $result", result is SignInResult.Success)
         compose.waitUntil(TIMEOUT_MS) {

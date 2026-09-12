@@ -3,7 +3,6 @@ package com.netzhansa.herold.android
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -23,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -31,11 +31,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.netzhansa.herold.android.auth.LockScreen
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.inbox.InboxScreen
 import com.netzhansa.herold.android.ui.outbox.OutboxScreen
 import com.netzhansa.herold.android.ui.search.SearchScreen
+import com.netzhansa.herold.android.ui.settings.SessionsScreen
 import com.netzhansa.herold.android.ui.settings.SettingsScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.push.MailNotifier
@@ -52,8 +54,11 @@ import kotlinx.coroutines.launch
  * back comes from the platform: the activity opts into the back-gesture
  * animation through `android:enableOnBackInvokedCallback` and Navigation
  * Compose animates the popped destination.
+ *
+ * It is a FragmentActivity because BiometricPrompt, the unlock
+ * REQ-AND-AUTH-11 gates the token behind, is hosted by one.
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val container: AppContainer by lazy { (application as HeroldApplication).container }
 
     /**
@@ -80,6 +85,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        container.unlock.onForegrounded(System.currentTimeMillis())
+    }
+
+    override fun onStop() {
+        super.onStop()
+        container.unlock.onBackgrounded(System.currentTimeMillis())
     }
 
     /** A tap on a notification while the shell is already running. */
@@ -119,6 +134,7 @@ fun HeroldApp(
 ) {
     val session by container.session.collectAsStateSafely(null)
     val restored by container.restored.collectAsStateSafely(false)
+    val locked by container.unlock.locked.collectAsStateSafely(false)
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) { container.restore() }
@@ -133,6 +149,10 @@ fun HeroldApp(
         }
 
         current == null -> SignInScreen(container)
+
+        // The unlock is ahead of every screen and every network call:
+        // the token is not released until it succeeds (REQ-AND-AUTH-11).
+        locked -> LockScreen(container.unlock)
 
         else -> {
             val navController = rememberNavController()
@@ -180,7 +200,18 @@ fun HeroldApp(
                     )
                 }
                 composable("settings") {
-                    SettingsScreen(onBack = { navController.popBackStack() })
+                    SettingsScreen(
+                        unlock = container.unlock,
+                        onSessions = { navController.navigate("sessions") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("sessions") {
+                    SessionsScreen(
+                        container = container,
+                        session = current,
+                        onBack = { navController.popBackStack() },
+                    )
                 }
                 composable("compose-resume") {
                     ComposeScreen(
