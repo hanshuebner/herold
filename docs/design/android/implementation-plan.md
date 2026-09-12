@@ -149,9 +149,21 @@ Milestone 1 closes with one real-world session on the maintainer's phone.
   the process is killed, drained on reconnect and confirmed through an
   independent JMAP client; a refused send retained with its reason; an
   undone send that never reaches the server.
-- **2b — the rest.** UnifiedPush client for the de-Googled device (#229);
-  Custom Tab OAuth2 code + PKCE sign-in with refresh tokens
-  (REQ-AND-AUTH-01/02); biometric unlock; active-sessions surface.
+- **2b — hardened auth (#352).** On branch `android-m2b`: sign-in through
+  herold's OAuth2 authorization-code grant with PKCE in a Custom Tab, on the
+  private-use redirect `com.netzhansa.herold:/oauth2/callback`; an expiring
+  access token with a rotating refresh token, refreshed single-flight ahead of
+  expiry and once on a `401`; opt-in biometric / device-credential unlock
+  gating the token on launch and after an idle period; the account's active
+  sessions with remote revoke; sign-out revoking the grant server-side
+  (`requirements/01-auth-and-token.md` REQ-AND-AUTH-01/02/04/11/20/21/22).
+  The device-token form stays as a debug-build fallback for the instrumented
+  harness. Acceptance: the whole Custom Tab round trip including the TOTP step
+  on the emulator's browser; a deleted access token refreshed silently; a
+  revoked grant landing back on sign-in; the sessions screen marking this
+  device and a second session's revoke signing the app out; the app locked on
+  a fresh process and released by the device credential.
+- **2c — UnifiedPush.** The de-Googled device's push transport (#229).
 
 ### Milestone 3 — organise and system integration
 

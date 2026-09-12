@@ -86,8 +86,11 @@ matrix is a complete picture of mobile scope.
 
 | Feature | REQ | Status |
 |---|---|---|
-| Bearer-token auth (device-token grant, Keystore storage) | REQ-AND-AUTH-03/04/10 | done (milestone 1a) |
-| OAuth2 Custom Tab sign-in + biometric unlock | REQ-AND-AUTH-01/02/11 | deferred (milestone 2) |
+| Bearer-token auth (Keystore storage) | REQ-AND-AUTH-03/10 | done (milestone 1a); the device-token grant it started on is a debug-build fallback since milestone 2b |
+| OAuth2 Custom Tab sign-in with PKCE | REQ-AND-AUTH-01/02 | done (milestone 2b, #352) |
+| Silent refresh of an expiring access token | REQ-AND-AUTH-04 | done (milestone 2b, #352); one single-flight refresh serves every caller, and a refused refresh forces sign-in with the cached mail kept |
+| Biometric / device-credential unlock | REQ-AND-AUTH-11 | done (milestone 2b, #352); opt-in, gates the token on launch and after a configurable idle period |
+| Active sessions with remote revoke | REQ-AND-AUTH-22 | done (milestone 2b, #352); reads `GET /api/v1/auth/credentials`, the endpoint the Suite's session management uses |
 | Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | done (milestone 1a); offline search under a "cached results only" banner done (milestone 1c) |
 | Durable offline outbox | REQ-AND-SYNC-20..25 | done (milestone 2a, #351); actions, drafts and sends queue in SQLite, drain in order on reconnect and through a WorkManager job with the app closed |
 | Undo-send window held on the device | REQ-AND-SYNC-26 | done (milestone 2a, #354) |
@@ -102,6 +105,9 @@ matrix is a complete picture of mobile scope.
 |---|---|---|
 | `/proxy/image` authenticates by session cookie only (`internal/admin/server.go` wires it to `authsession.ResolveSession`); a bearer token gets a `401`. | Remote images in the reading pane cannot be proxied, so they stay blocked. Inline `cid:` images are unaffected: they come from `/jmap/download`, which accepts the bearer token. | server (`http-api-implementor`) |
 | `EmailSubmission/set` refuses an envelope `mailFrom` that is not the principal's own local address: sending as a verified foreign identity answers `forbiddenFrom` ("from address ... is not owned by the authenticated principal"), and the separated sub-account's identity answers "identity domain is not authoritative on this server; configure external submission to use this identity". | A composed message can only leave through a local identity, so the dev instance's fake SMTP sink never sees one. Sends are verified by reading the message back from the recipient's account. | server (`http-api-implementor`) |
+| `is_current` is never true for an `oauth2_grant` in `GET /api/v1/auth/credentials`: the server derives it from the session cookie id, which a bearer-authenticated caller does not have (`internal/protoadmin/credentials.go`). | The client cannot be told which grant is its own. It reads the newest grant carrying its own `client_id` right after the code exchange and keeps that family id, which survives every refresh rotation. | server (`http-api-implementor`) |
+| `POST /api/v1/auth/step-up` refuses a bearer caller ("step-up requires a cookie session"), and `requireSelfServiceElevation` exempts bearer callers outright, so no `step_up_required` response is reachable for this client. | The native six-digit sheet REQ-AND-AUTH-20 calls for has no surface to answer. TOTP is collected instead by herold's own `/oauth2/authorize` page in the Custom Tab, and by the debug device-token form. | server (`directory-auth-implementor`) |
+| No configurable access-token TTL: `directory.AccessTokenTTL` is a compile-time hour. | The refresh path cannot be exercised by waiting. The acceptance run deletes the access token's `api_keys` row through the self-service API to force the 401. | server (`directory-auth-implementor`) |
 | No disposition property on a category. `CategorySettings` exposes `derivedCategories` names only, so pinned-vs-bundled (suite `REQ-CAT-04/05/11`) has no wire surface. | The client splits lanes itself: the first five names are tabs, the rest bundles. It reads a server disposition as soon as one exists. | server + suite |
 
 ## Behaviour the two clients share by copying, not by protocol

@@ -31,12 +31,49 @@ Divergences from the Suite's pinned set:
 
 The Suite uses a same-origin session cookie. The mobile client uses
 `Authorization: Bearer <token>` on every JMAP method call, blob upload/download,
-and the EventSource connection, and obtains that token via herold's token grant
-(`server-prerequisites.md` #199). All other session semantics — scope
-enforcement (`REQ-AUTH-SCOPE-*`), idle-expiry, TOTP step-up (Suite
-`REQ-AS-10..27`), session management (`REQ-AS-30..34`) — apply to the
-bearer-authed session identically; the mobile UI reacts to the same
-`session_expired` / `session_revoked` / `step_up_required` responses.
+and the EventSource connection, and obtains that token through herold's OAuth2
+authorization-code grant with PKCE (`server-prerequisites.md` #199,
+`internal/protoadmin/oauth2_native.go`). All other session semantics — scope
+enforcement (`REQ-AUTH-SCOPE-*`), idle-expiry, session management
+(`REQ-AS-30..34`) — apply to the bearer-authed session identically.
+
+**Redirect URI.** `com.netzhansa.herold:/oauth2/callback`, an RFC 8252 §7.1
+private-use scheme claimed by an exported activity. The scheme is the app's
+reversed domain, the form with a single slash and no authority, which Go's
+`net/url` parses as a hierarchical URI so the authorization endpoint appends
+`code` and `state` to it cleanly. The server matches a private-use redirect
+byte-for-byte (`directory.ValidateRedirectURI`), so the registered string and
+the one the client sends are identical. An App Link was not needed: the client
+must work against any herold host the user types, and an App Link binds to one.
+
+**Client registration.** The client is public — no secret, PKCE is what
+secures it. An operator registers it once per instance, with an admin session:
+
+    curl -X POST https://<host>/api/v1/oauth2/clients \
+      -H "Authorization: Bearer <admin api key>" \
+      -H "Content-Type: application/json" \
+      -d '{
+            "client_id": "herold-android",
+            "name": "herold Android",
+            "redirect_uris": ["com.netzhansa.herold:/oauth2/callback"]
+          }'
+
+Omitting `scopes` grants the default end-user set (`auth.AllEndUserScopes`);
+the grant never issues an admin-scoped token. `scripts/dev-instance.sh` runs
+exactly this call after seeding and prints the id as `OAUTH2_CLIENT_ID`.
+
+**Token lifecycle.** The access token is the `hk_` bearer credential with a
+one-hour expiry (`directory.AccessTokenTTL`); the refresh token rotates within
+a 30-day family and its reuse revokes the family. Revoking a family deletes the
+paired access token immediately, so a remote revoke takes effect on the client's
+very next request rather than at the next expiry.
+
+**Sessions.** `GET /api/v1/auth/credentials` and
+`DELETE /api/v1/auth/credentials/{kind}/{id}` — the endpoints the Suite's
+session management uses (issue #224). Two gaps the client works around, both
+recorded in `parity-matrix.md` § Server gaps: the list never marks an
+`oauth2_grant` as `is_current` for a bearer caller, and no `step_up_required`
+response is reachable by one.
 
 ### Push (delta from § Web Push)
 

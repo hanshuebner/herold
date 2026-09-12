@@ -57,6 +57,58 @@ app process, one `am instrument` invocation each:
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.
 
+### Sign-in, unlock and sessions (issue #352)
+
+`CustomTabSignInTest` drives the emulator's real browser. Complete
+Chrome's first-run screens once before the run - launch it and tap "Use
+without an account" - or the first Custom Tab of the run shows them
+instead of herold's login page:
+
+    adb shell am start -a android.intent.action.VIEW -d http://example.com
+    # tap through "Use without an account"
+
+`UnlockAcceptanceTest` needs a screen lock, and runs in two phases with
+a process kill between them:
+
+    adb shell locksettings set-pin 1234
+    # UnlockAcceptanceTest#t80  - locks on returning to the foreground
+    adb shell am kill com.netzhansa.herold.android
+    # UnlockAcceptanceTest#t81  - the fresh process starts locked
+    adb shell locksettings clear --old 1234
+
+The emulator's device credential stands in for a fingerprint: enrolling
+one needs a pass through the Settings UI, and the credential is the
+fallback the same prompt offers.
+
+`OAuthAcceptanceTest` needs no device setup. Pass the instance's
+`OAUTH2_CLIENT_ID` when it is not the default `herold-android`:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.OAuthAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
+      -e heroldOauthClientId <OAUTH2_CLIENT_ID> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+### Registering the OAuth2 client on a real instance
+
+`scripts/dev-instance.sh` registers the client itself. A production
+instance needs it once, from an admin session:
+
+    curl -X POST https://<host>/api/v1/oauth2/clients \
+      -H "Authorization: Bearer <admin api key>" \
+      -H "Content-Type: application/json" \
+      -d '{
+            "client_id": "herold-android",
+            "name": "herold Android",
+            "redirect_uris": ["com.netzhansa.herold:/oauth2/callback"]
+          }'
+
+The client is public: no secret is issued and PKCE S256 is mandatory.
+Omitting `scopes` grants the default end-user set. The redirect URI is
+matched byte-for-byte, so it must read exactly as above
+(`docs/design/android/notes/server-contract.md`).
+
 Then run the online phase, the offline phase, and collect the screenshots:
 
     adb shell am instrument -w -r \
