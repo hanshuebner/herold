@@ -53,6 +53,9 @@ class AcceptanceTest {
 
     @Before
     fun signedOut() {
+        // The app asks for it contextually after the first sync; granted up
+        // front the dialog never covers the screen these checks read.
+        grantNotificationPermission()
         runBlocking { app.container.signOut() }
         compose.waitUntil(TIMEOUT_MS) { compose.onAllNodesWithTag("signin-submit").fetchSemanticsNodes().isNotEmpty() }
     }

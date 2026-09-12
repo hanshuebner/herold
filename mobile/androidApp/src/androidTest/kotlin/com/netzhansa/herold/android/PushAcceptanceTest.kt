@@ -229,13 +229,6 @@ class PushAcceptanceTest {
 
     private fun activeNotifications() = notifications.activeNotifications.toList()
 
-    private fun grantNotificationPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        instrumentation.uiAutomation.executeShellCommand(
-            "pm grant ${instrumentation.targetContext.packageName} android.permission.POST_NOTIFICATIONS",
-        ).close()
-    }
-
     /** Opens the shade so the screenshot shows what the user sees. */
     private fun showShade(name: String) {
         val device = UiDevice.getInstance(instrumentation)

@@ -119,13 +119,6 @@ class PushTapAcceptanceTest {
     private fun String.jsonEscaped(): String =
         replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
 
-    private fun grantNotificationPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        instrumentation.uiAutomation.executeShellCommand(
-            "pm grant ${instrumentation.targetContext.packageName} android.permission.POST_NOTIFICATIONS",
-        ).close()
-    }
-
     private companion object {
         const val TIMEOUT_MS = 30_000L
         const val POST_TIMEOUT_MS = 10_000L

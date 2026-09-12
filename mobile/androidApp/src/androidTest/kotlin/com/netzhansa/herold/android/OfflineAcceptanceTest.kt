@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
@@ -47,6 +48,13 @@ class OfflineAcceptanceTest {
 
     private val app get() = InstrumentationRegistry.getInstrumentation()
         .targetContext.applicationContext as HeroldApplication
+
+    @Before
+    fun notificationsAllowed() {
+        // The app asks for it contextually after the first sync; granted up
+        // front the dialog never covers the screen these checks read.
+        grantNotificationPermission()
+    }
 
     @Test
     fun t1_warmTheCacheWhileOnline() = runBlocking {
