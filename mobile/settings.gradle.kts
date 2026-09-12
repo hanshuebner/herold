@@ -21,3 +21,5 @@ rootProject.name = "herold-mobile"
 
 include(":shared")
 include(":androidApp")
+// The acceptance run's UnifiedPush distributor (issue #229); test tooling.
+include(":fakeDistributor")

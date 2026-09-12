@@ -658,6 +658,11 @@ cmd_start() {
     # 127.0.0.1:<port> the same way a self-hosted UnifiedPush distributor
     # would be allowlisted in production.
     local fakefcm_port="${FAKEFCM_HTTP_ADDR##*:}"
+    # The UnifiedPush acceptance run (re #229) publishes the emulator's
+    # fake distributor on this fixed host port with `adb forward`, so the
+    # port is known before the instance starts and is allowlisted the same
+    # way. Override with HEROLD_DEV_UNIFIEDPUSH_PORT.
+    local unifiedpush_port="${HEROLD_DEV_UNIFIEDPUSH_PORT:-19280}"
     cat >> "$dir/system.toml" <<EOF
 
 [server.push]
@@ -667,9 +672,9 @@ fcm_base_url = "$FAKEFCM_SEND_URL"
 [server.push.network]
 allow_insecure = true
 allowed_hosts = ["127.0.0.1"]
-allowed_ports = [$fakefcm_port]
+allowed_ports = [$fakefcm_port, $unifiedpush_port]
 EOF
-    log "appended [server.push] (fake FCM) to system.toml"
+    log "appended [server.push] (fake FCM, UnifiedPush distributor port $unifiedpush_port) to system.toml"
 
     # OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230):
     # build and start heroldfakeoidc now (no system.toml dependency, unlike
