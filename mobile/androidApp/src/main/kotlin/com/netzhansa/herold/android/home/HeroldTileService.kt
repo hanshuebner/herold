@@ -3,16 +3,13 @@ package com.netzhansa.herold.android.home
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
-import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import com.netzhansa.herold.android.MainActivity
 import com.netzhansa.herold.android.R
 import com.netzhansa.herold.android.push.NotificationMute
 import com.netzhansa.herold.android.ui.settings.TileAction
 import com.netzhansa.herold.android.ui.settings.TileActionPreference
-import com.netzhansa.herold.shared.links.AppLinks
 
 /**
  * The Quick Settings tile (REQ-AND-SYS-21). It carries the action the
@@ -32,7 +29,7 @@ class HeroldTileService : TileService() {
         when (TileActionPreference.current(this)) {
             TileAction.COMPOSE -> openCompose()
             TileAction.MUTE_NOTIFICATIONS -> {
-                if (NotificationMute.isMuted(this)) NotificationMute.clear(this) else NotificationMute.mute(this)
+                TileActions.toggleMute(this)
                 render()
             }
         }
@@ -40,28 +37,20 @@ class HeroldTileService : TileService() {
 
     private fun render() {
         val tile: Tile = qsTile ?: return
-        when (TileActionPreference.current(this)) {
-            TileAction.COMPOSE -> {
-                tile.label = "Compose"
-                tile.state = Tile.STATE_INACTIVE
-            }
-
-            TileAction.MUTE_NOTIFICATIONS -> {
-                val muted = NotificationMute.isMuted(this)
-                tile.label = if (muted) "Mail muted" else "Mute mail"
-                tile.state = if (muted) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            }
+        val action = TileActionPreference.current(this)
+        val muted = NotificationMute.isMuted(this)
+        tile.label = TileActions.label(action, muted)
+        tile.state = if (action == TileAction.MUTE_NOTIFICATIONS && muted) {
+            Tile.STATE_ACTIVE
+        } else {
+            Tile.STATE_INACTIVE
         }
         tile.icon = Icon.createWithResource(this, R.drawable.ic_notification)
         tile.updateTile()
     }
 
     private fun openCompose() {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            data = Uri.parse(AppLinks.composeUri())
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val intent = TileActions.composeIntent(this)
         val pending = PendingIntent.getActivity(
             this,
             0,

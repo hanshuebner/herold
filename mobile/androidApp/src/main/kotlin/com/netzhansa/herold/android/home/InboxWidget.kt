@@ -13,8 +13,6 @@ import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
-import androidx.glance.appwidget.lazy.LazyColumn
-import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.updateAll
 import androidx.glance.background
@@ -110,8 +108,8 @@ private fun WidgetBody(snapshot: HomeSnapshot) {
                     style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant),
                 )
             } else {
-                LazyColumn(modifier = GlanceModifier.defaultWeight()) {
-                    items(snapshot.threads) { row -> ThreadLine(row) }
+                Column(modifier = GlanceModifier.defaultWeight()) {
+                    snapshot.threads.forEach { row -> ThreadLine(row) }
                 }
             }
             Text(

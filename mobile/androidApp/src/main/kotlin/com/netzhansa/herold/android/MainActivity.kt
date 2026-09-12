@@ -26,6 +26,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -159,18 +160,22 @@ fun HeroldApp(
             val request by launchRequest.collectAsStateSafely(null)
             LaunchedEffect(request) {
                 val pending = request ?: return@LaunchedEffect
+                // A link the user follows twice lands on the destination
+                // it names, rather than stacking a second copy of it.
+                val singleTop: NavOptionsBuilder.() -> Unit = { launchSingleTop = true }
                 when (val destination = pending.destination) {
                     is AppDestination.Thread -> {
                         val account = destination.accountId
                             ?: container.accountHolding(destination.threadId)
                         if (account != null) {
-                            navController.navigate("thread/$account/${destination.threadId}")
+                            navController.navigate("thread/$account/${destination.threadId}", singleTop)
                         }
                     }
 
                     is AppDestination.Reply ->
                         navController.navigate(
                             "compose/${ComposeMode.REPLY.name}/${destination.accountId}/${destination.emailId}",
+                            singleTop,
                         )
 
                     is AppDestination.Compose -> {
@@ -178,10 +183,10 @@ fun HeroldApp(
                             prefill = destination.prefill,
                             attachments = pending.attachments.map { it.toString() },
                         )
-                        navController.navigate("compose-handoff")
+                        navController.navigate("compose-handoff", singleTop)
                     }
 
-                    is AppDestination.Settings -> navController.navigate("settings")
+                    is AppDestination.Settings -> navController.navigate("settings", singleTop)
 
                     AppDestination.Inbox -> navController.popBackStack("inbox", inclusive = false)
                 }

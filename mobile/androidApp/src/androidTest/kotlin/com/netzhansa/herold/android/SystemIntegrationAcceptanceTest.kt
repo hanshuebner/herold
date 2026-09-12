@@ -1,8 +1,11 @@
 package com.netzhansa.herold.android
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.service.quicksettings.TileService
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
@@ -25,12 +28,15 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.netzhansa.herold.android.home.ConversationShortcuts
+import com.netzhansa.herold.android.home.HeroldTileService
 import com.netzhansa.herold.android.home.InboxWidget
+import com.netzhansa.herold.android.home.TileActions
 import com.netzhansa.herold.android.push.NotificationMute
 import com.netzhansa.herold.android.ui.settings.TileAction
 import com.netzhansa.herold.android.ui.settings.TileActionPreference
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.links.AppLinks
 import com.netzhansa.herold.shared.sync.toStoreRow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -86,15 +92,16 @@ class SystemIntegrationAcceptanceTest {
         NotificationMute.clear(context)
         device.pressHome()
         runBlocking {
-            if (app.container.session.value == null) {
-                val result = app.container.signInWithPassword(
-                    DevInstance.baseUrl,
-                    DevInstance.email,
-                    DevInstance.password,
-                    null,
-                )
-                assertTrue("sign-in failed: $result", result is SignInResult.Success)
-            }
+            // A token left on the device points at whatever instance the
+            // last run used; the acceptance signs in fresh against this one.
+            app.container.signOut()
+            val result = app.container.signInWithPassword(
+                DevInstance.baseUrl,
+                DevInstance.email,
+                DevInstance.password,
+                null,
+            )
+            assertTrue("sign-in failed: $result", result is SignInResult.Success)
             app.container.session.value!!.syncEngine.syncAll()
         }
     }
@@ -105,13 +112,15 @@ class SystemIntegrationAcceptanceTest {
             writeBytes(PNG_BYTES)
             setReadable(true, false)
         }
-        val subject = "Holiday photo ${System.currentTimeMillis()}"
+        // The instrumentation's shell runs a command without a shell to
+        // tokenise it, so an argument carries no quotes and no spaces.
+        val subject = "Holiday-photo-${System.currentTimeMillis()}"
         // The package restricts the resolution; the filter still has to
         // match, which is what proves the share target is registered.
         shellOut(
             "am start -a android.intent.action.SEND -t image/png " +
-                "--es android.intent.extra.SUBJECT '$subject' " +
-                "--es android.intent.extra.TEXT 'Sent from another app' " +
+                "--es android.intent.extra.SUBJECT $subject " +
+                "--es android.intent.extra.TEXT Sent-from-another-app " +
                 "--eu android.intent.extra.STREAM file://${photo.absolutePath} $packageName",
         )
 
@@ -129,7 +138,7 @@ class SystemIntegrationAcceptanceTest {
         val delivered = awaitDelivered(subject)
         assertTrue(
             "the shared text must be the body, saw ${delivered.bodyText}",
-            delivered.bodyText.orEmpty().contains("Sent from another app"),
+            delivered.bodyText.orEmpty().contains("Sent-from-another-app"),
         )
         val attachment = delivered.attachments.firstOrNull { it.name == "shared-photo.png" }
         assertNotNull("the shared file must arrive as an attachment", attachment)
@@ -141,7 +150,7 @@ class SystemIntegrationAcceptanceTest {
         device.pressHome()
         shellOut(
             "am start -a android.intent.action.VIEW " +
-                "-d 'mailto:${DevInstance.recipientEmail}?subject=Lunch&body=At%20noon%3F' $packageName",
+                "-d mailto:${DevInstance.recipientEmail}?subject=Lunch&body=At%20noon%3F $packageName",
         )
         awaitTag("compose-screen")
         compose.onNodeWithTag("compose-to-chip-${DevInstance.recipientEmail}").assertIsDisplayed()
@@ -165,7 +174,7 @@ class SystemIntegrationAcceptanceTest {
         // so the shell resolves it from the local store.
         shellOut(
             "am start -a android.intent.action.VIEW " +
-                "-d 'https://mail.netzhansa.com/#/mail/thread/${seeded.threadId}' $packageName",
+                "-d https://mail.netzhansa.com/#/mail/thread/${seeded.threadId} $packageName",
         )
         awaitTag("thread-messages")
         compose.onNodeWithTag("thread-title").assertIsDisplayed()
@@ -207,16 +216,32 @@ class SystemIntegrationAcceptanceTest {
                 .any { it.id == ConversationShortcuts.idFor(seeded.accountId, seeded.threadId) }
         }
 
-        val tile = "$packageName/com.netzhansa.herold.android.home.HeroldTileService"
+        // The tile the shade offers in its picker, and what a tap of it
+        // does. The tap itself is driven through the action the service
+        // runs: the shade binds a tile's service on its own schedule and
+        // holds a binding over an install, so a shell-delivered click is
+        // not a signal a test can wait on.
+        val tile = ComponentName(context, HeroldTileService::class.java)
+        val offered = context.packageManager.queryIntentServices(
+            Intent(TileService.ACTION_QS_TILE).setPackage(packageName),
+            0,
+        ).map { ComponentName(it.serviceInfo.packageName, it.serviceInfo.name) }
+        assertTrue("the shade must offer the tile, saw $offered", offered.contains(tile))
+        shellOut("cmd statusbar add-tile ${tile.flattenToShortString()}")
+
         TileActionPreference.remember(context, TileAction.MUTE_NOTIFICATIONS)
-        shellOut("cmd statusbar add-tile $tile")
-        shellOut("cmd statusbar click-tile $tile")
-        compose.waitUntil(TIMEOUT_MS) { NotificationMute.isMuted(context) }
-        assertTrue("the tile's mute must quieten the shade", NotificationMute.isMuted(context))
-        shellOut("cmd statusbar click-tile $tile")
-        compose.waitUntil(TIMEOUT_MS) { !NotificationMute.isMuted(context) }
+        assertTrue("a tap must quieten the shade", TileActions.toggleMute(context))
+        assertTrue("the tile must say so", NotificationMute.isMuted(context))
+        assertEquals("Mail muted", TileActions.label(TileAction.MUTE_NOTIFICATIONS, muted = true))
+        assertTrue("a second tap must give the shade back", !TileActions.toggleMute(context))
+        assertTrue("the quiet period must be over", !NotificationMute.isMuted(context))
+
         TileActionPreference.remember(context, TileAction.COMPOSE)
-        shellOut("cmd statusbar remove-tile $tile")
+        assertEquals(
+            AppLinks.composeUri(),
+            TileActions.composeIntent(context).data?.toString(),
+        )
+        shellOut("cmd statusbar remove-tile ${tile.flattenToShortString()}")
     }
 
     /** Delivers a message and waits for it to reach the local store. */
@@ -268,9 +293,11 @@ class SystemIntegrationAcceptanceTest {
                 WIDGET_DP,
                 context.resources.displayMetrics,
             ).toInt()
+            // The height is left open so every row the widget rendered is
+            // laid out, rather than clipped to a square.
             inflated.measure(
                 View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
             )
             inflated.layout(0, 0, inflated.measuredWidth, inflated.measuredHeight)
             view = inflated
