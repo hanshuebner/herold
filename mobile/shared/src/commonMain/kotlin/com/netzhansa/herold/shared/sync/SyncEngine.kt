@@ -260,6 +260,28 @@ class SyncEngine(
     }
 
     /**
+     * Brings a thread the store does not hold into it - a search result
+     * outside the synced set, or a notification for a conversation the
+     * fill never covered (issue #339). The store's own reconciliation is
+     * untouched: the rows land through the same mapping a sync pass uses
+     * and the per-type state strings are left alone, so the next
+     * `Email/changes` still asks for exactly what it would have asked for.
+     *
+     * Returns true when the thread's messages are in the store afterwards.
+     */
+    suspend fun ensureThread(accountId: String, threadId: String): Boolean {
+        if (store.threadEmailList(accountId, threadId).isNotEmpty()) return true
+        val thread = runCatching { api.threadGet(accountId, listOf(threadId)) }
+            .getOrNull()?.list?.firstOrNull() ?: return false
+        store.upsertThreads(listOf(thread.toDomain(accountId)))
+        val ids = thread.emailIds.filter { it.isNotBlank() }
+        if (ids.isEmpty()) return false
+        val fetched = runCatching { api.emailGet(accountId, ids) }.getOrNull() ?: return false
+        store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
+        return store.threadEmailList(accountId, threadId).isNotEmpty()
+    }
+
+    /**
      * Fetches and caches a message body on open. Returns the stored message
      * with its body; with no connectivity it returns whatever the cache
      * holds, so a previously read thread still opens and an unread one

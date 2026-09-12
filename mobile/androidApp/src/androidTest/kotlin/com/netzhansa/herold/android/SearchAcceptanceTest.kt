@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -122,6 +123,44 @@ class SearchAcceptanceTest {
         compose.onNodeWithText(QUERY).assertIsDisplayed()
         compose.onNodeWithTag("search-row-${seeded.threadId}").assertIsDisplayed()
         compose.captureScreen("33-back-restores-the-search")
+    }
+
+    @Test
+    fun t30c_aResultOutsideTheSyncedSetOpensTheWholeThread() = runBlocking {
+        signInAndSync()
+        val seeded = app.container.store.inboxEmails().first()
+            .lastOrNull { it.subject.startsWith(SEED_PREFIX) }
+            ?: error("the dev instance holds no \"$SEED_PREFIX ...\" message to search for")
+
+        // Take the thread back out of the store, which is the state the
+        // initial inbox fill leaves for mail older than its window or in
+        // another mailbox: the server has it, the device does not
+        // (issue #339). Nothing changed server-side, so no reconcile pass
+        // puts it back.
+        app.container.store.deleteEmails(seeded.accountId, listOf(seeded.id))
+        app.container.store.deleteThreads(seeded.accountId, listOf(seeded.threadId))
+        assertTrue(
+            "the thread must be out of the store before the search",
+            app.container.store.threadEmailList(seeded.accountId, seeded.threadId).isEmpty(),
+        )
+
+        openSearch()
+        compose.onNodeWithTag("search-field").performTextInput(QUERY)
+        compose.onNodeWithTag("search-field").performImeAction()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("search-row-${seeded.threadId}").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("search-row-${seeded.threadId}").performClick()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("message-${seeded.id}").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("thread-title").assertTextEquals(seeded.subject)
+        assertTrue(
+            "the fetched thread must be cached like any synced one",
+            app.container.store.threadEmailList(seeded.accountId, seeded.threadId).isNotEmpty(),
+        )
+        compose.captureScreen("34-search-result-outside-the-synced-set")
     }
 
     @Test

@@ -67,6 +67,10 @@ class FakeLocalStore : LocalStore {
         rows.filter { it.accountId == accountId && it.threadId == threadId }.sortedBy { it.receivedAt }
     }
 
+    override suspend fun threadEmailList(accountId: String, threadId: String): List<Email> =
+        emailRows.value.filter { it.accountId == accountId && it.threadId == threadId }
+            .sortedBy { it.receivedAt }
+
     override suspend fun email(accountId: String, id: String): Email? =
         emailRows.value.firstOrNull { it.accountId == accountId && it.id == id }
 

@@ -63,6 +63,13 @@ interface LocalStore {
 
     fun threadEmails(accountId: String, threadId: String): Flow<List<Email>>
 
+    /**
+     * The thread's messages as they stand, for a caller that must know
+     * whether the store holds the thread at all before rendering it
+     * (issue #339).
+     */
+    suspend fun threadEmailList(accountId: String, threadId: String): List<Email>
+
     suspend fun email(accountId: String, id: String): Email?
 
     suspend fun emailList(): List<Email>

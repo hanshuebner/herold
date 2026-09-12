@@ -14,6 +14,7 @@ import com.netzhansa.herold.shared.jmap.WireThread
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -77,6 +78,48 @@ class SyncEngineTest {
         assertEquals("email-1", store.syncState("acct-a", SyncTypes.EMAIL))
         assertEquals("thread-1", store.syncState("acct-a", SyncTypes.THREAD))
         assertEquals(listOf("acct-a"), store.accountList().map { it.id })
+    }
+
+    @Test
+    fun ensureThreadFetchesAThreadTheFillNeverCovered() = runTest {
+        val api = api()
+        // The fill sees an inbox of one; the thread the user searches for
+        // sits outside it, the way an older or archived conversation does
+        // (issue #339).
+        api.inboxIds = listOf("e1")
+        api.emails = mapOf(
+            "e1" to wireEmail("e1"),
+            "e9" to wireEmail("e9", threadId = "t-e9", mailboxIds = mapOf("archive-1" to true)),
+        )
+        api.threads = listOf(
+            WireThread(id = "t-e1", emailIds = listOf("e1")),
+            WireThread(id = "t-e9", emailIds = listOf("e9")),
+        )
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+        assertTrue(store.threadEmailList("acct-a", "t-e9").isEmpty())
+
+        assertTrue(engine.ensureThread("acct-a", "t-e9"))
+
+        assertEquals(listOf("e9"), store.threadEmailList("acct-a", "t-e9").map { it.id })
+        assertEquals("Subject e9", store.email("acct-a", "e9")!!.subject)
+
+        // A thread already held is answered from the store.
+        val before = api.emailGetCalls.size
+        assertTrue(engine.ensureThread("acct-a", "t-e9"))
+        assertEquals(before, api.emailGetCalls.size)
+    }
+
+    @Test
+    fun ensureThreadReportsAThreadItCannotFetch() = runTest {
+        val api = api()
+        api.inboxIds = emptyList()
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+
+        assertFalse(engine.ensureThread("acct-a", "t-missing"))
+        assertTrue(store.threadEmailList("acct-a", "t-missing").isEmpty())
     }
 
     @Test

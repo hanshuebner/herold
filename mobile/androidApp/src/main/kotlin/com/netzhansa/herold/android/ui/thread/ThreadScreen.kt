@@ -8,6 +8,7 @@ import android.webkit.WebViewClient
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -91,7 +94,21 @@ fun ThreadScreen(
     var expandedId by remember { mutableStateOf<String?>(null) }
     var loadRemoteImages by remember { mutableStateOf(false) }
     var snoozing by remember { mutableStateOf(false) }
+    var fetching by remember { mutableStateOf(false) }
+    var unavailable by remember { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
+
+    // A thread reached from search or a notification can be outside the
+    // synced set; the store is still the source of truth, so the sync
+    // engine fetches it into the store and the screen renders from there
+    // (issue #339, REQ-AND-SYNC-01).
+    LaunchedEffect(accountId, threadId) {
+        if (container.store.threadEmailList(accountId, threadId).isNotEmpty()) return@LaunchedEffect
+        fetching = true
+        val held = session.syncEngine.ensureThread(accountId, threadId)
+        fetching = false
+        unavailable = !held
+    }
 
     // A push for the thread on screen reconciles but posts no notification,
     // and any notification already in the shade for it is withdrawn
@@ -128,7 +145,13 @@ fun ThreadScreen(
                 },
                 title = {
                     Text(
-                        text = messages.firstOrNull { it.subject.isNotBlank() }?.subject ?: "(no subject)",
+                        text = when {
+                            messages.isNotEmpty() ->
+                                messages.firstOrNull { it.subject.isNotBlank() }?.subject ?: "(no subject)"
+
+                            unavailable -> "Conversation"
+                            else -> ""
+                        },
                         maxLines = 1,
                         modifier = Modifier.testTag("thread-title"),
                     )
@@ -173,6 +196,20 @@ fun ThreadScreen(
             onReplyAll = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
             onForward = { messages.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
         )
+        if (messages.isEmpty() && fetching) {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(32.dp).testTag("thread-loading"),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
+            }
+        }
+        if (messages.isEmpty() && unavailable) {
+            Text(
+                text = "This conversation could not be loaded. Connect and try again.",
+                modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("thread-unavailable"),
+            )
+        }
         LazyColumn(
             modifier = Modifier.fillMaxSize().testTag("thread-messages"),
         ) {

@@ -113,6 +113,11 @@ class SqlDelightLocalStore(
         database.emailQueries.selectByThread(accountId, threadId).asFlow().mapToList(dispatcher)
             .mapList { it.toDomain() }
 
+    override suspend fun threadEmailList(accountId: String, threadId: String): List<DomainEmail> =
+        withContext(dispatcher) {
+            database.emailQueries.selectByThread(accountId, threadId).executeAsList().map { it.toDomain() }
+        }
+
     override suspend fun email(accountId: String, id: String): DomainEmail? = withContext(dispatcher) {
         database.emailQueries.selectById(accountId, id).executeAsOneOrNull()?.toDomain()
     }
