@@ -16,10 +16,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * What a send does with no connectivity in milestone 1c: it fails where
- * the user can see it and leaves the compose open. Queueing it is
- * milestone 2's durable outbox (REQ-AND-SYNC-21), so this check pins the
- * current contract rather than a silent drop.
+ * What a send does with no connectivity: it goes into the durable
+ * outbox, the compose closes, and the message leaves when there is a
+ * connection (REQ-AND-SYNC-21).
  *
  * The harness runs it with the emulator's radios off, after
  * `SearchAcceptanceTest#t30...` has signed the app in.
@@ -39,7 +38,7 @@ class ComposeOfflineAcceptanceTest {
     }
 
     @Test
-    fun t33_sendingWithoutAConnectionSaysSoAndKeepsTheCompose() = runBlocking {
+    fun t33_sendingWithoutAConnectionQueuesTheMessage() = runBlocking {
         // A cold start restores the stored token asynchronously; the check
         // needs the session the previous online phase left behind, not the
         // instant after launch.
@@ -51,16 +50,22 @@ class ComposeOfflineAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
         }
+        val before = app.container.outbox.list().size
         compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
         compose.onNodeWithTag("compose-subject").performTextInput("offline send")
         compose.onNodeWithTag("compose-send").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("compose-snackbar").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
         }
-        compose.onNodeWithText("No connection - the message was not sent").assertIsDisplayed()
-        compose.onNodeWithTag("compose-screen").assertIsDisplayed()
-        compose.captureScreen("33-offline-send-refused")
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().size > before }
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("connectivity-chip").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("connectivity-chip").assertIsDisplayed()
+        compose.captureScreen("33-offline-send-queued")
     }
 
     private companion object {

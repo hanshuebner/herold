@@ -32,12 +32,12 @@ import org.junit.runners.MethodSorters
  *
  *   am instrument ... -e class OfflineAcceptanceTest#t1_warmTheCacheWhileOnline
  *   adb shell svc data disable && adb shell svc wifi disable
- *   am instrument ... -e class OfflineAcceptanceTest#t2_readOfflineAndRefuseAnArchive
+ *   am instrument ... -e class OfflineAcceptanceTest#t2_readOfflineAndQueueAnArchive
  *
- * Phase two asserts what milestone 1a promises with no connectivity: a
- * synced thread still opens from the local store (REQ-AND-SYNC-03), and an
- * archive attempt reports the lost connection and leaves the row where it
- * was, because there is no durable outbox yet.
+ * Phase two asserts what the client promises with no connectivity: a
+ * synced thread still opens from the local store (REQ-AND-SYNC-03), and
+ * an archive applies at once and waits in the durable outbox for a
+ * connection (REQ-AND-SYNC-20/22).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -96,7 +96,7 @@ class OfflineAcceptanceTest {
     }
 
     @Test
-    fun t2_readOfflineAndRefuseAnArchive() = runBlocking {
+    fun t2_readOfflineAndQueueAnArchive() = runBlocking {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
@@ -115,29 +115,23 @@ class OfflineAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
         }
+        val inboxId = app.container.store.mailboxList()
+            .first { it.accountId == target.accountId && it.role == "inbox" }.id
         compose.onNodeWithTag("thread-swipe-${target.threadId}").performTouchInput { swipeRight() }
 
-        // The undo offer goes up with the optimistic write (issue #338);
-        // with no connection the `Email/set` then fails, which takes the
-        // offer down, reports the lost connection and puts the row back.
+        // The archive applies to the store at once and waits in the
+        // outbox; the chip is what says so (REQ-AND-SYNC-20/30).
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithText("No connection", substring = true).fetchSemanticsNodes().isNotEmpty()
+            runBlocking { !app.container.store.email(target.accountId, target.id)!!.mailboxIds.contains(inboxId) }
         }
-        compose.onNodeWithTag("inbox-snackbar").assertIsDisplayed()
-        compose.captureScreen("11-offline-archive-refused")
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("connectivity-chip").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("connectivity-chip").assertIsDisplayed()
+        compose.captureScreen("11-offline-archive-queued")
 
-        // The reverted row is back in the list; the list may have kept its
-        // scroll offset while the row was optimistically gone, so scroll to
-        // it before asserting it is on screen.
-        compose.onNodeWithTag("inbox-list")
-            .performScrollToNode(hasTestTag("thread-row-${target.threadId}"))
-        compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
-        val after = app.container.store.email(target.accountId, target.id)!!
-        assertEquals(
-            "a failed action must leave the local membership untouched",
-            target.mailboxIds,
-            after.mailboxIds,
-        )
+        val queued = app.container.outbox.list()
+        assertTrue("the archive is durable, saw $queued", queued.isNotEmpty())
     }
 
     /** The newest inbox message whose body the store already holds. */
