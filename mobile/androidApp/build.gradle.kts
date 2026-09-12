@@ -245,6 +245,9 @@ dependencies {
     // the unlock prompt that gates releasing the token (REQ-AND-AUTH-01/11).
     implementation(libs.androidx.browser)
     implementation(libs.androidx.biometric)
+    // The FragmentActivity the prompt is hosted in, at the version that
+    // passes activity-result request codes through unchanged (issue #359).
+    implementation(libs.androidx.fragment)
     implementation(libs.kotlinx.coroutines.core)
     // Needed on this module's own compile classpath because MainActivity
     // wires shared's HttpClient-typed factory directly into JmapClient

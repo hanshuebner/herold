@@ -18,6 +18,12 @@ androidx-navigation-compose = "2.8.9"
 androidx-security-crypto = "1.1.0"
 androidx-browser = "1.8.0"
 androidx-biometric = "1.1.0"
+# BiometricPrompt hosts the unlock in a FragmentActivity, so the shell is one.
+# Fragment 1.8 hands the activity-result registry's request codes to the
+# platform unchanged, which every ActivityResultLauncher in the app depends on:
+# biometric 1.1.0 on its own resolves fragment 1.2.5, whose FragmentActivity
+# rejects the registry's codes as wider than 16 bits (issue #359).
+androidx-fragment = "1.8.9"
 androidx-datastore = "1.1.2"
 androidx-test-runner = "1.6.2"
 androidx-work = "2.10.0"
@@ -47,6 +53,7 @@ androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-ru
 androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "androidx-security-crypto" }
 androidx-browser = { module = "androidx.browser:browser", version.ref = "androidx-browser" }
 androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "androidx-biometric" }
+androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidx-fragment" }
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "androidx-work" }
 androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "androidx-work" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
