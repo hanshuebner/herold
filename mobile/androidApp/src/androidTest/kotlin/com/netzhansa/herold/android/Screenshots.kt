@@ -1,9 +1,15 @@
 package com.netzhansa.herold.android
 
+import android.graphics.Bitmap
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.ComposeTestRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Writes a PNG of the current screen where the acceptance harness pulls it
@@ -30,6 +36,25 @@ fun captureDeviceScreen(name: String) {
     SystemClock.sleep(SETTLE_MS)
     shell("mkdir -p $SHOT_DIR")
     shell("screencap -p $SHOT_DIR/$name.png")
+}
+
+/**
+ * Captures one composable rather than the screen, for a shot the
+ * platform will not let `screencap` take: the device-credential prompt
+ * marks its window secure, so a screen capture under it is black,
+ * while the composition beneath renders fine. The bitmap goes out
+ * through the app's own external files directory - the only place the
+ * app process may write - and is copied into [SHOT_DIR] from the
+ * shell, where the harness collects it with the rest.
+ */
+fun ComposeTestRule.captureComposable(tag: String, name: String) {
+    waitForIdle()
+    val bitmap = onNodeWithTag(tag).captureToImage().asAndroidBitmap()
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val staged = File(context.getExternalFilesDir(null), "$name.png")
+    FileOutputStream(staged).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    shell("mkdir -p $SHOT_DIR")
+    shell("cp ${staged.absolutePath} $SHOT_DIR/$name.png")
 }
 
 /** Runs a shell command and waits for it to finish. */

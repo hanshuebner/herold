@@ -111,7 +111,9 @@ class AcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("signin-password-error").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("signin-password-error").assertIsDisplayed()
+        // The form scrolls once the code field is in it, so the
+        // message can sit below the fold.
+        compose.onNodeWithTag("signin-password-error").assertExists()
         compose.onAllNodesWithTag("inbox-list").assertCountEquals(0)
         compose.captureScreen("03-wrong-totp-rejected")
     }

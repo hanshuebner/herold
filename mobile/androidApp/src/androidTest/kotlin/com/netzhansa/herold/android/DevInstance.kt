@@ -38,6 +38,13 @@ object DevInstance {
     val totpSecret: String? get() = argument("heroldTotpSecret")
 
     /**
+     * The OAuth2 native client the instance registered
+     * (`scripts/dev-instance.sh` prints it as OAUTH2_CLIENT_ID); the
+     * app's own default, unless the harness overrides it.
+     */
+    val oauthClientId: String get() = argument("heroldOauthClientId") ?: "herold-android"
+
+    /**
      * The in-tree fake FCM endpoint every dev instance runs
      * (`scripts/dev-instance.sh` prints it as FAKEFCM_HTTP_ADDR). Its
      * GET/DELETE /messages API is how a test reads the pushes herold sent.
@@ -122,7 +129,8 @@ object DevInstance {
         from: String = "Bob Example <bob@example.local>",
         body: String,
         messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
-    ): String = deliverRaw(subject, from, body, messageId)
+        to: String = email,
+    ): String = deliverRaw(subject, from, body, messageId, to = to)
 
     /** The SMTP conversation both seeding helpers share. */
     private fun deliverRaw(
@@ -131,6 +139,7 @@ object DevInstance {
         body: String,
         messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
         extraHeaders: String = "",
+        to: String = email,
     ): String {
         val (host, port) = smtpAddr.split(":")
         Socket(host, port.toInt()).use { socket ->
@@ -153,10 +162,10 @@ object DevInstance {
             expect("220")
             send("HELO acceptance.test", "250")
             send("MAIL FROM:<${from.substringAfter('<').substringBefore('>')}>", "250")
-            send("RCPT TO:<$email>", "250")
+            send("RCPT TO:<$to>", "250")
             send("DATA", "354")
             writer.write(
-                "From: $from\r\nTo: $email\r\nSubject: $subject\r\n" +
+                "From: $from\r\nTo: $to\r\nSubject: $subject\r\n" +
                     "Message-ID: <$messageId>\r\n" + extraHeaders + "\r\n$body\r\n.\r\n",
             )
             writer.flush()
@@ -178,6 +187,23 @@ object DevInstance {
      * state directly rather than trusting the screen.
      */
     suspend fun serverClient(): JmapClient = clientFor(email)
+
+    /**
+     * A bearer token of a second session for [principal], for a test
+     * that has to act as another signed-in client of the same account.
+     */
+    suspend fun deviceToken(principal: String): String {
+        val tokenStore = InMemoryTokenStore()
+        val result = AuthClient(createHttpClient(), tokenStore).signIn(
+            baseUrl = baseUrl,
+            email = principal,
+            password = password,
+            totpCode = totpSecret?.let { Totp.code(it) },
+            deviceLabel = "acceptance second session",
+        )
+        check(result is SignInResult.Success) { "second-session sign-in as $principal failed: $result" }
+        return result.token
+    }
 
     /** The same, signed in as the recipient, for reading a sent message back. */
     suspend fun recipientClient(): JmapClient = clientFor(recipientEmail)
