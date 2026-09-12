@@ -154,6 +154,57 @@ fun resolveKeyPassword(keystore: File, storePassword: String, alias: String, con
     }
 }
 
+// ---------------------------------------------------------------------------
+// Acceptance TLS fixture (issue #361).
+//
+// REQ-UNS-20's one-click unsubscribe only applies to an `https:` URL, so the
+// instrumented check runs its recording sink over TLS. keytool generates a
+// self-signed pair into the build directory on first configuration: the
+// certificate becomes a debug-only raw resource the network security config
+// trusts under `debug-overrides`, the keystore an androidTest asset the sink
+// serves with. Android ignores `debug-overrides` in a non-debuggable build and
+// neither half is committed, so a shipped APK trusts nothing extra.
+// ---------------------------------------------------------------------------
+
+val acceptanceTlsDir: File = File(layout.buildDirectory.get().asFile, "generated/acceptanceTls")
+val acceptanceTlsResDir: File = File(acceptanceTlsDir, "res")
+val acceptanceTlsAssetsDir: File = File(acceptanceTlsDir, "assets")
+
+/** The password protecting the generated fixture; it guards nothing real. */
+val acceptanceTlsPassword = "acceptance"
+
+fun generateAcceptanceTls() {
+    val keystore = File(acceptanceTlsAssetsDir, "acceptance-sink.p12")
+    val certificate = File(acceptanceTlsResDir, "raw/acceptance_sink.pem")
+    if (keystore.isFile && certificate.isFile) return
+    keystore.parentFile.mkdirs()
+    certificate.parentFile.mkdirs()
+    keystore.delete()
+    certificate.delete()
+    val keytool = File(File(System.getProperty("java.home"), "bin"), "keytool").absolutePath
+    fun run(vararg args: String) {
+        val process = ProcessBuilder(listOf(keytool) + args)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().readText()
+        check(process.waitFor() == 0) { "keytool failed: $output" }
+    }
+    run(
+        "-genkeypair", "-alias", "sink", "-keyalg", "RSA", "-keysize", "2048",
+        "-validity", "3650", "-dname", "CN=herold-acceptance-sink",
+        "-ext", "san=ip:127.0.0.1,dns:localhost",
+        "-storetype", "PKCS12", "-keystore", keystore.absolutePath,
+        "-storepass", acceptanceTlsPassword, "-keypass", acceptanceTlsPassword,
+    )
+    run(
+        "-exportcert", "-rfc", "-alias", "sink",
+        "-keystore", keystore.absolutePath, "-storepass", acceptanceTlsPassword,
+        "-file", certificate.absolutePath,
+    )
+}
+
+generateAcceptanceTls()
+
 android {
     namespace = "com.netzhansa.herold.android"
     compileSdk = 36
@@ -170,6 +221,7 @@ android {
         buildConfigField("String", "FIREBASE_APPLICATION_ID", "\"${firebaseConfig.applicationId}\"")
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseConfig.apiKey}\"")
         buildConfigField("String", "FIREBASE_PROJECT_NUMBER", "\"${firebaseConfig.projectNumber}\"")
+        buildConfigField("String", "ACCEPTANCE_TLS_PASSWORD", "\"$acceptanceTlsPassword\"")
     }
 
     signingConfigs {
@@ -189,6 +241,11 @@ android {
                 )
             }
         }
+    }
+
+    sourceSets {
+        getByName("debug") { res.srcDir(acceptanceTlsResDir) }
+        getByName("androidTest") { assets.srcDir(acceptanceTlsAssetsDir) }
     }
 
     buildTypes {

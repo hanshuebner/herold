@@ -44,7 +44,9 @@ import com.netzhansa.herold.shared.domain.RuleCondition
 import com.netzhansa.herold.shared.domain.RuleFields
 import com.netzhansa.herold.shared.domain.RuleOps
 import com.netzhansa.herold.shared.filters.RuleText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The structured filter editor (suite REQ-FLT-30): conditions and actions
@@ -98,7 +100,9 @@ fun FilterEditorScreen(
                 val order = all.filter { it.accountId == accountId }.maxOfOrNull { it.order + 1 } ?: 0
                 session.filters.create(accountId, name, conditions.toList(), actions.toList(), order)
             }
-            onClose()
+            // Navigation runs on the main thread; the write above resumed
+            // off it, so the pop hops back before it touches the back stack.
+            withContext(Dispatchers.Main.immediate) { onClose() }
         }
     }
 

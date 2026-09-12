@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Debug-only network policy.
+
+base-config keeps cleartext on so a build under test reaches an ephemeral
+scripts/dev-instance.sh herold at 10.0.2.2:<port> from the emulator.
+
+debug-overrides adds the certificate of the HTTPS sink the instrumented
+List-Unsubscribe check runs in the test process (REQ-UNS-20 needs an
+https: URL in the header, so the sink has to speak TLS). Android ignores
+debug-overrides unless the app is debuggable, and the certificate is
+generated into the build directory rather than committed, so no shipped
+build trusts anything extra.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/acceptance_sink" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

@@ -29,7 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +73,11 @@ fun FiltersScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf<ManagedRule?>(null) }
+    // Read once per account: the section lives in the lazy list, which
+    // composes and disposes it as the list scrolls.
+    val sieveScript by produceState<String?>(null, accountId) {
+        value = runCatching { session.client.sieveScript(accountId) }.getOrNull()
+    }
 
     val rules = remember(all, accountId) {
         FilterActions.userRules(all.filter { it.accountId == accountId })
@@ -132,7 +137,7 @@ fun FiltersScreen(
                     )
                     HorizontalDivider()
                 }
-                item { SieveSection(session = session, accountId = accountId) }
+                item { SieveSection(script = sieveScript) }
             }
         }
     }
@@ -229,16 +234,8 @@ private fun FilterRow(
  * where their filtering went.
  */
 @Composable
-private fun SieveSection(session: SessionScope, accountId: String) {
-    var script by remember(accountId) { mutableStateOf<String?>(null) }
-    var loaded by remember(accountId) { mutableStateOf(false) }
-
-    LaunchedEffect(accountId) {
-        script = runCatching { session.client.sieveScript(accountId) }.getOrNull()
-        loaded = true
-    }
-
-    if (!loaded || script.isNullOrBlank()) return
+private fun SieveSection(script: String?) {
+    if (script.isNullOrBlank()) return
     Column(modifier = Modifier.padding(16.dp).testTag("filters-sieve")) {
         Text(text = "Your Sieve script", style = MaterialTheme.typography.titleSmall)
         Text(

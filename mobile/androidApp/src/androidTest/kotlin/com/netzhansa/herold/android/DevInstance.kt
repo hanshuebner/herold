@@ -130,7 +130,9 @@ object DevInstance {
         body: String,
         messageId: String = "acceptance-" + System.nanoTime() + "@acceptance.test",
         to: String = email,
-    ): String = deliverRaw(subject, from, body, messageId, to = to)
+        /** Extra header lines, each CRLF-terminated: List-Unsubscribe and friends. */
+        headers: String = "",
+    ): String = deliverRaw(subject, from, body, messageId, extraHeaders = headers, to = to)
 
     /** The SMTP conversation both seeding helpers share. */
     private fun deliverRaw(
