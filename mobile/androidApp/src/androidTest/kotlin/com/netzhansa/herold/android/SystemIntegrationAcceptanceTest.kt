@@ -104,11 +104,13 @@ class SystemIntegrationAcceptanceTest {
             setReadable(true, false)
         }
         val subject = "Holiday photo ${System.currentTimeMillis()}"
+        // The package restricts the resolution; the filter still has to
+        // match, which is what proves the share target is registered.
         shellOut(
-            "am start -a android.intent.action.SEND -t image/png -p $packageName " +
+            "am start -a android.intent.action.SEND -t image/png " +
                 "--es android.intent.extra.SUBJECT '$subject' " +
                 "--es android.intent.extra.TEXT 'Sent from another app' " +
-                "--eu android.intent.extra.STREAM file://${photo.absolutePath}",
+                "--eu android.intent.extra.STREAM file://${photo.absolutePath} $packageName",
         )
 
         awaitTag("compose-screen")
@@ -136,8 +138,8 @@ class SystemIntegrationAcceptanceTest {
     fun t31_aMailtoLinkOpensComposePrefilled() {
         device.pressHome()
         shellOut(
-            "am start -a android.intent.action.VIEW -p $packageName " +
-                "-d 'mailto:${DevInstance.recipientEmail}?subject=Lunch&body=At%20noon%3F'",
+            "am start -a android.intent.action.VIEW " +
+                "-d 'mailto:${DevInstance.recipientEmail}?subject=Lunch&body=At%20noon%3F' $packageName",
         )
         awaitTag("compose-screen")
         compose.onNodeWithTag("compose-to-chip-${DevInstance.recipientEmail}").assertIsDisplayed()
@@ -150,8 +152,8 @@ class SystemIntegrationAcceptanceTest {
 
         device.pressHome()
         shellOut(
-            "am start -a android.intent.action.VIEW -p $packageName " +
-                "-d herold://thread/${seeded.accountId}/${seeded.threadId}",
+            "am start -a android.intent.action.VIEW " +
+                "-d herold://thread/${seeded.accountId}/${seeded.threadId} $packageName",
         )
         awaitTag("thread-messages")
         compose.onNodeWithTag("thread-title").assertIsDisplayed()
@@ -160,8 +162,8 @@ class SystemIntegrationAcceptanceTest {
         // The Suite's own URL for the conversation. It carries no account,
         // so the shell resolves it from the local store.
         shellOut(
-            "am start -a android.intent.action.VIEW -p $packageName " +
-                "-d 'https://mail.netzhansa.com/#/mail/thread/${seeded.threadId}'",
+            "am start -a android.intent.action.VIEW " +
+                "-d 'https://mail.netzhansa.com/#/mail/thread/${seeded.threadId}' $packageName",
         )
         awaitTag("thread-messages")
         compose.onNodeWithTag("thread-title").assertIsDisplayed()
@@ -194,6 +196,9 @@ class SystemIntegrationAcceptanceTest {
             "the launcher must offer the static Compose shortcut, saw ${manifest.map { it.id }}",
             manifest.any { it.id == "compose" },
         )
+        // Publishing a shortcut from the background is rate-limited;
+        // the acceptance run drives many in a row.
+        shellOut("cmd shortcut reset-throttling")
         val seeded = seedThread("Shortcut ${System.currentTimeMillis()}")
         compose.waitUntil(TIMEOUT_MS) {
             ShortcutManagerCompat.getDynamicShortcuts(context)
