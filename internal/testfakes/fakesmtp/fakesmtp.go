@@ -34,6 +34,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -156,11 +157,16 @@ func New(t testing.TB, opts Options) *Server {
 }
 
 // HTTPHandler returns an http.Handler that exposes the server's recorded
-// messages for dev-instance status checks. Mount it on a separate listener.
+// messages for dev-instance status checks and test assertions. Mount it on
+// a separate listener.
 //
 // Routes:
-//   - GET /messages — JSON array of envelope records (no raw body bytes).
-//   - GET /count    — JSON object {"count": N}.
+//   - GET /messages       — JSON array of envelope records. Add ?raw=1 to
+//     include each message's raw RFC 5322 bytes as a base64 "raw" field.
+//   - GET /messages/{n}/raw — the nth recorded message's raw RFC 5322 bytes
+//     verbatim (n is 1-based, in recording order). 404 when n is out of
+//     range or not a positive integer.
+//   - GET /count          — JSON object {"count": N}.
 func (s *Server) HTTPHandler() http.Handler {
 	type msgJSON struct {
 		MailFrom      string   `json:"mail_from"`
@@ -168,9 +174,11 @@ func (s *Server) HTTPHandler() http.Handler {
 		AuthMechanism string   `json:"auth_mechanism,omitempty"`
 		AuthIdentity  string   `json:"auth_identity,omitempty"`
 		OverTLS       bool     `json:"over_tls,omitempty"`
+		Raw           string   `json:"raw,omitempty"`
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/messages", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
+		includeRaw := r.URL.Query().Get("raw") == "1"
 		msgs := s.Messages()
 		out := make([]msgJSON, len(msgs))
 		for i, m := range msgs {
@@ -181,9 +189,22 @@ func (s *Server) HTTPHandler() http.Handler {
 				AuthIdentity:  m.AuthIdentity,
 				OverTLS:       m.OverTLS,
 			}
+			if includeRaw {
+				out[i].Raw = base64.StdEncoding.EncodeToString(m.Data)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("GET /messages/{n}/raw", func(w http.ResponseWriter, r *http.Request) {
+		n, err := strconv.Atoi(r.PathValue("n"))
+		msgs := s.Messages()
+		if err != nil || n < 1 || n > len(msgs) {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "message/rfc822")
+		_, _ = w.Write(msgs[n-1].Data)
 	})
 	mux.HandleFunc("/count", func(w http.ResponseWriter, _ *http.Request) {
 		n := len(s.Messages())

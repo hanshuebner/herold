@@ -8,8 +8,13 @@
 // until SIGTERM or SIGINT. Each accepted SMTP message is logged to stderr.
 //
 // The HTTP status server exposes:
-//   - GET /messages — JSON array of accepted message envelopes.
-//   - GET /count    — JSON {"count": N} of accepted messages.
+//   - GET /messages         — JSON array of accepted message envelopes.
+//     Add ?raw=1 to include each message's raw RFC 5322 bytes as a
+//     base64 "raw" field.
+//   - GET /messages/{n}/raw — the nth accepted message's raw RFC 5322
+//     bytes verbatim (n is 1-based, in recording order); 404 when out
+//     of range.
+//   - GET /count            — JSON {"count": N} of accepted messages.
 //
 // Usage:
 //

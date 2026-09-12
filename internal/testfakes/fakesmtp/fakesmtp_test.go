@@ -4,7 +4,11 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +159,114 @@ func TestSTARTTLS_Upgrade(t *testing.T) {
 	}
 	if !msgs[0].OverTLS {
 		t.Errorf("OverTLS = false after STARTTLS upgrade")
+	}
+}
+
+// TestHTTPHandler_MessagesRaw verifies GET /messages/{n}/raw returns the
+// nth recorded message's raw bytes verbatim (1-based, recording order) and
+// 404s when n is out of range or not a positive integer.
+func TestHTTPHandler_MessagesRaw(t *testing.T) {
+	srv := fakesmtp.New(t, fakesmtp.Options{Security: fakesmtp.Plain})
+	c := dial(t, srv.Addr())
+	c.cmd("EHLO client.test", "250")
+	c.cmd("MAIL FROM:<one@ext.test>", "250")
+	c.cmd("RCPT TO:<dest@remote.test>", "250")
+	c.cmd("DATA", "354")
+	c.cmd("Subject: first\r\n\r\nfirst body\r\n.", "250")
+	c.cmd("MAIL FROM:<two@ext.test>", "250")
+	c.cmd("RCPT TO:<dest@remote.test>", "250")
+	c.cmd("DATA", "354")
+	c.cmd("Subject: second\r\n\r\nsecond body\r\n.", "250")
+	c.cmd("QUIT", "221")
+
+	ts := httptest.NewServer(srv.HTTPHandler())
+	defer ts.Close()
+
+	get := func(path string) (*http.Response, []byte) {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, body
+	}
+
+	resp, body := get("/messages/1/raw")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /messages/1/raw: status=%d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Subject: first") || !strings.Contains(string(body), "first body") {
+		t.Errorf("/messages/1/raw body = %q; want the first message's raw bytes", body)
+	}
+
+	resp, body = get("/messages/2/raw")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /messages/2/raw: status=%d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Subject: second") {
+		t.Errorf("/messages/2/raw body = %q; want the second message's raw bytes", body)
+	}
+
+	for _, path := range []string{"/messages/0/raw", "/messages/3/raw", "/messages/-1/raw", "/messages/abc/raw"} {
+		resp, body = get(path)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s: status=%d; want 404 (body=%s)", path, resp.StatusCode, body)
+		}
+	}
+}
+
+// TestHTTPHandler_MessagesRawFlag verifies GET /messages?raw=1 includes a
+// base64 "raw" field per record that decodes to the message's raw bytes,
+// and that the field is omitted without the flag.
+func TestHTTPHandler_MessagesRawFlag(t *testing.T) {
+	srv := fakesmtp.New(t, fakesmtp.Options{Security: fakesmtp.Plain})
+	c := dial(t, srv.Addr())
+	c.cmd("EHLO client.test", "250")
+	c.cmd("MAIL FROM:<u@ext.test>", "250")
+	c.cmd("RCPT TO:<dest@remote.test>", "250")
+	c.cmd("DATA", "354")
+	c.cmd("Subject: hi\r\n\r\nbody line\r\n.", "250")
+	c.cmd("QUIT", "221")
+
+	ts := httptest.NewServer(srv.HTTPHandler())
+	defer ts.Close()
+
+	type msgJSON struct {
+		MailFrom string `json:"mail_from"`
+		Raw      string `json:"raw,omitempty"`
+	}
+
+	resp, err := http.Get(ts.URL + "/messages")
+	if err != nil {
+		t.Fatalf("GET /messages: %v", err)
+	}
+	var withoutRaw []msgJSON
+	if err := json.NewDecoder(resp.Body).Decode(&withoutRaw); err != nil {
+		t.Fatalf("decode /messages: %v", err)
+	}
+	_ = resp.Body.Close()
+	if len(withoutRaw) != 1 || withoutRaw[0].Raw != "" {
+		t.Fatalf("/messages without raw=1: %+v; want one record with no raw field", withoutRaw)
+	}
+
+	resp, err = http.Get(ts.URL + "/messages?raw=1")
+	if err != nil {
+		t.Fatalf("GET /messages?raw=1: %v", err)
+	}
+	var withRaw []msgJSON
+	if err := json.NewDecoder(resp.Body).Decode(&withRaw); err != nil {
+		t.Fatalf("decode /messages?raw=1: %v", err)
+	}
+	_ = resp.Body.Close()
+	if len(withRaw) != 1 {
+		t.Fatalf("/messages?raw=1: got %d records; want 1", len(withRaw))
+	}
+	decoded, err := base64.StdEncoding.DecodeString(withRaw[0].Raw)
+	if err != nil {
+		t.Fatalf("decode raw field: %v", err)
+	}
+	if !strings.Contains(string(decoded), "Subject: hi") || !strings.Contains(string(decoded), "body line") {
+		t.Errorf("decoded raw field = %q; want the recorded message bytes", decoded)
 	}
 }
