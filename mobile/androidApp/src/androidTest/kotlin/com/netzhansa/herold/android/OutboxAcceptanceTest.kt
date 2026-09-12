@@ -170,6 +170,7 @@ class OutboxAcceptanceTest {
         }
         compose.captureScreen("62-offline-outbox-three-queued")
         compose.onNodeWithTag("outbox-back").performClick()
+        Unit
     }
 
     /**
@@ -195,6 +196,7 @@ class OutboxAcceptanceTest {
         }
         compose.captureScreen("63-queue-after-process-death")
         compose.onNodeWithTag("outbox-back").performClick()
+        Unit
     }
 
     /**

@@ -126,6 +126,8 @@ fun ComposeScreen(
     var toText by remember { mutableStateOf("") }
     var ccText by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
+    /** True once the message is the outbox's; leaving must not save it again. */
+    var handedOff by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
     /** A picked image waiting for its size choice (issue #341). */
     var sizeChoice by remember { mutableStateOf<PendingImage?>(null) }
@@ -199,9 +201,11 @@ fun ComposeScreen(
     }
 
     // Backgrounding the app saves what has been typed (suite REQ-DFT-01/02).
+    // A message already queued for sending is not a draft: saving it here
+    // would put a second copy of it in the outbox.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
         val target = state
-        if (target != null && (target.hasRecipient || target.subject.isNotBlank())) {
+        if (!handedOff && target != null && (target.hasRecipient || target.subject.isNotBlank())) {
             scope.launch { saveDraft(target) }
         }
     }
@@ -289,6 +293,7 @@ fun ComposeScreen(
                                         // without a connection. The hold
                                         // is the window the list offers
                                         // the undo in (issue #354).
+                                        handedOff = true
                                         offerUndoSend(container, result, hold)
                                         session.requestDrain(hold)
                                         close()
