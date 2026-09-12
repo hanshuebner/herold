@@ -225,7 +225,7 @@ fun ThreadScreen(
             SnoozedIndicator(
                 wakeAt = wakeAt,
                 onEdit = { snoozing = true },
-                onCancel = { scope.launch { report(session.actions.unsnooze(messages)) } },
+                onCancel = { scope.launch { session.actions.unsnooze(messages) } },
             )
         }
         ReplyBar(
@@ -315,7 +315,7 @@ fun ThreadScreen(
                         // Editing the wake time of a conversation that is
                         // already snoozed keeps it on screen: it is not in
                         // the list this view would return to.
-                        report(session.actions.snooze(messages, wakeAt))
+                        session.actions.snooze(messages, wakeAt)
                     } else {
                         leaveWith(session.actions.snoozeLocally(messages, wakeAt), UndoMessages.SNOOZED)
                     }

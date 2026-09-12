@@ -215,16 +215,15 @@ class MailActionsTest {
 
     @Test
     fun cancellingASnoozeClearsTheWakeTimeAndTheKeyword() = runTest {
-        val api = FakeJmapApi()
-        val store = store(seeded().copy(snoozedUntil = "2026-09-12T06:00:00Z", keywords = setOf(Keywords.SNOOZED)))
-        val actions = MailActions(api, store)
+        val h = harness(seeded().copy(snoozedUntil = "2026-09-12T06:00:00Z", keywords = setOf(Keywords.SNOOZED)))
 
-        actions.unsnooze(listOf(store.email("acct-a", "e1")!!))
+        h.actions.unsnooze(listOf(h.store.email("acct-a", "e1")!!))
+        h.drainer.drain()
 
-        val stored = store.email("acct-a", "e1")!!
+        val stored = h.store.email("acct-a", "e1")!!
         assertEquals(null, stored.snoozedUntil)
         assertTrue(!stored.isSnoozed)
-        assertEquals(JsonNull, api.emailSetCalls.single().getValue("e1")["snoozedUntil"])
+        assertEquals(JsonNull, h.api.emailSetCalls.single().getValue("e1")["snoozedUntil"])
     }
 
     @Test
