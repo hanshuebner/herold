@@ -49,7 +49,7 @@ presentation-level and not yet built.
 | `20-settings` — settings model | protocol | n/a | — |
 | `20-settings` — settings UI | presentation | todo | — |
 | `25-push-notifications` — enriched push payload | protocol | n/a | — |
-| `25-push-notifications` — notification presentation (FCM) | presentation | todo | — |
+| `25-push-notifications` — notification presentation (FCM) | presentation | done (milestone 1b) | #328 |
 | G7 — LLM transparency contract | protocol | n/a | — |
 | G7 — per-message "the LLM was asked ..." inspect view | presentation | todo | — |
 
@@ -77,7 +77,8 @@ matrix is a complete picture of mobile scope.
 | OAuth2 Custom Tab sign-in + biometric unlock | REQ-AND-AUTH-01/02/11 | deferred (milestone 2) |
 | Local store as UI source of truth (cache-first) | REQ-AND-SYNC-01..13 | done (milestone 1a); offline search is milestone 1c |
 | Durable offline outbox | REQ-AND-SYNC-20..25 | deferred (milestone 2) |
-| FCM notifications (direct-reply, shortcuts, Bubbles) | REQ-AND-03x | todo |
+| FCM registration, channels, thread notifications, Archive / Mark Read, tap-through | REQ-AND-PUSH-01..03, 10..13, 20 | done (milestone 1b) |
+| Inline direct-reply and conversation shortcuts / Bubbles | REQ-AND-PUSH-21/22 | todo (reply needs compose, milestone 1c) |
 | System integration (share, widgets, tiles, SAF) | REQ-AND-04x | todo |
 | Native navigation shell + predictive back | REQ-AND-05x | done (milestone 1a, phone single-pane) |
 
@@ -87,3 +88,10 @@ matrix is a complete picture of mobile scope.
 |---|---|---|
 | `/proxy/image` authenticates by session cookie only (`internal/admin/server.go` wires it to `authsession.ResolveSession`); a bearer token gets a `401`. | Remote images in the reading pane cannot be proxied, so they stay blocked. Inline `cid:` images are unaffected: they come from `/jmap/download`, which accepts the bearer token. | server (`http-api-implementor`) |
 | No disposition property on a category. `CategorySettings` exposes `derivedCategories` names only, so pinned-vs-bundled (suite `REQ-CAT-04/05/11`) has no wire surface. | The client splits lanes itself: the first five names are tabs, the rest bundles. It reads a server disposition as soon as one exists. | server + suite |
+
+## Behaviour the two clients share by copying, not by protocol
+
+| Behaviour | Suite | Mobile |
+|---|---|---|
+| Push subscription registration | `web/apps/suite/src/lib/push/push-subscription.svelte.ts` sends `deviceClientId`, the endpoint, and `types: ["Email", "Message", "Conversation"]`; it sends no `notificationRules` and no `quietHours`, so herold's REQ-PUSH-81 defaults apply. | `PushRegistrar` sends the same `types` with `kind: "fcm"` and an `fcmToken`. Rules and quiet hours are typed and optional; a settings surface on either client fills them in and the other follows. |
+| Notification content | The service worker renders sender as title, subject as body, thread as the tag, with Archive / Mark Read / Reply. | The same payload fields, with the server's 80-byte preview appended to the body and Archive / Mark Read as actions; Reply waits on compose (milestone 1c). |
