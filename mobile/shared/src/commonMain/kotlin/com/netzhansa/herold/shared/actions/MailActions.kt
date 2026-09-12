@@ -177,7 +177,15 @@ class MailActions(
      * as an atomic pair (`internal/protojmap/mail/email/set.go`), so the
      * client sends only `snoozedUntil`.
      */
-    suspend fun snooze(emails: List<Email>, wakeAt: String): ActionResult {
+    suspend fun snooze(emails: List<Email>, wakeAt: String): ActionResult = commit(snoozeLocally(emails, wakeAt))
+
+    /**
+     * The local half of a snooze, the counterpart of [archiveLocally]: the
+     * rows carry the wake time in the store at once and the `Email/set` is
+     * left for [commit], so the undo affordance appears with the change
+     * (issue #345).
+     */
+    suspend fun snoozeLocally(emails: List<Email>, wakeAt: String): PendingAction {
         val snapshot = ActionSnapshot(emails)
         val optimistic = emails.map {
             it.copy(snoozedUntil = wakeAt, keywords = it.keywords + Keywords.SNOOZED)
@@ -185,7 +193,8 @@ class MailActions(
         val patches = emails.associate { email ->
             email.id to buildJsonObject { put("snoozedUntil", wakeAt) }
         }
-        return apply(snapshot, optimistic, patches)
+        optimistic.forEach { write(it) }
+        return PendingAction(snapshot, optimistic, patches)
     }
 
     private suspend fun keywordAction(emails: List<Email>, keyword: String, present: Boolean): ActionResult {

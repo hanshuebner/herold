@@ -70,6 +70,8 @@ import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.ActionResult
+import com.netzhansa.herold.shared.actions.PendingAction
+import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Email
@@ -156,6 +158,18 @@ fun ThreadScreen(
         if (result is ActionResult.Reverted) snackbar.showSnackbar(result.message)
     }
 
+    /**
+     * An action that takes the conversation off this screen: the local
+     * write is already in the store, the offer is parked for the list, and
+     * the view pops back so the undo appears where the user lands
+     * (issue #345). Popping back happens on the main thread, which a
+     * coroutine resumed off it must return to.
+     */
+    suspend fun leaveWith(action: PendingAction, message: String) {
+        container.undo.offer(message, action, session.actions)
+        withContext(Dispatchers.Main.immediate) { onBack() }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("thread-snackbar")) },
         topBar = {
@@ -193,16 +207,7 @@ fun ThreadScreen(
                         Icon(Icons.Filled.Schedule, contentDescription = "Snooze")
                     }
                     IconButton(
-                        onClick = {
-                            scope.launch {
-                                val (result, _) = session.actions.archive(messages, mailboxes)
-                                if (result is ActionResult.Reverted) {
-                                    snackbar.showSnackbar(result.message)
-                                } else {
-                                    onBack()
-                                }
-                            }
-                        },
+                        onClick = { scope.launch { leaveWith(session.actions.archiveLocally(messages, mailboxes), UndoMessages.ARCHIVED) } },
                         modifier = Modifier.testTag("thread-archive"),
                     ) {
                         Icon(Icons.Filled.Archive, contentDescription = "Archive")
@@ -294,10 +299,7 @@ fun ThreadScreen(
             onDismiss = { snoozing = false },
             onPick = { wakeAt ->
                 snoozing = false
-                scope.launch {
-                    report(session.actions.snooze(messages, wakeAt))
-                    onBack()
-                }
+                scope.launch { leaveWith(session.actions.snoozeLocally(messages, wakeAt), UndoMessages.SNOOZED) }
             },
         )
     }

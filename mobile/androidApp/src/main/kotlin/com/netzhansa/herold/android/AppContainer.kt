@@ -2,6 +2,7 @@ package com.netzhansa.herold.android
 
 import android.content.Context
 import com.netzhansa.herold.shared.actions.MailActions
+import com.netzhansa.herold.shared.actions.UndoCenter
 import com.netzhansa.herold.shared.compose.AddressBook
 import com.netzhansa.herold.shared.compose.Composer
 import com.netzhansa.herold.shared.auth.AuthClient
@@ -20,7 +21,9 @@ import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
 import com.netzhansa.herold.shared.sync.SyncEngine
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -55,6 +58,16 @@ class SessionScope(
 class AppContainer(context: Context) {
 
     private val httpClient: HttpClient = createHttpClient()
+
+    /**
+     * The scope work outlives a screen in: an action's `Email/set` runs
+     * here, so navigating away from the screen that started it does not
+     * cancel the change the user already saw applied (issue #345).
+     */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Undo offers an action parks for the list that shows them (issue #345). */
+    val undo = UndoCenter(appScope)
 
     val tokenStore = KeystoreTokenStore(context)
 

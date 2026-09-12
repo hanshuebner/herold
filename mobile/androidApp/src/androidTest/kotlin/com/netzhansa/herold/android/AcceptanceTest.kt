@@ -259,6 +259,56 @@ class AcceptanceTest {
         )
     }
 
+    @Test
+    fun t07_archivingFromTheThreadViewOffersTheUndoOnTheListItReturnsTo() = runBlocking {
+        signIn()
+        // The check archives a message it delivered itself, so it does not
+        // depend on what an earlier test left in the inbox.
+        val subject = DevInstance.deliverMail(
+            subject = "Thread archive ${System.currentTimeMillis()}",
+            body = "Archived from the open conversation.",
+        )
+        val target = awaitInbox(subject)
+        compose.waitUntil(TIMEOUT_MS) { threadRowCount() > 0 }
+
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        val inboxId = app.container.store.mailboxList()
+            .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
+
+        scrollInboxToThread(target.threadId)
+        compose.onNodeWithTag("thread-row-${target.threadId}").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // The reported failure: this returned to the list with the thread
+        // gone and no way back (issue #345).
+        compose.onNodeWithTag("thread-archive").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) { !inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Undo").assertIsDisplayed()
+        assertFalse(
+            "the server must have the message out of the inbox after the archive",
+            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+        )
+        compose.captureScreen("09b-thread-archive-undo")
+
+        compose.onNodeWithText("Undo").performClick()
+        compose.waitUntil(TIMEOUT_MS) { inboxHoldsThread(target.threadId) }
+        compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
+        assertTrue(
+            "undo must put the message back in the inbox on the server",
+            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+        )
+        compose.captureScreen("09c-thread-archive-undone")
+    }
+
     // ---- helpers -------------------------------------------------------
 
     private fun signIn() {
