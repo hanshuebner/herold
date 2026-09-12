@@ -255,6 +255,103 @@ func TestBuildPayload_RejectsUnsupportedKind(t *testing.T) {
 	}
 }
 
+// TestFirstAddress covers re #347's From-header decoding: an RFC 2047
+// encoded-word display name, a quoted display name, and a bare address
+// with no display name at all.
+func TestFirstAddress(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		raw      string
+		wantName string
+		wantAddr string
+	}{
+		{
+			name:     "encoded word display name",
+			raw:      `=?utf-8?q?Hans_H=C3=BCbner?= <hans@example.org>`,
+			wantName: "Hans Hübner",
+			wantAddr: "hans@example.org",
+		},
+		{
+			name:     "quoted display name",
+			raw:      `"Doe, Jane" <jane@example.test>`,
+			wantName: "Doe, Jane",
+			wantAddr: "jane@example.test",
+		},
+		{
+			name:     "bare address no display name",
+			raw:      "bob@example.test",
+			wantName: "bob@example.test",
+			wantAddr: "bob@example.test",
+		},
+		{
+			name:     "empty",
+			raw:      "",
+			wantName: "",
+			wantAddr: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			gotName, gotAddr := firstAddress(c.raw)
+			if gotName != c.wantName {
+				t.Errorf("firstAddress(%q) name = %q, want %q", c.raw, gotName, c.wantName)
+			}
+			if gotAddr != c.wantAddr {
+				t.Errorf("firstAddress(%q) address = %q, want %q", c.raw, gotAddr, c.wantAddr)
+			}
+		})
+	}
+}
+
+// TestBuildPayload_Email_DecodesEncodedWordFrom proves BuildPayload
+// wires firstAddress into the email payload's from/fromAddress fields
+// (re #347) rather than passing store.Envelope.From through raw.
+func TestBuildPayload_Email_DecodesEncodedWordFrom(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+	msg := store.Message{
+		Envelope: store.Envelope{
+			From:    `=?utf-8?q?Hans_H=C3=BCbner?= <hans@example.org>`,
+			Subject: "hi",
+		},
+		Blob: store.BlobRef{Hash: "deadbeef", Size: 1},
+	}
+	_, _, err := st.Meta().InsertMessage(ctx, msg, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	rows, err := st.Meta().ListMessages(ctx, mbid, store.MessageFilter{Limit: 10, WithEnvelope: true})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list messages: %v %d", err, len(rows))
+	}
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(rows[0].ID),
+		Op:          store.ChangeOpCreated,
+	}
+	res, err := BuildPayload(ctx, st, ev)
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.JSON, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got["from"] != "Hans Hübner" {
+		t.Fatalf("from=%v, want decoded display name %q (not the raw RFC 2047 header)", got["from"], "Hans Hübner")
+	}
+	if got["fromAddress"] != "hans@example.org" {
+		t.Fatalf("fromAddress=%v, want %q", got["fromAddress"], "hans@example.org")
+	}
+}
+
 func TestTruncateUTF8(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

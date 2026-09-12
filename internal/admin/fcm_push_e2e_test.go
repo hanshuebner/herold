@@ -191,8 +191,11 @@ metrics_bind = ""
 	// subscription. The change-feed-driven dispatcher picks up the
 	// resulting Email/Add event and, since no classifier plugin is
 	// configured, the message defaults to category "primary" -- inside
-	// DefaultRules' MailCategoryAllowlist -- so the push fires.
-	const rawFrom = "bob@external.example"
+	// DefaultRules' MailCategoryAllowlist -- so the push fires. The From
+	// header carries an RFC 2047 encoded-word display name (re #347) so
+	// the assertions below prove the push payload decodes it instead of
+	// leaking the raw header.
+	const rawFrom = `=?utf-8?q?Hans_H=C3=BCbner?= <hans@external.example>`
 	deliverFCMPushTestMessage(t, smtpAddr, email, rawFrom)
 
 	// Assert the fake FCM endpoint received the mail push. The create
@@ -214,12 +217,22 @@ metrics_bind = ""
 		t.Errorf("fake FCM message data.payload = %q; want it to reference the Email state change", m.Data["payload"])
 	}
 
+	// re #347: from is the decoded display name, not the raw RFC 2047
+	// header; fromAddress carries the bare address alongside it.
 	var payload struct {
+		From           string `json:"from"`
+		FromAddress    string `json:"fromAddress"`
 		EmailID        string `json:"emailId"`
 		InboxMailboxID string `json:"inboxMailboxId"`
 	}
 	if err := json.Unmarshal([]byte(m.Data["payload"]), &payload); err != nil {
 		t.Fatalf("decode data.payload: %v: %s", err, m.Data["payload"])
+	}
+	if payload.From != "Hans Hübner" {
+		t.Errorf("payload.from = %q, want decoded display name %q", payload.From, "Hans Hübner")
+	}
+	if payload.FromAddress != "hans@external.example" {
+		t.Errorf("payload.fromAddress = %q, want %q", payload.FromAddress, "hans@external.example")
 	}
 	if payload.EmailID == "" || payload.InboxMailboxID == "" {
 		t.Fatalf("payload missing emailId/inboxMailboxId: %+v", payload)

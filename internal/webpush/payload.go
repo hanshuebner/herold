@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/mail"
 	"strings"
 	"unicode/utf8"
 
@@ -103,7 +104,13 @@ type emailPayload struct {
 	// preview envelope.
 	Kind string `json:"kind"`
 	Type string `json:"type"`
+	// From is the sender's decoded display name (RFC 2047 encoded words
+	// resolved), falling back to the bare address when the header
+	// carries no display name (re #347). Never the raw From header.
 	From string `json:"from,omitempty"`
+	// FromAddress is the sender's bare email address, carried alongside
+	// From so a client can resolve an avatar without re-parsing From.
+	FromAddress string `json:"fromAddress,omitempty"`
 	// Body is the OS notification body text (= email subject). SW reads
 	// payload.body to populate the notification body field; Subject is kept as a
 	// legacy alias.
@@ -142,11 +149,13 @@ func buildEmailPayload(ctx context.Context, st store.Store, ev store.StateChange
 	}
 	subj := truncateUTF8(msg.Envelope.Subject, PayloadCapBytes)
 	msgIDStr := fmt.Sprintf("%d", msg.ID)
+	fromName, fromAddr := firstAddress(msg.Envelope.From)
 	out := emailPayload{
 		stateChangeBase: newStateChangeBase(ev.PrincipalID, "Email", stateValueForKind(ev)),
 		Kind:            "mail",
 		Type:            "email",
-		From:            truncateUTF8(msg.Envelope.From, PayloadCapBytes),
+		From:            truncateUTF8(fromName, PayloadCapBytes),
+		FromAddress:     fromAddr,
 		Body:            subj,
 		Subject:         subj,
 		Mailbox:         mbox.Name,
@@ -427,6 +436,39 @@ func previewCollapseWhitespace(s string) string {
 		prevSpace = false
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// firstAddress parses raw (an RFC 5322 address-list header value, e.g.
+// store.Envelope.From) and returns the first address's decoded display
+// name and bare email address (re #347). RFC 2047 encoded words in the
+// display name are resolved by mail.ParseAddressList / mail.ParseAddress
+// (net/mail runs a mime.WordDecoder over the phrase internally). name
+// falls back to the address when the header carries no display name;
+// both return "" when raw is empty or wholly unparseable, leaving the
+// caller's payload field omitted rather than showing the raw header.
+func firstAddress(raw string) (name, address string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	addrs, err := mail.ParseAddressList(raw)
+	if err != nil || len(addrs) == 0 {
+		// A single malformed-list address (e.g. a bare unquoted display
+		// name with a comma) can still parse as one address; fall back
+		// before giving up entirely.
+		if a, aErr := mail.ParseAddress(raw); aErr == nil {
+			addrs = []*mail.Address{a}
+		}
+	}
+	if len(addrs) == 0 {
+		return "", ""
+	}
+	a := addrs[0]
+	name = a.Name
+	if name == "" {
+		name = a.Address
+	}
+	return name, a.Address
 }
 
 // truncateUTF8 returns s truncated to at most maxBytes bytes, never
