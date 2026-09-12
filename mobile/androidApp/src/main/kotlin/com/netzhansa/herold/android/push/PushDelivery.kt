@@ -5,6 +5,7 @@ import android.util.Log
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.shared.push.MailNotification
 import com.netzhansa.herold.shared.push.PushEnvelope
+import com.netzhansa.herold.shared.push.PushVerification
 import com.netzhansa.herold.shared.push.mailNotification
 import com.netzhansa.herold.shared.sync.SyncTypes
 import kotlinx.coroutines.withTimeoutOrNull
@@ -28,10 +29,20 @@ class PushDelivery(private val context: Context) {
      * user is already looking at the thread, or no session is held.
      */
     suspend fun deliver(data: Map<String, String>): MailNotification? {
-        val envelope = PushEnvelope.fromData(data) ?: return null
         val container = (context.applicationContext as HeroldApplication).container
         container.restore()
         val session = container.session.value
+
+        // The RFC 8620 section 7.2.2 handshake arrives under its own data
+        // key and renders nothing: echoing the code back is what makes
+        // herold deliver anything else to this subscription.
+        PushVerification.fromData(data)?.let { handshake ->
+            val registrar = session?.pushRegistrar ?: return null
+            registrar.confirmVerification(handshake.subscriptionId, handshake.code)
+            return null
+        }
+
+        val envelope = PushEnvelope.fromData(data) ?: return null
 
         val accountId = envelope.accountId
         if (session != null && accountId != null) {

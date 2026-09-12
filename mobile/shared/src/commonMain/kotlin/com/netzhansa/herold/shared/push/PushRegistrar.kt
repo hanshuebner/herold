@@ -7,6 +7,8 @@ import com.netzhansa.herold.shared.jmap.NotificationRules
 import com.netzhansa.herold.shared.jmap.QuietHours
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.PushRegistration
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /** What a registration attempt did. */
 sealed interface RegistrationOutcome {
@@ -87,7 +89,27 @@ class PushRegistrar(
                 registeredAt = now(),
             ),
         )
+        // herold delivers nothing to an unverified subscription (RFC 8620
+        // section 7.2). The code arrives twice: on the created object and,
+        // over the push channel, as a PushVerification handshake. Echo the
+        // one already in hand so delivery does not wait on the ping.
+        outcome.verificationCode?.let { confirmVerification(id, it) }
         return RegistrationOutcome.Registered(id)
+    }
+
+    /**
+     * Echoes a verification code back, which is what makes the
+     * subscription eligible for delivery (RFC 8620 section 7.2.2). Called
+     * with the code the create returned and again when the handshake
+     * arrives over the push channel; both are idempotent.
+     */
+    suspend fun confirmVerification(subscriptionId: String, code: String): Boolean {
+        val id = subscriptionId.ifBlank { store.pushRegistration()?.subscriptionId ?: return false }
+        return runCatching {
+            api.pushSubscriptionSet(
+                update = mapOf(id to buildJsonObject { put("verificationCode", code) }),
+            )
+        }.isSuccess
     }
 
     /**

@@ -37,6 +37,13 @@ object DevInstance {
     /** The TOTP secret scripts/dev-instance.sh prints as ADMIN_TOTP_SECRET. */
     val totpSecret: String? get() = argument("heroldTotpSecret")
 
+    /**
+     * The in-tree fake FCM endpoint every dev instance runs
+     * (`scripts/dev-instance.sh` prints it as FAKEFCM_HTTP_ADDR). Its
+     * GET/DELETE /messages API is how a test reads the pushes herold sent.
+     */
+    val fakeFcmAddr: String get() = argument("heroldFakeFcmAddr") ?: "10.0.2.2:9099"
+
     /** The instance's SMTP listener, for delivering a message to a principal. */
     val smtpAddr: String get() = argument("heroldSmtpAddr") ?: "10.0.2.2:2525"
 

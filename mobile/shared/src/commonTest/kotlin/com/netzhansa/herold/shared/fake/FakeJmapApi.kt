@@ -105,6 +105,12 @@ class FakeJmapApi(
     /** Every `PushSubscription/set` the client made, in order. */
     val pushSetCalls = mutableListOf<Pair<FcmSubscriptionCreate?, List<String>>>()
 
+    /** Every `PushSubscription/set { update }` patch, by subscription id. */
+    val pushUpdateCalls = mutableListOf<Map<String, JsonObject>>()
+
+    /** The verification code the next create is answered with. */
+    var pushVerificationCode: String? = null
+
     /** The id the next create is answered with. */
     var pushSubscriptionId: String = "1"
 
@@ -116,15 +122,23 @@ class FakeJmapApi(
 
     override suspend fun pushSubscriptionSet(
         create: FcmSubscriptionCreate?,
+        update: Map<String, JsonObject>,
         destroy: List<String>,
     ): PushSetOutcome {
         pushSetCalls.add(create to destroy)
+        if (update.isNotEmpty()) pushUpdateCalls.add(update)
         pushFailure?.let { throw it }
         pushRejection?.let {
-            return PushSetOutcome(createdId = null, notCreated = it, destroyed = destroy)
+            return PushSetOutcome(
+                createdId = null,
+                verificationCode = null,
+                notCreated = it,
+                destroyed = destroy,
+            )
         }
         return PushSetOutcome(
             createdId = if (create == null) null else pushSubscriptionId,
+            verificationCode = if (create == null) null else pushVerificationCode,
             notCreated = null,
             destroyed = destroy,
         )

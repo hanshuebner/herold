@@ -4,6 +4,7 @@ import com.netzhansa.herold.shared.fake.FakeJmapApi
 import com.netzhansa.herold.shared.fake.FakeLocalStore
 import com.netzhansa.herold.shared.jmap.JmapException
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -110,6 +111,29 @@ class PushRegistrarTest {
         assertEquals(listOf("7"), api.pushSetCalls.last().second)
         assertNull(api.pushSetCalls.last().first)
         assertNull(store.pushRegistration())
+    }
+
+    @Test
+    fun theVerificationCodeTheCreateReturnedIsEchoedBackAtOnce() = runTest {
+        api.pushSubscriptionId = "7"
+        api.pushVerificationCode = "code-123"
+
+        registrar.register("fcm-token-a")
+
+        val patch = api.pushUpdateCalls.single()
+        assertEquals(setOf("7"), patch.keys)
+        assertEquals("code-123", patch.getValue("7")["verificationCode"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun theHandshakeArrivingOverThePushChannelIsEchoedBackToo() = runTest {
+        api.pushSubscriptionId = "7"
+        registrar.register("fcm-token-a")
+
+        assertTrue(registrar.confirmVerification("7", "code-from-push"))
+
+        val patch = api.pushUpdateCalls.single()
+        assertEquals("code-from-push", patch.getValue("7")["verificationCode"]?.jsonPrimitive?.content)
     }
 
     @Test

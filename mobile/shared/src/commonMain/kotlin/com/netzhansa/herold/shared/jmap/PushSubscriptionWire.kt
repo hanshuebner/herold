@@ -59,6 +59,13 @@ data class FcmSubscriptionCreate(
 /** The outcome of a `PushSubscription/set` call. */
 data class PushSetOutcome(
     val createdId: String?,
+    /**
+     * The RFC 8620 section 7.2 verification code, when herold returned it on
+     * the created object. Echoing it back is what makes the subscription
+     * eligible for delivery; the same code also arrives over the push
+     * channel as a `PushVerification` handshake.
+     */
+    val verificationCode: String?,
     val notCreated: String?,
     val destroyed: List<String>,
 )

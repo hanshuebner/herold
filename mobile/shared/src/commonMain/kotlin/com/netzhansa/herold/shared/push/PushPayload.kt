@@ -87,3 +87,33 @@ data class PushEnvelope(
 
 private fun JsonObject.string(key: String): String? =
     this[key]?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }?.takeIf { it.isNotBlank() }
+
+/**
+ * The RFC 8620 section 7.2.2 `PushVerification` handshake. herold sends it
+ * to a freshly created subscription under its own `verification` data key
+ * and delivers nothing else until the client echoes [code] back
+ * (`internal/webpush/dispatcher.go` sendVerificationPingFCM).
+ */
+data class PushVerification(
+    val subscriptionId: String,
+    val code: String,
+) {
+    companion object {
+        /** The FCM data key the dispatcher puts the handshake under. */
+        const val DATA_KEY = "verification"
+
+        fun parse(text: String): PushVerification? {
+            val root = runCatching { payloadJson.parseToJsonElement(text).jsonObject }.getOrNull()
+                ?: return null
+            if (root.string("@type") != "PushVerification") return null
+            val code = root.string("verificationCode") ?: return null
+            return PushVerification(
+                subscriptionId = root.string("pushSubscriptionId").orEmpty(),
+                code = code,
+            )
+        }
+
+        fun fromData(data: Map<String, String>): PushVerification? =
+            data[DATA_KEY]?.let { parse(it) }
+    }
+}

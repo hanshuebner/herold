@@ -199,11 +199,15 @@ class JmapClient(
      */
     override suspend fun pushSubscriptionSet(
         create: FcmSubscriptionCreate?,
+        update: Map<String, JsonObject>,
         destroy: List<String>,
     ): PushSetOutcome {
         val args = buildJsonObject {
             if (create != null) {
                 putJsonObject("create") { put(PUSH_CREATE_KEY, create.toWire(wireJson)) }
+            }
+            if (update.isNotEmpty()) {
+                putJsonObject("update") { update.forEach { (id, patch) -> put(id, patch) } }
             }
             if (destroy.isNotEmpty()) {
                 putJsonArray("destroy") { destroy.forEach { add(it) } }
@@ -214,6 +218,7 @@ class JmapClient(
         val notCreated = (result["notCreated"] as? JsonObject)?.get(PUSH_CREATE_KEY)?.jsonObject
         return PushSetOutcome(
             createdId = created?.get("id")?.jsonPrimitive?.content,
+            verificationCode = created?.get("verificationCode")?.jsonPrimitive?.content,
             notCreated = notCreated?.let {
                 it["description"]?.jsonPrimitive?.content
                     ?: it["type"]?.jsonPrimitive?.content

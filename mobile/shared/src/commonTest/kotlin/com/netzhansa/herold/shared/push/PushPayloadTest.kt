@@ -85,6 +85,25 @@ class PushPayloadTest {
     }
 
     @Test
+    fun theVerificationHandshakeIsReadFromItsOwnDataKey() {
+        val data = mapOf(
+            "verification" to """{"@type":"PushVerification","pushSubscriptionId":"7",
+                |"verificationCode":"abc123"}""".trimMargin(),
+        )
+        val handshake = PushVerification.fromData(data)!!
+
+        assertEquals("7", handshake.subscriptionId)
+        assertEquals("abc123", handshake.code)
+        // It is not a payload push and renders nothing.
+        assertNull(PushEnvelope.fromData(data))
+    }
+
+    @Test
+    fun aPayloadPushIsNotMistakenForAHandshake() {
+        assertNull(PushVerification.fromData(mapOf("payload" to MAIL_PAYLOAD)))
+    }
+
+    @Test
     fun garbageIsDroppedRatherThanThrown() {
         assertNull(PushEnvelope.parse("not json"))
         assertNull(PushEnvelope.fromData(emptyMap()))
