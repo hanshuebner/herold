@@ -287,6 +287,10 @@ func Run(t *testing.T, f Factory) {
 		// -- Wave 2.5 (REQ-PROTO-53/56/57; REQ-STORE-34/35) --------
 		{"Mailbox_Color_RoundTrip", testMailboxColorRoundTrip},
 		{"Mailbox_Color_RejectsInvalidFormat", testMailboxColorRejectsInvalid},
+		// -- issue #333: category disposition + priority --------------
+		{"Mailbox_DispositionAndPriority_RoundTrip", testMailboxDispositionAndPriorityRoundTrip},
+		{"ReorderMailboxPriority_DenseRenumbering", testReorderMailboxPriorityDenseRenumbering},
+		{"CountPinnedMailboxes", testCountPinnedMailboxes},
 		{"JMAPStates_SieveCounter", testJMAPStatesSieveCounter},
 		// -- REQ-PROTO-49 JMAP snooze ------------------------------
 		{"Snooze_SetGet_Roundtrip", testSnoozeSetGetRoundtrip},

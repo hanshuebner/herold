@@ -220,15 +220,18 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	      VALUES (?, ?, ?, ?, ?)`,
 		2, "reply", 1, nil, int64(2000000))
 
-	// mailboxes
+	// mailboxes — the first row exercises default disposition ('none')
+	// and NULL priority (unranked); the second exercises a non-default
+	// disposition and a set priority (issue #333, migration 0107).
 	exec(`INSERT INTO mailboxes (id, principal_id, parent_id, name, attributes,
 	        uidvalidity, uidnext, highest_modseq, created_at_us, updated_at_us)
 	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, 0, "INBOX", 0, 1, 1, 1, int64(1000000), int64(2000000))
 	exec(`INSERT INTO mailboxes (id, principal_id, parent_id, name, attributes,
-	        uidvalidity, uidnext, highest_modseq, created_at_us, updated_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		2, 1, 1, "Archive", 2, 2, 1, 1, int64(3000000), int64(4000000))
+	        uidvalidity, uidnext, highest_modseq, created_at_us, updated_at_us,
+	        disposition, priority)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, 1, 1, "Archive", 2, 2, 1, 1, int64(3000000), int64(4000000), "pinned", int64(0))
 
 	// blob_refs (seed before messages reference them)
 	exec(`INSERT INTO blob_refs (hash, size, ref_count, last_change_us) VALUES (?, ?, ?, ?)`,

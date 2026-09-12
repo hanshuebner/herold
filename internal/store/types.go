@@ -307,6 +307,45 @@ const (
 	MailboxAttrSubscribed
 )
 
+// MailboxDisposition classifies how a category (a label, modelled as a
+// Mailbox) renders in a client's inbox lanes (ADR-0004,
+// docs/design/web/requirements/05-categorisation.md REQ-CAT-01/04/05/10/11).
+// A multi-category message appears in exactly one lane, decided by the
+// disposition of the highest-priority category it carries.
+type MailboxDisposition string
+
+const (
+	// MailboxDispositionNone is a plain mailbox/label with no special
+	// inbox rendering. The default for every mailbox.
+	MailboxDispositionNone MailboxDisposition = "none"
+	// MailboxDispositionPinned renders as its own inbox tab. At most
+	// five mailboxes per principal may carry this disposition
+	// (REQ-CAT-11); the store does not enforce the limit itself — see
+	// Metadata.CountPinnedMailboxes.
+	MailboxDispositionPinned MailboxDisposition = "pinned"
+	// MailboxDispositionBundled collapses its messages to one summary
+	// row in the inbox.
+	MailboxDispositionBundled MailboxDisposition = "bundled"
+	// MailboxDispositionDaily digests its messages once a day.
+	MailboxDispositionDaily MailboxDisposition = "daily"
+	// MailboxDispositionWeekly digests its messages once a week.
+	MailboxDispositionWeekly MailboxDisposition = "weekly"
+	// MailboxDispositionFiled labels and archives its messages out of
+	// the inbox entirely.
+	MailboxDispositionFiled MailboxDisposition = "filed"
+)
+
+// ValidMailboxDisposition reports whether s is one of the six
+// MailboxDisposition enum values.
+func ValidMailboxDisposition(s MailboxDisposition) bool {
+	switch s {
+	case MailboxDispositionNone, MailboxDispositionPinned, MailboxDispositionBundled,
+		MailboxDispositionDaily, MailboxDispositionWeekly, MailboxDispositionFiled:
+		return true
+	}
+	return false
+}
+
 // Mailbox is a named folder owned by a Principal. Mailboxes form a
 // hierarchy via ParentID; the root has ParentID == 0.
 type Mailbox struct {
@@ -340,6 +379,14 @@ type Mailbox struct {
 	// Lower values sort first; 0 is the default. Clients use this to
 	// reorder the mailbox list independently of the name.
 	SortOrder uint32
+	// Disposition classifies how this label renders in a client's inbox
+	// lanes (issue #333). Defaults to MailboxDispositionNone.
+	Disposition MailboxDisposition
+	// Priority is this mailbox's position in its principal's
+	// user-ordered ranked-label list; lower values rank higher. nil
+	// means unranked. Metadata.ReorderMailboxPriority keeps the set of
+	// non-nil values dense (0..n-1) per principal.
+	Priority *int
 	// CreatedAt is the insert instant.
 	CreatedAt time.Time
 	// UpdatedAt is the instant of the most recent mutation.

@@ -841,7 +841,16 @@ const CurrentBackupVersion = 1
 //	own Junk placement alone when an upstream \Deleted is later seen in
 //	the folder that nominally mapped to INBOX. No new table;
 //	IMAPImportMessageStateRow gains the one field.
-const CurrentSchemaVersion = 106
+//
+// 107 — 0107_mailbox_disposition_priority.sql (issue #333, ADR-0004,
+//
+//	REQ-CAT-01..11). Adds mailboxes.disposition (text, default 'none':
+//	none/pinned/bundled/daily/weekly/filed, validated by
+//	store.ValidMailboxDisposition) and mailboxes.priority (integer,
+//	nullable, NULL meaning unranked). priority is kept a dense
+//	sequence per principal by store.Metadata.ReorderMailboxPriority.
+//	No new table; MailboxRow gains the two fields.
+const CurrentSchemaVersion = 107
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

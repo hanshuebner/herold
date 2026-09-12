@@ -219,6 +219,12 @@ type MailboxRow struct {
 	HighestModSeq int64  `json:"highest_modseq"`
 	CreatedAtUs   int64  `json:"created_at_us"`
 	UpdatedAtUs   int64  `json:"updated_at_us"`
+	// Disposition is the category rendering hint (issue #333, migration
+	// 0107): none/pinned/bundled/daily/weekly/filed.
+	Disposition string `json:"disposition"`
+	// Priority is the mailbox's rank in its principal's ranked-label
+	// list; nil means unranked (migration 0107).
+	Priority *int64 `json:"priority,omitempty"`
 }
 
 // MessageRow mirrors the messages table after migration 0024 removed the

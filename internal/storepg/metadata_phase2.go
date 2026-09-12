@@ -1444,7 +1444,7 @@ func (m *metadata) ListMailboxesAccessibleBy(ctx context.Context, pid store.Prin
 	mbRows, err := m.s.pool.Query(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes,
 		       uidvalidity, uidnext, highest_modseq, created_at_us,
-		       updated_at_us, color_hex, sort_order
+		       updated_at_us, color_hex, sort_order, disposition, priority
 		  FROM mailboxes WHERE id = ANY($1)
 		 ORDER BY name ASC`,
 		idArgs)

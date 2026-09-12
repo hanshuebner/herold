@@ -1311,6 +1311,33 @@ type Metadata interface {
 	// ErrNotFound when the mailbox has been deleted.
 	SetMailboxColor(ctx context.Context, mailboxID MailboxID, color *string) error
 
+	// SetMailboxDisposition updates the Mailbox.Disposition category
+	// property (issue #333, ADR-0004). disposition must satisfy
+	// ValidMailboxDisposition or the call returns ErrInvalidArgument.
+	// Returns ErrNotFound when the mailbox has been deleted. Appends an
+	// (EntityKindMailbox, ChangeOpUpdated) change-feed entry. Enforcing
+	// the five-pinned limit (REQ-CAT-11) and the system-mailbox rule is
+	// the caller's job — see CountPinnedMailboxes.
+	SetMailboxDisposition(ctx context.Context, mailboxID MailboxID, disposition MailboxDisposition) error
+
+	// ReorderMailboxPriority assigns mailboxID the rank newRank within
+	// its principal's ranked-label list, or unranks it when newRank is
+	// nil, and renumbers every other ranked label of the same principal
+	// densely from 0 in the same transaction (issue #333). newRank is
+	// clamped to [0, n] where n is the count of ranked labels excluding
+	// mailboxID; passing a value that already matches the mailbox's
+	// current rank is a no-op renumbering pass. Returns ErrNotFound
+	// when the mailbox has been deleted. Appends an
+	// (EntityKindMailbox, ChangeOpUpdated) change-feed entry for every
+	// mailbox whose Priority value actually changes.
+	ReorderMailboxPriority(ctx context.Context, principalID PrincipalID, mailboxID MailboxID, newRank *int) error
+
+	// CountPinnedMailboxes returns the number of mailboxes owned by
+	// principalID whose Disposition is MailboxDispositionPinned, for
+	// the five-pinned rule (REQ-CAT-11). Enforcement of the limit is
+	// the caller's job (the JMAP layer's Mailbox/set handler).
+	CountPinnedMailboxes(ctx context.Context, principalID PrincipalID) (int, error)
+
 	// GetSieveScript returns the active Sieve script text for pid, or
 	// ("", nil) when no script is on record (the interpreter then
 	// falls back to implicit keep). An I/O error on the backend is

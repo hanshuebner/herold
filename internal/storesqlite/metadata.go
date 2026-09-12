@@ -908,18 +908,30 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 			return store.Mailbox{}, fmt.Errorf("color %q: %w", *mb.Color, store.ErrInvalidArgument)
 		}
 	}
+	if mb.Disposition == "" {
+		mb.Disposition = store.MailboxDispositionNone
+	}
+	if !store.ValidMailboxDisposition(mb.Disposition) {
+		return store.Mailbox{}, fmt.Errorf("disposition %q: %w", mb.Disposition, store.ErrInvalidArgument)
+	}
 	var id int64
 	err := m.runTx(ctx, func(tx *sql.Tx) error {
 		var color any
 		if mb.Color != nil {
 			color = *mb.Color
 		}
+		var priority any
+		if mb.Priority != nil {
+			priority = int64(*mb.Priority)
+		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO mailboxes (principal_id, parent_id, name, attributes, uidvalidity,
-			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex, sort_order)
-			VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)`,
+			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex, sort_order,
+			  disposition, priority)
+			VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)`,
 			int64(mb.PrincipalID), int64(mb.ParentID), mb.Name, int64(mb.Attributes),
-			int64(mb.UIDValidity), usMicros(now), usMicros(now), color, int64(mb.SortOrder))
+			int64(mb.UIDValidity), usMicros(now), usMicros(now), color, int64(mb.SortOrder),
+			string(mb.Disposition), priority)
 		if err != nil {
 			return fmt.Errorf("mailbox %q: %w", mb.Name, mapErr(err))
 		}
@@ -950,7 +962,8 @@ func (m *metadata) InsertMailbox(ctx context.Context, mb store.Mailbox) (store.M
 func (m *metadata) GetMailboxByID(ctx context.Context, id store.MailboxID) (store.Mailbox, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order,
+		       disposition, priority
 		  FROM mailboxes WHERE id = ?`, int64(id))
 	return scanMailbox(row)
 }
@@ -966,7 +979,10 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 	var createdUs, updatedUs int64
 	var color sql.NullString
 	var sortOrder int64
-	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs, &color, &sortOrder)
+	var disposition string
+	var priority sql.NullInt64
+	err := row.Scan(&id, &pid, &parent, &mb.Name, &attrs, &uidv, &uidn, &hm, &createdUs, &updatedUs,
+		&color, &sortOrder, &disposition, &priority)
 	if err != nil {
 		return store.Mailbox{}, mapErr(err)
 	}
@@ -984,13 +1000,19 @@ func scanMailbox(row rowLike) (store.Mailbox, error) {
 		v := color.String
 		mb.Color = &v
 	}
+	mb.Disposition = store.MailboxDisposition(disposition)
+	if priority.Valid {
+		v := int(priority.Int64)
+		mb.Priority = &v
+	}
 	return mb, nil
 }
 
 func (m *metadata) ListMailboxes(ctx context.Context, principalID store.PrincipalID) ([]store.Mailbox, error) {
 	rows, err := m.s.db.QueryContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order,
+		       disposition, priority
 		  FROM mailboxes WHERE principal_id = ? ORDER BY name`, int64(principalID))
 	if err != nil {
 		return nil, mapErr(err)
@@ -3582,7 +3604,8 @@ func (m *metadata) AppendAuditLog(ctx context.Context, entry store.AuditLogEntry
 func (m *metadata) GetMailboxByName(ctx context.Context, pid store.PrincipalID, name string) (store.Mailbox, error) {
 	row := m.s.db.QueryRowContext(ctx, `
 		SELECT id, principal_id, parent_id, name, attributes, uidvalidity, uidnext,
-		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order
+		       highest_modseq, created_at_us, updated_at_us, color_hex, sort_order,
+		       disposition, priority
 		  FROM mailboxes WHERE principal_id = ? AND name = ?`,
 		int64(pid), name)
 	return scanMailbox(row)
@@ -4070,6 +4093,183 @@ func (m *metadata) SetMailboxColor(ctx context.Context, mailboxID store.MailboxI
 		}
 		return nil
 	})
+}
+
+// SetMailboxDisposition implements store.Metadata.SetMailboxDisposition
+// (issue #333, ADR-0004): validates the enum, updates the column, and
+// appends an (EntityKindMailbox, ChangeOpUpdated) change-feed entry so
+// Mailbox/changes reports the new disposition.
+func (m *metadata) SetMailboxDisposition(ctx context.Context, mailboxID store.MailboxID, disposition store.MailboxDisposition) error {
+	if !store.ValidMailboxDisposition(disposition) {
+		return fmt.Errorf("disposition %q: %w", disposition, store.ErrInvalidArgument)
+	}
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var pid int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE mailboxes SET disposition = ?, updated_at_us = ? WHERE id = ?`,
+			string(disposition), usMicros(now), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("storesqlite: rows affected: %w", err)
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindMailbox, uint64(mailboxID), 0, store.ChangeOpUpdated, now)
+	})
+}
+
+// mailboxPriorityEntry is one row of the principal's ranked-label list
+// as tracked by ReorderMailboxPriority: an id and its priority (old or
+// intended new value, depending on context).
+type mailboxPriorityEntry struct {
+	id  int64
+	pri int64
+}
+
+// ReorderMailboxPriority implements store.Metadata.ReorderMailboxPriority
+// (issue #333, REQ-CAT-10). It reads the principal's current ranked
+// labels (priority IS NOT NULL, excluding mailboxID), computes the
+// target dense ordering, and writes back only the rows whose priority
+// value actually changes -- each such write appends an
+// (EntityKindMailbox, ChangeOpUpdated) change-feed entry in the same
+// transaction, so JMAP Mailbox/changes reports every mailbox whose rank
+// moved.
+func (m *metadata) ReorderMailboxPriority(ctx context.Context, principalID store.PrincipalID, mailboxID store.MailboxID, newRank *int) error {
+	now := m.s.clock.Now().UTC()
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		var pid int64
+		var curPriority sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id, priority FROM mailboxes WHERE id = ?`, int64(mailboxID)).
+			Scan(&pid, &curPriority); err != nil {
+			return mapErr(err)
+		}
+		if store.PrincipalID(pid) != principalID {
+			return store.ErrNotFound
+		}
+
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id, priority FROM mailboxes
+			   WHERE principal_id = ? AND priority IS NOT NULL AND id != ?
+			  ORDER BY priority ASC, id ASC`,
+			int64(principalID), int64(mailboxID))
+		if err != nil {
+			return mapErr(err)
+		}
+		var others []mailboxPriorityEntry
+		for rows.Next() {
+			var e mailboxPriorityEntry
+			if err := rows.Scan(&e.id, &e.pri); err != nil {
+				rows.Close()
+				return mapErr(err)
+			}
+			others = append(others, e)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return mapErr(err)
+		}
+		rows.Close()
+
+		var curPtr *int64
+		if curPriority.Valid {
+			v := curPriority.Int64
+			curPtr = &v
+		}
+
+		otherIDs := make([]int64, len(others))
+		for i, o := range others {
+			otherIDs[i] = o.id
+		}
+
+		// idsFinal is the target dense ordering: others with mailboxID
+		// inserted at the clamped position, or omitted entirely when
+		// unranking. Every entry (including the untouched ones) is
+		// walked below so a removal from the middle renumbers the
+		// labels that shift down, not just an insertion.
+		var idsFinal []int64
+		if newRank == nil {
+			idsFinal = otherIDs
+		} else {
+			pos := *newRank
+			if pos < 0 {
+				pos = 0
+			}
+			if pos > len(others) {
+				pos = len(others)
+			}
+			idsFinal = make([]int64, 0, len(others)+1)
+			idsFinal = append(idsFinal, otherIDs[:pos]...)
+			idsFinal = append(idsFinal, int64(mailboxID))
+			idsFinal = append(idsFinal, otherIDs[pos:]...)
+		}
+
+		oldOf := make(map[int64]*int64, len(others)+1)
+		for _, o := range others {
+			v := o.pri
+			oldOf[o.id] = &v
+		}
+		oldOf[int64(mailboxID)] = curPtr
+
+		type change struct {
+			id        int64
+			hasNewPri bool
+			newPri    int64
+		}
+		var changes []change
+		for i, id := range idsFinal {
+			np := int64(i)
+			old := oldOf[id]
+			if old != nil && *old == np {
+				continue
+			}
+			changes = append(changes, change{id: id, hasNewPri: true, newPri: np})
+		}
+		if newRank == nil && curPtr != nil {
+			changes = append(changes, change{id: int64(mailboxID), hasNewPri: false})
+		}
+
+		for _, c := range changes {
+			var v any
+			if c.hasNewPri {
+				v = c.newPri
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE mailboxes SET priority = ?, updated_at_us = ? WHERE id = ?`,
+				v, usMicros(now), c.id); err != nil {
+				return mapErr(err)
+			}
+			if err := appendStateChange(ctx, tx, principalID,
+				store.EntityKindMailbox, uint64(c.id), 0, store.ChangeOpUpdated, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// CountPinnedMailboxes implements store.Metadata.CountPinnedMailboxes
+// (REQ-CAT-11): the count of principalID's mailboxes whose disposition
+// is MailboxDispositionPinned.
+func (m *metadata) CountPinnedMailboxes(ctx context.Context, principalID store.PrincipalID) (int, error) {
+	var n int
+	err := m.s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailboxes WHERE principal_id = ? AND disposition = ?`,
+		int64(principalID), string(store.MailboxDispositionPinned)).Scan(&n)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
 }
 
 // validMailboxColor reports whether s matches the JMAP Mailbox.color
