@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The shared core's Android half declares what its platform actuals
+     need: the connectivity monitor reads the default network, which is
+     what drives the outbox drain and the offline chip
+     (docs/design/android/requirements/02-offline-and-sync.md
+     REQ-AND-SYNC-30/31). androidApp declares the same permission for
+     itself; a library manifest is what makes lint see it here. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>
