@@ -281,6 +281,22 @@ class JmapClient(
         call("BlockedSender/set", args, listOf(Capability.CORE, Capability.MANAGED_RULES))
     }
 
+    override suspend fun sieveScript(accountId: String): String? {
+        if (!session().hasCapability(Capability.SIEVE)) return null
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("ids", JsonPrimitive(null as String?))
+        }
+        val result = call("Sieve/get", args, listOf(Capability.CORE, Capability.SIEVE))
+        val row = (result["list"] as? JsonArray)?.firstOrNull()?.jsonObject ?: return null
+        val blobId = row["blobId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val name = row["name"]?.jsonPrimitive?.contentOrNull ?: "sieve"
+        val blob = runCatching {
+            downloadBlob(accountId, blobId, "application/sieve", name)
+        }.getOrNull() ?: return null
+        return blob.bytes.decodeToString()
+    }
+
     override suspend fun llmTransparency(accountId: String): WireLlmTransparency? {
         if (!session().hasCapability(Capability.LLM_TRANSPARENCY)) return null
         val args = buildJsonObject {

@@ -34,6 +34,7 @@ import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.auth.IdlePeriod
 import com.netzhansa.herold.android.auth.UnlockController
 import com.netzhansa.herold.android.push.PushTransportChoice
+import com.netzhansa.herold.shared.llm.TransparencyText
 import kotlinx.coroutines.launch
 
 /**
@@ -47,6 +48,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     unlock: UnlockController,
     onSessions: () -> Unit,
+    onTransparency: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -172,6 +174,21 @@ fun SettingsScreen(
                 Text(text = "Sessions", modifier = Modifier.weight(1f))
                 Text(
                     text = "Where this account is signed in",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onTransparency)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .testTag("settings-transparency"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = TransparencyText.TITLE, modifier = Modifier.weight(1f))
+                Text(
+                    text = "Prompts, categories and models",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -14,6 +14,7 @@ object Capability {
     const val MAIL = "urn:ietf:params:jmap:mail"
     const val SUBMISSION = "urn:ietf:params:jmap:submission"
     const val SNOOZE = "urn:ietf:params:jmap:mail:snooze"
+    const val SIEVE = "urn:ietf:params:jmap:sieve"
     const val CATEGORISE = "https://netzhansa.com/jmap/categorise"
     const val SUB_ACCOUNTS = "https://netzhansa.com/jmap/sub-accounts"
     const val PUSH = "https://netzhansa.com/jmap/push"

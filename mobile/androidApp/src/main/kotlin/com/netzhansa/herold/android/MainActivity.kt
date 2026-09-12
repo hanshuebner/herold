@@ -34,11 +34,14 @@ import androidx.navigation.navArgument
 import com.netzhansa.herold.android.auth.LockScreen
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.android.ui.compose.ComposeScreen
+import com.netzhansa.herold.android.ui.filters.FilterEditorScreen
+import com.netzhansa.herold.android.ui.filters.FiltersScreen
 import com.netzhansa.herold.android.ui.inbox.InboxScreen
 import com.netzhansa.herold.android.ui.outbox.OutboxScreen
 import com.netzhansa.herold.android.ui.search.SearchScreen
 import com.netzhansa.herold.android.ui.settings.SessionsScreen
 import com.netzhansa.herold.android.ui.settings.SettingsScreen
+import com.netzhansa.herold.android.ui.settings.TransparencyScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.ui.theme.HeroldTheme
@@ -156,6 +159,13 @@ fun HeroldApp(
 
         else -> {
             val navController = rememberNavController()
+            // Filters and the transparency page are per principal: the
+            // scoped account when the user picked one, the primary
+            // otherwise (suite REQ-MAIL-SUB-02).
+            val accounts by container.store.accounts().collectAsStateSafely(emptyList())
+            val scoped by container.accountScope.collectAsStateSafely(null)
+            val filterAccount = scoped ?: accounts.firstOrNull { it.isPrimary }?.id ?: ""
+
             ForegroundSync(session = current)
             PushEngagement(container = container, session = current)
 
@@ -196,6 +206,7 @@ fun HeroldApp(
                         onSearch = { navController.navigate("search") },
                         onOutbox = { navController.navigate("outbox") },
                         onSettings = { navController.navigate("settings") },
+                        onFilters = { navController.navigate("filters") },
                         onSignOut = { scope.launch { container.signOut() } },
                     )
                 }
@@ -203,6 +214,7 @@ fun HeroldApp(
                     SettingsScreen(
                         unlock = container.unlock,
                         onSessions = { navController.navigate("sessions") },
+                        onTransparency = { navController.navigate("transparency") },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -281,7 +293,89 @@ fun HeroldApp(
                             val account = entry.arguments?.getString("accountId").orEmpty()
                             navController.navigate("compose/${mode.name}/$account/$emailId")
                         },
+                        onCreateFilter = { fromEmail, subject ->
+                            val account = entry.arguments?.getString("accountId").orEmpty()
+                            container.filterSeed.value = FilterSeed(account, fromEmail, subject)
+                            navController.navigate("filter-new/$account")
+                        },
+                        onComposeTo = { to, subject, body ->
+                            container.composePrefill.value = ComposePrefill(to, subject, body)
+                            navController.navigate("compose-unsubscribe")
+                        },
                         onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("filters") {
+                    FiltersScreen(
+                        container = container,
+                        session = current,
+                        accountId = filterAccount,
+                        onEdit = { ruleId ->
+                            navController.navigate("filter-edit/${filterAccount}/$ruleId")
+                        },
+                        onCreate = {
+                            container.filterSeed.value = null
+                            navController.navigate("filter-new/${filterAccount}")
+                        },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    route = "filter-new/{accountId}",
+                    arguments = listOf(navArgument("accountId") { type = NavType.StringType }),
+                ) { entry ->
+                    val account = entry.arguments?.getString("accountId").orEmpty()
+                    val seed = container.filterSeed.value?.takeIf { it.accountId == account }
+                    FilterEditorScreen(
+                        container = container,
+                        session = current,
+                        accountId = account,
+                        ruleId = null,
+                        seedFrom = seed?.fromEmail,
+                        seedSubject = seed?.subject,
+                        onClose = {
+                            container.filterSeed.value = null
+                            navController.popBackStack()
+                        },
+                    )
+                }
+                composable(
+                    route = "filter-edit/{accountId}/{ruleId}",
+                    arguments = listOf(
+                        navArgument("accountId") { type = NavType.StringType },
+                        navArgument("ruleId") { type = NavType.StringType },
+                    ),
+                ) { entry ->
+                    FilterEditorScreen(
+                        container = container,
+                        session = current,
+                        accountId = entry.arguments?.getString("accountId").orEmpty(),
+                        ruleId = entry.arguments?.getString("ruleId"),
+                        seedFrom = null,
+                        seedSubject = null,
+                        onClose = { navController.popBackStack() },
+                    )
+                }
+                composable("transparency") {
+                    TransparencyScreen(
+                        session = current,
+                        accountId = filterAccount,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("compose-unsubscribe") {
+                    ComposeScreen(
+                        container = container,
+                        session = current,
+                        mode = ComposeMode.NEW,
+                        accountId = null,
+                        parentEmailId = null,
+                        accountScope = container.accountScope.value,
+                        onClose = {
+                            container.composePrefill.value = null
+                            navController.popBackStack()
+                        },
+                        prefill = container.composePrefill.value,
                     )
                 }
             }

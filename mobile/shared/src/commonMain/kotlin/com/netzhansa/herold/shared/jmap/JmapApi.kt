@@ -137,6 +137,13 @@ interface JmapApi {
     suspend fun blockedSenderSet(accountId: String, address: String)
 
     /**
+     * The principal's hand-written Sieve script (`Sieve/get` plus the
+     * blob download, RFC 9007 section 2.1), or null when there is none.
+     * The phone shows it read-only; the suite is where it is edited.
+     */
+    suspend fun sieveScript(accountId: String): String?
+
+    /**
      * `LLMTransparency/get`, the account's singleton; null when the server
      * does not advertise the capability.
      */

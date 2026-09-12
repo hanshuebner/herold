@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.netzhansa.herold.android.AppContainer
+import com.netzhansa.herold.android.ComposePrefill
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.media.ImageSize
@@ -112,6 +113,8 @@ fun ComposeScreen(
     onClose: () -> Unit,
     /** A send taken back within its undo window, reopened as it was (issue #354). */
     resume: ComposePayload? = null,
+    /** Recipient, subject and body a caller chose, as a `mailto:` names them. */
+    prefill: ComposePrefill? = null,
 ) {
     val identities by container.store.identities().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
@@ -155,10 +158,20 @@ fun ComposeScreen(
         } else {
             null
         }
-        state = if (parent != null && mode != ComposeMode.NEW) {
+        val opened = if (parent != null && mode != ComposeMode.NEW) {
             session.composer.openFrom(mode, parent, identities, accounts, formatQuoteDate(parent.receivedAt))
         } else {
             session.composer.openNew(identities, accounts, accountScope ?: accountId)
+        }
+        state = if (prefill == null) {
+            opened
+        } else {
+            toText = prefill.to
+            opened.copy(
+                to = listOf(MailAddress(email = prefill.to)),
+                subject = prefill.subject,
+                bodyHtml = HtmlText.toHtml(prefill.body),
+            )
         }
     }
 

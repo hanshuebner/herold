@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android
 
 import android.content.Context
+import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
 import com.netzhansa.herold.shared.actions.UndoCenter
 import com.netzhansa.herold.shared.compose.AddressBook
@@ -22,11 +23,13 @@ import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
 import com.netzhansa.herold.android.work.OutboxWorker
 import com.netzhansa.herold.shared.jmap.JmapClient
+import com.netzhansa.herold.shared.llm.Transparency
 import com.netzhansa.herold.shared.outbox.ComposePayload
 import com.netzhansa.herold.shared.outbox.FileBlobSpool
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import com.netzhansa.herold.shared.push.PushRegistrar
+import com.netzhansa.herold.shared.mail.UnsubscribeClient
 import com.netzhansa.herold.shared.search.MailSearch
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
@@ -72,6 +75,12 @@ class SessionScope(
      */
     val requestDrain: (delayMs: Long) -> Unit,
     val actions: MailActions,
+    /** Filter-rule writes: the filters screen, mute and block (suite REQ-FLT-20). */
+    val filters: FilterActions,
+    /** The RFC 8058 one-click POST, off the session's own client (REQ-UNS-20). */
+    val unsubscribe: UnsubscribeClient,
+    /** The prompts, the models and the per-message classifier detail (suite G7). */
+    val transparency: Transparency,
     val eventSource: EventSourceClient,
     val imageProxy: ImageProxyClient,
     val pushRegistrar: PushRegistrar,
@@ -81,6 +90,18 @@ class SessionScope(
     /** The account's active sessions and grants (REQ-AND-AUTH-22). */
     val credentials: CredentialsClient,
 )
+
+/**
+ * Recipient, subject and body a caller hands the composer: what a
+ * `mailto:` unsubscribe URI names (REQ-UNS-22).
+ */
+data class ComposePrefill(val to: String, val subject: String, val body: String)
+
+/**
+ * The message "Create filter from this message" was invoked on, waiting
+ * for the editor to open on it (suite REQ-FLT-32).
+ */
+data class FilterSeed(val accountId: String, val fromEmail: String, val subject: String)
 
 /** Where the sign-in screen is in the authorization-code flow. */
 sealed interface SignInState {
@@ -136,6 +157,15 @@ class AppContainer(context: Context) {
      * the shell to reopen the composer on it (issue #354).
      */
     val composeResume = MutableStateFlow<ComposePayload?>(null)
+
+    /**
+     * A compose a `mailto:` unsubscribe asked for, waiting for the shell
+     * to open the composer on it (REQ-UNS-22).
+     */
+    val composePrefill = MutableStateFlow<ComposePrefill?>(null)
+
+    /** What the filter editor opens with when a message seeded it. */
+    val filterSeed = MutableStateFlow<FilterSeed?>(null)
 
     /** The platform's connectivity, which drives the drain and the chip. */
     private val connectivity = AndroidConnectivityMonitor(context.applicationContext, appScope)
@@ -384,6 +414,11 @@ class AppContainer(context: Context) {
             drainer = drainer,
             requestDrain = requestDrain,
             actions = MailActions(store, outbox) { requestDrain(0) },
+            filters = FilterActions(store, outbox) { requestDrain(0) },
+            // The unsubscribe POST goes out on the plain client: no auth
+            // plugin, no cookie storage, nothing of the account on it.
+            unsubscribe = UnsubscribeClient(httpClient),
+            transparency = Transparency(client),
             eventSource = EventSourceClient(httpClient, client),
             imageProxy = ImageProxyClient(httpClient, client),
             pushRegistrar = PushRegistrar(

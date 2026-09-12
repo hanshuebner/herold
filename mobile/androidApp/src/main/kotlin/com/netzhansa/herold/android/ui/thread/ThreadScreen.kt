@@ -24,10 +24,14 @@ import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -76,7 +80,11 @@ import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
+import com.netzhansa.herold.shared.mail.ListHeaders
+import com.netzhansa.herold.shared.mail.UnsubscribeMessages
+import com.netzhansa.herold.shared.mail.UnsubscribeOffer
 import com.netzhansa.herold.shared.push.MailNotification
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -100,10 +108,15 @@ fun ThreadScreen(
     accountId: String,
     threadId: String,
     onCompose: (mode: ComposeMode, emailId: String) -> Unit,
+    /** Opens the filter editor seeded from a message (suite REQ-FLT-32). */
+    onCreateFilter: (fromEmail: String, subject: String) -> Unit,
+    /** Opens the composer on a `mailto:` unsubscribe (REQ-UNS-22). */
+    onComposeTo: (to: String, subject: String, body: String) -> Unit,
     onBack: () -> Unit,
 ) {
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
+    val rules by container.store.managedRules().collectAsStateSafely(emptyList())
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -113,6 +126,9 @@ fun ThreadScreen(
     var fetching by remember { mutableStateOf(false) }
     var unavailable by remember { mutableStateOf(false) }
     var viewing by remember { mutableStateOf<Attachment?>(null) }
+    var inspecting by remember { mutableStateOf<String?>(null) }
+    var blocking by remember { mutableStateOf<String?>(null) }
+    var unsubscribing by remember { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
 
     // What an image is decoded for: the column it is drawn in, never its
@@ -150,6 +166,16 @@ fun ThreadScreen(
     // (suite REQ-SNZ-12): the indicator states it and offers the edit and
     // the cancel.
     val snoozedUntil = messages.firstNotNullOfOrNull { it.snoozedUntil }
+
+    /** The address a block and a seeded filter act on. */
+    val newestSender = messages.lastOrNull()?.fromEmail.orEmpty()
+
+    /**
+     * The conversation's unsubscribe mechanism, from the newest message
+     * that advertises one (REQ-UNS-11): the affordance belongs to the
+     * thread even though the header is per message.
+     */
+    val offer = UnsubscribeOffer.of(messages)
 
     val newest = messages.lastOrNull()
     LaunchedEffect(newest?.id) {
@@ -216,6 +242,22 @@ fun ThreadScreen(
                     ) {
                         Icon(Icons.Filled.Archive, contentDescription = "Archive")
                     }
+                    ThreadOverflow(
+                        muted = rules.any { FilterActions.isThreadMuteRule(it, threadId) },
+                        sender = newestSender,
+                        onMute = { muted ->
+                            scope.launch {
+                                session.filters.setMuted(accountId, threadId, muted)
+                                snackbar.showSnackbar(if (muted) "Conversation muted" else "Conversation unmuted")
+                            }
+                        },
+                        onBlock = { blocking = newestSender },
+                        onCreateFilter = {
+                            val newest = messages.lastOrNull()
+                            onCreateFilter(newest?.fromEmail.orEmpty(), newest?.subject.orEmpty())
+                        },
+                        onInspect = { inspecting = (messages.lastOrNull { it.id == expandedId } ?: messages.lastOrNull())?.id },
+                    )
                 },
             )
         },
@@ -226,6 +268,40 @@ fun ThreadScreen(
                 wakeAt = wakeAt,
                 onEdit = { snoozing = true },
                 onCancel = { scope.launch { session.actions.unsnooze(messages) } },
+            )
+        }
+        offer?.let { current ->
+            UnsubscribeBar(
+                busy = unsubscribing,
+                onClick = {
+                    when (val mechanism = current.mechanism) {
+                        is ListHeaders.Mechanism.OneClick -> scope.launch {
+                            // REQ-UNS-30: no confirmation; that is the
+                            // point of RFC 8058.
+                            unsubscribing = true
+                            val result = session.unsubscribe.postOneClick(mechanism.url)
+                            unsubscribing = false
+                            snackbar.showSnackbar(
+                                if (result.ok) {
+                                    UnsubscribeMessages.success(current.senderDisplay)
+                                } else {
+                                    UnsubscribeMessages.FAILED
+                                },
+                            )
+                        }
+
+                        is ListHeaders.Mechanism.Https -> openInBrowser(context, mechanism.url)
+
+                        is ListHeaders.Mechanism.Mailto -> {
+                            val fields = ListHeaders.parseMailto(mechanism.url)
+                            onComposeTo(fields.to, fields.subject, fields.body)
+                        }
+
+                        is ListHeaders.Mechanism.HttpOnly -> scope.launch {
+                            snackbar.showSnackbar(UnsubscribeMessages.CLEARTEXT)
+                        }
+                    }
+                },
             )
         }
         ReplyBar(
@@ -305,6 +381,36 @@ fun ThreadScreen(
         )
     }
 
+    inspecting?.let { id ->
+        LlmInspectSheet(
+            session = session,
+            accountId = accountId,
+            emailId = id,
+            onDismiss = { inspecting = null },
+        )
+    }
+
+    blocking?.let { address ->
+        AlertDialog(
+            onDismissRequest = { blocking = null },
+            title = { Text("Block $address?") },
+            text = { Text("Mail from this sender goes straight to Trash. You can undo this in Filters.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        blocking = null
+                        scope.launch {
+                            session.filters.blockSender(accountId, address)
+                            snackbar.showSnackbar("Blocked $address")
+                        }
+                    },
+                    modifier = Modifier.testTag("thread-block-confirm"),
+                ) { Text("Block") }
+            },
+            dismissButton = { TextButton(onClick = { blocking = null }) { Text("Cancel") } },
+        )
+    }
+
     if (snoozing) {
         SnoozeSheet(
             onDismiss = { snoozing = false },
@@ -321,6 +427,93 @@ fun ThreadScreen(
                     }
                 }
             },
+        )
+    }
+}
+
+/**
+ * The conversation's overflow: the organise actions that are not worth a
+ * toolbar slot - mute, block, a filter seeded from the message, and what
+ * the classifier made of it (suite REQ-MAIL-136/138, G7).
+ */
+@Composable
+private fun ThreadOverflow(
+    muted: Boolean,
+    sender: String,
+    onMute: (Boolean) -> Unit,
+    onBlock: () -> Unit,
+    onCreateFilter: () -> Unit,
+    onInspect: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    IconButton(onClick = { open = true }, modifier = Modifier.testTag("thread-overflow")) {
+        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+    }
+    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenuItem(
+            text = { Text(if (muted) "Unmute conversation" else "Mute conversation") },
+            onClick = {
+                open = false
+                onMute(!muted)
+            },
+            modifier = Modifier.testTag("thread-mute"),
+        )
+        DropdownMenuItem(
+            text = { Text("Block $sender") },
+            onClick = {
+                open = false
+                onBlock()
+            },
+            enabled = sender.isNotBlank(),
+            modifier = Modifier.testTag("thread-block"),
+        )
+        DropdownMenuItem(
+            text = { Text("Create filter from this message") },
+            onClick = {
+                open = false
+                onCreateFilter()
+            },
+            modifier = Modifier.testTag("thread-create-filter"),
+        )
+        DropdownMenuItem(
+            text = { Text("Why is this here?") },
+            onClick = {
+                open = false
+                onInspect()
+            },
+            modifier = Modifier.testTag("thread-why"),
+        )
+    }
+}
+
+/**
+ * The Unsubscribe affordance, between the subject and the action bar
+ * (REQ-UNS-10). It is present whenever the conversation advertises a
+ * mechanism, including a cleartext one, which on tap surfaces the refusal
+ * rather than opening it (REQ-UNS-03/04).
+ */
+@Composable
+private fun UnsubscribeBar(busy: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(
+            onClick = onClick,
+            enabled = !busy,
+            modifier = Modifier.testTag("thread-unsubscribe"),
+        ) {
+            Text(UnsubscribeMessages.BUTTON)
+        }
+    }
+}
+
+/** Hands an unsubscribe URL to the browser; the phone never renders it. */
+private fun openInBrowser(context: android.content.Context, url: String) {
+    runCatching {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 }

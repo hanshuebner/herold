@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
@@ -106,6 +107,7 @@ fun InboxScreen(
     onSearch: () -> Unit,
     onOutbox: () -> Unit,
     onSettings: () -> Unit,
+    onFilters: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
@@ -209,6 +211,16 @@ fun InboxScreen(
                         onOutbox()
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-outbox"),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Filters") },
+                    selected = false,
+                    icon = { Icon(Icons.Filled.FilterList, contentDescription = null) },
+                    onClick = {
+                        scope.launch { drawer.close() }
+                        onFilters()
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-filters"),
                 )
                 NavigationDrawerItem(
                     label = { Text("Settings") },

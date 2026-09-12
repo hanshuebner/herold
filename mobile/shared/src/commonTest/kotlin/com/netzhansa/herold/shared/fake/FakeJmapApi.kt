@@ -60,6 +60,7 @@ class FakeJmapApi(
     /** What a `ManagedRule/set` answers; refusals go in its `errors`. */
     var ruleSetOutcome: RuleSetOutcome = RuleSetOutcome()
 
+    var sieve: String? = null
     var transparency: WireLlmTransparency? = null
     var inspect: List<WireLlmInspect> = emptyList()
 
@@ -113,6 +114,8 @@ class FakeJmapApi(
         setFailure?.let { throw it }
         blockedSenderCalls.add(address)
     }
+
+    override suspend fun sieveScript(accountId: String): String? = sieve
 
     override suspend fun llmTransparency(accountId: String): WireLlmTransparency? = transparency
 
