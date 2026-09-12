@@ -73,6 +73,54 @@ class MailActionsTest {
     }
 
     @Test
+    fun archiveLocallyMovesTheRowsBeforeAnythingIsSent() = runTest {
+        val api = FakeJmapApi()
+        val store = store()
+        val actions = MailActions(api, store)
+
+        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
+
+        // The undo affordance rides on this: the row is out of the inbox
+        // with no request made yet (issue #338).
+        assertEquals(setOf("archive-1"), store.email("acct-a", "e1")!!.mailboxIds)
+        assertTrue(api.emailSetCalls.isEmpty(), "archiveLocally must not send anything")
+
+        assertEquals(ActionResult.Applied, actions.commit(pending))
+        assertEquals(JsonNull, api.emailSetCalls.single().getValue("e1")["mailboxIds/inbox-1"])
+
+        assertEquals(ActionResult.Applied, actions.restore(pending.snapshot))
+        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
+    }
+
+    @Test
+    fun aRejectedCommitPutsTheRowsBackAfterTheUndoWasAlreadyOffered() = runTest {
+        val api = FakeJmapApi().apply { setFailure = kotlinx.io.IOException("network unreachable") }
+        val store = store()
+        val actions = MailActions(api, store)
+
+        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
+        assertEquals(setOf("archive-1"), store.email("acct-a", "e1")!!.mailboxIds)
+
+        val result = actions.commit(pending)
+
+        assertTrue(result is ActionResult.Reverted && result.offline)
+        assertEquals(setOf("inbox-1"), store.email("acct-a", "e1")!!.mailboxIds)
+    }
+
+    @Test
+    fun archivingAnAlreadyArchivedRowHasNothingToCommit() = runTest {
+        val api = FakeJmapApi()
+        val store = store(seeded().copy(mailboxIds = setOf("archive-1")))
+        val actions = MailActions(api, store)
+
+        val pending = actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), mailboxes)
+
+        assertTrue(pending.isEmpty)
+        assertEquals(ActionResult.Applied, actions.commit(pending))
+        assertTrue(api.emailSetCalls.isEmpty())
+    }
+
+    @Test
     fun anUnreachableServerRevertsTheOptimisticStateAndReportsOffline() = runTest {
         val api = FakeJmapApi().apply { setFailure = kotlinx.io.IOException("network unreachable") }
         val store = store()

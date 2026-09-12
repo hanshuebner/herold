@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
@@ -222,6 +223,40 @@ class AcceptanceTest {
             DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
         )
         compose.captureScreen("08-undo-restored")
+    }
+
+    @Test
+    fun t06_aFingerSwipeOffersUndoWhileTheArchiveIsStillInFlight() = runBlocking {
+        signIn()
+        syncNow()
+        compose.waitUntil(TIMEOUT_MS) { threadRowCount() > 0 }
+
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        val target = app.container.store.inboxEmails().first()
+            .maxByOrNull { it.receivedAt } ?: error("no inbox message to archive")
+
+        scrollInboxToThread(target.threadId)
+        // The reported failure was a real finger on a real device, so the
+        // gesture goes through the input dispatcher, not the semantics
+        // tree (issue #338).
+        Gestures.swipeAcrossNode(compose, "thread-swipe-${target.threadId}")
+
+        compose.waitUntil(TIMEOUT_MS) { !inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Undo").assertIsDisplayed()
+        compose.captureScreen("09-gesture-swipe-shows-undo")
+
+        compose.onNodeWithText("Undo").performClick()
+        compose.waitUntil(TIMEOUT_MS) { inboxHoldsThread(target.threadId) }
+        val inboxId = app.container.store.mailboxList()
+            .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
+        assertTrue(
+            "undo must put the message back in the inbox on the server",
+            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+        )
     }
 
     // ---- helpers -------------------------------------------------------

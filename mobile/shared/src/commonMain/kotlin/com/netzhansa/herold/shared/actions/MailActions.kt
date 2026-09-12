@@ -27,6 +27,23 @@ sealed interface ActionResult {
 data class ActionSnapshot(val emails: List<Email>)
 
 /**
+ * An action whose optimistic write is already in the local store and whose
+ * `Email/set` has not been sent yet. It exists so the UI can offer its undo
+ * the moment the rows change rather than after the round trip: the phone
+ * removes the row instantly, and an undo that waits for the server is an
+ * undo the user never sees on a slow link (issue #338).
+ */
+class PendingAction internal constructor(
+    /** What the messages looked like before the action; what an undo restores. */
+    val snapshot: ActionSnapshot,
+    internal val optimistic: List<Email>,
+    internal val patches: Map<String, JsonObject>,
+) {
+    /** True when the action changed nothing, so there is nothing to send. */
+    val isEmpty: Boolean get() = patches.isEmpty()
+}
+
+/**
  * Optimistic mail actions: star, read/unread, archive, label, snooze
  * (issue #327, suite REQ-OPT-01/02). Each action writes the intended state
  * into the local store first so the UI reflects it at once, then sends the
@@ -81,6 +98,17 @@ class MailActions(
      * has one. Returns the snapshot the undo snackbar restores.
      */
     suspend fun archive(emails: List<Email>, mailboxes: List<Mailbox>): Pair<ActionResult, ActionSnapshot> {
+        val pending = archiveLocally(emails, mailboxes)
+        return commit(pending) to pending.snapshot
+    }
+
+    /**
+     * The local half of an archive: the rows leave the inbox in the store
+     * at once and the `Email/set` is left for [commit]. A caller that shows
+     * an undo affordance uses this pair so the affordance appears with the
+     * change, not with the server's answer (issue #338).
+     */
+    suspend fun archiveLocally(emails: List<Email>, mailboxes: List<Mailbox>): PendingAction {
         val snapshot = ActionSnapshot(emails)
         val optimistic = mutableListOf<Email>()
         val patches = mutableMapOf<String, JsonObject>()
@@ -103,8 +131,18 @@ class MailActions(
                 patches[email.id] = patch
             }
         }
-        if (patches.isEmpty()) return ActionResult.Applied to snapshot
-        return apply(snapshot, optimistic, patches) to snapshot
+        optimistic.forEach { write(it) }
+        return PendingAction(snapshot, optimistic, patches)
+    }
+
+    /**
+     * Sends what [archiveLocally] wrote. A rejection or a dead connection
+     * puts the store rows back and says why, exactly as an immediate action
+     * does.
+     */
+    suspend fun commit(pending: PendingAction): ActionResult {
+        if (pending.isEmpty) return ActionResult.Applied
+        return send(pending.snapshot, pending.optimistic, pending.patches)
     }
 
     /** Puts the messages back exactly as they were before an action. */
@@ -171,7 +209,15 @@ class MailActions(
         patches: Map<String, JsonObject>,
     ): ActionResult {
         optimistic.forEach { write(it) }
+        return send(snapshot, optimistic, patches)
+    }
 
+    /** The server half: the `Email/set` for rows already written locally. */
+    private suspend fun send(
+        snapshot: ActionSnapshot,
+        optimistic: List<Email>,
+        patches: Map<String, JsonObject>,
+    ): ActionResult {
         val byAccount = optimistic.groupBy { it.accountId }
         val rejected = mutableMapOf<String, String>()
         for ((accountId, accountEmails) in byAccount) {

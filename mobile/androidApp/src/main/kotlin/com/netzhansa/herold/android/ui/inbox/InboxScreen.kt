@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -69,6 +70,9 @@ import com.netzhansa.herold.shared.inbox.InboxAssembler
 import com.netzhansa.herold.shared.inbox.InboxItem
 import com.netzhansa.herold.shared.inbox.ThreadRow
 import com.netzhansa.herold.shared.sync.SyncStatus
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -120,20 +124,41 @@ fun InboxScreen(
         if (result is ActionResult.Reverted) snackbar.showSnackbar(result.message)
     }
 
-    suspend fun archive(row: ThreadRow) {
+    /**
+     * Archive with undo. The rows leave the list on the optimistic write and
+     * the snackbar goes up with them, while the `Email/set` runs underneath:
+     * an undo offered only after the round trip is one the user does not see
+     * on a slow link (issue #338). A rejection takes the offer down and
+     * reports itself; the store rows are already back.
+     */
+    suspend fun archive(row: ThreadRow) = coroutineScope {
         val targets = emailsOf(row)
-        val (result, snapshot) = session.actions.archive(targets, mailboxes)
-        if (result is ActionResult.Reverted) {
-            snackbar.showSnackbar(result.message)
-            return
+        val pending = session.actions.archiveLocally(targets, mailboxes)
+        // A settling swipe can ask twice; the second pass finds the rows
+        // already out of the inbox and has nothing to offer an undo for.
+        if (pending.isEmpty) return@coroutineScope
+        val commit = async { session.actions.commit(pending) }
+
+        // One offer at a time: a snackbar still up from an earlier action
+        // would otherwise hold this one in the host's queue, invisible.
+        snackbar.currentSnackbarData?.dismiss()
+        val offer = async {
+            snackbar.showSnackbar(
+                message = "Archived",
+                actionLabel = "Undo",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long,
+            )
         }
-        val undo = snackbar.showSnackbar(
-            message = "Archived",
-            actionLabel = "Undo",
-            withDismissAction = true,
-        )
-        if (undo == SnackbarResult.ActionPerformed) {
-            report(session.actions.restore(snapshot))
+
+        val result = commit.await()
+        if (result is ActionResult.Reverted) {
+            offer.cancelAndJoin()
+            snackbar.showSnackbar(result.message)
+            return@coroutineScope
+        }
+        if (offer.await() == SnackbarResult.ActionPerformed) {
+            report(session.actions.restore(pending.snapshot))
         }
     }
 
