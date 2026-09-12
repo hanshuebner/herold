@@ -1,6 +1,8 @@
 package com.netzhansa.herold.shared.fake
 
 import com.netzhansa.herold.shared.jmap.ChangesOutcome
+import com.netzhansa.herold.shared.jmap.EmailWriteOutcome
+import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.DownloadedBlob
 import com.netzhansa.herold.shared.jmap.FcmSubscriptionCreate
 import com.netzhansa.herold.shared.jmap.GetResult
@@ -9,9 +11,13 @@ import com.netzhansa.herold.shared.jmap.JmapException
 import com.netzhansa.herold.shared.jmap.JmapSession
 import com.netzhansa.herold.shared.jmap.PushSetOutcome
 import com.netzhansa.herold.shared.jmap.SetOutcome
+import com.netzhansa.herold.shared.jmap.SubmissionOutcome
+import com.netzhansa.herold.shared.jmap.UploadedBlob
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireIdentity
 import com.netzhansa.herold.shared.jmap.WireMailbox
+import com.netzhansa.herold.shared.jmap.WireSeenAddress
+import com.netzhansa.herold.shared.jmap.WireSnippet
 import com.netzhansa.herold.shared.jmap.WireThread
 import kotlinx.serialization.json.JsonObject
 
@@ -145,6 +151,124 @@ class FakeJmapApi(
     }
 
     override suspend fun derivedCategories(accountId: String): List<String> = categories
+
+    // ---- compose and search -------------------------------------------
+
+    /** Ids the next `Email/query` returns, by account. */
+    var queryIds: Map<String, List<String>> = emptyMap()
+
+    /** Snippets the next `SearchSnippet/get` returns. */
+    var snippets: List<WireSnippet> = emptyList()
+
+    var seenAddresses: List<WireSeenAddress> = emptyList()
+
+    /** When set, every compose or search call throws it. */
+    var composeFailure: Throwable? = null
+
+    val queryCalls = mutableListOf<Pair<String, JsonObject>>()
+    val snippetCalls = mutableListOf<Pair<JsonObject, List<String>>>()
+    val uploads = mutableListOf<Triple<String, String, Int>>()
+    val emailCreates = mutableListOf<Pair<String, JsonObject>>()
+    val emailReplaces = mutableListOf<Triple<String, String, JsonObject>>()
+    val emailDestroys = mutableListOf<List<String>>()
+    val sendCalls = mutableListOf<SendCall>()
+
+    /** One recorded [sendEmail], so a test can assert the whole batch's shape. */
+    data class SendCall(
+        val accountId: String,
+        val email: JsonObject,
+        val draftId: String?,
+        val identityId: String,
+        val envelope: Envelope,
+        val onSuccessUpdate: JsonObject,
+        val parentId: String?,
+        val parentKeyword: String?,
+    )
+
+    var uploadBlobId: String = "blob-1"
+    var createdEmailId: String = "draft-1"
+    var sentEmailId: String = "sent-1"
+    var emailCreateError: String? = null
+    var submissionError: String? = null
+
+    override suspend fun emailQuery(
+        accountId: String,
+        filter: JsonObject,
+        limit: Int,
+        collapseThreads: Boolean,
+    ): List<String> {
+        composeFailure?.let { throw it }
+        queryCalls.add(accountId to filter)
+        return queryIds[accountId] ?: emptyList()
+    }
+
+    override suspend fun searchSnippets(
+        accountId: String,
+        filter: JsonObject,
+        emailIds: List<String>,
+    ): List<WireSnippet> {
+        composeFailure?.let { throw it }
+        snippetCalls.add(filter to emailIds)
+        return snippets.filter { it.emailId in emailIds }
+    }
+
+    override suspend fun seenAddresses(accountId: String): List<WireSeenAddress> {
+        composeFailure?.let { throw it }
+        return seenAddresses
+    }
+
+    override suspend fun uploadBlob(
+        accountId: String,
+        bytes: ByteArray,
+        type: String,
+        filename: String?,
+    ): UploadedBlob {
+        composeFailure?.let { throw it }
+        uploads.add(Triple(accountId, type, bytes.size))
+        return UploadedBlob(accountId, uploadBlobId, type, bytes.size.toLong())
+    }
+
+    override suspend fun emailCreate(accountId: String, email: JsonObject): EmailWriteOutcome {
+        composeFailure?.let { throw it }
+        emailCreates.add(accountId to email)
+        return EmailWriteOutcome(
+            id = if (emailCreateError == null) createdEmailId else null,
+            newState = emailState,
+            error = emailCreateError,
+        )
+    }
+
+    override suspend fun emailReplace(accountId: String, id: String, email: JsonObject): EmailWriteOutcome {
+        composeFailure?.let { throw it }
+        emailReplaces.add(Triple(accountId, id, email))
+        return EmailWriteOutcome(id = id, newState = emailState, error = emailCreateError)
+    }
+
+    override suspend fun emailDestroy(accountId: String, ids: List<String>) {
+        composeFailure?.let { throw it }
+        emailDestroys.add(ids)
+    }
+
+    override suspend fun sendEmail(
+        accountId: String,
+        email: JsonObject,
+        draftId: String?,
+        identityId: String,
+        envelope: Envelope,
+        onSuccessUpdate: JsonObject,
+        parentId: String?,
+        parentKeyword: String?,
+    ): SubmissionOutcome {
+        composeFailure?.let { throw it }
+        sendCalls.add(
+            SendCall(accountId, email, draftId, identityId, envelope, onSuccessUpdate, parentId, parentKeyword),
+        )
+        return SubmissionOutcome(
+            submissionId = if (submissionError == null) "sub-1" else null,
+            emailId = if (submissionError == null) (draftId ?: sentEmailId) else null,
+            error = submissionError,
+        )
+    }
 
     override suspend fun downloadBlob(
         accountId: String,

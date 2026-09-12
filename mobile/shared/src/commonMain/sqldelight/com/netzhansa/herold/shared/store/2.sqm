@@ -1,0 +1,10 @@
+-- Schema 2 -> 3: the header fields a reply is built from (issue #329).
+-- The structured recipient lists, the RFC 5322 threading headers, and the
+-- address herold delivered the message to, all additive.
+
+ALTER TABLE email ADD COLUMN toJson TEXT;
+ALTER TABLE email ADD COLUMN ccJson TEXT;
+ALTER TABLE email ADD COLUMN messageIdJson TEXT;
+ALTER TABLE email ADD COLUMN inReplyToJson TEXT;
+ALTER TABLE email ADD COLUMN referencesJson TEXT;
+ALTER TABLE email ADD COLUMN deliveredTo TEXT;

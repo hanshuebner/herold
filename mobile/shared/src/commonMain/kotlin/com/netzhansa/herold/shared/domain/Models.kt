@@ -35,6 +35,21 @@ data class Mailbox(
     val unreadEmails: Int = 0,
 )
 
+/**
+ * A mail address as a header carries it. Compose needs the structured
+ * form - a reply's To list is built from the parent's addresses, not from
+ * a rendered line (suite REQ-MAIL-30).
+ */
+data class MailAddress(
+    val name: String? = null,
+    val email: String,
+) {
+    /** "Name <addr>" when a display name is present, the bare address otherwise. */
+    fun format(): String = if (!name.isNullOrBlank()) "$name <$email>" else email
+
+    val display: String get() = name?.takeIf { it.isNotBlank() } ?: email
+}
+
 /** An attachment of a message, as listed in the thread view. */
 data class Attachment(
     val blobId: String,
@@ -59,6 +74,14 @@ data class Email(
     val fromName: String = "",
     val fromEmail: String = "",
     val toLine: String = "",
+    val toAddresses: List<MailAddress> = emptyList(),
+    val ccAddresses: List<MailAddress> = emptyList(),
+    /** RFC 5322 Message-ID(s), In-Reply-To and References, for threading a reply. */
+    val messageId: List<String> = emptyList(),
+    val inReplyTo: List<String> = emptyList(),
+    val references: List<String> = emptyList(),
+    /** The address herold delivered this message to (server REQ-FLOW-34). */
+    val deliveredTo: String? = null,
     val subject: String = "",
     val preview: String = "",
     val receivedAt: Long = 0,
@@ -79,6 +102,10 @@ data class Email(
     val category: String? get() = keywords.firstNotNullOfOrNull { Keywords.categoryName(it) }
 
     val senderDisplay: String get() = fromName.ifBlank { fromEmail }
+
+    val fromAddress: MailAddress get() = MailAddress(fromName.takeIf { it.isNotBlank() }, fromEmail)
+
+    val isDraft: Boolean get() = keywords.any { it.equals(Keywords.DRAFT, ignoreCase = true) }
 }
 
 /** A JMAP Thread (RFC 8621 section 3). */

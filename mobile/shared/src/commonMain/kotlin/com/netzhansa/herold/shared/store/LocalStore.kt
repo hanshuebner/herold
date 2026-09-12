@@ -67,6 +67,12 @@ interface LocalStore {
 
     suspend fun emailList(): List<Email>
 
+    /**
+     * Offline search over the synced set: sender, subject and the cached
+     * preview matched case-insensitively, newest first (REQ-AND-SYNC-13).
+     */
+    suspend fun searchCached(query: String, limit: Long = DEFAULT_SEARCH_LIMIT): List<Email>
+
     suspend fun upsertEmails(rows: List<Email>)
 
     suspend fun deleteEmails(accountId: String, ids: List<String>)
@@ -130,5 +136,6 @@ interface LocalStore {
 
     companion object {
         const val DEFAULT_INBOX_LIMIT: Long = 500
+        const val DEFAULT_SEARCH_LIMIT: Long = 100
     }
 }

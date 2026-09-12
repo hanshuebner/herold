@@ -3,6 +3,7 @@ package com.netzhansa.herold.shared.store
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.domain.MailAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +26,9 @@ private data class AttachmentDto(
     val cid: String? = null,
     val isInline: Boolean = false,
 )
+
+@Serializable
+private data class AddressDto(val name: String? = null, val email: String)
 
 private val attachmentJson = Json { ignoreUnknownKeys = true }
 
@@ -117,6 +121,12 @@ class SqlDelightLocalStore(
         database.emailQueries.selectAll().executeAsList().map { it.toDomain() }
     }
 
+    override suspend fun searchCached(query: String, limit: Long): List<DomainEmail> =
+        withContext(dispatcher) {
+            val pattern = "%" + query.escapeForLike() + "%"
+            database.emailQueries.searchCached(pattern, limit).executeAsList().map { it.toDomain() }
+        }
+
     override suspend fun upsertEmails(rows: List<DomainEmail>) = withContext(dispatcher) {
         database.transaction {
             rows.forEach { email ->
@@ -127,6 +137,12 @@ class SqlDelightLocalStore(
                     fromName = email.fromName,
                     fromEmail = email.fromEmail,
                     toLine = email.toLine,
+                    toJson = email.toAddresses.encodeAddresses(),
+                    ccJson = email.ccAddresses.encodeAddresses(),
+                    messageIdJson = email.messageId.encodeStrings(),
+                    inReplyToJson = email.inReplyTo.encodeStrings(),
+                    referencesJson = email.references.encodeStrings(),
+                    deliveredTo = email.deliveredTo,
                     subject = email.subject,
                     preview = email.preview,
                     receivedAt = email.receivedAt,
@@ -382,6 +398,12 @@ private fun Email.toDomain() = DomainEmail(
     fromName = fromName,
     fromEmail = fromEmail,
     toLine = toLine,
+    toAddresses = toJson.decodeAddresses(),
+    ccAddresses = ccJson.decodeAddresses(),
+    messageId = messageIdJson.decodeStrings(),
+    inReplyTo = inReplyToJson.decodeStrings(),
+    references = referencesJson.decodeStrings(),
+    deliveredTo = deliveredTo,
     subject = subject,
     preview = preview,
     receivedAt = receivedAt,
@@ -415,6 +437,28 @@ private fun Identity.toDomain() = DomainIdentity(
 
 private fun String.splitTokens(): Set<String> =
     split(" ").filter { it.isNotBlank() }.toSet()
+
+private fun List<MailAddress>.encodeAddresses(): String? =
+    if (isEmpty()) null else attachmentJson.encodeToString(map { AddressDto(it.name, it.email) })
+
+private fun String?.decodeAddresses(): List<MailAddress> =
+    this?.let { json ->
+        runCatching { attachmentJson.decodeFromString<List<AddressDto>>(json) }
+            .getOrDefault(emptyList())
+            .map { MailAddress(it.name, it.email) }
+    } ?: emptyList()
+
+private fun List<String>.encodeStrings(): String? =
+    if (isEmpty()) null else attachmentJson.encodeToString(this)
+
+private fun String?.decodeStrings(): List<String> =
+    this?.let { json ->
+        runCatching { attachmentJson.decodeFromString<List<String>>(json) }.getOrDefault(emptyList())
+    } ?: emptyList()
+
+/** Neutralises the wildcards of a LIKE pattern, which the caller wraps in `%`. */
+private fun String.escapeForLike(): String =
+    replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 private fun Attachment.toDto() = AttachmentDto(blobId, name, type, size, cid, isInline)
 

@@ -3,8 +3,10 @@ package com.netzhansa.herold.shared.sync
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
+import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.Thread
+import com.netzhansa.herold.shared.jmap.WireAddress
 import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.jmap.WireIdentity
 import com.netzhansa.herold.shared.jmap.WireMailbox
@@ -41,6 +43,15 @@ internal fun WireIdentity.toDomain(accountId: String) = Identity(
     mayDelete = mayDelete,
 )
 
+internal fun WireAddress.toDomain() = MailAddress(name?.takeIf { it.isNotBlank() }, email)
+
+/**
+ * herold returns Message-IDs both bare and in angle brackets depending on
+ * the path they took; the client keeps the bare form so a reply's
+ * `inReplyTo` matches the parent's `messageId` whichever way it arrived.
+ */
+internal fun String.normaliseMessageId(): String = trim().removePrefix("<").removeSuffix(">")
+
 internal fun WireEmail.toDomain(accountId: String): Email {
     val htmlPart = htmlBody?.firstOrNull { it.type == "text/html" } ?: htmlBody?.firstOrNull()
     val textPart = textBody?.firstOrNull()
@@ -52,6 +63,12 @@ internal fun WireEmail.toDomain(accountId: String): Email {
         fromName = from?.firstOrNull()?.name.orEmpty(),
         fromEmail = from?.firstOrNull()?.email.orEmpty(),
         toLine = to.orEmpty().joinToString(", ") { it.name?.takeIf(String::isNotBlank) ?: it.email },
+        toAddresses = to.orEmpty().map { it.toDomain() },
+        ccAddresses = cc.orEmpty().map { it.toDomain() },
+        messageId = messageId.orEmpty().map { it.normaliseMessageId() },
+        inReplyTo = inReplyTo.orEmpty().map { it.normaliseMessageId() },
+        references = references.orEmpty().map { it.normaliseMessageId() },
+        deliveredTo = deliveredTo,
         subject = subject.orEmpty(),
         preview = preview.orEmpty(),
         receivedAt = parseJmapDate(receivedAt),

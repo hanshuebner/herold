@@ -27,6 +27,14 @@ CREATE TABLE email (
     bodyText TEXT,
     bodyFetchedAt INTEGER,
     attachmentsJson TEXT,
+    -- Appended by migration 2.sqm; keep them last so the generated schema
+    -- and the migrated database agree on column order.
+    toJson TEXT,
+    ccJson TEXT,
+    messageIdJson TEXT,
+    inReplyToJson TEXT,
+    referencesJson TEXT,
+    deliveredTo TEXT,
     PRIMARY KEY (accountId, id)
 );
 
@@ -52,6 +60,12 @@ UPDATE email SET
     fromName = ?,
     fromEmail = ?,
     toLine = ?,
+    toJson = ?,
+    ccJson = ?,
+    messageIdJson = ?,
+    inReplyToJson = ?,
+    referencesJson = ?,
+    deliveredTo = ?,
     subject = ?,
     preview = ?,
     receivedAt = ?,
@@ -85,6 +99,17 @@ LIMIT ?;
 
 selectAll:
 SELECT * FROM email ORDER BY receivedAt DESC;
+
+-- Offline search (REQ-AND-SYNC-13): the locally synced set filtered on
+-- sender, subject and the cached preview, newest first.
+searchCached:
+SELECT * FROM email
+WHERE fromName LIKE :pattern ESCAPE '\'
+   OR fromEmail LIKE :pattern ESCAPE '\'
+   OR subject LIKE :pattern ESCAPE '\'
+   OR preview LIKE :pattern ESCAPE '\'
+ORDER BY receivedAt DESC
+LIMIT :limit;
 
 deleteById:
 DELETE FROM email WHERE accountId = ? AND id = ?;

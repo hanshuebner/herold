@@ -72,6 +72,19 @@ class FakeLocalStore : LocalStore {
 
     override suspend fun emailList(): List<Email> = emailRows.value
 
+    override suspend fun searchCached(query: String, limit: Long): List<Email> {
+        val needle = query.trim().lowercase()
+        return emailRows.value
+            .filter { row ->
+                row.fromName.lowercase().contains(needle) ||
+                    row.fromEmail.lowercase().contains(needle) ||
+                    row.subject.lowercase().contains(needle) ||
+                    row.preview.lowercase().contains(needle)
+            }
+            .sortedByDescending { it.receivedAt }
+            .take(limit.toInt())
+    }
+
     override suspend fun upsertEmails(rows: List<Email>) {
         val byKey = emailRows.value.associateBy { it.accountId to it.id }.toMutableMap()
         rows.forEach { incoming ->

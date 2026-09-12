@@ -3,6 +3,9 @@ package com.netzhansa.herold.shared.jmap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Wire shapes of the JMAP objects the client reads (RFC 8620/8621 plus
@@ -34,6 +37,14 @@ data class JmapSession(
     val mailAccountId: String? get() = primaryAccounts[Capability.MAIL]
 
     fun hasCapability(uri: String): Boolean = capabilities.containsKey(uri)
+
+    /**
+     * The largest blob the server accepts in one upload
+     * (`urn:ietf:params:jmap:core/maxSizeUpload`, suite REQ-ATT-04).
+     */
+    val maxSizeUpload: Long?
+        get() = (capabilities[Capability.CORE] as? JsonObject)
+            ?.get("maxSizeUpload")?.jsonPrimitive?.longOrNull
 
     /**
      * Every account carrying the mail capability, primary first, then
@@ -95,6 +106,19 @@ data class WireEmail(
     val keywords: Map<String, Boolean> = emptyMap(),
     val from: List<WireAddress>? = null,
     val to: List<WireAddress>? = null,
+    val cc: List<WireAddress>? = null,
+    val replyTo: List<WireAddress>? = null,
+    val messageId: List<String>? = null,
+    val inReplyTo: List<String>? = null,
+    val references: List<String>? = null,
+    val sentAt: String? = null,
+    /**
+     * The delivery address herold injected at fan-out (server REQ-FLOW-34).
+     * It is what tells a reply which of the principal's identities the
+     * message reached, for Bcc and list mail that name none of them in
+     * To/Cc (suite REQ-MAIL-12a step 3).
+     */
+    @SerialName("header:X-Herold-Recipient:asText") val deliveredTo: String? = null,
     val subject: String? = null,
     val receivedAt: String? = null,
     val size: Long = 0,
@@ -171,3 +195,49 @@ data class StateChangeEvent(
     @SerialName("@type") val type: String = "StateChange",
     val changed: Map<String, Map<String, String>> = emptyMap(),
 )
+
+/** One entry of the principal's seen-address history (suite REQ-MAIL-11e). */
+@Serializable
+data class WireSeenAddress(
+    val id: String,
+    val email: String = "",
+    val displayName: String = "",
+    val lastUsedAt: String? = null,
+    val sendCount: Long = 0,
+    val receivedCount: Long = 0,
+)
+
+/** A `SearchSnippet` (RFC 8621 section 6.1); matches come back in `<mark>`. */
+@Serializable
+data class WireSnippet(
+    val emailId: String,
+    val subject: String? = null,
+    val preview: String? = null,
+)
+
+/** The `POST /jmap/upload/<accountId>` response (RFC 8620 section 6.1). */
+@Serializable
+data class UploadedBlob(
+    val accountId: String = "",
+    val blobId: String,
+    val type: String = "application/octet-stream",
+    val size: Long = 0,
+)
+
+/** Result of an `Email/set` that creates or updates one message. */
+data class EmailWriteOutcome(
+    val id: String?,
+    val newState: String?,
+    val error: String?,
+) {
+    val isSuccess: Boolean get() = error == null
+}
+
+/** Result of an `EmailSubmission/set` create. */
+data class SubmissionOutcome(
+    val submissionId: String?,
+    val emailId: String?,
+    val error: String?,
+) {
+    val isSuccess: Boolean get() = error == null
+}

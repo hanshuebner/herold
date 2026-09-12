@@ -228,6 +228,192 @@ class JmapClient(
         )
     }
 
+    override suspend fun emailQuery(
+        accountId: String,
+        filter: JsonObject,
+        limit: Int,
+        collapseThreads: Boolean,
+    ): List<String> {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("filter", filter)
+            put("collapseThreads", collapseThreads)
+            putJsonArray("sort") {
+                addJsonObject {
+                    put("property", "receivedAt")
+                    put("isAscending", false)
+                }
+            }
+            put("position", 0)
+            put("limit", limit)
+            put("calculateTotal", false)
+        }
+        val result = call("Email/query", args, listOf(Capability.CORE, Capability.MAIL))
+        return result.idList("ids")
+    }
+
+    override suspend fun searchSnippets(
+        accountId: String,
+        filter: JsonObject,
+        emailIds: List<String>,
+    ): List<WireSnippet> {
+        if (emailIds.isEmpty()) return emptyList()
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("filter", filter)
+            putJsonArray("emailIds") { emailIds.forEach { add(it) } }
+        }
+        val result = call("SearchSnippet/get", args, listOf(Capability.CORE, Capability.MAIL))
+        return (result["list"] as? JsonArray)?.map {
+            wireJson.decodeFromJsonElement(WireSnippet.serializer(), it)
+        } ?: emptyList()
+    }
+
+    override suspend fun seenAddresses(accountId: String): List<WireSeenAddress> {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            put("ids", JsonPrimitive(null as String?))
+        }
+        val result = call("SeenAddress/get", args, listOf(Capability.CORE, Capability.MAIL))
+        return (result["list"] as? JsonArray)?.map {
+            wireJson.decodeFromJsonElement(WireSeenAddress.serializer(), it)
+        } ?: emptyList()
+    }
+
+    override suspend fun uploadBlob(
+        accountId: String,
+        bytes: ByteArray,
+        type: String,
+        filename: String?,
+    ): UploadedBlob {
+        val template = session().uploadUrl.ifBlank {
+            "${baseUrl.trimEnd('/')}/jmap/upload/{accountId}"
+        }
+        val url = template.replace("{accountId}", accountId.urlEncode())
+        val token = bearerToken()
+        val response = httpClient.post(url) {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header(HttpHeaders.ContentType, type.ifBlank { "application/octet-stream" })
+            setBody(bytes)
+        }
+        val text = response.bodyAsText()
+        requireSuccess(response, text, "blob upload")
+        return wireJson.decodeFromString(UploadedBlob.serializer(), text)
+    }
+
+    override suspend fun emailCreate(accountId: String, email: JsonObject): EmailWriteOutcome {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonObject("create") { put(DRAFT_CREATE_KEY, email) }
+        }
+        val result = call("Email/set", args, listOf(Capability.CORE, Capability.MAIL))
+        val created = (result["created"] as? JsonObject)?.get(DRAFT_CREATE_KEY)?.jsonObject
+        return EmailWriteOutcome(
+            id = created?.get("id")?.jsonPrimitive?.content,
+            newState = result["newState"]?.jsonPrimitive?.content,
+            error = if (created != null) {
+                null
+            } else {
+                (result["notCreated"] as? JsonObject)?.get(DRAFT_CREATE_KEY)?.jsonObject.describe()
+                    ?: "the server did not create the draft"
+            },
+        )
+    }
+
+    override suspend fun emailReplace(accountId: String, id: String, email: JsonObject): EmailWriteOutcome {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonObject("update") { put(id, email) }
+        }
+        val result = call("Email/set", args, listOf(Capability.CORE, Capability.MAIL))
+        val failure = (result["notUpdated"] as? JsonObject)?.get(id)?.jsonObject
+        return EmailWriteOutcome(
+            id = id,
+            newState = result["newState"]?.jsonPrimitive?.content,
+            error = failure.describe(),
+        )
+    }
+
+    override suspend fun emailDestroy(accountId: String, ids: List<String>) {
+        if (ids.isEmpty()) return
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonArray("destroy") { ids.forEach { add(it) } }
+        }
+        call("Email/set", args, listOf(Capability.CORE, Capability.MAIL))
+    }
+
+    override suspend fun sendEmail(
+        accountId: String,
+        email: JsonObject,
+        draftId: String?,
+        identityId: String,
+        envelope: Envelope,
+        onSuccessUpdate: JsonObject,
+        parentId: String?,
+        parentKeyword: String?,
+    ): SubmissionOutcome {
+        val setArgs = buildJsonObject {
+            put("accountId", accountId)
+            if (draftId == null) {
+                putJsonObject("create") { put(DRAFT_CREATE_KEY, email) }
+            }
+            putJsonObject("update") {
+                if (draftId != null) put(draftId, email)
+                if (parentId != null && parentKeyword != null) {
+                    put(
+                        parentId,
+                        buildJsonObject { put("keywords/$parentKeyword", true) },
+                    )
+                }
+            }
+        }
+        val emailRef = draftId ?: "#$DRAFT_CREATE_KEY"
+        val submissionArgs = buildJsonObject {
+            put("accountId", accountId)
+            putJsonObject("create") {
+                putJsonObject(SUBMISSION_CREATE_KEY) {
+                    put("emailId", emailRef)
+                    put("identityId", identityId)
+                    putJsonObject("envelope") {
+                        putJsonObject("mailFrom") { put("email", envelope.mailFrom) }
+                        putJsonArray("rcptTo") {
+                            envelope.rcptTo.forEach { addJsonObject { put("email", it) } }
+                        }
+                    }
+                    put("sendAt", JsonPrimitive(null as String?))
+                }
+            }
+            putJsonObject("onSuccessUpdateEmail") {
+                put("#$SUBMISSION_CREATE_KEY", onSuccessUpdate)
+            }
+        }
+        val responses = batch(
+            listOf(
+                MethodCall("Email/set", setArgs, "s0"),
+                MethodCall("EmailSubmission/set", submissionArgs, "s1"),
+            ),
+            listOf(Capability.CORE, Capability.MAIL, Capability.SUBMISSION),
+        )
+        val setResult = responses.first { it.id == "s0" }.args
+        val createdEmail = (setResult["created"] as? JsonObject)?.get(DRAFT_CREATE_KEY)?.jsonObject
+        val notCreatedEmail = (setResult["notCreated"] as? JsonObject)?.get(DRAFT_CREATE_KEY)?.jsonObject
+        val notUpdatedEmail = draftId?.let { (setResult["notUpdated"] as? JsonObject)?.get(it)?.jsonObject }
+        val emailError = notCreatedEmail.describe() ?: notUpdatedEmail.describe()
+        if (emailError != null) return SubmissionOutcome(null, null, emailError)
+
+        val subResult = responses.first { it.id == "s1" }.args
+        val created = (subResult["created"] as? JsonObject)?.get(SUBMISSION_CREATE_KEY)?.jsonObject
+        val failure = (subResult["notCreated"] as? JsonObject)?.get(SUBMISSION_CREATE_KEY)?.jsonObject
+        return SubmissionOutcome(
+            submissionId = created?.get("id")?.jsonPrimitive?.content,
+            emailId = created?.get("emailId")?.jsonPrimitive?.content
+                ?: createdEmail?.get("id")?.jsonPrimitive?.content
+                ?: draftId,
+            error = failure.describe(),
+        )
+    }
+
     override suspend fun downloadBlob(
         accountId: String,
         blobId: String,
@@ -361,17 +547,31 @@ class JmapClient(
         notFound = idList("notFound"),
     )
 
+    /** The human-readable reason a `Foo/set` entry failed, or null when it did not. */
+    private fun JsonObject?.describe(): String? {
+        if (this == null) return null
+        return this["description"]?.jsonPrimitive?.content
+            ?: this["type"]?.jsonPrimitive?.content
+            ?: "rejected"
+    }
+
     private fun JsonObject.idList(key: String): List<String> =
         (this[key] as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
 
     companion object {
         /** The creation key the create/notCreated maps are routed back by. */
         private const val PUSH_CREATE_KEY = "push0"
+
+        /** Creation keys the draft and its submission are routed back by. */
+        private const val DRAFT_CREATE_KEY = "draft1"
+        private const val SUBMISSION_CREATE_KEY = "sub1"
         private const val MAX_CHANGES = 256
         private const val MAX_BODY_VALUE_BYTES = 512 * 1024
 
         private val METADATA_PROPERTIES = listOf(
-            "id", "blobId", "threadId", "mailboxIds", "keywords", "from", "to",
+            "id", "blobId", "threadId", "mailboxIds", "keywords", "from", "to", "cc",
+            "replyTo", "messageId", "inReplyTo", "references", "sentAt",
+            "header:X-Herold-Recipient:asText",
             "subject", "receivedAt", "size", "preview", "hasAttachment", "snoozedUntil",
         )
         private val BODY_PROPERTIES = listOf("htmlBody", "textBody", "attachments", "bodyValues")

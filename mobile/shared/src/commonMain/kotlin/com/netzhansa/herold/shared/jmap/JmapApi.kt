@@ -34,6 +34,69 @@ interface JmapApi {
 
     suspend fun identityChanges(accountId: String, sinceState: String): ChangesOutcome
 
+    /**
+     * `Email/query` with an arbitrary filter (search, REQ-SRC-02/06). Ids
+     * come back newest first; [collapseThreads] returns one message per
+     * conversation so results render as threads (REQ-SRC-03).
+     */
+    suspend fun emailQuery(
+        accountId: String,
+        filter: JsonObject,
+        limit: Int,
+        collapseThreads: Boolean = true,
+    ): List<String>
+
+    /**
+     * `SearchSnippet/get` (RFC 8621 section 6.1) for the visible result
+     * rows, passing the active filter so the server highlights the matched
+     * terms in `<mark>` (REQ-SRC-30).
+     */
+    suspend fun searchSnippets(
+        accountId: String,
+        filter: JsonObject,
+        emailIds: List<String>,
+    ): List<WireSnippet>
+
+    /** `SeenAddress/get`: the address history the recipient fields complete from. */
+    suspend fun seenAddresses(accountId: String): List<WireSeenAddress>
+
+    /** `POST` to the session's `uploadUrl` (RFC 8620 section 6.1). */
+    suspend fun uploadBlob(
+        accountId: String,
+        bytes: ByteArray,
+        type: String,
+        filename: String? = null,
+    ): UploadedBlob
+
+    /** `Email/set { create }` for a draft; returns the id the server assigned. */
+    suspend fun emailCreate(accountId: String, email: JsonObject): EmailWriteOutcome
+
+    /** `Email/set { update }` for one message with a full property set (draft autosave). */
+    suspend fun emailReplace(accountId: String, id: String, email: JsonObject): EmailWriteOutcome
+
+    suspend fun emailDestroy(accountId: String, ids: List<String>)
+
+    /**
+     * The send batch: `Email/set` writing the draft, then
+     * `EmailSubmission/set { create }` referencing it with
+     * `onSuccessUpdateEmail` moving the message out of Drafts into Sent and
+     * clearing `$draft` (suite `19-drafts.md`, RFC 8621 section 7.5).
+     *
+     * @param draftId the id of an already-saved draft, or null to create one
+     *   in the same batch
+     * @param parentKeyword `$answered` / `$forwarded` to set on [parentId]
+     */
+    suspend fun sendEmail(
+        accountId: String,
+        email: JsonObject,
+        draftId: String?,
+        identityId: String,
+        envelope: Envelope,
+        onSuccessUpdate: JsonObject,
+        parentId: String? = null,
+        parentKeyword: String? = null,
+    ): SubmissionOutcome
+
     /** `Email/set` with a patch per email id (star, read, archive, label, snooze). */
     suspend fun emailSet(accountId: String, update: Map<String, JsonObject>): SetOutcome
 
@@ -76,3 +139,9 @@ class JmapException(
 ) : Exception(message) {
     val isUnauthorized: Boolean get() = status == 401
 }
+
+/** The SMTP envelope an `EmailSubmission` carries (RFC 8621 section 7). */
+data class Envelope(
+    val mailFrom: String,
+    val rcptTo: List<String>,
+)
