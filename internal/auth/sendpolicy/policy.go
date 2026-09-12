@@ -60,8 +60,9 @@ type Decision struct {
 // interface enables a simple stub in tests.
 type Checker interface {
 	// PrincipalOwnsAddress reports whether addr (lowercased addr-spec)
-	// is the principal's canonical address or resolves via an alias to
-	// that principal.  Callers must lower-case addr before calling.
+	// is the principal's canonical address, resolves via an alias to
+	// that principal, or names one of the principal's verified JMAP
+	// identities.  Callers must lower-case addr before calling.
 	PrincipalOwnsAddress(ctx context.Context, p store.Principal, addr string) (bool, error)
 }
 
@@ -71,8 +72,9 @@ type StoreChecker struct {
 }
 
 // PrincipalOwnsAddress checks the canonical email first, then the alias
-// table.  Both lookups are case-insensitive (addr must already be lower-
-// cased by the caller).
+// table, then the principal's verified JMAP identities (REQ-IDENT-01).
+// All lookups are case-insensitive (addr must already be lower-cased by
+// the caller).
 func (c StoreChecker) PrincipalOwnsAddress(ctx context.Context, p store.Principal, addr string) (bool, error) {
 	if strings.EqualFold(p.CanonicalEmail, addr) {
 		return true, nil
@@ -82,13 +84,28 @@ func (c StoreChecker) PrincipalOwnsAddress(ctx context.Context, p store.Principa
 		return false, nil
 	}
 	pid, err := c.Meta.ResolveAlias(ctx, local, domain)
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
+	if err == nil {
+		return pid == p.ID, nil
+	}
+	if !isNotFound(err) {
 		return false, fmt.Errorf("sendpolicy: alias lookup: %w", err)
 	}
-	return pid == p.ID, nil
+
+	// No alias row: an address on a verified identity of this principal
+	// is owned too, so a user's own external-submission identity (issue
+	// #342) does not require an alias-row workaround. An identity whose
+	// verification never completed (VerifiedAtUs == 0) is not ownership
+	// yet.
+	identities, err := c.Meta.ListJMAPIdentities(ctx, p.ID)
+	if err != nil {
+		return false, fmt.Errorf("sendpolicy: identity lookup: %w", err)
+	}
+	for _, id := range identities {
+		if id.VerifiedAtUs != 0 && strings.EqualFold(id.Email, addr) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CheckFrom enforces REQ-SEND-12 / REQ-FLOW-41.

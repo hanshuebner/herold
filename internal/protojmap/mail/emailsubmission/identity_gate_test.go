@@ -679,3 +679,129 @@ func TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected(t *tes
 func TestEmailSubmission_Set_Gate_ForeignDomainExternalRouter_NotRejected_Postgres(t *testing.T) {
 	testForeignDomainExternalRouterNotRejected(t, openPostgresStore(t))
 }
+
+// testNonAdminVerifiedIdentityExternalSubmissionSucceeds is the
+// backend-agnostic body of
+// TestEmailSubmission_Set_NonAdminVerifiedIdentity_ExternalSubmissionSucceeds_*
+// (issue #342): a non-admin principal with a verified foreign-domain
+// identity and external submission configured -- no alias row -- must
+// pass the sendpolicy ownership check and reach the external
+// submitter, exactly like the admin path already covered by
+// TestEmailSubmission_Set_Gate_ExternalDomainWithSubmissionSucceeds.
+func testNonAdminVerifiedIdentityExternalSubmissionSucceeds(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+		t.Fatalf("InsertDomain: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	mb, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "Drafts", Attributes: store.MailboxAttrDrafts,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	body := "From: alice-work@foreign.example\r\nTo: bob@remote.test\r\nSubject: test\r\n\r\nbody.\r\n"
+	ref, err := st.Blobs().Put(ctx, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	uid, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		Blob: ref, Size: int64(len(body)),
+		Envelope: store.Envelope{Subject: "test", From: "alice-work@foreign.example", To: "bob@remote.test"},
+	}, []store.MessageMailbox{{MailboxID: mb.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, _ := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 100, WithEnvelope: true})
+	var mid store.MessageID
+	for _, m := range msgs {
+		if m.UID == uid {
+			mid = m.ID
+		}
+	}
+
+	const idID = "id-nonadmin-verified-ext"
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID: idID, PrincipalID: p.ID, Name: "Alice work",
+		Email: "alice-work@foreign.example", MayDelete: true, VerifiedAtUs: 1,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := st.Meta().UpsertIdentitySubmission(ctx, store.IdentitySubmission{
+		IdentityID: idID, SubmitHost: "smtp.foreign.example", SubmitPort: 587,
+		SubmitSecurity: "starttls", SubmitAuthMethod: "password",
+		PasswordCT: []byte("v1:fake"),
+	}); err != nil {
+		t.Fatalf("UpsertIdentitySubmission: %v", err)
+	}
+
+	extSub := &fakeExternalSubmitter{outcome: extsubmit.Outcome{
+		State: extsubmit.OutcomeOK, Diagnostic: "accepted",
+	}}
+	extRouter := &fakeExternalRouter{has: true}
+	sub := &fakeSubmitter{store: st}
+	h := &handlerSet{
+		store:          st,
+		queue:          sub,
+		clk:            clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		identity:       mapResolver{m: map[string]string{idID: "alice-work@foreign.example"}},
+		externalSubmit: extSub,
+		externalRouter: extRouter,
+	}
+	t.Cleanup(func() { h.Wait() })
+
+	// p is a plain non-admin user; no alias row exists for
+	// alice-work@foreign.example. Ownership must come from the
+	// verified jmap_identities row alone.
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"create": map[string]any{
+			"k1": map[string]any{"identityId": idID, "emailId": renderEmailID(mid)},
+		},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("EmailSubmission/set: %v", mErr)
+	}
+	sresp := resp.(setResponse)
+	if len(sresp.NotCreated) != 0 {
+		js, _ := json.Marshal(sresp.NotCreated)
+		t.Fatalf("expected no notCreated, got %s", js)
+	}
+	if len(sresp.Created) != 1 {
+		js, _ := json.Marshal(sresp)
+		t.Fatalf("expected 1 created entry, got %d (resp=%s)", len(sresp.Created), js)
+	}
+	h.Wait()
+	if len(extSub.calls) != 1 {
+		t.Fatalf("expected 1 external submit, got %d", len(extSub.calls))
+	}
+	if extSub.calls[0].MailFrom != "alice-work@foreign.example" {
+		t.Fatalf("MailFrom: got %q, want alice-work@foreign.example", extSub.calls[0].MailFrom)
+	}
+}
+
+// TestEmailSubmission_Set_NonAdminVerifiedIdentity_ExternalSubmissionSucceeds_SQLite
+// runs testNonAdminVerifiedIdentityExternalSubmissionSucceeds against SQLite.
+func TestEmailSubmission_Set_NonAdminVerifiedIdentity_ExternalSubmissionSucceeds_SQLite(t *testing.T) {
+	st, err := storesqlite.Open(context.Background(), filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testNonAdminVerifiedIdentityExternalSubmissionSucceeds(t, st)
+}
+
+// TestEmailSubmission_Set_NonAdminVerifiedIdentity_ExternalSubmissionSucceeds_Postgres
+// runs the same assertion against the Postgres backend. Skips when
+// HEROLD_PG_DSN is not set.
+func TestEmailSubmission_Set_NonAdminVerifiedIdentity_ExternalSubmissionSucceeds_Postgres(t *testing.T) {
+	testNonAdminVerifiedIdentityExternalSubmissionSucceeds(t, openPostgresStore(t))
+}
