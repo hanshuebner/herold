@@ -4704,6 +4704,53 @@ func (m *metadata) SetSnooze(ctx context.Context, msgID store.MessageID, mailbox
 	return modseq, nil
 }
 
+// RecordMailboxArrival appends a ChangeOpCreated Email state-change for
+// the existing (msgID, mailboxID) membership without touching its
+// contents beyond bumping ModSeq / HighestModSeq. See the store.Store
+// doc comment (re #349).
+func (m *metadata) RecordMailboxArrival(ctx context.Context, msgID store.MessageID, mailboxID store.MailboxID) (store.ModSeq, error) {
+	now := m.s.clock.Now().UTC()
+	var modseq store.ModSeq
+	err := m.runTx(ctx, func(tx *sql.Tx) error {
+		var pid int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT principal_id FROM messages WHERE id = ?`, int64(msgID)).Scan(&pid); err != nil {
+			return mapErr(err)
+		}
+		var existing int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM message_mailboxes WHERE message_id = ? AND mailbox_id = ?`,
+			int64(msgID), int64(mailboxID)).Scan(&existing); err != nil {
+			return mapErr(err)
+		}
+		if existing == 0 {
+			return store.ErrNotFound
+		}
+		var highest int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT highest_modseq FROM mailboxes WHERE id = ?`, int64(mailboxID)).Scan(&highest); err != nil {
+			return mapErr(err)
+		}
+		modseq = store.ModSeq(highest + 1)
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE message_mailboxes SET modseq = ? WHERE message_id = ? AND mailbox_id = ?`,
+			int64(modseq), int64(msgID), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE mailboxes SET highest_modseq = ?, updated_at_us = ? WHERE id = ?`,
+			int64(modseq), usMicros(now), int64(mailboxID)); err != nil {
+			return mapErr(err)
+		}
+		return appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindEmail, uint64(msgID), uint64(mailboxID), store.ChangeOpCreated, now)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return modseq, nil
+}
+
 func (m *metadata) ListAuditLog(ctx context.Context, filter store.AuditLogFilter) ([]store.AuditLogEntry, error) {
 	// Fail closed: non-nil empty Domains means no access (REQ-ADM-307).
 	if filter.Domains != nil && len(filter.Domains) == 0 {

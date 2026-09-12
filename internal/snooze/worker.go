@@ -166,9 +166,18 @@ func (w *Worker) Run(ctx context.Context) error {
 // from the message's current mailbox it is ADDED there via
 // AddMessageToMailbox, retaining the origin membership — this is not a
 // move. AddMessageToMailbox is not idempotent; ErrConflict (membership
-// already exists) is tolerated as the no-op case. The add happens
-// before the snooze is cleared so a failed clear retries safely on the
-// next tick without re-adding.
+// already exists) is tolerated, falling back to RecordMailboxArrival
+// below. The add happens before the snooze is cleared so a failed
+// clear retries safely on the next tick.
+//
+// Every release is made observable as an arrival in the change feed
+// (re #349), not just the destination-differs case: when the message
+// was not freshly added to dest by AddMessageToMailbox above — wake in
+// place (dest == origin), or the membership already existed — the
+// worker calls RecordMailboxArrival to append the same Created-shaped
+// Email change AddMessageToMailbox would have appended, so the
+// webpush dispatcher's new-arrival gate (re #346) sees a wake exactly
+// like a fresh delivery regardless of destination.
 func (w *Worker) tick(ctx context.Context) (int, error) {
 	start := w.clock.Now()
 	defer func() {
@@ -195,17 +204,31 @@ func (w *Worker) tick(ctx context.Context) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		arrived := false
 		if dest != msg.MailboxID {
 			if _, _, err := w.store.Meta().AddMessageToMailbox(ctx, msg.ID, dest); err != nil {
 				switch {
 				case errors.Is(err, store.ErrConflict):
-					// Already a member of the destination — no-op.
+					// Already a member of the destination — fall
+					// through to RecordMailboxArrival below so the
+					// wake still shows as an arrival.
 				case errors.Is(err, store.ErrNotFound):
 					// Message was expunged between list and add; skip.
 					continue
 				default:
 					return 0, fmt.Errorf("snooze: add %d to mailbox %d: %w", msg.ID, dest, err)
 				}
+			} else {
+				arrived = true
+			}
+		}
+		if !arrived {
+			if _, err := w.store.Meta().RecordMailboxArrival(ctx, msg.ID, dest); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					// Message was expunged between list and record; skip.
+					continue
+				}
+				return 0, fmt.Errorf("snooze: record arrival %d at mailbox %d: %w", msg.ID, dest, err)
 			}
 		}
 		if _, err := w.store.Meta().SetSnooze(ctx, msg.ID, msg.MailboxID, nil, nil); err != nil {

@@ -143,25 +143,27 @@ func TestDispatcher_SnoozeWake_DestinationDiffers_FiresNotification(t *testing.T
 	}
 }
 
-// TestDispatcher_SnoozeWake_DestinationEqualsOrigin_NoPush drives the
-// wake-in-place case (explicit wake destination == the message's
-// current mailbox, so the worker never calls AddMessageToMailbox and
-// only SetSnooze's ChangeOpUpdated is appended) through the same
-// webpush payload/rules path.
+// TestDispatcher_SnoozeWake_DestinationEqualsOrigin_FiresNotification
+// drives the wake-in-place case (explicit wake destination == the
+// message's current mailbox, so the worker never calls
+// AddMessageToMailbox) through the same webpush payload/rules path.
 //
-// re #346: Evaluate now requires StateChange.Op == ChangeOpCreated for
-// a mail push (REQ-PUSH-81 "Primary category in Inbox only" is an
+// re #346: Evaluate requires StateChange.Op == ChangeOpCreated for a
+// mail push (REQ-PUSH-81 "Primary category in Inbox only" is an
 // arrival gate, not a "the row changed" gate) so a keyword/mailbox
 // mutation the user makes themselves — mark read, star, archive — does
-// not resurrect as a "new mail" notification. Wake-in-place produces the
-// exact same shape (Op=Updated, mailbox unchanged) as those mutations:
-// the change feed carries no signal distinguishing "the snooze worker
-// cleared $snoozed" from "the user marked this read", so the arrival
-// gate denies it too, superseding the "push fires" behaviour this test
-// previously pinned (see #274). A wake to a DIFFERENT mailbox still
-// pushes (store.ChangeOpCreated on the destination membership) — see
+// not resurrect as a "new mail" notification. Wake-in-place shares the
+// message-unchanged shape of those mutations, so distinguishing it
+// needs an explicit signal: re #349, the worker now also calls
+// RecordMailboxArrival on release, appending a Created-shaped Email
+// change for the wake destination even when the membership already
+// exists (wake in place is exactly that case). That Created change —
+// not SetSnooze's Updated one — is what the arrival gate sees, so the
+// wake pushes exactly like a fresh delivery. A wake to a DIFFERENT
+// mailbox pushes the same way via AddMessageToMailbox's own Created
+// change — see
 // TestDispatcher_SnoozeWake_DestinationDiffers_FiresNotification.
-func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_NoPush(t *testing.T) {
+func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_FiresNotification(t *testing.T) {
 	t.Parallel()
 	f := newDispatcherFixture(t, http.StatusCreated)
 	ctx := context.Background()
@@ -190,7 +192,47 @@ func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_NoPush(t *testing.T) {
 		t.Fatalf("dispatcher tick: %v", err)
 	}
 	after := len(f.gateway.Calls())
+	if after <= before {
+		t.Fatalf("expected a new push POST after wake-in-place; before=%d after=%d", before, after)
+	}
+}
+
+// TestDispatcher_SnoozeSet_NoPush pins the other half of #349's
+// acceptance criterion: setting a snooze (Email/set writing
+// snoozedUntil + $snoozed, which SetSnooze always records as an
+// ordinary ChangeOpUpdated) must not push, only the later wake may.
+func TestDispatcher_SnoozeSet_NoPush(t *testing.T) {
+	t.Parallel()
+	f := newDispatcherFixture(t, http.StatusCreated)
+	ctx := context.Background()
+
+	mailboxes, err := f.store.Meta().ListMailboxes(ctx, f.pid)
+	if err != nil {
+		t.Fatalf("ListMailboxes: %v", err)
+	}
+	var inbox store.Mailbox
+	for _, mb := range mailboxes {
+		if mb.Name == "INBOX" {
+			inbox = mb
+		}
+	}
+	if inbox.ID == 0 {
+		t.Fatalf("fixture INBOX not found")
+	}
+
+	// Snoozed into the future: insertSnoozedMessage's SetSnooze call is
+	// the only thing under test here, so the worker (which only
+	// touches due messages) must not fire in the same tick.
+	due := f.clk.Now().Add(time.Hour)
+	wake := inbox.ID
+	f.insertSnoozedMessage(t, inbox.ID, due, &wake, "snooze-set")
+
+	before := len(f.gateway.Calls())
+	if _, err := f.disp.tick(ctx); err != nil {
+		t.Fatalf("dispatcher tick: %v", err)
+	}
+	after := len(f.gateway.Calls())
 	if after != before {
-		t.Fatalf("wake-in-place (Updated-only) produced a push POST; before=%d after=%d, want no new push per #346's arrival gate", before, after)
+		t.Fatalf("setting a snooze produced a push POST; before=%d after=%d, want no push at snooze time", before, after)
 	}
 }

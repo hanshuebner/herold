@@ -2061,6 +2061,21 @@ type Metadata interface {
 	// the (msgID, mailboxID) membership is gone.
 	SetSnooze(ctx context.Context, msgID MessageID, mailboxID MailboxID, when *time.Time, wake *MailboxID) (ModSeq, error)
 
+	// RecordMailboxArrival appends a (EntityKindEmail, ChangeOpCreated)
+	// row to the state-change feed for the existing (msgID, mailboxID)
+	// membership, without inserting or altering any message_mailboxes
+	// row beyond bumping its ModSeq (and the mailbox's HighestModSeq),
+	// the same way every other message_mailboxes mutation does. Used by
+	// the snooze wake worker (issue #349) to make a wake into a mailbox
+	// the message already belongs to — wake in place, or a retried wake
+	// after a crash between AddMessageToMailbox and SetSnooze — show up
+	// in the change feed as an arrival exactly like AddMessageToMailbox's
+	// Created row does for a wake into a new mailbox, so both shapes
+	// pass the webpush dispatcher's new-arrival gate (re #346). Returns
+	// the message's new ModSeq. Returns ErrNotFound when the (msgID,
+	// mailboxID) membership does not exist.
+	RecordMailboxArrival(ctx context.Context, msgID MessageID, mailboxID MailboxID) (ModSeq, error)
+
 	// -- Phase 2 LLM categorisation (REQ-FILT-200..221) ---------------
 
 	// GetCategorisationConfig returns the per-account categoriser
