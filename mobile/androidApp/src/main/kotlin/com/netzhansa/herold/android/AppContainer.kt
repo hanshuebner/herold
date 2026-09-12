@@ -191,6 +191,9 @@ class AppContainer(context: Context) {
         }
     }
 
+    /** The server the last sign-in was against, offered again on the sign-in screen. */
+    suspend fun rememberedBaseUrl(): String? = tokenStore.baseUrl()
+
     /** Re-opens the session a stored token already authorises (token survives process death). */
     suspend fun restore() {
         if (_session.value == null) {

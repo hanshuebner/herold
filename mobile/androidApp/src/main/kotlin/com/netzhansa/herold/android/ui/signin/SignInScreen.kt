@@ -60,6 +60,11 @@ fun SignInScreen(container: AppContainer) {
     val context = LocalContext.current
     var baseUrl by rememberSaveable { mutableStateOf(DEFAULT_BASE_URL) }
     val state by container.signInState.collectAsStateSafely(SignInState.Idle)
+    // The server of the last sign-in, so signing back in after a
+    // revoked session does not mean retyping it.
+    LaunchedEffect(Unit) {
+        container.rememberedBaseUrl()?.takeIf { it.isNotBlank() }?.let { baseUrl = it }
+    }
     var launching by remember { mutableStateOf(false) }
     var noBrowser by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()

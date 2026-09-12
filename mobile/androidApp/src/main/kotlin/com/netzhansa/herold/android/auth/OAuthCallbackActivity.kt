@@ -31,9 +31,16 @@ class OAuthCallbackActivity : ComponentActivity() {
     private fun deliver(intent: Intent?) {
         val container = (application as HeroldApplication).container
         intent?.data?.toString()?.let(container::completeSignIn)
+        // NEW_TASK sends this at the app's own task rather than the
+        // one this receiver runs in, where CLEAR_TOP then finds the
+        // shell's existing activity and resumes it instead of stacking
+        // a second copy on top of the browser.
         startActivity(
-            Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            Intent(this, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            ),
         )
         finish()
     }
