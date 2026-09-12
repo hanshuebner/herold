@@ -25,6 +25,12 @@ on:
       - "mobile/**"
       - "docs/design/android/**"
       - ".forgejo/workflows/mobile.yml"
+    tags: ["android-v*"]
+  # A tag push carries both trigger shapes here: `push.tags` above, and
+  # `create` for forges that report a new tag only as a ref creation. The
+  # release job gates on the ref, so whichever arrives starts it, and the
+  # release it publishes is idempotent if both do.
+  create:
   pull_request:
     paths:
       - "mobile/**"
@@ -33,15 +39,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: mobile-${{ github.ref }}
-  cancel-in-progress: true
+  # A superseded branch build is worth cancelling; a half-uploaded release
+  # is not.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build-and-test:
     name: build (shared + androidApp) + unit tests
+    if: "github.event_name != 'create' && !startsWith(github.ref, 'refs/tags/')"
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 20
     defaults:
@@ -107,3 +116,135 @@ jobs:
       # #251 verified from a clean checkout.
       - name: androidApp assembleDebug
         run: ./gradlew --no-daemon :androidApp:assembleDebug
+
+  # Release lane: an `android-vX.Y.Z` tag builds a signed APK and attaches
+  # it to a Forgejo release, the same shape ci.yml's release job uses
+  # (curl against the releases API with RELEASE_TOKEN). The maintainer
+  # pushes the tag; nothing here creates one.
+  #
+  # The signing material is repository secrets, never in the tree:
+  # ANDROID_KEYSTORE_B64 (base64 of the keystore), ANDROID_KEYSTORE_PASSWORD,
+  # ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD. The build decodes the keystore
+  # into the build directory and reads the rest from the environment
+  # (mobile/androidApp/build.gradle.kts).
+  release:
+    name: signed APK for an android-v* tag
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    runs-on: [self-hosted, netzhansa, amd64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: set up Android SDK
+        run: |
+          set -euo pipefail
+          command -v unzip >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y unzip; }
+          if [ -x /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager ]; then
+            SDK=/opt/android-sdk
+          else
+            SDK="$HOME/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/clt.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip
+            unzip -q /tmp/clt.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" \
+              "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+      - name: cache Gradle caches + wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('mobile/gradle/libs.versions.toml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # Fail early and legibly when the signing secrets are missing, rather
+      # than shipping an unsigned APK.
+      - name: check signing secrets
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_B64}" ]; then
+            echo "ANDROID_KEYSTORE_B64 is not set; a tagged build must be signed" >&2
+            exit 1
+          fi
+
+      - name: assembleRelease
+        working-directory: mobile
+        env:
+          ANDROID_VERSION_TAG: ${{ github.ref_name }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # The maintainer's Firebase project, held on the runner rather
+          # than in the tree. Absent, the APK builds with push switched off.
+          HEROLD_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_PATH }}
+        run: ./gradlew --no-daemon :androidApp:printBuildFacts :androidApp:assembleRelease
+
+      - name: verify the signature
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF#android-v}"
+          APKSIGNER=$(ls "${ANDROID_SDK_ROOT}"/build-tools/*/apksigner | sort -V | tail -1)
+          SRC=mobile/androidApp/build/outputs/apk/release/androidApp-release.apk
+          APK="herold-android-${VERSION}.apk"
+          cp "${SRC}" "${APK}"
+          "${APKSIGNER}" verify --print-certs -v "${APK}"
+          sha256sum "${APK}" | tee "${APK}.sha256"
+
+      - name: create Forgejo release and upload the APK
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_SERVER_URL}/api/v1"
+          REPO="herold/herold"
+          AUTH="Authorization: token ${RELEASE_TOKEN}"
+          VERSION="${REF#android-v}"
+          APK="herold-android-${VERSION}.apk"
+
+          # Idempotent: a re-run of the same tag replaces its release.
+          existing=$(curl -fsS -H "${AUTH}" \
+            "${API}/repos/${REPO}/releases/tags/${REF}" 2>/dev/null \
+            | jq -r '.id // empty' || true)
+          if [ -n "${existing}" ]; then
+            echo "removing existing release ${REF} (id ${existing})"
+            curl -fsS -X DELETE -H "${AUTH}" "${API}/repos/${REPO}/releases/${existing}" || true
+          fi
+
+          RELEASE_ID=$(curl -fsSL -X POST "${API}/repos/${REPO}/releases" \
+            -H "${AUTH}" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg t "${REF}" --arg c "${GITHUB_SHA}" \
+                  '{tag_name:$t, target_commitish:$c, name:("herold Android " + ($t | ltrimstr("android-v"))), prerelease:false, draft:false}')" \
+            | jq -r '.id')
+
+          if [ -z "${RELEASE_ID}" ] || [ "${RELEASE_ID}" = "null" ]; then
+            echo "ERROR: failed to create release; no id returned" >&2
+            exit 1
+          fi
+
+          curl -fsSL -X POST \
+            "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${APK}" \
+            -H "${AUTH}" -F "attachment=@${APK}" > /dev/null
+          curl -fsSL -X POST \
+            "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${APK}.sha256" \
+            -H "${AUTH}" -F "attachment=@${APK}.sha256" > /dev/null
+
+          echo "Uploaded ${APK} to release ${RELEASE_ID} (${REF})"
