@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -31,6 +32,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -71,18 +74,24 @@ fun SearchScreen(
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
 
-    var query by remember { mutableStateOf("") }
-    var running by remember { mutableStateOf(false) }
-    var results by remember { mutableStateOf<SearchResults?>(null) }
+    // The query, the results and the scroll position live in a holder
+    // scoped to this destination's back-stack entry, so opening a result
+    // and coming back shows the search as it was left (issue #340).
+    val model: SearchViewModel = viewModel()
 
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    LaunchedEffect(Unit) {
+        if (!model.everFocused) {
+            model.everFocused = true
+            runCatching { focus.requestFocus() }
+        }
+    }
 
     fun run() {
-        if (query.isBlank()) return
-        running = true
+        if (model.query.isBlank()) return
+        model.running = true
         scope.launch {
-            results = session.search.search(query, accounts, mailboxes, accountScope)
-            running = false
+            model.results = session.search.search(model.query, accounts, mailboxes, accountScope)
+            model.running = false
         }
     }
 
@@ -96,16 +105,16 @@ fun SearchScreen(
                 },
                 title = {
                     TextField(
-                        value = query,
-                        onValueChange = { query = it },
+                        value = model.query,
+                        onValueChange = { model.query = it },
                         placeholder = { Text("Search mail") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { run() }),
                         trailingIcon = {
-                            if (query.isNotEmpty()) {
+                            if (model.query.isNotEmpty()) {
                                 IconButton(
-                                    onClick = { query = ""; results = null },
+                                    onClick = { model.query = ""; model.results = null },
                                     modifier = Modifier.testTag("search-clear"),
                                 ) {
                                     Icon(Icons.Filled.Close, contentDescription = "Clear")
@@ -122,10 +131,10 @@ fun SearchScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (running) {
+            if (model.running) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("search-running"))
             }
-            val current = results
+            val current = model.results
             if (current != null) {
                 if (current.scope == SearchScope.CACHED) {
                     Text(
@@ -143,7 +152,10 @@ fun SearchScreen(
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("search-count"),
                 )
-                LazyColumn(modifier = Modifier.fillMaxSize().testTag("search-results")) {
+                LazyColumn(
+                    state = model.listState,
+                    modifier = Modifier.fillMaxSize().testTag("search-results"),
+                ) {
                     items(current.hits, key = { it.row.accountId + ":" + it.row.threadId }) { hit ->
                         SearchRow(hit = hit, onOpen = { onOpenThread(hit.row.accountId, hit.row.threadId) })
                         HorizontalDivider()
@@ -214,4 +226,23 @@ private fun highlighted(snippet: String?, fallback: String) = buildAnnotatedStri
             append(text)
         }
     }
+}
+
+/**
+ * What the search screen holds across a trip into a thread. Navigation
+ * Compose disposes a destination's composition while it stays on the back
+ * stack, so plain `remember` state is gone by the time back returns; a
+ * ViewModel resolved inside the destination is scoped to its back-stack
+ * entry and is cleared when the entry is popped (REQ-AND-NAV-01).
+ */
+class SearchViewModel : ViewModel() {
+    var query by mutableStateOf("")
+    var running by mutableStateOf(false)
+    var results by mutableStateOf<SearchResults?>(null)
+
+    /** The result list's scroll offset, restored with the results. */
+    val listState = LazyListState()
+
+    /** True once the field has taken focus, so a return does not re-open the keyboard. */
+    var everFocused = false
 }

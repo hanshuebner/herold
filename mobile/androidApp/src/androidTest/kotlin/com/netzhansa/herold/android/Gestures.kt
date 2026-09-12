@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.test.platform.app.InstrumentationRegistry
 
 /**
@@ -30,6 +31,19 @@ object Gestures {
     fun swipeAcrossNode(rule: ComposeTestRule, tag: String, durationMs: Int = 200) {
         rule.waitForIdle()
         swipeAcross(rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInWindow, durationMs)
+    }
+
+    /**
+     * The system back gesture: an inward swipe from the left edge, which
+     * is how the report in issue #340 left a thread. The travel is most of
+     * the screen's width, which is what the gesture detector commits to a
+     * back rather than reading as a cancelled drag.
+     */
+    fun swipeBack(rule: ComposeTestRule) {
+        rule.waitForIdle()
+        val size = rule.onRoot().fetchSemanticsNode().size
+        val y = size.height / 2
+        shell("input swipe 2 $y ${(size.width * 0.65f).toInt()} $y 120")
     }
 
     /** Runs a shell command and waits for it to finish. */

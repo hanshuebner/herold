@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
@@ -89,6 +90,38 @@ class SearchAcceptanceTest {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
         }
         compose.captureScreen("31-search-result-opens-the-thread")
+    }
+
+    @Test
+    fun t30b_backFromAResultRestoresTheSearchScreen() = runBlocking {
+        signInAndSync()
+        val seeded = app.container.store.inboxEmails().first()
+            .firstOrNull { it.subject.startsWith(SEED_PREFIX) }
+            ?: error("the dev instance holds no \"$SEED_PREFIX ...\" message to search for")
+
+        openSearch()
+        compose.onNodeWithTag("search-field").performTextInput(QUERY)
+        compose.onNodeWithTag("search-field").performImeAction()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("search-row-${seeded.threadId}").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        compose.onNodeWithTag("search-row-${seeded.threadId}").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // The report was a back swipe, so the check swipes too.
+        Gestures.swipeBack(compose)
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("search-field").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("search-row-${seeded.threadId}").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText(QUERY).assertIsDisplayed()
+        compose.onNodeWithTag("search-row-${seeded.threadId}").assertIsDisplayed()
+        compose.captureScreen("33-back-restores-the-search")
     }
 
     @Test
