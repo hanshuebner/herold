@@ -180,6 +180,17 @@ class KeystoreTokenStore(
         Unit
     }
 
+    override suspend fun pushEndpoint(): String? = withContext(Dispatchers.IO) {
+        preferences.getString(KEY_PUSH_ENDPOINT, null)
+    }
+
+    override suspend fun setPushEndpoint(endpoint: String?) = withContext(Dispatchers.IO) {
+        val editor = preferences.edit()
+        if (endpoint == null) editor.remove(KEY_PUSH_ENDPOINT) else editor.putString(KEY_PUSH_ENDPOINT, endpoint)
+        editor.commit()
+        Unit
+    }
+
     private companion object {
         const val KEY_TOKEN = "bearer_token"
         const val KEY_REFRESH_TOKEN = "refresh_token"
@@ -194,5 +205,6 @@ class KeystoreTokenStore(
         const val KEY_PUSH_PUBLIC = "push_p256dh"
         const val KEY_PUSH_PRIVATE = "push_private_key"
         const val KEY_PUSH_AUTH = "push_auth_secret"
+        const val KEY_PUSH_ENDPOINT = "push_endpoint"
     }
 }

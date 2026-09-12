@@ -15,6 +15,15 @@ interface PushKeyStore {
 
     suspend fun clearPushKeys()
 
+    /**
+     * The endpoint the UnifiedPush distributor handed out. Anyone holding
+     * it can push to this device, so it lives here rather than in ordinary
+     * preferences; null once the distributor has taken it back.
+     */
+    suspend fun pushEndpoint(): String?
+
+    suspend fun setPushEndpoint(endpoint: String?)
+
     /** The keys this install holds, minting and storing them on first use. */
     suspend fun pushKeysOrGenerate(): WebPushKeys =
         pushKeys() ?: WebPushKeys.generate().also { storePushKeys(it) }

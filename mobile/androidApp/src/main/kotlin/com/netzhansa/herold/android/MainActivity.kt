@@ -358,7 +358,7 @@ private fun PushEngagement(container: AppContainer, session: SessionScope) {
             }
             return@LaunchedEffect
         }
-        container.push.registerCurrentToken()
+        container.push.registerCurrentTransport()
     }
 }
 

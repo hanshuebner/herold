@@ -10,6 +10,13 @@
          user has turned it on (REQ-AND-AUTH-11). -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <!-- Whether Play Services is installed decides the automatic push
+         transport (REQ-AND-PUSH-05); the connector declares its own query
+         for distributor packages. -->
+    <queries>
+        <package android:name="com.google.android.gms" />
+    </queries>
+
     <application
         android:name=".HeroldApplication"
         android:label="@string/app_name"
@@ -59,6 +66,21 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- The UnifiedPush distributor broadcasts the endpoint and every
+             push here (REQ-AND-PUSH-04). The sender is another app, so the
+             receiver is exported; the connector matches the instance token
+             it handed the distributor before anything is acted on. -->
+        <receiver
+            android:name=".push.HeroldUnifiedPushReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Archive and Mark Read from the shade, applied without opening
              the app (REQ-AND-PUSH-20). -->

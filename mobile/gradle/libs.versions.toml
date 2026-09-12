@@ -22,6 +22,10 @@ androidx-datastore = "1.1.2"
 androidx-test-runner = "1.6.2"
 androidx-work = "2.10.0"
 firebase-bom = "33.7.0"
+# The UnifiedPush connector's v2 API hands the app the distributor's bytes
+# unchanged, so the RFC 8291 keys and the envelope decryption stay in the
+# shared module where the iOS client reuses them (issue #229).
+unifiedpush = "2.5.0"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -47,6 +51,7 @@ androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version
 androidx-work-testing = { module = "androidx.work:work-testing", version.ref = "androidx-work" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
 firebase-messaging = { module = "com.google.firebase:firebase-messaging" }
+unifiedpush-connector = { module = "org.unifiedpush.android:connector", version.ref = "unifiedpush" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
