@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AssistChip
@@ -104,6 +105,7 @@ fun InboxScreen(
     onCompose: () -> Unit,
     onSearch: () -> Unit,
     onOutbox: () -> Unit,
+    onSettings: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
@@ -207,6 +209,16 @@ fun InboxScreen(
                         onOutbox()
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-outbox"),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Settings") },
+                    selected = false,
+                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    onClick = {
+                        scope.launch { drawer.close() }
+                        onSettings()
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-settings"),
                 )
             }
         },

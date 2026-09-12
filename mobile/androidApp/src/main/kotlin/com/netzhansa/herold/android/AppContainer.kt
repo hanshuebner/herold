@@ -31,6 +31,7 @@ import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -52,8 +53,12 @@ class SessionScope(
     val syncEngine: SyncEngine,
     /** The outbox's submitter; the shell watches its failures. */
     val drainer: OutboxDrainer,
-    /** Asks for a drain of the outbox, off any screen's lifetime. */
-    val requestDrain: () -> Unit,
+    /**
+     * Asks for a drain of the outbox, off any screen's lifetime. The
+     * delay is how long the first attempt waits, which is what holds a
+     * send inside its undo window (issue #354).
+     */
+    val requestDrain: (delayMs: Long) -> Unit,
     val actions: MailActions,
     val eventSource: EventSourceClient,
     val imageProxy: ImageProxyClient,
@@ -140,7 +145,7 @@ class AppContainer(context: Context) {
         // (REQ-AND-SYNC-22); the drain follows it without the user
         // having to open anything.
         appScope.launch {
-            connectivity.online.collect { up -> if (up) session.value?.requestDrain?.invoke() }
+            connectivity.online.collect { up -> if (up) session.value?.requestDrain?.invoke(0) }
         }
     }
 
@@ -180,11 +185,12 @@ class AppContainer(context: Context) {
      * result back in: the Sent copy of a message the drain submitted is
      * what the user expects to see next.
      */
-    private fun drain(syncEngine: SyncEngine) {
+    private fun drain(syncEngine: SyncEngine, delayMs: Long) {
         // The background job covers what this pass cannot: the app being
         // closed or killed before the queue is empty (REQ-AND-SYNC-31).
-        OutboxWorker.schedule(appContext)
+        OutboxWorker.schedule(appContext, delayMs)
         appScope.launch {
+            if (delayMs > 0) delay(delayMs)
             val outcome = syncEngine.drainOutbox()
             if (outcome.submitted > 0) syncEngine.syncAll()
         }
@@ -209,14 +215,14 @@ class AppContainer(context: Context) {
             drainer = drainer,
             now = { System.currentTimeMillis() },
         )
-        val requestDrain = { drain(syncEngine) }
+        val requestDrain: (Long) -> Unit = { delayMs -> drain(syncEngine, delayMs) }
         return SessionScope(
             baseUrl = baseUrl,
             client = client,
             syncEngine = syncEngine,
             drainer = drainer,
             requestDrain = requestDrain,
-            actions = MailActions(store, outbox, requestDrain),
+            actions = MailActions(store, outbox) { requestDrain(0) },
             eventSource = EventSourceClient(httpClient, client),
             imageProxy = ImageProxyClient(httpClient, client),
             pushRegistrar = PushRegistrar(

@@ -36,6 +36,7 @@ import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.inbox.InboxScreen
 import com.netzhansa.herold.android.ui.outbox.OutboxScreen
 import com.netzhansa.herold.android.ui.search.SearchScreen
+import com.netzhansa.herold.android.ui.settings.SettingsScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.ui.theme.HeroldTheme
@@ -147,6 +148,13 @@ fun HeroldApp(
                 }
             }
 
+            // A send taken back inside its undo window comes back as the
+            // compose it was, on the screen the user is on (issue #354).
+            val resumed by container.composeResume.collectAsStateSafely(null)
+            LaunchedEffect(resumed) {
+                if (resumed != null) navController.navigate("compose-resume")
+            }
+
             // The shade's Reply action names a message; open the composer
             // on it, quote prepared (REQ-AND-PUSH-21).
             val reply by replyTarget.collectAsStateSafely(null)
@@ -167,7 +175,23 @@ fun HeroldApp(
                         onCompose = { navController.navigate("compose/NEW/-/-") },
                         onSearch = { navController.navigate("search") },
                         onOutbox = { navController.navigate("outbox") },
+                        onSettings = { navController.navigate("settings") },
                         onSignOut = { scope.launch { container.signOut() } },
+                    )
+                }
+                composable("settings") {
+                    SettingsScreen(onBack = { navController.popBackStack() })
+                }
+                composable("compose-resume") {
+                    ComposeScreen(
+                        container = container,
+                        session = current,
+                        mode = ComposeMode.NEW,
+                        accountId = null,
+                        parentEmailId = null,
+                        accountScope = container.accountScope.value,
+                        onClose = { navController.popBackStack() },
+                        resume = resumed,
                     )
                 }
                 composable("outbox") {

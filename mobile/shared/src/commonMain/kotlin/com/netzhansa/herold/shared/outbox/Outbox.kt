@@ -97,6 +97,16 @@ class Outbox(
         return entry
     }
 
+    /**
+     * Drops a queued compose and hands back what it held, so the
+     * composer can reopen on it - the undo of a send still inside its
+     * window (issue #354). Null when the drain already took it.
+     */
+    suspend fun cancelCompose(id: Long): ComposePayload? {
+        val entry = cancelIfQueued(id) ?: return null
+        return runCatching { outboxJson.decodeFromString<ComposePayload>(entry.payload) }.getOrNull()
+    }
+
     /** Drops an entry outright, whatever its state; the outbox screen's discard. */
     suspend fun remove(id: Long) = store.deleteOutbox(id)
 

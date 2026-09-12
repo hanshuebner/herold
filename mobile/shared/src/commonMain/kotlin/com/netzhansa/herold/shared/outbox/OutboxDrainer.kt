@@ -339,8 +339,12 @@ class OutboxDrainer(
     }
 }
 
-/** The compose the payload describes, for the wire builder to render. */
-internal fun ComposePayload.toComposeState(): ComposeState = ComposeState(
+/**
+ * The compose the payload describes: what the wire builder renders at
+ * drain time, and what the composer reopens on when a send is taken back
+ * within its undo window (issue #354).
+ */
+fun ComposePayload.toComposeState(): ComposeState = ComposeState(
     mode = if (parentId == null) ComposeMode.NEW else ComposeMode.REPLY,
     accountId = accountId,
     identity = Identity(
@@ -356,14 +360,15 @@ internal fun ComposePayload.toComposeState(): ComposeState = ComposeState(
     bodyHtml = bodyHtml,
     attachments = attachments.map {
         ComposeAttachment(
-            key = it.blobId.orEmpty() + ":" + it.name,
+            key = (it.blobId ?: it.spool).orEmpty() + ":" + it.name,
             name = it.name,
             type = it.type,
             size = it.size,
             blobId = it.blobId,
-            status = if (it.blobId == null) AttachmentStatus.UPLOADING else AttachmentStatus.READY,
+            status = if (it.blobId == null) AttachmentStatus.PENDING else AttachmentStatus.READY,
             inline = it.inline,
             cid = it.cid,
+            spool = it.spool,
         )
     },
     replyContext = parentId?.let {

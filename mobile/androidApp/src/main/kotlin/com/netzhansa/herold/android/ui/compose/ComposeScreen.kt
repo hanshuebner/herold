@@ -79,7 +79,11 @@ import com.netzhansa.herold.shared.compose.ComposeState
 import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
+import com.netzhansa.herold.android.ui.settings.UndoSendPreference
+import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.domain.MailAddress
+import com.netzhansa.herold.shared.outbox.ComposePayload
+import com.netzhansa.herold.shared.outbox.toComposeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
@@ -106,6 +110,8 @@ fun ComposeScreen(
     parentEmailId: String?,
     accountScope: String?,
     onClose: () -> Unit,
+    /** A send taken back within its undo window, reopened as it was (issue #354). */
+    resume: ComposePayload? = null,
 ) {
     val identities by container.store.identities().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
@@ -130,7 +136,14 @@ fun ComposeScreen(
 
     // The compose opens once its inputs have arrived from the local store.
     LaunchedEffect(identities, accounts, parentEmailId, mode) {
-        if (state != null || identities.isEmpty()) return@LaunchedEffect
+        if (state != null) return@LaunchedEffect
+        if (resume != null) {
+            state = resume.toComposeState()
+            // Taken: a later recomposition must not reopen it again.
+            container.composeResume.value = null
+            return@LaunchedEffect
+        }
+        if (identities.isEmpty()) return@LaunchedEffect
         // The quote needs the parent's body, which a message opened from
         // the shade's Reply action has not been read with yet; loadBody
         // returns the cached copy when there is one (issue #348).
@@ -268,12 +281,16 @@ fun ComposeScreen(
                             scope.launch {
                                 editor.publish()
                                 val toSend = withBody(state ?: target)
-                                when (val result = session.composer.send(toSend, mailboxes)) {
+                                val hold = UndoSendPreference.current(context).millis
+                                when (val result = session.composer.send(toSend, mailboxes, hold)) {
                                     is ComposeResult.Queued -> {
                                         // The message is durable now: the
                                         // drain carries it, with or
-                                        // without a connection.
-                                        session.requestDrain()
+                                        // without a connection. The hold
+                                        // is the window the list offers
+                                        // the undo in (issue #354).
+                                        offerUndoSend(container, result, hold)
+                                        session.requestDrain(hold)
                                         close()
                                     }
 
@@ -563,6 +580,18 @@ private fun FormattingToolbar(
         IconButton(onClick = onInsertImage, modifier = Modifier.testTag("compose-insert-image")) {
             Icon(Icons.Filled.Image, contentDescription = "Insert an image")
         }
+    }
+}
+
+/**
+ * Parks the "Sending" offer the list shows for the length of the hold.
+ * Taking it drops the queued entry and hands the compose back, with its
+ * recipients, body and attachments as they were (issue #354).
+ */
+private fun offerUndoSend(container: AppContainer, queued: ComposeResult.Queued, holdMs: Long) {
+    if (holdMs <= 0) return
+    container.undo.offer(UndoMessages.SENDING, windowMs = holdMs) {
+        container.composeResume.value = container.outbox.cancelCompose(queued.entryId)
     }
 }
 

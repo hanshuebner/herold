@@ -64,7 +64,7 @@ fun OutboxScreen(
                             onClick = {
                                 scope.launch {
                                     container.outbox.retryAll()
-                                    session.requestDrain()
+                                    session.requestDrain(0)
                                 }
                             },
                             modifier = Modifier.testTag("outbox-retry-all"),
@@ -91,7 +91,7 @@ fun OutboxScreen(
                         onRetry = {
                             scope.launch {
                                 container.outbox.retry(entry.id)
-                                session.requestDrain()
+                                session.requestDrain(0)
                             }
                         },
                         onDiscard = { scope.launch { container.outbox.remove(entry.id) } },
