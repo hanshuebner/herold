@@ -35,14 +35,26 @@ func newStore(t *testing.T) store.Store {
 // context key is owned by the Core agent's protojmap package).
 func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
-	st := newStore(t)
+	return newHandlersUsingStore(t, newStore(t), "alice@example.test")
+}
+
+// newHandlersUsingStore is newHandlers' backend-agnostic body: it wires
+// the handler set on top of a pre-opened store.Store, so the same setup
+// runs unchanged against SQLite (newHandlers) or Postgres
+// (newHandlersPostgres in subaccount_test.go), letting store-agnostic
+// identity-listing bugs (e.g. issue #337) be pinned on both backends.
+// canonicalEmail lets Postgres callers pass a nanosecond-suffixed
+// address so repeated runs against a persistent database never collide
+// on a still-registered principal from an earlier run.
+func newHandlersUsingStore(t *testing.T, st store.Store, canonicalEmail string) (*handlerSet, store.Store, store.Principal) {
+	t.Helper()
 	ctx := context.Background()
-	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil {
+	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil && !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("insert domain: %v", err)
 	}
 	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
 		Kind:           store.PrincipalKindUser,
-		CanonicalEmail: "alice@example.test",
+		CanonicalEmail: canonicalEmail,
 		DisplayName:    "Alice",
 	})
 	if err != nil {

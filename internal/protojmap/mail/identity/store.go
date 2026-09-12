@@ -73,14 +73,45 @@ func NewStoreWith(st store.Store, clk clock.Clock) *Store {
 // Metadata.SetDefaultJMAPIdentity, so at most one custom row should
 // ever be flagged; if a stale double-flag is observed the first row in
 // id order wins and the rest are reported false.
+//
+// A sub-principal's CanonicalEmail is set, at creation, to the email
+// of the Identity that store.SeparateIdentity promoted into it (issue
+// #227): the promoted row and the synthesised default would otherwise
+// both name the same address, so a client listing this account's
+// identities sees the same From choice twice (issue #337). When the
+// sub-principal already holds a persisted identity for its own
+// address, that row *is* the account's identity: the synthesised
+// default is suppressed and the promoted row carries IsDefault and
+// MayDelete=false instead -- it is the account's only identity for
+// its own address, so it stays as non-deletable as the default it
+// replaces. A parent principal's own listing is unaffected: its
+// CanonicalEmail names its own inbox, never a promoted identity's
+// address.
 func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []identityRecord {
 	s.mu.RLock()
 	def := s.defaultRecordLocked(p)
 	s.mu.RUnlock()
 	custom, _ := s.loadPersisted(ctx, p)
-	out := make([]identityRecord, 0, 1+len(custom))
-	out = append(out, def)
-	out = append(out, custom...)
+
+	promotedIdx := -1
+	if p.Kind == store.PrincipalKindSubAccount {
+		want := strings.ToLower(strings.TrimSpace(p.CanonicalEmail))
+		for i := range custom {
+			if strings.ToLower(strings.TrimSpace(custom[i].Email)) == want {
+				promotedIdx = i
+				break
+			}
+		}
+	}
+
+	var out []identityRecord
+	if promotedIdx >= 0 {
+		out = custom
+	} else {
+		out = make([]identityRecord, 0, 1+len(custom))
+		out = append(out, def)
+		out = append(out, custom...)
+	}
 	seen := false
 	for i := range out {
 		if out[i].ID == 0 {
@@ -95,7 +126,14 @@ func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []ident
 		out[i].IsDefault = false
 	}
 	if !seen {
-		out[0].IsDefault = true
+		if promotedIdx >= 0 {
+			out[promotedIdx].IsDefault = true
+		} else {
+			out[0].IsDefault = true
+		}
+	}
+	if promotedIdx >= 0 {
+		out[promotedIdx].MayDelete = false
 	}
 	for i := range out {
 		s.attachSeparation(ctx, &out[i])

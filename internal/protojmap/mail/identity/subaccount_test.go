@@ -16,12 +16,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 )
 
 // newHandlersWithSubAccounts is newHandlers plus a capability registry
@@ -30,6 +32,31 @@ import (
 func newHandlersWithSubAccounts(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
 	h, st, p := newHandlers(t)
+	reg := protojmap.NewCapabilityRegistry()
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilitySubAccounts, struct{}{})
+	h.reg = reg
+	return h, st, p
+}
+
+// newHandlersWithSubAccountsPostgres is newHandlersWithSubAccounts'
+// Postgres counterpart: same fixture wiring, opened against
+// HEROLD_PG_DSN instead of an on-disk SQLite file. Skips the test when
+// HEROLD_PG_DSN is unset or the connection cannot be established, so
+// tests using it run as a no-op locally without a running Postgres and
+// as a real parity check in CI's storepg leg.
+func newHandlersWithSubAccountsPostgres(t *testing.T) (*handlerSet, store.Store, store.Principal) {
+	t.Helper()
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, nil)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	canonicalEmail := fmt.Sprintf("alice-%d@example.test", time.Now().UnixNano())
+	h, st, p := newHandlersUsingStore(t, st, canonicalEmail)
 	reg := protojmap.NewCapabilityRegistry()
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilitySubAccounts, struct{}{})
 	h.reg = reg
@@ -340,4 +367,84 @@ func TestIdentity_Set_Separation_FullRoundTrip(t *testing.T) {
 	if len(backResp.(getResponse).List) != 1 {
 		t.Fatalf("identity not listed under parent after reversal: %+v", backResp.(getResponse))
 	}
+}
+
+// assertSubAccountListsPromotedIdentityOnce is the shared body of
+// TestIdentity_Get_SubAccount_NoDuplicateDefault: it verifies issue
+// #337 -- once an identity has been separated, a full Identity/get (no
+// ids filter) against the sub-account lists that identity exactly once.
+// The synthesised "default" (whose email is always the account's
+// CanonicalEmail, set to the promoted identity's address by
+// store.SeparateIdentity) must not also appear; the promoted row
+// stands in for the default and carries isDefault and mayDelete=false.
+func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st store.Store, p store.Principal, wantEmail string) {
+	t.Helper()
+	created := createIdentity(t, h, p, "ext", "External", wantEmail)
+
+	args, _ := json.Marshal(map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(p.ID),
+		"update":    map[string]any{created.ID: map[string]any{"separated": true}},
+	})
+	resp, mErr := setHandler{h: h}.executeAs(p, args)
+	if mErr != nil {
+		t.Fatalf("Identity/set separated:true: %v", mErr)
+	}
+	updated, ok := resp.(setResponse).Updated[created.ID]
+	if !ok || updated.SubAccountId == nil {
+		t.Fatalf("expected updated with subAccountId; got %+v / notUpdated %+v", updated, resp.(setResponse).NotUpdated)
+	}
+	subAccountID := *updated.SubAccountId
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mig, err := st.Meta().GetSubAccountMigrationByIdentity(context.Background(), created.ID)
+		if err != nil {
+			t.Fatalf("GetSubAccountMigrationByIdentity: %v", err)
+		}
+		if mig.Status == store.SubAccountMigrationStatusDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("migration did not complete within deadline: %+v", mig)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	listArgs, _ := json.Marshal(map[string]any{"accountId": subAccountID})
+	listResp, mErr := getHandler{h: h}.executeAs(p, listArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/get(sub-account): %v", mErr)
+	}
+	list := listResp.(getResponse).List
+	if len(list) != 1 {
+		t.Fatalf("sub-account Identity/get list len = %d; want 1: %+v", len(list), list)
+	}
+	got := list[0]
+	if string(got.ID) != created.ID {
+		t.Fatalf("sub-account identity id = %q; want %q", got.ID, created.ID)
+	}
+	if got.Email != wantEmail {
+		t.Fatalf("sub-account identity email = %q; want %q", got.Email, wantEmail)
+	}
+	if !got.IsDefault {
+		t.Fatalf("sub-account identity IsDefault = false; want true (it is the account's only identity)")
+	}
+	if got.MayDelete {
+		t.Fatalf("sub-account identity MayDelete = true; want false (it is the account's only identity for its own address)")
+	}
+}
+
+func TestIdentity_Get_SubAccount_NoDuplicateDefault(t *testing.T) {
+	h, st, p := newHandlersWithSubAccounts(t)
+	assertSubAccountListsPromotedIdentityOnce(t, h, st, p, "ext@example.test")
+}
+
+// TestIdentity_Get_SubAccount_NoDuplicateDefault_Postgres is the
+// Postgres-backed parity leg for issue #337 (STANDARDS.md SS8: every
+// integration test runs on both backends). Skips when HEROLD_PG_DSN is
+// unset.
+func TestIdentity_Get_SubAccount_NoDuplicateDefault_Postgres(t *testing.T) {
+	h, st, p := newHandlersWithSubAccountsPostgres(t)
+	wantEmail := fmt.Sprintf("ext-%d@example.test", time.Now().UnixNano())
+	assertSubAccountListsPromotedIdentityOnce(t, h, st, p, wantEmail)
 }
