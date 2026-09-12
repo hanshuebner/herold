@@ -96,6 +96,23 @@ Distinct from spam classification (which produces `$junk` and the spam mailbox),
 
 The suite sets `Mailbox.color` (a hex string) on label create / edit. Herold persists and returns this property. See `../requirements/03-labels.md`.
 
+### Mailbox disposition and priority
+
+Every `Mailbox` (a category is a label) carries two properties (issue #333, ADR-0004, `../requirements/05-categorisation.md` REQ-CAT-01/04/05/10/11, `../requirements/03-labels.md`):
+
+- `disposition`: string, one of `none`, `pinned`, `bundled`, `daily`, `weekly`, `filed`. Defaults to `none`. `pinned` renders as an inbox tab; `bundled` collapses to one row; `daily`/`weekly` digest; `filed` labels and archives out of the inbox.
+- `priority`: integer or `null`. `null` (the default) means unranked. Lower values rank higher; a multi-category message lands in the lane of the category with the lowest `priority` among the ones it carries.
+
+Both are settable through `Mailbox/set`, on create and on update:
+
+- The server validates `disposition` against the six-value enum, returning `invalidProperties` for anything else.
+- At most 5 mailboxes per principal may carry `disposition: "pinned"` (REQ-CAT-11). A create or update that would exceed the limit is refused with a `tooManyPinned` SetError, not `invalidProperties`.
+- INBOX, Sent, Drafts, Trash, Junk, Archive, and the virtual Flagged mailbox (any mailbox with a `role`) refuse both properties with `invalidProperties` — disposition and priority are category-label concepts and do not apply to system mailboxes.
+- Setting `priority` moves the mailbox to that rank within the principal's ranked-label list; the server renumbers every other ranked label densely (0..n-1) in the same operation, so a client reorders by drag with a single `Mailbox/set{priority: <newRank>}` per moved label. Setting `priority` to `null` unranks the mailbox and densely renumbers the remainder.
+- Both changes advance the `Mailbox` state string, so `Mailbox/changes` reports every mailbox whose `disposition` or `priority` moved — including mailboxes the client didn't touch directly but whose rank shifted as a side effect of the renumbering.
+
+`CategorySettings/get`'s `derivedCategories` is unaffected — it stays the server-derived list of category names from the classifier, independent of the disposition/priority wire surface.
+
 ### Image proxy (resolved Q4)
 
 For inline `<img>` references in HTML mail, the suite renders the image via a server-side proxy URL of the shape `<origin>/proxy/image?url=<encoded-original>`. The proxy fetches the image, strips tracking-relevant request headers, enforces caps, and serves the result back. Same origin as the JMAP API so the CSP can `img-src 'self'` (`../requirements/13-nonfunctional.md` REQ-SEC-07).

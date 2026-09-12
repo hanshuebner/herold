@@ -47,6 +47,16 @@ token** as a push subscription and receives via FCM
 contract (`notificationRules`, enriched-vs-minimal, coalescing by thread) is
 unchanged; only the transport and the encryption/visibility properties differ.
 
+### Categorisation (no divergence from § Mailbox disposition and priority)
+
+The mobile client reads `Mailbox.disposition` and `Mailbox.priority` from the
+server (base contract § Mailbox disposition and priority) to decide inbox
+lanes — pinned tabs (max 5), bundled rows, daily/weekly digests, filed
+labels — and their order, identically to the Suite. This supersedes the
+milestone-1a client-side heuristic (deriving tabs from the first five
+category names) tracked on #327; the client-side switch to the server
+fields is tracked on the Android client tickets, not here.
+
 ### EventSource
 
 Used identically to the Suite (server-contract § EventSource push) while the app
