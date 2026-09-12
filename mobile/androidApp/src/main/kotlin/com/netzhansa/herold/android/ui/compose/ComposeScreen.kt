@@ -10,6 +10,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -70,6 +71,7 @@ import com.netzhansa.herold.shared.compose.ComposeAttachment
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.compose.ComposeState
+import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
 import com.netzhansa.herold.shared.domain.MailAddress
@@ -115,6 +117,9 @@ fun ComposeScreen(
     var sending by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
     var suggestions by remember { mutableStateOf<List<MailAddress>>(emptyList()) }
+    // The editor's document loads asynchronously; it publishes its body
+    // once it is up, which is also what tells a caller it can be typed in.
+    var editorReady by remember { mutableStateOf(false) }
 
     // The compose opens once its inputs have arrived from the local store.
     LaunchedEffect(identities, accounts, parentEmailId, mode) {
@@ -155,8 +160,12 @@ fun ComposeScreen(
         return next
     }
 
+    /** The compose with the editor's last published body folded in. */
+    fun withBody(target: ComposeState): ComposeState =
+        editor.latestHtml?.let { target.copy(bodyHtml = it) } ?: target
+
     suspend fun saveDraft(target: ComposeState) {
-        when (val result = session.composer.saveDraft(target, mailboxes)) {
+        when (val result = session.composer.saveDraft(withBody(target), mailboxes)) {
             is ComposeResult.Saved -> state = (state ?: target).copy(draftId = result.draftId)
             is ComposeResult.Failed -> snackbar.showSnackbar(result.message)
             else -> Unit
@@ -219,7 +228,7 @@ fun ComposeScreen(
                             sending = true
                             scope.launch {
                                 editor.publish()
-                                val toSend = state ?: target
+                                val toSend = withBody(state ?: target)
                                 when (val result = session.composer.send(toSend, mailboxes)) {
                                     is ComposeResult.Sent -> {
                                         session.syncEngine.syncAccount(toSend.accountId)
@@ -330,9 +339,20 @@ fun ComposeScreen(
                 darkTheme = darkTheme,
                 attachments = current.attachments,
                 handle = editor,
-                onHtmlChanged = { html -> state = state?.copy(bodyHtml = html) },
+                onHtmlChanged = { html ->
+                    state = state?.copy(bodyHtml = html)
+                    editorReady = true
+                },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp).testTag("compose-body"),
             )
+
+            if (editorReady) {
+                // The editor lives in a WebView, whose content is outside
+                // the Compose tree; its length is what tells a caller the
+                // document is up and has taken an edit.
+                val bodyChars = HtmlText.toPlainText(current.bodyHtml).length
+                Spacer(modifier = Modifier.testTag("compose-editor-$bodyChars"))
+            }
 
             AttachmentStrip(
                 attachments = current.attachments,

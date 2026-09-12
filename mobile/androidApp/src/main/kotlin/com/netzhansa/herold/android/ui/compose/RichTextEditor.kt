@@ -46,6 +46,15 @@ class EditorHandle {
      */
     internal val inlineImages = mutableMapOf<String, Pair<String, ByteArray>>()
 
+    /**
+     * The HTML of the last edit the page published. The bridge writes it
+     * as the keystroke arrives, so a save that runs before the state
+     * update has been applied still writes what the user typed.
+     */
+    @Volatile
+    var latestHtml: String? = null
+        internal set
+
     /** Applies a formatting command to the selection. */
     fun run(command: EditorCommand) = evaluate(command.js + ";herold.publish();")
 
@@ -107,6 +116,7 @@ fun RichTextEditor(
                     object {
                         @JavascriptInterface
                         fun changed(html: String) {
+                            handle.latestHtml = html
                             post { handle.onHtml?.invoke(html) }
                         }
                     },
@@ -135,7 +145,11 @@ fun RichTextEditor(
                         WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
                 handle.webView = this
+                // The body is where a reply is written, so the editor takes
+                // focus as it loads rather than waiting for a tap.
+                isFocusableInTouchMode = true
                 loadDataWithBaseURL(null, editorDocument(initialHtml, darkTheme), "text/html", "utf-8", null)
+                requestFocus()
             }
         },
         onRelease = { if (handle.webView === it) handle.webView = null },
@@ -182,6 +196,8 @@ private fun editorDocument(body: String, darkTheme: Boolean): String {
             selection.removeAllRanges();
             selection.addRange(range);
           })();
+          // Tell the host the document is up and what it starts with.
+          herold.publish();
         </script>
         </body></html>
     """.trimIndent()

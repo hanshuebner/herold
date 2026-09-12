@@ -5,6 +5,8 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -260,11 +262,24 @@ class ComposeAcceptanceTest {
      * reply is written.
      */
     private fun typeInBody(text: String) {
+        // The editor's document loads asynchronously and publishes its
+        // body's length once it is up.
+        compose.waitUntil(TIMEOUT_MS) { editorChars() >= 0 }
+        val before = editorChars()
         compose.onNodeWithTag("compose-body").performTouchInput { click(Offset(30f, 20f)) }
         compose.waitForIdle()
         InstrumentationRegistry.getInstrumentation().sendStringSync(text)
-        compose.waitForIdle()
+        compose.waitUntil(TIMEOUT_MS) { editorChars() >= before + text.length }
     }
+
+    /** How many characters the editor's body holds, or -1 before it loads. */
+    private fun editorChars(): Int =
+        compose.onAllNodes(hasTestTagStartingWith("compose-editor-"), useUnmergedTree = true)
+            .fetchSemanticsNodes()
+            .firstNotNullOfOrNull {
+                it.config.getOrNull(SemanticsProperties.TestTag)
+                    ?.removePrefix("compose-editor-")?.toIntOrNull()
+            } ?: -1
 
     /**
      * Stubs the system file picker with a file of our own, so the

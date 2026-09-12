@@ -5,7 +5,6 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -64,21 +63,35 @@ class OfflineAcceptanceTest {
             )
             assertTrue("sign-in failed: $result", result is SignInResult.Success)
         }
-        app.container.session.value!!.syncEngine.syncAll()
+        // The phase seeds the message it caches, so phase two reads a
+        // thread this run put there rather than whatever was left behind.
+        val subject = "offline read ${System.currentTimeMillis()}"
+        DevInstance.deliverMail(subject, body = "Body to read with the radios off.")
+        var seeded: Email? = null
+        repeat(30) {
+            app.container.session.value!!.syncEngine.syncAll()
+            seeded = app.container.store.inboxEmails().first().firstOrNull { it.subject == subject }
+            if (seeded != null) return@repeat
+            Thread.sleep(500)
+        }
+        val target = seeded ?: error("the seeded message \"$subject\" never reached the inbox")
 
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onAllNodes(hasTestTagStartingWith("thread-row-"), useUnmergedTree = true)
-            .onFirst().performClick()
+        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${target.threadId}"))
+        compose.onNodeWithTag("thread-row-${target.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodes(isRenderedMessageBody(), useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("thread-back").performClick()
 
-        assertNotNull("nothing was cached to read offline", cachedMessage())
+        assertNotNull(
+            "the opened message must be cached to read offline",
+            app.container.store.email(target.accountId, target.id)?.let { it.bodyHtml ?: it.bodyText },
+        )
     }
 
     @Test
