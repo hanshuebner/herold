@@ -290,6 +290,7 @@ func Run(t *testing.T, f Factory) {
 		// -- issue #333: category disposition + priority --------------
 		{"Mailbox_DispositionAndPriority_RoundTrip", testMailboxDispositionAndPriorityRoundTrip},
 		{"ReorderMailboxPriority_DenseRenumbering", testReorderMailboxPriorityDenseRenumbering},
+		{"DeleteMailbox_RenumbersRankedSurvivors", testDeleteMailboxRenumbersRankedSurvivors},
 		{"CountPinnedMailboxes", testCountPinnedMailboxes},
 		{"JMAPStates_SieveCounter", testJMAPStatesSieveCounter},
 		// -- REQ-PROTO-49 JMAP snooze ------------------------------

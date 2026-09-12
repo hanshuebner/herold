@@ -203,6 +203,108 @@ func runDispositionAndPriorityAcceptance(t *testing.T, f *fixture) {
 	assertPriority(t, f, r1ID, 2)
 }
 
+// TestMailbox_Destroy_RenumbersRankedSurvivors covers the #333
+// verification finding: Mailbox/set destroy of a ranked label shares
+// store.Metadata.DeleteMailbox with IMAP DELETE, which must renumber
+// the principal's remaining ranked labels densely and report the
+// shift through Mailbox/changes -- not just leave a gap.
+func TestMailbox_Destroy_RenumbersRankedSurvivors(t *testing.T) {
+	runDestroyRenumbersRankedSurvivors(t, setupFixture(t))
+}
+
+// TestMailbox_Destroy_RenumbersRankedSurvivors_Postgres is the same
+// scenario against a Postgres-backed store, skipping when HEROLD_PG_DSN
+// is unset or unreachable.
+func TestMailbox_Destroy_RenumbersRankedSurvivors_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, nil)
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	runDestroyRenumbersRankedSurvivors(t, setupFixtureWithStore(t, st))
+}
+
+func runDestroyRenumbersRankedSurvivors(t *testing.T, f *fixture) {
+	// Three ranked labels [R0:0, R1:1, R2:2].
+	_, r0resp := mustCreateMailbox(t, f, "DR0", "filed", intPtr(0))
+	r0ID := r0resp.Created["mb"]["id"].(string)
+	_, r1resp := mustCreateMailbox(t, f, "DR1", "filed", intPtr(1))
+	r1ID := r1resp.Created["mb"]["id"].(string)
+	_, r2resp := mustCreateMailbox(t, f, "DR2", "filed", intPtr(2))
+	r2ID := r2resp.Created["mb"]["id"].(string)
+
+	assertPriority(t, f, r0ID, 0)
+	assertPriority(t, f, r1ID, 1)
+	assertPriority(t, f, r2ID, 2)
+
+	_, stateRaw := f.invoke(t, "Mailbox/get", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"ids":       []string{r0ID},
+	})
+	var stateResp struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(stateRaw, &stateResp); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	beforeState := stateResp.State
+
+	// Destroy the middle rank: R1 (priority 1). The sole higher-ranked
+	// survivor, R2, must shift from priority 2 down to 1; R0 is
+	// untouched.
+	_, destroyRaw := f.invoke(t, "Mailbox/set", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"destroy":   []string{r1ID},
+	})
+	var destroyResp struct {
+		Destroyed    []string                  `json:"destroyed"`
+		NotDestroyed map[string]map[string]any `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(destroyRaw, &destroyResp); err != nil {
+		t.Fatalf("unmarshal destroy: %v", err)
+	}
+	if len(destroyResp.NotDestroyed) != 0 {
+		t.Fatalf("destroy R1 rejected: %+v (raw=%s)", destroyResp.NotDestroyed, destroyRaw)
+	}
+
+	assertPriority(t, f, r0ID, 0)
+	assertPriority(t, f, r2ID, 1)
+
+	_, chRaw := f.invoke(t, "Mailbox/changes", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"sinceState": beforeState,
+	})
+	var chResp struct {
+		Updated   []string `json:"updated"`
+		Destroyed []string `json:"destroyed"`
+	}
+	if err := json.Unmarshal(chRaw, &chResp); err != nil {
+		t.Fatalf("unmarshal changes: %v", err)
+	}
+	destroyedFound := false
+	for _, id := range chResp.Destroyed {
+		if id == r1ID {
+			destroyedFound = true
+		}
+	}
+	if !destroyedFound {
+		t.Errorf("Mailbox/changes destroyed list %v does not contain %s (raw=%s)", chResp.Destroyed, r1ID, chRaw)
+	}
+	updatedFound := false
+	for _, id := range chResp.Updated {
+		if id == r2ID {
+			updatedFound = true
+		}
+	}
+	if !updatedFound {
+		t.Errorf("Mailbox/changes updated list %v does not contain the renumbered %s (raw=%s)", chResp.Updated, r2ID, chRaw)
+	}
+}
+
 // intPtr returns a pointer to v, for the inline priority literals above.
 func intPtr(v int) *int { return &v }
 

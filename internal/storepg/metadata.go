@@ -919,7 +919,9 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 	now := m.s.clock.Now().UTC()
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		var pid int64
-		err := tx.QueryRow(ctx, `SELECT principal_id FROM mailboxes WHERE id = $1`, int64(id)).Scan(&pid)
+		var curPriority *int64
+		err := tx.QueryRow(ctx,
+			`SELECT principal_id, priority FROM mailboxes WHERE id = $1`, int64(id)).Scan(&pid, &curPriority)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -981,8 +983,31 @@ func (m *metadata) DeleteMailbox(ctx context.Context, id store.MailboxID) error 
 		if res.RowsAffected() == 0 {
 			return store.ErrNotFound
 		}
-		return appendStateChange(ctx, tx, store.PrincipalID(pid),
-			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpDestroyed, now)
+		if err := appendStateChange(ctx, tx, store.PrincipalID(pid),
+			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpDestroyed, now); err != nil {
+			return err
+		}
+		// A deleted ranked label leaves a gap in its principal's dense
+		// priority sequence (issue #333, REQ-CAT-10); renumber the
+		// survivors so ReorderMailboxPriority's dense invariant holds
+		// after a destroy, not just after an insert or a move.
+		if curPriority != nil {
+			others, err := rankedMailboxPriorities(ctx, tx, store.PrincipalID(pid), int64(id))
+			if err != nil {
+				return err
+			}
+			ids := make([]int64, len(others))
+			oldOf := make(map[int64]*int64, len(others))
+			for i, o := range others {
+				ids[i] = o.id
+				v := o.pri
+				oldOf[o.id] = &v
+			}
+			if err := applyDenseMailboxPriorities(ctx, tx, store.PrincipalID(pid), ids, oldOf, now); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -3801,6 +3826,61 @@ type mailboxPriorityEntry struct {
 	pri int64
 }
 
+// rankedMailboxPriorities returns principalID's ranked mailboxes
+// (priority IS NOT NULL), excluding excludeID (0 to exclude none),
+// ordered by priority ascending then id ascending -- the input order
+// ReorderMailboxPriority and DeleteMailbox's post-delete renumbering
+// both build their target dense ordering from.
+func rankedMailboxPriorities(ctx context.Context, tx pgx.Tx, principalID store.PrincipalID, excludeID int64) ([]mailboxPriorityEntry, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT id, priority FROM mailboxes
+		   WHERE principal_id = $1 AND priority IS NOT NULL AND id != $2
+		  ORDER BY priority ASC, id ASC`,
+		int64(principalID), excludeID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []mailboxPriorityEntry
+	for rows.Next() {
+		var e mailboxPriorityEntry
+		if err := rows.Scan(&e.id, &e.pri); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return out, nil
+}
+
+// applyDenseMailboxPriorities writes ids[i] -> priority i for every
+// mailbox in ids whose current value (looked up in oldOf) differs, and
+// appends an (EntityKindMailbox, ChangeOpUpdated) change-feed entry for
+// each write, so JMAP Mailbox/changes reports every relabelled rank.
+// Shared by ReorderMailboxPriority and DeleteMailbox's renumbering of
+// the survivors after a ranked label is removed.
+func applyDenseMailboxPriorities(ctx context.Context, tx pgx.Tx, principalID store.PrincipalID, ids []int64, oldOf map[int64]*int64, now time.Time) error {
+	for i, id := range ids {
+		np := int64(i)
+		old := oldOf[id]
+		if old != nil && *old == np {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE mailboxes SET priority = $1, updated_at_us = $2 WHERE id = $3`,
+			np, usMicros(now), id); err != nil {
+			return mapErr(err)
+		}
+		if err := appendStateChange(ctx, tx, principalID,
+			store.EntityKindMailbox, uint64(id), 0, store.ChangeOpUpdated, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ReorderMailboxPriority implements store.Metadata.ReorderMailboxPriority
 // (issue #333, REQ-CAT-10). It reads the principal's current ranked
 // labels (priority IS NOT NULL, excluding mailboxID), computes the
@@ -3823,28 +3903,10 @@ func (m *metadata) ReorderMailboxPriority(ctx context.Context, principalID store
 			return store.ErrNotFound
 		}
 
-		rows, err := tx.Query(ctx,
-			`SELECT id, priority FROM mailboxes
-			   WHERE principal_id = $1 AND priority IS NOT NULL AND id != $2
-			  ORDER BY priority ASC, id ASC`,
-			int64(principalID), int64(mailboxID))
+		others, err := rankedMailboxPriorities(ctx, tx, principalID, int64(mailboxID))
 		if err != nil {
-			return mapErr(err)
+			return err
 		}
-		var others []mailboxPriorityEntry
-		for rows.Next() {
-			var e mailboxPriorityEntry
-			if err := rows.Scan(&e.id, &e.pri); err != nil {
-				rows.Close()
-				return mapErr(err)
-			}
-			others = append(others, e)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return mapErr(err)
-		}
-		rows.Close()
 
 		curPtr := curPriority
 
@@ -3882,36 +3944,17 @@ func (m *metadata) ReorderMailboxPriority(ctx context.Context, principalID store
 		}
 		oldOf[int64(mailboxID)] = curPtr
 
-		type change struct {
-			id        int64
-			hasNewPri bool
-			newPri    int64
-		}
-		var changes []change
-		for i, id := range idsFinal {
-			np := int64(i)
-			old := oldOf[id]
-			if old != nil && *old == np {
-				continue
-			}
-			changes = append(changes, change{id: id, hasNewPri: true, newPri: np})
+		if err := applyDenseMailboxPriorities(ctx, tx, principalID, idsFinal, oldOf, now); err != nil {
+			return err
 		}
 		if newRank == nil && curPtr != nil {
-			changes = append(changes, change{id: int64(mailboxID), hasNewPri: false})
-		}
-
-		for _, c := range changes {
-			var v any
-			if c.hasNewPri {
-				v = c.newPri
-			}
 			if _, err := tx.Exec(ctx,
-				`UPDATE mailboxes SET priority = $1, updated_at_us = $2 WHERE id = $3`,
-				v, usMicros(now), c.id); err != nil {
+				`UPDATE mailboxes SET priority = NULL, updated_at_us = $1 WHERE id = $2`,
+				usMicros(now), int64(mailboxID)); err != nil {
 				return mapErr(err)
 			}
 			if err := appendStateChange(ctx, tx, principalID,
-				store.EntityKindMailbox, uint64(c.id), 0, store.ChangeOpUpdated, now); err != nil {
+				store.EntityKindMailbox, uint64(mailboxID), 0, store.ChangeOpUpdated, now); err != nil {
 				return err
 			}
 		}

@@ -196,6 +196,81 @@ func testReorderMailboxPriorityDenseRenumbering(t *testing.T, s store.Store) {
 	}
 }
 
+// testDeleteMailboxRenumbersRankedSurvivors covers the DeleteMailbox
+// deviation found in the #333 verification pass: deleting a ranked
+// label must renumber the principal's remaining ranked labels densely
+// in the same transaction, reusing the renumbering ReorderMailboxPriority
+// performs on an unrank, and append a change-feed entry for every
+// survivor whose priority shifted so Mailbox/changes reports it.
+func testDeleteMailboxRenumbersRankedSurvivors(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "mb-delete-renumber@example.com")
+	a := mustInsertMailbox(t, s, p.ID, "A")
+	b := mustInsertMailbox(t, s, p.ID, "B")
+	c := mustInsertMailbox(t, s, p.ID, "C")
+
+	if err := s.Meta().ReorderMailboxPriority(ctx, p.ID, a.ID, intPtr(0)); err != nil {
+		t.Fatalf("ReorderMailboxPriority(A, 0): %v", err)
+	}
+	if err := s.Meta().ReorderMailboxPriority(ctx, p.ID, b.ID, intPtr(1)); err != nil {
+		t.Fatalf("ReorderMailboxPriority(B, 1): %v", err)
+	}
+	if err := s.Meta().ReorderMailboxPriority(ctx, p.ID, c.ID, intPtr(2)); err != nil {
+		t.Fatalf("ReorderMailboxPriority(C, 2): %v", err)
+	}
+	wantPriority(t, s, a.ID, intPtr(0))
+	wantPriority(t, s, b.ID, intPtr(1))
+	wantPriority(t, s, c.ID, intPtr(2))
+
+	feedBefore, err := s.Meta().ReadChangeFeed(ctx, p.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed before delete: %v", err)
+	}
+	cursor := feedBefore[len(feedBefore)-1].Seq
+
+	// Delete the middle rank: B (priority 1). C, the sole survivor
+	// after A, must shift from priority 2 down to 1; A is untouched.
+	if err := s.Meta().DeleteMailbox(ctx, b.ID); err != nil {
+		t.Fatalf("DeleteMailbox(B): %v", err)
+	}
+
+	wantPriority(t, s, a.ID, intPtr(0))
+	wantPriority(t, s, c.ID, intPtr(1))
+	if _, err := s.Meta().GetMailboxByID(ctx, b.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMailboxByID(B) after delete = %v, want ErrNotFound", err)
+	}
+
+	feedAfter, err := s.Meta().ReadChangeFeed(ctx, p.ID, cursor, 1000)
+	if err != nil {
+		t.Fatalf("ReadChangeFeed after delete: %v", err)
+	}
+	var sawBDestroyed, sawCUpdated bool
+	for _, ch := range feedAfter {
+		if ch.Kind != store.EntityKindMailbox {
+			continue
+		}
+		switch {
+		case ch.EntityID == uint64(b.ID) && ch.Op == store.ChangeOpDestroyed:
+			sawBDestroyed = true
+		case ch.EntityID == uint64(c.ID) && ch.Op == store.ChangeOpUpdated:
+			sawCUpdated = true
+		}
+	}
+	if !sawBDestroyed {
+		t.Errorf("change feed after DeleteMailbox(B) does not report B destroyed: %+v", feedAfter)
+	}
+	if !sawCUpdated {
+		t.Errorf("change feed after DeleteMailbox(B) does not report C's renumbering: %+v", feedAfter)
+	}
+	// A did not move (already at rank 0) and must not generate a
+	// spurious update entry.
+	for _, ch := range feedAfter {
+		if ch.Kind == store.EntityKindMailbox && ch.EntityID == uint64(a.ID) {
+			t.Errorf("change feed after DeleteMailbox(B) reports an unchanged A: %+v", ch)
+		}
+	}
+}
+
 func testCountPinnedMailboxes(t *testing.T, s store.Store) {
 	ctx := ctxT(t)
 	p := mustInsertPrincipal(t, s, "mb-pinned@example.com")
