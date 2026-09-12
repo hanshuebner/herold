@@ -58,9 +58,17 @@ fun SessionsScreen(container: AppContainer, session: SessionScope, onBack: () ->
     LaunchedEffect(reloads) {
         loading = true
         ownGrantId = container.tokenStore.grantId()
+        val own = ownGrantId
         runCatching { session.credentials.list() }
-            .onSuccess {
-                entries = it
+            .onSuccess { loaded ->
+                // This device first, then the most recently used, so
+                // the row the user is most likely looking for is the
+                // one they see without scrolling.
+                entries = loaded.sortedWith(
+                    compareByDescending<Credential> {
+                        it.kind == Credential.KIND_OAUTH2_GRANT && it.id == own
+                    }.thenByDescending { it.lastUsedAt.ifBlank { it.createdAt } },
+                )
                 error = null
             }
             .onFailure { error = it.message ?: "the sessions list could not be read" }

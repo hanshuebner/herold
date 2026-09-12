@@ -40,6 +40,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +50,9 @@ import kotlinx.coroutines.launch
 
 /** The default herold deployment; editable on the sign-in screen. */
 const val DEFAULT_BASE_URL = "https://mail.netzhansa.com"
+
+/** How long sign-out waits for the push subscription to be dropped. */
+private const val PUSH_UNREGISTER_TIMEOUT_MS = 5_000L
 
 /**
  * Everything a signed-in session owns. It exists only while a bearer token
@@ -304,8 +308,10 @@ class AppContainer(context: Context) {
     suspend fun signOut() {
         val current = _session.value
         // Drop the push subscription first: it is bound to the principal
-        // whose token is about to be forgotten (REQ-AND-PUSH-02).
-        runCatching { push.unregister() }
+        // whose token is about to be forgotten (REQ-AND-PUSH-02). It is
+        // bounded: signing out must not wait on the push transport,
+        // which on a cold process is still bringing itself up.
+        runCatching { withTimeoutOrNull(PUSH_UNREGISTER_TIMEOUT_MS) { push.unregister() } }
         // Then the grant itself, which is what makes the token stop
         // working everywhere rather than only on this device
         // (REQ-AND-AUTH-21).

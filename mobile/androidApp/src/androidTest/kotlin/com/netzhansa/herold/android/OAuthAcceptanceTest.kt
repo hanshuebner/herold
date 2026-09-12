@@ -15,6 +15,7 @@ import com.netzhansa.herold.shared.auth.KeystoreTokenStore
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.FixMethodOrder
@@ -108,6 +109,8 @@ class OAuthAcceptanceTest {
     fun t75_theSessionsScreenMarksThisDeviceAndARemoteRevokeSignsTheAppOut() {
         signInThroughTheGrant()
         val token = runBlocking { tokenStore.currentToken() }!!
+        val grantId = runBlocking { tokenStore.grantId() }
+        assertNotNull("the sign-in did not record which grant is this device", grantId)
 
         compose.onNodeWithTag("inbox-drawer-open").performClick()
         compose.waitUntil(TIMEOUT_MS) {
@@ -121,18 +124,22 @@ class OAuthAcceptanceTest {
         compose.onNodeWithTag("settings-sessions").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("session-this-device").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("session-oauth2_grant-$grantId").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("session-this-device").assertIsDisplayed()
         compose.captureScreen("75-sessions-this-device")
 
         // A second session of the same principal - a device token the
         // harness mints - revokes this device's grant.
-        val grantId = AccountApi.ownGrantId(DevInstance.baseUrl, token, DevInstance.oauthClientId)
+        assertEquals(
+            "the client marked a grant the server does not call the newest",
+            AccountApi.ownGrantId(DevInstance.baseUrl, token, DevInstance.oauthClientId),
+            grantId,
+        )
         val other = runBlocking { DevInstance.deviceToken(DevInstance.totpEmail) }
         assertEquals(
             204,
-            AccountApi.revokeCredential(DevInstance.baseUrl, other, "oauth2_grant", grantId),
+            AccountApi.revokeCredential(DevInstance.baseUrl, other, "oauth2_grant", grantId!!),
         )
 
         val session = app.container.session.value!!
