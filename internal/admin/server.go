@@ -3100,16 +3100,30 @@ func composeAdminAndUI(
 		if err != nil {
 			logger.Warn("fcm: failed to resolve FCM service-account JSON; FCM push disabled",
 				slog.String("err", err.Error()))
-		} else if sender, err := fcm.New(fcm.Options{
-			ServiceAccountJSON: []byte(raw),
-			ProjectID:          cfg.Server.Push.FCMProjectID,
-			HTTPDoer:           pushHTTPClient,
-		}); err != nil {
-			logger.Warn("fcm: failed to construct FCM sender; FCM push disabled",
-				slog.String("err", err.Error()))
 		} else {
-			fcmSender = sender
-			logger.Info("fcm: FCM service-account credential loaded; FCM push enabled")
+			opts := fcm.Options{
+				ServiceAccountJSON: []byte(raw),
+				ProjectID:          cfg.Server.Push.FCMProjectID,
+				HTTPDoer:           pushHTTPClient,
+				BaseURL:            cfg.Server.Push.FCMBaseURL,
+			}
+			if cfg.Server.Push.FCMBaseURL != "" {
+				// Dev/test posture (re #334): fcm_base_url points at an
+				// in-tree fake, so the resolved credential need not be a
+				// signable service-account key. Skip the JWT/OAuth flow
+				// entirely and hand the sender a static bearer token,
+				// matching how internal/webpush's fake-FCM test avoids
+				// Google's real OAuth token endpoint.
+				opts.ServiceAccountJSON = nil
+				opts.Tokens = fcm.StaticTokenSource("dev-fcm-token")
+			}
+			if sender, err := fcm.New(opts); err != nil {
+				logger.Warn("fcm: failed to construct FCM sender; FCM push disabled",
+					slog.String("err", err.Error()))
+			} else {
+				fcmSender = sender
+				logger.Info("fcm: FCM service-account credential loaded; FCM push enabled")
+			}
 		}
 	}
 	pushDispatcher, err := webpush.New(webpush.Options{

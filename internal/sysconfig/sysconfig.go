@@ -1082,6 +1082,18 @@ type PushConfig struct {
 	// set only when the credential's project_id field is absent or
 	// wrong for the deployment's Firebase project.
 	FCMProjectID string `toml:"fcm_project_id,omitempty"`
+	// FCMBaseURL overrides the FCM HTTP v1 messages:send endpoint the
+	// dispatcher posts to, used verbatim (no project-id templating,
+	// mirroring internal/fcm.Options.BaseURL). Empty uses the real
+	// FCM endpoint. Set only by scripts/dev-instance.sh and tests to
+	// point at the in-tree fake FCM server (re #334); when set, the
+	// server wiring also skips the service-account JWT/OAuth flow and
+	// uses a static bearer token, since a dev-instance credential is
+	// never a signable key and no request may reach Google's real
+	// OAuth endpoint. Not a secret — an endpoint URL, not a
+	// credential — so it takes a plain string rather than a
+	// STANDARDS §9 secret ref, mirroring [acme] directory_url.
+	FCMBaseURL string `toml:"fcm_base_url,omitempty"`
 
 	// Network configures the SSRF guard applied to every push endpoint
 	// URL a client registers (a Web Push / UnifiedPush subscription's
@@ -3210,6 +3222,12 @@ func Validate(c *Config) error {
 	if fcmFileSet && !strings.HasPrefix(push.FCMServiceAccountJSONFile, "/") {
 		return fmt.Errorf("sysconfig: [server.push] fcm_service_account_json_file %q must be an absolute path",
 			push.FCMServiceAccountJSONFile)
+	}
+	if push.FCMBaseURL != "" {
+		if _, err := url.ParseRequestURI(push.FCMBaseURL); err != nil {
+			return fmt.Errorf("sysconfig: [server.push] fcm_base_url %q is not a valid absolute URL",
+				push.FCMBaseURL)
+		}
 	}
 	// Dispatcher knobs (Wave 3.8b). Negative or zero values mean
 	// "use default" at dispatcher construction; only out-of-range
