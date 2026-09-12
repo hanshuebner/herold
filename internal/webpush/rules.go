@@ -342,6 +342,17 @@ const (
 	ReasonQuietHours       = "quiet_hours"
 	ReasonDefaultAllow     = "default_allow"
 	ReasonUnsupportedEvent = "unsupported_event"
+	// ReasonDroppedNotArrival denies a mail event whose StateChange.Op
+	// is not ChangeOpCreated (re #346): a keyword or mailbox mutation
+	// the user makes themselves (archive, mark read, star) reaches the
+	// dispatcher as an ordinary Email update and must not resurrect as
+	// a "new mail" push.
+	ReasonDroppedNotArrival = "dropped_not_arrival"
+	// ReasonDroppedNotInbox denies a mail event whose message does not
+	// sit in the principal's Inbox-role mailbox (re #346, REQ-PUSH-81
+	// "Primary category in Inbox only") — e.g. a sent copy created
+	// directly in Sent.
+	ReasonDroppedNotInbox = "dropped_not_inbox"
 )
 
 // errUnknownConversation is returned by classifyEvent when a chat event
@@ -358,10 +369,11 @@ var errUnknownConversation = errors.New("webpush: chat conversation not found")
 //
 // Mapping rationale:
 //
-//   - EntityKindEmail              -> EventTypeMail. Reaction detection is
-//     deferred to Wave 3.9 (REQ-PROTO-127 reserves the "reaction" key in
-//     the closed enum but the change-feed shape that distinguishes a
-//     reaction from a regular Email update lands later).
+//   - EntityKindEmail              -> EventTypeMail by default; Evaluate
+//     reclassifies an Updated Email event to EventTypeReaction when the
+//     message carries a reaction (see emailHasAnyReaction) so a reaction
+//     is governed by its own per-event-type toggle (REQ-PUSH-81:
+//     "reaction = always") instead of the mail arrival gate (re #346).
 //   - EntityKindChatMessage        -> EventTypeChatDM if the conversation
 //     kind is "dm", else EventTypeChatSpace.
 //   - EntityKindCalendarEvent     -> EventTypeCalendarInvite. Reminders
@@ -420,6 +432,36 @@ func inAllowlist(allow []string, category string) bool {
 	return false
 }
 
+// isInboxRoleMailbox reports whether mb is the principal's Inbox
+// (REQ-PUSH-81 "Primary category in Inbox only"). Mirrors
+// store.ResolveInboxMailbox's per-mailbox test: the MailboxAttrInbox
+// bit is authoritative; a case-insensitive name match on "INBOX" is the
+// fallback for a mailbox that predates the attribute being set.
+func isInboxRoleMailbox(mb store.Mailbox) bool {
+	if mb.Attributes&store.MailboxAttrInbox != 0 {
+		return true
+	}
+	return strings.EqualFold(mb.Name, "INBOX")
+}
+
+// emailHasAnyReaction reports whether id carries at least one row in
+// email_reactions. The change feed does not (yet) carry a reason code
+// distinguishing "this Email update is a reaction bump" from any other
+// keyword/flag mutation (mark read, star); presence of a reaction is
+// the best signal available from within internal/webpush without a
+// store schema change, so a reaction on a message that later receives
+// an unrelated update may occasionally re-classify as a reaction push
+// too — REQ-PUSH-46 already designs the reaction notification class
+// for tag-based coalescing, so a redundant reaction push collapses
+// into the prior one rather than stacking.
+func emailHasAnyReaction(ctx context.Context, st store.Store, id store.MessageID) (bool, error) {
+	reactions, err := st.Meta().ListEmailReactions(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return len(reactions) > 0, nil
+}
+
 // withinQuietHours reports whether instant t (in tz) lies within the
 // half-open hour-of-day window [start, end). Handles wrap-around midnight
 // (e.g. start=22 end=7 means 22:00..23:59 plus 00:00..06:59). When start
@@ -453,13 +495,15 @@ func withinQuietHours(t time.Time, tz string, start, end int) bool {
 //
 // Decision precedence (REQ-PROTO-127 + REQ-PUSH-80..83):
 //
-//  1. Master == false               -> deny "muted_master"
-//  2. Event maps to no closed type  -> deny "unsupported_event"
-//  3. PerEventType[type] == false   -> deny "muted_event_type"
-//  4. Mail + category not allowed   -> deny "category_filtered"
-//  5. Quiet hours active and the
-//     per-type override is false    -> deny "quiet_hours"
-//  6. otherwise                     -> allow "default_allow"
+//  1. Master == false                -> deny "muted_master"
+//  2. Event maps to no closed type   -> deny "unsupported_event"
+//  3. PerEventType[type] == false    -> deny "muted_event_type"
+//  4. Mail + not a new Inbox arrival -> deny "dropped_not_arrival" /
+//     "dropped_not_inbox" (re #346, REQ-PUSH-81)
+//  5. Mail + category not allowed    -> deny "category_filtered"
+//  6. Quiet hours active and the
+//     per-type override is false     -> deny "quiet_hours"
+//  7. otherwise                      -> allow "default_allow"
 //
 // VIP handling (REQ-PUSH-83): VIPs are client-local; the field is
 // accepted in the JSON for forward-compat but Evaluate never consults
@@ -478,29 +522,52 @@ func Evaluate(
 	if err != nil || eventType == "" {
 		return RuleDecision{Allow: false, Reason: ReasonUnsupportedEvent}
 	}
+	if eventType == EventTypeMail && ev.Op == store.ChangeOpUpdated {
+		// re #346: an Email update that carries a reaction is a
+		// reaction event, not a "new mail" arrival — reclassify so it
+		// is governed by PerEventType[reaction] instead of the mail
+		// arrival gate below.
+		if hasReaction, hErr := emailHasAnyReaction(ctx, st, store.MessageID(ev.EntityID)); hErr == nil && hasReaction {
+			eventType = EventTypeReaction
+		}
+	}
 	if allowed, ok := rules.PerEventType[eventType]; ok && !allowed {
 		return RuleDecision{Allow: false, Reason: ReasonMutedEventType, EventType: eventType}
 	}
 	if eventType == EventTypeMail {
+		// REQ-PUSH-81 "Primary category in Inbox only": a mail push
+		// requires (a) a new arrival, not a keyword/mailbox mutation
+		// the user made themselves (archive, mark read, star), and
+		// (b) the message sitting in the principal's Inbox-role
+		// mailbox, not e.g. a sent copy created directly in Sent
+		// (re #346).
+		if ev.Op != store.ChangeOpCreated {
+			return RuleDecision{Allow: false, Reason: ReasonDroppedNotArrival, EventType: eventType}
+		}
+		msg, mErr := st.Meta().GetMessage(ctx, store.MessageID(ev.EntityID))
+		if mErr != nil {
+			return RuleDecision{Allow: false, Reason: ReasonDroppedNotInbox, EventType: eventType}
+		}
+		mbox, mbErr := st.Meta().GetMailboxByID(ctx, msg.MailboxID)
+		if mbErr != nil || !isInboxRoleMailbox(mbox) {
+			return RuleDecision{Allow: false, Reason: ReasonDroppedNotInbox, EventType: eventType}
+		}
 		// Look up the message's category keyword; deny when it is not
 		// in the allowlist (and the allowlist is non-nil — a nil
 		// allowlist behaves like "no category filter", treating every
 		// mail event as allowed regardless of category).
 		if rules.MailCategoryAllowlist != nil {
-			msg, mErr := st.Meta().GetMessage(ctx, store.MessageID(ev.EntityID))
-			if mErr == nil {
-				cat := categoryFromMessage(msg)
-				// An uncategorised message (no $category-* keyword) is
-				// treated as "primary" — operators that have not
-				// configured the categoriser see all mail under the
-				// default allowlist. This matches REQ-FILT-200's
-				// graceful-fallback contract.
-				if cat == "" {
-					cat = "primary"
-				}
-				if !inAllowlist(rules.MailCategoryAllowlist, cat) {
-					return RuleDecision{Allow: false, Reason: ReasonCategoryFiltered, EventType: eventType}
-				}
+			cat := categoryFromMessage(msg)
+			// An uncategorised message (no $category-* keyword) is
+			// treated as "primary" — operators that have not
+			// configured the categoriser see all mail under the
+			// default allowlist. This matches REQ-FILT-200's
+			// graceful-fallback contract.
+			if cat == "" {
+				cat = "primary"
+			}
+			if !inAllowlist(rules.MailCategoryAllowlist, cat) {
+				return RuleDecision{Allow: false, Reason: ReasonCategoryFiltered, EventType: eventType}
 			}
 		}
 	}

@@ -36,6 +36,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite"
@@ -174,7 +175,8 @@ metrics_bind = ""
 	// JMAP bearer credential).
 	const apiKeyPlain = protoadmin.APIKeyPrefix + "fcm_e2e_test_key_000000000000001"
 	const email = "alice@" + fcmE2EDomain
-	seedFCMPushStore(t, openPreseed(), clk, email, apiKeyPlain)
+	pid := seedFCMPushStore(t, openPreseed(), clk, email, apiKeyPlain)
+	accountID := string(protojmap.AccountIDForPrincipal(pid))
 
 	publicAddr, smtpAddr := startFCMPushServer(t, cfg)
 
@@ -190,30 +192,15 @@ metrics_bind = ""
 	// resulting Email/Add event and, since no classifier plugin is
 	// configured, the message defaults to category "primary" -- inside
 	// DefaultRules' MailCategoryAllowlist -- so the push fires.
-	deliverFCMPushTestMessage(t, smtpAddr, email)
+	const rawFrom = "bob@external.example"
+	deliverFCMPushTestMessage(t, smtpAddr, email, rawFrom)
 
 	// Assert the fake FCM endpoint received the mail push. The create
 	// handshake above already produced one messages:send call carrying a
 	// "verification" data field (RFC 8620 §7.2.2); the mail push carries
 	// "payload" instead, so find that one specifically rather than
 	// asserting on index 0.
-	deadline := time.Now().Add(15 * time.Second)
-	var m fakefcm.Message
-	var found bool
-	for time.Now().Before(deadline) && !found {
-		for _, cand := range fake.Messages() {
-			if cand.Data["payload"] != "" {
-				m, found = cand, true
-				break
-			}
-		}
-		if !found {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	if !found {
-		t.Fatalf("fake FCM endpoint received no messages:send call with a data.payload within 15s; recorded=%+v", fake.Messages())
-	}
+	m := waitForFCMPayload(t, fake, nil)
 	if m.Token != fcmToken {
 		t.Errorf("fake FCM message token = %q; want %q", m.Token, fcmToken)
 	}
@@ -226,6 +213,56 @@ metrics_bind = ""
 	if !bytes.Contains([]byte(m.Data["payload"]), []byte("Email")) {
 		t.Errorf("fake FCM message data.payload = %q; want it to reference the Email state change", m.Data["payload"])
 	}
+
+	var payload struct {
+		EmailID        string `json:"emailId"`
+		InboxMailboxID string `json:"inboxMailboxId"`
+	}
+	if err := json.Unmarshal([]byte(m.Data["payload"]), &payload); err != nil {
+		t.Fatalf("decode data.payload: %v: %s", err, m.Data["payload"])
+	}
+	if payload.EmailID == "" || payload.InboxMailboxID == "" {
+		t.Fatalf("payload missing emailId/inboxMailboxId: %+v", payload)
+	}
+
+	// re #346: archiving the message (moving it out of the Inbox-role
+	// mailbox) must not resurrect as a "new mail" push.
+	archiveID := jmapFindMailboxByRole(t, publicAddr, apiKeyPlain, accountID, "archive")
+	before := len(fake.Messages())
+	jmapCall(t, publicAddr, apiKeyPlain, "Email/set", map[string]any{
+		"accountId": accountID,
+		"update": map[string]any{
+			payload.EmailID: map[string]any{
+				"mailboxIds/" + archiveID:              true,
+				"mailboxIds/" + payload.InboxMailboxID: false,
+			},
+		},
+	})
+	assertNoNewFCMPayload(t, fake, before, "archiving a message")
+
+	// re #346: a message created directly in Sent (a submission's sent
+	// copy) must not push either -- it never sat in the Inbox-role
+	// mailbox.
+	sentID := jmapFindMailboxByRole(t, publicAddr, apiKeyPlain, accountID, "sent")
+	sentRaw := "From: " + email + "\r\n" +
+		"To: bob@external.example\r\n" +
+		"Subject: fcm push e2e sent copy\r\n" +
+		"Message-ID: <fcm-push-e2e-sent@" + fcmE2EDomain + ">\r\n" +
+		"\r\n" +
+		"a message the principal sent.\r\n"
+	blobID := jmapUploadBlob(t, publicAddr, apiKeyPlain, accountID, []byte(sentRaw))
+	before = len(fake.Messages())
+	jmapCall(t, publicAddr, apiKeyPlain, "Email/import", map[string]any{
+		"accountId": accountID,
+		"emails": map[string]any{
+			"s1": map[string]any{
+				"blobId":     blobID,
+				"mailboxIds": map[string]bool{sentID: true},
+				"keywords":   map[string]bool{"$seen": true},
+			},
+		},
+	})
+	assertNoNewFCMPayload(t, fake, before, "a message created directly in Sent")
 }
 
 // seedFCMPushStore inserts the local domain, one mail principal, and an
@@ -373,7 +410,10 @@ func jmapCall(t *testing.T, publicAddr, apiKey, method string, args map[string]a
 	t.Helper()
 	argsBytes, _ := json.Marshal(args)
 	envelope := map[string]any{
-		"using": []string{"urn:ietf:params:jmap:core"},
+		"using": []string{
+			"urn:ietf:params:jmap:core",
+			"urn:ietf:params:jmap:mail",
+		},
 		"methodCalls": []any{
 			[]any{method, json.RawMessage(argsBytes), "c0"},
 		},
@@ -409,9 +449,104 @@ func jmapCall(t *testing.T, publicAddr, apiKey, method string, args map[string]a
 	return out.MethodResponses[0][1]
 }
 
+// waitForFCMPayload polls fake.Messages() until it finds a
+// messages:send call carrying a non-empty data.payload field whose raw
+// bytes were not already recorded in skip (the RFC 8620 §7.2.2
+// verification-ping call carries a "verification" field instead of
+// "payload", so any payload-bearing call not already seen is the mail
+// push under test). Fails the test after 15s with no match.
+func waitForFCMPayload(t *testing.T, fake *fakefcm.Server, skip map[string]bool) fakefcm.Message {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, cand := range fake.Messages() {
+			p := cand.Data["payload"]
+			if p == "" || skip[p] {
+				continue
+			}
+			return cand
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("fake FCM endpoint received no new data.payload call within 15s; recorded=%+v", fake.Messages())
+	return fakefcm.Message{}
+}
+
+// assertNoNewFCMPayload waits briefly (long enough for the 1s
+// dispatcher poll interval configured by runFCMPushE2E to run several
+// ticks) and fails the test if fake.Messages() grew past before,
+// labeling the failure with what.
+func assertNoNewFCMPayload(t *testing.T, fake *fakefcm.Server, before int, what string) {
+	t.Helper()
+	time.Sleep(3 * time.Second)
+	if got := len(fake.Messages()); got != before {
+		t.Fatalf("%s produced %d new fake FCM messages:send call(s); want 0 (re #346)", what, got-before)
+	}
+}
+
+// jmapFindMailboxByRole calls Mailbox/get with no ids (return-all) and
+// returns the id of the mailbox whose JMAP role matches want (e.g.
+// "sent", "archive"). Fails the test when no mailbox has that role.
+func jmapFindMailboxByRole(t *testing.T, publicAddr, apiKey, accountID, want string) string {
+	t.Helper()
+	raw := jmapCall(t, publicAddr, apiKey, "Mailbox/get", map[string]any{
+		"accountId": accountID,
+		"ids":       nil,
+	})
+	var out struct {
+		List []struct {
+			ID   string  `json:"id"`
+			Role *string `json:"role"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode Mailbox/get: %v body=%s", err, raw)
+	}
+	for _, mb := range out.List {
+		if mb.Role != nil && *mb.Role == want {
+			return mb.ID
+		}
+	}
+	t.Fatalf("no mailbox with role=%q found: %s", want, raw)
+	return ""
+}
+
+// jmapUploadBlob uploads raw bytes to the JMAP upload endpoint and
+// returns the server-assigned blobId.
+func jmapUploadBlob(t *testing.T, publicAddr, apiKey, accountID string, data []byte) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost,
+		"http://"+publicAddr+"/jmap/upload/"+accountID,
+		bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("jmapUploadBlob: new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "message/rfc822")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("jmapUploadBlob: do: %v", err)
+	}
+	raw, _ := readAllAndClose(resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("jmapUploadBlob: status %d: %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		BlobID string `json:"blobId"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("jmapUploadBlob: decode: %v body=%s", err, raw)
+	}
+	if out.BlobID == "" {
+		t.Fatalf("jmapUploadBlob: blobId empty: %s", raw)
+	}
+	return out.BlobID
+}
+
 // deliverFCMPushTestMessage drives a minimal EHLO/MAIL/RCPT/DATA dialogue
-// against the smtp listener, delivering one message to rcpt.
-func deliverFCMPushTestMessage(t *testing.T, smtpAddr, rcpt string) {
+// against the smtp listener, delivering one message to rcpt with the
+// given raw From header value.
+func deliverFCMPushTestMessage(t *testing.T, smtpAddr, rcpt, from string) {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", smtpAddr, 5*time.Second)
 	if err != nil {
@@ -456,7 +591,7 @@ func deliverFCMPushTestMessage(t *testing.T, smtpAddr, rcpt string) {
 	expect(250)
 	send("DATA")
 	expect(354)
-	rawMsg := "From: bob@external.example\r\n" +
+	rawMsg := "From: " + from + "\r\n" +
 		"To: " + rcpt + "\r\n" +
 		"Subject: fcm push e2e\r\n" +
 		"Message-ID: <fcm-push-e2e@external.example>\r\n" +

@@ -452,6 +452,119 @@ func TestEvaluate_NilCategoryAllowlist_PassesEveryMail(t *testing.T) {
 	}
 }
 
+// TestEvaluate_MailUpdate_DeniesNotArrival covers re #346: an Email
+// update in the Inbox that carries no reaction (the shape a mark-read
+// or star toggle produces) must not push as "new mail".
+func TestEvaluate_MailUpdate_DeniesNotArrival(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpUpdated,
+	}
+	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
+	if d.Allow || d.Reason != ReasonDroppedNotArrival {
+		t.Fatalf("decision=%+v want deny/dropped_not_arrival", d)
+	}
+}
+
+// TestEvaluate_MailCreated_NotInbox_DeniesNotInbox covers re #346: a
+// message created directly outside the Inbox-role mailbox (a sent copy
+// landing in Sent) must not push, per REQ-PUSH-81 "Primary category in
+// Inbox only".
+func TestEvaluate_MailCreated_NotInbox_DeniesNotInbox(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	sentID := mustInsertMailbox(t, st, pid, "Sent")
+	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: sentID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpCreated,
+	}
+	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
+	if d.Allow || d.Reason != ReasonDroppedNotInbox {
+		t.Fatalf("decision=%+v want deny/dropped_not_inbox", d)
+	}
+}
+
+// TestEvaluate_MailCreated_Inbox_Allows covers re #346's positive case:
+// a genuine new arrival in the Inbox-role mailbox still pushes.
+func TestEvaluate_MailCreated_Inbox_Allows(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpCreated,
+	}
+	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
+	if !d.Allow || d.EventType != EventTypeMail {
+		t.Fatalf("decision=%+v want allow/mail", d)
+	}
+}
+
+// TestEvaluate_MailUpdate_WithReaction_ReclassifiesToReaction covers
+// re #346's "keep the reaction-on-Email path working" requirement: an
+// Email update on a message carrying a reaction reclassifies to
+// EventTypeReaction (governed by PerEventType[reaction], default true)
+// instead of being denied by the mail arrival gate.
+func TestEvaluate_MailUpdate_WithReaction_ReclassifiesToReaction(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	pid := mustInsertPrincipal(t, st, "alice@example.test")
+	mbid := mustInsertMailbox(t, st, pid, "INBOX")
+	mid, _, err := st.Meta().InsertMessage(context.Background(), store.Message{
+		Keywords: []string{"$category-primary"},
+		Envelope: store.Envelope{Subject: "x"},
+	}, []store.MessageMailbox{{MailboxID: mbid}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	if err := st.Meta().AddEmailReaction(context.Background(), store.MessageID(mid), "👍", pid, time.Now().UTC()); err != nil {
+		t.Fatalf("AddEmailReaction: %v", err)
+	}
+	ev := store.StateChange{
+		PrincipalID: pid,
+		Kind:        store.EntityKindEmail,
+		EntityID:    uint64(mid),
+		Op:          store.ChangeOpUpdated,
+	}
+	d := Evaluate(context.Background(), DefaultRules(), st, ev, time.Now().UTC())
+	if !d.Allow || d.EventType != EventTypeReaction {
+		t.Fatalf("decision=%+v want allow/reaction", d)
+	}
+}
+
 func TestParseRules_Roundtrip_Stable(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"master":false,"perEventType":{"mail":false},"mailCategories":["primary","updates"],"quietHours":{"startHourLocal":22,"endHourLocal":7,"tz":"UTC"},"customField":42}`)

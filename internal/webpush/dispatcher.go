@@ -458,7 +458,18 @@ func (d *Dispatcher) processChange(ctx context.Context, ch store.FTSChange) {
 		}
 		decision := Evaluate(ctx, rules, d.store, ev, d.clock.Now())
 		if !decision.Allow {
-			observe.WebPushDeliveriesTotal.WithLabelValues("dropped_by_rule", string(sub.Transport.Normalized())).Inc()
+			// dropped_not_arrival / dropped_not_inbox (re #346) get their
+			// own outcome label so the metrics explain a mail-push
+			// silence; every other rule-denial reason still lumps under
+			// the generic dropped_by_rule outcome.
+			outcome := "dropped_by_rule"
+			switch decision.Reason {
+			case ReasonDroppedNotArrival:
+				outcome = "dropped_not_arrival"
+			case ReasonDroppedNotInbox:
+				outcome = "dropped_not_inbox"
+			}
+			observe.WebPushDeliveriesTotal.WithLabelValues(outcome, string(sub.Transport.Normalized())).Inc()
 			d.logger.LogAttrs(ctx, slog.LevelDebug,
 				"webpush: dropped by rule",
 				slog.Uint64("subscription", uint64(sub.ID)),

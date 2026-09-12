@@ -143,19 +143,25 @@ func TestDispatcher_SnoozeWake_DestinationDiffers_FiresNotification(t *testing.T
 	}
 }
 
-// TestDispatcher_SnoozeWake_DestinationEqualsOrigin_Observed drives the
+// TestDispatcher_SnoozeWake_DestinationEqualsOrigin_NoPush drives the
 // wake-in-place case (explicit wake destination == the message's
 // current mailbox, so the worker never calls AddMessageToMailbox and
 // only SetSnooze's ChangeOpUpdated is appended) through the same
-// webpush payload/rules path. Observed result: a push POST fires here
-// too. Neither buildEmailPayload (payload.go) nor classifyEvent /
-// Evaluate (rules.go) discriminate on StateChange.Op — buildEmailPayload
-// accepts Created and Updated alike, and Evaluate never inspects Op —
-// so an Updated-only Email change reaches a push subscriber exactly
-// like a Created one. This test pins that observed behaviour so a
-// future change that starts filtering on Op is caught here rather than
-// silently reintroducing the "wake in place: no reminder" gap.
-func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_Observed(t *testing.T) {
+// webpush payload/rules path.
+//
+// re #346: Evaluate now requires StateChange.Op == ChangeOpCreated for
+// a mail push (REQ-PUSH-81 "Primary category in Inbox only" is an
+// arrival gate, not a "the row changed" gate) so a keyword/mailbox
+// mutation the user makes themselves — mark read, star, archive — does
+// not resurrect as a "new mail" notification. Wake-in-place produces the
+// exact same shape (Op=Updated, mailbox unchanged) as those mutations:
+// the change feed carries no signal distinguishing "the snooze worker
+// cleared $snoozed" from "the user marked this read", so the arrival
+// gate denies it too, superseding the "push fires" behaviour this test
+// previously pinned (see #274). A wake to a DIFFERENT mailbox still
+// pushes (store.ChangeOpCreated on the destination membership) — see
+// TestDispatcher_SnoozeWake_DestinationDiffers_FiresNotification.
+func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_NoPush(t *testing.T) {
 	t.Parallel()
 	f := newDispatcherFixture(t, http.StatusCreated)
 	ctx := context.Background()
@@ -184,7 +190,7 @@ func TestDispatcher_SnoozeWake_DestinationEqualsOrigin_Observed(t *testing.T) {
 		t.Fatalf("dispatcher tick: %v", err)
 	}
 	after := len(f.gateway.Calls())
-	if after <= before {
-		t.Fatalf("wake-in-place (Updated-only) produced no push POST; before=%d after=%d", before, after)
+	if after != before {
+		t.Fatalf("wake-in-place (Updated-only) produced a push POST; before=%d after=%d, want no new push per #346's arrival gate", before, after)
 	}
 }

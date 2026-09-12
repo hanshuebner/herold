@@ -1091,6 +1091,7 @@ func RegisterTLSCertMetrics() {
 //
 //   - outcome (deliveries_total): "success" | "retry" | "gone" |
 //     "rejected" | "rate_limited" | "cooldown" | "dropped_by_rule" |
+//     "dropped_not_arrival" | "dropped_not_inbox" (re #346) |
 //     "dropped_no_match_vapid", plus the FCM-prefixed variants
 //     "fcm_success" | "fcm_retry" | "fcm_gone" | "fcm_rejected" |
 //     "fcm_not_configured" (re #200).
