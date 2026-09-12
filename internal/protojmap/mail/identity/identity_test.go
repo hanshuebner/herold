@@ -35,7 +35,8 @@ func newStore(t *testing.T) store.Store {
 // context key is owned by the Core agent's protojmap package).
 func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
-	return newHandlersUsingStore(t, newStore(t), "alice@example.test")
+	return newHandlersUsingStore(t, newStore(t), "alice@example.test",
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 }
 
 // newHandlersUsingStore is newHandlers' backend-agnostic body: it wires
@@ -45,8 +46,15 @@ func newHandlers(t *testing.T) (*handlerSet, store.Store, store.Principal) {
 // identity-listing bugs (e.g. issue #337) be pinned on both backends.
 // canonicalEmail lets Postgres callers pass a nanosecond-suffixed
 // address so repeated runs against a persistent database never collide
-// on a still-registered principal from an earlier run.
-func newHandlersUsingStore(t *testing.T, st store.Store, canonicalEmail string) (*handlerSet, store.Store, store.Principal) {
+// on a still-registered principal from an earlier run. clk drives the
+// identity Store's ID allocation (allocateIdentityID keys off the
+// clock's nanosecond): SQLite callers pass a fixed fake for
+// deterministic ids, but a Postgres caller sharing one persistent
+// database across several test functions in the same run MUST pass a
+// clock that advances between calls, or two createIdentity calls at
+// the same fixed instant collide on the same allocated id and the
+// second test silently operates on the first test's row.
+func newHandlersUsingStore(t *testing.T, st store.Store, canonicalEmail string, clk clock.Clock) (*handlerSet, store.Store, store.Principal) {
 	t.Helper()
 	ctx := context.Background()
 	if err := st.Meta().InsertDomain(ctx, store.Domain{Name: "example.test", IsLocal: true}); err != nil && !errors.Is(err, store.ErrConflict) {
@@ -62,7 +70,7 @@ func newHandlersUsingStore(t *testing.T, st store.Store, canonicalEmail string) 
 	}
 	return &handlerSet{
 		store:    st,
-		identity: NewStoreWith(st, clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))),
+		identity: NewStoreWith(st, clk),
 		domains:  makeDomainsFn(st),
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, st, p

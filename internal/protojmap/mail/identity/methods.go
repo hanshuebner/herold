@@ -550,13 +550,43 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 				Type: "forbidden", Description: "default identity is not deletable"}
 			continue
 		}
-		// Snapshot the avatar hash before destroying so we can decRef.
-		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, target, v)
-		if !s.h.identity.destroy(ctx, target, v) {
+		// Refuse a sub-account's own promoted identity here, ahead of
+		// destroy() (issue #337 follow-up): a bare destroy would drop
+		// the row that store.SeparateIdentity moved into this
+		// sub-principal and leave the account with no identity at all,
+		// silently reverting it to the synthesised default with
+		// separation.state back to "none". This check is redundant with
+		// the one destroy() itself makes (defence in depth against any
+		// other caller of destroy()) but it lets the handler report the
+		// specific forbidden reason without depending on destroy()'s
+		// return shape.
+		rowID := strconv.FormatUint(v, 10)
+		if row, err := s.h.store.Meta().GetJMAPIdentity(ctx, rowID); err == nil &&
+			row.PrincipalID == target.ID && isSubAccountsOwnIdentity(target, row.Email) {
 			if resp.NotDestroyed == nil {
 				resp.NotDestroyed = make(map[jmapID]setError)
 			}
-			resp.NotDestroyed[id] = setError{Type: "notFound"}
+			resp.NotDestroyed[id] = setError{
+				Type:        "forbidden",
+				Description: "the sub-account's identity is removed by Identity/set{separated:false}, not destroy",
+			}
+			continue
+		}
+		// Snapshot the avatar hash before destroying so we can decRef.
+		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, target, v)
+		destroyOK, destroyForbidden := s.h.identity.destroy(ctx, target, v)
+		if !destroyOK {
+			if resp.NotDestroyed == nil {
+				resp.NotDestroyed = make(map[jmapID]setError)
+			}
+			if destroyForbidden {
+				resp.NotDestroyed[id] = setError{
+					Type:        "forbidden",
+					Description: "the sub-account's identity is removed by Identity/set{separated:false}, not destroy",
+				}
+			} else {
+				resp.NotDestroyed[id] = setError{Type: "notFound"}
+			}
 			continue
 		}
 		if oldAvatarHash != "" {

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
@@ -56,7 +57,12 @@ func newHandlersWithSubAccountsPostgres(t *testing.T) (*handlerSet, store.Store,
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	canonicalEmail := fmt.Sprintf("alice-%d@example.test", time.Now().UnixNano())
-	h, st, p := newHandlersUsingStore(t, st, canonicalEmail)
+	// A real-time clock, not a fixed fake: allocateIdentityID keys off
+	// the clock's nanosecond, and this fixture's database persists
+	// across every Postgres test function in the run, so a fixed
+	// instant would let two createIdentity calls from different tests
+	// collide on the same allocated id.
+	h, st, p := newHandlersUsingStore(t, st, canonicalEmail, clock.NewReal())
 	reg := protojmap.NewCapabilityRegistry()
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilitySubAccounts, struct{}{})
 	h.reg = reg
@@ -377,7 +383,11 @@ func TestIdentity_Set_Separation_FullRoundTrip(t *testing.T) {
 // CanonicalEmail, set to the promoted identity's address by
 // store.SeparateIdentity) must not also appear; the promoted row
 // stands in for the default and carries isDefault and mayDelete=false.
-func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st store.Store, p store.Principal, wantEmail string) {
+// separateNewIdentity creates an identity with wantEmail on p, separates
+// it (Identity/set{separated:true}), and blocks until the background
+// sweep reports SubAccountMigrationStatusDone. Returns the created
+// identity's wire id and the resulting sub-account's accountId.
+func separateNewIdentity(t *testing.T, h *handlerSet, st store.Store, p store.Principal, wantEmail string) (createdID, subAccountID string) {
 	t.Helper()
 	created := createIdentity(t, h, p, "ext", "External", wantEmail)
 
@@ -393,7 +403,7 @@ func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st s
 	if !ok || updated.SubAccountId == nil {
 		t.Fatalf("expected updated with subAccountId; got %+v / notUpdated %+v", updated, resp.(setResponse).NotUpdated)
 	}
-	subAccountID := *updated.SubAccountId
+	subAccountID = *updated.SubAccountId
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -409,6 +419,12 @@ func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st s
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	return created.ID, subAccountID
+}
+
+func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st store.Store, p store.Principal, wantEmail string) {
+	t.Helper()
+	createdID, subAccountID := separateNewIdentity(t, h, st, p, wantEmail)
 
 	listArgs, _ := json.Marshal(map[string]any{"accountId": subAccountID})
 	listResp, mErr := getHandler{h: h}.executeAs(p, listArgs)
@@ -420,8 +436,8 @@ func assertSubAccountListsPromotedIdentityOnce(t *testing.T, h *handlerSet, st s
 		t.Fatalf("sub-account Identity/get list len = %d; want 1: %+v", len(list), list)
 	}
 	got := list[0]
-	if string(got.ID) != created.ID {
-		t.Fatalf("sub-account identity id = %q; want %q", got.ID, created.ID)
+	if string(got.ID) != createdID {
+		t.Fatalf("sub-account identity id = %q; want %q", got.ID, createdID)
 	}
 	if got.Email != wantEmail {
 		t.Fatalf("sub-account identity email = %q; want %q", got.Email, wantEmail)
@@ -447,4 +463,70 @@ func TestIdentity_Get_SubAccount_NoDuplicateDefault_Postgres(t *testing.T) {
 	h, st, p := newHandlersWithSubAccountsPostgres(t)
 	wantEmail := fmt.Sprintf("ext-%d@example.test", time.Now().UnixNano())
 	assertSubAccountListsPromotedIdentityOnce(t, h, st, p, wantEmail)
+}
+
+// assertDestroySubAccountsOwnIdentityRefused is the #337 follow-up: a
+// bare Identity/set{destroy} on the sub-account's own promoted identity
+// -- its only identity -- must be refused with a "forbidden" SetError
+// naming Identity/set{separated:false} as the correct removal path,
+// and the identity plus its separation state must survive the attempt
+// unchanged.
+func assertDestroySubAccountsOwnIdentityRefused(t *testing.T, h *handlerSet, st store.Store, p store.Principal, wantEmail string) {
+	t.Helper()
+	createdID, subAccountID := separateNewIdentity(t, h, st, p, wantEmail)
+
+	destroyArgs, _ := json.Marshal(map[string]any{
+		"accountId": subAccountID,
+		"destroy":   []string{createdID},
+	})
+	destroyResp, mErr := setHandler{h: h}.executeAs(p, destroyArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/set destroy: %v", mErr)
+	}
+	sr := destroyResp.(setResponse)
+	if len(sr.Destroyed) != 0 {
+		t.Fatalf("destroyed = %v; want none (destroy must be refused)", sr.Destroyed)
+	}
+	se, ok := sr.NotDestroyed[jmapID(createdID)]
+	if !ok {
+		t.Fatalf("expected notDestroyed[%s]; got destroyed %v", createdID, sr.Destroyed)
+	}
+	if se.Type != "forbidden" {
+		t.Fatalf("setError.Type = %q; want forbidden", se.Type)
+	}
+	if !strings.Contains(se.Description, "separated:false") {
+		t.Fatalf("setError.Description = %q; want it to name Identity/set{separated:false}", se.Description)
+	}
+
+	// The identity and its separation state survive the refused destroy.
+	getArgs, _ := json.Marshal(map[string]any{"accountId": subAccountID, "ids": []string{createdID}})
+	getResp, mErr := getHandler{h: h}.executeAs(p, getArgs)
+	if mErr != nil {
+		t.Fatalf("Identity/get after refused destroy: %v", mErr)
+	}
+	list := getResp.(getResponse).List
+	if len(list) != 1 {
+		t.Fatalf("sub-account Identity/get list len = %d after refused destroy; want 1: %+v", len(list), list)
+	}
+	got := list[0]
+	if got.SubAccountId == nil || *got.SubAccountId != subAccountID {
+		t.Fatalf("subAccountId after refused destroy = %v; want %q", got.SubAccountId, subAccountID)
+	}
+	if got.Separation.State != separationStateSeparated {
+		t.Fatalf("separation.state after refused destroy = %q; want separated", got.Separation.State)
+	}
+}
+
+func TestIdentity_Set_Destroy_SubAccountsOwnIdentityRefused(t *testing.T) {
+	h, st, p := newHandlersWithSubAccounts(t)
+	assertDestroySubAccountsOwnIdentityRefused(t, h, st, p, "ext2@example.test")
+}
+
+// TestIdentity_Set_Destroy_SubAccountsOwnIdentityRefused_Postgres is
+// the Postgres-backed parity leg for the #337 follow-up. Skips when
+// HEROLD_PG_DSN is unset.
+func TestIdentity_Set_Destroy_SubAccountsOwnIdentityRefused_Postgres(t *testing.T) {
+	h, st, p := newHandlersWithSubAccountsPostgres(t)
+	wantEmail := fmt.Sprintf("ext2-%d@example.test", time.Now().UnixNano())
+	assertDestroySubAccountsOwnIdentityRefused(t, h, st, p, wantEmail)
 }

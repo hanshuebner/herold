@@ -94,13 +94,10 @@ func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []ident
 	custom, _ := s.loadPersisted(ctx, p)
 
 	promotedIdx := -1
-	if p.Kind == store.PrincipalKindSubAccount {
-		want := strings.ToLower(strings.TrimSpace(p.CanonicalEmail))
-		for i := range custom {
-			if strings.ToLower(strings.TrimSpace(custom[i].Email)) == want {
-				promotedIdx = i
-				break
-			}
+	for i := range custom {
+		if isSubAccountsOwnIdentity(p, custom[i].Email) {
+			promotedIdx = i
+			break
 		}
 	}
 
@@ -139,6 +136,19 @@ func (s *Store) listForPrincipal(ctx context.Context, p store.Principal) []ident
 		s.attachSeparation(ctx, &out[i])
 	}
 	return out
+}
+
+// isSubAccountsOwnIdentity reports whether email is the address a
+// sub-principal was created for: store.SeparateIdentity sets a
+// sub-principal's CanonicalEmail to the promoted identity's own
+// address, so this is exactly the persisted identity that stands in
+// for the sub-account's synthesised default (issue #337). Always false
+// for a non-sub-account principal.
+func isSubAccountsOwnIdentity(p store.Principal, email string) bool {
+	if p.Kind != store.PrincipalKindSubAccount {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(email), strings.TrimSpace(p.CanonicalEmail))
 }
 
 // attachSeparation fills in rec.separation (issue #227,
@@ -468,26 +478,40 @@ func (s *Store) resolveIsDefault(ctx context.Context, p store.Principal, id uint
 
 // destroy removes the record with the given id for p. Returns ok=false
 // when the id is the default ("default" identities are not deletable
-// per RFC 8621 §7.4 mayDelete=false) or when no such id exists.
-func (s *Store) destroy(ctx context.Context, p store.Principal, id uint64) bool {
+// per RFC 8621 §7.4 mayDelete=false) or when no such id exists, and
+// forbidden=true when the id exists but is refused for a policy reason
+// distinct from "not found". Currently the only such case is a
+// sub-account's own promoted identity (issue #337 follow-up): the
+// persisted row store.SeparateIdentity moved into the sub-principal is
+// that account's only identity, and destroying it out from under the
+// account would silently revert it to the synthesised default and
+// clear its separation state. It is removed only via
+// Identity/set{separated:false}, which unwinds the whole sub-account
+// (issue #227, REQ-SUBACCT-10), not a bare destroy -- so this check
+// runs here (not only in the caller) as the persisted-store's own
+// defence in depth, independent of how a caller reaches destroy.
+func (s *Store) destroy(ctx context.Context, p store.Principal, id uint64) (ok bool, forbidden bool) {
 	if id == 0 {
-		return false
+		return false, false
 	}
 	if s.st == nil {
-		return false
+		return false, false
 	}
 	rowID := strconv.FormatUint(id, 10)
 	cur, err := s.st.Meta().GetJMAPIdentity(ctx, rowID)
 	if err != nil || cur.PrincipalID != p.ID {
-		return false
+		return false, false
+	}
+	if isSubAccountsOwnIdentity(p, cur.Email) {
+		return false, true
 	}
 	if err := s.st.Meta().DeleteJMAPIdentity(ctx, rowID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false
+			return false, false
 		}
-		return false
+		return false, false
 	}
-	return true
+	return true, false
 }
 
 // persistedToRecord projects a store.JMAPIdentity row into the
