@@ -1,0 +1,252 @@
+package com.netzhansa.herold.android
+
+import android.app.Notification
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
+import com.google.firebase.messaging.RemoteMessage
+import com.netzhansa.herold.android.push.ActiveThread
+import com.netzhansa.herold.android.push.HeroldMessagingService
+import com.netzhansa.herold.android.push.MailNotifier
+import com.netzhansa.herold.shared.auth.SignInResult
+import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.domain.Keywords
+import com.netzhansa.herold.shared.push.MailNotification
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.FixMethodOrder
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
+
+/**
+ * The milestone 1b acceptance run (issue #328): a push herold sent arrives
+ * as a notification, its actions apply, and a tap opens the thread.
+ *
+ * Google's delivery leg cannot run from a test, so the message is injected
+ * into the service's own handler exactly as the SDK would: a [RemoteMessage]
+ * carrying the `data.payload` envelope the dispatcher builds
+ * (`internal/webpush/payload.go`). Everything downstream of that - the
+ * bounded reconcile, the channel, the rendering, the actions, the tap
+ * intent - is the code the device runs.
+ */
+@RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+class PushAcceptanceTest {
+
+    @get:Rule
+    val compose = createAndroidComposeRule<MainActivity>()
+
+    private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+
+    private val app get() = instrumentation.targetContext.applicationContext as HeroldApplication
+
+    private val notifications: NotificationManager
+        get() = instrumentation.targetContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    @Before
+    fun signedInWithNotificationsAllowed() {
+        grantNotificationPermission()
+        notifications.cancelAll()
+        ActiveThread.left("", "")
+        val result = runBlocking {
+            app.container.signIn(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
+        }
+        assertTrue("sign-in failed: $result", result is SignInResult.Success)
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        runBlocking { app.container.session.value!!.syncEngine.syncAll() }
+    }
+
+    @Test
+    fun t01_aPushRendersAsAMailNotificationWithItsActions() {
+        val target = newestInboxMessage()
+        val posted = deliver(payloadFor(target))
+
+        val title = posted.extras.getString(Notification.EXTRA_TITLE).orEmpty()
+        val body = posted.extras.getString(Notification.EXTRA_TEXT).orEmpty()
+        assertEquals("the sender is the title", target.senderDisplay, title)
+        assertTrue("the subject is in the body: $body", body.contains(target.subject))
+        assertTrue("the preview is in the body: $body", body.contains(target.preview.take(20)))
+        assertEquals("mail", posted.channelId)
+
+        val actions = posted.actions.orEmpty().map { it.title.toString() }
+        assertEquals(listOf(MailNotifier.ARCHIVE_TITLE, MailNotifier.MARK_READ_TITLE), actions)
+
+        // Grouped under a per-account summary (REQ-AND-PUSH-12).
+        assertEquals(MailNotification.groupFor(target.accountId), posted.group)
+        val summary = activeNotifications().firstOrNull {
+            it.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
+        }
+        assertNotNull("the account's notifications must have a summary", summary)
+
+        showShade("10-push-notification")
+    }
+
+    @Test
+    fun t02_aSecondMessageOnTheThreadReplacesTheNotificationRatherThanStacking() {
+        val target = newestInboxMessage()
+        deliver(payloadFor(target))
+        deliver(payloadFor(target, subject = "Re: " + target.subject, emailId = target.id + "0"))
+
+        val tag = MailNotification.tagFor(target.accountId, target.threadId)
+        val onThread = activeNotifications().filter { it.tag == tag }
+        assertEquals("one notification per thread", 1, onThread.size)
+        val body = onThread.single().notification.extras.getString(Notification.EXTRA_TEXT).orEmpty()
+        assertTrue("the newest message's subject is shown: $body", body.startsWith("Re: "))
+    }
+
+    @Test
+    fun t03_aPushForTheThreadOnScreenPostsNothing() {
+        val target = newestInboxMessage()
+        ActiveThread.entered(target.accountId, target.threadId)
+        try {
+            TestableService(instrumentation.targetContext.applicationContext)
+                .onMessageReceived(remoteMessage(payloadFor(target)))
+            compose.waitForIdle()
+            val tag = MailNotification.tagFor(target.accountId, target.threadId)
+            assertTrue(
+                "no notification while the thread is on screen",
+                activeNotifications().none { it.tag == tag },
+            )
+        } finally {
+            ActiveThread.left(target.accountId, target.threadId)
+        }
+    }
+
+    @Test
+    fun t04_theMarkReadActionAppliesOnTheServer() = runBlocking {
+        val target = unreadInboxMessage()
+        val posted = deliver(payloadFor(target))
+        val action = posted.actions.orEmpty()
+            .first { it.title.toString() == MailNotifier.MARK_READ_TITLE }
+
+        action.actionIntent.send()
+
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking {
+                DevInstance.serverEmail(server, accountId, target.id)
+                    ?.keywords?.contains(Keywords.SEEN) == true
+            }
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            activeNotifications().none {
+                it.tag == MailNotification.tagFor(target.accountId, target.threadId)
+            }
+        }
+    }
+
+    @Test
+    fun t05_tappingTheNotificationOpensTheThread() {
+        val target = newestInboxMessage()
+        val posted = deliver(payloadFor(target))
+
+        posted.contentIntent.send()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+        val opened = app.container.threadTarget.value
+        // The shell consumed the target; the reading pane is up on it.
+        assertTrue(
+            "the reading pane must be showing",
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty(),
+        )
+        assertTrue("the deep link was consumed once", opened == null)
+        compose.captureScreen("11-notification-tap-opens-thread")
+    }
+
+    // ---- helpers -------------------------------------------------------
+
+    /**
+     * Hands [payload] to the messaging service the way the Firebase SDK
+     * does and returns the notification it posted.
+     */
+    private fun deliver(payload: String): Notification {
+        val service = TestableService(instrumentation.targetContext.applicationContext)
+        service.onMessageReceived(remoteMessage(payload))
+        compose.waitForIdle()
+        val posted = activeNotifications().firstOrNull {
+            it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0
+        }
+        assertNotNull("no notification was posted for the push", posted)
+        return posted!!.notification
+    }
+
+    private fun remoteMessage(payload: String): RemoteMessage =
+        RemoteMessage.Builder("herold@fcm.test").addData("payload", payload).build()
+
+    /**
+     * The envelope herold's dispatcher builds for a new message, filled
+     * with a real message of the dev instance so the ids route.
+     */
+    private fun payloadFor(
+        email: Email,
+        subject: String = email.subject,
+        emailId: String = email.id,
+    ): String = """
+        {"@type":"StateChange","changed":{"${email.accountId}":{"Email":"1"}},
+         "kind":"mail","type":"email","from":"${email.senderDisplay}",
+         "body":"${subject.jsonEscaped()}","subject":"${subject.jsonEscaped()}",
+         "preview":"${email.preview.take(80).jsonEscaped()}","mailbox":"Inbox",
+         "emailId":"$emailId","msgid":"$emailId","threadId":"${email.threadId}"}
+    """.trimIndent()
+
+    private fun String.jsonEscaped(): String =
+        replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+
+    private fun newestInboxMessage(): Email = runBlocking {
+        app.container.store.inboxEmails().first().maxByOrNull { it.receivedAt }
+            ?: error("no synced mail on the dev instance")
+    }
+
+    private fun unreadInboxMessage(): Email = runBlocking {
+        val inbox = app.container.store.inboxEmails().first()
+        inbox.firstOrNull { it.isUnread } ?: inbox.first()
+    }
+
+    private fun activeNotifications() = notifications.activeNotifications.toList()
+
+    private fun grantNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        instrumentation.uiAutomation.executeShellCommand(
+            "pm grant ${instrumentation.targetContext.packageName} android.permission.POST_NOTIFICATIONS",
+        ).close()
+    }
+
+    /** Opens the shade so the screenshot shows what the user sees. */
+    private fun showShade(name: String) {
+        val device = UiDevice.getInstance(instrumentation)
+        device.openNotification()
+        device.waitForIdle()
+        compose.captureScreen(name)
+        device.pressBack()
+    }
+
+    /**
+     * The service with a context attached. `onMessageReceived` is the
+     * method the Firebase SDK calls; giving the instance the app context is
+     * all it needs to run outside the framework's own service dispatch.
+     */
+    private class TestableService(private val appContext: Context) : HeroldMessagingService() {
+        override fun getApplicationContext(): Context = appContext
+    }
+
+    private companion object {
+        const val TIMEOUT_MS = 30_000L
+    }
+}

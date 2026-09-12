@@ -17,9 +17,12 @@ import kotlinx.coroutines.runBlocking
  * for the duration of the call, so the delivery work runs to completion
  * under its own timeout rather than being handed to a detached scope.
  */
-class HeroldMessagingService : FirebaseMessagingService() {
+// Open so the instrumented acceptance run can attach a context and hand
+// the handler a RemoteMessage, which is the one part of the delivery path
+// Google's SDK would otherwise own.
+open class HeroldMessagingService : FirebaseMessagingService() {
 
-    override fun onMessageReceived(message: RemoteMessage) {
+    final override fun onMessageReceived(message: RemoteMessage) {
         runBlocking {
             runCatching { PushDelivery(applicationContext).deliver(message.data) }
                 .onFailure { Log.w(TAG, "push delivery failed: ${it.message}") }
