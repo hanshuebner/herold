@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -74,7 +75,9 @@ fun SnoozeSheet(
     when (stage) {
         CustomStage.NONE ->
             ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("snooze-sheet")) {
-                Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                // A sheet sits over the keyboard's space, so its content
+                // is inset by the keyboard while it is up (issue #373).
+                Column(modifier = Modifier.fillMaxWidth().imePadding().padding(bottom = 24.dp)) {
                     Text(
                         text = "Snooze until",
                         style = MaterialTheme.typography.titleMedium,
@@ -201,7 +204,13 @@ private fun SnoozeTimePicker(
             modifier = Modifier.testTag("snooze-time-dialog"),
         ) {
             Column(
-                modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .padding(20.dp)
+                    // The keyboard entry the time picker offers raises the
+                    // IME over the dialog, which scrolls inside what is
+                    // left of it (issue #373).
+                    .imePadding()
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
@@ -255,7 +264,7 @@ fun LabelSheet(
 ) {
     var appliedNames by remember { mutableStateOf(applied) }
     ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("label-sheet")) {
-        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().imePadding().padding(bottom = 24.dp)) {
             Text(
                 text = "Labels",
                 style = MaterialTheme.typography.titleMedium,

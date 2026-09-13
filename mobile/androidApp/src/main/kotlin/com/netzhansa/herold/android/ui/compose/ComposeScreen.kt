@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -394,6 +395,9 @@ fun ComposeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                // The body scrolls inside what the keyboard leaves, so the
+                // field being typed into stays in view (issue #373).
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .testTag("compose-screen"),
         ) {

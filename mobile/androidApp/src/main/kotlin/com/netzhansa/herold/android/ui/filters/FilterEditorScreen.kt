@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -132,6 +133,10 @@ fun FilterEditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                // The form scrolls inside what the keyboard leaves, so the
+                // focused field and every field below it can be brought
+                // into view while the keyboard is up (issue #373).
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .testTag("filter-editor"),
         ) {

@@ -1,5 +1,6 @@
 package com.netzhansa.herold.android
 
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -8,6 +9,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.auth.SignInResult
@@ -93,13 +96,15 @@ class FiltersAcceptanceTest {
         compose.onNodeWithTag("condition-op-0").performClick()
         compose.onNodeWithTag("condition-op-0-equals").performClick()
         compose.onNodeWithTag("condition-value-0").performTextReplacement(sender)
+        closeKeyboard()
 
         // Label the message, and add skipping the inbox as a second action.
         compose.onNodeWithTag("action-kind-0").performClick()
         compose.onNodeWithTag("action-kind-0-apply-label").performClick()
         compose.onNodeWithTag("action-value-0").performTextReplacement(labelName)
-        compose.onNodeWithTag("filter-add-action").performClick()
-        compose.onNodeWithTag("action-kind-1").performClick()
+        closeKeyboard()
+        editorTap("filter-add-action")
+        editorTap("action-kind-1")
         compose.onNodeWithTag("action-kind-1-skip-inbox").performClick()
         compose.captureScreen("m3a-filter-editor")
         compose.onNodeWithTag("filter-save").performClick()
@@ -151,6 +156,63 @@ class FiltersAcceptanceTest {
         assertFalse(
             "skip-inbox did not take: a copy is still in the inbox",
             inbox != null && copies.any { it.mailboxIds.contains(inbox.id) },
+        )
+    }
+
+    @Test
+    fun t15_theEditorStaysReachableWithTheKeyboardUp(): Unit = runBlocking {
+        signInAndSync()
+        // An emulator with a hardware keyboard hides the soft one, and
+        // this check is about what the soft one covers. The setting goes
+        // back as it was, so the rest of the run meets the device it
+        // expects.
+        val imeSetting = shellOut("settings get secure show_ime_with_hard_keyboard").trim()
+        shellOut("settings put secure show_ime_with_hard_keyboard 1")
+        try {
+            keyboardCheck()
+        } finally {
+            if (imeSetting.isEmpty() || imeSetting == "null") {
+                shellOut("settings delete secure show_ime_with_hard_keyboard")
+            } else {
+                shellOut("settings put secure show_ime_with_hard_keyboard $imeSetting")
+            }
+        }
+    }
+
+    /** The body of [t15_theEditorStaysReachableWithTheKeyboardUp]. */
+    private fun keyboardCheck() {
+        openFilters()
+        compose.onNodeWithTag("filters-new").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("filter-editor").fetchSemanticsNodes().isNotEmpty()
+        }
+        // A form taller than what the keyboard leaves: three conditions
+        // and a labelling action, which is the rule the report was about.
+        compose.onNodeWithTag("filter-add-condition").performClick()
+        compose.onNodeWithTag("filter-add-condition").performClick()
+        compose.onNodeWithTag("action-kind-0").performClick()
+        compose.onNodeWithTag("action-kind-0-apply-label").performClick()
+
+        // Typing in the last condition raises the keyboard over the half
+        // of the form that carries the action.
+        compose.onNodeWithTag("condition-value-2").performClick()
+        compose.onNodeWithTag("condition-value-2").performTextReplacement("vendor.example")
+        val imeTop = awaitKeyboard()
+
+        compose.onNodeWithTag("filter-save").assertIsDisplayed()
+        compose.onNodeWithTag("filter-editor").performScrollToNode(hasTestTag("action-value-0"))
+        compose.waitForIdle()
+        compose.captureScreen("m3a-filter-editor-keyboard")
+
+        val label = compose.onNodeWithTag("action-value-0").fetchSemanticsNode().boundsInWindow
+        assertTrue(
+            "the label field is behind the keyboard: it ends at ${label.bottom}, the keyboard starts at $imeTop",
+            label.bottom <= imeTop,
+        )
+        val save = compose.onNodeWithTag("filter-save").fetchSemanticsNode().boundsInWindow
+        assertTrue(
+            "the save action is behind the keyboard: it ends at ${save.bottom}, the keyboard starts at $imeTop",
+            save.bottom <= imeTop,
         )
     }
 
@@ -244,6 +306,41 @@ class FiltersAcceptanceTest {
         compose.onNodeWithTag("filter-name").performTextReplacement(name)
         compose.onNodeWithTag("condition-value-0").performTextReplacement(value)
         compose.onNodeWithTag("filter-save").performClick()
+        compose.waitForIdle()
+    }
+
+    /**
+     * Waits for the soft keyboard and returns where its top edge sits in
+     * the window, which is what a field has to stay above to be reachable.
+     */
+    private fun awaitKeyboard(): Float {
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            var top = 0f
+            instrumentation.runOnMainSync {
+                val decor = compose.activity.window.decorView
+                val insets = ViewCompat.getRootWindowInsets(decor)
+                val ime = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                if (ime > 0) top = (decor.height - ime).toFloat()
+            }
+            if (top > 0f) return top
+            Thread.sleep(POLL_MS)
+        }
+        error("the keyboard never came up")
+    }
+
+    /** Brings a field of the editor into view and taps it. */
+    private fun editorTap(tag: String) {
+        compose.onNodeWithTag("filter-editor").performScrollToNode(hasTestTag(tag))
+        compose.onNodeWithTag(tag).performClick()
+    }
+
+    /**
+     * Puts the keyboard away, so the next tap lands on the form rather
+     * than on the keyboard the field being left raised.
+     */
+    private fun closeKeyboard() {
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.waitForIdle()
     }
 
