@@ -143,7 +143,7 @@ class AppContainer(context: Context) {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Undo offers an action parks for the list that shows them (issue #345). */
-    val undo = UndoCenter()
+    val undo = UndoCenter { System.currentTimeMillis() }
 
     val tokenStore = KeystoreTokenStore(context)
 

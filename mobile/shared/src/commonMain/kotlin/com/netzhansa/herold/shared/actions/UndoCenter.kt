@@ -17,10 +17,23 @@ import kotlinx.coroutines.flow.getAndUpdate
 class UndoOffer internal constructor(
     /** What the snackbar says, "Archived", "Snoozed" or "Sending". */
     val message: String,
-    /** How long the offer stands, in milliseconds; null for the default. */
-    val windowMs: Long?,
+    /**
+     * When the offer stops being takeable, in epoch milliseconds; null
+     * when it stands for as long as its snackbar does. It is an instant
+     * rather than a duration because the screen that shows the offer is
+     * not always the screen that parked it: a send takes its undo window
+     * with it, so a snackbar raised on the screen the composer returned
+     * to comes down when the hold is up, not a full window later.
+     */
+    val expiresAtMs: Long?,
     private val action: suspend () -> Unit,
 ) {
+    /** How much of the offer is left at [now]; null when it has no deadline. */
+    fun remainingMs(now: Long): Long? = expiresAtMs?.let { (it - now).coerceAtLeast(0) }
+
+    /** True when taking it back is no longer possible. */
+    fun isExpired(now: Long): Boolean = remainingMs(now) == 0L
+
     suspend fun undo() = action()
 }
 
@@ -41,7 +54,7 @@ object UndoMessages {
  * writes the change and leaves the offer here, and the list picks it up
  * when it is returned to.
  */
-class UndoCenter {
+class UndoCenter(private val now: () -> Long = { 0L }) {
 
     private val _pending = MutableStateFlow<UndoOffer?>(null)
 
@@ -61,16 +74,21 @@ class UndoCenter {
         return offer
     }
 
-    /** Parks an offer whose undo is something other than a mail action. */
+    /**
+     * Parks an offer whose undo is something other than a mail action.
+     * [windowMs] is how long it may still be taken back from now.
+     */
     fun offer(message: String, windowMs: Long?, undo: suspend () -> Unit): UndoOffer {
-        val offer = UndoOffer(message, windowMs, undo)
+        val offer = UndoOffer(message, windowMs?.let { now() + it }, undo)
         _pending.value = offer
         return offer
     }
 
     /**
      * Takes the parked offer, leaving none behind, so exactly one screen
-     * shows it however many are watching.
+     * shows it however many are watching. An offer whose window ran out
+     * before any screen picked it up is dropped rather than shown: the
+     * send it belonged to has already left.
      */
-    fun take(): UndoOffer? = _pending.getAndUpdate { null }
+    fun take(): UndoOffer? = _pending.getAndUpdate { null }?.takeUnless { it.isExpired(now()) }
 }

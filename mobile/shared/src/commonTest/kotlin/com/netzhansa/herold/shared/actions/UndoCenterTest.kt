@@ -114,13 +114,59 @@ class UndoCenterTest {
 
     @Test
     fun anOfferWithItsOwnUndoRunsThatUndo() = runTest {
-        val centre = UndoCenter()
+        var clock = 1_000L
+        val centre = UndoCenter { clock }
         var taken = false
 
         val offer = centre.offer(UndoMessages.SENDING, windowMs = 5_000) { taken = true }
-        assertEquals(5_000L, offer.windowMs)
+        assertEquals(6_000L, offer.expiresAtMs)
+        assertEquals(5_000L, offer.remainingMs(clock))
         centre.take()!!.undo()
 
         assertTrue(taken)
+    }
+
+    @Test
+    fun anOfferPickedUpLateStandsOnlyForWhatIsLeftOfItsWindow() = runTest {
+        var clock = 1_000L
+        val centre = UndoCenter { clock }
+
+        val offer = centre.offer(UndoMessages.SENDING, windowMs = 5_000) { }
+        clock = 3_000L
+
+        assertEquals(3_000L, offer.remainingMs(clock))
+        assertTrue(!offer.isExpired(clock))
+        assertEquals(offer, centre.take(), "an offer still inside its window is shown")
+    }
+
+    @Test
+    fun anOfferWhoseWindowRanOutIsNotShown() = runTest {
+        var clock = 1_000L
+        val centre = UndoCenter { clock }
+        var taken = false
+
+        centre.offer(UndoMessages.SENDING, windowMs = 5_000) { taken = true }
+        clock = 9_000L
+
+        assertNull(centre.take(), "a send that has already left offers nothing to take back")
+        assertTrue(!taken)
+    }
+
+    @Test
+    fun anActionOfferStandsUntilItsSnackbarComesDown() = runTest {
+        val store = store(message("e1"))
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter { 10_000L }
+
+        val offer = centre.offer(
+            UndoMessages.ARCHIVED,
+            actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), boxes),
+            actions,
+        )!!
+
+        assertNull(offer.expiresAtMs)
+        assertNull(offer.remainingMs(999_000L))
+        assertTrue(!offer.isExpired(999_000L))
     }
 }

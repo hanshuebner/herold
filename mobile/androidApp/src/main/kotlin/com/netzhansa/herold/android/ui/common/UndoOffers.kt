@@ -12,12 +12,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Shows the undo offers actions park in the container (issue #345).
  *
- * A message list mounts this next to its snackbar host. An action invoked
- * on the list itself parks its offer and this picks it up at once; an
- * action invoked in the thread view parks its offer and pops back, and
- * this picks it up when the list is composed again - so the affordance
- * appears on the screen the user lands on, whichever screen started the
- * action.
+ * Every screen a composer or an action can return to mounts this next to
+ * its snackbar host: the message list, and the thread view a reply returns
+ * to (issue #368). An action invoked on the screen itself parks its offer
+ * and this picks it up at once; an action invoked somewhere that pops back
+ * parks its offer and this picks it up when the destination is composed -
+ * so the affordance appears on the screen the user lands on, whichever
+ * screen started the action.
  *
  * The offer is taken rather than observed, so two lists watching at once
  * still show it once.
@@ -28,7 +29,7 @@ fun UndoOffers(container: AppContainer, snackbar: SnackbarHostState) {
         container.undo.pending.collect { parked ->
             if (parked == null) return@collect
             val offer = container.undo.take() ?: return@collect
-            show(offer, snackbar)
+            show(offer, snackbar) { System.currentTimeMillis() }
         }
     }
 }
@@ -39,7 +40,7 @@ fun UndoOffers(container: AppContainer, snackbar: SnackbarHostState) {
  * is up, so the affordance is gone exactly when taking it back stops
  * being possible.
  */
-private suspend fun show(offer: UndoOffer, snackbar: SnackbarHostState) {
+private suspend fun show(offer: UndoOffer, snackbar: SnackbarHostState, now: () -> Long) {
     // One offer at a time: a snackbar still up from an earlier action
     // would otherwise hold this one in the host's queue, invisible.
     snackbar.currentSnackbarData?.dismiss()
@@ -49,7 +50,8 @@ private suspend fun show(offer: UndoOffer, snackbar: SnackbarHostState) {
         withDismissAction = true,
         duration = SnackbarDuration.Long,
     )
-    val window = offer.windowMs
+    val window = offer.remainingMs(now())
+    if (window != null && window <= 0) return
     val result = if (window == null) raise() else withTimeoutOrNull(window) { raise() }
     if (result == SnackbarResult.ActionPerformed) offer.undo()
 }

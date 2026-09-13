@@ -75,6 +75,7 @@ import com.netzhansa.herold.android.push.ActiveThread
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
+import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.PendingAction
 import com.netzhansa.herold.shared.actions.SnoozeClock
@@ -202,6 +203,10 @@ fun ThreadScreen(
         container.undo.offer(message, action, session.actions)
         withContext(Dispatchers.Main.immediate) { onBack() }
     }
+
+    // A send started here returns here, so the "Sending / Undo" offer is
+    // raised on this screen as well as on the list (issue #368).
+    UndoOffers(container = container, snackbar = snackbar)
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("thread-snackbar")) },

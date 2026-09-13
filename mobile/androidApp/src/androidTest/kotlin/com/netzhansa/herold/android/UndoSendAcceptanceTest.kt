@@ -10,10 +10,14 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
+import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.sync.toStoreRow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -106,6 +110,64 @@ class UndoSendAcceptanceTest {
             runBlocking { app.container.outbox.list().none { it.isPending } }
         }
         compose.captureScreen("72-held-send-delivered")
+    }
+
+    @Test
+    fun t72_undoAfterAReplyIsOfferedOnTheThreadView() = runBlocking {
+        chooseWindow(seconds = 30)
+        val parent = deliverAndOpen("undo reply")
+        compose.onNodeWithTag("thread-reply").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("compose-send").performClick()
+
+        // The composer returns to the thread, and the offer is raised
+        // there rather than waiting for the list (issue #368).
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithText(UndoMessages.SENDING).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.captureScreen("74-reply-sending-with-undo-on-the-thread")
+        compose.onNodeWithText("Undo").performClick()
+
+        // The reply comes back as it was, and the server never heard of it.
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.captureScreen("75-undo-reopened-the-reply")
+        assertTrue(
+            "the queued reply is gone, saw ${app.container.outbox.list()}",
+            app.container.outbox.list().none { it.isPending },
+        )
+        Thread.sleep(SETTLE_MS)
+        assertNull("an undone reply must not reach the recipient", delivered("Re: " + parent.subject))
+    }
+
+    /** Seeds a message and opens its conversation. */
+    private fun deliverAndOpen(prefix: String): Email {
+        val subject = "$prefix ${System.currentTimeMillis()}"
+        DevInstance.deliverMail(subject = subject, body = "Please answer this.")
+        runBlocking { DevInstance.awaitFiled(subject) }
+        val parent = awaitInbox(subject)
+        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${parent.threadId}"))
+        compose.onNodeWithTag("thread-row-${parent.threadId}").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-reply").fetchSemanticsNodes().isNotEmpty()
+        }
+        return parent
+    }
+
+    private fun awaitInbox(subject: String): Email = runBlocking {
+        repeat(30) {
+            app.container.session.value!!.syncEngine.syncAll()
+            app.container.store.inboxEmails().first().firstOrNull { it.subject == subject }
+                ?.let { return@runBlocking it }
+            Thread.sleep(1_000)
+        }
+        error("the seeded message \"$subject\" never reached the inbox")
     }
 
     /** Picks the undo window on the settings screen, as a user would. */
