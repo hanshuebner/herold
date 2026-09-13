@@ -147,6 +147,39 @@ class AttachmentAcceptanceTest {
     }
 
     @Test
+    fun t43_anInlinedPhotoIsSentWithItsDisplayDimensions() = runBlocking {
+        val parent = deliverAndReply("acceptance inline size")
+        val photo = photoJpeg(4000, 3000)
+
+        stubPicker("inline.jpg", "image/jpeg", photo)
+        compose.onNodeWithTag("compose-insert-image").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("image-size-dialog").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("image-size-confirm").performClick()
+        // The editor inserts the tag once the image has been taken in.
+        Thread.sleep(SETTLE_MS)
+        compose.captureScreen("43-inline-image-in-the-composer")
+
+        compose.onNodeWithTag("compose-send").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
+        }
+
+        val delivered = awaitDelivered(parent.subject)
+        val html = delivered.bodyHtml.orEmpty()
+        val img = Regex("""<img\b[^>]*>""").find(html)?.value
+        assertNotNull("the reply must carry an inline img, saw: $html", img)
+        assertTrue("the img must be bounded to the display width, saw $img", img!!.contains("width=\"562\""))
+        assertTrue("the img must carry a height, saw $img", Regex("height=\"\\d+\"").containsMatchIn(img))
+        assertTrue(
+            "the img must stay inside a narrow column, saw $img",
+            Regex("max-width\\s*:\\s*100%").containsMatchIn(img),
+        )
+        assertTrue("the img must reference the inline part, saw $img", img.contains("cid:"))
+    }
+
+    @Test
     fun t42_aReceivedPhotoRendersAsAThumbnailNotAFullResolutionImage() = runBlocking {
         val subject = "photo attachment " + System.currentTimeMillis()
         DevInstance.deliverMailWithImage(subject, photoJpeg(3000, 2000), "holiday.jpg", inline = false)
@@ -211,6 +244,7 @@ class AttachmentAcceptanceTest {
     private fun deliverAndReply(prefix: String): Email {
         val subject = "$prefix ${System.currentTimeMillis()}"
         DevInstance.deliverMail(subject = subject, body = "Please send me the photo.")
+        runBlocking { DevInstance.awaitFiled(subject) }
         val parent = awaitInbox(subject)
         compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${parent.threadId}"))
         compose.onNodeWithTag("thread-row-${parent.threadId}").performClick()
@@ -256,6 +290,7 @@ class AttachmentAcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MS = 60_000L
+        const val SETTLE_MS = 2_000L
         const val DELIVERY_POLLS = 30
         const val DELIVERY_POLL_MS = 1_000L
     }

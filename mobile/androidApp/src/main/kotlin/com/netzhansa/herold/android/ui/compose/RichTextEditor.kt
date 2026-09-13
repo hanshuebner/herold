@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.netzhansa.herold.shared.compose.ComposeAttachment
+import com.netzhansa.herold.shared.compose.InlineImage
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import java.io.ByteArrayInputStream
 
@@ -64,11 +65,24 @@ class EditorHandle {
         evaluate("document.execCommand('createLink', false, '$escaped');herold.publish();")
     }
 
-    /** Places an inline image at the cursor, referenced by its Content-ID. */
-    fun insertInlineImage(cid: String, type: String, bytes: ByteArray) {
+    /**
+     * Places an inline image at the cursor, referenced by its Content-ID.
+     * [box] is the display size the tag carries, so a receiving client
+     * that ignores the sender's CSS still draws the image reduced rather
+     * than at its encoded resolution (issue #367).
+     */
+    fun insertInlineImage(cid: String, type: String, bytes: ByteArray, box: InlineImage.Box?) {
         inlineImages[cid] = type to bytes
         val src = HtmlSanitizer.INLINE_SCHEME + cid
-        evaluate("document.execCommand('insertHTML', false, '<img src=\"$src\">');herold.publish();")
+        val tag = InlineImage.tag(src, box)
+        // The editor's own markup filter drops a style attribute out of
+        // inserted HTML, so the column bound is set on the live element.
+        evaluate(
+            "document.execCommand('insertHTML', false, '$tag');" +
+                "var inserted = document.querySelector('img[src=\"$src\"]');" +
+                "if (inserted) { inserted.style.maxWidth = '100%'; }" +
+                "herold.publish();",
+        )
     }
 
     /** Asks the editor to hand its current HTML to the state holder. */

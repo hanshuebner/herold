@@ -79,6 +79,7 @@ import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.ComposeResult
 import com.netzhansa.herold.shared.compose.ComposeState
 import com.netzhansa.herold.shared.compose.HtmlText
+import com.netzhansa.herold.shared.compose.InlineImage
 import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
 import com.netzhansa.herold.shared.compose.withPrefill
@@ -233,7 +234,10 @@ fun ComposeScreen(
                 state = state?.let { it.copy(attachments = it.attachments + added) }
                 val bytes = added.bytes
                 if (inline && added.cid != null && bytes != null) {
-                    editor.insertInlineImage(added.cid!!, added.type, bytes)
+                    // The tag describes the box the image is drawn in, not
+                    // the pixels it is encoded at (issue #367).
+                    val box = ImageScaling.dimensions(bytes)?.let { (w, h) -> InlineImage.fit(w, h) }
+                    editor.insertInlineImage(added.cid!!, added.type, bytes, box)
                 }
             }
 

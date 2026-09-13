@@ -177,6 +177,31 @@ object DevInstance {
         return subject
     }
 
+    /**
+     * Waits until the instance has filed [subject] in [principal]'s inbox.
+     * Ingest runs a body-metadata pass before a delivered message answers
+     * an `Email/query`, so a client-side wait that starts at the SMTP 250
+     * would be measuring that pass rather than the client's sync.
+     */
+    suspend fun awaitFiled(subject: String, principal: String = email) {
+        val client = clientFor(principal)
+        val accountId = client.session().mailAccountId!!
+        val inbox = client.mailboxGet(accountId).list.first { it.role == "inbox" }.id
+        repeat(FILING_POLLS) {
+            val ids = client.emailQueryInbox(accountId, inbox, 20)
+            val filed = client.emailGet(accountId, ids).list
+                .map { it.toStoreRow(accountId) }
+                .any { it.subject == subject }
+            if (filed) return
+            kotlinx.coroutines.delay(FILING_POLL_MS)
+        }
+        error("the instance never filed \"$subject\" for $principal")
+    }
+
+    /** How long the instance's ingest is given, and at what cadence. */
+    private const val FILING_POLLS = 60
+    private const val FILING_POLL_MS = 1_000L
+
     /** The principal a composed message is addressed to and read back from. */
     val recipientEmail: String get() = argument("heroldRecipient") ?: "bob@example.local"
 
