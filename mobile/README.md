@@ -53,6 +53,15 @@ app process, one `am instrument` invocation each:
         background work until the user opens it again), turn the radios
         back on, and read the recipient's account to see it arrive
 
+The client treats a network the system has not validated as no network,
+so the checks that turn the radios off and on need the emulator to
+validate its own. An emulator whose captive-portal probe cannot reach
+the internet never marks the link validated, the queue stays parked and
+the drain phases time out; switch the probe off once per emulator:
+
+    adb shell settings put global captive_portal_detection_enabled 0
+    adb shell settings put global captive_portal_mode 0
+
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.

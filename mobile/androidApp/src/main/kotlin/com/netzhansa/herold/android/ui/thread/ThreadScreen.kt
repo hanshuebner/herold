@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -158,9 +160,17 @@ fun ThreadScreen(
         LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
     }
 
-    /** The attachment's bytes from the blob cache, downloading them once. */
-    suspend fun blobOf(attachment: Attachment): ByteArray? =
-        session.syncEngine.blob(accountId, attachment.blobId, attachment.type, attachment.name)
+    /**
+     * The attachment's bytes: from the spool while the message that
+     * carries it is still queued, from the blob cache once the server
+     * holds it, downloading it once (issue #380).
+     */
+    suspend fun blobOf(attachment: Attachment): ByteArray? {
+        PendingMessage.spoolHandle(attachment.blobId)?.let { handle ->
+            return container.spool.read(handle)
+        }
+        return session.syncEngine.blob(accountId, attachment.blobId, attachment.type, attachment.name)
+    }
 
     // A thread reached from search or a notification can be outside the
     // synced set; the store is still the source of truth, so the sync
@@ -198,6 +208,8 @@ fun ThreadScreen(
      */
     val offer = UnsubscribeOffer.of(conversation)
 
+    val newestPending = pending.lastOrNull()
+
     val newest = conversation.lastOrNull()
     LaunchedEffect(newest?.id) {
         val target = conversation.lastOrNull { it.isUnread } ?: newest
@@ -207,6 +219,13 @@ fun ThreadScreen(
             if (target.isUnread) session.actions.setSeen(listOf(target), true)
         }
         Unit
+    }
+
+    // A queued reply is the newest message in the conversation, so it is
+    // the one the thread opens on (issue #380). It follows the effect
+    // above, which opens the newest message the store holds.
+    LaunchedEffect(newestPending?.entryId, newest?.id) {
+        newestPending?.let { expandedId = PendingMessage.ID_PREFIX + it.entryId }
     }
 
     /**
@@ -433,7 +452,41 @@ fun ThreadScreen(
                 HorizontalDivider()
             }
             items(pending, key = { "pending-" + it.entryId }) { message ->
-                PendingMessageCard(message = message, onOpenOutbox = onOutbox)
+                // The queued message is read the way a sent one is: same
+                // composable, same accordion, with a chip stating what it
+                // is waiting for and opening the outbox (issue #380).
+                val queued = message.asEmail()
+                MessageCard(
+                    message = queued,
+                    expanded = expandedId == queued.id,
+                    darkTheme = darkTheme,
+                    loadRemoteImages = loadRemoteImages,
+                    onToggle = { expandedId = if (expandedId == queued.id) null else queued.id },
+                    onShowRemoteImages = { loadRemoteImages = true },
+                    resolveRemoteImage = { url ->
+                        runBlocking(Dispatchers.IO) {
+                            session.imageProxy.fetch(url)?.let { it.contentType to it.bytes }
+                        }
+                    },
+                    resolveInlineImage = { cid ->
+                        val attachment = queued.attachments.firstOrNull {
+                            it.cid?.trim('<', '>') == cid || it.name == cid
+                        }
+                        attachment?.let {
+                            runBlocking(Dispatchers.IO) {
+                                blobOf(it)?.let { bytes ->
+                                    it.type to ImageScaling.forDisplay(bytes, displayWidthPx)
+                                }
+                            }
+                        }
+                    },
+                    loadBlob = { attachment -> blobOf(attachment) },
+                    onOpenAttachment = { attachment -> viewing = attachment },
+                    tag = "thread-pending-${message.entryId}",
+                    status = {
+                        PendingMarker(message = message, onOpenOutbox = onOutbox)
+                    },
+                )
                 HorizontalDivider()
             }
         }
@@ -553,49 +606,26 @@ private fun DraftMessageCard(draft: Email, onEdit: () -> Unit) {
 }
 
 /**
- * A message this conversation is waiting to send, rendered where the sent
- * one will be (issue #369). It states what it is waiting for and opens the
- * outbox, which is where it is retried or discarded.
+ * What a waiting message is waiting for (issue #369): the marker on the
+ * message, which is also the way to the outbox, where the entry is
+ * retried or discarded (issue #380).
  */
 @Composable
-private fun PendingMessageCard(message: PendingMessage, onOpenOutbox: () -> Unit) {
-    ListItem(
-        headlineContent = {
-            Text(
-                text = message.fromEmail.ifBlank { "You" },
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-            )
-        },
-        supportingContent = {
-            Column {
-                Text(
-                    text = "to " + message.recipientLine.ifBlank { "(no recipient)" },
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    text = HtmlText.toPlainText(message.bodyHtml).trim().take(PENDING_PREVIEW_CHARS),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                )
-            }
-        },
-        trailingContent = {
+private fun PendingMarker(message: PendingMessage, onOpenOutbox: () -> Unit) {
+    val failed = message.failure != null
+    AssistChip(
+        onClick = onOpenOutbox,
+        label = {
             Text(
                 text = message.marker,
                 style = MaterialTheme.typography.labelMedium,
-                color = if (message.failure != null) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
                 modifier = Modifier.testTag("thread-pending-marker-${message.entryId}"),
             )
         },
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onOpenOutbox() }
-            .testTag("thread-pending-${message.entryId}"),
+        colors = AssistChipDefaults.assistChipColors(
+            labelColor = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        ),
+        modifier = Modifier.testTag("thread-pending-outbox-${message.entryId}"),
     )
 }
 
@@ -772,8 +802,12 @@ private fun MessageCard(
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
     loadBlob: suspend (Attachment) -> ByteArray?,
     onOpenAttachment: (Attachment) -> Unit,
+    /** What the message is tagged with, for the instrumented checks. */
+    tag: String = "message-${message.id}",
+    /** The state marker a message that is not on the server yet carries. */
+    status: (@Composable () -> Unit)? = null,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().testTag("message-${message.id}")) {
+    Column(modifier = Modifier.fillMaxWidth().testTag(tag)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -800,6 +834,7 @@ private fun MessageCard(
                     )
                 }
             }
+            status?.invoke()
         }
 
         if (expanded) {

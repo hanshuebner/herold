@@ -20,6 +20,9 @@ import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
@@ -387,8 +390,9 @@ class OutboxAcceptanceTest {
 
     /**
      * A reply written with the radios off shows in its conversation at
-     * once, marked as waiting, and is the sent message once the queue has
-     * drained (issue #369). Run standalone with the radios on.
+     * once, open and readable, marked as waiting, and is the sent message
+     * once the queue has drained (issues #369, #380). Run standalone with
+     * the radios on.
      */
     @Test
     fun t67_aReplyQueuedOfflineShowsInItsThreadAndBecomesTheSentMessage() = runBlocking {
@@ -429,7 +433,15 @@ class OutboxAcceptanceTest {
             }
             compose.onNodeWithTag("thread-messages")
                 .performScrollToNode(hasTestTag("thread-pending-$entryId"))
+            // The queued message is open where it stands, so what was
+            // written is read without a tap (issue #380): its body
+            // surface is there, and the launcher's accessibility tree
+            // carries the text the WebView drew.
+            compose.onNodeWithTag("message-body-${PendingMessage.ID_PREFIX}$entryId").assertExists()
+            val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+            val shown = device.wait(Until.hasObject(By.textContains(QUOTE_ATTRIBUTION)), TIMEOUT_MS)
             compose.captureScreen("69-queued-reply-in-its-thread")
+            assertTrue("the queued reply must show its body without a tap", shown)
             // The list item merges its children, so the marker is read
             // from the unmerged tree.
             compose.onNodeWithTag("thread-pending-marker-$entryId", useUnmergedTree = true)
@@ -573,6 +585,14 @@ class OutboxAcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
+
+        /**
+         * What a reply quotes its parent with; it is in the composed
+         * body and nowhere else on the thread, so finding it on screen
+         * is finding the queued message's body (issue #380).
+         */
+        const val QUOTE_ATTRIBUTION = "wrote:"
+
         const val DRAIN_TIMEOUT_MS = 120_000L
 
         /** How many drain passes the dead-network check puts the entry through. */

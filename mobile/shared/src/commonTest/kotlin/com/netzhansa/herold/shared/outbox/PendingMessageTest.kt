@@ -1,5 +1,6 @@
 package com.netzhansa.herold.shared.outbox
 
+import com.netzhansa.herold.shared.domain.Keywords
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -12,6 +13,9 @@ private fun payload(threadId: String?, subject: String) = ComposePayload(
     to = listOf(OutboxAddress("Bob Example", "bob@example.local")),
     subject = subject,
     bodyHtml = "<p>on my way</p>",
+    attachments = listOf(
+        OutboxAttachment(name = "map.png", type = "image/png", size = 12, spool = "spool-1-map.png"),
+    ),
     draftsMailboxId = "drafts-1",
     threadId = threadId,
     parentId = "e1",
@@ -109,5 +113,31 @@ class PendingMessageTest {
         val pending = listOf(entry(3), entry(1), entry(2)).pendingMessages()
 
         assertEquals(listOf(1L, 2L, 3L), pending.map { it.entryId })
+    }
+
+    @Test
+    fun aWaitingMessageIsReadAsTheMessageItWillBe() {
+        val message = listOf(entry(1)).pendingMessages().single()
+
+        val email = message.asEmail()
+        assertEquals(PendingMessage.ID_PREFIX + message.entryId, email.id)
+        assertEquals("t-1", email.threadId)
+        assertEquals("<p>on my way</p>", email.bodyHtml)
+        assertEquals("Bob Example", email.toLine)
+        assertEquals("on my way", email.preview)
+        assertTrue(email.keywords.contains(Keywords.SEEN))
+        val attachment = email.attachments.single()
+        assertEquals("map.png", attachment.name)
+        assertEquals("spool-1-map.png", PendingMessage.spoolHandle(attachment.blobId))
+    }
+
+    @Test
+    fun anUploadedAttachmentIsReadFromItsBlob() {
+        val message = listOf(entry(1)).pendingMessages().single()
+            .let { it.copy(attachments = it.attachments.map { file -> file.copy(blobId = "blob-9") }) }
+
+        val attachment = message.asEmail().attachments.single()
+        assertEquals("blob-9", attachment.blobId)
+        assertEquals(null, PendingMessage.spoolHandle(attachment.blobId))
     }
 }
