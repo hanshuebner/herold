@@ -153,6 +153,56 @@ class UndoCenterTest {
     }
 
     @Test
+    fun anOfferHandedOnWaitsForTheScreenTheUserLandsOn() = runTest {
+        val store = store(message("e1"))
+        val outbox = Outbox(store)
+        val actions = MailActions(store, outbox)
+        val centre = UndoCenter { 10_000L }
+        val threadView = Any()
+        val list = Any()
+
+        val offered = centre.offer(
+            UndoMessages.ARCHIVED,
+            actions.archiveLocally(listOf(store.email("acct-a", "e1")!!), boxes),
+            actions,
+            handOnFrom = threadView,
+        )!!
+
+        assertNull(centre.take(threadView), "the screen that popped hands the offer on")
+        assertEquals(offered, centre.take(list), "the list it returns to shows it")
+        assertNull(centre.take(list), "and shows it once")
+    }
+
+    @Test
+    fun anOfferHandedOnKeepsItsFullWindowUntilItIsShown() = runTest {
+        var clock = 1_000L
+        val centre = UndoCenter { clock }
+        val threadView = Any()
+
+        val offered = centre.offer(UndoMessages.ARCHIVED, windowMs = null, handOnFrom = threadView) { }
+        clock = 600_000L
+
+        assertNull(centre.take(threadView))
+        assertNull(offered.remainingMs(clock), "the archive offer stands as long as its snackbar")
+        assertEquals(offered, centre.take(Any()), "however long the destination took to appear")
+    }
+
+    @Test
+    fun anOfferNoScreenHandedOnIsShownWhereverItIsRaised() = runTest {
+        var clock = 1_000L
+        val centre = UndoCenter { clock }
+        val threadView = Any()
+
+        // The composer parks the send offer and returns to the thread
+        // view, which raises it for what is left of the hold (issue #368).
+        val offered = centre.offer(UndoMessages.SENDING, windowMs = 5_000) { }
+        clock = 2_000L
+
+        assertEquals(offered, centre.take(threadView))
+        assertEquals(4_000L, offered.remainingMs(clock))
+    }
+
+    @Test
     fun anActionOfferStandsUntilItsSnackbarComesDown() = runTest {
         val store = store(message("e1"))
         val outbox = Outbox(store)

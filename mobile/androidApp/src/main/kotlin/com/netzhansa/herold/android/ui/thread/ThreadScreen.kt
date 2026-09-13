@@ -210,6 +210,12 @@ fun ThreadScreen(
     }
 
     /**
+     * This screen's undo surface, told apart from the list's so an offer
+     * handed on as the view pops is shown where the user lands (issue #378).
+     */
+    val undoSurface = remember { Any() }
+
+    /**
      * An action that takes the conversation off this screen: the local
      * write is already in the store, the offer is parked for the list, and
      * the view pops back so the undo appears where the user lands
@@ -217,13 +223,14 @@ fun ThreadScreen(
      * coroutine resumed off it must return to.
      */
     suspend fun leaveWith(action: PendingAction, message: String) {
-        container.undo.offer(message, action, session.actions)
+        container.undo.offer(message, action, session.actions, handOnFrom = undoSurface)
         withContext(Dispatchers.Main.immediate) { onBack() }
     }
 
     // A send started here returns here, so the "Sending / Undo" offer is
-    // raised on this screen as well as on the list (issue #368).
-    UndoOffers(container = container, snackbar = snackbar)
+    // raised on this screen as well as on the list (issue #368). The
+    // offers this screen hands on as it pops are left for the list.
+    UndoOffers(container = container, snackbar = snackbar, surface = undoSurface)
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.testTag("thread-snackbar")) },

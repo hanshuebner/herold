@@ -21,14 +21,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  * screen started the action.
  *
  * The offer is taken rather than observed, so two lists watching at once
- * still show it once.
+ * still show it once. [surface] identifies this mount: an offer a screen
+ * parked on its way off stays parked until the screen the user lands on
+ * mounts its own surface and takes it (issue #378).
  */
 @Composable
-fun UndoOffers(container: AppContainer, snackbar: SnackbarHostState) {
-    LaunchedEffect(container) {
+fun UndoOffers(container: AppContainer, snackbar: SnackbarHostState, surface: Any? = null) {
+    LaunchedEffect(container, surface) {
         container.undo.pending.collect { parked ->
             if (parked == null) return@collect
-            val offer = container.undo.take() ?: return@collect
+            val offer = container.undo.take(surface) ?: return@collect
             show(offer, snackbar) { System.currentTimeMillis() }
         }
     }

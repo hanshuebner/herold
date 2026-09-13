@@ -3,7 +3,6 @@ package com.netzhansa.herold.shared.actions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * An offer to take back what just happened: an action whose optimistic
@@ -28,6 +27,14 @@ class UndoOffer internal constructor(
     val expiresAtMs: Long?,
     /** What the snackbar's action reads: "Undo", or "Discard" for a saved draft. */
     val actionLabel: String,
+    /**
+     * The surface that parked the offer on its way off screen, when the
+     * offer belongs to the screen the user lands on; null when whichever
+     * surface is up may show it. Archiving from an open conversation pops
+     * back to the list, so the thread view hands its offer on rather than
+     * showing it for the instant it has left.
+     */
+    val handedOnBy: Any?,
     private val action: suspend () -> Unit,
 ) {
     /** How much of the offer is left at [now]; null when it has no deadline. */
@@ -75,10 +82,15 @@ class UndoCenter(private val now: () -> Long = { 0L }) {
      * nothing, when the action changed nothing - a settling swipe can ask
      * twice, and the second pass has nothing to offer an undo for.
      */
-    suspend fun offer(message: String, action: PendingAction, actions: MailActions): UndoOffer? {
+    suspend fun offer(
+        message: String,
+        action: PendingAction,
+        actions: MailActions,
+        handOnFrom: Any? = null,
+    ): UndoOffer? {
         if (action.isEmpty) return null
         actions.commit(action)
-        val offer = UndoOffer(message, null, UndoActions.UNDO) { actions.undo(action) }
+        val offer = UndoOffer(message, null, UndoActions.UNDO, handOnFrom) { actions.undo(action) }
         _pending.value = offer
         return offer
     }
@@ -91,18 +103,29 @@ class UndoCenter(private val now: () -> Long = { 0L }) {
         message: String,
         windowMs: Long?,
         actionLabel: String = UndoActions.UNDO,
+        handOnFrom: Any? = null,
         undo: suspend () -> Unit,
     ): UndoOffer {
-        val offer = UndoOffer(message, windowMs?.let { now() + it }, actionLabel, undo)
+        val offer = UndoOffer(message, windowMs?.let { now() + it }, actionLabel, handOnFrom, undo)
         _pending.value = offer
         return offer
     }
 
     /**
-     * Takes the parked offer, leaving none behind, so exactly one screen
-     * shows it however many are watching. An offer whose window ran out
-     * before any screen picked it up is dropped rather than shown: the
-     * send it belonged to has already left.
+     * Takes the parked offer for [surface], leaving none behind, so
+     * exactly one screen shows it however many are watching. An offer
+     * whose window ran out before any screen picked it up is dropped
+     * rather than shown: the send it belonged to has already left. An
+     * offer a surface handed on stays parked for that surface, so it
+     * waits for the screen the user lands on (issue #378).
      */
-    fun take(): UndoOffer? = _pending.getAndUpdate { null }?.takeUnless { it.isExpired(now()) }
+    fun take(surface: Any? = null): UndoOffer? {
+        val parked = _pending.value ?: return null
+        if (parked.isExpired(now())) {
+            _pending.compareAndSet(parked, null)
+            return null
+        }
+        if (surface != null && surface === parked.handedOnBy) return null
+        return if (_pending.compareAndSet(parked, null)) parked else null
+    }
 }
