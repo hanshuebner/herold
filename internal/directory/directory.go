@@ -318,6 +318,22 @@ func (d *Directory) GetPrincipalByEmail(ctx context.Context, email string) (Prin
 	return principalFromStore(p), nil
 }
 
+// GetPrincipalByID resolves a principal by its numeric ID. Returns
+// ErrNotFound when no such principal exists.
+func (d *Directory) GetPrincipalByID(ctx context.Context, pid PrincipalID) (Principal, error) {
+	if err := ctx.Err(); err != nil {
+		return Principal{}, err
+	}
+	p, err := d.meta.GetPrincipalByID(ctx, pid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Principal{}, fmt.Errorf("%w: principal %d", ErrNotFound, pid)
+		}
+		return Principal{}, fmt.Errorf("directory: load principal: %w", err)
+	}
+	return principalFromStore(p), nil
+}
+
 // ListPrincipals returns up to limit principals starting after the
 // given cursor (zero for the first page), in ascending ID order.
 // Non-positive limits apply the default of 100; the store enforces a

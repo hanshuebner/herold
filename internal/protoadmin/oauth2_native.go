@@ -151,6 +151,13 @@ func (s *Server) handleOAuthAuthorizeGet(w http.ResponseWriter, r *http.Request)
 // alternative to password+TOTP; each button posts the same signed "req"
 // token and CSRF cookie value the password form posts, to
 // POST /oauth2/authorize/federated (oauth2_federated.go).
+//
+// When CodeOnly is set (issue #372: the password step succeeded and the
+// principal has TOTP enrolled), the form asks only for the six-digit
+// code -- email/password are not re-requested because req already
+// carries a signed, short-lived "password verified" binding
+// (directory.AuthorizeRequest.StepUpPrincipalID) the POST handler
+// authenticates against instead of re-checking a password.
 var oauthLoginFormTemplate = template.Must(template.New("oauth2-login").Parse(`<!DOCTYPE html>
 <html>
 <head>
@@ -164,6 +171,12 @@ var oauthLoginFormTemplate = template.Must(template.New("oauth2-login").Parse(`<
 <form method="POST" action="/oauth2/authorize" autocomplete="on">
   <input type="hidden" name="req" value="{{.Req}}">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{if .CodeOnly}}
+  <p>
+    <label for="totp_code">Authentication code</label><br>
+    <input type="text" id="totp_code" name="totp_code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" required autofocus>
+  </p>
+  {{else}}
   <p>
     <label for="email">Email</label><br>
     <input type="email" id="email" name="email" autocomplete="username" required autofocus>
@@ -172,15 +185,10 @@ var oauthLoginFormTemplate = template.Must(template.New("oauth2-login").Parse(`<
     <label for="password">Password</label><br>
     <input type="password" id="password" name="password" autocomplete="current-password" required>
   </p>
-  {{if .ShowTOTP}}
-  <p>
-    <label for="totp_code">Authentication code</label><br>
-    <input type="text" id="totp_code" name="totp_code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6">
-  </p>
   {{end}}
   <p><button type="submit">Sign in</button></p>
 </form>
-{{if .Providers}}
+{{if and .Providers (not .CodeOnly)}}
 <hr>
 <p>Or sign in with:</p>
 {{range .Providers}}
@@ -202,7 +210,7 @@ type oauthLoginProviderOption struct {
 	Name string
 }
 
-func (s *Server) renderOAuthLoginForm(ctx context.Context, w http.ResponseWriter, encodedReq, csrf, errMsg string, showTOTP bool) {
+func (s *Server) renderOAuthLoginForm(ctx context.Context, w http.ResponseWriter, encodedReq, csrf, errMsg string, codeOnly bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
@@ -210,9 +218,9 @@ func (s *Server) renderOAuthLoginForm(ctx context.Context, w http.ResponseWriter
 		Req       string
 		CSRF      string
 		Error     string
-		ShowTOTP  bool
+		CodeOnly  bool
 		Providers []oauthLoginProviderOption
-	}{encodedReq, csrf, errMsg, showTOTP, s.oauthLoginProviders(ctx)})
+	}{encodedReq, csrf, errMsg, codeOnly, s.oauthLoginProviders(ctx)})
 }
 
 // handleOAuthAuthorizePost processes the submitted login form.
@@ -249,12 +257,51 @@ func (s *Server) handleOAuthAuthorizePost(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := directory.WithAuthSource(r.Context(), remoteHost(r.RemoteAddr))
-	code, err := s.dir.IssueAuthorizationCode(ctx, email, password, totpCode, req)
+	now := s.clk.Now().UTC()
+
+	// resetToFullForm re-renders the full email+password form, always
+	// clearing any password-verified binding req may carry: a full-form
+	// render means the human is about to (re)supply credentials, and a
+	// stale binding must never survive to be silently reused against
+	// whatever they type this time (issue #372).
+	resetToFullForm := func(errMsg string) {
+		reset := req.WithoutPasswordVerified()
+		s.renderOAuthLoginForm(ctx, w, s.dir.EncodeAuthorizeRequest(reset), formCSRF, errMsg, false)
+	}
+	// renderCodeOnly re-renders the six-digit-only form, (re-)binding the
+	// password-verified state to pid for a fresh PasswordStepUpTTL
+	// window.
+	renderCodeOnly := func(pid store.PrincipalID, errMsg string) {
+		bound := req.WithPasswordVerified(pid, now)
+		s.renderOAuthLoginForm(ctx, w, s.dir.EncodeAuthorizeRequest(bound), formCSRF, errMsg, true)
+	}
+
+	if req.StepUpPrincipalID != 0 && !req.PasswordVerified(now) {
+		// The six-digit-code window elapsed while the form was still on
+		// screen; email/password were never re-submitted (the code-only
+		// form doesn't ask for them), so don't run an authentication
+		// attempt against blank credentials -- ask for everything again.
+		s.auditAuthFailure(r, "auth.oauth2.authorize", email, req.StepUpPrincipalID, "totp step-up binding expired")
+		resetToFullForm("Your sign-in session timed out; please sign in again.")
+		return
+	}
+
+	var code string
+	if req.PasswordVerified(now) {
+		code, err = s.dir.IssueAuthorizationCodeWithVerifiedPassword(ctx, req.StepUpPrincipalID, totpCode, req)
+	} else {
+		code, err = s.dir.IssueAuthorizationCode(ctx, email, password, totpCode, req)
+	}
 	if err != nil {
+		var stepUp *directory.TOTPStepUpError
 		switch {
-		case errors.Is(err, directory.ErrTOTPRequired):
-			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, "totp step-up required")
-			s.renderOAuthLoginForm(ctx, w, encodedReq, formCSRF, "Enter your 6-digit authentication code.", true)
+		case errors.As(err, &stepUp):
+			msg := "Enter your 6-digit authentication code."
+			if req.PasswordVerified(now) {
+				msg = "That code was not correct. Enter your 6-digit authentication code."
+			}
+			s.auditAuthFailure(r, "auth.oauth2.authorize", email, stepUp.PrincipalID, "totp step-up required")
+			renderCodeOnly(stepUp.PrincipalID, msg)
 			return
 		case errors.Is(err, directory.ErrRateLimited):
 			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, "rate limited")
@@ -262,12 +309,21 @@ func (s *Server) handleOAuthAuthorizePost(w http.ResponseWriter, r *http.Request
 			return
 		default:
 			s.auditAuthFailure(r, "auth.oauth2.authorize", email, 0, humanLoginError(err))
-			s.renderOAuthLoginForm(ctx, w, encodedReq, formCSRF, humanLoginError(err), false)
+			resetToFullForm(humanLoginError(err))
 			return
 		}
 	}
 
-	s.appendAudit(ctx, "auth.oauth2.authorize", "principal:"+email, store.OutcomeSuccess, "",
+	// The code-only (TOTP) step never re-submits email; resolve the
+	// canonical address from the step-up binding's principal for the
+	// audit target instead of logging an empty one.
+	auditEmail := email
+	if req.StepUpPrincipalID != 0 {
+		if p, perr := s.dir.GetPrincipalByID(ctx, req.StepUpPrincipalID); perr == nil {
+			auditEmail = p.CanonicalEmail
+		}
+	}
+	s.appendAudit(ctx, "auth.oauth2.authorize", "principal:"+auditEmail, store.OutcomeSuccess, "",
 		map[string]string{"remote": remoteHost(r.RemoteAddr), "client_id": req.ClientID})
 
 	// Clear the CSRF cookie: the authorize request has been consumed.

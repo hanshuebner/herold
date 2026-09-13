@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/directory"
 )
@@ -117,6 +118,242 @@ func oauthAuthorizeGetForClient(t *testing.T, client *http.Client, baseURL, clie
 		}
 	}
 	return res, csrfCookie, reqField
+}
+
+// mustEnrollTOTP enrolls and confirms TOTP for pid, returning the shared
+// secret so callers can generate valid codes with otpGenerateCode.
+func mustEnrollTOTP(t *testing.T, h *harness, pid uint64) string {
+	t.Helper()
+	ctx := context.Background()
+	secret, _, err := h.dir.EnrollTOTP(ctx, directory.PrincipalID(pid))
+	if err != nil {
+		t.Fatalf("EnrollTOTP: %v", err)
+	}
+	code, err := otpGenerateCode(secret, h.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+	if err := h.dir.ConfirmTOTP(ctx, directory.PrincipalID(pid), code); err != nil {
+		t.Fatalf("ConfirmTOTP: %v", err)
+	}
+	return secret
+}
+
+// scrapeReqField extracts the hidden "req" field value out of a rendered
+// login-form HTML body, or "" if absent.
+func scrapeReqField(body []byte) string {
+	const marker = `name="req" value="`
+	s := string(body)
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// postOAuthAuthorize submits form to POST /oauth2/authorize with the CSRF
+// cookie attached, returning the response and its body (never following
+// a redirect).
+func postOAuthAuthorize(t *testing.T, client *http.Client, baseURL, csrfCookie string, form url.Values) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest("POST", baseURL+"/oauth2/authorize", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "herold_oauth2_csrf", Value: csrfCookie})
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	res.Body.Close()
+	return res, body
+}
+
+// TestOAuth2Authorize_TOTPStepUp_CodeOnlyForm covers issue #372: once the
+// password step succeeds for a TOTP-enrolled principal, the second POST
+// needs only totp_code -- the re-rendered form carries no email/password
+// fields, and a correct code redeems straight into an authorization code
+// without the human retyping anything already proven.
+func TestOAuth2Authorize_TOTPStepUp_CodeOnlyForm(t *testing.T) {
+	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
+	_, adminKey := h.bootstrap("oauth2totp-admin@example.com")
+	const email = "oauth2totp-user@example.com"
+	const password = "correct-horse-battery-staple"
+	pid := h.createPrincipal(adminKey, email)
+	secret := mustEnrollTOTP(t, h, pid)
+
+	client := oauthNoRedirectClient(h)
+	_, challenge := oauthPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+
+	_, csrfCookie, reqField := oauthAuthorizeGet(t, client, h.baseURL, redirectURI, "state-totp", challenge)
+
+	// Step 1: email + password, no code yet -- the password checks out
+	// and TOTP is required, so the response must be the code-only form,
+	// not a redirect and not the full form again.
+	passRes, passBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField}, "csrf": {csrfCookie},
+		"email": {email}, "password": {password},
+	})
+	if passRes.StatusCode != http.StatusOK {
+		t.Fatalf("password step: status=%d body=%s, want 200 (code-only form)", passRes.StatusCode, passBody)
+	}
+	if strings.Contains(string(passBody), `name="email"`) || strings.Contains(string(passBody), `name="password"`) {
+		t.Fatalf("code-only form still asks for email/password: %s", passBody)
+	}
+	if !strings.Contains(string(passBody), `name="totp_code"`) {
+		t.Fatalf("code-only form missing totp_code field: %s", passBody)
+	}
+	reqField2 := scrapeReqField(passBody)
+	if reqField2 == "" || reqField2 == reqField {
+		t.Fatalf("expected a fresh, distinct req field for the code-only step")
+	}
+
+	// Step 2: totp_code only -- no email/password submitted at all.
+	code, err := otpGenerateCode(secret, h.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+	codeRes, codeBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField2}, "csrf": {csrfCookie}, "totp_code": {code},
+	})
+	if codeRes.StatusCode != http.StatusFound {
+		t.Fatalf("code step: status=%d body=%s, want 302", codeRes.StatusCode, codeBody)
+	}
+	loc, err := url.Parse(codeRes.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if !strings.HasPrefix(loc.String(), redirectURI) {
+		t.Fatalf("Location = %q, want prefix %q", loc.String(), redirectURI)
+	}
+	if loc.Query().Get("code") == "" {
+		t.Fatalf("Location = %q, missing code", loc.String())
+	}
+	if loc.Query().Get("state") != "state-totp" {
+		t.Fatalf("Location state = %q, want state-totp", loc.Query().Get("state"))
+	}
+}
+
+// TestOAuth2Authorize_TOTPStepUp_WrongCodeRerendersCodeOnlyForm asserts a
+// wrong code on the second step re-renders the code-only form -- not the
+// full email+password form -- and that the rebound token still accepts
+// the correct code afterwards.
+func TestOAuth2Authorize_TOTPStepUp_WrongCodeRerendersCodeOnlyForm(t *testing.T) {
+	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
+	_, adminKey := h.bootstrap("oauth2totp-wrong-admin@example.com")
+	const email = "oauth2totp-wrong-user@example.com"
+	const password = "correct-horse-battery-staple"
+	pid := h.createPrincipal(adminKey, email)
+	secret := mustEnrollTOTP(t, h, pid)
+
+	client := oauthNoRedirectClient(h)
+	_, challenge := oauthPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	_, csrfCookie, reqField := oauthAuthorizeGet(t, client, h.baseURL, redirectURI, "state-wrong", challenge)
+
+	_, passBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField}, "csrf": {csrfCookie},
+		"email": {email}, "password": {password},
+	})
+	reqField2 := scrapeReqField(passBody)
+	if reqField2 == "" {
+		t.Fatalf("missing req field in code-only form: %s", passBody)
+	}
+
+	correct, err := otpGenerateCode(secret, h.clk.Now())
+	if err != nil {
+		t.Fatalf("otpGenerateCode: %v", err)
+	}
+	wrong := "000000"
+	if wrong == correct {
+		wrong = "111111"
+	}
+
+	wrongRes, wrongBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField2}, "csrf": {csrfCookie}, "totp_code": {wrong},
+	})
+	if wrongRes.StatusCode != http.StatusOK {
+		t.Fatalf("wrong code: status=%d body=%s, want 200 (code-only form)", wrongRes.StatusCode, wrongBody)
+	}
+	if strings.Contains(string(wrongBody), `name="email"`) || strings.Contains(string(wrongBody), `name="password"`) {
+		t.Fatalf("wrong-code response should stay code-only, not re-ask for email/password: %s", wrongBody)
+	}
+	if !strings.Contains(string(wrongBody), `name="totp_code"`) {
+		t.Fatalf("wrong-code response missing totp_code field: %s", wrongBody)
+	}
+
+	// The rebound token still redeems a code with the correct value.
+	reqField3 := scrapeReqField(wrongBody)
+	if reqField3 == "" {
+		t.Fatalf("missing req field after wrong code: %s", wrongBody)
+	}
+	rightRes, rightBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField3}, "csrf": {csrfCookie}, "totp_code": {correct},
+	})
+	if rightRes.StatusCode != http.StatusFound {
+		t.Fatalf("correct code after wrong: status=%d body=%s, want 302", rightRes.StatusCode, rightBody)
+	}
+}
+
+// TestOAuth2Authorize_TOTPStepUp_ExpiredBindingFallsBackToFullForm
+// asserts that once the password-verified binding's own (short) TTL has
+// elapsed, submitting the code-only form falls back to the full
+// email+password form rather than running an authentication attempt
+// against the blank credential fields the code-only form never carried.
+func TestOAuth2Authorize_TOTPStepUp_ExpiredBindingFallsBackToFullForm(t *testing.T) {
+	h := newHarness(t)
+	mustRegisterHTTPAndroidClient(t, h)
+	_, adminKey := h.bootstrap("oauth2totp-exp-admin@example.com")
+	const email = "oauth2totp-exp-user@example.com"
+	const password = "correct-horse-battery-staple"
+	pid := h.createPrincipal(adminKey, email)
+	mustEnrollTOTP(t, h, pid)
+
+	client := oauthNoRedirectClient(h)
+	_, challenge := oauthPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	_, csrfCookie, reqField := oauthAuthorizeGet(t, client, h.baseURL, redirectURI, "state-exp", challenge)
+
+	_, passBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField}, "csrf": {csrfCookie},
+		"email": {email}, "password": {password},
+	})
+	reqField2 := scrapeReqField(passBody)
+	if reqField2 == "" {
+		t.Fatalf("missing req field in code-only form: %s", passBody)
+	}
+
+	// directory.PasswordStepUpTTL is 5 minutes; 6 minutes elapses the
+	// binding while staying comfortably inside the outer
+	// AuthorizeRequestTTL (10 minutes) so the signed token itself still
+	// decodes.
+	h.clk.Advance(6 * time.Minute)
+
+	expRes, expBody := postOAuthAuthorize(t, client, h.baseURL, csrfCookie, url.Values{
+		"req": {reqField2}, "csrf": {csrfCookie}, "totp_code": {"000000"},
+	})
+	if expRes.StatusCode != http.StatusOK {
+		t.Fatalf("expired step-up: status=%d body=%s, want 200 (full form)", expRes.StatusCode, expBody)
+	}
+	if !strings.Contains(string(expBody), `name="email"`) || !strings.Contains(string(expBody), `name="password"`) {
+		t.Fatalf("expired step-up should fall back to the full email+password form: %s", expBody)
+	}
+	if strings.Contains(string(expBody), `name="totp_code"`) {
+		t.Fatalf("expired step-up should not still show the code-only field: %s", expBody)
+	}
 }
 
 func TestOAuth2Authorize_GET_RendersLoginForm(t *testing.T) {

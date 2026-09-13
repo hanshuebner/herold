@@ -82,6 +82,25 @@ const maxDeviceLabelLen = 200
 // caller can prompt for a code without re-asking for the password.
 var ErrTOTPRequired = errors.New("directory: totp code required")
 
+// TOTPStepUpError wraps ErrTOTPRequired with the PrincipalID whose
+// password just verified successfully (issue #372). A caller that wants
+// to avoid re-asking for the password on the next request -- the OAuth2
+// authorize-page login POST is the only one today -- can use
+// errors.As to recover PrincipalID and bind it into a short-lived
+// "password already verified" carrier instead of discarding it. Every
+// other caller keeps working unmodified: errors.Is(err, ErrTOTPRequired)
+// still reports true via the Is method below.
+type TOTPStepUpError struct {
+	PrincipalID PrincipalID
+}
+
+func (e *TOTPStepUpError) Error() string { return ErrTOTPRequired.Error() }
+
+// Is makes errors.Is(err, ErrTOTPRequired) report true for a
+// *TOTPStepUpError, so existing callers that only check the sentinel
+// need no changes.
+func (e *TOTPStepUpError) Is(target error) bool { return target == ErrTOTPRequired }
+
 // IssueDeviceToken authenticates (email, password) and, when the
 // principal has TOTP enrolled, verifies totpCode, then mints a
 // long-lived Bearer token scoped to auth.AllEndUserScopes and persists
@@ -217,13 +236,13 @@ func (d *Directory) authenticateWithOptionalTOTP(ctx context.Context, email, pas
 	}
 	if p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		if totpCode == "" {
-			return 0, ErrTOTPRequired
+			return 0, &TOTPStepUpError{PrincipalID: pid}
 		}
 		if verr := d.VerifyTOTP(ctx, pid, totpCode); verr != nil {
 			if errors.Is(verr, ErrRateLimited) {
 				return 0, ErrRateLimited
 			}
-			return 0, ErrTOTPRequired
+			return 0, &TOTPStepUpError{PrincipalID: pid}
 		}
 	}
 	return pid, nil

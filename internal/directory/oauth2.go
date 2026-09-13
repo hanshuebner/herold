@@ -188,6 +188,59 @@ func (d *Directory) IssueAuthorizationCode(ctx context.Context, email, password,
 	return d.mintAuthorizationCode(ctx, pid, client, req)
 }
 
+// IssueAuthorizationCodeWithVerifiedPassword mints an authorization code
+// for a principal whose password was already verified by a prior POST in
+// this same browser round trip (issue #372): the HTTP layer records that
+// fact by binding pid into req.StepUpPrincipalID (AuthorizeRequest.
+// WithPasswordVerified) after IssueAuthorizationCode's password check
+// returned a *TOTPStepUpError, then re-renders the login form asking only
+// for totp_code. This mirrors the Suite's own step-up flow
+// (protoadmin/session_auth.go handleStepUp), which likewise re-verifies
+// only TOTP once the caller already proved the password, instead of
+// asking a human to retype credentials that already checked out.
+//
+// Returns ErrUnknownOAuthClient, ErrUnauthorized (the principal is no
+// longer authenticatable, or is not TOTP-enrolled -- the binding predates
+// a state this stale should never trust), ErrRateLimited, or a
+// *TOTPStepUpError (code absent or wrong; the caller re-renders the
+// code-only form rather than falling back to the full one).
+func (d *Directory) IssueAuthorizationCodeWithVerifiedPassword(ctx context.Context, pid PrincipalID, totpCode string, req AuthorizeRequest) (code string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	client, err := d.LookupOAuthClient(ctx, req.ClientID)
+	if err != nil {
+		return "", err
+	}
+	p, err := d.meta.GetPrincipalByID(ctx, pid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", ErrUnauthorized
+		}
+		return "", fmt.Errorf("directory: load principal: %w", err)
+	}
+	if !p.IsAuthenticatable() {
+		return "", ErrUnauthorized
+	}
+	if !p.Flags.Has(store.PrincipalFlagTOTPEnabled) {
+		// The binding was minted because TOTP was required at password-
+		// verification time; if that is no longer true (TOTP was removed
+		// mid-flow), fail closed instead of minting a code with a
+		// second factor that was never actually checked.
+		return "", ErrUnauthorized
+	}
+	if totpCode == "" {
+		return "", &TOTPStepUpError{PrincipalID: pid}
+	}
+	if verr := d.VerifyTOTP(ctx, pid, totpCode); verr != nil {
+		if errors.Is(verr, ErrRateLimited) {
+			return "", ErrRateLimited
+		}
+		return "", &TOTPStepUpError{PrincipalID: pid}
+	}
+	return d.mintAuthorizationCode(ctx, pid, client, req)
+}
+
 // IssueAuthorizationCodeForFederatedPrincipal mints a single-use
 // authorization code for a principal that has already been authenticated
 // by an external OIDC provider (issue #238: the federated leg of the
