@@ -114,6 +114,7 @@ class Composer(
                 replyContext = ReplyContext(
                     accountId = parent.accountId,
                     parentId = parent.id,
+                    threadId = parent.threadId,
                     parentKeyword = ParentKeywords.FORWARDED,
                     inReplyTo = ReplyBuilder.inReplyTo(parent),
                     references = ReplyBuilder.references(parent),
@@ -138,6 +139,7 @@ class Composer(
                     replyContext = ReplyContext(
                         accountId = parent.accountId,
                         parentId = parent.id,
+                        threadId = parent.threadId,
                         parentKeyword = ParentKeywords.ANSWERED,
                         inReplyTo = ReplyBuilder.inReplyTo(parent),
                         references = ReplyBuilder.references(parent),
@@ -320,6 +322,7 @@ class Composer(
             draftsMailboxId = draftsMailboxId,
             sentMailboxId = sentMailboxId,
             draftId = state.draftId,
+            threadId = parent?.threadId?.takeIf { it.isNotBlank() },
             parentId = parent?.parentId,
             parentKeyword = parent?.parentKeyword,
             inReplyTo = parent?.inReplyTo ?: emptyList(),

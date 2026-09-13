@@ -81,12 +81,15 @@ import com.netzhansa.herold.shared.actions.PendingAction
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
+import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.links.AppLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.mail.ListHeaders
+import com.netzhansa.herold.shared.outbox.PendingMessage
+import com.netzhansa.herold.shared.outbox.pendingMessagesIn
 import com.netzhansa.herold.shared.mail.UnsubscribeMessages
 import com.netzhansa.herold.shared.mail.UnsubscribeOffer
 import com.netzhansa.herold.shared.push.MailNotification
@@ -116,9 +119,18 @@ fun ThreadScreen(
     onCreateFilter: (fromEmail: String, subject: String) -> Unit,
     /** Opens the composer on a `mailto:` unsubscribe (REQ-UNS-22). */
     onComposeTo: (to: String, subject: String, body: String) -> Unit,
+    /** Opens the outbox, which is where a queued message is acted on (issue #369). */
+    onOutbox: () -> Unit,
     onBack: () -> Unit,
 ) {
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
+    val queued by container.outbox.entries.collectAsStateSafely(emptyList())
+    // What this conversation has waiting: a reply written offline shows
+    // here until the drain has put the server's copy in the store
+    // (issue #369).
+    val pending = remember(queued, accountId, threadId) {
+        queued.filter { it.isPending }.pendingMessagesIn(accountId, threadId)
+    }
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val rules by container.store.managedRules().collectAsStateSafely(emptyList())
     val scope = rememberCoroutineScope()
@@ -401,6 +413,10 @@ fun ThreadScreen(
                 )
                 HorizontalDivider()
             }
+            items(pending, key = { "pending-" + it.entryId }) { message ->
+                PendingMessageCard(message = message, onOpenOutbox = onOutbox)
+                HorizontalDivider()
+            }
         }
         }
     }
@@ -463,6 +479,56 @@ fun ThreadScreen(
         )
     }
 }
+
+/**
+ * A message this conversation is waiting to send, rendered where the sent
+ * one will be (issue #369). It states what it is waiting for and opens the
+ * outbox, which is where it is retried or discarded.
+ */
+@Composable
+private fun PendingMessageCard(message: PendingMessage, onOpenOutbox: () -> Unit) {
+    ListItem(
+        headlineContent = {
+            Text(
+                text = message.fromEmail.ifBlank { "You" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        supportingContent = {
+            Column {
+                Text(
+                    text = "to " + message.recipientLine.ifBlank { "(no recipient)" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = HtmlText.toPlainText(message.bodyHtml).trim().take(PENDING_PREVIEW_CHARS),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                )
+            }
+        },
+        trailingContent = {
+            Text(
+                text = message.marker,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (message.failure != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                modifier = Modifier.testTag("thread-pending-marker-${message.entryId}"),
+            )
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenOutbox() }
+            .testTag("thread-pending-${message.entryId}"),
+    )
+}
+
+/** How much of a waiting message's body the thread previews. */
+private const val PENDING_PREVIEW_CHARS = 200
 
 /**
  * The conversation's overflow: the organise actions that are not worth a

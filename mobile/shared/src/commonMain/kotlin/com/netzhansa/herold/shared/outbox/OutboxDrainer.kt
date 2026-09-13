@@ -464,6 +464,7 @@ fun ComposePayload.toComposeState(): ComposeState = ComposeState(
         ReplyContext(
             accountId = accountId,
             parentId = it,
+            threadId = threadId.orEmpty(),
             parentKeyword = parentKeyword.orEmpty(),
             inReplyTo = inReplyTo,
             references = references,

@@ -68,6 +68,8 @@ data class ComposeAttachment(
 data class ReplyContext(
     val accountId: String,
     val parentId: String,
+    /** The conversation the reply belongs to, so a queued one shows in it (issue #369). */
+    val threadId: String = "",
     val parentKeyword: String,
     val inReplyTo: List<String>,
     val references: List<String>,

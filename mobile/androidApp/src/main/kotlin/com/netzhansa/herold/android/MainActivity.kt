@@ -324,6 +324,7 @@ fun HeroldApp(
                             )
                             navController.navigate("compose-unsubscribe")
                         },
+                        onOutbox = { navController.navigate("outbox") },
                         onBack = { navController.popBackStack() },
                     )
                 }

@@ -11,7 +11,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,6 +25,7 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.outbox.OutboxKind
+import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.outbox.OutboxEntry
@@ -378,6 +383,77 @@ class OutboxAcceptanceTest {
         compose.waitUntil(DRAIN_TIMEOUT_MS) {
             runBlocking { app.container.outbox.list().none { it.label.endsWith(subject) } }
         }
+    }
+
+    /**
+     * A reply written with the radios off shows in its conversation at
+     * once, marked as waiting, and is the sent message once the queue has
+     * drained (issue #369). Run standalone with the radios on.
+     */
+    @Test
+    fun t67_aReplyQueuedOfflineShowsInItsThreadAndBecomesTheSentMessage() = runBlocking {
+        if (app.container.session.value == null) {
+            val result = app.container.signInWithPassword(
+                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
+            )
+            assertTrue("sign-in failed: $result", result is SignInResult.Success)
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        val subject = "queued reply ${System.currentTimeMillis()}"
+        DevInstance.deliverMail(subject = subject, body = "Answer me offline.")
+        DevInstance.awaitFiled(subject)
+        val parent = awaitInInbox(listOf(subject)).single()
+
+        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${parent.threadId}"))
+        compose.onNodeWithTag("thread-row-${parent.threadId}").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-reply").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("thread-reply").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val entryId: Long
+        try {
+            radios(up = false)
+            compose.onNodeWithTag("compose-send").performClick()
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+            }
+            entryId = app.container.outbox.list().single { it.label.endsWith("Re: $subject") }.id
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithTag("thread-pending-$entryId").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("thread-messages")
+                .performScrollToNode(hasTestTag("thread-pending-$entryId"))
+            compose.captureScreen("69-queued-reply-in-its-thread")
+            // The list item merges its children, so the marker is read
+            // from the unmerged tree.
+            compose.onNodeWithTag("thread-pending-marker-$entryId", useUnmergedTree = true)
+                .assertTextEquals(PendingMessage.MARKER_QUEUED)
+        } finally {
+            radios(up = true)
+        }
+
+        // The connection returns: the placeholder gives way to the copy
+        // the server filed in Sent, in the same conversation.
+        compose.waitUntil(DRAIN_TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().none { it.id == entryId } }
+        }
+        compose.waitUntil(DRAIN_TIMEOUT_MS) {
+            runBlocking {
+                app.container.session.value!!.syncEngine.syncAll()
+                app.container.store.threadEmailList(parent.accountId, parent.threadId)
+                    .any { it.subject == "Re: $subject" }
+            }
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-pending-$entryId").fetchSemanticsNodes().isEmpty()
+        }
+        compose.captureScreen("70-queued-reply-became-the-sent-message")
     }
 
     /** Turns the emulator's radios off and on, as the harness does. */

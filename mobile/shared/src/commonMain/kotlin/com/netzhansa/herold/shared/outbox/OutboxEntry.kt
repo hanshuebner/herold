@@ -175,6 +175,8 @@ data class ComposePayload(
     val sentMailboxId: String? = null,
     /** The server-side draft, once an earlier attempt created it. */
     val draftId: String? = null,
+    /** The conversation a reply belongs to, so the thread can show it queued (issue #369). */
+    val threadId: String? = null,
     val parentId: String? = null,
     val parentKeyword: String? = null,
     val inReplyTo: List<String> = emptyList(),
