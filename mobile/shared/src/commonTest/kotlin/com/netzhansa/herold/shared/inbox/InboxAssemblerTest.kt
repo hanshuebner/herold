@@ -180,4 +180,30 @@ class InboxAssemblerTest {
 
         assertEquals(setOf("updates"), InboxAssembler.observedCategories(emails))
     }
+
+    @Test
+    fun aConversationWithAnUnsentAnswerIsMarked() {
+        val inbox = listOf(
+            Email(
+                accountId = "acct-a",
+                id = "e1",
+                threadId = "t-1",
+                subject = "Hello",
+                receivedAt = 1000,
+                mailboxIds = setOf("inbox-1"),
+            ),
+        )
+        val draft = inbox.single().copy(id = "d1", mailboxIds = setOf("drafts-1"), receivedAt = 2000)
+
+        val plain = InboxAssembler.threadRows(inbox, accounts, mailboxes)
+        assertTrue(!plain.single().hasDraft)
+
+        val withDraft = InboxAssembler.threadRows(inbox, accounts, mailboxes, drafts = listOf(draft))
+        assertTrue(withDraft.single().hasDraft)
+        assertEquals("e1", withDraft.single().latestEmailId, "the draft does not become the row's message")
+        assertEquals(listOf("e1"), withDraft.single().emailIds)
+
+        val withQueued = InboxAssembler.threadRows(inbox, accounts, mailboxes, pendingThreads = setOf("t-1"))
+        assertTrue(withQueued.single().hasDraft)
+    }
 }

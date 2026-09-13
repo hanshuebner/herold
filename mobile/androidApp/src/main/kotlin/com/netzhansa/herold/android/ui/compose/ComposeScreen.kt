@@ -84,6 +84,7 @@ import com.netzhansa.herold.shared.compose.IdentityChoice
 import com.netzhansa.herold.shared.compose.RecipientParser
 import com.netzhansa.herold.shared.compose.withPrefill
 import com.netzhansa.herold.android.ui.settings.UndoSendPreference
+import com.netzhansa.herold.shared.actions.UndoActions
 import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.outbox.ComposePayload
@@ -165,10 +166,14 @@ fun ComposeScreen(
         } else {
             null
         }
-        val opened = if (parent != null && mode != ComposeMode.NEW) {
-            session.composer.openFrom(mode, parent, identities, accounts, formatQuoteDate(parent.receivedAt))
-        } else {
-            session.composer.openNew(identities, accounts, accountScope ?: accountId)
+        val opened = when {
+            parent != null && mode == ComposeMode.EDIT_DRAFT ->
+                session.composer.openDraft(parent, identities, accounts)
+
+            parent != null && mode != ComposeMode.NEW ->
+                session.composer.openFrom(mode, parent, identities, accounts, formatQuoteDate(parent.receivedAt))
+
+            else -> session.composer.openNew(identities, accounts, accountScope ?: accountId)
         }
         state = handoff?.let { opened.withPrefill(it.prefill) } ?: opened
         if (handoff != null) {
@@ -206,9 +211,21 @@ fun ComposeScreen(
     fun withBody(target: ComposeState): ComposeState =
         editor.latestHtml?.let { target.copy(bodyHtml = it) } ?: target
 
+    /**
+     * Takes a just-written draft into the local store, which is what every
+     * screen renders from: the conversation shows the draft at the end of
+     * it without waiting for the next full sync (issue #371).
+     */
+    suspend fun takeDraftIntoStore(accountId: String, draftId: String) {
+        runCatching { session.syncEngine.loadBody(accountId, draftId) }
+    }
+
     suspend fun saveDraft(target: ComposeState) {
         when (val result = session.composer.saveDraft(withBody(target), mailboxes)) {
-            is ComposeResult.Saved -> state = (state ?: target).copy(draftId = result.draftId)
+            is ComposeResult.Saved -> {
+                state = (state ?: target).copy(draftId = result.draftId)
+                takeDraftIntoStore(target.accountId, result.draftId)
+            }
             // With no connection the draft is in the outbox; it reaches
             // the server's Drafts mailbox on the next drain.
             is ComposeResult.Queued -> state = (state ?: target).copy(draftEntryId = result.entryId)
@@ -290,8 +307,35 @@ fun ComposeScreen(
                         onClick = {
                             val target = commitRecipients()
                             scope.launch {
-                                if (target.hasRecipient || target.subject.isNotBlank()) saveDraft(target)
-                                close()
+                                editor.publish()
+                                val toSave = withBody(state ?: target)
+                                // An empty composer closes silently; one
+                                // with something in it is kept, and the
+                                // snackbar on the screen behind offers to
+                                // throw it away (issue #371).
+                                if (!toSave.hasContent) {
+                                    close()
+                                    return@launch
+                                }
+                                when (val result = session.composer.saveDraft(toSave, mailboxes)) {
+                                    is ComposeResult.Saved -> {
+                                        handedOff = true
+                                        takeDraftIntoStore(toSave.accountId, result.draftId)
+                                        offerDiscardDraft(container, session, toSave.accountId, result.draftId, null)
+                                        close()
+                                    }
+
+                                    is ComposeResult.Queued -> {
+                                        handedOff = true
+                                        offerDiscardDraft(container, session, toSave.accountId, null, result.entryId)
+                                        close()
+                                    }
+
+                                    // The draft could not be kept: the
+                                    // composer stays open rather than
+                                    // losing what was typed.
+                                    is ComposeResult.Failed -> snackbar.showSnackbar(result.message)
+                                }
                             }
                         },
                         modifier = Modifier.testTag("compose-close"),
@@ -614,6 +658,31 @@ private fun FormattingToolbar(
         }
         IconButton(onClick = onInsertImage, modifier = Modifier.testTag("compose-insert-image")) {
             Icon(Icons.Filled.Image, contentDescription = "Insert an image")
+        }
+    }
+}
+
+/**
+ * Parks the "Draft saved / Discard" offer for the screen the composer
+ * returned to (issue #371). Taking it destroys the draft the close wrote,
+ * or drops the entry that was going to write it.
+ */
+private fun offerDiscardDraft(
+    container: AppContainer,
+    session: SessionScope,
+    accountId: String,
+    draftId: String?,
+    entryId: Long?,
+) {
+    container.undo.offer(
+        message = UndoMessages.DRAFT_SAVED,
+        windowMs = null,
+        actionLabel = UndoActions.DISCARD,
+    ) {
+        entryId?.let { container.outbox.remove(it) }
+        draftId?.let {
+            session.composer.discardDraft(accountId, it)
+            container.store.deleteEmails(accountId, listOf(it))
         }
     }
 }

@@ -68,6 +68,14 @@ class FakeLocalStore : LocalStore {
             .take(limit.toInt())
     }
 
+    override fun draftEmails(limit: Long): Flow<List<Email>> = emailRows.map { rows ->
+        val draftIds = mailboxRows.value.filter { it.role == MailboxRoles.DRAFTS }
+            .map { it.accountId to it.id }.toSet()
+        rows.filter { email -> email.mailboxIds.any { (email.accountId to it) in draftIds } }
+            .sortedByDescending { it.receivedAt }
+            .take(limit.toInt())
+    }
+
     override fun snoozedEmails(limit: Long): Flow<List<Email>> = emailRows.map { rows ->
         rows.filter { it.snoozedUntil != null }
             .sortedBy { it.snoozedUntil }

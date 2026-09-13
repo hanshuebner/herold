@@ -83,6 +83,7 @@ import com.netzhansa.herold.shared.actions.UndoMessages
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.links.AppLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
@@ -125,6 +126,10 @@ fun ThreadScreen(
 ) {
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
     val queued by container.outbox.entries.collectAsStateSafely(emptyList())
+    // A draft reply belongs to its conversation and is rendered at the end
+    // of it, with Edit reopening the composer on it (issue #371).
+    val drafts = remember(messages) { messages.filter { it.keywords.contains(Keywords.DRAFT) } }
+    val conversation = remember(messages) { messages.filterNot { it.keywords.contains(Keywords.DRAFT) } }
     // What this conversation has waiting: a reply written offline shows
     // here until the drain has put the server's copy in the store
     // (issue #369).
@@ -181,21 +186,21 @@ fun ThreadScreen(
     // The conversation's wake time, when the server holds one for it
     // (suite REQ-SNZ-12): the indicator states it and offers the edit and
     // the cancel.
-    val snoozedUntil = messages.firstNotNullOfOrNull { it.snoozedUntil }
+    val snoozedUntil = conversation.firstNotNullOfOrNull { it.snoozedUntil }
 
     /** The address a block and a seeded filter act on. */
-    val newestSender = messages.lastOrNull()?.fromEmail.orEmpty()
+    val newestSender = conversation.lastOrNull()?.fromEmail.orEmpty()
 
     /**
      * The conversation's unsubscribe mechanism, from the newest message
      * that advertises one (REQ-UNS-11): the affordance belongs to the
      * thread even though the header is per message.
      */
-    val offer = UnsubscribeOffer.of(messages)
+    val offer = UnsubscribeOffer.of(conversation)
 
-    val newest = messages.lastOrNull()
+    val newest = conversation.lastOrNull()
     LaunchedEffect(newest?.id) {
-        val target = messages.lastOrNull { it.isUnread } ?: newest
+        val target = conversation.lastOrNull { it.isUnread } ?: newest
         if (target != null) {
             expandedId = target.id
             session.syncEngine.loadBody(accountId, target.id)
@@ -243,9 +248,9 @@ fun ThreadScreen(
                     )
                 },
                 actions = {
-                    val flagged = messages.any { it.isFlagged }
+                    val flagged = conversation.any { it.isFlagged }
                     IconButton(
-                        onClick = { scope.launch { session.actions.setFlagged(messages, !flagged) } },
+                        onClick = { scope.launch { session.actions.setFlagged(conversation, !flagged) } },
                         modifier = Modifier.testTag("thread-star"),
                     ) {
                         Icon(
@@ -258,7 +263,7 @@ fun ThreadScreen(
                     // (REQ-AND-SYS-02).
                     IconButton(
                         onClick = {
-                            val subject = messages.firstOrNull { it.subject.isNotBlank() }?.subject
+                            val subject = conversation.firstOrNull { it.subject.isNotBlank() }?.subject
                                 ?: "(no subject)"
                             context.startActivity(
                                 Intent.createChooser(
@@ -282,7 +287,7 @@ fun ThreadScreen(
                         Icon(Icons.Filled.Schedule, contentDescription = "Snooze")
                     }
                     IconButton(
-                        onClick = { scope.launch { leaveWith(session.actions.archiveLocally(messages, mailboxes), UndoMessages.ARCHIVED) } },
+                        onClick = { scope.launch { leaveWith(session.actions.archiveLocally(conversation, mailboxes), UndoMessages.ARCHIVED) } },
                         modifier = Modifier.testTag("thread-archive"),
                     ) {
                         Icon(Icons.Filled.Archive, contentDescription = "Archive")
@@ -298,10 +303,10 @@ fun ThreadScreen(
                         },
                         onBlock = { blocking = newestSender },
                         onCreateFilter = {
-                            val newest = messages.lastOrNull()
+                            val newest = conversation.lastOrNull()
                             onCreateFilter(newest?.fromEmail.orEmpty(), newest?.subject.orEmpty())
                         },
-                        onInspect = { inspecting = (messages.lastOrNull { it.id == expandedId } ?: messages.lastOrNull())?.id },
+                        onInspect = { inspecting = (conversation.lastOrNull { it.id == expandedId } ?: conversation.lastOrNull())?.id },
                     )
                 },
             )
@@ -312,7 +317,7 @@ fun ThreadScreen(
             SnoozedIndicator(
                 wakeAt = wakeAt,
                 onEdit = { snoozing = true },
-                onCancel = { scope.launch { session.actions.unsnooze(messages) } },
+                onCancel = { scope.launch { session.actions.unsnooze(conversation) } },
             )
         }
         offer?.let { current ->
@@ -350,10 +355,10 @@ fun ThreadScreen(
             )
         }
         ReplyBar(
-            enabled = messages.isNotEmpty(),
-            onReply = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
-            onReplyAll = { messages.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
-            onForward = { messages.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
+            enabled = conversation.isNotEmpty(),
+            onReply = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY, it.id) } },
+            onReplyAll = { conversation.lastOrNull()?.let { onCompose(ComposeMode.REPLY_ALL, it.id) } },
+            onForward = { conversation.lastOrNull()?.let { onCompose(ComposeMode.FORWARD, it.id) } },
         )
         if (messages.isEmpty() && fetching) {
             Box(
@@ -372,7 +377,7 @@ fun ThreadScreen(
         LazyColumn(
             modifier = Modifier.fillMaxSize().testTag("thread-messages"),
         ) {
-            items(messages, key = { it.id }) { message ->
+            items(conversation, key = { it.id }) { message ->
                 MessageCard(
                     message = message,
                     expanded = expandedId == message.id,
@@ -410,6 +415,13 @@ fun ThreadScreen(
                     },
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
+                )
+                HorizontalDivider()
+            }
+            items(drafts, key = { "draft-" + it.id }) { draft ->
+                DraftMessageCard(
+                    draft = draft,
+                    onEdit = { onCompose(ComposeMode.EDIT_DRAFT, draft.id) },
                 )
                 HorizontalDivider()
             }
@@ -478,6 +490,59 @@ fun ThreadScreen(
             },
         )
     }
+}
+
+/**
+ * A draft answer to this conversation, rendered at the end of it the way
+ * the Suite threads drafts (`docs/design/web/requirements/19-drafts.md`,
+ * issue #371). Edit reopens the composer on it; sending it removes it.
+ */
+@Composable
+private fun DraftMessageCard(draft: Email, onEdit: () -> Unit) {
+    ListItem(
+        headlineContent = {
+            Text(
+                text = draft.fromEmail.ifBlank { "You" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        supportingContent = {
+            Column {
+                Text(
+                    text = "to " + draft.toLine.ifBlank { "(no recipient)" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = draft.preview.ifBlank {
+                        HtmlText.toPlainText(draft.bodyHtml ?: draft.bodyText.orEmpty()).trim()
+                    }.take(PENDING_PREVIEW_CHARS),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                )
+            }
+        },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = PendingMessage.MARKER_DRAFT,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("thread-draft-marker-${draft.id}"),
+                )
+                TextButton(
+                    onClick = onEdit,
+                    modifier = Modifier.testTag("thread-draft-edit-${draft.id}"),
+                ) {
+                    Text("Edit")
+                }
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onEdit() }
+            .testTag("thread-draft-${draft.id}"),
+    )
 }
 
 /**

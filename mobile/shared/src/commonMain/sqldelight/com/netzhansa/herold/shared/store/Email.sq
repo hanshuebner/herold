@@ -102,6 +102,16 @@ WHERE mailbox.role = 'inbox'
 ORDER BY email.receivedAt DESC
 LIMIT ?;
 
+-- The account's drafts (suite REQ-DFT-20, issue #371): what the thread
+-- view marks as a draft and what the Drafts destination lists.
+selectDrafts:
+SELECT email.* FROM email
+JOIN email_mailbox ON email_mailbox.accountId = email.accountId AND email_mailbox.emailId = email.id
+JOIN mailbox ON mailbox.accountId = email_mailbox.accountId AND mailbox.id = email_mailbox.mailboxId
+WHERE mailbox.role = 'drafts'
+ORDER BY email.receivedAt DESC
+LIMIT ?;
+
 -- The snoozed set (suite REQ-SNZ-14): every message the server holds a
 -- wake time for, next to wake first.
 selectSnoozed:

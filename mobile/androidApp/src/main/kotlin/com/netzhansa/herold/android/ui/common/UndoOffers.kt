@@ -46,7 +46,7 @@ private suspend fun show(offer: UndoOffer, snackbar: SnackbarHostState, now: () 
     snackbar.currentSnackbarData?.dismiss()
     suspend fun raise() = snackbar.showSnackbar(
         message = offer.message,
-        actionLabel = UNDO_LABEL,
+        actionLabel = offer.actionLabel,
         withDismissAction = true,
         duration = SnackbarDuration.Long,
     )
@@ -55,5 +55,3 @@ private suspend fun show(offer: UndoOffer, snackbar: SnackbarHostState, now: () 
     val result = if (window == null) raise() else withTimeoutOrNull(window) { raise() }
     if (result == SnackbarResult.ActionPerformed) offer.undo()
 }
-
-const val UNDO_LABEL = "Undo"

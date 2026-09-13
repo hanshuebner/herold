@@ -80,6 +80,8 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.inbox.CategoryLanes
 import com.netzhansa.herold.shared.inbox.InboxAssembler
+import com.netzhansa.herold.shared.outbox.PendingMessage
+import com.netzhansa.herold.shared.outbox.pendingMarkersByThread
 import com.netzhansa.herold.shared.inbox.InboxItem
 import com.netzhansa.herold.shared.inbox.ThreadRow
 import com.netzhansa.herold.shared.sync.SyncStatus
@@ -112,6 +114,13 @@ fun InboxScreen(
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
     val snoozedEmails by container.store.snoozedEmails().collectAsStateSafely(emptyList())
+    // A conversation with an unsent answer - a draft on the server or a
+    // send still in the outbox - is marked in the list (issue #371).
+    val drafts by container.store.draftEmails().collectAsStateSafely(emptyList())
+    val queued by container.outbox.entries.collectAsStateSafely(emptyList())
+    val pendingThreads = remember(queued) {
+        queued.filter { it.isPending }.pendingMarkersByThread().keys
+    }
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
     val categories by session.syncEngine.categories.collectAsStateSafely(emptyList())
@@ -130,8 +139,15 @@ fun InboxScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    val rows = remember(emails, mailboxes, accounts, accountScope) {
-        InboxAssembler.threadRows(emails, accounts, mailboxes, accountScope)
+    val rows = remember(emails, mailboxes, accounts, accountScope, drafts, pendingThreads) {
+        InboxAssembler.threadRows(
+            emails = emails,
+            accounts = accounts,
+            mailboxes = mailboxes,
+            accountScope = accountScope,
+            drafts = drafts,
+            pendingThreads = pendingThreads,
+        )
     }
     val lanes = remember(categories, emails) {
         CategoryLanes.from(categories, InboxAssembler.observedCategories(emails))
@@ -649,6 +665,19 @@ private fun ThreadRowItem(
                 overflow = TextOverflow.Ellipsis,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (row.hasDraft) {
+                    AssistChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                text = PendingMessage.MARKER_DRAFT,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        },
+                        modifier = Modifier.testTag("thread-draft-${row.threadId}"),
+                    )
+                }
                 if (showAccount) {
                     AssistChip(onClick = {}, label = { Text(row.accountName, style = MaterialTheme.typography.labelSmall) })
                 }

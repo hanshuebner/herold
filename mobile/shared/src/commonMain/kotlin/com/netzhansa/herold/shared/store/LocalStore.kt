@@ -71,6 +71,9 @@ interface LocalStore {
     /** The snoozed messages, next to wake first (suite REQ-SNZ-14). */
     fun snoozedEmails(limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
 
+    /** The account's drafts, newest first (suite REQ-DFT-20, issue #371). */
+    fun draftEmails(limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
+
     fun threadEmails(accountId: String, threadId: String): Flow<List<Email>>
 
     /**

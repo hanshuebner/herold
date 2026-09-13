@@ -101,6 +101,14 @@ data class ComposeState(
 
     val hasRecipient: Boolean get() = recipients.any { it.email.isNotBlank() }
 
+    /**
+     * True when closing the composer would throw something away, so the
+     * close saves a draft rather than dropping it (issue #371).
+     */
+    val hasContent: Boolean
+        get() = hasRecipient || subject.isNotBlank() || attachments.isNotEmpty() ||
+            HtmlText.toPlainText(bodyHtml).isNotBlank()
+
     val uploading: Boolean get() = attachments.any { it.status == AttachmentStatus.UPLOADING }
 }
 

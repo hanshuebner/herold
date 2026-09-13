@@ -150,6 +150,42 @@ class Composer(
     }
 
     /**
+     * A draft already written, reopened as it stands (suite REQ-DFT-22,
+     * issue #371). The compose keeps the draft's id, so saving and
+     * sending act on that message rather than leaving a second copy of it
+     * in Drafts.
+     */
+    fun openDraft(draft: Email, identities: List<Identity>, accounts: List<Account>): ComposeState {
+        val identity = identities.firstOrNull {
+            it.accountId == draft.accountId && it.email.equals(draft.fromEmail, ignoreCase = true)
+        } ?: IdentityChoice.defaultForNew(identities, accounts, draft.accountId)
+        return ComposeState(
+            mode = ComposeMode.EDIT_DRAFT,
+            accountId = draft.accountId,
+            identity = identity,
+            to = draft.toAddresses,
+            cc = draft.ccAddresses,
+            showCc = draft.ccAddresses.isNotEmpty(),
+            subject = draft.subject,
+            bodyHtml = draft.bodyHtml ?: HtmlSanitizer.fromPlainText(draft.bodyText.orEmpty()),
+            attachments = ReplyBuilder.forwardAttachments(draft),
+            replyContext = if (draft.inReplyTo.isEmpty()) {
+                null
+            } else {
+                ReplyContext(
+                    accountId = draft.accountId,
+                    parentId = "",
+                    threadId = draft.threadId,
+                    parentKeyword = "",
+                    inReplyTo = draft.inReplyTo,
+                    references = draft.references,
+                )
+            },
+            draftId = draft.id,
+        )
+    }
+
+    /**
      * Uploads one file and returns the entry the chip strip renders. An
      * upload over the session's `maxSizeUpload` is refused before any
      * bytes leave the device (suite REQ-ATT-04).
@@ -323,8 +359,8 @@ class Composer(
             sentMailboxId = sentMailboxId,
             draftId = state.draftId,
             threadId = parent?.threadId?.takeIf { it.isNotBlank() },
-            parentId = parent?.parentId,
-            parentKeyword = parent?.parentKeyword,
+            parentId = parent?.parentId?.takeIf { it.isNotBlank() },
+            parentKeyword = parent?.parentKeyword?.takeIf { it.isNotBlank() },
             inReplyTo = parent?.inReplyTo ?: emptyList(),
             references = parent?.references ?: emptyList(),
         )

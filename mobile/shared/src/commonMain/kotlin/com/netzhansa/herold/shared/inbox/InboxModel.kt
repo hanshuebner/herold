@@ -22,6 +22,8 @@ data class ThreadRow(
     val emailIds: List<String>,
     /** The wake time the server holds for the conversation, when it sleeps. */
     val wakeAt: String? = null,
+    /** True when an unsent answer to this conversation is waiting (issue #371). */
+    val hasDraft: Boolean = false,
 )
 
 /** A bundled category collapsed to one row, positioned by its newest member (REQ-CAT-10). */
@@ -92,12 +94,16 @@ object InboxAssembler {
         accounts: List<Account>,
         mailboxes: List<Mailbox>,
         accountScope: String? = null,
+        /** The account's drafts, so a conversation with one is marked (issue #371). */
+        drafts: List<Email> = emptyList(),
+        /** Conversations with something in the outbox, by thread id. */
+        pendingThreads: Set<String> = emptySet(),
     ): List<ThreadRow> =
         // A snoozed message is out of the stream until its wake time
         // (suite REQ-SNZ-10); a conversation whose every message sleeps
         // leaves the list with them, and the Snoozed destination lists it
         // instead (issue #353).
-        fold(emails.filter { !it.isSnoozed }, accounts, mailboxes, accountScope)
+        fold(emails.filter { !it.isSnoozed }, accounts, mailboxes, accountScope, drafts, pendingThreads)
             .sortedByDescending { it.receivedAt }
 
     /**
@@ -119,7 +125,10 @@ object InboxAssembler {
         accounts: List<Account>,
         mailboxes: List<Mailbox>,
         accountScope: String?,
+        drafts: List<Email> = emptyList(),
+        pendingThreads: Set<String> = emptySet(),
     ): List<ThreadRow> {
+        val draftThreads = drafts.map { it.accountId to it.threadId }.toSet()
         val accountNames = accounts.associate { it.id to it.name }
         val labelNames = mailboxes.filter { it.role == null }
             .associate { (it.accountId to it.id) to it.name }
@@ -148,6 +157,7 @@ object InboxAssembler {
                     category = ordered.firstNotNullOfOrNull { it.category },
                     emailIds = ordered.map { it.id },
                     wakeAt = ordered.firstNotNullOfOrNull { it.snoozedUntil },
+                    hasDraft = key in draftThreads || key.second in pendingThreads,
                 )
             }
     }

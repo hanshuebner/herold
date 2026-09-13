@@ -122,6 +122,10 @@ class SqlDelightLocalStore(
         database.emailQueries.selectInbox(limit).asFlow().mapToList(dispatcher)
             .mapList { it.toDomain() }
 
+    override fun draftEmails(limit: Long): Flow<List<DomainEmail>> =
+        database.emailQueries.selectDrafts(limit).asFlow().mapToList(dispatcher)
+            .mapList { it.toDomain() }
+
     override fun snoozedEmails(limit: Long): Flow<List<DomainEmail>> =
         database.emailQueries.selectSnoozed(limit).asFlow().mapToList(dispatcher)
             .mapList { it.toDomain() }

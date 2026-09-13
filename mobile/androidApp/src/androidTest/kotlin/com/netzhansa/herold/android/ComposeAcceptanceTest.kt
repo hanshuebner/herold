@@ -8,6 +8,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -30,6 +33,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
+import com.netzhansa.herold.shared.actions.UndoActions
+import com.netzhansa.herold.shared.actions.UndoMessages
+import com.netzhansa.herold.shared.outbox.PendingMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -216,6 +222,92 @@ class ComposeAcceptanceTest {
         assertTrue("the draft carries the body", draft.bodyText.orEmpty().contains("Unsent thoughts"))
     }
 
+    /**
+     * Closing a reply with something in it keeps it: the draft is in the
+     * server's Drafts mailbox, rendered at the end of the conversation it
+     * answers, and the snackbar on the thread offers to throw it away
+     * (issue #371, suite REQ-DFT-70/42).
+     */
+    @Test
+    fun t24_closingAReplyWithTextKeepsItAsADraftInItsThread() = runBlocking {
+        val parent = deliverAndReply("draft in thread")
+        compose.onNodeWithTag("compose-subject").performTextInput(" (draft)")
+        compose.onNodeWithTag("compose-close").performClick()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithText(UndoMessages.DRAFT_SAVED).fetchSemanticsNodes().isNotEmpty()
+        }
+        val draft = awaitThreadDraft(parent.accountId, parent.threadId)
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-draft-${draft.id}").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("thread-messages").performScrollToNode(hasTestTag("thread-draft-${draft.id}"))
+        compose.captureScreen("24-draft-reply-in-its-thread")
+        compose.onNodeWithTag("thread-draft-marker-${draft.id}", useUnmergedTree = true)
+            .assertTextEquals(PendingMessage.MARKER_DRAFT)
+
+        // The server has it, in Drafts and in the parent's conversation.
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        val onServer = DevInstance.serverEmail(server, accountId, draft.id)
+        assertNotNull("the draft must be on the server", onServer)
+        assertTrue(
+            "a draft carries \$draft, saw ${onServer!!.keywords}",
+            onServer.keywords.any { it.equals("\$draft", ignoreCase = true) },
+        )
+        assertEquals("the draft belongs to the parent's conversation", parent.threadId, onServer.threadId)
+
+        // Edit reopens the composer on that same draft rather than
+        // starting a second one.
+        compose.onNodeWithTag("thread-draft-edit-${draft.id}", useUnmergedTree = true).performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText(draft.subject).assertIsDisplayed()
+        compose.captureScreen("26-editing-the-threaded-draft")
+        compose.onNodeWithTag("compose-close").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertEquals(
+            "editing a draft must not leave a second one behind",
+            listOf(draft.id),
+            app.container.store.threadEmailList(parent.accountId, parent.threadId)
+                .filter { row -> row.keywords.any { it.equals("\$draft", ignoreCase = true) } }
+                .map { it.id },
+        )
+
+        // Discard from the snackbar takes it away again.
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithText(UndoActions.DISCARD).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText(UndoActions.DISCARD).performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            runBlocking {
+                app.container.store.threadEmailList(parent.accountId, parent.threadId)
+                    .none { it.id == draft.id }
+            }
+        }
+        compose.captureScreen("25-draft-discarded")
+    }
+
+    /** The conversation's draft, once the store has it. */
+    private suspend fun awaitThreadDraft(
+        accountId: String,
+        threadId: String,
+    ): com.netzhansa.herold.shared.domain.Email {
+        repeat(DELIVERY_POLLS) {
+            app.container.store.threadEmailList(accountId, threadId)
+                .firstOrNull { row -> row.keywords.any { it.equals("\$draft", ignoreCase = true) } }
+                ?.let { return it }
+            Thread.sleep(DELIVERY_POLL_MS)
+        }
+        error("no draft reached the conversation $threadId")
+    }
+
     // ---- helpers -------------------------------------------------------
 
     /**
@@ -227,6 +319,7 @@ class ComposeAcceptanceTest {
     private fun deliverAndReply(tag: String): com.netzhansa.herold.shared.domain.Email = runBlocking {
         val subject = "$tag ${System.currentTimeMillis()}"
         DevInstance.deliverMail(subject, body = "Parent body for $tag.")
+        DevInstance.awaitFiled(subject)
 
         var seeded: com.netzhansa.herold.shared.domain.Email? = null
         repeat(DELIVERY_POLLS) {

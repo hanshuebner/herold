@@ -26,6 +26,8 @@ class UndoOffer internal constructor(
      * to comes down when the hold is up, not a full window later.
      */
     val expiresAtMs: Long?,
+    /** What the snackbar's action reads: "Undo", or "Discard" for a saved draft. */
+    val actionLabel: String,
     private val action: suspend () -> Unit,
 ) {
     /** How much of the offer is left at [now]; null when it has no deadline. */
@@ -45,6 +47,13 @@ object UndoMessages {
     const val ARCHIVED = "Archived"
     const val SNOOZED = "Snoozed"
     const val SENDING = "Sending"
+    const val DRAFT_SAVED = "Draft saved"
+}
+
+/** What an offer's action reads. */
+object UndoActions {
+    const val UNDO = "Undo"
+    const val DISCARD = "Discard"
 }
 
 /**
@@ -69,7 +78,7 @@ class UndoCenter(private val now: () -> Long = { 0L }) {
     suspend fun offer(message: String, action: PendingAction, actions: MailActions): UndoOffer? {
         if (action.isEmpty) return null
         actions.commit(action)
-        val offer = UndoOffer(message, null) { actions.undo(action) }
+        val offer = UndoOffer(message, null, UndoActions.UNDO) { actions.undo(action) }
         _pending.value = offer
         return offer
     }
@@ -78,8 +87,13 @@ class UndoCenter(private val now: () -> Long = { 0L }) {
      * Parks an offer whose undo is something other than a mail action.
      * [windowMs] is how long it may still be taken back from now.
      */
-    fun offer(message: String, windowMs: Long?, undo: suspend () -> Unit): UndoOffer {
-        val offer = UndoOffer(message, windowMs?.let { now() + it }, undo)
+    fun offer(
+        message: String,
+        windowMs: Long?,
+        actionLabel: String = UndoActions.UNDO,
+        undo: suspend () -> Unit,
+    ): UndoOffer {
+        val offer = UndoOffer(message, windowMs?.let { now() + it }, actionLabel, undo)
         _pending.value = offer
         return offer
     }
