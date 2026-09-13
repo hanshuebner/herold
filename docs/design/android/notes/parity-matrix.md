@@ -60,7 +60,7 @@ presentation-level and not yet built.
 | `17-attachments` — share-link offload (`REQ-ATT-60..73`) | presentation | todo | — |
 | `19-drafts` — draft model | protocol | n/a | — |
 | `19-drafts` — compose UI: new / reply / reply-all / forward, rich text, From picker, drafts (`REQ-MAIL-05/12/12a/30/33`, `REQ-DFT-02`) | presentation | done (milestone 1c) | #329 |
-| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | todo; a draft written with no connection is queued and reaches the server's Drafts mailbox on reconnect (#351), but there is no local drafts list yet | — |
+| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | partial; a draft reply is threaded into its conversation, rendered at the end of it with a "Draft" marker, and Edit reopens the composer on that same message (`REQ-DFT-22`, #371). Closing a composer with content saves the draft and offers Discard (`REQ-DFT-42`). A draft written with no connection is queued and reaches the server's Drafts mailbox on reconnect (#351). No standalone Drafts destination yet (`REQ-DFT-20/21`) | #371 |
 | `19-drafts` — multi-device conflict banner (`REQ-DFT-30..33`) | presentation | todo | — |
 | `20-settings` — settings model | protocol | n/a | — |
 | `20-settings` — settings UI | presentation | todo | — |
