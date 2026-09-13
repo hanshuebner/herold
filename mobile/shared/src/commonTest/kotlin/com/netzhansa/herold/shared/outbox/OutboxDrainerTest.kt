@@ -15,12 +15,16 @@ import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.fake.FakeJmapApi
 import com.netzhansa.herold.shared.fake.FakeLocalStore
 import com.netzhansa.herold.shared.jmap.JmapException
+import com.netzhansa.herold.shared.sync.Reachability
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+/** What the transport raises when the server cannot be reached at all. */
+private class UnreachableHost : Exception("Unable to resolve host \"mail.example.local\"")
 
 private val boxes = listOf(
     Mailbox(accountId = "acct-a", id = "inbox-1", name = "Inbox", role = MailboxRoles.INBOX),
@@ -53,7 +57,18 @@ class OutboxDrainerTest {
         val spool = InMemoryBlobSpool()
         val outbox = Outbox(store) { clock.now }
         val composer = Composer(api, outbox, spool, { clock.now })
-        val drainer = OutboxDrainer(api, store, outbox, spool, composer, { clock.now })
+        val reachability = Reachability()
+        val logs = mutableListOf<String>()
+        val drainer = OutboxDrainer(
+            api = api,
+            store = store,
+            outbox = outbox,
+            spool = spool,
+            composer = composer,
+            reachability = reachability,
+            log = { logs += it },
+            now = { clock.now },
+        )
         val actions = MailActions(store, outbox)
     }
 
@@ -90,7 +105,7 @@ class OutboxDrainerTest {
     @Test
     fun aTransientFailureBacksOffAndHoldsTheEntriesBehindIt() = runTest {
         val h = harness(message("e1"), message("e2"))
-        h.api.setFailure = kotlinx.io.IOException("network unreachable")
+        h.api.setFailure = JmapException("server is restarting", status = 503)
 
         h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
         h.actions.setSeen(listOf(h.store.email("acct-a", "e2")!!), true)
@@ -327,6 +342,71 @@ class OutboxDrainerTest {
         h.drainer.drain()
         assertEquals(OutboxState.QUEUED, h.outbox.list().single().state)
         assertTrue(!h.outbox.list().single().permanent)
+    }
+
+    @Test
+    fun aFailureOnTheWireLeavesTheEntryExactlyAsItWasAndGoesToTheLog() = runTest {
+        val h = harness(message("e1"))
+        // What the transport raises when the radio has just gone: not a
+        // JmapException, because nothing reached the server.
+        h.api.setFailure = null
+        h.api.composeFailure = null
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.api.setFailure = null
+        h.api.readFailure = null
+        h.api.setFailure = UnreachableHost()
+
+        val outcome = h.drainer.drain()
+
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.QUEUED, entry.state, "being offline does not fail an entry")
+        assertEquals(0, entry.attempts, "being offline is not an attempt the entry spends")
+        assertNull(entry.lastError, "a transport failure is not an error on the entry")
+        assertTrue(!entry.permanent)
+        assertEquals(1, outcome.offline)
+        assertEquals(0, outcome.rejected)
+        assertEquals(0, outcome.retryable)
+        assertTrue(!h.reachability.reachable.value, "the chip says offline as soon as a send could not go")
+        assertTrue(
+            h.logs.any { it.contains("waits for a connection") },
+            "the transport failure belongs in the log, saw ${h.logs}",
+        )
+    }
+
+    @Test
+    fun beingOfflineNeverExhaustsAnEntrySAttempts() = runTest {
+        val h = harness(message("e1"))
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.api.setFailure = UnreachableHost()
+
+        repeat(10) {
+            h.drainer.drain()
+            h.clock.now += 60_000
+        }
+
+        val entry = h.outbox.list().single()
+        assertEquals(OutboxState.QUEUED, entry.state, "an offline phone must not give up on the queue")
+        assertEquals(0, entry.attempts)
+
+        // And it goes out untouched once there is a connection again.
+        h.api.setFailure = null
+        h.drainer.drain()
+        assertTrue(h.outbox.list().isEmpty())
+        assertTrue(h.reachability.reachable.value)
+    }
+
+    @Test
+    fun aServerThatAnsweredKeepsTheClientOnline() = runTest {
+        val h = harness(message("e1"))
+        h.actions.setFlagged(listOf(h.store.email("acct-a", "e1")!!), true)
+        h.api.setFailure = JmapException("server is restarting", status = 503)
+
+        h.drainer.drain()
+
+        val entry = h.outbox.list().single()
+        assertEquals(1, entry.attempts, "a busy server is an attempt the entry spends")
+        assertEquals("server is restarting", entry.lastError)
+        assertTrue(h.reachability.reachable.value, "the server answered, so the phone is not offline")
     }
 
     @Test

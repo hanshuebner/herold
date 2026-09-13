@@ -71,7 +71,7 @@ class ComposerTest {
         val spool = InMemoryBlobSpool()
         val outbox = Outbox(store) { clock }
         val composer = Composer(api, outbox, spool, { clock }, { "inline-1@herold.local" })
-        private val drainer = OutboxDrainer(api, store, outbox, spool, composer, { clock })
+        private val drainer = OutboxDrainer(api, store, outbox, spool, composer, now = { clock })
 
         suspend fun drain() = drainer.drain()
     }

@@ -156,7 +156,8 @@ class MailActionsTest {
         )
         val entry = h.outbox.list().single()
         assertEquals(OutboxState.QUEUED, entry.state)
-        assertEquals(1, entry.attempts)
+        assertEquals(0, entry.attempts, "being offline is not an attempt the entry spends (issue #370)")
+        assertNull(entry.lastError, "a transport failure is not an error on the entry")
     }
 
     @Test

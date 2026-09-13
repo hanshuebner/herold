@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android
 
 import android.content.Context
+import android.util.Log
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
 import com.netzhansa.herold.shared.actions.UndoCenter
@@ -38,6 +39,7 @@ import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
 import com.netzhansa.herold.shared.sync.AndroidConnectivityMonitor
 import com.netzhansa.herold.shared.sync.SyncEngine
+import com.netzhansa.herold.shared.sync.Reachability
 import com.netzhansa.herold.shared.sync.offlineIndication
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -57,6 +60,9 @@ const val DEFAULT_BASE_URL = "https://mail.netzhansa.com"
 
 /** How long sign-out waits for the push subscription to be dropped. */
 private const val PUSH_UNREGISTER_TIMEOUT_MS = 5_000L
+
+/** Where the drain's transport failures go: the log, never the screen. */
+private const val OUTBOX_TAG = "HeroldOutbox"
 
 /**
  * Everything a signed-in session owns. It exists only while a bearer token
@@ -178,12 +184,23 @@ class AppContainer(context: Context) {
     private val connectivity = AndroidConnectivityMonitor(context.applicationContext, appScope)
 
     /**
+     * What the client's own requests say about reaching the server. The
+     * platform reports a validated network for a moment after the radio
+     * has gone, so a send in that window fails on the wire; the chip says
+     * "offline" because of this, not only because of the radio
+     * (issue #370).
+     */
+    private val reachability = Reachability()
+
+    /**
      * Whether the shell says the phone is offline. It lags the radio by
      * the grace period, so a drop the user would not have noticed does
      * not flash a chip at them (REQ-AND-SYNC-30).
      */
     val offline: StateFlow<Boolean> =
-        connectivity.online.offlineIndication().stateIn(appScope, SharingStarted.Eagerly, false)
+        combine(connectivity.online, reachability.reachable) { up, reached -> up && reached }
+            .offlineIndication()
+            .stateIn(appScope, SharingStarted.Eagerly, false)
 
     private val authClient = AuthClient(httpClient, tokenStore)
 
@@ -228,7 +245,14 @@ class AppContainer(context: Context) {
         // (REQ-AND-SYNC-22); the drain follows it without the user
         // having to open anything.
         appScope.launch {
-            connectivity.online.collect { up -> if (up) session.value?.requestDrain?.invoke(0) }
+            connectivity.online.collect { up ->
+                if (!up) return@collect
+                // The radio is back; what the last failed request said
+                // about reaching the server no longer holds, and the
+                // drain that follows is what decides again.
+                reachability.reached()
+                session.value?.requestDrain?.invoke(0)
+            }
         }
     }
 
@@ -419,6 +443,8 @@ class AppContainer(context: Context) {
             outbox = outbox,
             spool = spool,
             composer = composer,
+            reachability = reachability,
+            log = { message -> Log.i(OUTBOX_TAG, message) },
             now = { System.currentTimeMillis() },
         )
         val syncEngine = SyncEngine(
@@ -426,6 +452,7 @@ class AppContainer(context: Context) {
             store = store,
             outbox = outbox,
             drainer = drainer,
+            reachability = reachability,
             now = { System.currentTimeMillis() },
         )
         val requestDrain: (Long) -> Unit = { delayMs -> drain(syncEngine, delayMs) }

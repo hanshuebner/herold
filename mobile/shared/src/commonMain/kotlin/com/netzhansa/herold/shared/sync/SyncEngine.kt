@@ -55,6 +55,8 @@ class SyncEngine(
     private val outbox: Outbox = Outbox(store),
     /** The outbox's submitter; null in tests that only exercise reconciliation. */
     private val drainer: OutboxDrainer? = null,
+    /** What the engine's own traffic says about reaching the server (issue #370). */
+    private val reachability: Reachability = Reachability(),
     private val inboxFetchLimit: Int = DEFAULT_INBOX_FETCH,
     private val now: () -> Long = { 0L },
 ) {
@@ -95,10 +97,15 @@ class SyncEngine(
             if (primary != null) {
                 _categories.value = runCatching { api.derivedCategories(primary) }.getOrDefault(emptyList())
             }
+            reachability.reached()
             _status.value = SyncStatus.Idle
         } catch (e: JmapException) {
+            // The server answered, so the phone is not offline; the pass
+            // failed for its own reason.
+            reachability.reached()
             _status.value = SyncStatus.Failed(e.message ?: "sync failed", unauthorized = e.isUnauthorized)
         } catch (t: Throwable) {
+            reachability.unreachable()
             _status.value = SyncStatus.Failed(t.message ?: "sync failed")
         }
         _status.value
@@ -118,10 +125,13 @@ class SyncEngine(
             _status.value = SyncStatus.Syncing
             try {
                 syncAccountLocked(accountId, types)
+                reachability.reached()
                 _status.value = SyncStatus.Idle
             } catch (e: JmapException) {
+                reachability.reached()
                 _status.value = SyncStatus.Failed(e.message ?: "sync failed", unauthorized = e.isUnauthorized)
             } catch (t: Throwable) {
+                reachability.unreachable()
                 _status.value = SyncStatus.Failed(t.message ?: "sync failed")
             }
             _status.value

@@ -7,8 +7,9 @@ import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.jmap.Envelope
+import com.netzhansa.herold.shared.jmap.FailureKind
 import com.netzhansa.herold.shared.jmap.JmapApi
-import com.netzhansa.herold.shared.jmap.JmapException
+import com.netzhansa.herold.shared.jmap.classifyFailure
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.outbox.BlobSpool
 import com.netzhansa.herold.shared.outbox.ComposePayload
@@ -170,9 +171,12 @@ class Composer(
         val cid = if (inline) newCid() else null
         val uploaded = try {
             api.uploadBlob(accountId, bytes, type, name)
-        } catch (e: JmapException) {
-            return AttachResult.Rejected(e.message ?: "the upload was rejected")
         } catch (t: Throwable) {
+            if (classifyFailure(t) == FailureKind.REFUSED) {
+                return AttachResult.Rejected(t.message ?: "the upload was rejected")
+            }
+            // The upload did not get there; the file is on the device and
+            // goes up when the send drains (issue #370).
             if (handle == null) return AttachResult.Rejected("$name could not be kept for sending")
             return AttachResult.Added(
                 ComposeAttachment(
@@ -230,10 +234,15 @@ class Composer(
             } else {
                 ComposeResult.Saved(id)
             }
-        } catch (e: JmapException) {
-            ComposeResult.Failed(e.message ?: "the draft was not saved")
         } catch (t: Throwable) {
-            queueCompose(state, mailboxes, OutboxKind.DRAFT, draftLabel(state), 0)
+            // Only a refusal the server answered with is the user's to
+            // see; anything that did not get there leaves the draft in
+            // the outbox for the next drain (issue #370).
+            if (classifyFailure(t) == FailureKind.REFUSED) {
+                ComposeResult.Failed(t.message ?: "the draft was not saved")
+            } else {
+                queueCompose(state, mailboxes, OutboxKind.DRAFT, draftLabel(state), 0)
+            }
         }
     }
 

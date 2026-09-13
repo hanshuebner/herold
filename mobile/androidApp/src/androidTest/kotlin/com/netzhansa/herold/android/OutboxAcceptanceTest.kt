@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -31,6 +32,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.FixMethodOrder
@@ -38,6 +40,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
+import android.os.ParcelFileDescriptor
 import java.io.File
 
 /**
@@ -314,6 +317,82 @@ class OutboxAcceptanceTest {
         compose.captureScreen("67-queued-for-the-background-drain")
     }
 
+    /**
+     * The radios go off in the moment before Send (issue #370). The
+     * platform still reports a validated network, so the send meets the
+     * wire's own failure; the entry stays queued, nothing is put on the
+     * entry as an error, and the chip says the phone is offline. Run
+     * standalone with the radios on.
+     */
+    @Test
+    fun t66_aSendMetByADeadNetworkQueuesQuietly() = runBlocking {
+        if (app.container.session.value == null) {
+            val result = app.container.signInWithPassword(
+                DevInstance.baseUrl, DevInstance.email, DevInstance.password, null,
+            )
+            assertTrue("sign-in failed: $result", result is SignInResult.Success)
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        val subject = "dead network send ${System.currentTimeMillis()}"
+        compose.onNodeWithTag("inbox-compose").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("compose-to").performTextInput(DevInstance.recipientEmail + ",")
+        compose.onNodeWithTag("compose-subject").performTextInput(subject)
+
+        try {
+            radios(up = false)
+            compose.onNodeWithTag("compose-send").performClick()
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithTag("compose-screen").fetchSemanticsNodes().isEmpty()
+            }
+
+            // Several drain passes against a dead network.
+            repeat(DEAD_NETWORK_PASSES) {
+                app.container.session.value!!.requestDrain(0)
+                Thread.sleep(DEAD_NETWORK_PASS_MS)
+            }
+
+            val entry = app.container.outbox.list().single { it.label.endsWith(subject) }
+            assertEquals("a send met by a dead network stays queued", OutboxState.QUEUED, entry.state)
+            assertEquals("being offline is not an attempt the entry spends", 0, entry.attempts)
+            assertNull("a transport failure is not an error on the entry", entry.lastError)
+            assertTrue(
+                "nothing about the transport belongs on screen",
+                compose.onAllNodesWithText("resolve host", substring = true).fetchSemanticsNodes().isEmpty() &&
+                    compose.onAllNodesWithText("failed", substring = true, ignoreCase = true)
+                        .fetchSemanticsNodes().isEmpty(),
+            )
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithText("Offline", substring = true).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.captureScreen("68-send-met-by-a-dead-network")
+        } finally {
+            radios(up = true)
+        }
+
+        // And it leaves once there is a connection again.
+        compose.waitUntil(DRAIN_TIMEOUT_MS) {
+            runBlocking { app.container.outbox.list().none { it.label.endsWith(subject) } }
+        }
+    }
+
+    /** Turns the emulator's radios off and on, as the harness does. */
+    private fun radios(up: Boolean) {
+        val verb = if (up) "enable" else "disable"
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        listOf("svc wifi $verb", "svc data $verb").forEach { command ->
+            ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command)).use { stream ->
+                while (stream.read() != -1) {
+                    // Draining the pipe is what makes the command run to completion.
+                }
+            }
+        }
+    }
+
     // ---- helpers ------------------------------------------------------
 
     private suspend fun awaitInInbox(subjects: List<String>): List<Email> {
@@ -419,6 +498,10 @@ class OutboxAcceptanceTest {
     private companion object {
         const val TIMEOUT_MS = 30_000L
         const val DRAIN_TIMEOUT_MS = 120_000L
+
+        /** How many drain passes the dead-network check puts the entry through. */
+        const val DEAD_NETWORK_PASSES = 4
+        const val DEAD_NETWORK_PASS_MS = 2_000L
         const val DELIVERY_POLLS = 30
         const val DRAIN_POLLS = 60
         const val DELIVERY_POLL_MS = 1_000L

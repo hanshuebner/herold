@@ -10,8 +10,10 @@ import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.jmap.Envelope
+import com.netzhansa.herold.shared.jmap.FailureKind
 import com.netzhansa.herold.shared.jmap.JmapApi
-import com.netzhansa.herold.shared.jmap.JmapException
+import com.netzhansa.herold.shared.jmap.classifyFailure
+import com.netzhansa.herold.shared.sync.Reachability
 import com.netzhansa.herold.shared.store.LocalStore
 import com.netzhansa.herold.shared.sync.toRuleRow
 import com.netzhansa.herold.shared.sync.toStoreRow
@@ -34,6 +36,12 @@ private sealed interface StepResult {
 
     /** The attempt could not be completed; it is worth trying again. */
     data class Retry(val message: String) : StepResult
+
+    /**
+     * Nothing reached the server. The entry stays queued exactly as it
+     * was and the failure goes to the log, not to the user (issue #370).
+     */
+    data class Offline(val message: String) : StepResult
 }
 
 /** An entry the server refused, for the snackbar the shell raises. */
@@ -44,6 +52,8 @@ data class DrainOutcome(
     val submitted: Int = 0,
     val rejected: Int = 0,
     val retryable: Int = 0,
+    /** Entries the pass left queued because the server could not be reached. */
+    val offline: Int = 0,
     val pending: Int = 0,
 ) {
     /** True when entries remain that a later pass should pick up. */
@@ -69,6 +79,9 @@ class OutboxDrainer(
     private val outbox: Outbox,
     private val spool: BlobSpool,
     private val composer: Composer = Composer(api),
+    private val reachability: Reachability = Reachability(),
+    /** Where transport failures go: the developer log, never the screen. */
+    private val log: (String) -> Unit = {},
     private val now: () -> Long = { 0L },
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val backoffBaseMs: Long = DEFAULT_BACKOFF_BASE_MS,
@@ -90,6 +103,7 @@ class OutboxDrainer(
         var submitted = 0
         var rejected = 0
         var retryable = 0
+        var offline = 0
         val byAccount = outbox.list().filter { it.isPending }.groupBy { it.accountId }
         for ((_, entries) in byAccount) {
             for (entry in entries.sortedBy { it.id }) {
@@ -110,11 +124,13 @@ class OutboxDrainer(
                 )
                 when (val result = submit(entry)) {
                     is StepResult.Done -> {
+                        reachability.reached()
                         discard(entry)
                         submitted++
                     }
 
                     is StepResult.Rejected -> {
+                        reachability.reached()
                         revert(entry)
                         store.updateOutboxState(
                             id = entry.id,
@@ -129,6 +145,7 @@ class OutboxDrainer(
                     }
 
                     is StepResult.Retry -> {
+                        reachability.reached()
                         val attempts = entry.attempts + 1
                         val exhausted = attempts >= maxAttempts
                         store.updateOutboxState(
@@ -142,6 +159,25 @@ class OutboxDrainer(
                         retryable++
                         break
                     }
+
+                    is StepResult.Offline -> {
+                        // Being offline is not an attempt the entry
+                        // spends, and it is not an error on it: the entry
+                        // goes back exactly as it was and leaves with the
+                        // next drain a connection triggers (issue #370).
+                        reachability.unreachable()
+                        log("outbox: \"${entry.label}\" waits for a connection (${result.message})")
+                        store.updateOutboxState(
+                            id = entry.id,
+                            state = OutboxState.QUEUED,
+                            attempts = entry.attempts,
+                            lastError = entry.lastError,
+                            permanent = false,
+                            nextAttemptAt = entry.nextAttemptAt,
+                        )
+                        offline++
+                        break
+                    }
                 }
             }
         }
@@ -149,6 +185,7 @@ class OutboxDrainer(
             submitted = submitted,
             rejected = rejected,
             retryable = retryable,
+            offline = offline,
             pending = outbox.list().count { it.isPending },
         )
     }
@@ -365,20 +402,14 @@ class OutboxDrainer(
     }
 
     /**
-     * Whether a thrown failure is worth another attempt. A status the
-     * server answered with in the 4xx range, other than the two that mean
-     * "come back later", is the server's decision and stands.
+     * What the drain does with a thrown failure: a refusal the server
+     * answered with stands, a busy server is worth another attempt, and a
+     * failure on the wire leaves the entry untouched (issue #370).
      */
-    private fun failureOf(t: Throwable): StepResult {
-        if (t is JmapException) {
-            val status = t.status
-            val clientError = status != null && status in 400..499 &&
-                status != HTTP_REQUEST_TIMEOUT && status != HTTP_TOO_MANY_REQUESTS &&
-                status != HTTP_UNAUTHORIZED
-            val refused = t.methodError != null && t.methodError !in RETRYABLE_METHOD_ERRORS
-            if (clientError || refused) return StepResult.Rejected(t.message ?: "the server refused the change")
-        }
-        return StepResult.Retry(t.message ?: "no connection")
+    private fun failureOf(t: Throwable): StepResult = when (classifyFailure(t)) {
+        FailureKind.REFUSED -> StepResult.Rejected(t.message ?: "the server refused the change")
+        FailureKind.BUSY -> StepResult.Retry(t.message ?: "the server could not do this now")
+        FailureKind.OFFLINE -> StepResult.Offline(t.message ?: "no connection")
     }
 
     private fun backoff(attempts: Int): Long {
@@ -394,12 +425,6 @@ class OutboxDrainer(
         const val DEFAULT_MAX_ATTEMPTS = 6
         const val DEFAULT_BACKOFF_BASE_MS = 5_000L
         const val DEFAULT_BACKOFF_CAP_MS = 5 * 60_000L
-        const val HTTP_REQUEST_TIMEOUT = 408
-        const val HTTP_TOO_MANY_REQUESTS = 429
-        const val HTTP_UNAUTHORIZED = 401
-
-        /** Method errors that describe a busy server rather than a refusal. */
-        val RETRYABLE_METHOD_ERRORS = setOf("serverFail", "serverUnavailable", "serverPartialFail")
     }
 }
 
