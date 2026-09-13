@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The home-screen widget (REQ-AND-SYS-20). It is repainted from the
      local store whenever the store changes, so the platform's own update
-     period only has to cover a device that has been idle. -->
+     period only has to cover a device that has been idle.
+
+     It is placed three cells square, which holds the unread count, the
+     conversation rows and the compose action; resizing down to the minimum
+     keeps the count and the first rows. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="180dp"
-    android:minHeight="110dp"
+    android:minWidth="250dp"
+    android:minHeight="180dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="110dp"
     android:targetCellWidth="3"
     android:targetCellHeight="3"
     android:description="@string/widget_description"

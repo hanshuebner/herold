@@ -22,6 +22,7 @@ import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
+import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
@@ -101,7 +102,11 @@ private fun WidgetBody(snapshot: HomeSnapshot) {
                     style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant),
                 )
             }
-            Spacer(modifier = GlanceModifier.padding(4.dp))
+            // The gap states its height, so the column's remaining space
+            // stays with the rows: a spacer sized only by a padding
+            // modifier takes the whole remainder and leaves the rows and
+            // the compose action outside the widget's bounds (issue #375).
+            Spacer(modifier = GlanceModifier.height(8.dp))
             if (snapshot.threads.isEmpty()) {
                 Text(
                     text = "No mail yet",
