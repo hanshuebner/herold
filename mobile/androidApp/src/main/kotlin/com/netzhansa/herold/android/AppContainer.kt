@@ -54,6 +54,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** The default herold deployment; editable on the sign-in screen. */
 const val DEFAULT_BASE_URL = "https://mail.netzhansa.com"
@@ -226,6 +228,14 @@ class AppContainer(context: Context) {
     /** Push registration and the memory of a declined permission (REQ-AND-PUSH-01/03). */
     val push: PushController = PushController(context.applicationContext, this)
 
+
+    /**
+     * Serialises the three writers of the session: the restore of a
+     * stored token, a sign-in and a sign-out. They race on a cold start
+     * where the user signs out while the restore is still reading the
+     * token, which leaves a session behind whose token is already gone.
+     */
+    private val sessionMutex = Mutex()
     private val _session = MutableStateFlow<SessionScope?>(null)
     val session: StateFlow<SessionScope?> = _session.asStateFlow()
 
@@ -275,7 +285,7 @@ class AppContainer(context: Context) {
     suspend fun rememberedBaseUrl(): String? = tokenStore.baseUrl()
 
     /** Re-opens the session a stored token already authorises (token survives process death). */
-    suspend fun restore() {
+    suspend fun restore() = sessionMutex.withLock {
         if (_session.value == null) {
             val token = tokenStore.currentToken()
             val baseUrl = tokenStore.baseUrl()
@@ -349,7 +359,7 @@ class AppContainer(context: Context) {
      * and records this device's own grant so the sessions screen can
      * mark and revoke it (REQ-AND-AUTH-21/22).
      */
-    private suspend fun openSession(baseUrl: String) {
+    private suspend fun openSession(baseUrl: String) = sessionMutex.withLock {
         tokenStore.setBaseUrl(baseUrl)
         val session = buildSession(baseUrl)
         val username = runCatching { session.client.session().username }.getOrNull()
@@ -381,7 +391,7 @@ class AppContainer(context: Context) {
     }
 
     /** Revokes this device's grant server-side and clears the account's local rows. */
-    suspend fun signOut() {
+    suspend fun signOut() = sessionMutex.withLock {
         val current = _session.value
         // Drop the push subscription first: it is bound to the principal
         // whose token is about to be forgotten (REQ-AND-PUSH-02). It is
