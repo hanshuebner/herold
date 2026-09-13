@@ -112,6 +112,15 @@ WHERE mailbox.role = 'drafts'
 ORDER BY email.receivedAt DESC
 LIMIT ?;
 
+-- The messages of one drawer destination: a system folder or a label,
+-- across the accounts the scope covers, newest first (suite REQ-LBL-20).
+selectInMailboxes:
+SELECT email.* FROM email
+JOIN email_mailbox ON email_mailbox.accountId = email.accountId AND email_mailbox.emailId = email.id
+WHERE email_mailbox.mailboxId IN ?
+ORDER BY email.receivedAt DESC
+LIMIT ?;
+
 -- The snoozed set (suite REQ-SNZ-14): every message the server holds a
 -- wake time for, next to wake first.
 selectSnoozed:

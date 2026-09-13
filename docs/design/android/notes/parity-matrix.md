@@ -33,7 +33,7 @@ presentation-level and not yet built.
 | `02-mail-basics` — Bcc field and the From-picker verification gating (`REQ-IDENT-60`) | presentation | todo (the model carries Bcc; no field yet) | — |
 | `03-labels` — label CRUD, apply/remove | protocol | n/a | — |
 | `03-labels` — label chips and apply/remove picker | presentation | done (milestone 1a) | #327 |
-| `03-labels` — sidebar label tree UI | presentation | todo; the navigation drawer carries the Inbox and Snoozed destinations (#353), the label tree is still to come | — |
+| `03-labels` — sidebar label tree UI | presentation | done (#374); the navigation drawer carries Inbox, Snoozed, the system folders in the suite's sidebar order (`REQ-UI-13b`) and the label tree below them, nested by parent with a colour swatch and unread counts. Opening one lists its conversations with the inbox's row model, and the sync engine fills that mailbox on demand | #374 |
 | `04-filters` — Sieve filter model | protocol | n/a | — |
 | `04-filters` — filter editor UI | presentation | done (milestone 3a, #361); the Filters drawer destination lists the account's `ManagedRule` set in execution order with enable, reorder and delete, over a structured editor; "Create filter from this message" seeds the sender and the reply-stripped subject (`REQ-FLT-32`). The hand-written Sieve script is read-only on the phone with a pointer to the suite | #361 |
 | `04-filters` — mute thread and blocked senders (`Thread/mute`, `BlockedSender/set`) | presentation | done (milestone 3a, #361); both live in the thread overflow and go out through the outbox like every other write | #361 |
@@ -60,7 +60,7 @@ presentation-level and not yet built.
 | `17-attachments` — share-link offload (`REQ-ATT-60..73`) | presentation | todo | — |
 | `19-drafts` — draft model | protocol | n/a | — |
 | `19-drafts` — compose UI: new / reply / reply-all / forward, rich text, From picker, drafts (`REQ-MAIL-05/12/12a/30/33`, `REQ-DFT-02`) | presentation | done (milestone 1c) | #329 |
-| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | partial; a draft reply is threaded into its conversation, rendered at the end of it with a "Draft" marker, and Edit reopens the composer on that same message (`REQ-DFT-22`, #371). Closing a composer with content saves the draft and offers Discard (`REQ-DFT-42`). A draft written with no connection is queued and reaches the server's Drafts mailbox on reconnect (#351). No standalone Drafts destination yet (`REQ-DFT-20/21`) | #371 |
+| `19-drafts` — drafts list and re-opening a draft (`REQ-DFT-20..22`) | presentation | partial; a draft reply is threaded into its conversation, rendered at the end of it with a "Draft" marker, and Edit reopens the composer on that same message (`REQ-DFT-22`, #371). Closing a composer with content saves the draft and offers Discard (`REQ-DFT-42`). A draft written with no connection is queued and reaches the server's Drafts mailbox on reconnect (#351). The drawer's Drafts destination lists the mailbox (`REQ-DFT-20`, #374); a row there opens its conversation rather than the composer (`REQ-DFT-21`) | #371 |
 | `19-drafts` — multi-device conflict banner (`REQ-DFT-30..33`) | presentation | todo | — |
 | `20-settings` — settings model | protocol | n/a | — |
 | `20-settings` — settings UI | presentation | todo | — |

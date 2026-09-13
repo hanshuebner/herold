@@ -68,6 +68,12 @@ interface LocalStore {
     /** Every inbox message across accounts, newest first (suite REQ-MAIL-SUB-03). */
     fun inboxEmails(limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
 
+    /**
+     * The messages held by any of [mailboxIds], newest first: what a
+     * drawer destination other than the inbox renders (suite REQ-LBL-20).
+     */
+    fun mailboxEmails(mailboxIds: Collection<String>, limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
+
     /** The snoozed messages, next to wake first (suite REQ-SNZ-14). */
     fun snoozedEmails(limit: Long = DEFAULT_INBOX_LIMIT): Flow<List<Email>>
 

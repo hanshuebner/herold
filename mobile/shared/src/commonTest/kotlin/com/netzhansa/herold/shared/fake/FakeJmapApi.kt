@@ -39,6 +39,9 @@ class FakeJmapApi(
     var mailboxChanges: ChangesOutcome = ChangesOutcome.Changed("mailbox-1", emptyList(), emptyList(), emptyList(), false)
 
     var inboxIds: List<String> = emptyList()
+
+    /** What `Email/query` answers for a mailbox other than the inbox. */
+    var mailboxIds: Map<String, List<String>> = emptyMap()
     var emails: Map<String, WireEmail> = emptyMap()
     var emailState: String = "email-1"
     var emailChanges: ChangesOutcome = ChangesOutcome.Changed("email-1", emptyList(), emptyList(), emptyList(), false)
@@ -133,7 +136,7 @@ class FakeJmapApi(
 
     override suspend fun emailQueryInbox(accountId: String, mailboxId: String, limit: Int): List<String> {
         inboxQueryCalls++
-        return inboxIds
+        return mailboxIds[mailboxId] ?: inboxIds
     }
 
     override suspend fun emailGet(accountId: String, ids: List<String>, withBody: Boolean): GetResult<WireEmail> {

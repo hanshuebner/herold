@@ -11,6 +11,7 @@ import com.netzhansa.herold.shared.outbox.OutboxState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -125,6 +126,14 @@ class SqlDelightLocalStore(
     override fun draftEmails(limit: Long): Flow<List<DomainEmail>> =
         database.emailQueries.selectDrafts(limit).asFlow().mapToList(dispatcher)
             .mapList { it.toDomain() }
+
+    override fun mailboxEmails(mailboxIds: Collection<String>, limit: Long): Flow<List<DomainEmail>> =
+        if (mailboxIds.isEmpty()) {
+            flowOf(emptyList())
+        } else {
+            database.emailQueries.selectInMailboxes(mailboxIds, limit).asFlow().mapToList(dispatcher)
+                .mapList { it.toDomain() }
+        }
 
     override fun snoozedEmails(limit: Long): Flow<List<DomainEmail>> =
         database.emailQueries.selectSnoozed(limit).asFlow().mapToList(dispatcher)

@@ -76,6 +76,13 @@ class FakeLocalStore : LocalStore {
             .take(limit.toInt())
     }
 
+    override fun mailboxEmails(mailboxIds: Collection<String>, limit: Long): Flow<List<Email>> =
+        emailRows.map { rows ->
+            rows.filter { email -> email.mailboxIds.any { it in mailboxIds } }
+                .sortedByDescending { it.receivedAt }
+                .take(limit.toInt())
+        }
+
     override fun snoozedEmails(limit: Long): Flow<List<Email>> = emailRows.map { rows ->
         rows.filter { it.snoozedUntil != null }
             .sortedBy { it.snoozedUntil }

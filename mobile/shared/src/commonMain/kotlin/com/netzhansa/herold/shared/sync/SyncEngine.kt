@@ -5,6 +5,7 @@ import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.jmap.ChangesOutcome
 import com.netzhansa.herold.shared.jmap.JmapApi
 import com.netzhansa.herold.shared.jmap.JmapException
+import com.netzhansa.herold.shared.jmap.WireEmail
 import com.netzhansa.herold.shared.outbox.DrainOutcome
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
@@ -61,6 +62,9 @@ class SyncEngine(
     private val now: () -> Long = { 0L },
 ) {
     private val mutex = Mutex()
+
+    /** The mailboxes an on-demand fill has already covered this run. */
+    private val filledMailboxes = mutableSetOf<Pair<String, String>>()
     private val _status = MutableStateFlow<SyncStatus>(SyncStatus.Idle)
     val status: StateFlow<SyncStatus> = _status.asStateFlow()
 
@@ -360,6 +364,54 @@ class SyncEngine(
         val fetched = runCatching { api.emailGet(accountId, ids) }.getOrNull() ?: return false
         store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
         return store.threadEmailList(accountId, threadId).isNotEmpty()
+    }
+
+    /**
+     * Fills a mailbox the user opened - a label, Archive, Sent - the way
+     * the first pass fills the inbox (REQ-AND-SYNC-02): its newest
+     * messages and the rest of their threads. The initial fill covers the
+     * inbox, so a drawer destination is filled the first time it is
+     * opened (issue #374).
+     *
+     * The per-type state strings are left alone, so the next
+     * `Email/changes` still asks for exactly what it would have asked for.
+     * Returns true when the mailbox's messages are in the store.
+     */
+    suspend fun ensureMailbox(accountId: String, mailboxId: String): Boolean = mutex.withLock {
+        if (!filledMailboxes.add(accountId to mailboxId)) return true
+        val ids = runCatching { api.emailQueryInbox(accountId, mailboxId, inboxFetchLimit) }
+            .getOrElse {
+                filledMailboxes.remove(accountId to mailboxId)
+                return false
+            }
+        if (ids.isEmpty()) return true
+        val fetched = runCatching { api.emailGet(accountId, ids) }
+            .getOrElse {
+                filledMailboxes.remove(accountId to mailboxId)
+                return false
+            }
+        store.upsertEmails(fetched.list.map { it.toDomain(accountId) })
+        fillThreadsOf(accountId, fetched.list)
+        return true
+    }
+
+    /**
+     * The rest of each fetched message's thread, so an opened conversation
+     * is complete offline.
+     */
+    private suspend fun fillThreadsOf(
+        accountId: String,
+        fetched: List<WireEmail>,
+    ) {
+        val threadIds = fetched.map { it.threadId }.filter { it.isNotBlank() }.distinct()
+        if (threadIds.isEmpty()) return
+        val threads = runCatching { api.threadGet(accountId, threadIds) }.getOrNull() ?: return
+        store.upsertThreads(threads.list.map { it.toDomain(accountId) })
+        val known = fetched.map { it.id }.toSet()
+        val missing = threads.list.flatMap { it.emailIds }.filter { it !in known }.distinct()
+        if (missing.isEmpty()) return
+        val rest = runCatching { api.emailGet(accountId, missing) }.getOrNull() ?: return
+        store.upsertEmails(rest.list.map { it.toDomain(accountId) })
     }
 
     /**

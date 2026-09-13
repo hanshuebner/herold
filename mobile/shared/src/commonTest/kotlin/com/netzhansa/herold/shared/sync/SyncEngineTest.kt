@@ -14,6 +14,7 @@ import com.netzhansa.herold.shared.jmap.WireManagedRule
 import com.netzhansa.herold.shared.jmap.WireRuleAction
 import com.netzhansa.herold.shared.jmap.WireRuleCondition
 import com.netzhansa.herold.shared.jmap.WireThread
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -112,6 +113,36 @@ class SyncEngineTest {
         val before = api.emailGetCalls.size
         assertTrue(engine.ensureThread("acct-a", "t-e9"))
         assertEquals(before, api.emailGetCalls.size)
+    }
+
+    @Test
+    fun ensureMailboxFillsADestinationTheInboxFillDidNotCover() = runTest {
+        val api = api()
+        // The fill sees an inbox of one; the archived conversation the
+        // user opens from the drawer sits outside it (issue #374).
+        api.inboxIds = listOf("e1")
+        api.mailboxIds = mapOf("archive-1" to listOf("e9"))
+        api.emails = mapOf(
+            "e1" to wireEmail("e1"),
+            "e9" to wireEmail("e9", threadId = "t-e9", mailboxIds = mapOf("archive-1" to true)),
+        )
+        api.threads = listOf(
+            WireThread(id = "t-e1", emailIds = listOf("e1")),
+            WireThread(id = "t-e9", emailIds = listOf("e9")),
+        )
+        val store = FakeLocalStore()
+        val engine = SyncEngine(api, store)
+        engine.syncAll()
+        assertNull(store.email("acct-a", "e9"))
+
+        assertTrue(engine.ensureMailbox("acct-a", "archive-1"))
+        assertEquals("Subject e9", store.email("acct-a", "e9")!!.subject)
+        assertEquals(listOf("e9"), store.mailboxEmails(listOf("archive-1")).first().map { it.id })
+
+        // A mailbox already filled costs no second query.
+        val queries = api.inboxQueryCalls
+        assertTrue(engine.ensureMailbox("acct-a", "archive-1"))
+        assertEquals(queries, api.inboxQueryCalls)
     }
 
     @Test

@@ -6,22 +6,33 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Drafts
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -57,10 +68,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -78,7 +91,12 @@ import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.SnoozeClock
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import com.netzhansa.herold.shared.domain.MailboxRoles
 import com.netzhansa.herold.shared.inbox.CategoryLanes
+import com.netzhansa.herold.shared.inbox.DrawerModel
+import com.netzhansa.herold.shared.inbox.MailDestination
 import com.netzhansa.herold.shared.inbox.InboxAssembler
 import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.pendingMarkersByThread
@@ -131,7 +149,10 @@ fun InboxScreen(
     val accountScope by container.accountScope.collectAsStateSafely(null)
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var expandedBundles by remember { mutableStateOf(setOf<String>()) }
-    var snoozedView by rememberSaveable { mutableStateOf(false) }
+    // The open destination is held as its key, so it survives process death
+    // in saved instance state (REQ-AND-NAV-20).
+    var destinationKey by rememberSaveable { mutableStateOf(DrawerModel.key(MailDestination.Inbox)) }
+    val destination = remember(destinationKey) { DrawerModel.destination(destinationKey) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     var snoozeTarget by remember { mutableStateOf<ThreadRow?>(null) }
     var labelTarget by remember { mutableStateOf<ThreadRow?>(null) }
@@ -157,6 +178,48 @@ fun InboxScreen(
     }
     val snoozedRows = remember(snoozedEmails, accounts, mailboxes, accountScope) {
         InboxAssembler.snoozedRows(snoozedEmails, accounts, mailboxes, accountScope)
+    }
+    val folders = remember(mailboxes, accountScope) { DrawerModel.folders(mailboxes, accountScope) }
+    val labelTree = remember(mailboxes, accountScope) { DrawerModel.labels(mailboxes, accountScope) }
+    val inboxUnread = remember(mailboxes, accountScope) { DrawerModel.inboxUnread(mailboxes, accountScope) }
+
+    // The mailboxes the open destination stands for: one per account in
+    // scope, so a label opens across the combined view the inbox shows.
+    val openMailboxes = remember(destination, mailboxes, accountScope) {
+        (destination as? MailDestination.Folder)
+            ?.let { DrawerModel.mailboxesFor(it, mailboxes, accountScope) }
+            .orEmpty()
+    }
+    // The destination's messages, re-collected whenever the destination
+    // changes: the state starts empty for the new mailbox rather than
+    // showing the previous one's rows until the first emission.
+    val folderEmails by produceState(initialValue = emptyList<Email>(), openMailboxes) {
+        value = emptyList()
+        container.store.mailboxEmails(openMailboxes.map { it.id }).collect { value = it }
+    }
+    val folderRows = remember(folderEmails, accounts, mailboxes, accountScope) {
+        InboxAssembler.threadRows(folderEmails, accounts, mailboxes, accountScope)
+    }
+
+    // Each destination keeps its own scroll position, and opens at its
+    // newest conversation.
+    val folderListState = remember(destinationKey) { LazyListState() }
+    var folderScrolled by remember(destinationKey) { mutableStateOf(false) }
+    LaunchedEffect(folderListState) {
+        snapshotFlow { folderListState.isScrollInProgress }
+            .collect { dragging -> if (dragging) folderScrolled = true }
+    }
+    // The fill below puts conversations ahead of the ones already
+    // listed, and a list holds its position against that, so a
+    // destination the user has not scrolled is kept at its newest.
+    LaunchedEffect(destinationKey, folderRows.firstOrNull()?.threadId) {
+        if (!folderScrolled) folderListState.scrollToItem(0)
+    }
+
+    // The first pass fills the inbox; a destination the user opens is
+    // filled when they open it (REQ-AND-SYNC-02, issue #374).
+    LaunchedEffect(openMailboxes) {
+        openMailboxes.forEach { session.syncEngine.ensureMailbox(it.accountId, it.id) }
     }
 
     suspend fun emailsOf(row: ThreadRow): List<Email> =
@@ -191,6 +254,15 @@ fun InboxScreen(
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet(modifier = Modifier.testTag("inbox-drawer")) {
+              // The mailboxes scroll; Filters and Settings are pinned
+              // below them, so an account with many labels does not push
+              // them off the sheet.
+              Column(modifier = Modifier.fillMaxHeight()) {
+              Column(
+                  modifier = Modifier
+                      .weight(1f)
+                      .verticalScroll(rememberScrollState()),
+              ) {
                 Text(
                     text = "Mail",
                     style = MaterialTheme.typography.titleMedium,
@@ -198,25 +270,44 @@ fun InboxScreen(
                 )
                 NavigationDrawerItem(
                     label = { Text("Inbox") },
-                    selected = !snoozedView,
-                    icon = { Icon(Icons.Filled.Archive, contentDescription = null) },
+                    selected = destination == MailDestination.Inbox,
+                    icon = { Icon(Icons.Filled.Inbox, contentDescription = null) },
+                    badge = { if (inboxUnread > 0) Text("$inboxUnread") },
                     onClick = {
-                        snoozedView = false
+                        destinationKey = DrawerModel.key(MailDestination.Inbox)
                         scope.launch { drawer.close() }
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-inbox"),
                 )
                 NavigationDrawerItem(
                     label = { Text("Snoozed") },
-                    selected = snoozedView,
+                    selected = destination == MailDestination.Snoozed,
                     icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
                     badge = { if (snoozedRows.isNotEmpty()) Text("${snoozedRows.size}") },
                     onClick = {
-                        snoozedView = true
+                        destinationKey = DrawerModel.key(MailDestination.Snoozed)
                         scope.launch { drawer.close() }
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-snoozed"),
                 )
+                // The system folders in the suite's sidebar order
+                // (REQ-UI-13b), each with the unread count of the accounts
+                // in scope (REQ-UI-13c).
+                folders.forEach { folder ->
+                    NavigationDrawerItem(
+                        label = { Text(folder.title) },
+                        selected = destination == folder.destination,
+                        icon = { Icon(folderIcon(folder.role), contentDescription = null) },
+                        badge = { if (folder.unread > 0) Text("${folder.unread}") },
+                        onClick = {
+                            destinationKey = DrawerModel.key(folder.destination)
+                            scope.launch { drawer.close() }
+                        },
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .testTag("drawer-folder-${folder.role}"),
+                    )
+                }
                 NavigationDrawerItem(
                     label = { Text("Outbox") },
                     selected = false,
@@ -228,6 +319,33 @@ fun InboxScreen(
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-outbox"),
                 )
+                // The label tree (REQ-UI-13d): top-level labels at the
+                // root, children indented, each with its colour swatch and
+                // unread count.
+                if (labelTree.isNotEmpty()) {
+                    Text(
+                        text = "Labels",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(start = 28.dp, top = 16.dp, bottom = 4.dp),
+                    )
+                    labelTree.forEach { label ->
+                        NavigationDrawerItem(
+                            label = { Text(label.name) },
+                            selected = destination == label.destination,
+                            icon = { LabelDot(label.title) },
+                            badge = { if (label.unread > 0) Text("${label.unread}") },
+                            onClick = {
+                                destinationKey = DrawerModel.key(label.destination)
+                                scope.launch { drawer.close() }
+                            },
+                            modifier = Modifier
+                                .padding(start = 12.dp + (label.depth * 16).dp, end = 12.dp)
+                                .testTag("drawer-label-${label.title}"),
+                        )
+                    }
+                }
+              }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 NavigationDrawerItem(
                     label = { Text("Filters") },
                     selected = false,
@@ -248,6 +366,7 @@ fun InboxScreen(
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-settings"),
                 )
+              }
             }
         },
     ) {
@@ -270,9 +389,11 @@ fun InboxScreen(
                 },
                 title = {
                     Text(
-                        text = when {
-                            snoozedView -> "Snoozed"
-                            else -> accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox"
+                        text = when (destination) {
+                            MailDestination.Snoozed -> "Snoozed"
+                            is MailDestination.Folder -> (destination as MailDestination.Folder).title
+                            MailDestination.Inbox ->
+                                accounts.firstOrNull { it.id == accountScope }?.name ?: "Inbox"
                         },
                         modifier = Modifier.testTag("inbox-title"),
                     )
@@ -311,7 +432,7 @@ fun InboxScreen(
                 )
             }
 
-            if (snoozedView) {
+            if (destination == MailDestination.Snoozed) {
                 SnoozedList(
                     rows = snoozedRows,
                     showAccount = accountScope == null && accounts.size > 1,
@@ -319,7 +440,40 @@ fun InboxScreen(
                 )
             }
 
-            if (!snoozedView) {
+            // A folder or a label lists its conversations with the inbox's
+            // row model and actions (issue #374).
+            if (destination is MailDestination.Folder) {
+                if (folderRows.isEmpty()) {
+                    Text(
+                        text = "Nothing here yet.",
+                        modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("mailbox-empty"),
+                    )
+                }
+                LazyColumn(
+                    state = folderListState,
+                    modifier = Modifier.fillMaxSize().testTag("mailbox-list"),
+                ) {
+                    items(folderRows, key = { "mailbox:${it.accountId}:${it.threadId}" }) { row ->
+                        SwipeableThreadRow(
+                            row = row,
+                            showAccount = accountScope == null && accounts.size > 1,
+                            onOpen = { onOpenThread(row.accountId, row.threadId) },
+                            onArchive = { scope.launch { archive(row) } },
+                            onToggleStar = {
+                                scope.launch { session.actions.setFlagged(emailsOf(row), !row.isFlagged) }
+                            },
+                            onToggleRead = {
+                                scope.launch { session.actions.setSeen(emailsOf(row), row.isUnread) }
+                            },
+                            onSnooze = { snoozeTarget = row },
+                            onLabel = { labelTarget = row },
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+
+            if (destination == MailDestination.Inbox) {
             if (lanes.pinned.isNotEmpty()) {
                 val tabs = listOf<String?>(null) + lanes.pinned
                 ScrollableTabRow(
@@ -756,3 +910,37 @@ private fun BundleRowItem(
         }
     }
 }
+
+/** The icon a system folder carries in the drawer. */
+private fun folderIcon(role: String?) = when (role) {
+    MailboxRoles.SENT -> Icons.Filled.Send
+    MailboxRoles.DRAFTS -> Icons.Filled.Drafts
+    MailboxRoles.ARCHIVE -> Icons.Filled.Archive
+    MailboxRoles.JUNK -> Icons.Filled.Report
+    MailboxRoles.TRASH -> Icons.Filled.Delete
+    else -> Icons.Filled.Folder
+}
+
+/**
+ * A label's colour swatch (suite REQ-UI-13d). herold carries no colour on
+ * `Mailbox`, so the swatch is derived from the label's path, which is what
+ * the suite falls back to (`docs/design/web/requirements/03-labels.md`,
+ * "Colour storage").
+ */
+@Composable
+private fun LabelDot(path: String) {
+    Box(
+        modifier = Modifier
+            .size(12.dp)
+            .clip(CircleShape)
+            .background(labelColour(path)),
+    )
+}
+
+private fun labelColour(path: String): Color {
+    val hue = ((path.hashCode().toLong() and 0xFFFFFFFFL) % 360L).toFloat()
+    return Color.hsv(hue, SWATCH_SATURATION, SWATCH_VALUE)
+}
+
+private const val SWATCH_SATURATION = 0.55f
+private const val SWATCH_VALUE = 0.75f
