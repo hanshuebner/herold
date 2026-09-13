@@ -76,6 +76,49 @@ class WidgetLauncherAcceptanceTest {
     }
 
     /**
+     * A conversation archived in the app leaves the widget (issue #381).
+     * Nothing here asks the widget to repaint: the local write alone has
+     * to reach the launcher, which is what the store's change
+     * notifications are for.
+     */
+    @Test
+    fun t37_archivingInTheAppTakesTheThreadOutOfTheWidget() {
+        val subject = "Widget archive ${System.currentTimeMillis()}"
+        val email = seedThread(subject)
+        runBlocking { InboxWidget.refresh(context) }
+
+        placeWidget()
+        showWidgetPage()
+        assertTrue(
+            "the widget must show the seeded conversation first, expected \"$subject\"",
+            awaitWidget { device.hasObject(By.text(subject)) },
+        )
+        captureDeviceScreen("37-widget-before-archive")
+
+        runBlocking {
+            val session = app.container.session.value!!
+            session.actions.archive(listOf(email), app.container.store.mailboxList())
+        }
+        device.pressHome()
+        showWidgetPage()
+
+        val gone = awaitGone { !device.hasObject(By.text(subject)) }
+        captureDeviceScreen("37-widget-after-archive")
+        assertTrue("the archived conversation must leave the widget", gone)
+    }
+
+    /** Waits for the launcher to drop what the store no longer holds. */
+    private fun awaitGone(condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + PLACE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            device.waitForIdle()
+            Thread.sleep(POLL_MS)
+        }
+        return condition()
+    }
+
+    /**
      * Waits for the launcher to show what the store holds: the widget's
      * own repaint runs in a Glance session the host schedules, so the
      * first frame after a placement can still carry the older snapshot.

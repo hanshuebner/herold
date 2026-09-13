@@ -2,18 +2,16 @@ package com.netzhansa.herold.android.home
 
 import android.content.Context
 import com.netzhansa.herold.android.AppContainer
-import com.netzhansa.herold.shared.inbox.HomeSnapshot
+import com.netzhansa.herold.shared.inbox.homeSnapshots
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
  * Keeps the home-screen surfaces in step with the local store
- * (REQ-AND-SYS-20/22): the widget repaints and the launcher's
- * conversation shortcuts are republished whenever the store changes, so a
- * push, a sync or an action the user took is reflected without either
- * surface polling.
+ * (REQ-AND-SYS-20/22): the launcher's conversation shortcuts are
+ * republished and the widget is asked to repaint whenever the store
+ * changes, so a push, a sync or an action the user took is reflected
+ * without either surface polling.
  *
  * The store is the only input, which is what makes both surfaces correct
  * offline.
@@ -25,22 +23,10 @@ class HomeSurfaces(
 ) {
     fun start() {
         scope.launch {
-            combine(
-                container.store.inboxEmails(EMAIL_LIMIT),
-                container.store.accounts(),
-                container.store.mailboxes(),
-            ) { emails, accounts, mailboxes ->
-                HomeSnapshot.from(emails, accounts, mailboxes)
+            container.store.homeSnapshots().collect { snapshot ->
+                runCatching { ConversationShortcuts.publish(context, snapshot.threads) }
+                InboxWidget.refresh(context)
             }
-                .distinctUntilChanged()
-                .collect { snapshot ->
-                    runCatching { ConversationShortcuts.publish(context, snapshot.threads) }
-                    InboxWidget.refresh(context)
-                }
         }
-    }
-
-    private companion object {
-        const val EMAIL_LIMIT = 200L
     }
 }

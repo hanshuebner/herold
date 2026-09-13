@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.dp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -29,8 +31,10 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.MainActivity
+import com.netzhansa.herold.shared.inbox.HOME_EMAIL_LIMIT
 import com.netzhansa.herold.shared.inbox.HomeSnapshot
 import com.netzhansa.herold.shared.inbox.ThreadRow
+import com.netzhansa.herold.shared.inbox.homeSnapshots
 import com.netzhansa.herold.shared.links.AppLinks
 import kotlinx.coroutines.flow.first
 
@@ -40,28 +44,31 @@ import kotlinx.coroutines.flow.first
  * that opens compose.
  *
  * It renders from the local store, so it is populated on a phone with no
- * connection and does not wake the network to paint itself. The sync
- * engine's writes are what refresh it, through [HomeSurfaces].
+ * connection and does not wake the network to paint itself. The content
+ * follows the store's change notifications for as long as the host keeps
+ * the widget's session, so an archive, a read or an arrival reaches the
+ * launcher from the local write alone (issue #381).
  */
 class InboxWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val container = (context.applicationContext as HeroldApplication).container
-        val snapshot = runCatching {
+        val snapshots = container.store.homeSnapshots()
+        val first = runCatching {
             HomeSnapshot.from(
-                emails = container.store.inboxEmails(WIDGET_EMAIL_LIMIT).first(),
+                emails = container.store.inboxEmails(HOME_EMAIL_LIMIT).first(),
                 accounts = container.store.accountList(),
                 mailboxes = container.store.mailboxList(),
                 limit = HomeSnapshot.DEFAULT_LIMIT,
             )
         }.getOrDefault(HomeSnapshot.EMPTY)
-        provideContent { WidgetBody(snapshot) }
+        provideContent {
+            val snapshot by snapshots.collectAsState(first)
+            WidgetBody(snapshot)
+        }
     }
 
     companion object {
-        /** How many messages are folded into the widget's conversations. */
-        private const val WIDGET_EMAIL_LIMIT = 200L
-
         /** Repaints every placed widget from the local store. */
         suspend fun refresh(context: Context) {
             runCatching { InboxWidget().updateAll(context) }
