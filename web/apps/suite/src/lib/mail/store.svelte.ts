@@ -31,6 +31,7 @@ import { shouldPlayMailCue } from '../notifications/cue-gates';
 import { settings } from '../settings/settings.svelte';
 import { router } from '../router/router.svelte';
 import { appendEvent } from '../debug-ring/debug-ring';
+import { readCsrfToken } from '../api/client';
 import { buildSelfEmailSet, isFromSelf } from './identity-match';
 import { resolveDefault } from '../identities/identity-status';
 import {
@@ -4794,20 +4795,35 @@ class MailStore {
    * Post a REQ-FILT-70 spam-feedback record to the server
    * (/api/v1/spam-feedback, internal/protoadmin/spam_feedback.go):
    * "spam"/"phishing" for reportSpam's correction into Junk, "ham" for
-   * notSpam's correction out of Junk. Errors are silently swallowed so
-   * the user-visible report/not-spam flow is unaffected by a feedback
-   * post failing.
+   * notSpam's correction out of Junk. This is a cookie-authenticated
+   * mutating POST on the public listener, so it needs X-CSRF-Token from
+   * the herold_public_csrf cookie (readCsrfToken, shared with the REST
+   * client and clientlog) or the server rejects it with 403
+   * csrf_required (issue #391). A non-2xx response or network error is
+   * recorded to the debug ring rather than swallowed, so a broken
+   * feedback path is diagnosable; the user-visible report/not-spam flow
+   * still proceeds regardless of the outcome.
    */
   async #postSpamFeedback(emailId: string, kind: 'spam' | 'phishing' | 'ham'): Promise<void> {
     try {
-      await fetch('/api/v1/spam-feedback', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = readCsrfToken();
+      if (token !== '') headers['X-CSRF-Token'] = token;
+      const response = await fetch('/api/v1/spam-feedback', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ emailId, kind }),
       });
-    } catch {
-      // Network error or endpoint absent — silently drop.
+      if (!response.ok) {
+        void appendEvent('page', 'error', 'spam-feedback.error', { status: response.status, kind });
+      }
+    } catch (err) {
+      void appendEvent('page', 'error', 'spam-feedback.error', {
+        status: 0,
+        kind,
+        title: err instanceof Error ? err.message : 'Network error',
+      });
     }
   }
 
