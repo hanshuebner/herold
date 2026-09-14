@@ -32,10 +32,10 @@ Seed what the suite expects beyond its own deliveries:
 
 - `SearchAcceptanceTest` searches for messages whose subject starts with
   `seed message`; deliver two or three over the instance's SMTP listener.
-- `ComposeAcceptanceTest#t22` needs two accounts, which means separating
-  the seeded identity: `Identity/set {"<id>": {"separated": true}}` on the
-  primary account, with the sub-accounts capability in `using`. The seed
-  leaves it separable, not separated.
+- `ComposeAcceptanceTest#t22` needs two accounts. The seed leaves the
+  identity separable, not separated, so the suite's setup separates it
+  itself over JMAP; all it needs from the instance is the
+  `HEROLD_DEV_SUB_ACCOUNTS=1` seed.
 
 `OutboxAcceptanceTest` runs in phases around the radios and a kill of the
 app process, one `am instrument` invocation each:

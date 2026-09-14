@@ -55,6 +55,13 @@ import java.io.File
  * account over JMAP, so threading headers, body alternatives and
  * attachment parts are asserted as they were delivered, not as the screen
  * claims to have sent them.
+ *
+ * t22 reads the From picker across accounts, so the signed-in principal
+ * has to hold a sub-account. The instance supplies the raw material for
+ * one when it is started with `HEROLD_DEV_SUB_ACCOUNTS=1`, which seeds a
+ * separable identity; setup separates that identity over JMAP
+ * ([DevInstance.ensureSubAccount]) so the run provisions the second
+ * account itself (issue #343).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -71,6 +78,9 @@ class ComposeAcceptanceTest {
         grantNotificationPermission()
         Intents.init()
         runBlocking {
+            // The sub-account exists before the app signs in, so its
+            // first session descriptor already carries both accounts.
+            DevInstance.ensureSubAccount()
             app.container.signOut()
             val result = app.container.signInWithPassword(DevInstance.baseUrl, DevInstance.email, DevInstance.password, null)
             assertTrue("sign-in failed: $result", result is SignInResult.Success)

@@ -6,8 +6,13 @@ import com.netzhansa.herold.shared.auth.InMemoryTokenStore
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.createHttpClient
 import com.netzhansa.herold.shared.domain.Email
+import com.netzhansa.herold.shared.jmap.Capability
 import com.netzhansa.herold.shared.jmap.JmapClient
 import com.netzhansa.herold.shared.sync.toStoreRow
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -242,6 +247,55 @@ object DevInstance {
         check(result is SignInResult.Success) { "dev-instance sign-in as $principal failed: $result" }
         return JmapClient(httpClient, baseUrl, tokenStore)
     }
+
+    /**
+     * Gives [email] a sub-account to hold, for the checks that read
+     * across accounts (issue #343). `scripts/dev-instance.sh
+     * HEROLD_DEV_SUB_ACCOUNTS=1` seeds a separable identity, and the
+     * session advertises a second account once that identity has been
+     * separated - so a test provisions it here the way the push suites
+     * provision their own mail, rather than a run depending on a
+     * hand-issued JMAP call.
+     *
+     * Returns the mail accounts the session advertises afterwards.
+     */
+    suspend fun ensureSubAccount(): List<String> {
+        val client = serverClient()
+        val held = client.session().mailAccountIds()
+        if (held.size >= 2) return held
+        val accountId = client.session().mailAccountId
+            ?: error("the session for $email carries no mail account")
+        val separable = client.identityGet(accountId).list.firstOrNull { it.mayDelete && !it.isDefault }
+            ?: error(
+                "$email holds no separable identity; start the instance with " +
+                    "HEROLD_DEV_SUB_ACCOUNTS=1 so one is seeded",
+            )
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            putJsonObject("update") {
+                putJsonObject(separable.id) { put("separated", true) }
+            }
+        }
+        val result = client.batch(
+            listOf(JmapClient.MethodCall("Identity/set", args, "c0")),
+            listOf(Capability.CORE, Capability.MAIL, Capability.SUBMISSION, Capability.SUB_ACCOUNTS),
+        ).single().args
+        result["notUpdated"]?.jsonObject?.get(separable.id)?.let { refusal ->
+            error("separating ${separable.email} was refused: $refusal")
+        }
+        // The identity moves to its sub-account as the call returns; the
+        // session descriptor is re-read until it carries the new account.
+        repeat(SEPARATION_POLLS) {
+            val accounts = client.refreshSession().mailAccountIds()
+            if (accounts.size >= 2) return accounts
+            kotlinx.coroutines.delay(SEPARATION_POLL_MS)
+        }
+        error("the session never advertised a sub-account for ${separable.email}")
+    }
+
+    /** How long the separation is given to show up in the session. */
+    private const val SEPARATION_POLLS = 30
+    private const val SEPARATION_POLL_MS = 500L
 
     /** The server's view of one message, by id. */
     suspend fun serverEmail(client: JmapClient, accountId: String, id: String): Email? =
