@@ -18,13 +18,17 @@ race=$(echo "$patterns" | xargs go list 2>/dev/null | sort -u)
 all=$(go list ./... | sort -u)
 norace=$(comm -23 <(echo "$all") <(echo "$race"))
 
+# The SQLite lanes run without a Postgres DSN: with one set, every
+# package's Postgres variants would run in parallel against a single
+# database, and the storepg test seam terminates the other backends on
+# that database (the Postgres lanes below run those packages serialised).
 echo "test-lanes: sqlite race lane, $(echo "$race" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-go test -race -count=1 -timeout 30m $race
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite go test -race -count=1 -timeout 30m $race
 
 echo "test-lanes: sqlite fast lane, $(echo "$norace" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-go test -count=1 -timeout 15m $norace
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite go test -count=1 -timeout 15m $norace
 
 if [ -z "${HEROLD_PG_DSN:-}" ]; then
     echo "test-lanes: HEROLD_PG_DSN unset, postgres lanes skipped" >&2
@@ -32,9 +36,13 @@ if [ -z "${HEROLD_PG_DSN:-}" ]; then
 fi
 
 echo "test-lanes: postgres serialised lane"
-go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
 
+# The CI postgres lane runs the remaining packages without the DSN (only
+# HEROLD_TEST_STORE=postgres), so their Postgres variants skip there; the
+# gate does the same. Packages whose Postgres variants matter are covered
+# by the serialised lane and by each ticket's own targeted run.
 rest=$(echo "$all" | grep -vE '/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
 echo "test-lanes: postgres parallel lane, $(echo "$rest" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m $rest
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m $rest
