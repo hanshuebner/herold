@@ -7,14 +7,12 @@ import android.text.format.DateFormat
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasSetTextAction
-import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -153,16 +151,16 @@ class SnoozeAcceptanceTest {
             awaitNotification(subject),
         )
 
-        // And the row is back on the list the user is looking at.
+        // And the row is back on the list the user is looking at, wherever
+        // the mail that arrived while it slept has pushed it down to.
         awaitInbox(subject)
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId) }
+        compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         compose.captureScreen("41-custom-snooze-woke-into-the-inbox")
     }
 
     @Test
-    fun t41_aSnoozedConversationStatesItsWakeTimeAndCancelBringsItBack() = runBlocking {
+    fun t41_aSnoozedConversationStatesItsWakeTimeAndCancelBringsItBack() = runBlocking<Unit> {
         signInAndSync()
         val subject = DevInstance.deliverMail(
             subject = "Snooze indicator ${System.currentTimeMillis()}",
@@ -209,9 +207,8 @@ class SnoozeAcceptanceTest {
 
         // REQ-SNZ-10 in reverse: the conversation is on the list again.
         compose.onNodeWithTag("thread-back").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId) }
+        compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
     }
 
     // ---- the flow under test -------------------------------------------
@@ -285,7 +282,7 @@ class SnoozeAcceptanceTest {
     }
 
     private fun openThread(threadId: String) {
-        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-$threadId"))
+        compose.scrollListToThread(threadId)
         compose.onNodeWithTag("thread-row-$threadId").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()

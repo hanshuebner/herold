@@ -1,12 +1,10 @@
 package com.netzhansa.herold.android
 
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.actions.SnoozeClock
@@ -59,7 +57,7 @@ class SnoozedDestinationAcceptanceTest {
         signInAndSync()
         val target = deliverAndAwait("List snooze")
 
-        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${target.threadId}"))
+        compose.scrollListToThread(target.threadId)
         compose.onNodeWithTag("thread-menu-${target.threadId}").performClick()
         compose.onNodeWithTag("action-snooze-${target.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
@@ -80,9 +78,7 @@ class SnoozedDestinationAcceptanceTest {
         )
 
         openSnoozedDestination()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId, SNOOZED_LIST) }
         compose.onNodeWithTag("thread-wake-${target.threadId}", useUnmergedTree = true).assertIsDisplayed()
         compose.captureScreen("44-snoozed-destination")
 
@@ -100,7 +96,7 @@ class SnoozedDestinationAcceptanceTest {
         signInAndSync()
         val target = deliverAndAwait("Thread snooze")
 
-        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-${target.threadId}"))
+        compose.scrollListToThread(target.threadId)
         compose.onNodeWithTag("thread-row-${target.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
@@ -119,9 +115,7 @@ class SnoozedDestinationAcceptanceTest {
         }
 
         openSnoozedDestination()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId, SNOOZED_LIST) }
 
         // The wake: the wake time is brought forward to a few seconds out,
         // which the instance's five-second sweep releases (REQ-SNZ-11).
@@ -139,9 +133,11 @@ class SnoozedDestinationAcceptanceTest {
 
         compose.onNodeWithTag("inbox-drawer-open").performClick()
         compose.onNodeWithTag("drawer-inbox").performClick()
+        // The woken conversation keeps the time it was received, so it
+        // returns below whatever arrived while it slept (issue #355).
         compose.waitUntil(WAKE_TIMEOUT_MS) {
             syncNow()
-            compose.onAllNodesWithTag("thread-row-${target.threadId}").fetchSemanticsNodes().isNotEmpty()
+            compose.listHoldsThread(target.threadId)
         }
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         compose.captureScreen("46-woken-back-into-the-inbox")
@@ -192,7 +188,7 @@ class SnoozedDestinationAcceptanceTest {
         }
         compose.onNodeWithTag("drawer-snoozed").performClick()
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("snoozed-list").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag(SNOOZED_LIST).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
@@ -207,6 +203,8 @@ class SnoozedDestinationAcceptanceTest {
     }
 
     private companion object {
+        /** The Snoozed destination's list, which its rows are scrolled in. */
+        const val SNOOZED_LIST = "snoozed-list"
         const val TIMEOUT_MS = 30_000L
         const val WAKE_TIMEOUT_MS = 60_000L
         const val POLL_MS = 1_000L

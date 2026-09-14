@@ -5,13 +5,11 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performScrollToIndex
-import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
@@ -184,7 +182,7 @@ class AcceptanceTest {
         val newest = awaitInbox(subject)
         compose.waitUntil(TIMEOUT_MS) { threadRowCount() > 0 }
 
-        scrollInboxToThread(newest.threadId)
+        compose.scrollListToThread(newest.threadId)
         compose.onNodeWithTag("thread-row-${newest.threadId}").performClick()
 
         compose.waitUntil(TIMEOUT_MS) {
@@ -225,9 +223,9 @@ class AcceptanceTest {
             DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
         )
 
-        scrollInboxToThread(target.threadId)
+        compose.scrollListToThread(target.threadId)
         compose.onNodeWithTag("thread-swipe-${target.threadId}").performTouchInput { swipeRight() }
-        compose.waitUntil(TIMEOUT_MS) { !inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
         assertFalse(
             "the server must have the message out of the inbox after the swipe",
             DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
@@ -236,7 +234,7 @@ class AcceptanceTest {
         compose.captureScreen("07-swipe-archived-with-undo")
 
         compose.onNodeWithText("Undo").performClick()
-        compose.waitUntil(TIMEOUT_MS) { inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId) }
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         assertTrue(
             "undo must put the message back in the inbox on the server",
@@ -256,13 +254,13 @@ class AcceptanceTest {
         val target = app.container.store.inboxEmails().first()
             .maxByOrNull { it.receivedAt } ?: error("no inbox message to archive")
 
-        scrollInboxToThread(target.threadId)
+        compose.scrollListToThread(target.threadId)
         // The reported failure was a real finger on a real device, so the
         // gesture goes through the input dispatcher, not the semantics
         // tree (issue #338).
         Gestures.swipeAcrossNode(compose, "thread-swipe-${target.threadId}")
 
-        compose.waitUntil(TIMEOUT_MS) { !inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
         }
@@ -270,7 +268,7 @@ class AcceptanceTest {
         compose.captureScreen("09-gesture-swipe-shows-undo")
 
         compose.onNodeWithText("Undo").performClick()
-        compose.waitUntil(TIMEOUT_MS) { inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId) }
         val inboxId = app.container.store.mailboxList()
             .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
         assertTrue(
@@ -296,7 +294,7 @@ class AcceptanceTest {
         val inboxId = app.container.store.mailboxList()
             .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
 
-        scrollInboxToThread(target.threadId)
+        compose.scrollListToThread(target.threadId)
         compose.onNodeWithTag("thread-row-${target.threadId}").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("thread-messages").fetchSemanticsNodes().isNotEmpty()
@@ -308,7 +306,7 @@ class AcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.waitUntil(TIMEOUT_MS) { !inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
         }
@@ -320,7 +318,7 @@ class AcceptanceTest {
         compose.captureScreen("09b-thread-archive-undo")
 
         compose.onNodeWithText("Undo").performClick()
-        compose.waitUntil(TIMEOUT_MS) { inboxHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { compose.listHoldsThread(target.threadId) }
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         assertTrue(
             "undo must put the message back in the inbox on the server",
@@ -379,24 +377,6 @@ class AcceptanceTest {
                 },
             ),
         )
-    }
-
-    /**
-     * True when the inbox holds a row for [threadId], scrolling the list to
-     * it when it sits outside the composed window. A LazyColumn composes
-     * only the rows around the viewport, so with an inbox longer than one
-     * screen a present row is invisible to a plain tag lookup (issue #335).
-     */
-    private fun inboxHoldsThread(threadId: String): Boolean {
-        if (compose.onAllNodesWithTag("thread-row-$threadId").fetchSemanticsNodes().isNotEmpty()) {
-            return true
-        }
-        return runCatching { scrollInboxToThread(threadId) }.isSuccess
-    }
-
-    /** Brings the row for [threadId] into the viewport; fails when the list has none. */
-    private fun scrollInboxToThread(threadId: String) {
-        compose.onNodeWithTag("inbox-list").performScrollToNode(hasTestTag("thread-row-$threadId"))
     }
 
     private fun threadRowCount(): Int =
