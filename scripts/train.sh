@@ -14,7 +14,8 @@
 #   land <sha>...     cherry-pick commits onto the train and push them
 #   verify            rebase the train onto origin/main, run `make
 #                     verify-batch` in the train worktree, record the tip
-#   ship              fast-forward main to the verified train tip
+#   ship              fast-forward main to the verified commit (the train
+#                     may already carry newer, unverified commits)
 #   abort             drop the train's unshipped commits (needs --yes)
 #
 # Environment:
@@ -188,16 +189,24 @@ cmd_verify() {
 cmd_ship() {
     fetch
     remote_train_exists || die "$REMOTE/$TRAIN does not exist"
-    local tip
+    local tip verified
     tip=$(git rev-parse "$REMOTE/$TRAIN")
     [ -f "$stamp_file" ] || die "no verified tip recorded; run 'train.sh verify'"
-    [ "$(cat "$stamp_file")" = "$tip" ] || die "verified tip $(git rev-parse --short "$(cat "$stamp_file")") is not the train tip $(git rev-parse --short "$tip"); run 'train.sh verify'"
-    git merge-base --is-ancestor "$REMOTE/main" "$tip" || die "main moved since verification; run 'train.sh verify'"
-    local n
-    n=$(unshipped | wc -l | tr -d ' ')
-    git push -q "$REMOTE" "$tip:main"
+    verified=$(cat "$stamp_file")
+    # The train may have moved on since the gate ran; the verified commit
+    # ships as long as it is still an ancestor of the train tip, and the
+    # newer commits stay on the train for the next batch.
+    git merge-base --is-ancestor "$verified" "$tip" || die "verified tip $(git rev-parse --short "$verified") is no longer on $REMOTE/$TRAIN; run 'train.sh verify'"
+    git merge-base --is-ancestor "$REMOTE/main" "$verified" || die "main moved since verification; run 'train.sh verify'"
+    local n rest
+    n=$(git rev-list "$REMOTE/main..$verified" | wc -l | tr -d ' ')
+    rest=$(git rev-list "$verified..$tip" | wc -l | tr -d ' ')
+    git push -q "$REMOTE" "$verified:main"
     rm -f "$stamp_file"
-    echo "train: shipped $n commit(s); main is at $(git rev-parse --short "$tip")"
+    echo "train: shipped $n commit(s); main is at $(git rev-parse --short "$verified")"
+    if [ "$rest" -gt 0 ]; then
+        echo "train: $rest newer commit(s) stay on the train for the next batch"
+    fi
 }
 
 cmd_abort() {
