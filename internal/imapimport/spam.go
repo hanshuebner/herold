@@ -106,6 +106,19 @@ type importSpamTarget struct {
 // internal/admin/imap_import_spam.go's Classify adapter, which builds
 // the same spam.ClassifyContext protosmtp.classifyMessage does.
 func resolveImportSpamTarget(classification spam.Classification) importSpamTarget {
+	// REQ-FILT-02a / REQ-FLT-16 (issue #382): a never-spam managed rule
+	// suppresses the verdict mapping below entirely -- the message goes
+	// to INBOX with no "$Junk" keyword, same as a ham verdict. Sieve
+	// never runs on the import path (REQ-IMAP-IMP-31), so this is the
+	// only place that mapping is applied for an imported message; the
+	// override is decided by imapImportSpamAdapter.Classify
+	// (internal/admin/imap_import_spam.go), which evaluates the
+	// principal's never-spam managed rules directly against the message
+	// (internal/sieve.NeverSpamOverrideLabel) without invoking Sieve
+	// itself.
+	if classification.DeliveryOverride != "" {
+		return importSpamTarget{mailbox: "INBOX", keywords: categoryKeywords(classification.Category)}
+	}
 	switch classification.Verdict {
 	case spam.Spam:
 		// ADR-0004: \Junk is exempt from categorisation even when the

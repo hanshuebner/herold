@@ -31,6 +31,7 @@ import (
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -106,6 +107,23 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 		cls.Category = ""
 	case cls.Category == "":
 		cls.Category = spam.StructuralCategory(msg) // ADR-0002
+	}
+	// REQ-FILT-02a / REQ-FLT-16 (issue #382): a never-spam managed rule
+	// keeps this message out of Junk regardless of verdict. Sieve never
+	// runs on the import path (REQ-IMAP-IMP-31), so the rule's
+	// conditions are evaluated directly against msg
+	// (internal/sieve.NeverSpamOverrideLabel), mirroring the compiled
+	// Sieve guard SMTP delivery runs for the same rule
+	// (internal/sieve/compile_managed.go) without invoking the Sieve
+	// interpreter itself. resolveImportSpamTarget
+	// (internal/imapimport/spam.go) reads DeliveryOverride to route the
+	// message to INBOX instead of Junk.
+	if cls.Verdict == spam.Spam || cls.Verdict == spam.Suspect {
+		if rules, rerr := a.st.Meta().ListManagedRules(ctx, principalID, store.ManagedRuleFilter{}); rerr == nil {
+			if label, merr := sieve.NeverSpamOverrideLabel(rules, msg); merr == nil && label != "" {
+				cls.DeliveryOverride = label
+			}
+		}
 	}
 	return cls
 }
@@ -224,6 +242,10 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 	}
 	t := a.clk.Now()
 	rec.SpamClassifiedAt = &t
+	if classification.DeliveryOverride != "" {
+		ov := classification.DeliveryOverride
+		rec.SpamDeliveryOverride = &ov
+	}
 
 	if err := a.st.Meta().SetLLMClassification(ctx, rec); err != nil {
 		a.logger.WarnContext(ctx, "imap-import spam: persist classification record",

@@ -269,3 +269,70 @@ func TestIMAPImportSpamAdapter_RecordVerdictPersistsUnclassifiedWithReason(t *te
 		t.Errorf("SpamConfidence = %v, want nil (no score was ever produced)", *rec.SpamConfidence)
 	}
 }
+
+// TestIMAPImportSpamAdapter_Classify_NeverSpamOverride covers REQ-FILT-02a
+// / REQ-FLT-16 (issue #382): a spam verdict on a message matched by a
+// never-spam managed rule carries DeliveryOverride naming the rule, since
+// Sieve never runs on the import path (REQ-IMAP-IMP-31) and this is the
+// only place that decision is made for imported mail.
+func TestIMAPImportSpamAdapter_Classify_NeverSpamOverride(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"spam","score":0.93,"reason":"looks bad"}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "neverspam@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	if _, err := st.Meta().InsertManagedRule(ctx, store.ManagedRule{
+		PrincipalID: p.ID,
+		Name:        "Trusted senders",
+		Enabled:     true,
+		Conditions: []store.RuleCondition{
+			{Field: "from", Op: "contains", Value: "sender@example.com"},
+		},
+		Actions: []store.RuleAction{{Kind: "never-spam"}},
+	}); err != nil {
+		t.Fatalf("InsertManagedRule: %v", err)
+	}
+
+	msg := buildSpamTestMessage(t)
+	got := adapter.Classify(ctx, p.ID, msg)
+	if got.Verdict != spam.Spam {
+		t.Fatalf("Verdict = %v, want spam.Spam", got.Verdict)
+	}
+	if got.DeliveryOverride != "filter:Trusted senders" {
+		t.Errorf("DeliveryOverride = %q, want %q", got.DeliveryOverride, "filter:Trusted senders")
+	}
+}
+
+// TestIMAPImportSpamAdapter_Classify_NoNeverSpamRule_NoOverride is the
+// unmatched-sender control: no managed rule, no override.
+func TestIMAPImportSpamAdapter_Classify_NoNeverSpamRule_NoOverride(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"spam","score":0.93,"reason":"looks bad"}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "no-rule@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
+	msg := buildSpamTestMessage(t)
+	got := adapter.Classify(ctx, p.ID, msg)
+	if got.DeliveryOverride != "" {
+		t.Errorf("DeliveryOverride = %q, want empty (no never-spam rule configured)", got.DeliveryOverride)
+	}
+}
