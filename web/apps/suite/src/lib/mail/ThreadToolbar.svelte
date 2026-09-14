@@ -17,6 +17,7 @@
   import { labelPicker } from './label-picker.svelte';
   import { snoozePicker } from './snooze-picker.svelte';
   import { managedRules } from '../settings/managed-rules.svelte';
+  import { llmTransparency } from '../llm/transparency.svelte';
   import { THREAD_ACTIONS } from './actions';
   import { t } from '../i18n/i18n.svelte';
   import ArchiveIcon from '../icons/ArchiveIcon.svelte';
@@ -33,7 +34,9 @@
   import PhishingIcon from '../icons/PhishingIcon.svelte';
   import BlockIcon from '../icons/BlockIcon.svelte';
   import NotSpamIcon from '../icons/NotSpamIcon.svelte';
+  import InspectClassificationIcon from '../icons/InspectClassificationIcon.svelte';
   import NotSpamDialog from './NotSpamDialog.svelte';
+  import LLMInspectModal from '../llm/LLMInspectModal.svelte';
   import type { Email } from './types';
 
   interface Props {
@@ -74,6 +77,21 @@
   // to Junk -- mirrors isInTrash's latest-only check rather than
   // isInInbox's whole-thread check, since Not spam operates on `latest`.
   let isInJunk = $derived(Boolean(junkId && latest.mailboxIds[junkId]));
+
+  // "Why was this classified?" (issue #390) opens LLMInspectModal for the
+  // thread's latest message, fed by Email/llmInspect. Fetch the record
+  // whenever the shown message changes so the action's visibility reflects
+  // whether a classification record actually exists for it.
+  $effect(() => {
+    if (llmTransparency.available) {
+      void llmTransparency.fetchInspect(latest.id);
+    }
+  });
+  let inspectRecord = $derived(llmTransparency.inspectResult(latest.id));
+  let hasClassification = $derived(
+    inspectRecord !== null && inspectRecord !== 'loading' && inspectRecord !== 'error',
+  );
+  let inspectModalOpen = $state(false);
 
   // Mute state for the thread — used by the mute/unmute action.
   let isMuted = $derived(managedRules.isThreadMuted(threadId));
@@ -192,6 +210,14 @@
     leaveThread();
   }
 
+  function openInspectModal(): void {
+    inspectModalOpen = true;
+  }
+
+  function closeInspectModal(): void {
+    inspectModalOpen = false;
+  }
+
   function openBlockConfirm(): void {
     blockError = null;
     blockConfirmOpen = true;
@@ -227,6 +253,7 @@
     | 'moveThread'
     | 'labelThread'
     | 'muteThread'
+    | 'inspectClassification'
     | 'notSpam'
     | 'reportSpam'
     | 'reportPhishing'
@@ -288,6 +315,11 @@
       label: isMuted ? t('msg.unmuteThread') : t('msg.muteThread'),
       onclick: () => void handleMuteToggle(),
       ariaPressed: isMuted,
+    },
+    inspectClassification: {
+      visible: hasClassification,
+      label: t('msg.inspectClassification'),
+      onclick: openInspectModal,
     },
     notSpam: {
       visible: isInJunk,
@@ -374,6 +406,8 @@
         <LabelIcon size={16} />
       {:else if id === 'muteThread'}
         {#if isMuted}<UnmuteIcon size={16} />{:else}<MuteIcon size={16} />{/if}
+      {:else if id === 'inspectClassification'}
+        <InspectClassificationIcon size={16} />
       {:else if id === 'notSpam'}
         <NotSpamIcon size={16} />
       {:else if id === 'reportSpam'}
@@ -390,6 +424,11 @@
 
   <span class="spacer" aria-hidden="true"></span>
 </div>
+
+<!-- "Why was this classified?" modal (issue #390): classifier verdict + reason. -->
+{#if inspectModalOpen}
+  <LLMInspectModal emailId={latest.id} onClose={closeInspectModal} />
+{/if}
 
 <!-- "Not spam" dialog (issue #382): move to Inbox + optional never-spam rule. -->
 {#if notSpamDialogOpen}

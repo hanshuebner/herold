@@ -317,6 +317,9 @@ export const en = {
   'msg.reportPhishing': 'Report phishing',
   'msg.notSpam': 'Not spam',
   'msg.blockSender': 'Block sender',
+  // Opens LLMInspectModal for the thread's latest message (issue #390);
+  // hidden when the message carries no classification record.
+  'msg.inspectClassification': 'Why was this classified?',
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
   'msg.alwaysFrom': 'Always from {sender}',

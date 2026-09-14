@@ -134,6 +134,26 @@ vi.mock('../settings/managed-rules.svelte', () => ({
 }));
 vi.mock('../toast/toast.svelte', () => ({ toast: { show: vi.fn() } }));
 
+// llmTransparency mock (issue #390): tests set `.available` and
+// `.inspectResultFor` to drive the "Why was this classified?" action's
+// visibility; `fetchInspect` is a spy so we can assert it was called with
+// the shown message's id.
+const { llmTransparencyMock } = vi.hoisted(() => {
+  const llmTransparencyMock = {
+    available: true,
+    loadStatus: 'ready',
+    data: null as unknown,
+    load: vi.fn().mockResolvedValue(undefined),
+    inspectResultFor: null as unknown,
+    fetchInspect: vi.fn(async (_emailId: string) => llmTransparencyMock.inspectResultFor),
+    inspectResult(_emailId: string) {
+      return llmTransparencyMock.inspectResultFor;
+    },
+  };
+  return { llmTransparencyMock };
+});
+vi.mock('../llm/transparency.svelte', () => ({ llmTransparency: llmTransparencyMock }));
+
 // Import the mocked singletons so we can assert on them.
 import { movePicker } from './move-picker.svelte';
 import { labelPicker } from './label-picker.svelte';
@@ -154,6 +174,7 @@ vi.mock('../icons/PhishingIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/BlockIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PrintIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/NotSpamIcon.svelte', () => ({ default: () => null }));
+vi.mock('../icons/InspectClassificationIcon.svelte', () => ({ default: () => null }));
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -410,6 +431,62 @@ describe('ThreadToolbar "Not spam" action (issue #382)', () => {
         }),
       );
     });
+  });
+});
+
+// ── "Why was this classified?" action (issue #390) ──────────────────────────────
+
+describe('ThreadToolbar "Why was this classified?" action (issue #390)', () => {
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.junk = null;
+    llmTransparencyMock.available = true;
+    llmTransparencyMock.inspectResultFor = null;
+    llmTransparencyMock.fetchInspect.mockClear();
+  });
+
+  it('hides the action when the message has no classification record', async () => {
+    const email = makeEmail('e-llm0', 'tid-llm0', { 'mbx-inbox': true });
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-llm0' ? [email] : []);
+    llmTransparencyMock.inspectResultFor = null;
+
+    renderToolbar(email);
+
+    await vi.waitFor(() => {
+      expect(llmTransparencyMock.fetchInspect).toHaveBeenCalledWith('e-llm0');
+    });
+    expect(
+      screen.queryByRole('button', { name: 'msg.inspectClassification' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the action and opens the modal for the message id when a record exists', async () => {
+    const email = makeEmail('e-llm1', 'tid-llm1', { 'mbx-junk': true });
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-llm1' ? [email] : []);
+    llmTransparencyMock.inspectResultFor = {
+      emailId: 'e-llm1',
+      spam: {
+        verdict: 'spam',
+        confidence: 0.97,
+        reason: 'Matches known spam pattern',
+        promptApplied: 'Classify...',
+        model: 'fake',
+        classifiedAt: '2026-09-14T00:00:00Z',
+      },
+    };
+
+    renderToolbar(email);
+
+    const btn = await screen.findByRole('button', { name: 'msg.inspectClassification' });
+    expect(btn).toBeInTheDocument();
+
+    await fireEvent.click(btn);
+
+    // LLMInspectModal (unmocked) fetches Email/llmInspect for the clicked
+    // message's id and renders its verdict -- confirms the toolbar opens
+    // the modal for the correct message.
+    expect(await screen.findByText('spam')).toBeInTheDocument();
+    expect(llmTransparencyMock.fetchInspect).toHaveBeenCalledWith('e-llm1');
   });
 });
 

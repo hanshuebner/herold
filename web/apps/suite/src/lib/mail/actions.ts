@@ -38,6 +38,7 @@ export const THREAD_ACTIONS: ActionDef[] = [
   { id: 'moveThread',    labelKey: 'thread.move',           iconName: 'MoveIcon' },
   { id: 'labelThread',   labelKey: 'thread.label',          iconName: 'LabelIcon' },
   { id: 'muteThread',    labelKey: 'msg.muteThread',        iconName: 'MuteIcon' },
+  { id: 'inspectClassification', labelKey: 'msg.inspectClassification', iconName: 'InspectClassificationIcon' },
   { id: 'notSpam',       labelKey: 'msg.notSpam',           iconName: 'NotSpamIcon' },
   { id: 'reportSpam',    labelKey: 'msg.reportSpam',        iconName: 'SpamIcon' },
   { id: 'reportPhishing',labelKey: 'msg.reportPhishing',    iconName: 'PhishingIcon' },

@@ -316,6 +316,7 @@ export const de = {
   'msg.reportPhishing': 'Phishing melden',
   'msg.notSpam': 'Kein Spam',
   'msg.blockSender': 'Absender blockieren',
+  'msg.inspectClassification': 'Warum wurde dies so eingestuft?',
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
   'msg.alwaysFrom': 'Immer von {sender}',
