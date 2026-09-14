@@ -468,6 +468,102 @@ if header :is "X-Herold-Thread-Id" "thread-42" {
 }
 `
 
+// -- never-spam (REQ-FILT-02a / REQ-FLT-16, issue #382) ----------------
+
+// TestCompileRules_NeverSpam_Bare covers a rule with only the never-spam
+// action: the compiled script must guard on "${spam.verdict}" and issue
+// an explicit "keep" when the verdict is spam or suspect, and must
+// declare the "variables" extension the guard's string test needs.
+func TestCompileRules_NeverSpam_Bare(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from", Op: "contains", Value: "@trusted.example"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "never-spam"},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, `require ["variables"];`) {
+		t.Errorf("script missing variables require; got:\n%s", script)
+	}
+	if !strings.Contains(script, `${spam.verdict}`) {
+		t.Errorf("script missing spam.verdict guard; got:\n%s", script)
+	}
+	if !strings.Contains(script, "\"spam\"") || !strings.Contains(script, "\"suspect\"") {
+		t.Errorf("script missing spam/suspect verdict checks; got:\n%s", script)
+	}
+	if !strings.Contains(script, "keep;") {
+		t.Errorf("script missing explicit keep; got:\n%s", script)
+	}
+}
+
+// TestCompileRules_NeverSpam_WithApplyLabel: never-spam alongside
+// apply-label keeps both effects -- the label is still applied (via the
+// existing fileinto :copy) and the verdict-driven Junk mapping is still
+// suppressed.
+func TestCompileRules_NeverSpam_WithApplyLabel(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from", Op: "contains", Value: "@trusted.example"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "apply-label", Params: map[string]any{"label": "Trusted"}},
+				{Kind: "never-spam"},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, `fileinto :copy "Trusted"`) {
+		t.Errorf("script missing label fileinto; got:\n%s", script)
+	}
+	if !strings.Contains(script, `${spam.verdict}`) {
+		t.Errorf("script missing spam.verdict guard; got:\n%s", script)
+	}
+}
+
+// TestCompileRules_NeverSpam_WithSkipInbox: skip-inbox already routes the
+// message unconditionally (REQ-FILT-207), so never-spam contributes no
+// extra Sieve of its own -- no spam.verdict guard, no "variables" require.
+func TestCompileRules_NeverSpam_WithSkipInbox(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from", Op: "contains", Value: "@trusted.example"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "skip-inbox"},
+				{Kind: "never-spam"},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(script, "spam.verdict") {
+		t.Errorf("script should not guard on spam.verdict when skip-inbox already routes explicitly; got:\n%s", script)
+	}
+	if strings.Contains(script, "variables") {
+		t.Errorf("script should not require variables when the guard is not emitted; got:\n%s", script)
+	}
+}
+
 func TestCompileRules_Snapshot(t *testing.T) {
 	rules := []store.ManagedRule{
 		{

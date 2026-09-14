@@ -28,6 +28,7 @@ accept → authenticate (SPF/DKIM/DMARC/ARC) → score (compiled ruleset, in-pro
 
 - **REQ-FILT-01** The classifier produces: `verdict` ∈ {`ham`, `suspect`, `spam`}, `confidence` ∈ [0.0, 1.0], `reason` (short text).
 - **REQ-FILT-02** Default verdict mapping: `ham` → Inbox; `suspect` → Inbox + `$Junk` keyword; `spam` → Junk folder. Sieve can override.
+- **REQ-FILT-02a** A user filter's "never classify as spam" action (REQ-FLT-16) suppresses REQ-FILT-02's mapping for a matching message: it is delivered to Inbox, or wherever the filter's other actions route it, never to Junk, regardless of verdict. The filter compiles to Sieve (REQ-FLT-30) so hand-written Sieve gets the same override by testing `${spam.verdict}` and issuing an explicit `keep`. The override is recorded in the message's LLM transparency record (REQ-FILT-66) so the reader can show "classifier said spam, delivered by your filter".
 - **REQ-FILT-03** Message gets headers added on delivery: `X-Spam-Verdict`, `X-Spam-Confidence`, `X-Spam-Reason`, and the existing `Authentication-Results`.
 
 ### Endpoint

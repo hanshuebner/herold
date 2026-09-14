@@ -17,6 +17,11 @@ import (
 // decimal string representation of the store.ThreadID.
 const XHeroldThreadIDHeader = "X-Herold-Thread-Id"
 
+// NeverSpamActionKind is the store.RuleAction.Kind that keeps a matching
+// message out of Junk regardless of the spam classifier's verdict
+// (REQ-FILT-02a / REQ-FLT-16, issue #382).
+const NeverSpamActionKind = "never-spam"
+
 // CompileRules returns a Sieve script that implements rules in the order
 // they are provided (lowest sort_order first, then by ID). Only enabled rules
 // are emitted. An empty or all-disabled rule set returns an empty string.
@@ -79,6 +84,15 @@ func CompileRules(rules []store.ManagedRule) (string, error) {
 				required["fileinto"] = true
 			case "forward":
 				// redirect is a base Sieve command; no extension needed.
+			case NeverSpamActionKind:
+				// re #382: the guard tests "${spam.verdict}", which
+				// needs "variables" (RFC 5229). No-op when the rule
+				// already routes explicitly via skip-inbox/delete/
+				// forward (hasUnconditionalRoute below) -- REQ-FILT-207
+				// already beats the verdict mapping in that case.
+				if !hasUnconditionalRoute(r.Actions) {
+					required["variables"] = true
+				}
 			}
 		}
 	}
@@ -227,6 +241,50 @@ func actionFlags(actions []store.RuleAction) (hasApplyLabel, hasSkipInbox bool) 
 	return hasApplyLabel, hasSkipInbox
 }
 
+// hasUnconditionalRoute reports whether actions already routes the message
+// away from the verdict-driven default *regardless of what the verdict
+// turns out to be*: "skip-inbox" and "delete" both compile to a fileinto
+// without :copy (compileSingleAction), and "forward" compiles to a
+// redirect without :copy -- either clears Sieve's implicit keep the
+// moment the rule's conditions match, before the classifier verdict is
+// ever consulted (resolveSieveTargets, internal/protosmtp/deliver.go).
+// A rule carrying one of these needs no never-spam guard of its own: the
+// explicit route already wins per REQ-FILT-207/REQ-FILT-102.
+func hasUnconditionalRoute(actions []store.RuleAction) bool {
+	for _, a := range actions {
+		switch a.Kind {
+		case "skip-inbox", "delete", "forward":
+			return true
+		}
+	}
+	return false
+}
+
+// hasNeverSpamAction reports whether actions carries a NeverSpamActionKind
+// action.
+func hasNeverSpamAction(actions []store.RuleAction) bool {
+	for _, a := range actions {
+		if a.Kind == NeverSpamActionKind {
+			return true
+		}
+	}
+	return false
+}
+
+// neverSpamGuardBlock returns the Sieve fragment that keeps a matching
+// message out of Junk regardless of the classifier's verdict (REQ-FILT-02a
+// / REQ-FLT-16): an explicit `keep` when (and only when) the verdict would
+// otherwise have routed the message toward Junk. RFC 5228 §2.10.6 accumulates
+// actions, so this runs safely alongside apply-label's own `fileinto :copy`
+// (the label mailbox and the guarded keep both take effect) without needing
+// to know what routing that other action already emitted.
+func neverSpamGuardBlock() string {
+	return "  if anyof (string :is \"${spam.verdict}\" \"spam\",\n" +
+		"             string :is \"${spam.verdict}\" \"suspect\") {\n" +
+		"    keep;\n" +
+		"  }\n"
+}
+
 // compileActions converts the action list into a Sieve block body (indented
 // lines terminated with semicolons). The caller wraps the result in braces.
 func compileActions(actions []store.RuleAction) (string, error) {
@@ -236,6 +294,9 @@ func compileActions(actions []store.RuleAction) (string, error) {
 	hasApplyLabel, hasSkipInbox := actionFlags(actions)
 	var sb strings.Builder
 	for _, a := range actions {
+		if a.Kind == NeverSpamActionKind {
+			continue // handled below, after the ordinary actions.
+		}
 		line, emit, err := compileSingleAction(a, hasApplyLabel, hasSkipInbox)
 		if err != nil {
 			return "", err
@@ -244,6 +305,9 @@ func compileActions(actions []store.RuleAction) (string, error) {
 			continue
 		}
 		fmt.Fprintf(&sb, "  %s;\n", line)
+	}
+	if hasNeverSpamAction(actions) && !hasUnconditionalRoute(actions) {
+		sb.WriteString(neverSpamGuardBlock())
 	}
 	return sb.String(), nil
 }

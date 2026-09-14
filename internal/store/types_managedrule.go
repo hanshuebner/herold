@@ -18,11 +18,16 @@ type RuleCondition struct {
 
 // RuleAction is one action in a ManagedRule.
 // Kind is one of: "apply-label", "skip-inbox", "mark-read", "delete",
-// "forward".
+// "forward", "never-spam".
 // Params carries kind-specific parameters:
 //   - "apply-label":  { "label": "<name>" }
 //   - "forward":      { "to": "<address>" }
 //   - others:         {} (no parameters)
+//
+// "never-spam" (REQ-FILT-02a / REQ-FLT-16, issue #382) keeps a matching
+// message out of Junk regardless of the spam classifier's verdict: the
+// message is delivered to Inbox, or wherever the rule's other actions
+// route it, instead of the classifier's default Junk mapping.
 type RuleAction struct {
 	Kind   string         `json:"kind"`
 	Params map[string]any `json:"params,omitempty"`

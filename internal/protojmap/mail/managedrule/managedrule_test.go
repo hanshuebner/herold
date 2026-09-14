@@ -431,6 +431,62 @@ func TestManagedRule_Set_InvalidActionCombo(t *testing.T) {
 	}
 }
 
+// TestManagedRule_Set_NeverSpamAction_RoundTrip covers REQ-FILT-02a /
+// REQ-FLT-16 (issue #382): a rule with a "never-spam" action round-trips
+// through ManagedRule/set + ManagedRule/get, and compiles into a Sieve
+// script that guards on the classifier verdict (internal/sieve
+// CompileRules, mirroring TestBlockedSender_Set_Generates_Sieve's pattern
+// of asserting the compiled script's shape).
+func TestManagedRule_Set_NeverSpamAction_RoundTrip(t *testing.T) {
+	f := setupFixture(t)
+	id := f.createRule(t, map[string]any{
+		"name":    "Trusted senders",
+		"enabled": true,
+		"order":   0,
+		"conditions": []map[string]any{
+			{"field": "from", "op": "contains", "value": "@accountprotection.microsoft.com"},
+		},
+		"actions": []map[string]any{
+			{"kind": "never-spam"},
+		},
+	})
+	if id == "" {
+		t.Fatal("expected created id")
+	}
+
+	_, getraw := f.invoke(t, "ManagedRule/get", map[string]any{
+		"accountId": f.accountID(),
+		"ids":       []string{id},
+	})
+	var getResp struct {
+		List []struct {
+			Actions []struct {
+				Kind string `json:"kind"`
+			} `json:"actions"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(getraw, &getResp); err != nil {
+		t.Fatalf("unmarshal get: %v", err)
+	}
+	if len(getResp.List) != 1 {
+		t.Fatalf("list len = %d, want 1", len(getResp.List))
+	}
+	if len(getResp.List[0].Actions) != 1 || getResp.List[0].Actions[0].Kind != "never-spam" {
+		t.Fatalf("actions = %v, want [never-spam]", getResp.List[0].Actions)
+	}
+
+	script, err := f.srv.Store.Meta().GetSieveScript(context.Background(), f.pid)
+	if err != nil {
+		t.Fatalf("GetSieveScript: %v", err)
+	}
+	if !strings.Contains(script, `${spam.verdict}`) {
+		t.Errorf("Sieve script missing spam.verdict guard; got: %s", script)
+	}
+	if !strings.Contains(script, "keep;") {
+		t.Errorf("Sieve script missing explicit keep; got: %s", script)
+	}
+}
+
 func TestManagedRule_Set_IfInState_Mismatch(t *testing.T) {
 	f := setupFixture(t)
 	badState := "99999"

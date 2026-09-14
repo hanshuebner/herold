@@ -22,6 +22,7 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 | REQ-FLT-13 | A filter can delete (move to Trash). |
 | REQ-FLT-14 | A filter can forward to an address. |
 | REQ-FLT-15 | Multiple actions combine on a single match. |
+| REQ-FLT-16 | A filter can declare matching mail is never filed to Junk by the spam verdict. |
 
 ## Management
 
