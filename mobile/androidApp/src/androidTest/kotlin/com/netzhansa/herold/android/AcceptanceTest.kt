@@ -23,6 +23,7 @@ import com.netzhansa.herold.shared.jmap.JmapClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -42,6 +43,12 @@ import org.junit.runners.MethodSorters
  *
  * The offline bullet lives in [OfflineAcceptanceTest], which the harness
  * runs with the emulator's radios turned off.
+ *
+ * Each check provisions the mail it reads, so the run stands on any
+ * instance and in any order. The category-tab check additionally needs the
+ * instance's category set to stay within the five lanes the tab row pins
+ * (CategoryLanes.PINNED_LIMIT); the dev instance's classifier derives
+ * three (primary, promotions, updates).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -155,7 +162,7 @@ class AcceptanceTest {
     @Test
     fun t03_theInboxShowsSeededThreadsWithCategoryTabsThatFilterTheList() {
         signIn()
-        categoriseTwoSeededThreads()
+        provisionCategoryLanes()
         syncNow()
 
         compose.waitUntil(TIMEOUT_MS) {
@@ -382,27 +389,55 @@ class AcceptanceTest {
     }
 
     /**
-     * Assigns a category keyword to the newest inbox thread, the same
+     * Delivers one message per lane the check asserts on and returns once
+     * each carries its category, so the tab row holds those lanes whatever
+     * the rest of the inbox already holds (issue #392).
+     *
+     * The subjects carry the markers the in-tree fake classifier reads
+     * (`internal/testfakes/fakeclassify`: "+promo" -> promotions,
+     * "+updates" -> updates, anything else -> primary), so the lane comes
+     * from the instance's own classification path. On an instance with no
+     * classifier the keyword is written afterwards with the same
      * `Email/set` on `$category-*` the suite's picker fires (REQ-CAT-20),
-     * so the tab lane has something to filter on a dev instance with no
-     * classifier configured.
+     * clearing whatever category the message carries: a message belongs to
+     * one lane, and the client reads the first `$category-` keyword it
+     * finds, so a second one would shadow the lane under test.
      */
-    private fun categoriseTwoSeededThreads() = runBlocking {
+    private fun provisionCategoryLanes() = runBlocking {
         val session = app.container.session.value!!
-        session.syncEngine.syncAll()
-        val inbox = app.container.store.inboxEmails().first().sortedByDescending { it.receivedAt }
-        check(inbox.size >= 2) { "the dev instance must hold at least two inbox messages, saw ${inbox.size}" }
-        session.client.emailSet(
-            inbox.first().accountId,
-            mapOf(
-                inbox[0].id to buildJsonObject {
-                    put("keywords/${Keywords.categoryKeyword(CATEGORY_A)}", true)
-                },
-                inbox[1].id to buildJsonObject {
-                    put("keywords/${Keywords.categoryKeyword(CATEGORY_B)}", true)
-                },
-            ),
-        )
+        listOf(CATEGORY_A to PROMOTIONS_MARKER, CATEGORY_B to UPDATES_MARKER).forEach { (category, marker) ->
+            val subject = "acceptance $category lane $marker ${System.nanoTime()}"
+            DevInstance.deliverMail(subject = subject, body = "One message for the $category lane.")
+            var email = awaitInbox(subject)
+            // Filing and classification are separate passes, so the
+            // keyword lands a moment after the message answers a query.
+            val deadline = System.currentTimeMillis() + TIMEOUT_MS
+            while (email.category != category && System.currentTimeMillis() < deadline) {
+                delay(SERVER_POLL_MS)
+                session.syncEngine.syncAll()
+                email = app.container.store.inboxEmails().first().first { it.id == email.id }
+            }
+            if (email.category != category) {
+                session.client.emailSet(
+                    email.accountId,
+                    mapOf(
+                        email.id to buildJsonObject {
+                            email.keywords.filter { Keywords.categoryName(it) != null }.forEach {
+                                put("keywords/$it", JsonPrimitive(null as String?))
+                            }
+                            put("keywords/${Keywords.categoryKeyword(category)}", true)
+                        },
+                    ),
+                )
+                session.syncEngine.syncAll()
+                email = app.container.store.inboxEmails().first().first { it.id == email.id }
+            }
+            assertEquals(
+                "the $category lane needs a message carrying its keyword",
+                category,
+                email.category,
+            )
+        }
     }
 
     private fun threadRowCount(): Int =
@@ -416,5 +451,8 @@ class AcceptanceTest {
         // test tag - is the lower-cased name.
         const val CATEGORY_A = "promotions"
         const val CATEGORY_B = "updates"
+        // The subject markers the fake classifier maps to those lanes.
+        const val PROMOTIONS_MARKER = "+promo"
+        const val UPDATES_MARKER = "+updates"
     }
 }
