@@ -24,7 +24,11 @@ norace=$(comm -23 <(echo "$all") <(echo "$race"))
 # that database (the Postgres lanes below run those packages serialised).
 echo "test-lanes: sqlite race lane, $(echo "$race" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite CGO_ENABLED=1 go test -race -count=1 -timeout 30m $race
+# Race-instrumented packages are 5-30x heavier than plain ones; running
+# ncpu of them at once on the development host oversubscribes it far
+# enough that server-boot tests miss their readiness window. Four at a
+# time keeps the lane within what the CI runner sees.
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite CGO_ENABLED=1 go test -race -count=1 -timeout 30m -p "${TEST_LANES_RACE_P:-4}" $race
 
 echo "test-lanes: sqlite fast lane, $(echo "$norace" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
