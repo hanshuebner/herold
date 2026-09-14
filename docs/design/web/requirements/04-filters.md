@@ -8,7 +8,7 @@ Filters are user-authored rules that act on incoming mail: apply a label, archiv
 
 | ID | Requirement |
 |----|-------------|
-| REQ-FLT-01 | A filter can match on: From address, From domain, To address, Subject (contains / equals), List-Id (equals; matches the `List-Id` header per RFC 2919), Has-attachment (boolean). The condition-field enum carried in `FiltersForm.svelte` and in the Sieve compiler is the closed set `from` \| `from-domain` \| `to` \| `subject` \| `list-id` \| `has-attachment` \| `thread-id`. |
+| REQ-FLT-01 | A filter can match on: From address, From domain, To address, Subject (contains / equals), List-Id (equals; matches the `List-Id` header per RFC 2919), Has-attachment (boolean). The condition-field enum carried in `FiltersForm.svelte` and in the Sieve compiler is the closed set `from` \| `from-domain` \| `to` \| `subject` \| `list-id` \| `has-attachment` \| `thread-id`. A "From domain" condition of `acme.com` matches the sender's domain exactly and every subdomain of it (e.g. `billing.acme.com`), not merely a domain ending in that string (`notacme.com` does not match). |
 | REQ-FLT-02 | Multiple conditions combine with AND logic. (OR support is post-v1.) |
 | REQ-FLT-03 | Address-field conditions support a wildcard (`*`). |
 

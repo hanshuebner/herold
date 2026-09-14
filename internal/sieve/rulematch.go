@@ -72,10 +72,17 @@ func matchSingleCondition(c store.RuleCondition, msg mailparse.Message) (bool, e
 		return matchHeader(msg, XHeroldThreadIDHeader, m, c.Value)
 	case "from-domain":
 		// Mirrors compileSingleCondition's `address :matches :domain
-		// "From" "*@<value>"` exactly, op included: from-domain always
-		// wildcard-matches regardless of the condition's own Op.
+		// "From" [<value>, "*.<value>"]`, op included: from-domain always
+		// wildcard-matches regardless of the condition's own Op. The
+		// extracted :domain value has no "@" prefix, so it is compared
+		// straight against the condition value, with a second "*.<value>"
+		// check so the domain condition also covers subdomains.
 		dm := matcher{comparator: "i;ascii-casemap", matchType: ":matches", addressPart: ":domain"}
-		return matchAddressHeader(msg, "From", dm, "*@"+c.Value)
+		ok, err := matchAddressHeader(msg, "From", dm, c.Value)
+		if err != nil || ok {
+			return ok, err
+		}
+		return matchAddressHeader(msg, "From", dm, "*."+c.Value)
 	default:
 		return false, fmt.Errorf("unknown condition field %q", c.Field)
 	}

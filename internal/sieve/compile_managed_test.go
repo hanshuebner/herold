@@ -1,12 +1,44 @@
 package sieve_test
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/mailparse"
 	"github.com/hanshuebner/herold/internal/sieve"
 	"github.com/hanshuebner/herold/internal/store"
 )
+
+// parseCompileManagedTestMessage parses a raw message for the interpreter
+// execution tests below.
+func parseCompileManagedTestMessage(t *testing.T, raw string) mailparse.Message {
+	t.Helper()
+	msg, err := mailparse.Parse(bytes.NewReader([]byte(raw)), mailparse.NewParseOptions())
+	if err != nil {
+		t.Fatalf("mailparse.Parse: %v", err)
+	}
+	return msg
+}
+
+// runCompiledRules parses, validates, and evaluates a compiled managed-rule
+// script against msg under env, mirroring the SMTP delivery path.
+func runCompiledRules(t *testing.T, script string, msg mailparse.Message, env sieve.Environment) sieve.Outcome {
+	t.Helper()
+	parsed, err := sieve.Parse([]byte(script))
+	if err != nil {
+		t.Fatalf("Parse: %v\nscript:\n%s", err, script)
+	}
+	if err := sieve.Validate(parsed); err != nil {
+		t.Fatalf("Validate: %v\nscript:\n%s", err, script)
+	}
+	out, err := sieve.NewInterpreter().Evaluate(context.Background(), parsed, msg, env)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	return out
+}
 
 // -- CompileRules unit tests ------------------------------------------
 
@@ -203,6 +235,126 @@ func TestCompileRules_FromDomain(t *testing.T) {
 	if !strings.Contains(script, `:domain`) {
 		t.Errorf("script missing :domain match; got:\n%s", script)
 	}
+}
+
+// TestCompileRules_FromDomain_InterpreterMatch runs a compiled from-domain
+// rule through the real interpreter (re #382): the extracted :domain part
+// carries no "@", so the condition must compare against it directly rather
+// than the "*@<domain>" pattern that could never match. A message from a
+// subdomain of the condition's value also matches (REQ-FLT-01's "From
+// domain" field is read as the domain and its subdomains).
+func TestCompileRules_FromDomain_InterpreterMatch(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from-domain", Op: "equals", Value: "acme.com"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "apply-label", Params: map[string]any{"label": "Acme"}},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	effective := sieve.EffectiveScript(script, "")
+
+	msg := parseCompileManagedTestMessage(t, "From: billing@sub.acme.com\r\n"+
+		"To: alice@example.test\r\nSubject: invoice\r\n\r\nBody.\r\n")
+	out := runCompiledRules(t, effective, msg, sieve.Environment{})
+	found := false
+	for _, a := range out.Actions {
+		if a.Kind == sieve.ActionFileInto && a.Mailbox == "Acme" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected fileinto \"Acme\" for a subdomain of the condition value; got actions %+v", out.Actions)
+	}
+}
+
+// TestCompileRules_FromDomain_InterpreterNoMatch is the negative
+// counterpart: a sender on an unrelated domain must not trigger the rule's
+// action.
+func TestCompileRules_FromDomain_InterpreterNoMatch(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from-domain", Op: "equals", Value: "acme.com"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "apply-label", Params: map[string]any{"label": "Acme"}},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	effective := sieve.EffectiveScript(script, "")
+
+	msg := parseCompileManagedTestMessage(t, "From: billing@evil.example\r\n"+
+		"To: alice@example.test\r\nSubject: invoice\r\n\r\nBody.\r\n")
+	out := runCompiledRules(t, effective, msg, sieve.Environment{})
+	for _, a := range out.Actions {
+		if a.Kind == sieve.ActionFileInto && a.Mailbox == "Acme" {
+			t.Errorf("did not expect fileinto \"Acme\" for an unrelated domain; got actions %+v", out.Actions)
+		}
+	}
+}
+
+// TestCompileRules_FromDomain_InterpreterNeverSpam runs a from-domain
+// never-spam rule through the real interpreter with a spam verdict,
+// mirroring the SMTP delivery path's use of ${spam.verdict} (re #382): a
+// matching sender gets the guard's explicit "keep" (Inbox); a sender on an
+// unrelated domain does not.
+func TestCompileRules_FromDomain_InterpreterNeverSpam(t *testing.T) {
+	rules := []store.ManagedRule{
+		{
+			ID:      1,
+			Enabled: true,
+			Conditions: []store.RuleCondition{
+				{Field: "from-domain", Op: "equals", Value: "accountprotection.microsoft.com"},
+			},
+			Actions: []store.RuleAction{
+				{Kind: "never-spam"},
+			},
+		},
+	}
+	script, err := sieve.CompileRules(rules)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	effective := sieve.EffectiveScript(script, "")
+
+	matched := parseCompileManagedTestMessage(t, "From: notify@accountprotection.microsoft.com\r\n"+
+		"To: alice@example.test\r\nSubject: password reset\r\n\r\nBody.\r\n")
+	out := runCompiledRules(t, effective, matched, sieve.Environment{SpamVerdict: "spam"})
+	if !hasAction(out, sieve.ActionKeep) {
+		t.Errorf("expected an explicit keep for a matching from-domain never-spam rule; got %+v", out.Actions)
+	}
+
+	unmatched := parseCompileManagedTestMessage(t, "From: notify@evil.example\r\n"+
+		"To: alice@example.test\r\nSubject: password reset\r\n\r\nBody.\r\n")
+	out = runCompiledRules(t, effective, unmatched, sieve.Environment{SpamVerdict: "spam"})
+	if hasAction(out, sieve.ActionKeep) {
+		t.Errorf("did not expect an explicit keep for an unrelated domain; got %+v", out.Actions)
+	}
+}
+
+// hasAction reports whether out.Actions contains an action of kind k.
+func hasAction(out sieve.Outcome, k sieve.ActionKind) bool {
+	for _, a := range out.Actions {
+		if a.Kind == k {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCompileRules_MultipleConditions_AllOf(t *testing.T) {

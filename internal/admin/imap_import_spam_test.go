@@ -312,6 +312,49 @@ func TestIMAPImportSpamAdapter_Classify_NeverSpamOverride(t *testing.T) {
 	}
 }
 
+// TestIMAPImportSpamAdapter_Classify_NeverSpamOverride_FromDomain is the
+// from-domain counterpart of TestIMAPImportSpamAdapter_Classify_NeverSpamOverride
+// (re #382): a never-spam rule keyed on the sender's domain must also
+// override the verdict on the IMAP-import path, which never runs Sieve
+// (REQ-IMAP-IMP-31) and instead matches the rule's conditions directly via
+// sieve.NeverSpamOverrideLabel.
+func TestIMAPImportSpamAdapter_Classify_NeverSpamOverride_FromDomain(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"spam","score":0.93,"reason":"looks bad"}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "neverspamdomain@example.com",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	if _, err := st.Meta().InsertManagedRule(ctx, store.ManagedRule{
+		PrincipalID: p.ID,
+		Name:        "Trusted domains",
+		Enabled:     true,
+		Conditions: []store.RuleCondition{
+			{Field: "from-domain", Op: "equals", Value: "example.com"},
+		},
+		Actions: []store.RuleAction{{Kind: "never-spam"}},
+	}); err != nil {
+		t.Fatalf("InsertManagedRule: %v", err)
+	}
+
+	msg := buildSpamTestMessage(t)
+	got := adapter.Classify(ctx, p.ID, msg)
+	if got.Verdict != spam.Spam {
+		t.Fatalf("Verdict = %v, want spam.Spam", got.Verdict)
+	}
+	if got.DeliveryOverride != "filter:Trusted domains" {
+		t.Errorf("DeliveryOverride = %q, want %q", got.DeliveryOverride, "filter:Trusted domains")
+	}
+}
+
 // TestIMAPImportSpamAdapter_Classify_NoNeverSpamRule_NoOverride is the
 // unmatched-sender control: no managed rule, no override.
 func TestIMAPImportSpamAdapter_Classify_NoNeverSpamRule_NoOverride(t *testing.T) {

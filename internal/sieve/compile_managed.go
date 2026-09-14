@@ -203,9 +203,16 @@ func compileSingleCondition(c store.RuleCondition) (string, error) {
 		return fmt.Sprintf("header %s %s %s",
 			match, sieveQuote(XHeroldThreadIDHeader), sieveQuote(c.Value)), nil
 	case "from-domain":
-		// Match the domain portion of the From address using :matches wildcard.
-		return fmt.Sprintf("address :matches :domain \"From\" %s",
-			sieveQuote("*@"+c.Value)), nil
+		// The :domain address-part the interpreter extracts is the bare
+		// domain with no "@" (extractAddressParts in interp.go splits
+		// "user@domain" and keeps only the right side), so the condition
+		// value is compared to it directly rather than as a "*@<value>"
+		// pattern, which could never match (re #382). The key-list adds a
+		// "*.<value>" wildcard so a domain condition also covers every
+		// subdomain of it (e.g. "acme.com" matches mail from
+		// "billing.acme.com"), matching REQ-FLT-01's "From domain" field.
+		return fmt.Sprintf("address :matches :domain \"From\" [%s, %s]",
+			sieveQuote(c.Value), sieveQuote("*."+c.Value)), nil
 	default:
 		return "", fmt.Errorf("unknown condition field %q", c.Field)
 	}

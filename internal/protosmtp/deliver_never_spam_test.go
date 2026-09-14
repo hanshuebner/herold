@@ -131,3 +131,94 @@ func TestNeverSpam_AllowedSenderStaysInInbox_SQLite(t *testing.T) {
 func TestNeverSpam_AllowedSenderStaysInInbox_Postgres(t *testing.T) {
 	testNeverSpamKeepsAllowedSenderOutOfJunk(t, pgStoreFactory)
 }
+
+// testNeverSpamFromDomainKeepsAllowedSenderOutOfJunk is the from-domain
+// counterpart of testNeverSpamKeepsAllowedSenderOutOfJunk (re #382): a
+// never-spam rule keyed on the sender's domain, rather than the full
+// address, keeps a spam-verdict message in Inbox with the transparency
+// record naming the rule; an unmatched domain still goes to Junk.
+func testNeverSpamFromDomainKeepsAllowedSenderOutOfJunk(t *testing.T, storeFactory func(t *testing.T) store.Store) {
+	f := newFixture(t, fixtureOpts{mode: protosmtp.RelayIn, store: storeFactory(t)})
+	f.spamPlug.Handle("spam.classify", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"spam","score":0.92}`), nil
+	})
+
+	ctx0 := context.Background()
+	inserted, err := f.ha.Store.Meta().InsertManagedRule(ctx0, store.ManagedRule{
+		PrincipalID: f.principal,
+		Name:        "Trusted domains",
+		Enabled:     true,
+		Conditions: []store.RuleCondition{
+			{Field: "from-domain", Op: "equals", Value: "accountprotection.microsoft.com"},
+		},
+		Actions: []store.RuleAction{{Kind: "never-spam"}},
+	})
+	if err != nil {
+		t.Fatalf("InsertManagedRule: %v", err)
+	}
+	preamble, err := sieve.CompileRules([]store.ManagedRule{inserted})
+	if err != nil {
+		t.Fatalf("CompileRules: %v", err)
+	}
+	effective := sieve.EffectiveScript(preamble, "")
+	if err := f.ha.Store.Meta().SetSieveScript(ctx0, f.principal, effective); err != nil {
+		t.Fatalf("SetSieveScript: %v", err)
+	}
+
+	// Matched sender domain: expect Inbox, not Junk, with the override
+	// recorded.
+	deliverNeverSpamMessage(t, f, "notify@accountprotection.microsoft.com", "allowed-domain@test")
+	// Unmatched sender domain: the classifier still says spam, and
+	// REQ-FILT-02's default mapping still applies.
+	deliverNeverSpamMessage(t, f, "someone@unrelated.example", "unmatched-domain@test")
+
+	ctx := context.Background()
+	inbox := mailboxByName(t, f, "INBOX")
+	junk := mailboxByName(t, f, "Junk")
+
+	inboxMsgs, err := f.ha.Store.Meta().ListMessages(ctx, inbox.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages(INBOX): %v", err)
+	}
+	if len(inboxMsgs) != 1 {
+		t.Fatalf("messages in INBOX = %d, want 1 (only the allow-listed domain)", len(inboxMsgs))
+	}
+
+	junkMsgs, err := f.ha.Store.Meta().ListMessages(ctx, junk.ID, store.MessageFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMessages(Junk): %v", err)
+	}
+	if len(junkMsgs) != 1 {
+		t.Fatalf("messages in Junk = %d, want 1 (the unmatched domain)", len(junkMsgs))
+	}
+
+	rec, err := f.ha.Store.Meta().GetLLMClassification(ctx, inboxMsgs[0].ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification(inbox message): %v", err)
+	}
+	if rec.SpamVerdict == nil || *rec.SpamVerdict != "spam" {
+		t.Fatalf("SpamVerdict = %v, want \"spam\"", rec.SpamVerdict)
+	}
+	if rec.SpamDeliveryOverride == nil {
+		t.Fatal("SpamDeliveryOverride is nil, want \"filter:Trusted domains\"")
+	}
+	if !strings.Contains(*rec.SpamDeliveryOverride, "Trusted domains") {
+		t.Errorf("SpamDeliveryOverride = %q, want it to name the rule", *rec.SpamDeliveryOverride)
+	}
+
+	junkRec, err := f.ha.Store.Meta().GetLLMClassification(ctx, junkMsgs[0].ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification(junk message): %v", err)
+	}
+	if junkRec.SpamDeliveryOverride != nil {
+		t.Errorf("SpamDeliveryOverride = %q for the unmatched domain, want nil", *junkRec.SpamDeliveryOverride)
+	}
+}
+
+func TestNeverSpam_FromDomain_AllowedSenderStaysInInbox_SQLite(t *testing.T) {
+	testNeverSpamFromDomainKeepsAllowedSenderOutOfJunk(t, func(*testing.T) store.Store { return nil })
+}
+
+func TestNeverSpam_FromDomain_AllowedSenderStaysInInbox_Postgres(t *testing.T) {
+	testNeverSpamFromDomainKeepsAllowedSenderOutOfJunk(t, pgStoreFactory)
+}
