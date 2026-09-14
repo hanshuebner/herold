@@ -171,12 +171,18 @@
    * Send + Archive: send the reply, then archive every inbox-member
    * email in the thread and navigate to the list. Captures inboxEmailIds
    * before send() calls close() and clears compose state (re #34, #35).
+   * send({ archiveOnSend: true }) files the just-created reply into
+   * Archive itself, in the same onSuccessUpdateEmail patch as the send —
+   * bulkArchive only ever touches ids already in the Inbox, so the reply
+   * (Sent-only, never an Inbox member) would otherwise stay unarchived
+   * and the terminal thread state would depend on the mail client never
+   * re-filing that copy back into Inbox (re #376).
    */
   async function sendAndArchive(): Promise<void> {
     if (compose.status === 'sending') return;
     if (!canSend) return;
     const ids = untrack(() => inboxEmailIds);
-    await compose.send();
+    await compose.send({ archiveOnSend: true });
     if (!compose.isOpen) {
       if (ids.length > 0) void mail.bulkArchive(ids);
       navigateBackFromThread();

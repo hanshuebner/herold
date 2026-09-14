@@ -1387,7 +1387,18 @@ class ComposeStore {
     return this.status !== 'idle';
   }
 
-  async send(): Promise<void> {
+  /**
+   * Sends the compose. `opts.archiveOnSend` files the just-created copy
+   * into Archive, alongside Sent, once the send completes (a follow-up
+   * plain Email/set update, not the submission's onSuccessUpdateEmail --
+   * that implicit-update path moves the email to a single target
+   * mailbox rather than adding one, so a second mailboxIds/<id>:true key
+   * there would race the Sent-mailbox key non-deterministically instead
+   * of adding to it). Send + Archive (ThreadInlineComposer.sendAndArchive)
+   * uses this so the reply itself is archived, not only the pre-existing
+   * Inbox members it already knew about (re #376).
+   */
+  async send(opts?: { archiveOnSend?: boolean }): Promise<void> {
     if (this.status === 'sending') return;
     const accountId = this.#accountId();
     if (!accountId) {
@@ -1626,6 +1637,17 @@ class ComposeStore {
         throw new Error('Submission created but no id returned');
       }
 
+      // Resolve the final Email id. For an existing draft we already have
+      // it; for a freshly created draft we read it from the Email/set result
+      // (REQ-MAIL-20: the suite reuses the draft Email id on send).
+      let sentEmailId: string | null = existingDraftId;
+      if (!sentEmailId) {
+        const emailSetResult = invocationArgs<{
+          created?: Record<string, { id: string }>;
+        }>(responses[0]);
+        sentEmailId = emailSetResult.created?.draft1?.id ?? null;
+      }
+
       // Confirm all pending shares to 'active' now that the message has
       // been successfully submitted (REQ-ATT-66). Fire-and-forget: a
       // failure here means the shares stay pending and expire via
@@ -1634,16 +1656,6 @@ class ComposeStore {
       // management view can display the originating message.
       const pendingShareIds = this.shares.map((s) => s.shareId);
       if (pendingShareIds.length > 0) {
-        // Resolve the final Email id. For an existing draft we already have
-        // it; for a freshly created draft we read it from the Email/set result
-        // (REQ-MAIL-20: the suite reuses the draft Email id on send).
-        let sentEmailId: string | null = existingDraftId;
-        if (!sentEmailId) {
-          const emailSetResult = invocationArgs<{
-            created?: Record<string, { id: string }>;
-          }>(responses[0]);
-          sentEmailId = emailSetResult.created?.draft1?.id ?? null;
-        }
         const source: FileShareSourceInfo | undefined = sentEmailId
           ? {
               sourceMessageId: sentEmailId,
@@ -1654,6 +1666,38 @@ class ComposeStore {
         void confirmFileShares(pendingShareIds, source).catch((err) => {
           console.warn('compose: could not confirm shares after send', err);
         });
+      }
+
+      // Send + Archive (re #376): file the just-sent copy into Archive
+      // alongside Sent. A plain Email/set update, not a second
+      // mailboxIds/<id>:true key on the submission's onSuccessUpdateEmail
+      // patch above -- that implicit-update path applies a single target
+      // mailbox move (see applyEmailPatch's "v1 single-mailbox model" in
+      // internal/protojmap/mail/emailsubmission/methods.go), so a second
+      // key there would non-deterministically race the Sent-mailbox key
+      // instead of adding to it. The plain Email/set path used here diffs
+      // the current membership against the patch and adds/removes
+      // incrementally, so Archive lands alongside Sent. Fire-and-forget:
+      // a failure here leaves the reply in Sent only, which is still a
+      // valid (if not fully archived) terminal state, not a broken one.
+      if (opts?.archiveOnSend && sentEmailId) {
+        const archiveMailboxId = this.#archiveMailboxId();
+        if (archiveMailboxId) {
+          void jmap
+            .batch((b) => {
+              b.call(
+                'Email/set',
+                {
+                  accountId,
+                  update: { [sentEmailId]: { [`mailboxIds/${archiveMailboxId}`]: true } },
+                },
+                [Capability.Mail],
+              );
+            })
+            .catch((err) => {
+              console.warn('compose: could not archive the sent reply', err);
+            });
+        }
       }
 
       this.close();
@@ -1740,6 +1784,12 @@ class ComposeStore {
   #sentMailboxId(): string | null {
     if (!this.scopeAccountId) return mail.sent?.id ?? null;
     return subAccounts.find(this.scopeAccountId)?.mailboxes.find((m) => m.role === 'sent')?.id ?? null;
+  }
+
+  /** The archive mailbox a Send + Archive adds to the just-sent copy. */
+  #archiveMailboxId(): string | null {
+    if (!this.scopeAccountId) return mail.archive?.id ?? null;
+    return subAccounts.find(this.scopeAccountId)?.mailboxes.find((m) => m.role === 'archive')?.id ?? null;
   }
 
   #ensureAccountReady(): Promise<void> {
