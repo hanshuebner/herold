@@ -150,11 +150,11 @@ ensure_pg_dsn() {
     if ! command -v psql >/dev/null 2>&1; then
         die "HEROLD_PG_DSN is unset and psql is not installed; the batch gate needs both backends"
     fi
-    if ! psql -U "$admin" -d postgres -tAc "select 1" >/dev/null 2>&1; then
+    if ! psql -X -U "$admin" -d postgres -tAc "select 1" >/dev/null 2>&1; then
         die "HEROLD_PG_DSN is unset and psql -U $admin cannot reach the local server; the batch gate needs both backends"
     fi
-    if [ "$(psql -U "$admin" -d postgres -tAc "select 1 from pg_database where datname='herold_train'")" != "1" ]; then
-        psql -U "$admin" -d postgres -qc "CREATE DATABASE herold_train OWNER herold"
+    if [ "$(psql -X -U "$admin" -d postgres -tAc "select 1 from pg_database where datname='herold_train'")" != "1" ]; then
+        psql -X -U "$admin" -d postgres -qc "CREATE DATABASE herold_train OWNER herold"
     fi
     export HEROLD_PG_DSN="postgres://herold:herold@127.0.0.1:5432/herold_train?sslmode=disable"
     echo "train: postgres leg uses herold_train"
