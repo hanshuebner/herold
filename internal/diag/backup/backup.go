@@ -104,20 +104,23 @@ func (b *Backup) CreateBundle(ctx context.Context, dst string) (Manifest, error)
 	for _, table := range TableNames {
 		// clientlog and system_events are excluded from backups by default
 		// (REQ-OPS-206a, REQ-ADM-304); --include-clientlog / --include-system-events opts in.
-		// sessions, session_elevations, and email_bulk_jobs are excluded
-		// permanently: sessions/elevations expire naturally and restoring
-		// stale rows would confuse TelemetryGate; email_bulk_jobs is
-		// ephemeral operational state a restore cannot meaningfully resume
-		// mid-flight (issue #149/#161). oauth_auth_codes (60-second TTL,
-		// single-use) and oauth_refresh_tokens (rotation-chain state that
-		// must stay contemporaneous with its paired access token) are
-		// excluded for the same reason (issue #199).
+		// sessions, session_elevations, api_key_elevations, and
+		// email_bulk_jobs are excluded permanently: sessions/elevations
+		// expire naturally and restoring stale rows would confuse
+		// TelemetryGate; email_bulk_jobs is ephemeral operational state a
+		// restore cannot meaningfully resume mid-flight (issue #149/#161).
+		// oauth_auth_codes (60-second TTL, single-use) and
+		// oauth_refresh_tokens (rotation-chain state that must stay
+		// contemporaneous with its paired access token) are excluded for
+		// the same reason (issue #199); api_key_elevations (issue #357)
+		// mirrors session_elevations for Bearer-authenticated callers.
 		// In all cases we still write an empty .jsonl so the bundle is
 		// structurally complete and restore / verify do not have to
 		// special-case the absence of the file.
 		if (table == "clientlog" && !b.opts.IncludeClientLog) ||
 			(table == "system_events" && !b.opts.IncludeSystemEvents) ||
 			table == "sessions" || table == "session_elevations" ||
+			table == "api_key_elevations" ||
 			table == "email_bulk_jobs" ||
 			table == "oauth_auth_codes" || table == "oauth_refresh_tokens" {
 			if err := writeEmptyJSONL(dst, table); err != nil {

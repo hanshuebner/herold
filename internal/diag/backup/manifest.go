@@ -867,7 +867,19 @@ const CurrentBackupVersion = 1
 //	(text, nullable): "filter:<rule name or id>" when a never-spam
 //	managed rule kept a spam/suspect-verdict message out of Junk, NULL
 //	otherwise. No new table; LLMClassificationRow gains the one field.
-const CurrentSchemaVersion = 109
+//
+// 110 — 0110_api_key_elevations.sql (REQ-AUTH-74, REQ-AUTH-78, issue #357).
+//
+//	Adds the api_key_elevations table: one row per active TOTP step-up
+//	elevation for a Bearer-authenticated caller (device token or OAuth2
+//	access token), keyed on api_key_id (FK -> api_keys ON DELETE CASCADE)
+//	instead of a cookie session_id. Columns: api_key_id, principal_id,
+//	elevated_at_us, idle_deadline_us, absolute_deadline_us -- the same
+//	shape as session_elevations post-migration-0091. Created by POST
+//	/api/v1/auth/step-up when the caller authenticated via Bearer token,
+//	gating requireSelfServiceElevation for that credential the same way
+//	session_elevations gates it for a cookie session.
+const CurrentSchemaVersion = 110
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -1106,4 +1118,12 @@ var TableNames = []string{
 	// REQ-IMAP-IMP-106/107, migration 0104). FKs to principals(id) ON
 	// DELETE CASCADE (parent and sub); restored after principals.
 	"subaccount_migrations",
+	// Bearer-credential TOTP step-up elevation records (REQ-AUTH-74,
+	// REQ-AUTH-78, issue #357, migration 0110). FK -> api_keys(id) ON
+	// DELETE CASCADE. Excluded from backup by default: like
+	// session_elevations, elevation records expire after the idle or
+	// absolute TTL and restoring stale rows into a fresh system would
+	// have no effect (the parent api_keys row's own state governs
+	// whether the credential is still valid).
+	"api_key_elevations",
 }

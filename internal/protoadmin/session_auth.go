@@ -17,10 +17,15 @@ package protoadmin
 //
 // POST /api/v1/auth/step-up  -- accepts {totp_code}; verifies TOTP and
 //
-//	creates (or refreshes) the server-side elevation record (REQ-AUTH-74).
-//	Returns {elevation_expires_at}. Admin endpoints require a valid
-//	elevation, and an elevation created at login satisfies this exactly
-//	like one created here.
+//	creates (or refreshes) the server-side elevation record (REQ-AUTH-74,
+//	REQ-AUTH-78, issue #357). Returns {elevation_expires_at}. Admin and
+//	self-service endpoints require a valid elevation, and an elevation
+//	created at login satisfies this exactly like one created here. Accepts
+//	either a cookie session (the elevation record lives in
+//	session_elevations, keyed on session id) or a Bearer device token /
+//	OAuth2 access token (the elevation record lives in
+//	api_key_elevations, keyed on the authenticating api_keys row id), so a
+//	native client's TOTP step-up sheet has a server surface to answer.
 //
 // POST /api/v1/auth/logout   -- clears the cookies, returns 204.
 // GET  /api/v1/auth/whoami   -- returns 200 + {principal_id, email, scopes,
@@ -523,33 +528,54 @@ type stepUpResponse struct {
 }
 
 // handleStepUp handles POST /api/v1/auth/step-up (REQ-AUTH-74, REQ-AUTH-78,
-// issue #79, re #330).
+// REQ-AUTH-79, issue #79, re #330, re #357).
 //
-// The caller must be authenticated (requireAuth) and CSRF-checked. It
-// supplies a TOTP code; on success a server-side elevation record is created
-// (or refreshed) for the session, expiring at now + Options.ElevationTTL.
-// The elevation record carries no "admin" vs "self-service" kind: any
-// TOTP-enrolled principal, admin or not, can create one here. Admin-gated
-// endpoints authorise on TWO independent checks -- PrincipalFlagAdmin AND
-// an active elevation record (requireElevation, auth.go) -- so a non-admin's
-// elevation record satisfies requireSelfServiceElevation (REQ-AUTH-78) for
-// their own account but never unlocks an admin route.
+// The caller must be authenticated (requireAuth) and CSRF-checked (cookie
+// callers only -- Bearer callers carry no ambient credential and are CSRF-
+// exempt, matching every other endpoint). It supplies a TOTP code; on
+// success a server-side elevation record is created (or refreshed) for the
+// authenticating credential, expiring at now + Options.ElevationTTL.
+//
+// Two caller modes, distinguished by whether requireAuth resolved a
+// Bearer-authenticating api_keys row (authAPIKeyIDFrom):
+//
+//   - Cookie session: the elevation record lives in session_elevations,
+//     keyed on the session id.
+//   - Bearer caller (device token or OAuth2 access token, issue #357): the
+//     elevation record lives in api_key_elevations, keyed on the
+//     authenticating api_keys row id, so a native client's TOTP step-up
+//     sheet (REQ-AND-AUTH-20) has a server surface to answer.
+//
+// Either way the elevation record carries no "admin" vs "self-service"
+// kind: any TOTP-enrolled principal, admin or not, can create one here.
+// Admin-gated endpoints for a cookie caller authorise on TWO independent
+// checks -- PrincipalFlagAdmin AND an active elevation record
+// (requireElevation, auth.go) -- so a non-admin's elevation record
+// satisfies requireSelfServiceElevation (REQ-AUTH-78) for their own account
+// but never unlocks an admin route. A Bearer caller's admin routes are
+// gated on ScopeAdmin in the credential instead (requireElevation,
+// unaffected by this endpoint).
 //
 // Error responses:
 //   - 400  principal has no TOTP enrolled:  {enroll_required: true}
 //   - 401  TOTP code invalid or rate-limited: RFC 7807 "unauthorized"
 func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
-	sessID := s.sessionIDFromRequest(r)
-	if sessID == "" {
-		// Bearer-key callers have no persistent session and therefore no
-		// elevation record. Step-up is only meaningful for cookie sessions.
-		writeProblem(w, r, http.StatusBadRequest,
-			"bad_request", "step-up requires a cookie session", "")
+	p, ok := principalFrom(r.Context())
+	if !ok {
+		writeProblem(w, r, http.StatusUnauthorized,
+			"unauthorized", "authentication required", "")
 		return
 	}
 
-	p, ok := principalFrom(r.Context())
-	if !ok {
+	// requireAuth has already authenticated the request via exactly one of
+	// these two paths; authAPIKeyIDFrom is set only for Bearer auth (issue
+	// #357).
+	apiKeyID, isBearer := authAPIKeyIDFrom(r.Context())
+	sessID := s.sessionIDFromRequest(r)
+	if !isBearer && sessID == "" {
+		// Defensive: requireAuth succeeded via neither known path (e.g. no
+		// session signing key configured in a test fixture). Treat as
+		// unauthenticated.
 		writeProblem(w, r, http.StatusUnauthorized,
 			"unauthorized", "authentication required", "")
 		return
@@ -577,15 +603,21 @@ func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate-limit step-up attempts per session to prevent brute-force
+	// Rate-limit step-up attempts per credential to prevent brute-force
 	// against the 6-digit TOTP window (directory also rate-limits per
-	// principal via its own bucket).
+	// principal via its own bucket). The per-credential bucket key is the
+	// session id for a cookie caller or the authenticating api_keys row id
+	// for a Bearer caller (issue #357), so the two caller kinds cannot
+	// share a rate-limit bucket.
 	ipKey := "stepup-ip:" + remoteHost(r.RemoteAddr)
-	sessKey := "stepup-sess:" + sessID
+	credKey := "stepup-sess:" + sessID
+	if isBearer {
+		credKey = "stepup-key:" + strconv.FormatUint(uint64(apiKeyID), 10)
+	}
 	if !s.checkRateLimit(w, r, ipKey) {
 		return
 	}
-	if !s.checkRateLimit(w, r, sessKey) {
+	if !s.checkRateLimit(w, r, credKey) {
 		return
 	}
 
@@ -616,23 +648,45 @@ func (s *Server) handleStepUp(w http.ResponseWriter, r *http.Request) {
 	now := s.clk.Now()
 	idleTTL, absoluteTTL := s.elevationTTLs()
 	expiresAt := now.Add(idleTTL)
-	elev := store.ElevationRow{
-		SessionID:        sessID,
-		PrincipalID:      p.ID,
-		ElevatedAt:       now,
-		IdleDeadline:     expiresAt,
-		AbsoluteDeadline: now.Add(absoluteTTL),
-	}
-	if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
-		s.loggerFrom(ctx).Error("protoadmin.auth.stepup_upsert_failed",
-			"activity", observe.ActivityInternal,
-			"err", err, "principal_id", uint64(p.ID))
-		writeProblem(w, r, http.StatusInternalServerError,
-			"internal_error", "failed to create elevation record", "")
-		return
+	absoluteDeadline := now.Add(absoluteTTL)
+	var effectiveDeadline time.Time
+	if isBearer {
+		elev := store.APIKeyElevationRow{
+			APIKeyID:         apiKeyID,
+			PrincipalID:      p.ID,
+			ElevatedAt:       now,
+			IdleDeadline:     expiresAt,
+			AbsoluteDeadline: absoluteDeadline,
+		}
+		if err := s.store.Meta().UpsertAPIKeyElevation(ctx, elev); err != nil {
+			s.loggerFrom(ctx).Error("protoadmin.auth.stepup_upsert_failed",
+				"activity", observe.ActivityInternal,
+				"err", err, "principal_id", uint64(p.ID))
+			writeProblem(w, r, http.StatusInternalServerError,
+				"internal_error", "failed to create elevation record", "")
+			return
+		}
+		effectiveDeadline = effectiveAPIKeyElevationDeadline(elev)
+	} else {
+		elev := store.ElevationRow{
+			SessionID:        sessID,
+			PrincipalID:      p.ID,
+			ElevatedAt:       now,
+			IdleDeadline:     expiresAt,
+			AbsoluteDeadline: absoluteDeadline,
+		}
+		if err := s.store.Meta().UpsertElevation(ctx, elev); err != nil {
+			s.loggerFrom(ctx).Error("protoadmin.auth.stepup_upsert_failed",
+				"activity", observe.ActivityInternal,
+				"err", err, "principal_id", uint64(p.ID))
+			writeProblem(w, r, http.StatusInternalServerError,
+				"internal_error", "failed to create elevation record", "")
+			return
+		}
+		effectiveDeadline = effectiveElevationDeadline(elev)
 	}
 
-	effective := effectiveElevationDeadline(elev).UTC().Format(time.RFC3339)
+	effective := effectiveDeadline.UTC().Format(time.RFC3339)
 	s.loggerFrom(ctx).InfoContext(ctx, "protoadmin.auth.stepup_success",
 		"activity", observe.ActivityAudit,
 		"principal_id", uint64(p.ID),
@@ -676,6 +730,15 @@ func (s *Server) activeElevationExpiry(r *http.Request) *string {
 // effectiveElevationDeadline returns the earlier of e's idle and absolute
 // deadlines -- the moment the elevation actually lapses next (REQ-AUTH-75).
 func effectiveElevationDeadline(e store.ElevationRow) time.Time {
+	if e.AbsoluteDeadline.Before(e.IdleDeadline) {
+		return e.AbsoluteDeadline
+	}
+	return e.IdleDeadline
+}
+
+// effectiveAPIKeyElevationDeadline is effectiveElevationDeadline's
+// Bearer-credential counterpart (REQ-AUTH-74, REQ-AUTH-78, issue #357).
+func effectiveAPIKeyElevationDeadline(e store.APIKeyElevationRow) time.Time {
 	if e.AbsoluteDeadline.Before(e.IdleDeadline) {
 		return e.AbsoluteDeadline
 	}

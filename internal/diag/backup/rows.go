@@ -896,6 +896,21 @@ type SessionElevationRow struct {
 	AbsoluteDeadline int64  `json:"absolute_deadline_us"`
 }
 
+// APIKeyElevationRow mirrors one row of the api_key_elevations table
+// introduced in migration 0110 (REQ-AUTH-74, REQ-AUTH-78, issue #357).
+// Excluded from backup by default for the same reason as
+// SessionElevationRow: elevation records expire after the idle or
+// absolute TTL and restoring stale rows into a fresh system has no
+// effect. The row is listed in TableNames so VerifyBundle has a typed
+// receiver; the backup writes an empty JSONL.
+type APIKeyElevationRow struct {
+	APIKeyID         int64 `json:"api_key_id"`
+	PrincipalID      int64 `json:"principal_id"`
+	ElevatedAt       int64 `json:"elevated_at_us"`
+	IdleDeadline     int64 `json:"idle_deadline_us"`
+	AbsoluteDeadline int64 `json:"absolute_deadline_us"`
+}
+
 // OAuthAuthCodeRow mirrors one row of the oauth_auth_codes table
 // introduced in migration 0082 (issue #199, REQ-AND-AUTH-01/02).
 // Excluded from backup by default: authorization codes have a 60-second

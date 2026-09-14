@@ -67,8 +67,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /oauth2/authorize/federated", s.handleOAuthAuthorizeFederatedBegin)
 	mux.HandleFunc("GET /oauth2/authorize/federated/callback", s.handleOAuthAuthorizeFederatedCallback)
 	// Step-up: TOTP verification that creates a server-side elevation record
-	// gating admin endpoints (REQ-AUTH-74, issue #79). Requires a cookie session
-	// and CSRF check (auth1 enforces the CSRF gate on POST).
+	// gating admin and self-service endpoints (REQ-AUTH-74, REQ-AUTH-78,
+	// issue #79, issue #357). Accepts a cookie session (CSRF-checked, auth1
+	// enforces the CSRF gate on POST) or a Bearer device token / OAuth2
+	// access token (CSRF-exempt, like every Bearer-authenticated route);
+	// the elevation record is keyed on whichever credential authenticated
+	// the request.
 	mux.HandleFunc("POST /api/v1/auth/step-up", auth1(s.handleStepUp))
 	mux.HandleFunc("POST /api/v1/auth/logout", auth1(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/whoami", auth1(s.handleWhoAmI))

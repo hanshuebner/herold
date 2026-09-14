@@ -2946,6 +2946,47 @@ type Metadata interface {
 	// expiry so this is a cosmetic cleanup only.
 	EvictExpiredElevations(ctx context.Context, nowMicros int64) (deleted int, err error)
 
+	// -- REQ-AUTH-74 / REQ-AUTH-78 / issue #357: Bearer step-up elevation
+	//    rows, mirroring the session_elevations methods above but keyed on
+	//    the authenticating api_keys row id instead of a cookie session id
+	//    so a device token or OAuth2 access token can answer a TOTP
+	//    step-up the same way a cookie session does. ------------------
+
+	// UpsertAPIKeyElevation inserts or replaces the elevation row for
+	// e.APIKeyID. A second step-up for the same credential resets the
+	// window so the caller always gets a fresh idle_deadline_us and
+	// absolute_deadline_us after each grant.
+	UpsertAPIKeyElevation(ctx context.Context, e APIKeyElevationRow) error
+
+	// GetActiveAPIKeyElevation returns the elevation row for apiKeyID when
+	// it exists and nowMicros is before BOTH idle_deadline_us and
+	// absolute_deadline_us (REQ-AUTH-74). Returns ErrNotFound when no
+	// active elevation exists.
+	GetActiveAPIKeyElevation(ctx context.Context, apiKeyID APIKeyID, nowMicros int64) (APIKeyElevationRow, error)
+
+	// ExtendAPIKeyElevation slides idle_deadline_us for apiKeyID forward to
+	// nowMicros + idleTTLMicros, clamped to never exceed the row's
+	// absolute_deadline_us (REQ-AUTH-74). Only a row that is currently
+	// active per GetActiveAPIKeyElevation's condition is updated. Returns
+	// store.ErrNotFound when no active elevation row exists for apiKeyID;
+	// callers that already confirmed activity via GetActiveAPIKeyElevation
+	// earlier in the same request treat this as a benign race and log at
+	// warn rather than reject the in-flight request.
+	ExtendAPIKeyElevation(ctx context.Context, apiKeyID APIKeyID, nowMicros int64, idleTTLMicros int64) error
+
+	// DeleteAPIKeyElevation removes the elevation row for apiKeyID.
+	// Returns ErrNotFound when the row is absent. Credential-cascade (ON
+	// DELETE CASCADE) also handles it automatically when the api_keys row
+	// is deleted; this method is for explicit removal.
+	DeleteAPIKeyElevation(ctx context.Context, apiKeyID APIKeyID) error
+
+	// EvictExpiredAPIKeyElevations deletes all elevation rows whose
+	// idle_deadline_us or absolute_deadline_us is <= nowMicros. Returns
+	// the number of rows deleted. Intended for a periodic background
+	// sweeper; the on-request gate in GetActiveAPIKeyElevation already
+	// enforces expiry so this is a cosmetic cleanup only.
+	EvictExpiredAPIKeyElevations(ctx context.Context, nowMicros int64) (deleted int, err error)
+
 	// -- Attachment shares (REQ-SHARE-01..23) --------------------------
 
 	// CreateFileShare creates a file_shares row in state pending. The

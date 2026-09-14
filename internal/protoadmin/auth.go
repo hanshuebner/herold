@@ -507,31 +507,53 @@ func requireSuperAdmin(w http.ResponseWriter, r *http.Request, caller store.Prin
 // requireSelfServiceElevation gates a sensitive self-service operation behind
 // TOTP step-up when the caller has TOTP enrolled (REQ-AUTH-78, issue #79).
 //
-// Bearer API-key callers (Authorization header present) are exempt entirely:
-// API keys are long-lived credentials managed outside the browser TOTP flow,
-// and TOTP step-up is a session-interactive mechanism.
+// Bearer API-key callers (device token or OAuth2 access token) are gated
+// exactly like cookie sessions (issue #357): the credential that
+// authenticated the request (authAPIKeyIDFrom, set by requireAuth) must
+// carry a live row in api_key_elevations, created by POST
+// /api/v1/auth/step-up. This lets a native client's TOTP step-up sheet
+// (REQ-AND-AUTH-20) answer the same step_up_required response a cookie
+// session gets, for the same elevation window.
 //
-// When TOTP is not enrolled the gate returns true unconditionally. There is
-// no enroll_required path on the self-service gate; that requirement is
-// admin-only.
+// When TOTP is not enrolled the gate returns true unconditionally,
+// regardless of credential kind. There is no enroll_required path on the
+// self-service gate; that requirement is admin-only.
 //
-// When TOTP is enrolled and no active elevation record exists for the current
-// session, the method writes 403 with {"step_up_required":true,
+// When TOTP is enrolled and no active elevation record exists for the
+// current credential, the method writes 403 with {"step_up_required":true,
 // "elevation_scope":"self-service"} and returns false. The handler must
 // return immediately in that case.
 //
-// A single elevation record (created by POST /api/v1/auth/step-up) satisfies
-// both the admin gate (requireElevation) and this self-service gate.
+// A single elevation record (created by POST /api/v1/auth/step-up, keyed on
+// session id for a cookie caller or on the authenticating api_keys row id
+// for a Bearer caller) satisfies both the admin gate (requireElevation) and
+// this self-service gate.
 func (s *Server) requireSelfServiceElevation(w http.ResponseWriter, r *http.Request, caller store.Principal) bool {
-	// Bearer callers have no persistent session and are exempt.
-	if r.Header.Get("Authorization") != "" {
-		return true
-	}
-	// If TOTP is not enrolled, no elevation is needed for self-service ops.
+	// If TOTP is not enrolled, no elevation is needed for self-service ops,
+	// for either credential kind (REQ-AUTH-78).
 	if !caller.Flags.Has(store.PrincipalFlagTOTPEnabled) {
 		return true
 	}
-	// TOTP is enrolled: require a live elevation record for the session.
+	if apiKeyID, ok := authAPIKeyIDFrom(r.Context()); ok {
+		// Bearer caller (device token or OAuth2 access token, issue #357):
+		// require a live api_key_elevations row for the authenticating
+		// credential.
+		_, err := s.store.Meta().GetActiveAPIKeyElevation(r.Context(), apiKeyID, s.clk.Now().UnixMicro())
+		if err != nil {
+			s.loggerFrom(r.Context()).WarnContext(r.Context(), "protoadmin.self_service_elevation_required",
+				"activity", observe.ActivityAudit,
+				"actor_id", caller.ID,
+				"method", r.Method,
+				"path", r.URL.Path)
+			writeStepUpRequired(w, r, "self-service")
+			return false
+		}
+		// Best-effort -- a failure here must not fail the in-flight request.
+		s.extendAPIKeyElevation(r.Context(), apiKeyID)
+		return true
+	}
+	// Cookie-authenticated caller: require a live elevation record for the
+	// session.
 	sessID := s.sessionIDFromRequest(r)
 	if sessID == "" {
 		// No session ID after requireAuth is a defensive edge case (e.g.
@@ -547,17 +569,7 @@ func (s *Server) requireSelfServiceElevation(w http.ResponseWriter, r *http.Requ
 			"actor_id", caller.ID,
 			"method", r.Method,
 			"path", r.URL.Path)
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"type":             "about:blank",
-			"title":            "Step-up elevation required",
-			"status":           http.StatusForbidden,
-			"detail":           "This operation requires a current TOTP step-up. POST /api/v1/auth/step-up with your TOTP code.",
-			"step_up_required": true,
-			"elevation_scope":  "self-service",
-			"step_up_url":      "/api/v1/auth/step-up",
-		})
+		writeStepUpRequired(w, r, "self-service")
 		return false
 	}
 	// The request passed the active-elevation check: slide the idle
@@ -566,6 +578,23 @@ func (s *Server) requireSelfServiceElevation(w http.ResponseWriter, r *http.Requ
 	// Best-effort -- a failure here must not fail the in-flight request.
 	s.extendElevation(r.Context(), sessID)
 	return true
+}
+
+// writeStepUpRequired writes the 403 step_up_required RFC 7807 body shared
+// by requireSelfServiceElevation and requireElevation's cookie-session
+// path. scope is "self-service" or "admin" (REQ-AUTH-74, REQ-AUTH-78).
+func writeStepUpRequired(w http.ResponseWriter, r *http.Request, scope string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type":             "about:blank",
+		"title":            "Step-up elevation required",
+		"status":           http.StatusForbidden,
+		"detail":           "This operation requires a current TOTP step-up. POST /api/v1/auth/step-up with your TOTP code.",
+		"step_up_required": true,
+		"elevation_scope":  scope,
+		"step_up_url":      "/api/v1/auth/step-up",
+	})
 }
 
 // requireElevation is the admin-route guard for the step-up elevation
@@ -696,6 +725,29 @@ func (s *Server) extendElevation(ctx context.Context, sessID string) {
 		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.elevation_extend_failed",
 			"activity", observe.ActivityInternal,
 			"session_id", sessID,
+			"err", err)
+	}
+}
+
+// extendAPIKeyElevation slides apiKeyID's elevation idle deadline forward to
+// now+ElevationIdleTTL, clamped to the elevation's absolute deadline, the
+// Bearer-credential counterpart of extendElevation (REQ-AUTH-74,
+// REQ-AUTH-78, issue #357). Called only after a caller has already passed
+// GetActiveAPIKeyElevation in the same request (requireSelfServiceElevation),
+// so a store.ErrNotFound here means the elevation was concurrently revoked
+// or reached its absolute cap between the read and this write -- a benign
+// race, not a bug. The write is best-effort: failures are logged at warn
+// and never fail the in-flight request.
+func (s *Server) extendAPIKeyElevation(ctx context.Context, apiKeyID store.APIKeyID) {
+	idleTTL, _ := s.elevationTTLs()
+	now := s.clk.Now()
+	if err := s.store.Meta().ExtendAPIKeyElevation(ctx, apiKeyID, now.UnixMicro(), idleTTL.Microseconds()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return
+		}
+		s.loggerFrom(ctx).WarnContext(ctx, "protoadmin.apikey_elevation_extend_failed",
+			"activity", observe.ActivityInternal,
+			"api_key_id", uint64(apiKeyID),
 			"err", err)
 	}
 }

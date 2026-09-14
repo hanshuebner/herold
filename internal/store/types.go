@@ -1443,6 +1443,40 @@ type ElevationRow struct {
 	AbsoluteDeadline time.Time
 }
 
+// APIKeyElevationRow is one row in the api_key_elevations table. It records
+// a successful TOTP step-up (REQ-AUTH-74, REQ-AUTH-78, issue #357) for a
+// Bearer-authenticated caller -- a device token or an OAuth2 access token --
+// and grants access to self-service-elevation-scoped endpoints while it is
+// active, mirroring ElevationRow's cookie-session model exactly.
+//
+// The row is keyed on api_key_id (one elevation per credential at a time).
+// A subsequent step-up overwrites the row via ON CONFLICT so the window
+// always starts fresh on re-elevation. Deleting the parent api_keys row
+// (credential revocation) cascades here automatically via the FK -- a
+// revoked device token or OAuth2 grant cannot leave a stray elevation
+// behind.
+//
+// The elevation is bounded by the same two independent deadlines as
+// ElevationRow: IdleDeadline slides forward on every request that passes
+// the active-elevation check; AbsoluteDeadline is fixed at grant time. The
+// elevation is active while now is before BOTH deadlines.
+type APIKeyElevationRow struct {
+	// APIKeyID is the api_keys row id that authenticated the
+	// Bearer-authenticated caller (device token or OAuth2 access token).
+	APIKeyID APIKeyID
+	// PrincipalID is the elevating principal (denormalised from the
+	// api_keys row for middleware convenience).
+	PrincipalID PrincipalID
+	// ElevatedAt is the instant the step-up completed.
+	ElevatedAt time.Time
+	// IdleDeadline is the instant the elevation lapses absent further
+	// elevated activity.
+	IdleDeadline time.Time
+	// AbsoluteDeadline is the instant the elevation unconditionally lapses,
+	// set once at grant time and never extended.
+	AbsoluteDeadline time.Time
+}
+
 // AuditLogFilter narrows a ListAuditLog read. Unset (zero) fields are
 // treated as "no constraint". Limit is capped at 1000 server-side
 // regardless of caller input.
