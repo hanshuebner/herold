@@ -201,6 +201,12 @@ type jmapSpamDetail struct {
 	Model string `json:"model,omitempty"`
 	// ClassifiedAt is the ISO 8601 instant classification ran.
 	ClassifiedAt string `json:"classifiedAt,omitempty"`
+	// DeliveryOverride is set when a user filter's "never classify as
+	// spam" action kept this message out of Junk despite Verdict being
+	// "spam" or "suspect" (REQ-FILT-02a / REQ-FLT-16, issue #382):
+	// "filter:<rule name or id>", naming the ManagedRule responsible.
+	// Empty when no override applied.
+	DeliveryOverride string `json:"deliveryOverride,omitempty"`
 }
 
 // jmapCategoryDetail is the categorisation sub-record in an llmInspect
@@ -303,12 +309,13 @@ func (i *llmInspectHandler) Execute(ctx context.Context, args json.RawMessage) (
 		entry := jmapLLMInspectEntry{ID: jid}
 		if rec.SpamVerdict != nil {
 			entry.Spam = &jmapSpamDetail{
-				Verdict:       derefStr(rec.SpamVerdict),
-				Confidence:    derefF64(rec.SpamConfidence),
-				Reason:        derefStr(rec.SpamReason),
-				PromptApplied: derefStr(rec.SpamPromptApplied),
-				Model:         derefStr(rec.SpamModel),
-				ClassifiedAt:  formatTime(rec.SpamClassifiedAt),
+				Verdict:          derefStr(rec.SpamVerdict),
+				Confidence:       derefF64(rec.SpamConfidence),
+				Reason:           derefStr(rec.SpamReason),
+				PromptApplied:    derefStr(rec.SpamPromptApplied),
+				Model:            derefStr(rec.SpamModel),
+				ClassifiedAt:     formatTime(rec.SpamClassifiedAt),
+				DeliveryOverride: derefStr(rec.SpamDeliveryOverride),
 			}
 		}
 		if rec.CategoryPromptApplied != nil {

@@ -116,7 +116,10 @@ func newSpamShowCmd() *cobra.Command {
 		Short: "print the recorded spam-classification outcome for one message",
 		Long: `Looks up the numeric store message id's llm_classifications row
 (the same id shown by ` + "`message-research`" + ` and stored-message listings)
-and prints verdict, confidence, reason, model, and when it ran.
+and prints verdict, confidence, reason, model, when it ran, and --
+when a never-spam managed rule kept a spam/suspect verdict out of
+Junk (REQ-FILT-02a / REQ-FLT-16, issue #382) -- delivery_override
+naming the rule responsible.
 
 reason is the plugin's own one-sentence explanation for a genuine
 ham/spam/suspect verdict, or a "<class>: <detail>" string when verdict is
@@ -177,6 +180,9 @@ func llmClassificationRecordToMap(rec store.LLMClassificationRecord) map[string]
 	}
 	if rec.SpamClassifiedAt != nil {
 		out["spam_classified_at"] = rec.SpamClassifiedAt.UTC().Format(time.RFC3339)
+	}
+	if rec.SpamDeliveryOverride != nil {
+		out["delivery_override"] = *rec.SpamDeliveryOverride
 	}
 	if rec.CategoryAssigned != nil {
 		out["category_assigned"] = *rec.CategoryAssigned
