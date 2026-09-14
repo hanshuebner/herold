@@ -522,6 +522,64 @@ func TestClassify_AuthSummaryReachesLLM(t *testing.T) {
 	}
 }
 
+// TestClassify_OwnAddressesReachLLM is the #386 acceptance test that
+// own_addresses (the principal's own addresses -- canonical email,
+// aliases, verified Identity primaries/aliases, IMAP-import account
+// addresses) survives trimPayload and lands in the LLM's user-turn JSON
+// verbatim, and that the built-in system prompt instructs the model
+// never to read a listed address as a "scraped" / "not one the owner
+// uses" spam signal.
+func TestClassify_OwnAddressesReachLLM(t *testing.T) {
+	var captured string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(body)
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.04,"reason":"ok"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("your weekly digest")
+	payload["own_addresses"] = []string{"bob@example.com", "bob.secondary@example.com"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.classify(ctx, payload); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	if !strings.Contains(body, `\"own_addresses\"`) {
+		t.Fatalf("LLM body missing own_addresses key; got %s", body)
+	}
+	if !strings.Contains(body, "bob.secondary@example.com") {
+		t.Fatalf("LLM body missing own_addresses entry; got %s", body)
+	}
+	// The system prompt is the first message in the chat-completions
+	// request; assert it instructs the model not to read a listed
+	// address as a scraped / not-the-owner's signal.
+	if !strings.Contains(body, "scraped") {
+		t.Fatalf("system prompt does not instruct treating own_addresses as owned; got %s", body)
+	}
+}
+
 func TestClassify_HamVerdictBelowThreshold(t *testing.T) {
 	llm := newFakeLLM(t)
 	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {

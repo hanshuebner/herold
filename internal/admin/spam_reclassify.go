@@ -112,6 +112,11 @@ func reclassifySpam(
 		candidates = candidates[:opts.Limit]
 	}
 
+	// re #386: own_addresses is the same for every candidate message in
+	// this run (they all belong to pid); resolve it once and reuse
+	// across the loop instead of a store round-trip per message.
+	ownAddrCache := make(map[store.PrincipalID][]string)
+
 	existing, err := st.Meta().BatchGetLLMClassifications(ctx, candidates)
 	if err != nil {
 		return sum, fmt.Errorf("batch get llm classifications for principal %d: %w", pid, err)
@@ -139,13 +144,19 @@ func reclassifySpam(
 		}
 		auth := deliveryAuthResults(msg, parsed)
 
-		cl, err := cls.Classify(ctx, parsed, auth, pluginName, spam.ClassifyContext{})
+		ownAddresses, oerr := spam.ResolveOwnAddresses(ctx, st.Meta(), pid, ownAddrCache)
+		if oerr != nil {
+			sum.Errors++
+			continue
+		}
+
+		cl, err := cls.Classify(ctx, parsed, auth, pluginName, spam.ClassifyContext{}, ownAddresses)
 		if err != nil {
 			sum.Errors++
 			continue
 		}
 
-		if err := recordReclassifyVerdict(ctx, st, clk, pid, mid, pluginName, parsed, auth, cl, opts.DryRun); err != nil {
+		if err := recordReclassifyVerdict(ctx, st, clk, pid, mid, pluginName, parsed, auth, ownAddresses, cl, opts.DryRun); err != nil {
 			sum.Errors++
 			continue
 		}
@@ -269,6 +280,7 @@ func recordReclassifyVerdict(
 	pluginName string,
 	parsed mailparse.Message,
 	auth *mailauth.AuthResults,
+	ownAddresses []string,
 	cl spam.Classification,
 	dryRun bool,
 ) error {
@@ -288,7 +300,9 @@ func recordReclassifyVerdict(
 	rec.SpamModel = &engine
 	classifiedAt := clk.Now()
 	rec.SpamClassifiedAt = &classifiedAt
-	if raw, err := spam.BuildRequest(parsed, auth).Canonical(); err == nil {
+	req := spam.BuildRequest(parsed, auth)
+	req.OwnAddresses = ownAddresses
+	if raw, err := req.Canonical(); err == nil {
 		s := string(raw)
 		rec.SpamPromptApplied = &s
 	}

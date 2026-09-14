@@ -257,6 +257,15 @@ type SpamClassifyParams struct {
 	// (re #383). Empty when DMARC is "none".
 	AuthSummary string `json:"auth_summary,omitempty"`
 	BodyExcerpt string `json:"body_excerpt"`
+	// OwnAddresses lists the lower-cased addresses that belong to the
+	// principal the message was classified for -- the canonical email,
+	// aliases, verified Identity primaries and aliases, and configured
+	// IMAP-import account addresses (re #386). A To/Cc address appearing
+	// here is one the principal actually receives at, never a scraped
+	// address or one "not one the owner uses": that heuristic must not
+	// fire against an address listed here. Empty when the message had
+	// no local recipient to resolve one for.
+	OwnAddresses []string `json:"own_addresses,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this call, in
 	// milliseconds, as of when the server built the request (issue #331).
 	// Run's per-request context wiring (extractTimeout) already reads

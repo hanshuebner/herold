@@ -178,7 +178,7 @@ func (a *testSpamAdapter) Classify(ctx context.Context, principalID store.Princi
 		// "<class>: <detail>" string spam.Classifier.Classify already
 		// set) so RecordVerdict below can persist it, mirroring
 		// internal/admin/imap_import_spam.go's real adapter.
-		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
+		cls, err = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx, nil)
 		if err != nil {
 			cls = spam.Classification{Verdict: spam.Unclassified, Score: -1, Reason: cls.Reason}
 		}

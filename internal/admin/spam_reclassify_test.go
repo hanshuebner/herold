@@ -626,3 +626,148 @@ func testSpamReclassifyIgnoresForeignAuthResults(t *testing.T, newStore func() s
 		})
 	}
 }
+
+// TestSpamReclassify_OwnAddresses is the #386 acceptance test: a
+// principal with an alias and a configured IMAP-import account
+// reclassified through `spam reclassify` must record a spam.Request
+// whose own_addresses lists the canonical email, the alias, and the
+// import account's address (resolved via its owning Identity).
+func TestSpamReclassify_OwnAddresses_SQLite(t *testing.T) {
+	testSpamReclassifyOwnAddresses(t, func() store.Store { return sqlitetest.Open(t, clock.NewReal()) })
+}
+
+func TestSpamReclassify_OwnAddresses_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	testSpamReclassifyOwnAddresses(t, func() store.Store {
+		st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clock.NewReal())
+		if err != nil {
+			t.Skipf("storepg.Open: %v", err)
+		}
+		if tr, ok := st.(interface {
+			TruncateAll(ctx context.Context) error
+		}); ok {
+			if err := tr.TruncateAll(context.Background()); err != nil {
+				_ = st.Close()
+				t.Fatalf("TruncateAll: %v", err)
+			}
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return st
+	})
+}
+
+func testSpamReclassifyOwnAddresses(t *testing.T, newStore func() store.Store) {
+	if testing.Short() {
+		t.Skip("builds and runs a real plugin child process")
+	}
+	ctx := context.Background()
+	clk := clock.NewReal()
+	st := newStore()
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "own-addr@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	if _, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk}); err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	if _, err := st.Meta().InsertAlias(ctx, store.Alias{
+		LocalPart:       "own-addr-alias",
+		Domain:          "example.test",
+		TargetPrincipal: p.ID,
+	}); err != nil {
+		t.Fatalf("InsertAlias: %v", err)
+	}
+
+	const importIdentityID = "own-addr-import-identity"
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          importIdentityID,
+		PrincipalID: p.ID,
+		Email:       "imported@external.test",
+		MayDelete:   true,
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if _, err := st.Meta().CreateIMAPImportAccount(ctx, store.IMAPImportAccountCreate{
+		IdentityID:   importIdentityID,
+		PrincipalID:  p.ID,
+		AccountName:  "Imported Account",
+		Host:         "imap.external.test",
+		Port:         993,
+		TLSMode:      store.IMAPImportTLSModeImplicit,
+		Username:     "imported",
+		AuthMethod:   store.IMAPImportAuthMethodPassword,
+		CredentialCT: []byte("v1:test"),
+		State:        store.IMAPImportAccountStateEnabled,
+	}); err != nil {
+		t.Fatalf("CreateIMAPImportAccount: %v", err)
+	}
+
+	const subject = "own-addr-message"
+	body := "From: sender@example.test\r\nTo: own-addr@example.test\r\nSubject: " + subject + "\r\n\r\nbody\r\n"
+	blob, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         blob.Size,
+		Blob:         blob,
+		Envelope:     store.Envelope{Subject: subject},
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := findSpamVerdictMessageBySubject(t, st, []store.PrincipalID{p.ID}, subject)
+
+	cls, plugName, shutdown := startReclassifyPlugin(t, clk, "ham")
+	defer shutdown()
+
+	sum, err := reclassifySpam(ctx, st, clk, cls, plugName, p.ID, spamReclassifyOptions{UnclassifiedOnly: true})
+	if err != nil {
+		t.Fatalf("reclassifySpam: %v", err)
+	}
+	want := SpamReclassifySummary{Selected: 1, Classified: 1, Ham: 1}
+	if sum != want {
+		t.Fatalf("summary = %+v, want %+v", sum, want)
+	}
+
+	rec, err := st.Meta().GetLLMClassification(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	var req spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &req); err != nil {
+		t.Fatalf("unmarshal SpamPromptApplied: %v", err)
+	}
+	wantOwn := map[string]bool{
+		"own-addr@example.test":       false,
+		"own-addr-alias@example.test": false,
+		"imported@external.test":      false,
+	}
+	for _, addr := range req.OwnAddresses {
+		if _, ok := wantOwn[addr]; ok {
+			wantOwn[addr] = true
+		}
+	}
+	for addr, found := range wantOwn {
+		if !found {
+			t.Fatalf("own_addresses %#v missing %q", req.OwnAddresses, addr)
+		}
+	}
+}

@@ -128,7 +128,8 @@ const builtinSystemPrompt = `You are a spam classifier. Return ONLY a single JSO
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
-When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.`
+When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
+When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.`
 
 // builtinClassifySystemPrompt is the mail.classify instruction (Wave
 // 4.3, issue #304): one model call answers both the spam verdict and
@@ -143,7 +144,8 @@ Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
-When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.`
+When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.
+When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.`
 
 // knownOptions enumerates every option key the plugin accepts. Any other
 // key in the configure map is rejected so typos surface immediately
@@ -637,6 +639,9 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	}
 	if in.AuthSummary != "" {
 		out["auth_summary"] = in.AuthSummary
+	}
+	if len(in.OwnAddresses) > 0 {
+		out["own_addresses"] = in.OwnAddresses
 	}
 	body := in.BodyExcerpt
 	if maxBody > 0 && len(body) > maxBody {

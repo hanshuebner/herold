@@ -168,6 +168,11 @@ func applySpamVerdicts(
 		}
 	}
 
+	// re #386: own_addresses is the same for every row in this run
+	// (they all belong to pid); resolve it once and reuse across the
+	// loop instead of a store round-trip per row.
+	ownAddrCache := make(map[store.PrincipalID][]string)
+
 	for _, row := range rows {
 		sum.RowsRead++
 
@@ -208,7 +213,11 @@ func applySpamVerdicts(
 		// same as before this field existed.
 		if parsed, perr := parseStoredMessageBlob(ctx, st, msg); perr == nil {
 			auth := deliveryAuthResults(msg, parsed)
-			if raw, err := spam.BuildRequest(parsed, auth).Canonical(); err == nil {
+			req := spam.BuildRequest(parsed, auth)
+			if own, oerr := spam.ResolveOwnAddresses(ctx, st.Meta(), pid, ownAddrCache); oerr == nil {
+				req.OwnAddresses = own
+			}
+			if raw, err := req.Canonical(); err == nil {
 				s := string(raw)
 				rec.SpamPromptApplied = &s
 			}

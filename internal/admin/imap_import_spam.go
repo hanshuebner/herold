@@ -85,8 +85,24 @@ func (a *imapImportSpamAdapter) Classify(ctx context.Context, principalID store.
 	if a.cls != nil && a.plugin != "" {
 		attempted = true
 		start := time.Now()
+		// re #386: own_addresses lets the classifier tell a To/Cc
+		// address the principal actually receives at (e.g. through this
+		// very import account) from a genuinely scraped one. Resolved
+		// fresh per call -- unlike spam_reclassify.go / spam_apply_
+		// verdicts.go's bounded single-run loops, this adapter is
+		// constructed once at server start and lives for the process
+		// lifetime (internal/admin/server.go), so a cache here would
+		// never see a later alias/Identity/import-account change.
+		var ownAddresses []string
+		if own, oerr := spam.ResolveOwnAddresses(ctx, a.st.Meta(), principalID, nil); oerr == nil {
+			ownAddresses = own
+		} else {
+			a.logger.WarnContext(ctx, "imap-import spam: resolve own addresses",
+				slog.Uint64("principal_id", uint64(principalID)),
+				slog.String("err", oerr.Error()))
+		}
 		// authResults: REQ-IMAP-IMP-33, no re-verification on import.
-		cls, clsErr = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx)
+		cls, clsErr = a.cls.Classify(ctx, msg, nil, a.plugin, clsCtx, ownAddresses)
 		elapsed = time.Since(start)
 		if clsErr != nil {
 			// spam.Classifier.Classify already logs a warn with the plugin
@@ -236,6 +252,13 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 	// persistLLMRecord does: the structured spam.Request context sent to
 	// the plugin, not the plugin's system prompt.
 	req := spam.BuildRequest(msg, nil)
+	if own, oerr := spam.ResolveOwnAddresses(ctx, a.st.Meta(), principalID, nil); oerr == nil {
+		req.OwnAddresses = own
+	} else {
+		a.logger.WarnContext(ctx, "imap-import spam: resolve own addresses",
+			slog.Uint64("principal_id", uint64(principalID)),
+			slog.String("err", oerr.Error()))
+	}
 	if b, jerr := req.Canonical(); jerr == nil {
 		s := string(b)
 		rec.SpamPromptApplied = &s

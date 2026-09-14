@@ -149,12 +149,15 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 	// Merged spam+category classification (REQ-FILT-13, Wave 4.3; same
 	// single call as the relay-in path, classifyMessage in deliver.go).
 	var classification spam.Classification
+	var ownAddresses []string
 	if s.spam != nil {
 		recipients := make([]recipientRef, len(req.Recipients))
 		for i, rc := range req.Recipients {
 			recipients[i] = recipientRef{addr: rc.Addr, principalID: rc.PrincipalID}
 		}
-		classification = classifyMessage(ctx, s, msg, &authResults, recipients).Classification
+		attempt := classifyMessage(ctx, s, msg, &authResults, recipients)
+		classification = attempt.Classification
+		ownAddresses = attempt.OwnAddresses
 		// Stamp spam verdict onto authResults for audit consistency.
 		authResults.Spam = &mailauth.SpamResult{
 			Verdict: classification.Verdict.String(),
@@ -284,7 +287,7 @@ func (s *Server) IngestBytes(ctx context.Context, req IngestRequest) error {
 			principalID: rc.PrincipalID,
 			domain:      domainOfRecipient(rc.Addr),
 		}
-		ok, derr := fakeSess.deliverOne(ctx, rcEntry, finalBytes, blobRef, msg, authResults, classification)
+		ok, derr := fakeSess.deliverOne(ctx, rcEntry, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 		if derr != nil {
 			s.log.ErrorContext(ctx, "ingest: delivery failed",
 				slog.String("activity", observe.ActivitySystem),

@@ -90,6 +90,7 @@ func (sess *session) finishMessage(spill *os.File) {
 
 	clsAttempt := sess.classify(ctx, msg, authResults)
 	classification := clsAttempt.Classification
+	ownAddresses := clsAttempt.OwnAddresses
 	listenerLabel := sess.mode.String()
 	// Track inbound DATA bytes (best-effort; counts the body bytes the
 	// session received, not framing or commands).
@@ -159,7 +160,7 @@ func (sess *session) finishMessage(spill *os.File) {
 				finalBytes = rewritten
 				sess.logExtImgOutcome(ctx, sum, ierr)
 				sess.stashRetainedFailedImages(ctx, sum, verdict)
-				sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
+				sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 				return
 			}
 			sess.logExtImgOutcome(ctx, sum, ierr)
@@ -193,7 +194,7 @@ func (sess *session) finishMessage(spill *os.File) {
 	// Reconstruct finalBytes for the pipeline stages that still need
 	// a []byte in Phase 1.
 	finalBytes = append(headerPrefix, body...)
-	sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification)
+	sess.finishMessageWithBlob(ctx, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 }
 
 // buildHeaderPrefix assembles the Received: (and optional
@@ -225,6 +226,7 @@ func (sess *session) finishMessageWithBlob(
 	msg mailparse.Message,
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
+	ownAddresses []string,
 ) {
 
 	// Deliver per recipient.
@@ -353,7 +355,7 @@ func (sess *session) finishMessageWithBlob(
 			anyOK = true
 			continue
 		}
-		ok, derr := sess.deliverOne(ctx, rc, finalBytes, blobRef, msg, authResults, classification)
+		ok, derr := sess.deliverOne(ctx, rc, finalBytes, blobRef, msg, authResults, classification, ownAddresses)
 		if derr != nil {
 			sess.log.ErrorContext(ctx, "smtp delivery failed",
 				slog.String("activity", observe.ActivitySystem),
@@ -443,6 +445,7 @@ func (sess *session) deliverOne(
 	msg mailparse.Message,
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
+	ownAddresses []string,
 ) (bool, error) {
 	// REQ-TAG-20 step 2: evaluate the tagged-address filter BEFORE
 	// Sieve. The effect (extra mailbox, suppress-implicit-keep,
@@ -736,7 +739,7 @@ func (sess *session) deliverOne(
 	// here is logged but never blocks delivery (REQ-FILT-230 /
 	// REQ-FILT-40).
 	if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "" || classification.Reason != "") {
-		sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification)
+		sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification, ownAddresses)
 	}
 
 	// Seed-on-receive (REQ-MAIL-11h): record the From address in the
@@ -774,6 +777,7 @@ func (sess *session) persistLLMRecord(
 	msg mailparse.Message,
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
+	ownAddresses []string,
 ) {
 	// Retrieve the message ID by Message-ID header lookup. This is the only
 	// way to get the store-assigned MessageID without changing InsertMessage's
@@ -832,6 +836,7 @@ func (sess *session) persistLLMRecord(
 		// is not in herold's scope; SpamPolicy.SystemPromptOverride is
 		// the per-account user-editable text returned by LLMTransparency/get.
 		req := spam.BuildRequest(msg, &authResults)
+		req.OwnAddresses = ownAddresses
 		if b, jerr := req.Canonical(); jerr == nil {
 			s := string(b)
 			rec.SpamPromptApplied = &s
@@ -1077,6 +1082,13 @@ type classifyAttempt struct {
 	Attempted      bool
 	Err            error
 	Elapsed        time.Duration
+	// OwnAddresses is the same set resolved for the request's
+	// own_addresses field (re #386, spam.ResolveOwnAddresses), carried
+	// alongside Classification so persistLLMRecord's rebuilt
+	// spam.Request for the transparency record matches the one actually
+	// sent to the plugin instead of re-resolving (and potentially
+	// disagreeing, on a multi-local-recipient message) per recipient.
+	OwnAddresses []string
 }
 
 // recipientRef is the minimal recipient shape classifyMessage needs to
@@ -1109,11 +1121,23 @@ type recipientRef struct {
 func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, auth *mailauth.AuthResults, recipients []recipientRef) classifyAttempt {
 	var clsCtx spam.ClassifyContext
 	var categorisationEnabled bool
+	var ownAddresses []string
 	for _, r := range recipients {
 		if r.principalID == 0 {
 			continue
 		}
 		clsCtx, categorisationEnabled = buildClassifyContext(ctx, srv, r.principalID, r.addr)
+		// re #386: same first-local-recipient simplification as the
+		// category context above -- one classify call per message, so
+		// own_addresses reflects that recipient's own addresses.
+		if own, oerr := spam.ResolveOwnAddresses(ctx, srv.store.Meta(), r.principalID, nil); oerr == nil {
+			ownAddresses = own
+		} else {
+			srv.log.WarnContext(ctx, "classify: resolve own addresses",
+				slog.String("activity", observe.ActivitySystem),
+				slog.Uint64("principal_id", uint64(r.principalID)),
+				slog.String("err", oerr.Error()))
+		}
 		break
 	}
 	// cls starts as the "no plugin verdict" default and is overwritten by
@@ -1133,7 +1157,7 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 	if srv.spam != nil && srv.spamPlug != "" {
 		attempted = true
 		start := time.Now()
-		cls, clsErr = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx)
+		cls, clsErr = srv.spam.Classify(ctx, msg, auth, srv.spamPlug, clsCtx, ownAddresses)
 		elapsed = time.Since(start)
 		if clsErr != nil {
 			// Classifier.Classify already emits a warn-level
@@ -1160,7 +1184,7 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 		// case, since Category is already "" on that path too).
 		cls.Category = spam.StructuralCategory(msg)
 	}
-	return classifyAttempt{Classification: cls, Attempted: attempted, Err: clsErr, Elapsed: elapsed}
+	return classifyAttempt{Classification: cls, Attempted: attempted, Err: clsErr, Elapsed: elapsed, OwnAddresses: ownAddresses}
 }
 
 // logClassifyOutcome emits the one INFO-level "spam classification

@@ -294,7 +294,11 @@ func (c *Classifier) WithTimeout(d time.Duration) *Classifier {
 // call is spam.classify or mail.classify is decided by the plugin's OWN
 // declared manifest type (via invoker's optional PluginTypeResolver),
 // not by clsCtx being non-zero.
-func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext) (Classification, error) {
+//
+// ownAddresses (re #386) is copied verbatim onto the built Request's
+// OwnAddresses field; callers resolve it via ResolveOwnAddresses (or
+// pass nil when there is no local recipient to resolve one for).
+func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *mailauth.AuthResults, pluginName string, clsCtx ClassifyContext, ownAddresses []string) (Classification, error) {
 	if c.invoker == nil {
 		return Classification{Verdict: Unclassified, Score: -1, Reason: reasonText(ErrNotConfigured)}, ErrNotConfigured
 	}
@@ -314,6 +318,7 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 
 	built := BuildRequest(msg, auth)
 	built.TimeoutMs = c.remainingBudgetMs(ctx)
+	built.OwnAddresses = ownAddresses
 
 	method := ClassifyMethod
 	var req any = built
@@ -523,6 +528,19 @@ type Request struct {
 	// identity conclusion to assert either way. See authSummary.
 	AuthSummary string `json:"auth_summary,omitempty"`
 	BodyExcerpt string `json:"body_excerpt"`
+	// OwnAddresses lists the lower-cased addresses that belong to the
+	// principal the message was classified for: the canonical email,
+	// every alias that routes to the principal, the primary address of
+	// each of the principal's verified Identities (plus that Identity's
+	// alias addresses, re #387), and the addresses of the principal's
+	// configured IMAP-import accounts (re #386). It tells the classifier
+	// a To/Cc address is one the principal actually receives at, so the
+	// "recipient address not one the owner uses" spam signal cannot fire
+	// on the owner's own secondary address -- the motivating false
+	// positive read an address reached only through an IMAP-import
+	// account as scraped. Populated by spam.ResolveOwnAddresses; empty
+	// when the message has no local recipient to resolve one for.
+	OwnAddresses []string `json:"own_addresses,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
 	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's
