@@ -2680,6 +2680,15 @@ type Metadata interface {
 	// mirrored is not duplicated on a later pass. blobHash must be non-empty.
 	GetMessageByBlobHash(ctx context.Context, principalID PrincipalID, blobHash string) (Message, error)
 
+	// GetMessageIDByMailboxUID returns the store-assigned MessageID of the
+	// message occupying (mailboxID, uid). (mailbox_id, uid) is a unique key
+	// (RFC 3501 UID uniqueness), so a caller that just inserted a message
+	// and holds the UID InsertMessage returned can recover the row's id
+	// without depending on a Message-ID header the message may lack or
+	// share with another message (issue #394). Returns ErrNotFound if no
+	// row matches.
+	GetMessageIDByMailboxUID(ctx context.Context, mailboxID MailboxID, uid UID) (MessageID, error)
+
 	// ListPrincipalBlobHashes returns the distinct blob_hash values
 	// owned by principalID in arbitrary order. Used by the bulk gmail
 	// importer to seed a content-addressed dedup set

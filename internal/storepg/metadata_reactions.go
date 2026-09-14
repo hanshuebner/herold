@@ -145,6 +145,27 @@ func (m *metadata) GetMessageByMessageIDHeader(
 	return m.GetMessage(ctx, store.MessageID(msgID))
 }
 
+// GetMessageIDByMailboxUID looks up the store-assigned MessageID for the
+// message occupying (mailboxID, uid); see store.Metadata for the contract.
+func (m *metadata) GetMessageIDByMailboxUID(
+	ctx context.Context,
+	mailboxID store.MailboxID,
+	uid store.UID,
+) (store.MessageID, error) {
+	const q = `
+		SELECT message_id FROM message_mailboxes
+		WHERE mailbox_id = $1 AND uid = $2`
+	var msgID int64
+	err := m.s.pool.QueryRow(ctx, q, int64(mailboxID), int64(uid)).Scan(&msgID)
+	if err == pgx.ErrNoRows {
+		return 0, store.ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("storepg: get message id by mailbox uid: %w", err)
+	}
+	return store.MessageID(msgID), nil
+}
+
 // GetMessageByBlobHash looks up a message owned by principalID whose
 // blob_hash column equals blobHash. Content-hash dedup fallback; see
 // store.Metadata for the contract.

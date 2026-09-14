@@ -804,24 +804,27 @@ func (w *accountWorker) ingestMessage(
 		Keywords:  spamKeywords,
 	}
 
-	_, _, insertErr := w.opts.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
+	insertedUID, _, insertErr := w.opts.store.Meta().InsertMessage(ctx, storeMsg, []store.MessageMailbox{target})
 	if insertErr != nil {
 		return false, false, 0, 0, "", fmt.Errorf("imapimport: InsertMessage: %w", insertErr)
 	}
 
-	// Retrieve the assigned MessageID for state recording. InsertMessage does
-	// not return it directly; look it up by Message-ID when present, else by
-	// the content hash (so write-back can address no-Message-ID mail too).
+	// Retrieve the assigned MessageID for state recording. InsertMessage
+	// does not return it directly; resolve it from (mailbox, UID) -- a
+	// unique key -- rather than the Message-ID header or content hash
+	// (issue #394): a message may lack a Message-ID header, share one
+	// with another message, or (content dedup) share a blob hash with an
+	// unrelated message for the same principal, any of which would
+	// misattach or drop the transparency record below.
 	var assignedMsgID store.MessageID
-	if rawMsgID != "" {
-		normID := mailparse.NormalizeMessageID(rawMsgID)
-		if inserted, err2 := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID); err2 == nil {
-			assignedMsgID = inserted.ID
-		}
+	if inserted, midErr := w.opts.store.Meta().GetMessageIDByMailboxUID(ctx, target.MailboxID, insertedUID); midErr == nil {
+		assignedMsgID = inserted
 	} else {
-		if inserted, err2 := w.opts.store.Meta().GetMessageByBlobHash(ctx, principalID, blobRef.Hash); err2 == nil {
-			assignedMsgID = inserted.ID
-		}
+		w.opts.log.Warn("imapimport: resolve message id for classification record",
+			slog.Uint64("mailbox_id", uint64(target.MailboxID)),
+			slog.Uint64("uid", uint64(insertedUID)),
+			slog.String("error", midErr.Error()),
+		)
 	}
 	// On lookup failure we still return isNew=true; mbID is known.
 

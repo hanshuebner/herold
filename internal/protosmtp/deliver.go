@@ -714,7 +714,7 @@ func (sess *session) deliverOne(
 		IngestSourceRef: sess.ingestSourceRef,
 	}
 	insertTimer := observe.StartStoreOp("insert_message")
-	_, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, messageMailboxes)
+	insertedUID, _, ierr := sess.srv.store.Meta().InsertMessage(ctx, storeMsg, messageMailboxes)
 	insertTimer.Done()
 	if ierr != nil {
 		if errors.Is(ierr, store.ErrQuotaExceeded) {
@@ -739,7 +739,20 @@ func (sess *session) deliverOne(
 	// here is logged but never blocks delivery (REQ-FILT-230 /
 	// REQ-FILT-40).
 	if rc.principalID != 0 && (classification.Verdict != spam.Unclassified || classification.Category != "" || classification.Reason != "") {
-		sess.persistLLMRecord(ctx, rc.principalID, storeMsg.Envelope.MessageID, msg, authResults, classification, ownAddresses)
+		// re #394: resolve the just-inserted row's store id from
+		// (mailbox, UID) -- a unique key -- rather than the
+		// Message-ID header, which InsertMessage returns no message
+		// id for and which a message may lack or share with another
+		// message.
+		storeMessageID, midErr := sess.srv.store.Meta().GetMessageIDByMailboxUID(ctx, messageMailboxes[0].MailboxID, insertedUID)
+		if midErr != nil {
+			sess.log.WarnContext(ctx, "llm-transparency: resolve message id for record",
+				slog.String("activity", observe.ActivityInternal),
+				slog.String("msg_id_header", storeMsg.Envelope.MessageID),
+				slog.String("err", midErr.Error()))
+		} else {
+			sess.persistLLMRecord(ctx, rc.principalID, storeMessageID, msg, authResults, classification, ownAddresses)
+		}
 	}
 
 	// Seed-on-receive (REQ-MAIL-11h): record the From address in the
@@ -770,39 +783,22 @@ func (sess *session) deliverOne(
 // user-visible category prompt is still read back from
 // GetCategorisationConfig for the transparency surface (REQ-FILT-216);
 // that is a store read, not a classifier call.
+// storeMessageID is the store-assigned id of the row deliverOne just
+// inserted, resolved via (mailbox, UID) rather than a Message-ID header
+// (issue #394): a message may lack a Message-ID header entirely, or share
+// one with another message, and the header lookup this used to do would
+// silently drop or misattach the record in either case.
 func (sess *session) persistLLMRecord(
 	ctx context.Context,
 	principalID store.PrincipalID,
-	msgIDHeader string,
+	storeMessageID store.MessageID,
 	msg mailparse.Message,
 	authResults mailauth.AuthResults,
 	classification spam.Classification,
 	ownAddresses []string,
 ) {
-	// Retrieve the message ID by Message-ID header lookup. This is the only
-	// way to get the store-assigned MessageID without changing InsertMessage's
-	// return type. The overhead is one indexed lookup per delivered message
-	// when LLM classification ran.
-	//
-	// The store column env_message_id is normalised (angle brackets stripped,
-	// lower-cased per mailparse.NormalizeMessageID) at insert time, so we
-	// must normalise on lookup to match. Messages without a Message-ID header
-	// cannot be located here; skip silently rather than emitting a noisy
-	// per-delivery warning at scale.
-	normalisedID := mailparse.NormalizeMessageID(msgIDHeader)
-	if normalisedID == "" {
-		return
-	}
-	m, err := sess.srv.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normalisedID)
-	if err != nil {
-		sess.log.WarnContext(ctx, "llm-transparency: lookup message ID for record",
-			slog.String("activity", observe.ActivityInternal),
-			slog.String("msg_id_header", normalisedID),
-			slog.String("err", err.Error()))
-		return
-	}
 	rec := store.LLMClassificationRecord{
-		MessageID:   m.ID,
+		MessageID:   storeMessageID,
 		PrincipalID: principalID,
 	}
 	// Spam sub-record. classification.Reason is non-empty for an
@@ -871,7 +867,7 @@ func (sess *session) persistLLMRecord(
 	if err := sess.srv.store.Meta().SetLLMClassification(ctx, rec); err != nil {
 		sess.log.WarnContext(ctx, "llm-transparency: persist classification record",
 			slog.String("activity", observe.ActivityInternal),
-			slog.String("msg_id_header", msgIDHeader),
+			slog.Uint64("message_id", uint64(storeMessageID)),
 			slog.String("err", err.Error()))
 	}
 }
@@ -1195,8 +1191,9 @@ func classifyMessage(ctx context.Context, srv *Server, msg mailparse.Message, au
 // succeeded, or was never configured, so an operator can answer "what
 // happened to this message" from the journal alone. msg carries no
 // store-assigned MessageID yet at this point in the pipeline (classify
-// runs before InsertMessage); the Message-ID header is logged instead,
-// the same key persistLLMRecord uses afterward to find the row.
+// runs before InsertMessage); the Message-ID header is logged instead as
+// the best available correlation key (persistLLMRecord itself resolves
+// the store id later from the delivery's mailbox/UID, not this header).
 func logClassifyOutcome(ctx context.Context, srv *Server, msg mailparse.Message, recipients []recipientRef, cls spam.Classification, attempted bool, clsErr error, elapsed time.Duration) {
 	principals := make([]string, 0, len(recipients))
 	for _, r := range recipients {
