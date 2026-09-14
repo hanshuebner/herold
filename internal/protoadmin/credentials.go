@@ -120,6 +120,13 @@ func (s *Server) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := s.clk.Now()
 
+	// A bearer caller (device token or OAuth2 access token) has no
+	// cookie session id to compare against; authBearerKeyID/hasBearer
+	// instead carries the api_keys row that authenticated this very
+	// request, so the device_token / oauth2_grant loops below can mark
+	// that credential -- and only that one -- current (issue #356).
+	authBearerKeyID, hasBearer := authAPIKeyIDFrom(ctx)
+
 	items := make([]credentialDTO, 0, 8)
 
 	sessions, err := s.store.Meta().ListSessionsByPrincipal(ctx, caller.ID, now.UnixMicro())
@@ -166,6 +173,7 @@ func (s *Server) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 			Label:      label,
 			CreatedAt:  rfc3339(k.CreatedAt),
 			LastUsedAt: rfc3339(k.LastUsedAt),
+			IsCurrent:  hasBearer && k.ID == authBearerKeyID,
 		})
 	}
 
@@ -191,6 +199,7 @@ func (s *Server) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:  rfc3339(g.CreatedAt),
 			LastUsedAt: lastUsed,
 			ExpiresAt:  rfc3339(g.ExpiresAt),
+			IsCurrent:  hasBearer && g.AccessKeyID == authBearerKeyID,
 		})
 	}
 

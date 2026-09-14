@@ -666,3 +666,56 @@ func TestCredentials_RevokeDeviceToken_WrongKindID_404(t *testing.T) {
 		t.Fatalf("plain API key was deleted despite kind mismatch: %v", err)
 	}
 }
+
+// TestCredentials_BearerCaller_MarksOwnCredentialCurrent asserts that a
+// bearer-authenticated GET /api/v1/auth/credentials marks the credential
+// whose token authenticated the request as current (issue #356): an
+// OAuth2 grant's own access token must mark exactly that oauth2_grant
+// entry, and a device token must mark exactly that device_token entry --
+// neither has a cookie session id to compare against, so
+// sessionIDFromRequest alone (the pre-fix behaviour) never matches and
+// is_current is always false.
+func TestCredentials_BearerCaller_MarksOwnCredentialCurrent(t *testing.T) {
+	sth := newSessionTestHarness(t)
+	sh := sth.sh
+	const email, password = "creds-bearer-current@example.test", "correct-horse-battery-17"
+	ctx := context.Background()
+	mustInsertLocalDomain(t, sh, "example.test")
+	if _, err := sh.dir.CreatePrincipal(ctx, email, password); err != nil {
+		t.Fatalf("CreatePrincipal: %v", err)
+	}
+	m := mintAllKinds(t, sth, sh.cookieJarClient, email, password)
+
+	// Device-token bearer: exactly the device_token entry for this
+	// token is current; nothing else is.
+	res, raw := sh.doRequest("GET", "/api/v1/auth/credentials", m.deviceTokenPlain, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET credentials (device token bearer): want 200, got %d body=%s", res.StatusCode, raw)
+	}
+	var page credPage
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, raw)
+	}
+	for _, it := range page.Items {
+		want := it.Kind == "device_token" && it.ID == m.deviceTokenID
+		if it.IsCurrent != want {
+			t.Errorf("device-token bearer: item %+v IsCurrent = %v, want %v", it, it.IsCurrent, want)
+		}
+	}
+
+	// OAuth2 access-token bearer: exactly the oauth2_grant entry owning
+	// that access token (via its refresh family) is current.
+	res, raw = sh.doRequest("GET", "/api/v1/auth/credentials", m.oauth2AccessPlain, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET credentials (oauth2 access-token bearer): want 200, got %d body=%s", res.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, raw)
+	}
+	for _, it := range page.Items {
+		want := it.Kind == "oauth2_grant" && it.ID == m.oauth2FamilyID
+		if it.IsCurrent != want {
+			t.Errorf("oauth2 access-token bearer: item %+v IsCurrent = %v, want %v", it, it.IsCurrent, want)
+		}
+	}
+}

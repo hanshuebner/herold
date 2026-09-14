@@ -24,6 +24,12 @@ const (
 	// the routing layer so clientlog handlers can tag emitted events correctly
 	// without inspecting the URL (REQ-OPS-203).
 	ctxKeyListener ctxKey = 10
+	// ctxKeyAuthAPIKeyID carries the store.APIKeyID of the api_keys row
+	// that authenticated a Bearer-authenticated request (device token or
+	// OAuth2 access token). Absent on cookie-authenticated requests --
+	// use authAPIKeyIDFrom, not a bare context.Value, so callers get an
+	// explicit ok bool rather than a zero-value ambiguity (issue #356).
+	ctxKeyAuthAPIKeyID ctxKey = 11
 )
 
 // WithListenerTag returns an http.Handler that stamps tag into the request
@@ -66,6 +72,16 @@ func principalFrom(ctx context.Context) (store.Principal, bool) {
 		return v, true
 	}
 	return store.Principal{}, false
+}
+
+// authAPIKeyIDFrom returns the api_keys row id that authenticated the
+// current request via Bearer token, or false when the request was
+// cookie-authenticated (or unauthenticated).
+func authAPIKeyIDFrom(ctx context.Context) (store.APIKeyID, bool) {
+	if v, ok := ctx.Value(ctxKeyAuthAPIKeyID).(store.APIKeyID); ok {
+		return v, true
+	}
+	return 0, false
 }
 
 // newRequestID produces a 32-character hex token.

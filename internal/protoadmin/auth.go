@@ -51,7 +51,7 @@ func HashAPIKey(plaintext string) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, scope, viaCookie, typeSlug, ok := s.authenticateWithMode(ctx, r)
+		principal, scope, viaCookie, apiKeyID, hasAPIKeyID, typeSlug, ok := s.authenticateWithMode(ctx, r)
 		if !ok {
 			// Use the typed slug from cookie-auth failure when available
 			// (e.g. "session_expired" per REQ-AUTH-76); fall back to the
@@ -76,6 +76,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx = context.WithValue(ctx, ctxKeyPrincipal, principal)
 		ctx = context.WithValue(ctx, ctxKeyRemoteAddr, r.RemoteAddr)
+		if hasAPIKeyID {
+			ctx = context.WithValue(ctx, ctxKeyAuthAPIKeyID, apiKeyID)
+		}
 		// Attach the closed-enum scope set so downstream handlers'
 		// auth.RequireScope checks see what the credential granted
 		// (REQ-AUTH-SCOPE-02). The listener label is read from the
@@ -160,35 +163,43 @@ func (s *Server) validateCSRF(w http.ResponseWriter, r *http.Request) bool {
 // typeSlug is the RFC 7807 type slug to use when ok=false. It is only
 // meaningful on the failure path; success always yields "". An empty
 // typeSlug means the caller should fall back to "unauthorized".
-func (s *Server) authenticateWithMode(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool, string, bool) {
+//
+// The apiKeyID / hasAPIKeyID pair reports the api_keys row that
+// authenticated the request when auth succeeded via Bearer token (device
+// token or OAuth2 access token); hasAPIKeyID is false for cookie auth
+// (issue #356 -- the unified credentials list needs this to mark the
+// authenticating credential itself as current for a bearer caller).
+func (s *Server) authenticateWithMode(ctx context.Context, r *http.Request) (store.Principal, auth.ScopeSet, bool, store.APIKeyID, bool, string, bool) {
 	h := r.Header.Get("Authorization")
 	if h != "" {
-		p, scope, ok := s.authenticateBearer(ctx, h)
-		return p, scope, false, "", ok
+		p, scope, keyID, ok := s.authenticateBearer(ctx, h)
+		return p, scope, false, keyID, ok, "", ok
 	}
 	// No Authorization header: try the admin session cookie if the
 	// server was configured with a signing key (REQ-AUTH-SESSION-REST).
 	if len(s.opts.Session.SigningKey) >= 32 {
 		p, scope, slug, ok := s.authenticateCookie(ctx, r)
-		return p, scope, ok, slug, ok
+		return p, scope, ok, 0, false, slug, ok
 	}
 	observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-	return store.Principal{}, nil, false, "", false
+	return store.Principal{}, nil, false, 0, false, "", false
 }
 
 // authenticateBearer validates an Authorization header value that starts
 // with "Bearer ". Only hk_... tokens are accepted; anything else is an
-// immediate fail so a wrong-prefix bearer is a definitive rejection.
-func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Principal, auth.ScopeSet, bool) {
+// immediate fail so a wrong-prefix bearer is a definitive rejection. On
+// success the third return value is the api_keys row id that
+// authenticated the request.
+func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Principal, auth.ScopeSet, store.APIKeyID, bool) {
 	const bearer = "Bearer "
 	if !strings.HasPrefix(h, bearer) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	token := strings.TrimSpace(h[len(bearer):])
 	if !strings.HasPrefix(token, APIKeyPrefix) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	hashed := HashAPIKey(token)
 	key, err := s.apikeyLookup(ctx, hashed)
@@ -198,7 +209,7 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 				"activity", observe.ActivityAudit, "err", err)
 		}
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	// Constant-time comparison against the stored hash to avoid a
 	// hypothetical timing channel in a backend that returns keys by
@@ -207,7 +218,7 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 	// defence-in-depth against future lookups that loosen that.
 	if subtle.ConstantTimeCompare([]byte(key.Hash), []byte(hashed)) != 1 {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	// Short-lived OAuth2 access tokens (issue #199, REQ-AND-AUTH-02)
 	// populate ExpiresAt; every other Bearer key (operator-issued,
@@ -216,7 +227,7 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 	// future.
 	if !key.ExpiresAt.IsZero() && !s.clk.Now().Before(key.ExpiresAt) {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	p, err := s.store.Meta().GetPrincipalByID(ctx, key.PrincipalID)
 	if err != nil {
@@ -224,17 +235,17 @@ func (s *Server) authenticateBearer(ctx context.Context, h string) (store.Princi
 			"activity", observe.ActivityAudit,
 			"err", err, "principal_id", key.PrincipalID)
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	// REQ-SUBACCT-02: a sub-principal is never authenticatable, on any
 	// credential kind. IsAuthenticatable also covers PrincipalFlagDisabled.
 	if !p.IsAuthenticatable() {
 		observe.AuthAttemptsTotal.WithLabelValues("apikey", "fail").Inc()
-		return store.Principal{}, nil, false
+		return store.Principal{}, nil, 0, false
 	}
 	_ = s.store.Meta().TouchAPIKey(ctx, key.ID, s.clk.Now())
 	observe.AuthAttemptsTotal.WithLabelValues("apikey", "ok").Inc()
-	return p, parseAPIKeyScope(key.ScopeJSON), true
+	return p, parseAPIKeyScope(key.ScopeJSON), key.ID, true
 }
 
 // authenticateCookie validates the admin session cookie on r. It uses
