@@ -452,6 +452,22 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 		nil, nil,
 		"auth-failed", int64(2000000), int64(2000000), int64(3000000))
 
+	// jmap_identity_aliases (FK to jmap_identities; issue #387, migration
+	// 0108). Two aliases for ident-1 (principal 1) inserted out of
+	// position order (position 1 before position 0) so the fidelity
+	// comparison — which relies on EnumerateRows' "identity_id, position"
+	// ordering, not insertion order — actually exercises position
+	// ordering; one alias for ident-2 under a distinct principal (2).
+	exec(`INSERT INTO jmap_identity_aliases (identity_id, principal_id, address, position)
+	      VALUES (?, ?, ?, ?)`,
+		"ident-1", 1, "zzz-alias@example.test", 1)
+	exec(`INSERT INTO jmap_identity_aliases (identity_id, principal_id, address, position)
+	      VALUES (?, ?, ?, ?)`,
+		"ident-1", 1, "aaa-alias@example.test", 0)
+	exec(`INSERT INTO jmap_identity_aliases (identity_id, principal_id, address, position)
+	      VALUES (?, ?, ?, ?)`,
+		"ident-2", 2, "bob-alias@example.test", 0)
+
 	// jmap_email_submissions
 	exec(`INSERT INTO jmap_email_submissions (id, envelope_id, principal_id, identity_id,
 	        email_id, thread_id, send_at_us, created_at_us, undo_status, properties)
