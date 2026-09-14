@@ -19,12 +19,13 @@ import com.netzhansa.herold.shared.auth.KeystoreTokenStore
 import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailboxRoles
+import com.netzhansa.herold.shared.jmap.JmapClient
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -225,10 +226,10 @@ class AcceptanceTest {
 
         compose.scrollListToThread(target.threadId)
         compose.onNodeWithTag("thread-swipe-${target.threadId}").performTouchInput { swipeRight() }
-        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
-        assertFalse(
+        compose.waitUntil(TIMEOUT_MS) { compose.listLacksThread(target.threadId) }
+        assertTrue(
             "the server must have the message out of the inbox after the swipe",
-            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+            serverPlacesEmail(server, accountId, target.id, inboxId, inMailbox = false),
         )
         compose.onNodeWithTag("inbox-list").performScrollToIndex(0)
         compose.captureScreen("07-swipe-archived-with-undo")
@@ -238,7 +239,7 @@ class AcceptanceTest {
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         assertTrue(
             "undo must put the message back in the inbox on the server",
-            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+            serverPlacesEmail(server, accountId, target.id, inboxId, inMailbox = true),
         )
         compose.captureScreen("08-undo-restored")
     }
@@ -260,7 +261,7 @@ class AcceptanceTest {
         // tree (issue #338).
         Gestures.swipeAcrossNode(compose, "thread-swipe-${target.threadId}")
 
-        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { compose.listLacksThread(target.threadId) }
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
         }
@@ -273,7 +274,7 @@ class AcceptanceTest {
             .first { it.accountId == accountId && it.role == MailboxRoles.INBOX }.id
         assertTrue(
             "undo must put the message back in the inbox on the server",
-            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+            serverPlacesEmail(server, accountId, target.id, inboxId, inMailbox = true),
         )
     }
 
@@ -306,14 +307,14 @@ class AcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.waitUntil(TIMEOUT_MS) { !compose.listHoldsThread(target.threadId) }
+        compose.waitUntil(TIMEOUT_MS) { compose.listLacksThread(target.threadId) }
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithText("Undo").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("Undo").assertIsDisplayed()
-        assertFalse(
+        assertTrue(
             "the server must have the message out of the inbox after the archive",
-            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+            serverPlacesEmail(server, accountId, target.id, inboxId, inMailbox = false),
         )
         compose.captureScreen("09b-thread-archive-undo")
 
@@ -322,7 +323,7 @@ class AcceptanceTest {
         compose.onNodeWithTag("thread-row-${target.threadId}").assertIsDisplayed()
         assertTrue(
             "undo must put the message back in the inbox on the server",
-            DevInstance.serverEmail(server, accountId, target.id)!!.mailboxIds.contains(inboxId),
+            serverPlacesEmail(server, accountId, target.id, inboxId, inMailbox = true),
         )
         compose.captureScreen("09c-thread-archive-undone")
     }
@@ -348,6 +349,31 @@ class AcceptanceTest {
             Thread.sleep(500)
         }
         error("the seeded message \"$subject\" never reached the inbox")
+    }
+
+    /**
+     * Waits for the server to hold [emailId] in [mailboxId], or to have it
+     * out of there when [inMailbox] is false.
+     *
+     * An archive and its undo write the local store first and run the
+     * `Email/set` underneath, so the row moves before the round trip lands
+     * (issue #338); reading the server the moment the list changes reads it
+     * mid-flight (issue #379).
+     */
+    private suspend fun serverPlacesEmail(
+        server: JmapClient,
+        accountId: String,
+        emailId: String,
+        mailboxId: String,
+        inMailbox: Boolean,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        while (true) {
+            val held = DevInstance.serverEmail(server, accountId, emailId)!!.mailboxIds.contains(mailboxId)
+            if (held == inMailbox) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            delay(SERVER_POLL_MS)
+        }
     }
 
     private fun syncNow() {
@@ -385,6 +411,7 @@ class AcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
+        const val SERVER_POLL_MS = 250L
         // herold case-folds keywords, so the lane's identity - and the tab's
         // test tag - is the lower-cased name.
         const val CATEGORY_A = "promotions"

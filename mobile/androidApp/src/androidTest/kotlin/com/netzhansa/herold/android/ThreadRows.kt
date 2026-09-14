@@ -22,6 +22,20 @@ fun ComposeTestRule.listHoldsThread(threadId: String, listTag: String = "inbox-l
     return runCatching { scrollListToThread(threadId, listTag) }.isSuccess
 }
 
+/**
+ * True when the list tagged [listTag] is on screen and holds no row for
+ * [threadId].
+ *
+ * The list itself has to be there. A check that reads a missing list as an
+ * absent row is satisfied by whatever screen the app went to instead, so a
+ * gesture that opened the conversation rather than swiping it away passes
+ * the "the row is gone" wait and fails somewhere later (issue #379).
+ */
+fun ComposeTestRule.listLacksThread(threadId: String, listTag: String = "inbox-list"): Boolean {
+    onNodeWithTag(listTag).assertExists()
+    return !listHoldsThread(threadId, listTag)
+}
+
 /** Brings the row for [threadId] into the viewport; fails when the list has none. */
 fun ComposeTestRule.scrollListToThread(threadId: String, listTag: String = "inbox-list") {
     onNodeWithTag(listTag).performScrollToNode(hasTestTag("thread-row-$threadId"))
