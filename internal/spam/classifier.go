@@ -509,10 +509,19 @@ type Request struct {
 	// (no AuthResults was available -- IMAP import, REQ-IMAP-IMP-33) and
 	// "evaluated, no record/signature found"; either way it is not a
 	// failure and the prompt must not read it as one. See BuildRequest.
-	SPF         string `json:"spf"`
-	DKIM        string `json:"dkim"`
-	DMARC       string `json:"dmarc"`
-	FromDomain  string `json:"from_domain,omitempty"`
+	SPF        string `json:"spf"`
+	DKIM       string `json:"dkim"`
+	DMARC      string `json:"dmarc"`
+	FromDomain string `json:"from_domain,omitempty"`
+	// AuthSummary states the DMARC outcome as a natural-language,
+	// authoritative fact rather than one more input for the model to
+	// weigh against surface content (re #383): a bare "dmarc":"pass"
+	// token left a classifier free to reason "the content looks like
+	// phishing, so despite passing authentication the From must be
+	// spoofed" -- exactly the contradiction #383 reported. Empty when
+	// DMARC is "none" (not evaluated, or no record): herold has no
+	// identity conclusion to assert either way. See authSummary.
+	AuthSummary string `json:"auth_summary,omitempty"`
 	BodyExcerpt string `json:"body_excerpt"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
@@ -582,7 +591,40 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		req.FromDomain = auth.FromDomain()
 		req.AuthResults = auth.Raw
 	}
+	req.AuthSummary = authSummary(req.DMARC, req.FromDomain)
 	return req
+}
+
+// authSummary renders the DMARC outcome as a sentence a classifier
+// model reads as an established fact, not as evidence to re-derive
+// from body content (re #383). DMARC governs the summary because it is
+// herold's own alignment check against the visible From header
+// (BuildRequest's auth argument is the server's verified result, never
+// a forwarded upstream claim); SPF/DKIM feed into that same DMARC
+// verdict and are not separately restated here. "none" -- not
+// evaluated, or evaluated with no record found -- yields no summary,
+// matching the rule that "none" is never a failure and therefore never
+// a claim about identity either way.
+func authSummary(dmarc, fromDomain string) string {
+	domain := fromDomain
+	if domain == "" {
+		domain = "the From domain"
+	}
+	switch dmarc {
+	case "pass":
+		return fmt.Sprintf(
+			"Sender identity is verified: DMARC-aligned pass for %s. "+
+				"This is herold's own confirmed authentication result, not a claim to re-derive from the message content -- "+
+				"judge this message by its content, not by re-litigating its identity.",
+			domain)
+	case "fail":
+		return fmt.Sprintf(
+			"Sender identity failed authentication: DMARC fail for %s. "+
+				"Treat the From address as unauthenticated and weigh that heavily.",
+			domain)
+	default:
+		return ""
+	}
 }
 
 // authVerdictToken collapses a mailauth.AuthStatus to the three-state

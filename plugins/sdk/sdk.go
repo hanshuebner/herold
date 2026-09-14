@@ -246,10 +246,16 @@ type SpamClassifyParams struct {
 	// field. "none" means herold has no opinion -- not evaluated, or
 	// evaluated with nothing found -- and must never be read as a
 	// failure.
-	SPF         string `json:"spf"`
-	DKIM        string `json:"dkim"`
-	DMARC       string `json:"dmarc"`
-	FromDomain  string `json:"from_domain,omitempty"`
+	SPF        string `json:"spf"`
+	DKIM       string `json:"dkim"`
+	DMARC      string `json:"dmarc"`
+	FromDomain string `json:"from_domain,omitempty"`
+	// AuthSummary states the DMARC outcome as a natural-language,
+	// authoritative fact -- e.g. "Sender identity is verified:
+	// DMARC-aligned pass for example.com" -- rather than leaving the
+	// plugin to infer identity from the bare pass/fail/none tokens
+	// (re #383). Empty when DMARC is "none".
+	AuthSummary string `json:"auth_summary,omitempty"`
 	BodyExcerpt string `json:"body_excerpt"`
 	// TimeoutMs is the caller's remaining time budget for this call, in
 	// milliseconds, as of when the server built the request (issue #331).

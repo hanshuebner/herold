@@ -499,6 +499,77 @@ func TestBuildRequest_AuthResultsFallsBackToUpstreamWhenNilAuth(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_AuthSummaryStatesAlignedPassAsAuthoritative is the
+// #383 regression test: a DMARC-aligned pass must render as an
+// authoritative statement of verified identity, not as a bare token a
+// classifier is free to override from body content. Before the fix, a
+// real message from accountprotection.microsoft.com that passed
+// SPF/DKIM/DMARC was still scored spam=0.92 with a reason asserting the
+// From was "spoofed" in the same sentence as the passing auth check.
+func TestBuildRequest_AuthSummaryStatesAlignedPassAsAuthoritative(t *testing.T) {
+	req := BuildRequest(buildMessage(t, canonMsg),
+		newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "accountprotection.microsoft.com"))
+	if !strings.Contains(req.AuthSummary, "verified") {
+		t.Fatalf("auth_summary does not state identity is verified: %q", req.AuthSummary)
+	}
+	if !strings.Contains(req.AuthSummary, "accountprotection.microsoft.com") {
+		t.Fatalf("auth_summary does not name the From domain: %q", req.AuthSummary)
+	}
+	for _, bad := range []string{"spoof", "impersonat", "forg"} {
+		if strings.Contains(strings.ToLower(req.AuthSummary), bad) {
+			t.Fatalf("auth_summary for an aligned pass must never suggest %q: %q", bad, req.AuthSummary)
+		}
+	}
+	raw, err := req.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["auth_summary"]; !ok {
+		t.Fatalf("wire payload missing auth_summary key: %+v", got)
+	}
+}
+
+// TestBuildRequest_AuthSummaryStatesFailDistinctly verifies a DMARC
+// fail renders as its own distinct authoritative statement, not the
+// aligned-pass wording.
+func TestBuildRequest_AuthSummaryStatesFailDistinctly(t *testing.T) {
+	req := BuildRequest(buildMessage(t, canonMsg),
+		newAuth(mailauth.AuthFail, mailauth.AuthFail, mailauth.AuthFail, mailauth.AuthNone, "example.com"))
+	if strings.Contains(req.AuthSummary, "verified") {
+		t.Fatalf("auth_summary for a DMARC fail must not claim the identity is verified: %q", req.AuthSummary)
+	}
+	if !strings.Contains(req.AuthSummary, "fail") {
+		t.Fatalf("auth_summary does not state the fail outcome: %q", req.AuthSummary)
+	}
+}
+
+// TestBuildRequest_AuthSummaryEmptyWhenNotEvaluated verifies that a
+// nil-auth / DMARC-"none" message carries no auth_summary at all: "none"
+// is not a failure and not a pass, so there is no identity conclusion
+// to assert either way, and the omitempty tag keeps the key off the
+// wire entirely.
+func TestBuildRequest_AuthSummaryEmptyWhenNotEvaluated(t *testing.T) {
+	req := BuildRequest(buildMessage(t, canonMsg), nil)
+	if req.AuthSummary != "" {
+		t.Fatalf("auth_summary: got %q, want empty for unevaluated auth", req.AuthSummary)
+	}
+	raw, err := req.Canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["auth_summary"]; ok {
+		t.Fatalf("wire payload unexpectedly carries auth_summary for unevaluated auth: %+v", got)
+	}
+}
+
 func TestBuildRequest_HTMLStripped(t *testing.T) {
 	const html = "From: a@b\r\nSubject: h\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
 		"<html><body>hello <a href=\"https://example.com\">link</a></body></html>"
@@ -569,6 +640,64 @@ func TestClassify_ReplayerMissingFixtureError(t *testing.T) {
 	}
 	if !errors.Is(err, llmtest.ErrFixtureMissing) {
 		t.Fatalf("expected ErrFixtureMissing, got: %v", err)
+	}
+}
+
+// TestClassify_PasswordResetDMARCPassMessageShape is the #383
+// evaluation case: a message shaped like the reported one -- DMARC-
+// aligned pass, From a password-reset sender at a well-known
+// provider's own domain, German password-reset subject and body --
+// must (a) carry the new auth_summary statement on the wire and (b)
+// classify Ham when the model's score respects that statement,
+// matching the ticket's Acceptance ("expects ham or a confidence below
+// the threshold").
+//
+// This is the deterministic half of that acceptance criterion. No live
+// or recorded LLM response is available for this shape: the
+// internal/llmtest fixture file for KindSpamClassify is empty (see
+// TestClassify_WithLLMReplayer above, skipped pending
+// scripts/llm-capture.sh), so this test cannot and does not assert
+// what the actually-configured production model outputs for this
+// message -- that stays model-dependent. What it does prove,
+// offline and deterministically: the wire payload the fix adds reaches
+// the classifier for this exact message shape, and Classify's
+// threshold/verdict wiring correctly reports Ham when the model
+// returns a low score. Run scripts/llm-capture.sh against a live
+// endpoint to record a real fixture for this shape and replace the
+// scripted response below with it.
+func TestClassify_PasswordResetDMARCPassMessageShape(t *testing.T) {
+	const raw = "From: Microsoft Account Team <account-security-noreply@accountprotection.microsoft.com>\r\n" +
+		"To: Alice <alice@example.com>\r\n" +
+		"Subject: Kennwortzuruecksetzung fuer persoenliches Microsoft-Konto\r\n" +
+		"Date: Sat, 12 Sep 2026 14:48:03 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"Sie haben kuerzlich angefordert, das Kennwort fuer Ihr Microsoft-Konto zurueckzusetzen.\r\n" +
+		"Klicken Sie auf den folgenden Link, um fortzufahren: https://account.live.com/password/reset?id=abc123&token=xyz\r\n"
+
+	msg := buildMessage(t, raw)
+	auth := newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "accountprotection.microsoft.com")
+
+	// (a) the wire payload for this exact shape carries the
+	// authoritative statement.
+	req := BuildRequest(msg, auth)
+	if !strings.Contains(req.AuthSummary, "verified") || !strings.Contains(req.AuthSummary, "accountprotection.microsoft.com") {
+		t.Fatalf("auth_summary for the reported message shape: %q", req.AuthSummary)
+	}
+
+	// (b) Classify reports Ham when the model's score respects the
+	// statement -- the threshold/verdict wiring this fix depends on.
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"legitimate password-reset notification from a DMARC-aligned sender"}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham for a model score below threshold", r.Verdict)
 	}
 }
 

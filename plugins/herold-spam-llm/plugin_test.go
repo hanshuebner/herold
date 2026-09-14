@@ -466,6 +466,62 @@ func TestClassify_ForwardingHeadersReachLLM(t *testing.T) {
 	}
 }
 
+// TestClassify_AuthSummaryReachesLLM verifies that auth_summary
+// (re #383) survives trimPayload and lands in the LLM's user-turn
+// JSON verbatim, and that the built-in system prompt instructs the
+// model to treat it as authoritative.
+func TestClassify_AuthSummaryReachesLLM(t *testing.T) {
+	var captured string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(body)
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"ham","score":0.05,"reason":"ok"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("please reset your password")
+	const summary = "Sender identity is verified: DMARC-aligned pass for accountprotection.microsoft.com. This is herold's own confirmed authentication result, not a claim to re-derive from the message content -- judge this message by its content, not by re-litigating its identity."
+	payload["auth_summary"] = summary
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.classify(ctx, payload); err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	if !strings.Contains(body, `\"auth_summary\"`) {
+		t.Fatalf("LLM body missing auth_summary key; got %s", body)
+	}
+	if !strings.Contains(body, "DMARC-aligned pass for accountprotection.microsoft.com") {
+		t.Fatalf("LLM body missing auth_summary text; got %s", body)
+	}
+	// The system prompt is the first message in the chat-completions
+	// request; assert it instructs the model to treat auth_summary as
+	// authoritative rather than one more input to weigh.
+	if !strings.Contains(body, "authoritative") {
+		t.Fatalf("system prompt does not instruct treating auth_summary as authoritative; got %s", body)
+	}
+}
+
 func TestClassify_HamVerdictBelowThreshold(t *testing.T) {
 	llm := newFakeLLM(t)
 	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
