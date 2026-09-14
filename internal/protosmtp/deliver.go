@@ -470,6 +470,23 @@ func (sess *session) deliverOne(
 	if tagHit {
 		outcome = tagEffect.applyTaggedFilterPreSieve(outcome)
 	}
+	// REQ-FILT-02a / REQ-FLT-16 (issue #382): attribute a spam/suspect
+	// verdict to the never-spam managed rule responsible, when one
+	// matches, for the transparency record (REQ-FILT-66) below. This is
+	// independent of the routing decision made by resolveSieveTargets
+	// just below: that decision already reflects the rule's compiled
+	// Sieve guard (compile_managed.go's neverSpamGuardBlock, an explicit
+	// `keep` on ${spam.verdict}) via outcome.ImplicitKeep/Actions. The
+	// lookup here only names the rule for display; it never changes
+	// where the message lands.
+	if rc.principalID != 0 && (classification.Verdict == spam.Spam || classification.Verdict == spam.Suspect) {
+		if rules, rerr := sess.srv.store.Meta().ListManagedRules(ctx, rc.principalID, store.ManagedRuleFilter{}); rerr == nil {
+			if label, merr := sieve.NeverSpamOverrideLabel(rules, msg); merr == nil && label != "" {
+				classification.DeliveryOverride = label
+			}
+		}
+	}
+
 	// Decide target mailboxes and redirect addresses. REQ-FILT-02: the
 	// classifier's verdict picks the default target when Sieve produced
 	// no explicit keep/fileinto (ImplicitKeep); implicitKeywords carries
@@ -821,6 +838,13 @@ func (sess *session) persistLLMRecord(
 		}
 		t := sess.srv.clk.Now()
 		rec.SpamClassifiedAt = &t
+		// REQ-FILT-02a / REQ-FLT-16 (issue #382): the never-spam managed
+		// rule that kept this verdict out of Junk, when one matched
+		// (computed in deliverOne, above).
+		if classification.DeliveryOverride != "" {
+			ov := classification.DeliveryOverride
+			rec.SpamDeliveryOverride = &ov
+		}
 	}
 	// Categorisation sub-record -- from the same classify() call above,
 	// not a second one (Wave 4.3).

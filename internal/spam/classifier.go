@@ -83,6 +83,15 @@ type Classification struct {
 	// RawResponse carries the plugin's full JSON response so callers
 	// can log extra fields (e.g. "model") the classifier reported.
 	RawResponse map[string]any
+	// DeliveryOverride is non-empty when a user filter's "never classify
+	// as spam" action kept this message out of Junk despite Verdict
+	// being Spam or Suspect (REQ-FILT-02a / REQ-FLT-16, issue #382):
+	// "filter:<rule name or id>", naming the ManagedRule responsible.
+	// Set by the delivery paths (internal/protosmtp, the IMAP-import
+	// adapter), never by the classifier plugin itself; persisted into
+	// LLMClassificationRecord.SpamDeliveryOverride for the transparency
+	// record (REQ-FILT-66).
+	DeliveryOverride string
 }
 
 // PluginInvoker is the minimum plugin-supervisor surface Classifier needs:
