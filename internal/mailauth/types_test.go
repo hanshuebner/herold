@@ -125,6 +125,41 @@ func TestAuthResultsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAuthResults(t *testing.T) {
+	raw := "mx.netzhansa.com; spf=pass smtp.mailfrom=billing@mail.anthropic.com; " +
+		"dkim=pass header.d=mail.anthropic.com header.s=s1; " +
+		"dmarc=pass header.from=anthropic.com; " +
+		"x-herold-spam=ham (score=0.10)"
+	got, ok := ParseAuthResults(raw)
+	if !ok {
+		t.Fatalf("ParseAuthResults(%q) ok = false, want true", raw)
+	}
+	if got.SPF.Status != AuthPass {
+		t.Errorf("SPF.Status = %v, want AuthPass", got.SPF.Status)
+	}
+	if len(got.DKIM) != 1 || got.DKIM[0].Status != AuthPass || got.DKIM[0].Domain != "mail.anthropic.com" || got.DKIM[0].Selector != "s1" {
+		t.Errorf("DKIM = %+v", got.DKIM)
+	}
+	if got.DMARC.Status != AuthPass || got.DMARC.HeaderFrom != "anthropic.com" {
+		t.Errorf("DMARC = %+v", got.DMARC)
+	}
+	if got.Raw != raw {
+		t.Errorf("Raw = %q, want %q", got.Raw, raw)
+	}
+}
+
+func TestParseAuthResults_NoRecognisedMethod(t *testing.T) {
+	for _, raw := range []string{
+		"",
+		"garbage with no semicolon",
+		"mail.example.com; x-herold-spam=ham (score=0.10)",
+	} {
+		if _, ok := ParseAuthResults(raw); ok {
+			t.Errorf("ParseAuthResults(%q) ok = true, want false", raw)
+		}
+	}
+}
+
 func TestAuthStatusUnmarshalUnknown(t *testing.T) {
 	// Forward-compat: an unknown token from a newer server should
 	// round-trip to AuthUnknown rather than failing.

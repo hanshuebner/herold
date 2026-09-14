@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 )
 
@@ -199,6 +200,19 @@ func applySpamVerdicts(
 		rec.SpamModel = &engine
 		classifiedAt := clk.Now()
 		rec.SpamClassifiedAt = &classifiedAt
+		// SpamPromptApplied records the request that produced this
+		// verdict (re #385, mirroring reclassifySpam's
+		// recordReclassifyVerdict): a blob read/parse failure here is
+		// tolerated -- the row's verdict is still applied below -- and
+		// simply leaves SpamPromptApplied unset for this one row, the
+		// same as before this field existed.
+		if parsed, perr := parseStoredMessageBlob(ctx, st, msg); perr == nil {
+			auth := deliveryAuthResults(msg, parsed)
+			if raw, err := spam.BuildRequest(parsed, auth).Canonical(); err == nil {
+				s := string(raw)
+				rec.SpamPromptApplied = &s
+			}
+		}
 
 		if !opts.DryRun {
 			if err := st.Meta().SetLLMClassification(ctx, rec); err != nil {

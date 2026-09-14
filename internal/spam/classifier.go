@@ -495,11 +495,16 @@ type Request struct {
 	Precedence      string   `json:"precedence,omitempty"`
 	AutoSubmitted   string   `json:"auto_submitted,omitempty"`
 	AuthResults     string   `json:"auth_results,omitempty"`
-	DKIMPass        bool     `json:"dkim_pass"`
-	SPFPass         bool     `json:"spf_pass"`
-	DMARCPass       bool     `json:"dmarc_pass"`
-	FromDomain      string   `json:"from_domain,omitempty"`
-	BodyExcerpt     string   `json:"body_excerpt"`
+	// SPF, DKIM, and DMARC each carry one of "pass", "fail", or "none"
+	// per method (re #385). "none" covers both "not evaluated at all"
+	// (no AuthResults was available -- IMAP import, REQ-IMAP-IMP-33) and
+	// "evaluated, no record/signature found"; either way it is not a
+	// failure and the prompt must not read it as one. See BuildRequest.
+	SPF         string `json:"spf"`
+	DKIM        string `json:"dkim"`
+	DMARC       string `json:"dmarc"`
+	FromDomain  string `json:"from_domain,omitempty"`
+	BodyExcerpt string `json:"body_excerpt"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
 	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's
@@ -533,8 +538,10 @@ type Request struct {
 // yet). A nil auth argument — the IMAP import path, which stores bytes
 // as-synced and performs no server-side verification (REQ-IMAP-IMP-33)
 // — falls back to msg.AuthResultsRaw, the upstream header content as
-// received, and collapses every did-pass boolean to false and
-// FromDomain to "" (re #298).
+// received, and sets SPF/DKIM/DMARC to "none" (not evaluated) and
+// FromDomain to "" (re #298, re #385). "none" is never rendered as a
+// failure: it means herold has no opinion on this message's
+// authentication, not that authentication was attempted and failed.
 func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 	from := addrsToStrings(msg.Envelope.From)
 	to := addrsToStrings(msg.Envelope.To)
@@ -554,16 +561,35 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		Precedence:      msg.Headers.Get("Precedence"),
 		AutoSubmitted:   msg.Headers.Get("Auto-Submitted"),
 		AuthResults:     msg.AuthResultsRaw,
+		SPF:             mailauth.AuthNone.String(),
+		DKIM:            mailauth.AuthNone.String(),
+		DMARC:           mailauth.AuthNone.String(),
 		BodyExcerpt:     body,
 	}
 	if auth != nil {
-		req.DKIMPass = auth.BestDKIMStatus() == mailauth.AuthPass
-		req.SPFPass = auth.SPF.Status == mailauth.AuthPass
-		req.DMARCPass = auth.DMARC.Status == mailauth.AuthPass
+		req.SPF = authVerdictToken(auth.SPF.Status)
+		req.DKIM = authVerdictToken(auth.BestDKIMStatus())
+		req.DMARC = authVerdictToken(auth.DMARC.Status)
 		req.FromDomain = auth.FromDomain()
 		req.AuthResults = auth.Raw
 	}
 	return req
+}
+
+// authVerdictToken collapses a mailauth.AuthStatus to the three-state
+// vocabulary the classifier prompt uses: "pass" on AuthPass, "none" on
+// AuthUnknown/AuthNone (not evaluated, or evaluated with nothing found --
+// neither is a failure), and "fail" for every other RFC 7601 result
+// (fail, softfail, neutral, policy, temperror, permerror).
+func authVerdictToken(s mailauth.AuthStatus) string {
+	switch s {
+	case mailauth.AuthPass:
+		return "pass"
+	case mailauth.AuthUnknown, mailauth.AuthNone:
+		return "none"
+	default:
+		return "fail"
+	}
 }
 
 // MarshalJSON on Request is default; this helper exists for tests that

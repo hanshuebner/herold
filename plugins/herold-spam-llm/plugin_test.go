@@ -206,9 +206,9 @@ func canonicalPayload(body string) map[string]any {
 		"from":          []string{"alice@example.com"},
 		"to":            []string{"bob@example.com"},
 		"subject":       "Hello",
-		"dkim_pass":     true,
-		"spf_pass":      true,
-		"dmarc_pass":    true,
+		"dkim":          "pass",
+		"spf":           "pass",
+		"dmarc":         "pass",
 		"from_domain":   "example.com",
 		"body_excerpt":  body,
 		"received_date": "2026-04-24T00:00:00Z",
@@ -385,9 +385,9 @@ func TestClassify_FullPayloadReachesLLM(t *testing.T) {
 		`\"from\"`, `alice@example.com`,
 		`\"to\"`, `bob@example.com`,
 		`\"subject\"`, `Hello`,
-		`\"dkim_pass\":true`,
-		`\"spf_pass\":true`,
-		`\"dmarc_pass\":true`,
+		`\"dkim\":\"pass\"`,
+		`\"spf\":\"pass\"`,
+		`\"dmarc\":\"pass\"`,
 		`\"from_domain\"`, `example.com`,
 		`\"body_excerpt\"`, `please review`,
 		`\"received_date\"`, `2026-04-24T00:00:00Z`,
@@ -1127,5 +1127,79 @@ func TestConfigure_APIKeyEnvResolvedSecretRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "api_key") {
 		t.Fatalf("error %v does not point at api_key", err)
+	}
+}
+
+// TestClassify_ImportedTransactionalMailNoAuthIsHam is the re #385
+// evaluation case (Acceptance item 4): an imported transactional
+// message with no server-side authentication data -- spam.BuildRequest's
+// nil-auth default, spf/dkim/dmarc all "none" -- must be scored ham. The
+// fake model here is scripted to the recommended prompt rule: score high
+// only on an explicit "fail", never on "none". Before the fix this
+// payload carried dkim_pass/spf_pass/dmarc_pass as plain "false" booleans
+// indistinguishable from a real authentication failure.
+func TestClassify_ImportedTransactionalMailNoAuthIsHam(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		var chatReq struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var payload struct {
+			SPF   string `json:"spf"`
+			DKIM  string `json:"dkim"`
+			DMARC string `json:"dmarc"`
+		}
+		for _, m := range chatReq.Messages {
+			if m.Role == "user" {
+				if err := json.Unmarshal([]byte(m.Content), &payload); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+		failed := payload.SPF == "fail" || payload.DKIM == "fail" || payload.DMARC == "fail"
+		if failed {
+			replyJSON(w, `{"verdict":"spam","score":0.9,"reason":"failed authentication"}`)
+		} else {
+			replyJSON(w, `{"verdict":"ham","score":0.05,"reason":"no authentication signal to distrust"}`)
+		}
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"timeout_sec":    5,
+		"spam_threshold": 0.7,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.classify(ctx, map[string]any{
+		"from":    []string{"Anthropic <billing@mail.anthropic.com>"},
+		"to":      []string{"alice@example.com"},
+		"subject": "Your receipt from Anthropic",
+		"spf":     "none",
+		"dkim":    "none",
+		"dmarc":   "none",
+	})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if got, _ := res["verdict"].(string); got != "ham" {
+		t.Fatalf("verdict = %q, want ham (spf/dkim/dmarc=\"none\" must never be read as a failure)", got)
 	}
 }

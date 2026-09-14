@@ -65,27 +65,36 @@ func (s *AuthStatus) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &name); err != nil {
 		return err
 	}
+	*s = authStatusFromToken(name)
+	return nil
+}
+
+// authStatusFromToken maps an RFC 8601 "result" token (case-insensitive)
+// to its AuthStatus. An unrecognised token maps to AuthUnknown, shared by
+// UnmarshalJSON (forward-compat with a newer server's wire payload) and
+// ParseAuthResults (a foreign or malformed Authentication-Results header
+// method).
+func authStatusFromToken(name string) AuthStatus {
 	switch strings.ToLower(name) {
 	case "pass":
-		*s = AuthPass
+		return AuthPass
 	case "fail":
-		*s = AuthFail
+		return AuthFail
 	case "softfail":
-		*s = AuthSoftFail
+		return AuthSoftFail
 	case "neutral":
-		*s = AuthNeutral
+		return AuthNeutral
 	case "none":
-		*s = AuthNone
+		return AuthNone
 	case "policy":
-		*s = AuthPolicy
+		return AuthPolicy
 	case "temperror":
-		*s = AuthTempError
+		return AuthTempError
 	case "permerror":
-		*s = AuthPermError
+		return AuthPermError
 	default:
-		*s = AuthUnknown
+		return AuthUnknown
 	}
-	return nil
 }
 
 // DMARCPolicy is the "p=" (or "sp=") value from a DMARC record.
@@ -314,4 +323,74 @@ type AuthResults struct {
 	// verbatim so ARC sealing can rely on it on forward and so tools that
 	// need to re-parse can.
 	Raw string `json:"raw,omitempty"`
+}
+
+// ParseAuthResults parses the value portion (header name and colon
+// already stripped) of an Authentication-Results header rendered by
+// herold's own renderAuthResults (internal/protosmtp/deliver.go) back
+// into typed per-method verdicts: "<authserv-id>; spf=<status> ...;
+// dkim=<status> ...; dmarc=<status> ...; arc=<status>; x-herold-spam=...".
+// It recognises exactly the method tokens herold renders -- spf, dkim
+// (repeated, one per signature), dmarc, arc -- and ignores every other
+// token, including the "x-herold-spam=" experimental method (callers read
+// the spam verdict separately). It is not a general RFC 8601 parser: a
+// foreign MTA's Authentication-Results header may parse to some result,
+// but callers that need to distinguish herold's own verdict from an
+// upstream, forgeable one must gate the call on the message's recorded
+// ingest path (e.g. store.IngestSourceSMTP), not on this function alone.
+//
+// ok is false when raw carries none of the recognised methods, which
+// callers should treat exactly like "no AuthResults available" (a nil
+// *AuthResults), not like a zero-value, all-AuthUnknown result.
+func ParseAuthResults(raw string) (result AuthResults, ok bool) {
+	parts := strings.Split(raw, ";")
+	if len(parts) < 2 {
+		return AuthResults{}, false
+	}
+	result.Raw = raw
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		fields := strings.Fields(part)
+		method, value, found := strings.Cut(fields[0], "=")
+		if !found {
+			continue
+		}
+		status := authStatusFromToken(value)
+		switch strings.ToLower(method) {
+		case "spf":
+			result.SPF.Status = status
+			ok = true
+		case "dkim":
+			d := DKIMResult{Status: status}
+			for _, attr := range fields[1:] {
+				k, v, found := strings.Cut(attr, "=")
+				if !found {
+					continue
+				}
+				switch k {
+				case "header.d":
+					d.Domain = v
+				case "header.s":
+					d.Selector = v
+				}
+			}
+			result.DKIM = append(result.DKIM, d)
+			ok = true
+		case "dmarc":
+			result.DMARC.Status = status
+			for _, attr := range fields[1:] {
+				k, v, found := strings.Cut(attr, "=")
+				if found && k == "header.from" {
+					result.DMARC.HeaderFrom = v
+				}
+			}
+			ok = true
+		case "arc":
+			result.ARC.Status = status
+		}
+	}
+	return result, ok
 }

@@ -326,8 +326,8 @@ func TestBuildRequest_Snapshot(t *testing.T) {
 	if req.Subject != "Promo" {
 		t.Fatalf("subject: %q", req.Subject)
 	}
-	if !req.SPFPass || !req.DKIMPass || req.DMARCPass {
-		t.Fatalf("auth flags: spf=%v dkim=%v dmarc=%v", req.SPFPass, req.DKIMPass, req.DMARCPass)
+	if req.SPF != "pass" || req.DKIM != "pass" || req.DMARC != "fail" {
+		t.Fatalf("auth verdicts: spf=%q dkim=%q dmarc=%q", req.SPF, req.DKIM, req.DMARC)
 	}
 	if !strings.Contains(req.BodyExcerpt, "widgets.example.com") {
 		t.Fatalf("excerpt missing URL: %q", req.BodyExcerpt)
@@ -346,6 +346,24 @@ func TestBuildRequest_Snapshot(t *testing.T) {
 	}
 	if got["subject"] != "Promo" {
 		t.Fatalf("snapshot subject mismatch: %+v", got)
+	}
+}
+
+// TestBuildRequest_NilAuthIsNoneNotFail is the re #385 regression test: a
+// nil auth argument (the IMAP import path, REQ-IMAP-IMP-33; the
+// pre-fix reclassify/apply-verdicts paths) must report "none" -- not
+// evaluated -- on every method, never a false "fail". Before the fix,
+// SPFPass/DKIMPass/DMARCPass were plain booleans that all defaulted to
+// false, which a classifier prompt reads identically to "evaluated and
+// failed".
+func TestBuildRequest_NilAuthIsNoneNotFail(t *testing.T) {
+	msg := buildMessage(t, canonMsg)
+	req := BuildRequest(msg, nil)
+	if req.SPF != "none" || req.DKIM != "none" || req.DMARC != "none" {
+		t.Fatalf("nil-auth verdicts: spf=%q dkim=%q dmarc=%q, want \"none\" for all three", req.SPF, req.DKIM, req.DMARC)
+	}
+	if req.FromDomain != "" {
+		t.Fatalf("nil-auth from-domain: %q, want empty", req.FromDomain)
 	}
 }
 

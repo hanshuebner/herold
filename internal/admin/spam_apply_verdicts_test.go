@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
+	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
@@ -295,6 +297,22 @@ func testSpamApplyVerdicts(t *testing.T, st store.Store) {
 	if rec.SpamReason == nil || *rec.SpamReason != "obvious phishing" {
 		t.Errorf("spam-new SpamReason = %v, want %q", rec.SpamReason, "obvious phishing")
 	}
+	// re #385: apply-verdicts must record the request that produced the
+	// verdict, like reclassify does, so every batch row is auditable.
+	// spam-new is a plain fixture message (no IngestSource, no
+	// Authentication-Results header), so the recovered auth is "none"
+	// on every method -- never a false "fail".
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("spam-new SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	var promptReq spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &promptReq); err != nil {
+		t.Fatalf("unmarshal spam-new SpamPromptApplied: %v", err)
+	}
+	if promptReq.SPF != "none" || promptReq.DKIM != "none" || promptReq.DMARC != "none" {
+		t.Errorf("spam-new recorded auth verdicts = spf=%q dkim=%q dmarc=%q, want none/none/none",
+			promptReq.SPF, promptReq.DKIM, promptReq.DMARC)
+	}
 
 	hamRec, err := st.Meta().GetLLMClassification(ctx, msg["ham-msg"])
 	if err != nil {
@@ -368,4 +386,107 @@ func testSpamApplyVerdicts(t *testing.T, st store.Store) {
 
 func itoaMsg(id store.MessageID) string {
 	return strconv.FormatUint(uint64(id), 10)
+}
+
+// TestApplySpamVerdicts_ReusesDeliveryAuthResults is the re #385
+// regression test for the apply-verdicts path: an SMTP-delivered
+// message's stamped Authentication-Results header must be recovered
+// into the recorded spam.Request, the same as reclassifySpam.
+func TestApplySpamVerdicts_ReusesDeliveryAuthResults_SQLite(t *testing.T) {
+	testApplySpamVerdictsReusesDeliveryAuthResults(t, sqlitetest.Open(t, clock.NewReal()))
+}
+
+func TestApplySpamVerdicts_ReusesDeliveryAuthResults_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clock.NewReal())
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	if tr, ok := st.(interface {
+		TruncateAll(ctx context.Context) error
+	}); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			_ = st.Close()
+			t.Fatalf("TruncateAll: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testApplySpamVerdictsReusesDeliveryAuthResults(t, st)
+}
+
+func testApplySpamVerdictsReusesDeliveryAuthResults(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC))
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "apply-delivery-auth@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	if _, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk}); err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	const rawAuthResults = "mx.test.example; dkim=pass header.d=example.test header.s=s1; " +
+		"spf=pass smtp.mailfrom=sender@example.test; dmarc=pass header.from=example.test"
+	const subject = "apply-delivery-auth-message"
+	body := "Authentication-Results: " + rawAuthResults + "\r\n" +
+		"From: sender@example.test\r\nTo: apply-delivery-auth@example.test\r\nSubject: " + subject + "\r\n\r\nbody\r\n"
+	blob, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         blob.Size,
+		Blob:         blob,
+		Envelope:     store.Envelope{Subject: subject},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := findSpamVerdictMessageBySubject(t, st, []store.PrincipalID{p.ID}, subject)
+
+	csvBody := "id,verdict,confidence,reason\n" + itoaMsg(mid) + ",ham,90,looks fine\n"
+	rows, err := parseSpamVerdictsCSV(strings.NewReader(csvBody))
+	if err != nil {
+		t.Fatalf("parseSpamVerdictsCSV: %v", err)
+	}
+	sum, err := applySpamVerdicts(ctx, st, clk, p.ID, rows, spamApplyVerdictsOptions{Engine: "batch:test"})
+	if err != nil {
+		t.Fatalf("applySpamVerdicts: %v", err)
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("summary = %+v, want Applied=1", sum)
+	}
+
+	rec, err := st.Meta().GetLLMClassification(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	var req spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &req); err != nil {
+		t.Fatalf("unmarshal SpamPromptApplied: %v", err)
+	}
+	if req.SPF != "pass" || req.DKIM != "pass" || req.DMARC != "pass" {
+		t.Fatalf("auth verdicts = spf=%q dkim=%q dmarc=%q, want pass/pass/pass matching the stamped header",
+			req.SPF, req.DKIM, req.DMARC)
+	}
+	if req.AuthResults != rawAuthResults {
+		t.Fatalf("auth_results = %q, want %q (the stamped header verbatim)", req.AuthResults, rawAuthResults)
+	}
 }

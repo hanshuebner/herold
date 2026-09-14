@@ -585,15 +585,20 @@ func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (
 // trimPayload returns a sanitised copy of the inbound params, with
 // the body excerpt capped at maxBody. The flat shape mirrors
 // internal/spam.Request exactly: the LLM sees the envelope headers,
-// authentication booleans, and the body excerpt as a single object.
+// the per-method authentication verdict, and the body excerpt as a
+// single object. spf/dkim/dmarc are the three-state "pass"/"fail"/"none"
+// tokens (re #385): "none" reads to the model as "not evaluated", never
+// as a failure, which the pre-#385 dkim_pass/spf_pass/dmarc_pass
+// booleans could not express (nil auth data collapsed to false, the
+// same shape as a real failure).
 func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	out := map[string]any{
-		"from":       in.From,
-		"to":         in.To,
-		"subject":    in.Subject,
-		"dkim_pass":  in.DKIMPass,
-		"spf_pass":   in.SPFPass,
-		"dmarc_pass": in.DMARCPass,
+		"from":    in.From,
+		"to":      in.To,
+		"subject": in.Subject,
+		"spf":     in.SPF,
+		"dkim":    in.DKIM,
+		"dmarc":   in.DMARC,
 	}
 	if len(in.Cc) > 0 {
 		out["cc"] = in.Cc

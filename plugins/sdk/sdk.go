@@ -241,11 +241,16 @@ type SpamClassifyParams struct {
 	Precedence      string   `json:"precedence,omitempty"`
 	AutoSubmitted   string   `json:"auto_submitted,omitempty"`
 	AuthResults     string   `json:"auth_results,omitempty"`
-	DKIMPass        bool     `json:"dkim_pass"`
-	SPFPass         bool     `json:"spf_pass"`
-	DMARCPass       bool     `json:"dmarc_pass"`
-	FromDomain      string   `json:"from_domain,omitempty"`
-	BodyExcerpt     string   `json:"body_excerpt"`
+	// SPF, DKIM, and DMARC each carry one of "pass", "fail", or "none"
+	// per method (re #385), mirroring internal/spam.Request field-for-
+	// field. "none" means herold has no opinion -- not evaluated, or
+	// evaluated with nothing found -- and must never be read as a
+	// failure.
+	SPF         string `json:"spf"`
+	DKIM        string `json:"dkim"`
+	DMARC       string `json:"dmarc"`
+	FromDomain  string `json:"from_domain,omitempty"`
+	BodyExcerpt string `json:"body_excerpt"`
 	// TimeoutMs is the caller's remaining time budget for this call, in
 	// milliseconds, as of when the server built the request (issue #331).
 	// Run's per-request context wiring (extractTimeout) already reads

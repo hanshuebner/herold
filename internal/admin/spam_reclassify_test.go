@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -391,5 +392,116 @@ func TestParseSpamReclassifySince(t *testing.T) {
 	}
 	if _, err := parseSpamReclassifySince("-1h", now); err == nil {
 		t.Error("negative duration --since: want error, got nil")
+	}
+}
+
+// TestSpamReclassify_ReusesDeliveryAuthResults is the re #385 regression
+// test: a message that was itself delivered by SMTP (IngestSourceSMTP)
+// carries herold's own delivery-time Authentication-Results header as
+// the first header of its stored blob; reclassify must recover it and
+// build a classifier request whose spf/dkim/dmarc verdicts agree with
+// that stamped string, instead of collapsing to "none" the way a
+// nil-auth request always did before the fix.
+func TestSpamReclassify_ReusesDeliveryAuthResults_SQLite(t *testing.T) {
+	testSpamReclassifyReusesDeliveryAuthResults(t, func() store.Store { return sqlitetest.Open(t, clock.NewReal()) })
+}
+
+func TestSpamReclassify_ReusesDeliveryAuthResults_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	testSpamReclassifyReusesDeliveryAuthResults(t, func() store.Store {
+		st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clock.NewReal())
+		if err != nil {
+			t.Skipf("storepg.Open: %v", err)
+		}
+		if tr, ok := st.(interface {
+			TruncateAll(ctx context.Context) error
+		}); ok {
+			if err := tr.TruncateAll(context.Background()); err != nil {
+				_ = st.Close()
+				t.Fatalf("TruncateAll: %v", err)
+			}
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return st
+	})
+}
+
+func testSpamReclassifyReusesDeliveryAuthResults(t *testing.T, newStore func() store.Store) {
+	if testing.Short() {
+		t.Skip("builds and runs a real plugin child process")
+	}
+	ctx := context.Background()
+	clk := clock.NewReal()
+	st := newStore()
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "delivery-auth@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	if _, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk}); err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	const rawAuthResults = "mx.test.example; dkim=pass header.d=example.test header.s=s1; " +
+		"spf=pass smtp.mailfrom=sender@example.test; dmarc=pass header.from=example.test"
+	const subject = "delivery-auth-message"
+	body := "Authentication-Results: " + rawAuthResults + "\r\n" +
+		"From: sender@example.test\r\nTo: delivery-auth@example.test\r\nSubject: " + subject + "\r\n\r\nbody\r\n"
+	blob, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         blob.Size,
+		Blob:         blob,
+		Envelope:     store.Envelope{Subject: subject},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := findSpamVerdictMessageBySubject(t, st, []store.PrincipalID{p.ID}, subject)
+
+	cls, plugName, shutdown := startReclassifyPlugin(t, clk, "ham")
+	defer shutdown()
+
+	sum, err := reclassifySpam(ctx, st, clk, cls, plugName, p.ID, spamReclassifyOptions{UnclassifiedOnly: true})
+	if err != nil {
+		t.Fatalf("reclassifySpam: %v", err)
+	}
+	want := SpamReclassifySummary{Selected: 1, Classified: 1, Ham: 1}
+	if sum != want {
+		t.Fatalf("summary = %+v, want %+v", sum, want)
+	}
+
+	rec, err := st.Meta().GetLLMClassification(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	var req spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &req); err != nil {
+		t.Fatalf("unmarshal SpamPromptApplied: %v", err)
+	}
+	if req.SPF != "pass" || req.DKIM != "pass" || req.DMARC != "pass" {
+		t.Fatalf("auth verdicts = spf=%q dkim=%q dmarc=%q, want pass/pass/pass matching the stamped header",
+			req.SPF, req.DKIM, req.DMARC)
+	}
+	if req.AuthResults != rawAuthResults {
+		t.Fatalf("auth_results = %q, want %q (the stamped header verbatim)", req.AuthResults, rawAuthResults)
 	}
 }
