@@ -17,6 +17,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/hanshuebner/herold/internal/secrets"
 	"github.com/hanshuebner/herold/internal/spam"
 	"github.com/hanshuebner/herold/internal/store"
+	"github.com/hanshuebner/herold/internal/storepg"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 	"github.com/hanshuebner/herold/internal/testharness"
 )
@@ -1252,6 +1255,225 @@ func TestOwnSentImportProvenanceLabelMirrorsSeen(t *testing.T) {
 		if mm.Flags&store.MessageFlagSeen == 0 {
 			t.Errorf("membership in mailbox %d is not $seen (re #316): %+v", mm.MailboxID, mm)
 		}
+	}
+}
+
+// ownSentDedupBackend names one store backend to run the #376 dedup tests
+// against, plus the store/clock pair testharness.Options needs to use it
+// instead of the package default (sqlite).
+type ownSentDedupBackend struct {
+	name string
+	st   store.Store
+	clk  clock.Clock
+}
+
+// ownSentDedupBackends returns the sqlite backend always, plus postgres
+// when HEROLD_PG_DSN is set -- mirroring classifySubprocessBackends'
+// pattern (classify_subprocess_e2e_test.go) so the #376 dedup/placement
+// fix in placeExistingMessage is verified on both backends the way
+// STANDARDS.md requires for any store-touching change.
+func ownSentDedupBackends(t *testing.T) []ownSentDedupBackend {
+	t.Helper()
+	out := []ownSentDedupBackend{{name: "sqlite"}}
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		return out
+	}
+	clk := clock.NewFake(time.Date(2025, 9, 13, 0, 0, 0, 0, time.UTC))
+	blobDir := t.TempDir()
+	st, err := storepg.Open(context.Background(), dsn, filepath.Join(blobDir, "blobs"), nil, clk)
+	if err != nil {
+		t.Fatalf("storepg.Open: %v", err)
+	}
+	if tr, ok := st.(interface{ TruncateAll(context.Context) error }); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			t.Fatalf("TruncateAll: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return append(out, ownSentDedupBackend{name: "postgres", st: st, clk: clk})
+}
+
+// TestDedupHitOnSentCopyMarkedSeen reproduces the INBOX half of #376: an
+// upstream copy of a message the principal already sent (same Message-ID
+// already imported into the herold Sent mailbox) arrives later in the
+// upstream INBOX -- the Cc-loops-back scenario from the production report.
+// Before the fix, placeExistingMessage's AddMessageToMailbox always created
+// the new INBOX membership unseen (flags=0), regardless of the message
+// being the principal's own Sent-role mail, so the thread reappeared bold
+// in Inbox with the principal as sender. The fix extends the #316
+// \Sent-role $seen rule to every membership a later dedup hit adds.
+func TestDedupHitOnSentCopyMarkedSeen(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			u := ts.addUser("u23", "pw")
+			if err := u.Create("Sent", nil); err != nil {
+				t.Fatalf("Create Sent: %v", err)
+			}
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "u23@example.test",
+				username:            "u23",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			d := time.Date(2025, 9, 13, 10, 32, 0, 0, time.UTC)
+			raw := buildRFC822("own-reply-dedup@test", "Own Reply", d)
+
+			// Phase 1: the principal's reply lands in Sent first (the send
+			// path), with no \Seen flag upstream -- forced $seen by the
+			// existing #316 rule.
+			appendToServer(t, ts, "u23", "pw", "Sent", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("first sync: %v", err)
+			}
+
+			// Precondition: the Sent membership exists and is $seen.
+			ctx := context.Background()
+			msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-dedup@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (precondition): %v", err)
+			}
+			if len(msg.Mailboxes) != 1 {
+				t.Fatalf("precondition: want 1 membership (Sent), got %d: %+v", len(msg.Mailboxes), msg.Mailboxes)
+			}
+			if msg.Mailboxes[0].Flags&store.MessageFlagSeen == 0 {
+				t.Fatal("precondition: Sent membership should be $seen")
+			}
+
+			// Phase 2: the SAME Message-ID (a byte-identical copy from the Cc
+			// that routed back into the upstream account) shows up in
+			// upstream INBOX, unseen -- the exact upstream state observed in
+			// production.
+			appendToServer(t, ts, "u23", "pw", "INBOX", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("second sync: %v", err)
+			}
+
+			msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-dedup@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (after dedup): %v", err)
+			}
+			if len(msg2.Mailboxes) != 2 {
+				t.Fatalf("want 2 memberships (Sent + INBOX), got %d: %+v", len(msg2.Mailboxes), msg2.Mailboxes)
+			}
+			inboxMB := getMailboxID(t, ha.Store, acc.PrincipalID, "INBOX")
+			found := false
+			for _, mm := range msg2.Mailboxes {
+				if mm.MailboxID != inboxMB {
+					continue
+				}
+				found = true
+				if mm.Flags&store.MessageFlagSeen == 0 {
+					t.Error("dedup-hit INBOX membership on the principal's own sent copy is not $seen (re #376)")
+				}
+			}
+			if !found {
+				t.Fatal("dedup hit did not create an INBOX membership")
+			}
+		})
+	}
+}
+
+// TestDedupHitOnArchivedSentCopySkipsInbox reproduces the Send+Archive half
+// of #376: after the principal sends a reply and archives the thread, an
+// upstream copy of that same reply (Cc-routed back into the imported
+// account's INBOX) must not resurface the thread in Inbox. Before the fix,
+// the multi-mailbox dedup unconditionally added an INBOX membership for any
+// folder the message had not yet been placed into, undoing the archive.
+func TestDedupHitOnArchivedSentCopySkipsInbox(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			u := ts.addUser("u24", "pw")
+			if err := u.Create("Sent", nil); err != nil {
+				t.Fatalf("Create Sent: %v", err)
+			}
+			if err := u.Create("Archive", nil); err != nil {
+				t.Fatalf("Create Archive: %v", err)
+			}
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "u24@example.test",
+				username:            "u24",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			d := time.Date(2025, 9, 13, 10, 32, 0, 0, time.UTC)
+			raw := buildRFC822("own-reply-archived@test", "Own Reply Archived", d)
+
+			// Phase 1: the reply lands in Sent (the send path).
+			appendToServer(t, ts, "u24", "pw", "Sent", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("first sync: %v", err)
+			}
+
+			// Phase 2: the principal archives the thread. Modelled here as
+			// the upstream copy also showing up in Archive (Send + Archive
+			// filed the message there); the dedup hit mirrors it into
+			// herold's Archive mailbox alongside Sent.
+			appendToServer(t, ts, "u24", "pw", "Archive", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("second sync: %v", err)
+			}
+
+			ctx := context.Background()
+			msg, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-archived@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (precondition): %v", err)
+			}
+			if len(msg.Mailboxes) != 2 {
+				t.Fatalf("precondition: want 2 memberships (Sent + Archive), got %d: %+v", len(msg.Mailboxes), msg.Mailboxes)
+			}
+
+			// Phase 3: the Cc-routed copy of the same reply shows up in
+			// upstream INBOX, unseen -- the production trigger. It must not
+			// resurrect an INBOX membership on an already-archived thread.
+			inboxUID := appendToServer(t, ts, "u24", "pw", "INBOX", raw, nil, d)
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("third sync: %v", err)
+			}
+
+			msg2, err := ha.Store.Meta().GetMessageByMessageIDHeader(ctx, acc.PrincipalID, "own-reply-archived@test")
+			if err != nil {
+				t.Fatalf("GetMessageByMessageIDHeader (after third sync): %v", err)
+			}
+			names := messageMailboxNames(t, ha.Store, acc.PrincipalID, msg2)
+			for _, n := range names {
+				if strings.EqualFold(n, "INBOX") {
+					t.Errorf("message mailboxes = %v; INBOX membership was added to an already-archived own-sent copy (re #376)", names)
+				}
+			}
+			if len(names) != 2 {
+				t.Errorf("message mailboxes = %v; want exactly [Sent Archive] (2 memberships)", names)
+			}
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+				t.Errorf("herold INBOX has %d messages; want 0 (archive wins over inbox for own sent copy)", got)
+			}
+
+			// The INBOX (folder, uid) is still recorded in message_state,
+			// pointing at the real Archive placement, so a later upstream
+			// \Deleted in INBOX can still be addressed (mirrors the
+			// Junk-wins precedent, re #319).
+			ms, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "INBOX", uint32(inboxUID))
+			if err != nil {
+				t.Fatalf("GetIMAPImportMessageState: %v", err)
+			}
+			if !found {
+				t.Fatal("message_state not recorded for the suppressed INBOX placement")
+			}
+			archiveMB := getMailboxID(t, ha.Store, acc.PrincipalID, "Archive")
+			inboxMB := getMailboxID(t, ha.Store, acc.PrincipalID, "INBOX")
+			if ms.HeroldMailboxID != archiveMB {
+				t.Errorf("HeroldMailboxID = %d; want %d (Archive, the message's real placement)", ms.HeroldMailboxID, archiveMB)
+			}
+			if ms.MappedMailboxID != inboxMB {
+				t.Errorf("MappedMailboxID = %d; want %d (the suppressed INBOX target)", ms.MappedMailboxID, inboxMB)
+			}
+		})
 	}
 }
 

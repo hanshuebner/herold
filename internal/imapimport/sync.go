@@ -520,20 +520,22 @@ func (w *accountWorker) fetchAndIngest(
 
 		isNew, isNewMember, msgID, mbID, finalMailbox, ingestErr := w.ingestMessage(ctx, fm, upstreamFolder, heroldMailbox, categorise)
 		if ingestErr != nil {
-			if errors.Is(ingestErr, errINBOXSuppressedByJunk) {
-				// Junk wins over inbox (re #303): this folder's mapped
-				// INBOX placement is intentionally suppressed because the
-				// message already carries a Junk-attributed membership. No
-				// membership is created here, but a state row is still
-				// recorded for (folder, uid) so this account can keep
-				// addressing the message: HeroldMailboxID is the message's
-				// real (Junk) placement (mbID, from placeExistingMessage);
+			if errors.Is(ingestErr, errINBOXSuppressedByJunk) || errors.Is(ingestErr, errINBOXSuppressedByArchive) {
+				// Junk wins over inbox (re #303), or Archive wins over inbox
+				// for a dedup hit on the principal's own sent copy (re #376):
+				// this folder's mapped INBOX placement is intentionally
+				// suppressed because the message already carries a
+				// Junk-attributed, or already-archived Sent-role/own-identity,
+				// membership. No membership is created here, but a state row
+				// is still recorded for (folder, uid) so this account can
+				// keep addressing the message: HeroldMailboxID is the
+				// message's real placement (mbID, from placeExistingMessage);
 				// MappedMailboxID is the suppressed INBOX target. The two
 				// diverge on purpose (re #319) -- a later upstream \Deleted
 				// seen in this folder then finds the divergence in
 				// removeMessageStateMembership and knows there is no
-				// mapped-mailbox membership here to remove, leaving
-				// herold's own Junk placement alone.
+				// mapped-mailbox membership here to remove, leaving herold's
+				// own placement alone.
 				principalID := store.PrincipalID(account.PrincipalID)
 				if mappedMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox); mbErr == nil {
 					sf := w.ingestedSyncedFlags(ctx, fm.Flags, msgID)
@@ -546,7 +548,7 @@ func (w *accountWorker) fetchAndIngest(
 						MappedMailboxID: mappedMB.ID,
 						LastSyncedFlags: sf,
 					}); msErr != nil {
-						w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed (junk-suppressed)",
+						w.opts.log.Warn("imapimport: UpsertIMAPImportMessageState failed (inbox-suppressed)",
 							slog.String("account_id", account.ID),
 							slog.Uint64("uid", uid),
 							slog.String("error", msErr.Error()),
@@ -699,7 +701,7 @@ func (w *accountWorker) ingestMessage(
 		normID := mailparse.NormalizeMessageID(rawMsgID)
 		existing, lookupErr := w.opts.store.Meta().GetMessageByMessageIDHeader(ctx, principalID, normID)
 		if lookupErr == nil {
-			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
+			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox, msg)
 			return false, newMember, eid, embID, heroldMailbox, placeErr
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
@@ -722,7 +724,7 @@ func (w *accountWorker) ingestMessage(
 	if rawMsgID == "" {
 		existing, lookupErr := w.opts.store.Meta().GetMessageByBlobHash(ctx, principalID, blobRef.Hash)
 		if lookupErr == nil {
-			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox)
+			newMember, eid, embID, placeErr := w.placeExistingMessage(ctx, principalID, existing, heroldMailbox, msg)
 			return false, newMember, eid, embID, heroldMailbox, placeErr
 		}
 		if !errors.Is(lookupErr, store.ErrNotFound) {
@@ -849,6 +851,7 @@ func (w *accountWorker) placeExistingMessage(
 	principalID store.PrincipalID,
 	existing store.Message,
 	heroldMailbox string,
+	msg mailparse.Message,
 ) (isNewMember bool, msgID store.MessageID, mbID store.MailboxID, err error) {
 	targetMB, mbErr := w.ensureMailbox(ctx, principalID, heroldMailbox)
 	if mbErr != nil {
@@ -857,6 +860,8 @@ func (w *accountWorker) placeExistingMessage(
 	// Tag with the per-account provenance label (REQ-IMAP-IMP-100); idempotent
 	// across the K folder placements of a multi-mailbox dedup.
 	w.addProvenanceLabel(ctx, existing.ID)
+
+	attrs := w.mailboxAttrByID(ctx, principalID)
 
 	// Junk-wins precedence (re #303): an imported message never carries both
 	// a Junk-attributed membership and an INBOX membership, regardless of
@@ -867,7 +872,6 @@ func (w *accountWorker) placeExistingMessage(
 	// first would let RemoveMessageFromMailbox's "last membership gone"
 	// contract destroy the message out from under the pending Junk add.
 	if targetMB.Attributes&store.MailboxAttrInbox != 0 {
-		attrs := w.mailboxAttrByID(ctx, principalID)
 		for _, mm := range existing.Mailboxes {
 			if attrs[mm.MailboxID]&store.MailboxAttrJunk != 0 {
 				// mbID here is the message's EXISTING Junk membership, not
@@ -876,6 +880,30 @@ func (w *accountWorker) placeExistingMessage(
 				// where the message actually lives, so a later upstream
 				// \Deleted seen in *this* folder can find it (re #319).
 				return false, existing.ID, mm.MailboxID, errINBOXSuppressedByJunk
+			}
+		}
+	}
+
+	// principalSent is true for a dedup hit that is a copy of a message the
+	// principal sent: `existing` already carries a \Sent-role membership, or
+	// the dedup-hit message's From names one of the principal's own
+	// identities (canonical address or a JMAP send-as identity). Gates both
+	// the Archive-wins placement below and the forced-$seen membership
+	// further down (re #376).
+	principalSent := w.dedupHitIsPrincipalSent(ctx, principalID, existing, msg, attrs)
+
+	// Archive-wins precedence (re #376): once the principal has filed a
+	// thread in Archive (Send + Archive), a copy of their own sent reply
+	// arriving later through IMAP import -- routed back into the upstream
+	// account's INBOX by a Cc that loops through it -- must not resurface
+	// the thread in Inbox. Mirrors the Junk-wins check above: runs before
+	// any membership is touched, and reports the existing Archive
+	// membership so fetchAndIngest still records a message_state row
+	// addressable by (folder, uid), same as the Junk case (re #319).
+	if targetMB.Attributes&store.MailboxAttrInbox != 0 && principalSent {
+		for _, mm := range existing.Mailboxes {
+			if attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {
+				return false, existing.ID, mm.MailboxID, errINBOXSuppressedByArchive
 			}
 		}
 	}
@@ -902,6 +930,20 @@ func (w *accountWorker) placeExistingMessage(
 		}
 	}
 
+	if isNewMember && principalSent {
+		// A copy of a message the principal already sent carries no "unread
+		// from a correspondent" meaning in any mailbox the import places it
+		// into. Force $seen on this membership the same way InsertMessage
+		// forces it on a fresh \Sent-role insert (re #316) -- this extends
+		// that rule from the insert-time membership to every membership a
+		// later dedup hit adds.
+		if _, uerr := w.opts.store.Meta().UpdateMessageFlags(ctx, existing.ID, targetMB.ID, store.MessageFlagSeen, 0, nil, nil, 0); uerr != nil {
+			w.opts.log.Warn("imapimport: failed to force $seen on principal-sent dedup membership",
+				slog.String("account_id", w.opts.account.ID),
+				slog.String("error", uerr.Error()))
+		}
+	}
+
 	if targetMB.Attributes&store.MailboxAttrJunk != 0 {
 		// Placing into Junk: strip any INBOX membership this message already
 		// carries from an earlier sync pass. The Junk membership added above
@@ -915,12 +957,79 @@ func (w *accountWorker) placeExistingMessage(
 	return isNewMember, existing.ID, targetMB.ID, nil
 }
 
+// dedupHitIsPrincipalSent reports whether a Message-ID/blob-hash dedup hit
+// (existing, freshly re-fetched msg) is a copy of a message the owning
+// principal sent: either existing already carries a membership in a
+// \Sent-role mailbox, or msg's From header names one of the principal's own
+// identities (the principal's canonical address or a JMAP send-as
+// identity). attrs is the caller's already-fetched MailboxID -> Attributes
+// map (re #376).
+func (w *accountWorker) dedupHitIsPrincipalSent(
+	ctx context.Context,
+	principalID store.PrincipalID,
+	existing store.Message,
+	msg mailparse.Message,
+	attrs map[store.MailboxID]store.MailboxAttributes,
+) bool {
+	for _, mm := range existing.Mailboxes {
+		if attrs[mm.MailboxID]&store.MailboxAttrSent != 0 {
+			return true
+		}
+	}
+	if len(msg.Envelope.From) == 0 {
+		return false
+	}
+	identities := w.principalIdentityEmails(ctx, principalID)
+	if len(identities) == 0 {
+		return false
+	}
+	for _, from := range msg.Envelope.From {
+		addr := strings.ToLower(strings.TrimSpace(from.Address))
+		if addr == "" {
+			continue
+		}
+		if _, ok := identities[addr]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// principalIdentityEmails returns the lower-cased set of addresses that
+// count as "the principal's own identity" for dedupHitIsPrincipalSent: the
+// principal's canonical address plus every JMAP send-as identity's Email.
+// Returns an empty (non-nil) map on a store error; callers treat a miss as
+// "no known identities" rather than failing the import.
+func (w *accountWorker) principalIdentityEmails(ctx context.Context, principalID store.PrincipalID) map[string]struct{} {
+	out := make(map[string]struct{}, 4)
+	if p, err := w.opts.store.Meta().GetPrincipalByID(ctx, principalID); err == nil {
+		if e := strings.ToLower(strings.TrimSpace(p.CanonicalEmail)); e != "" {
+			out[e] = struct{}{}
+		}
+	}
+	if ids, err := w.opts.store.Meta().ListJMAPIdentities(ctx, principalID); err == nil {
+		for _, id := range ids {
+			if e := strings.ToLower(strings.TrimSpace(id.Email)); e != "" {
+				out[e] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
 // errINBOXSuppressedByJunk is returned by placeExistingMessage when an
 // INBOX-mapped folder placement is suppressed because the message already
 // carries a Junk-attributed membership (re #303). Not a failure: the caller
 // treats it as a benign skip and records no message_state row for the
 // (folder, uid) that would have produced the suppressed membership.
 var errINBOXSuppressedByJunk = errors.New("imapimport: inbox membership suppressed by junk precedence")
+
+// errINBOXSuppressedByArchive is returned by placeExistingMessage when an
+// INBOX-mapped folder placement is suppressed because the dedup hit is a
+// copy of a message the principal sent and already filed in Archive
+// (re #376). Not a failure: the caller treats it as a benign skip, same as
+// errINBOXSuppressedByJunk.
+var errINBOXSuppressedByArchive = errors.New("imapimport: inbox membership suppressed by archive precedence (own sent copy)")
 
 // mailboxAttrByID returns a MailboxID -> Attributes map for every mailbox
 // owned by pid, for callers that need to classify several
