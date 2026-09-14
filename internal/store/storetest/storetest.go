@@ -399,6 +399,7 @@ func Run(t *testing.T, f Factory) {
 		{"EmailReaction_BatchList", testEmailReactionBatchList},
 		{"EmailReaction_GetMessageByMessageIDHeader", testGetMessageByMessageIDHeader},
 		{"Message_GetMessageByBlobHash", testGetMessageByBlobHash},
+		{"Message_GetMessageIDByMailboxUID", testGetMessageIDByMailboxUID},
 		// -- Principal/query support (REQ-CHAT-01b/c) --------------------
 		{"SearchPrincipalsByText_DisplayNameMatch", testSearchPrincipalsByTextDisplayNameMatch},
 		{"SearchPrincipalsByText_EmailLocalPartMatch", testSearchPrincipalsByTextEmailLocalPartMatch},
@@ -11276,6 +11277,70 @@ func testGetMessageByBlobHash(t *testing.T, s store.Store) {
 	// Empty hash -> ErrNotFound (defensive; never matches a real row).
 	if _, err := s.Meta().GetMessageByBlobHash(ctx, p.ID, ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("empty blob hash: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testGetMessageIDByMailboxUID(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "mailboxuid-lookup@example.com")
+	mb1 := mustInsertMailbox(t, s, p.ID, "INBOX")
+	mb2 := mustInsertMailbox(t, s, p.ID, "Archive")
+
+	ref := putBlob(t, s, "From: sender@example.com\r\nSubject: two mailboxes\r\n\r\nBody\r\n")
+	_, _, err := s.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		Size:         ref.Size,
+		Blob:         ref,
+		ReceivedAt:   time.Now().UTC(),
+		InternalDate: time.Now().UTC(),
+		Envelope:     store.Envelope{From: "sender@example.com"},
+	}, []store.MessageMailbox{{MailboxID: mb1.ID}, {MailboxID: mb2.ID}})
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	// Recover the message id and per-mailbox UIDs via ListMessages, since
+	// InsertMessage only returns the first target's UID.
+	msgs1, err := s.Meta().ListMessages(ctx, mb1.ID, store.MessageFilter{Limit: 10})
+	if err != nil || len(msgs1) != 1 {
+		t.Fatalf("ListMessages(mb1): msgs=%v err=%v", msgs1, err)
+	}
+	msgs2, err := s.Meta().ListMessages(ctx, mb2.ID, store.MessageFilter{Limit: 10})
+	if err != nil || len(msgs2) != 1 {
+		t.Fatalf("ListMessages(mb2): msgs=%v err=%v", msgs2, err)
+	}
+	want := msgs1[0].ID
+	if msgs2[0].ID != want {
+		t.Fatalf("mb1/mb2 disagree on message id: %d vs %d", want, msgs2[0].ID)
+	}
+
+	// Found: either (mailbox, uid) pair resolves to the same message id.
+	got1, err := s.Meta().GetMessageIDByMailboxUID(ctx, mb1.ID, msgs1[0].UID)
+	if err != nil {
+		t.Fatalf("GetMessageIDByMailboxUID(mb1): %v", err)
+	}
+	if got1 != want {
+		t.Fatalf("GetMessageIDByMailboxUID(mb1): got %d, want %d", got1, want)
+	}
+	got2, err := s.Meta().GetMessageIDByMailboxUID(ctx, mb2.ID, msgs2[0].UID)
+	if err != nil {
+		t.Fatalf("GetMessageIDByMailboxUID(mb2): %v", err)
+	}
+	if got2 != want {
+		t.Fatalf("GetMessageIDByMailboxUID(mb2): got %d, want %d", got2, want)
+	}
+
+	// Not found: the UID is not present in mb1's UID space.
+	if _, err := s.Meta().GetMessageIDByMailboxUID(ctx, mb1.ID, msgs1[0].UID+1000); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unused uid in mb1: err = %v, want ErrNotFound", err)
+	}
+
+	// Not found: a colliding UID belonging to a different principal's
+	// mailbox does not leak across principals.
+	p2 := mustInsertPrincipal(t, s, "mailboxuid-other@example.com")
+	mb3 := mustInsertMailbox(t, s, p2.ID, "INBOX")
+	if _, err := s.Meta().GetMessageIDByMailboxUID(ctx, mb3.ID, msgs1[0].UID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("colliding uid in other principal's mailbox: err = %v, want ErrNotFound", err)
 	}
 }
 
