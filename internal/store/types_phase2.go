@@ -1506,6 +1506,13 @@ type LLMClassificationRecord struct {
 	SpamModel *string
 	// SpamClassifiedAt is the instant the spam classifier ran.
 	SpamClassifiedAt *time.Time
+	// SpamDeliveryOverride records, when non-nil, that a user filter kept
+	// this message out of Junk despite a spam/suspect verdict
+	// (REQ-FILT-02a / REQ-FLT-16, issue #382). The value is
+	// "filter:<rule name or id>", naming the ManagedRule responsible, so
+	// the reader can show "classifier said spam, delivered by your
+	// filter". Nil when no override applied to this message.
+	SpamDeliveryOverride *string
 
 	// -- Categorisation (nil when categorisation was not run or produced no category) --
 

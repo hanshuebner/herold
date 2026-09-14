@@ -846,6 +846,10 @@ type LLMClassificationRow struct {
 	CategoryPromptApplied  *string  `json:"category_prompt_applied,omitempty"`
 	CategoryModel          *string  `json:"category_model,omitempty"`
 	CategoryClassifiedAtUs *int64   `json:"category_classified_at_us,omitempty"`
+	// DeliveryOverride is non-nil exactly when a never-spam managed rule
+	// kept this message out of Junk (migration 0108, REQ-FILT-02a /
+	// REQ-FLT-16, issue #382): "filter:<rule name or id>".
+	DeliveryOverride *string `json:"delivery_override,omitempty"`
 }
 
 // SeenAddressRow mirrors the seen_addresses table introduced in

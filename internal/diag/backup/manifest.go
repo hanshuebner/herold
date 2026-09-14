@@ -860,7 +860,14 @@ const CurrentBackupVersion = 1
 //	(principal_id, lower(address)) backstops the store's own
 //	pre-write uniqueness checks. New table; JMAPIdentityAliasRow
 //	added to rows.go and registered in tableReg / TableNames.
-const CurrentSchemaVersion = 108
+//
+// 109 — 0109_llm_classification_delivery_override.sql (REQ-FILT-02a /
+//
+//	REQ-FLT-16, issue #382). Adds llm_classifications.delivery_override
+//	(text, nullable): "filter:<rule name or id>" when a never-spam
+//	managed rule kept a spam/suspect-verdict message out of Junk, NULL
+//	otherwise. No new table; LLMClassificationRow gains the one field.
+const CurrentSchemaVersion = 109
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

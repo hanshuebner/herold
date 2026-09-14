@@ -333,6 +333,8 @@ func Run(t *testing.T, f Factory) {
 		{"LLMClassification_BatchGet", testLLMClassificationBatchGet},
 		{"LLMClassification_GetNotFound", testLLMClassificationGetNotFound},
 		{"LLMClassification_UnclassifiedWithReason", testLLMClassificationUnclassifiedWithReason},
+		{"LLMClassification_DeliveryOverride_RoundTrip", testLLMClassificationDeliveryOverrideRoundTrip},
+		{"LLMClassification_DeliveryOverride_NilByDefault", testLLMClassificationDeliveryOverrideNilByDefault},
 		// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) -----------
 		{"Calendar_InsertGet_Roundtrip", testCalendarInsertGetRoundtrip},
 		{"Calendar_List_FilterAndPagination", testCalendarListFilterAndPagination},
@@ -8567,6 +8569,82 @@ func testLLMClassificationUnclassifiedWithReason(t *testing.T, s store.Store) {
 	}
 	if gotHam.SpamReason != nil {
 		t.Fatalf("SpamReason = %v, want nil for a genuine ham verdict with no plugin reason", gotHam.SpamReason)
+	}
+}
+
+// testLLMClassificationDeliveryOverrideRoundTrip covers migration 0108
+// (REQ-FILT-02a / REQ-FLT-16, issue #382): a spam-verdict message a
+// never-spam managed rule kept out of Junk records the rule that did it
+// in SpamDeliveryOverride, and it round-trips through Set/Get.
+func testLLMClassificationDeliveryOverrideRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-override@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-override@host")
+
+	verdict := "spam"
+	confidence := 0.92
+	override := "filter:Trusted senders"
+
+	rec := store.LLMClassificationRecord{
+		MessageID:            msg.ID,
+		PrincipalID:          p.ID,
+		SpamVerdict:          &verdict,
+		SpamConfidence:       &confidence,
+		SpamDeliveryOverride: &override,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamVerdict == nil || *got.SpamVerdict != verdict {
+		t.Fatalf("SpamVerdict = %v, want %q", got.SpamVerdict, verdict)
+	}
+	if got.SpamDeliveryOverride == nil || *got.SpamDeliveryOverride != override {
+		t.Fatalf("SpamDeliveryOverride = %v, want %q", got.SpamDeliveryOverride, override)
+	}
+
+	// BatchGet must surface the same field.
+	batch, err := s.Meta().BatchGetLLMClassifications(ctx, []store.MessageID{msg.ID})
+	if err != nil {
+		t.Fatalf("BatchGetLLMClassifications: %v", err)
+	}
+	brec, ok := batch[msg.ID]
+	if !ok {
+		t.Fatalf("BatchGetLLMClassifications: message %d missing from result", msg.ID)
+	}
+	if brec.SpamDeliveryOverride == nil || *brec.SpamDeliveryOverride != override {
+		t.Fatalf("batch SpamDeliveryOverride = %v, want %q", brec.SpamDeliveryOverride, override)
+	}
+}
+
+// testLLMClassificationDeliveryOverrideNilByDefault covers the common
+// case -- a message with no filter override -- staying nil rather than
+// defaulting to an empty string, so callers can tell "no override" from
+// "override with an empty label".
+func testLLMClassificationDeliveryOverrideNilByDefault(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-no-override@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-no-override@host")
+
+	verdict := "spam"
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID:   msg.ID,
+		PrincipalID: p.ID,
+		SpamVerdict: &verdict,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamDeliveryOverride != nil {
+		t.Fatalf("SpamDeliveryOverride = %q, want nil", *got.SpamDeliveryOverride)
 	}
 }
 
