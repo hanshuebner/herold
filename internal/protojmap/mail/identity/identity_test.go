@@ -654,14 +654,14 @@ func createIdentity(t *testing.T, h *handlerSet, p store.Principal, clientID, na
 // unknown property (REQ-IDENT-70).
 func TestIdentity_DecodePatch_AcceptsIsDefault(t *testing.T) {
 	_, st, _ := newHandlers(t)
-	patch, perr := decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":true}`))
+	patch, perr := decodePatch(context.Background(), st, 1, json.RawMessage(`{"isDefault":true}`))
 	if perr != nil {
 		t.Fatalf("decodePatch rejected isDefault: %+v", perr)
 	}
 	if !patch.hasIsDefault || !patch.isDefault {
 		t.Fatalf("patch = %+v; want hasIsDefault && isDefault", patch)
 	}
-	patch, perr = decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":false}`))
+	patch, perr = decodePatch(context.Background(), st, 1, json.RawMessage(`{"isDefault":false}`))
 	if perr != nil {
 		t.Fatalf("decodePatch rejected isDefault:false: %+v", perr)
 	}
@@ -669,7 +669,7 @@ func TestIdentity_DecodePatch_AcceptsIsDefault(t *testing.T) {
 		t.Fatalf("patch = %+v; want hasIsDefault && !isDefault", patch)
 	}
 	// A non-boolean value is invalidProperties { isDefault }.
-	if _, perr = decodePatch(context.Background(), st, json.RawMessage(`{"isDefault":"yes"}`)); perr == nil {
+	if _, perr = decodePatch(context.Background(), st, 1, json.RawMessage(`{"isDefault":"yes"}`)); perr == nil {
 		t.Fatal("decodePatch accepted a non-boolean isDefault")
 	} else if perr.Type != "invalidProperties" ||
 		len(perr.Properties) != 1 || perr.Properties[0] != "isDefault" {

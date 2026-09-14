@@ -52,6 +52,38 @@ func seedIdentityRow(t *testing.T, st store.Store, pid store.PrincipalID, identi
 	return identityID
 }
 
+// TestCLIIdentityList_RoundTripsAliases proves REQ-IDENT-01 (re #387):
+// an identity's aliases, stored via InsertJMAPIdentity, appear in the
+// `herold identity list` table's ALIASES column, comma-joined.
+func TestCLIIdentityList_RoundTripsAliases(t *testing.T) {
+	t.Parallel()
+	cfgPath, _ := minimalConfigFixture(t)
+	st := openIdentityTestStore(t, cfgPath)
+	p := seedPrincipalDirect(t, st, "alice@test.local")
+	ctx := context.Background()
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:          "ident-aliases",
+		PrincipalID: p.ID,
+		Name:        "Alice Alt",
+		Email:       "alice+alt@example.com",
+		MayDelete:   true,
+		Aliases:     []string{"alice+one@example.com", "alice+two@example.com"},
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+
+	stdout, _, err := runIdentity(t, cfgPath, "identity", "list")
+	if err != nil {
+		t.Fatalf("identity list: %v", err)
+	}
+	if !strings.Contains(stdout, "ALIASES") {
+		t.Errorf("identity list output missing ALIASES header.\nstdout:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "alice+one@example.com,alice+two@example.com") {
+		t.Errorf("identity list output missing comma-joined aliases.\nstdout:\n%s", stdout)
+	}
+}
+
 // seedPrincipalDirect inserts a principal directly into the store and
 // returns the materialised row (CreatedAt populated).
 func seedPrincipalDirect(t *testing.T, st store.Store, email string) store.Principal {

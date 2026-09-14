@@ -87,6 +87,14 @@ type jmapIdentity struct {
 	// Identity/set{separated:true} is in progress, "separated" once
 	// it has completed.
 	Separation separationDesc `json:"separation"`
+	// Aliases is the herold extension property (REQ-IDENT-01, re #387):
+	// additional addr-specs that select this identity as the reply
+	// sender alongside Email, ordered as stored. Always present (never
+	// null), defaulting to an empty array. Aliases are match-only --
+	// they never appear as a From address on the wire, and the
+	// synthesised default identity always carries an empty list since
+	// it has no backing row in jmap_identities.
+	Aliases []string `json:"aliases"`
 }
 
 // separationDesc is the wire form of Identity.separation (issue #227,
@@ -150,6 +158,11 @@ type identityRecord struct {
 	// with zero counts, matching an identity that has never been
 	// separated.
 	separation separationInfo
+	// Aliases lists additional addr-specs that select this identity as
+	// the reply sender (REQ-IDENT-01, re #387). Empty/nil for the
+	// synthesised default identity, which is never overridden with
+	// aliases (it has no backing jmap_identities row to hold them).
+	Aliases []string
 }
 
 // separationInfo is the in-memory counterpart of the wire-form
@@ -204,6 +217,10 @@ func (r identityRecord) toJMAP() jmapIdentity {
 	if state == "" {
 		state = separationStateNone
 	}
+	// aliases is a non-nullable array on the wire, defaulting to empty
+	// (REQ-IDENT-01, re #387).
+	aliases := make([]string, len(r.Aliases))
+	copy(aliases, r.Aliases)
 	return jmapIdentity{
 		ID:            renderID(r.ID),
 		Name:          r.Name,
@@ -226,6 +243,7 @@ func (r identityRecord) toJMAP() jmapIdentity {
 			MessagesCopied: r.separation.messagesCopied,
 			LastError:      r.separation.lastError,
 		},
+		Aliases: aliases,
 	}
 }
 

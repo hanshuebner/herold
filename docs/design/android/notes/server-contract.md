@@ -100,6 +100,13 @@ milestone-1a client-side heuristic (deriving tabs from the first five
 category names) tracked on #327; the client-side switch to the server
 fields is tracked on the Android client tickets, not here.
 
+### Identity alias addresses (no divergence from § Identity alias addresses)
+
+The mobile client reads `Identity.aliases` (base contract § Identity alias
+addresses, issue #387) identically to the Suite: a non-nullable array of
+addr-spec strings, defaulting to empty, that select the owning identity as the
+reply sender without ever becoming a From address. No mobile-specific handling.
+
 ### EventSource
 
 Used identically to the Suite (server-contract § EventSource push) while the app

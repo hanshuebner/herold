@@ -289,8 +289,12 @@ func (s *Store) defaultRecordLocked(p store.Principal) identityRecord {
 }
 
 // create appends a new identity for p. The caller has already
-// validated email + replyTo against the local-domain set.
-func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord) identityRecord {
+// validated email + replyTo against the local-domain set. Returns the
+// store error verbatim on failure -- notably store.ErrIdentityAliasConflict
+// and store.ErrInvalidArgument (REQ-IDENT-01, re #387) when in.Aliases
+// fails the store's own validation -- so the caller can map it to a
+// SetError naming the offending property.
+func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord) (identityRecord, error) {
 	if s.st == nil {
 		// No persistence: synthesise an in-memory id and pretend.
 		// Identity/get on a fresh process won't see the row, but the
@@ -299,7 +303,7 @@ func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord
 		in.PrincipalID = p.ID
 		in.MayDelete = true
 		in.UpdatedAt = s.clk.Now()
-		return in
+		return in, nil
 	}
 	now := s.clk.Now()
 	id := allocateIdentityID(now)
@@ -311,15 +315,9 @@ func (s *Store) create(ctx context.Context, p store.Principal, in identityRecord
 	row.CreatedAtUs = now.UnixMicro()
 	row.UpdatedAtUs = now.UnixMicro()
 	if err := s.st.Meta().InsertJMAPIdentity(ctx, row); err != nil {
-		// On collision (extremely unlikely with nanosecond IDs) we
-		// fall back to a retry with a tiny offset. Other errors
-		// surface as "create returned anyway" — the JMAP layer's
-		// /set treats this as success because the record's ID is set;
-		// callers that care can re-list. Tests do not exercise this
-		// branch.
-		_ = err
+		return identityRecord{}, err
 	}
-	return in
+	return in, nil
 }
 
 // allocateIdentityID returns a fresh per-process identity id derived
@@ -334,9 +332,13 @@ func allocateIdentityID(now time.Time) uint64 {
 }
 
 // update mutates the record with the given id by applying the patch's
-// non-nil fields. Returns the updated record + ok=true on success;
-// returns ok=false when no such record exists for p.
-func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch identityPatch) (identityRecord, bool) {
+// non-nil fields. Returns the updated record on success; returns
+// store.ErrNotFound when no such record exists for p, or the store's
+// own write error verbatim -- notably store.ErrIdentityAliasConflict
+// and store.ErrInvalidArgument (REQ-IDENT-01, re #387) when
+// patch.aliases fails the store's own validation -- so the caller can
+// map it to a SetError naming the offending property.
+func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch identityPatch) (identityRecord, error) {
 	if id == 0 {
 		s.mu.Lock()
 		ovr := s.defaultOverrides[p.ID]
@@ -375,22 +377,22 @@ func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch 
 		// REQ-IDENT-70: isDefault on the synthesised default identity.
 		if patch.hasIsDefault {
 			if !s.applyIsDefault(ctx, p, 0, patch.isDefault) {
-				return identityRecord{}, false
+				return identityRecord{}, store.ErrNotFound
 			}
 		}
 		s.mu.RLock()
 		out := s.defaultRecordLocked(updateP)
 		s.mu.RUnlock()
 		out.IsDefault = s.resolveIsDefault(ctx, p, 0)
-		return out, true
+		return out, nil
 	}
 	if s.st == nil {
-		return identityRecord{}, false
+		return identityRecord{}, store.ErrNotFound
 	}
 	rowID := strconv.FormatUint(id, 10)
 	cur, err := s.st.Meta().GetJMAPIdentity(ctx, rowID)
 	if err != nil || cur.PrincipalID != p.ID {
-		return identityRecord{}, false
+		return identityRecord{}, store.ErrNotFound
 	}
 	rec := persistedToRecord(cur)
 	patch.applyTo(&rec)
@@ -399,18 +401,18 @@ func (s *Store) update(ctx context.Context, p store.Principal, id uint64, patch 
 	updated.CreatedAtUs = cur.CreatedAtUs
 	updated.UpdatedAtUs = rec.UpdatedAt.UnixMicro()
 	if err := s.st.Meta().UpdateJMAPIdentity(ctx, updated); err != nil {
-		return identityRecord{}, false
+		return identityRecord{}, err
 	}
 	// REQ-IDENT-70: isDefault is enforced by SetDefaultJMAPIdentity in a
 	// single transaction (UpdateJMAPIdentity above never touches the
 	// is_default column).
 	if patch.hasIsDefault {
 		if !s.applyIsDefault(ctx, p, id, patch.isDefault) {
-			return identityRecord{}, false
+			return identityRecord{}, store.ErrNotFound
 		}
 	}
 	rec.IsDefault = s.resolveIsDefault(ctx, p, id)
-	return rec, true
+	return rec, nil
 }
 
 // applyIsDefault enforces the REQ-IDENT-70 single-default invariant for
@@ -556,6 +558,9 @@ func persistedToRecord(r store.JMAPIdentity) identityRecord {
 			rec.Bcc = addrs
 		}
 	}
+	if len(r.Aliases) > 0 {
+		rec.Aliases = append([]string(nil), r.Aliases...)
+	}
 	return rec
 }
 
@@ -589,6 +594,9 @@ func recordToPersisted(r identityRecord) store.JMAPIdentity {
 		if b, err := json.Marshal(r.Bcc); err == nil {
 			row.BccJSON = b
 		}
+	}
+	if len(r.Aliases) > 0 {
+		row.Aliases = append([]string(nil), r.Aliases...)
 	}
 	return row
 }
@@ -755,6 +763,11 @@ type identityPatch struct {
 	// therefore does not touch identityRecord.IsDefault.
 	hasIsDefault bool
 	isDefault    bool
+	// hasAliases is true when the patch included "aliases" (REQ-IDENT-01,
+	// re #387). aliases fully replaces the identity's alias list; store
+	// validation (syntax, cross-identity uniqueness) runs on write.
+	hasAliases bool
+	aliases    []string
 }
 
 func (p identityPatch) applyTo(r *identityRecord) {
@@ -787,5 +800,8 @@ func (p identityPatch) applyTo(r *identityRecord) {
 	}
 	if p.hasXFaceEnabled {
 		r.XFaceEnabled = p.xFaceEnabled
+	}
+	if p.hasAliases {
+		r.Aliases = append([]string(nil), p.aliases...)
 	}
 }

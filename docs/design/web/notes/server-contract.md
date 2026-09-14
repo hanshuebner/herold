@@ -160,6 +160,10 @@ The proxy returns accurate HTTP status codes (404, 502, 413, 415, 408, etc.). Th
 
 `Identity` carries an extension property `signature` (plain-text body, plus optional HTML in phase 2). The suite reads it to populate compose; updates it via `Identity/set`. See `../requirements/20-settings.md` REQ-SET-03.
 
+### Identity alias addresses
+
+`Identity` carries an extension property `aliases`: a non-nullable array of addr-spec strings, defaulting to empty. An alias selects the owning identity as the reply sender when a message was addressed or delivered to it, alongside the identity's primary `email`; aliases are match-only and never a From address on the wire. `Identity/set` create/update accept `aliases` (update fully replaces the list); a duplicate alias, an alias equal to any identity's primary address, or a malformed address is rejected with a `SetError` of type `invalidProperties` naming `aliases`. The synthesised default identity (id `"default"`) always renders `aliases: []` and refuses an `aliases` update outright — it has no backing row to hold them. See issue #387, REQ-IDENT-01.
+
 ### EventSource push
 
 Per RFC 8620 §7. The suite expects:

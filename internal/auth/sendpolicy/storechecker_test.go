@@ -83,3 +83,65 @@ func TestStoreChecker_VerifiedIdentity_Owned(t *testing.T) {
 		t.Error("CheckFrom (unrelated address): expected denied")
 	}
 }
+
+// TestStoreChecker_JMAPIdentityAlias_NotOwned proves REQ-IDENT-01 (re
+// #387): a JMAP Identity alias is match-only and never a From address
+// in its own right. StoreChecker.PrincipalOwnsAddress inspects a
+// verified identity's primary Email but never its Aliases, so
+// CheckFrom must refuse an alias address even though the aliased
+// identity itself is verified and owned by the principal.
+func TestStoreChecker_JMAPIdentityAlias_NotOwned(t *testing.T) {
+	ctx := context.Background()
+	st, err := storesqlite.Open(ctx, filepath.Join(t.TempDir(), "store.db"), nil,
+		clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("storesqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind: store.PrincipalKindUser, CanonicalEmail: "alice@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+
+	const aliasAddr = "alice-alias@foreign.example"
+	if err := st.Meta().InsertJMAPIdentity(ctx, store.JMAPIdentity{
+		ID:           "id-with-alias",
+		PrincipalID:  p.ID,
+		Name:         "Alice work",
+		Email:        "alice-work@foreign.example",
+		MayDelete:    true,
+		VerifiedAtUs: 1,
+		Aliases:      []string{aliasAddr},
+	}); err != nil {
+		t.Fatalf("InsertJMAPIdentity (with alias): %v", err)
+	}
+
+	chk := sendpolicy.StoreChecker{Meta: st.Meta()}
+
+	// The identity's own primary address is owned (regression guard,
+	// mirrors TestStoreChecker_VerifiedIdentity_Owned).
+	dec, err := sendpolicy.CheckFrom(ctx, chk, p, nil, "alice-work@foreign.example")
+	if err != nil {
+		t.Fatalf("CheckFrom (primary address): unexpected error: %v", err)
+	}
+	if !dec.Allowed {
+		t.Errorf("CheckFrom (primary address): expected allowed, got reason=%q", dec.Reason)
+	}
+
+	// The alias address is match-only: it never becomes a From address
+	// on the wire, so CheckFrom refuses it even though it belongs to a
+	// verified identity of this principal.
+	dec, err = sendpolicy.CheckFrom(ctx, chk, p, nil, aliasAddr)
+	if err != nil {
+		t.Fatalf("CheckFrom (alias address): unexpected error: %v", err)
+	}
+	if dec.Allowed {
+		t.Error("CheckFrom (alias address): expected denied -- an alias must never be usable as a From address")
+	}
+	if dec.Reason != sendpolicy.ReasonNotOwned {
+		t.Errorf("CheckFrom (alias address): reason=%q want %q", dec.Reason, sendpolicy.ReasonNotOwned)
+	}
+}

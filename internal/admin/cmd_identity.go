@@ -355,12 +355,15 @@ func runIdentityList(cmd *cobra.Command, principalRef string) error {
 		Verified    string
 		CreatedAt   string
 		Note        string // "default" for the synthesised row.
+		Aliases     string // comma-joined; empty for none (REQ-IDENT-01, re #387).
 	}
 	var rows []listRow
 	for _, p := range principals {
 		// Synthesised default — always verified by construction, derived
 		// from the principal row (REQ-IDENT-02). The CreatedAt mirrors
 		// the principal's CreatedAt so the timestamp column has a value.
+		// The default carries no aliases (REQ-IDENT-01, re #387): it has
+		// no backing row in jmap_identities to hold them.
 		rows = append(rows, listRow{
 			PrincipalID: strconv.FormatUint(uint64(p.ID), 10),
 			IdentityID:  defaultIdentityID,
@@ -387,6 +390,7 @@ func runIdentityList(cmd *cobra.Command, principalRef string) error {
 				Email:       r.Email,
 				Verified:    formatVerified(r.VerifiedAtUs),
 				CreatedAt:   cliout.FormatTimeValue(time.UnixMicro(r.CreatedAtUs).UTC()),
+				Aliases:     strings.Join(r.Aliases, ","),
 			})
 		}
 	}
@@ -397,9 +401,9 @@ func runIdentityList(cmd *cobra.Command, principalRef string) error {
 		return nil
 	}
 	t := cliout.NewTable(w)
-	t.Header("PRINCIPAL-ID", "IDENTITY-ID", "EMAIL", "VERIFIED", "CREATED-AT", "NOTE")
+	t.Header("PRINCIPAL-ID", "IDENTITY-ID", "EMAIL", "VERIFIED", "CREATED-AT", "NOTE", "ALIASES")
 	for _, r := range rows {
-		t.Row(r.PrincipalID, r.IdentityID, r.Email, r.Verified, r.CreatedAt, r.Note)
+		t.Row(r.PrincipalID, r.IdentityID, r.Email, r.Verified, r.CreatedAt, r.Note, r.Aliases)
 	}
 	return t.Flush()
 }

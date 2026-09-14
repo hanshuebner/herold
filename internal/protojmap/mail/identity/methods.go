@@ -325,6 +325,10 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			// AvatarBlobId and XFaceEnabled are herold extensions (REQ-SET-03b).
 			AvatarBlobId *string `json:"avatarBlobId,omitempty"`
 			XFaceEnabled bool    `json:"xFaceEnabled,omitempty"`
+			// Aliases is the herold extension property (REQ-IDENT-01,
+			// re #387): additional addr-specs that select this identity
+			// as the reply sender. Validated by the store on write.
+			Aliases []string `json:"aliases,omitempty"`
 			// SkipVerificationEmail suppresses the post-create verification
 			// trigger for identities whose ownership will be proven via an
 			// OAuth round-trip instead (e.g. Gmail, Microsoft 365). When
@@ -418,6 +422,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			AvatarBlobHash: avatarHash,
 			AvatarBlobSize: avatarSize,
 			XFaceEnabled:   in.XFaceEnabled,
+			Aliases:        in.Aliases,
 			// REQ-IDENT-12: the row is committed in the unverified
 			// state. VerifiedAt is the zero value, which the
 			// recordToPersisted projection drops (the persisted
@@ -429,7 +434,14 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			v := *in.Signature
 			rec.Signature = &v
 		}
-		created := s.h.identity.create(ctx, target, rec)
+		created, cerr := s.h.identity.create(ctx, target, rec)
+		if cerr != nil {
+			if resp.NotCreated == nil {
+				resp.NotCreated = make(map[string]setError)
+			}
+			resp.NotCreated[clientID] = setErrorForIdentityWrite(cerr)
+			continue
+		}
 		// incRef the avatar blob after the row is committed.
 		if avatarHash != "" {
 			_ = s.h.store.Meta().IncRefBlob(ctx, avatarHash, avatarSize)
@@ -496,7 +508,7 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 			mutated = true
 			continue
 		}
-		patch, perr := decodePatch(ctx, s.h.store, raw)
+		patch, perr := decodePatch(ctx, s.h.store, v, raw)
 		if perr != nil {
 			if resp.NotUpdated == nil {
 				resp.NotUpdated = make(map[jmapID]setError)
@@ -507,12 +519,16 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 		// Snapshot old avatar hash before applying so we can manage
 		// refcounts after a successful update.
 		oldAvatarHash := s.h.identity.snapshotAvatarHash(ctx, target, v)
-		rec, ok := s.h.identity.update(ctx, target, v, patch)
-		if !ok {
+		rec, uerr := s.h.identity.update(ctx, target, v, patch)
+		if uerr != nil {
 			if resp.NotUpdated == nil {
 				resp.NotUpdated = make(map[jmapID]setError)
 			}
-			resp.NotUpdated[id] = setError{Type: "notFound"}
+			if errors.Is(uerr, store.ErrNotFound) {
+				resp.NotUpdated[id] = setError{Type: "notFound"}
+			} else {
+				resp.NotUpdated[id] = setErrorForIdentityWrite(uerr)
+			}
 			continue
 		}
 		// Manage refcounts: incRef new avatar first (never transiently
@@ -625,6 +641,23 @@ func (s setHandler) Execute(ctx context.Context, args json.RawMessage) (any, *pr
 	}
 	resp.NewState = newState
 	return resp, nil
+}
+
+// setErrorForIdentityWrite maps a store write error from create()/
+// update() to a SetError (REQ-IDENT-01, re #387). A malformed alias
+// (store.ErrInvalidArgument) or a cross-identity alias collision
+// (store.ErrIdentityAliasConflict) is reported as invalidProperties
+// naming "aliases" with the store's own description; any other error
+// (a genuine backend failure) is reported as serverFail.
+func setErrorForIdentityWrite(err error) setError {
+	if errors.Is(err, store.ErrIdentityAliasConflict) || errors.Is(err, store.ErrInvalidArgument) {
+		return setError{
+			Type:        "invalidProperties",
+			Properties:  []string{"aliases"},
+			Description: err.Error(),
+		}
+	}
+	return setError{Type: "serverFail", Description: err.Error()}
 }
 
 // hasSeparatedKey reports whether raw (an Identity/set update object)
@@ -838,8 +871,12 @@ func (h *handlerSet) hasSubAccountsCapability() bool {
 
 // decodePatch reads an Identity/set "update" object into the Store's
 // patch shape, distinguishing missing fields from cleared ones.
-// ctx and st are needed to validate avatarBlobId when present.
-func decodePatch(ctx context.Context, st store.Store, raw json.RawMessage) (identityPatch, *setError) {
+// ctx and st are needed to validate avatarBlobId when present. id is
+// the internal identity id the update targets (0 == the synthesised
+// default), needed to reject an "aliases" patch on the default
+// identity (REQ-IDENT-01, re #387: the default has no backing row in
+// jmap_identities to hold aliases).
+func decodePatch(ctx context.Context, st store.Store, id uint64, raw json.RawMessage) (identityPatch, *setError) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return identityPatch{}, &setError{Type: "invalidProperties", Description: err.Error()}
@@ -930,6 +967,24 @@ func decodePatch(ctx context.Context, st store.Store, raw json.RawMessage) (iden
 					Type:        "invalidProperties",
 					Properties:  []string{"isDefault"},
 					Description: fmt.Sprintf("isDefault: %v", err),
+				}
+			}
+		case "aliases":
+			// REQ-IDENT-01, re #387: the synthesised default identity has
+			// no backing jmap_identities row to hold aliases.
+			if id == 0 {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"aliases"},
+					Description: "the default identity cannot carry aliases",
+				}
+			}
+			out.hasAliases = true
+			if err := json.Unmarshal(v, &out.aliases); err != nil {
+				return identityPatch{}, &setError{
+					Type:        "invalidProperties",
+					Properties:  []string{"aliases"},
+					Description: fmt.Sprintf("aliases: %v", err),
 				}
 			}
 		case "email":
