@@ -100,7 +100,7 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_
       restoreFromTrash: vi.fn().mockResolvedValue(undefined),
       markThreadSeen: vi.fn().mockResolvedValue(undefined),
       reportSpam: vi.fn().mockResolvedValue(undefined),
-      notSpam: vi.fn().mockResolvedValue(true),
+      notSpam: vi.fn().mockResolvedValue({ ok: true, undo: vi.fn() }),
     };
 
     const routerMock = { parts: ['mail'] as readonly string[], navigate: vi.fn() };
@@ -128,6 +128,8 @@ vi.mock('../settings/managed-rules.svelte', () => ({
     blockSender: vi.fn().mockResolvedValue(undefined),
     rules: [] as { order: number }[],
     create: vi.fn().mockResolvedValue({ id: 'new1' }),
+    update: vi.fn().mockResolvedValue(true),
+    delete: vi.fn().mockResolvedValue(true),
   },
 }));
 vi.mock('../toast/toast.svelte', () => ({ toast: { show: vi.fn() } }));

@@ -3,19 +3,25 @@
    * "Not spam" dialog (issue #382, REQ-FLT-16 / REQ-FILT-02a).
    *
    * Triggered from ThreadToolbar's "Not spam" action on a Junk message.
-   * Moves the message to Inbox (mail.notSpam, which already produces the
-   * REQ-FILT-70 feedback record via the same Email/set path every other
-   * mailbox move uses) and, when the user opts in via the scope chooser,
-   * creates a never-spam ManagedRule scoped to the sender's exact address
-   * or its domain so future mail from that sender skips Junk filing
-   * regardless of the classifier verdict.
+   * Moves the message to Inbox (mail.notSpam, which posts the
+   * REQ-FILT-70 ham feedback record itself) and, when the user opts in
+   * via the scope chooser, creates -- or reuses / extends -- a
+   * never-spam ManagedRule scoped to the sender's exact address or its
+   * domain so future mail from that sender skips Junk filing regardless
+   * of the classifier verdict (planNeverSpamRule dedups against the
+   * caller's existing rules, issue #382 retry).
+   *
+   * mail.notSpam() returns its move-undo without showing a toast; this
+   * dialog shows the toast only after the rule step has also settled, so
+   * a single toast/undo covers both the move and the rule change in one
+   * step and clicking Undo can never leave an orphaned rule behind.
    */
   import { mail } from './store.svelte';
   import { managedRules } from '../settings/managed-rules.svelte';
   import { toast } from '../toast/toast.svelte';
   import { t } from '../i18n/i18n.svelte';
   import Button from '@herold/design-system/Button.svelte';
-  import { senderDomain, buildNeverSpamRule, type NeverSpamScope } from './not-spam';
+  import { senderDomain, planNeverSpamRule, type NeverSpamScope } from './not-spam';
 
   interface Props {
     emailId: string;
@@ -56,11 +62,19 @@
     error = null;
     moving = true;
     try {
-      const moved = await mail.notSpam(emailId);
-      if (!moved) {
+      const result = await mail.notSpam(emailId);
+      if (!result.ok) {
         error = t('mail.notSpam.error');
         return;
       }
+
+      let toastMessage = 'Moved to Inbox';
+      // Undoes whatever the rule step below actually did (created a
+      // rule, added the never-spam action to an existing one, or
+      // nothing at all when an existing rule was reused as-is) so the
+      // toast's Undo, which always reverts the move, never leaves an
+      // orphaned rule/action behind.
+      let undoRuleChange: (() => Promise<void>) | null = null;
 
       if (scope === 'address' || scope === 'domain') {
         const maxOrder = managedRules.rules.reduce((m, r) => Math.max(m, r.order), -1);
@@ -68,14 +82,41 @@
           scope === 'address'
             ? t('mail.notSpam.ruleNameAddress', { address: senderEmail })
             : t('mail.notSpam.ruleNameDomain', { domain });
-        const payload = buildNeverSpamRule(scope, senderEmail, maxOrder + 1, ruleName);
-        if (payload) {
-          const created = await managedRules.create(payload);
-          if (created) toast.show({ message: t('mail.notSpam.ruleCreated') });
+        const plan = planNeverSpamRule(managedRules.rules, scope, senderEmail, maxOrder + 1, ruleName);
+        if (plan?.mode === 'create') {
+          const created = await managedRules.create(plan.payload);
+          if (created) {
+            toastMessage = t('mail.notSpam.ruleCreated');
+            undoRuleChange = async () => {
+              await managedRules.delete(created.id);
+            };
+          }
           // managedRules.create already toasts its own failure; the move
           // to Inbox still succeeded, so we do not surface a second error.
+        } else if (plan?.mode === 'add-action') {
+          const rule = plan.rule;
+          const previousActions = rule.actions;
+          const ok = await managedRules.update(rule.id, { actions: plan.nextActions });
+          if (ok) {
+            toastMessage = t('mail.notSpam.ruleUpdated', { name: rule.name });
+            undoRuleChange = async () => {
+              await managedRules.update(rule.id, { actions: previousActions });
+            };
+          }
+        } else if (plan?.mode === 'reuse') {
+          // The sender already has a never-spam rule; nothing to
+          // create or change, so nothing to undo either.
+          toastMessage = t('mail.notSpam.ruleReused', { name: plan.rule.name });
         }
       }
+
+      toast.show({
+        message: toastMessage,
+        undo: async () => {
+          await result.undo();
+          if (undoRuleChange) await undoRuleChange();
+        },
+      });
 
       onmoved();
       onclose();

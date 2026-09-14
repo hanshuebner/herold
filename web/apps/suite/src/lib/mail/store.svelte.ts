@@ -4712,17 +4712,22 @@ class MailStore {
   /**
    * "Not spam" (issue #382, REQ-FILT-02a): moves a Junk-mailbox email to
    * Inbox and clears the $junk / $phishing keywords -- the reverse of
-   * reportSpam. Optimistic with undo, matching reportSpam's UX.
+   * reportSpam. Optimistic, matching reportSpam's UX. Also posts the
+   * REQ-FILT-70 ham feedback record (#postSpamFeedback) on success, the
+   * same way reportSpam posts a spam/phishing one.
    *
-   * Returns true when the server accepted the move, false on failure
-   * (already toasted). NotSpamDialog awaits this before creating the
-   * accompanying never-spam managed rule, so a failed move never leaves a
-   * dangling filter for a message that is still sitting in Junk.
+   * Returns `{ ok: false }` when the move failed (already toasted).
+   * Returns `{ ok: true, undo }` on success, WITHOUT showing a toast
+   * itself: NotSpamDialog shows the toast once it also knows whether it
+   * created (or reused) a never-spam rule, so a single toast/undo
+   * covers both the move and the rule in one step and undoing never
+   * leaves an orphaned rule behind. `undo` reverts the move; it does
+   * NOT touch any rule the caller may have created.
    */
-  async notSpam(emailId: string): Promise<boolean> {
+  async notSpam(emailId: string): Promise<{ ok: false } | { ok: true; undo: () => Promise<void> }> {
     const email = this.emails.get(emailId);
     const inboxMailbox = this.inbox;
-    if (!email) return false;
+    if (!email) return { ok: false };
 
     const prevMailboxIds = { ...email.mailboxIds };
     const prevKeywords = { ...email.keywords };
@@ -4759,40 +4764,41 @@ class MailStore {
         kind: 'error',
         timeoutMs: 6000,
       });
-      return false;
+      return { ok: false };
     }
 
-    toast.show({
-      message: 'Moved to Inbox',
-      undo: async () => {
-        try {
-          const undoPatches: Record<string, unknown> = {
-            'keywords/$junk': true,
-            mailboxIds: prevMailboxIds,
-          };
-          if (hadPhishing) undoPatches['keywords/$phishing'] = true;
-          await this.#emailSetUpdate(emailId, undoPatches);
-          this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
-          this.listEmailIds = prevListIds;
-        } catch (err) {
-          toast.show({
-            message: errMessage(err, 'Undo failed'),
-            kind: 'error',
-            timeoutMs: 6000,
-          });
-        }
-      },
-    });
-    return true;
+    void this.#postSpamFeedback(emailId, 'ham');
+
+    const undo = async (): Promise<void> => {
+      try {
+        const undoPatches: Record<string, unknown> = {
+          'keywords/$junk': true,
+          mailboxIds: prevMailboxIds,
+        };
+        if (hadPhishing) undoPatches['keywords/$phishing'] = true;
+        await this.#emailSetUpdate(emailId, undoPatches);
+        this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
+        this.listEmailIds = prevListIds;
+      } catch (err) {
+        toast.show({
+          message: errMessage(err, 'Undo failed'),
+          kind: 'error',
+          timeoutMs: 6000,
+        });
+      }
+    };
+    return { ok: true, undo };
   }
 
   /**
-   * Post a spam-feedback signal to the server. The endpoint
-   * (/api/v1/spam-feedback) is advisory and not yet implemented server-side
-   * in Wave 3.15 (gap documented in implementation report). Errors are
-   * silently swallowed so the user-visible report-spam flow is unaffected.
+   * Post a REQ-FILT-70 spam-feedback record to the server
+   * (/api/v1/spam-feedback, internal/protoadmin/spam_feedback.go):
+   * "spam"/"phishing" for reportSpam's correction into Junk, "ham" for
+   * notSpam's correction out of Junk. Errors are silently swallowed so
+   * the user-visible report/not-spam flow is unaffected by a feedback
+   * post failing.
    */
-  async #postSpamFeedback(emailId: string, kind: 'spam' | 'phishing'): Promise<void> {
+  async #postSpamFeedback(emailId: string, kind: 'spam' | 'phishing' | 'ham'): Promise<void> {
     try {
       await fetch('/api/v1/spam-feedback', {
         method: 'POST',

@@ -1761,6 +1761,9 @@ export const de = {
   'mail.notSpam.ruleNameAddress': 'Zulassen: {address}',
   'mail.notSpam.ruleNameDomain': 'Zulassen: {domain}',
   'mail.notSpam.ruleCreated': 'Filter erstellt: Post von diesem Absender wird nie in Junk einsortiert',
+  'mail.notSpam.ruleUpdated':
+    'Zu bestehendem Filter "{name}" hinzugefügt: Post von diesem Absender wird nie in Junk einsortiert',
+  'mail.notSpam.ruleReused': 'Post von diesem Absender wird bereits nie in Junk einsortiert (Filter "{name}")',
   'mail.notSpam.error': 'Nachricht konnte nicht in den Posteingang verschoben werden',
 
   // advanced search panel (AdvancedSearchPanel.svelte)

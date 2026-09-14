@@ -1743,6 +1743,8 @@ export const en = {
   'mail.notSpam.ruleNameAddress': 'Allow {address}',
   'mail.notSpam.ruleNameDomain': 'Allow {domain}',
   'mail.notSpam.ruleCreated': 'Filter created: mail from this sender is never sent to Junk',
+  'mail.notSpam.ruleUpdated': 'Added to existing filter "{name}": mail from this sender is never sent to Junk',
+  'mail.notSpam.ruleReused': 'Mail from this sender already never goes to Junk (filter "{name}")',
   'mail.notSpam.error': 'Could not move this message to Inbox',
 
   // advanced search panel (AdvancedSearchPanel.svelte)

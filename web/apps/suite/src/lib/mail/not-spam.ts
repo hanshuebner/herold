@@ -58,3 +58,60 @@ export function buildNeverSpamRule(
     actions: [action],
   };
 }
+
+/**
+ * What to do about a never-spam rule for a given scope + sender, having
+ * checked the caller's existing rules for one that already matches the
+ * same single condition (issue #382 retry: neither the client nor
+ * ManagedRule/set rejected a second identical rule for the same
+ * domain/address, so two "Not spam -> This domain" clicks on messages
+ * from the same domain used to create two rules).
+ *
+ * - 'create': no matching rule exists; payload is the ManagedRule/set
+ *   create body (same shape buildNeverSpamRule returns).
+ * - 'reuse': a rule with the same condition already carries the
+ *   never-spam action; nothing to do server-side.
+ * - 'add-action': a rule with the same condition exists but lacks the
+ *   never-spam action (e.g. it only applies a label); nextActions is
+ *   rule.actions with never-spam appended, for a ManagedRule/set update.
+ */
+export type NeverSpamPlan =
+  | { mode: 'create'; payload: Omit<ManagedRule, 'id'> }
+  | { mode: 'reuse'; rule: ManagedRule }
+  | { mode: 'add-action'; rule: ManagedRule; nextActions: RuleAction[] };
+
+/**
+ * Decide what buildNeverSpamRule's caller should do given the rules the
+ * principal already has. Returns null under the same conditions
+ * buildNeverSpamRule returns null (no usable condition value).
+ */
+export function planNeverSpamRule(
+  rules: ManagedRule[],
+  scope: NeverSpamScope,
+  senderEmail: string,
+  nextOrder: number,
+  ruleName: string,
+): NeverSpamPlan | null {
+  const payload = buildNeverSpamRule(scope, senderEmail, nextOrder, ruleName);
+  if (!payload) return null;
+  const condition = payload.conditions[0]!;
+
+  const existing = rules.find((r) => {
+    if (r.conditions.length !== 1) return false;
+    const c = r.conditions[0]!;
+    return (
+      c.field === condition.field &&
+      c.op === condition.op &&
+      c.value.toLowerCase() === condition.value.toLowerCase()
+    );
+  });
+  if (!existing) return { mode: 'create', payload };
+  if (existing.actions.some((a) => a.kind === 'never-spam')) {
+    return { mode: 'reuse', rule: existing };
+  }
+  return {
+    mode: 'add-action',
+    rule: existing,
+    nextActions: [...existing.actions, { kind: 'never-spam' }],
+  };
+}

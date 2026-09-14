@@ -5,6 +5,13 @@
  * Inbox and clears the $junk / $phishing keywords via the same Email/set
  * path every other mailbox move (archive, restore, block-sender) already
  * uses. Mirrors the mocking pattern in store.mark-thread-seen-dedup.test.ts.
+ *
+ * On success it returns `{ ok: true, undo }` rather than showing its own
+ * toast -- NotSpamDialog shows a single combined toast once it also
+ * knows the outcome of any never-spam rule it created, so undo can
+ * revert both in one step (issue #382 retry item 2: undo must not
+ * orphan a rule). It also posts a REQ-FILT-70 "ham" feedback record
+ * (issue #382 retry item 1).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -107,7 +114,7 @@ describe('mail.notSpam (issue #382)', () => {
     ]);
   });
 
-  it('moves the email to Inbox, clears $junk, and returns true on success', async () => {
+  it('moves the email to Inbox, clears $junk, and returns { ok: true, undo } on success', async () => {
     const { mail } = mailMod;
     mail.emails.set('e-1', makeEmail({ id: 'e-1', threadId: 't-1' }));
     mail.listEmailIds = ['e-1'];
@@ -116,8 +123,13 @@ describe('mail.notSpam (issue #382)', () => {
       responses: [invocation('Email/set', { newState: 's2', updated: { 'e-1': {} } })],
     });
 
-    const ok = await mail.notSpam('e-1');
-    expect(ok).toBe(true);
+    const result = await mail.notSpam('e-1');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(typeof result.undo).toBe('function');
+    // The store no longer shows its own toast on success -- the caller
+    // (NotSpamDialog) shows one combined toast once it also knows the
+    // outcome of any rule it created.
+    expect(toastShow).not.toHaveBeenCalled();
 
     // First jmap.batch call is the Email/set; a second, unmocked call may
     // follow from the store's post-mutation mailbox-count refresh.
@@ -185,8 +197,8 @@ describe('mail.notSpam (issue #382)', () => {
       ],
     });
 
-    const ok = await mail.notSpam('e-3');
-    expect(ok).toBe(false);
+    const result = await mail.notSpam('e-3');
+    expect(result.ok).toBe(false);
 
     const reverted = mail.emails.get('e-3');
     expect(reverted.mailboxIds).toEqual(original.mailboxIds);
@@ -195,10 +207,61 @@ describe('mail.notSpam (issue #382)', () => {
     expect(toastShow).toHaveBeenCalled();
   });
 
-  it('returns false for an unknown email id without calling the server', async () => {
+  it('returns { ok: false } for an unknown email id without calling the server', async () => {
     const { mail } = mailMod;
-    const ok = await mail.notSpam('does-not-exist');
-    expect(ok).toBe(false);
+    const result = await mail.notSpam('does-not-exist');
+    expect(result.ok).toBe(false);
     expect(jmapMod.jmap.batch).not.toHaveBeenCalled();
+  });
+
+  it('posts a "ham" REQ-FILT-70 feedback record on success', async () => {
+    const { mail } = mailMod;
+    mail.emails.set('e-4', makeEmail({ id: 'e-4', threadId: 't-4' }));
+    mail.listEmailIds = ['e-4'];
+
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [invocation('Email/set', { newState: 's5', updated: { 'e-4': {} } })],
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await mail.notSpam('e-4');
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          '/api/v1/spam-feedback',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ emailId: 'e-4', kind: 'ham' }),
+          }),
+        );
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('undo (from the returned closure) reverts the move and clears $junk again on failure to reapply', async () => {
+    const { mail } = mailMod;
+    const original = makeEmail({ id: 'e-5', threadId: 't-5' });
+    mail.emails.set('e-5', original);
+    mail.listEmailIds = ['e-5'];
+
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [invocation('Email/set', { newState: 's6', updated: { 'e-5': {} } })],
+    });
+    const result = await mail.notSpam('e-5');
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+
+    vi.mocked(jmapMod.jmap.batch).mockResolvedValueOnce({
+      responses: [invocation('Email/set', { newState: 's7', updated: { 'e-5': {} } })],
+    });
+    await result.undo();
+
+    const reverted = mail.emails.get('e-5');
+    expect(reverted.mailboxIds).toEqual(original.mailboxIds);
+    expect(reverted.keywords).toEqual(original.keywords);
+    expect(mail.listEmailIds).toEqual(['e-5']);
   });
 });

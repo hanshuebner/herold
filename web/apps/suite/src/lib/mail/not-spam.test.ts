@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { senderDomain, buildNeverSpamRule } from './not-spam';
+import { senderDomain, buildNeverSpamRule, planNeverSpamRule } from './not-spam';
+import type { ManagedRule } from '../settings/managed-rules.svelte';
 
 describe('senderDomain', () => {
   it('extracts the domain, lower-cased', () => {
@@ -65,5 +66,95 @@ describe('buildNeverSpamRule', () => {
 
   it('returns null for an address scope when the address is empty', () => {
     expect(buildNeverSpamRule('address', '   ', 0, 'x')).toBeNull();
+  });
+});
+
+describe('planNeverSpamRule (issue #382 retry: dedup existing rules)', () => {
+  it('plans "create" when no existing rule matches the condition', () => {
+    const plan = planNeverSpamRule(
+      [],
+      'domain',
+      'notify@accountprotection.microsoft.com',
+      0,
+      'Allow accountprotection.microsoft.com',
+    );
+    expect(plan).toEqual({
+      mode: 'create',
+      payload: {
+        name: 'Allow accountprotection.microsoft.com',
+        enabled: true,
+        order: 0,
+        conditions: [{ field: 'from-domain', op: 'equals', value: 'accountprotection.microsoft.com' }],
+        actions: [{ kind: 'never-spam' }],
+      },
+    });
+  });
+
+  it('plans "reuse" when a rule with the same condition already carries never-spam', () => {
+    const existing: ManagedRule = {
+      id: 'r1',
+      name: 'Allow accountprotection.microsoft.com',
+      enabled: true,
+      order: 2,
+      conditions: [{ field: 'from-domain', op: 'equals', value: 'accountprotection.microsoft.com' }],
+      actions: [{ kind: 'never-spam' }],
+    };
+    const plan = planNeverSpamRule(
+      [existing],
+      'domain',
+      'other@AccountProtection.Microsoft.Com',
+      5,
+      'Allow accountprotection.microsoft.com',
+    );
+    expect(plan).toEqual({ mode: 'reuse', rule: existing });
+  });
+
+  it('plans "add-action" when a matching rule exists but lacks never-spam', () => {
+    const existing: ManagedRule = {
+      id: 'r2',
+      name: 'Label as notifications',
+      enabled: true,
+      order: 1,
+      conditions: [{ field: 'from-domain', op: 'equals', value: 'accountprotection.microsoft.com' }],
+      actions: [{ kind: 'apply-label', params: { label: 'notifications' } }],
+    };
+    const plan = planNeverSpamRule(
+      [existing],
+      'domain',
+      'notify@accountprotection.microsoft.com',
+      5,
+      'Allow accountprotection.microsoft.com',
+    );
+    expect(plan).toEqual({
+      mode: 'add-action',
+      rule: existing,
+      nextActions: [{ kind: 'apply-label', params: { label: 'notifications' } }, { kind: 'never-spam' }],
+    });
+  });
+
+  it('does not match a rule with more than one condition', () => {
+    const existing: ManagedRule = {
+      id: 'r3',
+      name: 'Multi-condition rule',
+      enabled: true,
+      order: 1,
+      conditions: [
+        { field: 'from-domain', op: 'equals', value: 'accountprotection.microsoft.com' },
+        { field: 'subject', op: 'contains', value: 'alert' },
+      ],
+      actions: [{ kind: 'never-spam' }],
+    };
+    const plan = planNeverSpamRule(
+      [existing],
+      'domain',
+      'notify@accountprotection.microsoft.com',
+      5,
+      'Allow accountprotection.microsoft.com',
+    );
+    expect(plan?.mode).toBe('create');
+  });
+
+  it('returns null when the scope has no usable value, same as buildNeverSpamRule', () => {
+    expect(planNeverSpamRule([], 'domain', 'not-an-address', 0, 'x')).toBeNull();
   });
 });
