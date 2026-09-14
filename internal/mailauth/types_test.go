@@ -3,7 +3,10 @@ package mailauth
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/hanshuebner/herold/internal/mailparse"
 )
 
 func TestAuthStatusString(t *testing.T) {
@@ -145,6 +148,57 @@ func TestParseAuthResults(t *testing.T) {
 	}
 	if got.Raw != raw {
 		t.Errorf("Raw = %q, want %q", got.Raw, raw)
+	}
+}
+
+// TestParseAuthResults_HonoursOnlyFirstHeader is the re #385 regression
+// test for the caller contract ParseAuthResults's doc comment states:
+// a caller that needs herold's own verdict must read only the first
+// Authentication-Results header of the blob (the one herold itself
+// prepends at SMTP delivery, buildHeaderPrefix in
+// internal/protosmtp/deliver.go) and never a later one, which on an
+// SMTP-delivered message would be a foreign MTA's un-trusted copy of the
+// same header name. This parses a message with two
+// Authentication-Results headers -- herold's genuine pass first, a
+// forged fail second -- through the real header-parsing path
+// (mailparse.Parse) and confirms ParseAuthResults(vals[0]) yields the
+// genuine verdict. The forged second header parses to the opposite
+// verdict, proving the two headers actually disagree and the assertion
+// on vals[0] is not vacuous.
+func TestParseAuthResults_HonoursOnlyFirstHeader(t *testing.T) {
+	const genuine = "mx.netzhansa.com; spf=pass smtp.mailfrom=sender@example.test; " +
+		"dkim=pass header.d=example.test header.s=s1; dmarc=pass header.from=example.test"
+	const forged = "attacker.example; spf=fail smtp.mailfrom=sender@example.test; " +
+		"dkim=fail header.d=example.test header.s=s1; dmarc=fail header.from=example.test"
+	raw := "Authentication-Results: " + genuine + "\r\n" +
+		"Authentication-Results: " + forged + "\r\n" +
+		"From: sender@example.test\r\nTo: rcpt@example.test\r\nSubject: x\r\n\r\nbody\r\n"
+
+	msg, err := mailparse.Parse(strings.NewReader(raw), mailparse.NewLenientParseOptions())
+	if err != nil {
+		t.Fatalf("mailparse.Parse: %v", err)
+	}
+	vals := msg.Headers.GetAll("Authentication-Results")
+	if len(vals) != 2 {
+		t.Fatalf("got %d Authentication-Results headers, want 2", len(vals))
+	}
+
+	got, ok := ParseAuthResults(vals[0])
+	if !ok {
+		t.Fatalf("ParseAuthResults(vals[0]) ok = false, want true")
+	}
+	if got.SPF.Status != AuthPass || got.BestDKIMStatus() != AuthPass || got.DMARC.Status != AuthPass {
+		t.Fatalf("first-header verdicts = spf=%v dkim=%v dmarc=%v, want all AuthPass (herold's own header)",
+			got.SPF.Status, got.BestDKIMStatus(), got.DMARC.Status)
+	}
+
+	forgedResult, ok := ParseAuthResults(vals[1])
+	if !ok {
+		t.Fatalf("ParseAuthResults(vals[1]) ok = false, want true")
+	}
+	if forgedResult.SPF.Status != AuthFail || forgedResult.BestDKIMStatus() != AuthFail || forgedResult.DMARC.Status != AuthFail {
+		t.Fatalf("second-header verdicts = spf=%v dkim=%v dmarc=%v, want all AuthFail (forged header, confirming the two headers disagree)",
+			forgedResult.SPF.Status, forgedResult.BestDKIMStatus(), forgedResult.DMARC.Status)
 	}
 }
 
