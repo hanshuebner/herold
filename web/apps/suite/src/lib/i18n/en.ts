@@ -577,6 +577,18 @@ export const en = {
   'settings.identityEdit.saveFailed': 'Could not save',
   'settings.identityEdit.replyToHeading': 'Reply-To and Bcc',
 
+  // Identity aliases (issue #387)
+  'settings.identityEdit.aliasesHeading': 'Alias addresses',
+  'settings.identityEdit.aliasesHelper':
+    'Addresses that select this identity when replying to a message sent or delivered to them. They never appear in the From header.',
+  'settings.identityEdit.aliasesEmpty': 'No alias addresses yet.',
+  'settings.identityEdit.aliasAddLabel': 'Alias address',
+  'settings.identityEdit.aliasPlaceholder': 'alias@example.com',
+  'settings.identityEdit.aliasAdd': 'Add',
+  'settings.identityEdit.aliasRemoveAria': 'Remove alias {email}',
+  'settings.identityEdit.aliasDuplicate': 'This address is already in the list.',
+  'settings.identityEdit.aliasIsPrimary': "This is already the identity's primary address.",
+
   // Identity list (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identities',
   'settings.identityList.addBtn': 'Add identity',

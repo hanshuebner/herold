@@ -581,6 +581,19 @@ export const de = {
   'settings.identityEdit.saveFailed': 'Speichern fehlgeschlagen',
   'settings.identityEdit.replyToHeading': 'Antwort-an und Bcc',
 
+  // Identitäts-Aliasadressen (issue #387)
+  'settings.identityEdit.aliasesHeading': 'Aliasadressen',
+  'settings.identityEdit.aliasesHelper':
+    'Adressen, die diese Identität auswählen, wenn auf eine an sie gesendete oder zugestellte Nachricht geantwortet wird. Sie erscheinen nie im Von-Header.',
+  'settings.identityEdit.aliasesEmpty': 'Noch keine Aliasadressen.',
+  'settings.identityEdit.aliasAddLabel': 'Aliasadresse',
+  'settings.identityEdit.aliasPlaceholder': 'alias@example.com',
+  'settings.identityEdit.aliasAdd': 'Hinzufügen',
+  'settings.identityEdit.aliasRemoveAria': 'Alias {email} entfernen',
+  'settings.identityEdit.aliasDuplicate': 'Diese Adresse ist bereits in der Liste.',
+  'settings.identityEdit.aliasIsPrimary':
+    'Dies ist bereits die primäre Adresse dieser Identität.',
+
   // Identitäten-Liste (REQ-SET-IDENT-01..08, re #20)
   'settings.identityList.heading': 'Identitäten',
   'settings.identityList.addBtn': 'Identität hinzufügen',

@@ -89,6 +89,17 @@ export interface Identity {
    * see `separationOf()` in `identity-separation.ts`.
    */
   separation?: IdentitySeparation;
+  /**
+   * Herold extension (issue #387): additional addr-spec strings that
+   * select this identity as the reply sender when a message was
+   * addressed or delivered to them, alongside `email`. Never a From
+   * address on the wire -- match-only. Defaults to `[]` on the wire;
+   * optional here for legacy-server compatibility (absent means the
+   * server predates the feature, equivalent to no aliases). The
+   * synthesised default identity (`id: 'default'`) always carries an
+   * empty list and refuses updates to it.
+   */
+  aliases?: string[];
 }
 
 /** `Identity.separation.state` (REQ-SUBACCT-09/10). */

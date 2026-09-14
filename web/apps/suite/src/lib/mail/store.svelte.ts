@@ -1791,6 +1791,48 @@ class MailStore {
   }
 
   /**
+   * Update the alias-address list for the identity identified by
+   * `identityId` via `Identity/set update` (issue #387). `aliases` fully
+   * replaces the identity's alias list -- the server contract has no
+   * incremental add/remove wire operation. Throws an `Error` whose
+   * `.message` is the server's `invalidProperties` description on a
+   * duplicate alias, an alias equal to another identity's primary
+   * address, or a malformed address; the caller (an autosave-driven
+   * form) surfaces that message as-is.
+   */
+  async updateIdentityAliases(identityId: string, aliases: string[]): Promise<void> {
+    const accountId = this.mailAccountId;
+    if (!accountId) throw new Error('No Mail account on this session');
+
+    const { responses } = await jmap.batch((b) => {
+      b.call(
+        'Identity/set',
+        {
+          accountId,
+          update: {
+            [identityId]: { aliases },
+          },
+        },
+        [Capability.Submission],
+      );
+    });
+    strict(responses);
+
+    const result = invocationArgs<{
+      notUpdated?: Record<string, { type: string; description?: string }>;
+    }>(responses[0]);
+    const failure = result.notUpdated?.[identityId];
+    if (failure) {
+      throw new Error(failure.description ?? failure.type);
+    }
+
+    const next = new Map(this.identities);
+    const cur = next.get(identityId);
+    if (cur) next.set(identityId, { ...cur, aliases });
+    this.identities = next;
+  }
+
+  /**
    * Promote `identityId` to be the principal's default From identity
    * per REQ-SET-IDENT-04. Issues a single `Identity/set update` that
    * flips `isDefault: true` on the new default and `isDefault: false`

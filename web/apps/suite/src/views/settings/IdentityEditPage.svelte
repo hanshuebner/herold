@@ -44,6 +44,7 @@
   import IdentityImportSection from './IdentityImportSection.svelte';
   import IdentityAvatarForm from './IdentityAvatarForm.svelte';
   import IdentityDisplayNameForm from './IdentityDisplayNameForm.svelte';
+  import IdentityAliasesForm from './IdentityAliasesForm.svelte';
   import IdentitySignatureForm from './IdentitySignatureForm.svelte';
   import SaveStatus from './SaveStatus.svelte';
   import { AutosaveController } from './autosave.svelte';
@@ -460,6 +461,13 @@
       </p>
     {/if}
   </div>
+
+  <!-- Alias addresses (issue #387) — autosave add/remove. Never shown for
+       the synthesised default identity (mayDelete = false); the server
+       refuses an aliases update on that row outright. -->
+  {#if identity.mayDelete}
+    <IdentityAliasesForm {identity} {autosave} />
+  {/if}
 
   <!-- Plain-text signature editor (REQ-SET-03) — autosaves on blur. -->
   <IdentitySignatureForm {identity} {autosave} />
