@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -209,24 +211,7 @@ class ComposeAcceptanceTest {
         // Backgrounding is what triggers the save (suite REQ-DFT-01/02).
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
 
-        val server = DevInstance.serverClient()
-        val accountId = server.session().mailAccountId!!
-        val draftsId = server.mailboxGet(accountId).list.first { it.role == "drafts" }.id
-        var saved: com.netzhansa.herold.shared.domain.Email? = null
-        repeat(DELIVERY_POLLS) {
-            val ids = server.emailQuery(
-                accountId,
-                buildJsonObject { put("inMailbox", draftsId) },
-                20,
-                collapseThreads = false,
-            )
-            saved = server.emailGet(accountId, ids, withBody = true).list
-                .map { it.toStoreRow(accountId) }
-                .firstOrNull { it.subject == subject }
-            if (saved != null) return@repeat
-            Thread.sleep(DELIVERY_POLL_MS)
-        }
-        val draft = saved ?: error("no draft with subject \"$subject\" reached the Drafts mailbox")
+        val draft = awaitSavedDraft(subject)
         assertTrue("a draft carries \$draft", draft.keywords.any { it.equals("\$draft", ignoreCase = true) })
         assertEquals(listOf(DevInstance.recipientEmail), draft.toAddresses.map { it.email })
         assertTrue("the draft carries the body", draft.bodyText.orEmpty().contains("Unsent thoughts"))
@@ -304,6 +289,27 @@ class ComposeAcceptanceTest {
         compose.captureScreen("25-draft-discarded")
     }
 
+    /** The draft the save on backgrounding wrote, once the server holds it. */
+    private suspend fun awaitSavedDraft(subject: String): com.netzhansa.herold.shared.domain.Email {
+        val server = DevInstance.serverClient()
+        val accountId = server.session().mailAccountId!!
+        val draftsId = server.mailboxGet(accountId).list.first { it.role == "drafts" }.id
+        repeat(DELIVERY_POLLS) {
+            val ids = server.emailQuery(
+                accountId,
+                buildJsonObject { put("inMailbox", draftsId) },
+                20,
+                collapseThreads = false,
+            )
+            server.emailGet(accountId, ids, withBody = true).list
+                .map { it.toStoreRow(accountId) }
+                .firstOrNull { it.subject == subject }
+                ?.let { return it }
+            Thread.sleep(DELIVERY_POLL_MS)
+        }
+        error("no draft with subject \"$subject\" reached the Drafts mailbox")
+    }
+
     /** The conversation's draft, once the store has it. */
     private suspend fun awaitThreadDraft(
         accountId: String,
@@ -363,6 +369,13 @@ class ComposeAcceptanceTest {
      * contenteditable. The tap lands in its first line - the empty
      * paragraph above the quoted original - so the text goes where a
      * reply is written.
+     *
+     * A key event reaches the document only once the editable holds the
+     * caret, which the tap grants asynchronously; keys sent before that
+     * are dropped and the text loses its leading characters (issue #344).
+     * The page reports its focus and the editor is made to echo a
+     * keystroke, so the text goes in over a path that has been seen to
+     * carry one.
      */
     private fun typeInBody(text: String) {
         // The editor's document loads asynchronously and publishes its
@@ -370,9 +383,37 @@ class ComposeAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) { editorChars() >= 0 }
         val before = editorChars()
         compose.onNodeWithTag("compose-body").performTouchInput { click(Offset(30f, 20f)) }
-        compose.waitForIdle()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("compose-body-focused").fetchSemanticsNodes().isNotEmpty()
+        }
+        awaitTypingLands(before)
         InstrumentationRegistry.getInstrumentation().sendStringSync(text)
         compose.waitUntil(TIMEOUT_MS) { editorChars() >= before + text.length }
+    }
+
+    /**
+     * Types a probe character until the editor echoes it, then takes it
+     * back, leaving the body as it was over an input path that has been
+     * seen to carry a keystroke. The editable's focus flaps once as the
+     * keyboard comes up, so the page's report of holding the caret does
+     * not yet mean a key arrives; what the document echoes does
+     * (issue #344).
+     */
+    private fun awaitTypingLands(before: Int) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val deadline = SystemClock.uptimeMillis() + TIMEOUT_MS
+        while (editorChars() <= before) {
+            if (SystemClock.uptimeMillis() > deadline) error("the editor took no keystroke")
+            instrumentation.sendStringSync(PROBE)
+            runCatching { compose.waitUntil(ECHO_MS) { editorChars() > before } }
+        }
+        var chars = editorChars()
+        while (chars > before) {
+            if (SystemClock.uptimeMillis() > deadline) error("the probe character stayed in the editor")
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DEL)
+            runCatching { compose.waitUntil(ECHO_MS) { editorChars() < chars } }
+            chars = editorChars()
+        }
     }
 
     /** How many characters the editor's body holds, or -1 before it loads. */
@@ -425,6 +466,12 @@ class ComposeAcceptanceTest {
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
+
+        /** A character typed to see whether the editor takes keystrokes. */
+        const val PROBE = "x"
+
+        /** How long one probe keystroke is given to come back. */
+        const val ECHO_MS = 2_000L
         const val DELIVERY_POLLS = 30
         const val DELIVERY_POLL_MS = 1_000L
 

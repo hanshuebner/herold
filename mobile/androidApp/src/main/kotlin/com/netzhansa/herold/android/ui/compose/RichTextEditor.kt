@@ -31,13 +31,14 @@ enum class EditorCommand(val js: String) {
  * (`HtmlSanitizer.document` over `HtmlSanitizer.sanitize`), so the quoted
  * body arrives with its active elements already removed. JavaScript is on
  * here - `document.execCommand` is what applies the formatting - and the
- * page can reach exactly one bridge method, which hands the edited HTML
- * back; every network load other than an inline image served from memory
- * is refused.
+ * page can reach two bridge methods, which hand the edited HTML and the
+ * editable's focus back; every network load other than an inline image
+ * served from memory is refused.
  */
 class EditorHandle {
     internal var webView: WebView? = null
     internal var onHtml: ((String) -> Unit)? = null
+    internal var onFocus: ((Boolean) -> Unit)? = null
 
     /**
      * The bytes of the inline images the body references, which the
@@ -110,6 +111,7 @@ fun RichTextEditor(
     attachments: List<ComposeAttachment>,
     handle: EditorHandle,
     onHtmlChanged: (String) -> Unit,
+    onFocusChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // An image the compose already carries - a restored draft, a second
@@ -117,6 +119,7 @@ fun RichTextEditor(
     attachments.filter { it.inline && it.cid != null && it.bytes != null }
         .forEach { handle.inlineImages[it.cid!!] = it.type to it.bytes!! }
     handle.onHtml = onHtmlChanged
+    handle.onFocus = onFocusChanged
 
     AndroidView(
         modifier = modifier,
@@ -132,6 +135,16 @@ fun RichTextEditor(
                         fun changed(html: String) {
                             handle.latestHtml = html
                             post { handle.onHtml?.invoke(html) }
+                        }
+
+                        /**
+                         * Whether the editable holds the caret. A key
+                         * event only reaches the document once it does,
+                         * so the page reports it as it happens.
+                         */
+                        @JavascriptInterface
+                        fun focused(focused: Boolean) {
+                            post { handle.onFocus?.invoke(focused) }
                         }
                     },
                     BRIDGE,
@@ -200,7 +213,11 @@ private fun editorDocument(body: String, darkTheme: Boolean): String {
             publish: function () { $BRIDGE.changed(editor.innerHTML); }
           };
           editor.addEventListener('input', herold.publish);
-          editor.addEventListener('blur', herold.publish);
+          editor.addEventListener('focus', function () { $BRIDGE.focused(true); });
+          editor.addEventListener('blur', function () {
+            herold.publish();
+            $BRIDGE.focused(false);
+          });
           (function () {
             var first = editor.firstChild;
             var range = document.createRange();

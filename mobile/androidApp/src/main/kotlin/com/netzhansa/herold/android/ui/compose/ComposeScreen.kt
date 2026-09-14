@@ -147,6 +147,8 @@ fun ComposeScreen(
     // The editor's document loads asynchronously; it publishes its body
     // once it is up, which is also what tells a caller it can be typed in.
     var editorReady by remember { mutableStateOf(false) }
+    /** True while the editable holds the caret, so a keystroke reaches it. */
+    var editorFocused by remember { mutableStateOf(false) }
 
     // The compose opens once its inputs have arrived from the local store.
     LaunchedEffect(identities, accounts, parentEmailId, mode) {
@@ -485,6 +487,7 @@ fun ComposeScreen(
                     state = state?.copy(bodyHtml = html)
                     editorReady = true
                 },
+                onFocusChanged = { editorFocused = it },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp).testTag("compose-body"),
             )
 
@@ -494,6 +497,12 @@ fun ComposeScreen(
                 // document is up and has taken an edit.
                 val bodyChars = HtmlText.toPlainText(current.bodyHtml).length
                 Spacer(modifier = Modifier.testTag("compose-editor-$bodyChars"))
+            }
+
+            if (editorFocused) {
+                // Typing lands in the document from the moment the
+                // editable takes the caret, which the page reports.
+                Spacer(modifier = Modifier.testTag("compose-body-focused"))
             }
 
             AttachmentStrip(
