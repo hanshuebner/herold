@@ -97,6 +97,11 @@ jobs:
           done
           echo ">>> pre-commit failed with a transient hook-environment error on all 3 attempts."
           exit 1
+      # The manual stage holds the batch-gate hooks (diag round-trip, race
+      # lane) that `make verify-batch` runs on the train; running them here
+      # keeps CI and the local gate identical.
+      - name: pre-commit run --all-files --hook-stage manual
+        run: pre-commit run --all-files --hook-stage manual --show-diff-on-failure --color always
 
   lint:
     name: lint

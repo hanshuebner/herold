@@ -17,6 +17,10 @@
 # default explicit; the diag-fast-tests hook below opts into [pre-push]
 # explicitly so it still runs as the pre-push gate.
 default_stages: [pre-commit]
+# Hooks declared with `stages: [manual]` are the batch gate: they run
+# through `pre-commit run --all-files --hook-stage manual`, which
+# `make verify-batch` (scripts/train.sh verify) and CI's pre-commit job
+# both invoke.
 
 # Exempt from all hooks:
 #  - third_party/  : vendored upstream code (in-tree fork of emersion/go-imap
@@ -132,8 +136,7 @@ repos:
       # Originally lived at pre-push so commits stayed snappy, but
       # `git push` had two reasons to run any hooks at all (this row
       # plus three upstream lint hooks that ignored default_stages),
-      # so it was confusing in practice. Pinned to pre-commit now;
-      # `git push` runs no hooks.
+      # so it was confusing in practice. `git push` runs no hooks.
       #
       # The `-race` flag mirrors CI's test job. Without it the race
       # detector only flagged shared-state bugs after a push (e.g. the
@@ -145,9 +148,11 @@ repos:
         entry: bash -c 'go test -race -count=1 -short ./internal/diag/backup/... ./internal/diag/migrate/...' --
         language: system
         pass_filenames: false
-        # Skip when no Go source / module file is staged; rc.d /
-        # docs / yaml-only commits don't need the diag round-trip.
-        files: '\.go$|^go\.(mod|sum)$'
+        # Batch gate (manual stage): runs from `make verify-batch` on the
+        # train and from CI's pre-commit job, never on `git commit`. A
+        # commit stays a seconds-long formatting/vet/staticcheck check;
+        # the suites run once per shipped batch (scripts/train.sh).
+        stages: [manual]
 
       # Race-detector lane on the highest-concurrency-density packages.
       # Targeted (~17s on a warm cache) so the per-commit cost is bounded;
@@ -161,9 +166,8 @@ repos:
           bash -c 'go test -race -count=1 -short ./internal/linkpreview/... ./internal/webpush/... ./internal/storefts/... ./internal/protocall/... ./internal/protochat/... ./internal/protojmap/push/...' --
         language: system
         pass_filenames: false
-        # Skip when no Go source / module file is staged. See the
-        # same filter on diag-fast-tests above.
-        files: '\.go$|^go\.(mod|sum)$'
+        # Batch gate (manual stage), see diag-fast-tests above.
+        stages: [manual]
 
       # svelte-check runs the same TypeScript / Svelte typing checks
       # CI's "web (build + check)" job runs. Catches local typos like

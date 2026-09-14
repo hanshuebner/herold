@@ -226,6 +226,18 @@ precommit-all:
 	  exit 1; }
 	pre-commit run --all-files
 
+# verify-batch is the train's batch gate (scripts/train.sh verify): the
+# manual-stage pre-commit hooks, both Go builds, the CI test lanes
+# (scripts/test-lanes.sh; the Postgres lanes need HEROLD_PG_DSN) and the
+# web checks. Runs once per shipped batch on an otherwise idle host.
+verify-batch: prep-web
+	pre-commit run --all-files --hook-stage manual
+	$(GO) build -trimpath ./...
+	$(GO) build -trimpath -tags nofrontend ./...
+	./scripts/test-lanes.sh
+	pnpm --dir web run check
+	pnpm --dir web run test
+
 docker:
 	docker build -t herold:dev -f deploy/docker/Dockerfile .
 

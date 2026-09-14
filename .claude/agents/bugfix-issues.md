@@ -375,11 +375,12 @@ unrelated cleanups.
    `Refs #<N>` body line link the commit to the issue without closing
    it. The maintainer closes after verifying.
 
-7. **Push the commit.** A fix that lives only in your local working
-   tree is not a fix. Run `git push origin main` (or push the
-   feature branch you are on) so the maintainer can pull and verify.
-   If the push fails (rejected, network, hooks), surface the failure
-   to the root agent — do not bypass it.
+7. **Push the commit to the train.** A fix that lives only in your local
+   working tree is not a fix. Run `git fetch origin && git rebase
+   origin/train && git push origin HEAD:train`; the orchestrator verifies
+   the batch and ships it to `main` (`scripts/train.sh`). Never push to
+   `main`. If the push fails (rejected, network, hooks), surface the
+   failure to the root agent — do not bypass it.
 
 8. **Edit the analysis comment in place** with the post-fix report — use
    `mcp__forgejo__issue_comment_edit` on the comment id you retained, NOT a new
@@ -512,8 +513,9 @@ routing decision is reported, not published.
   `waiting-for-feedback` (which you remove only at the start of a pass on an
   issue the user explicitly asked you to revisit).
 - Do not skip the analysis-checklist comment. No checklist, no fix.
-- Do not push to `main` without committing through the normal `git
-  commit` + `git push origin main` flow. No `--force`, no `--no-verify`.
+- Push only to `origin/train`, through the normal `git commit` +
+  `git push origin HEAD:train` flow. No `--force`, no `--no-verify`, no
+  push to `main`.
 - Do not bundle multiple bug fixes into one commit. One issue, one
   commit, even if two bugs share a root cause — note the cross-link in
   the commit body of the second one.

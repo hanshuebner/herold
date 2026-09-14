@@ -73,10 +73,10 @@ type + area labels, cross-reference both) rather than forcing one class on it.
 
 ## 3. Route by class
 
-Process the work-list **one issue at a time, sequentially** — each fix commits
-and pushes to `main`, and concurrent pushes plus shared-working-tree edits race.
-(If you genuinely want parallelism, every agent MUST run with `isolation:
-"worktree"` — but sequential is the default.)
+Every fix commits to `origin/train`, never to `main` (see the train section
+below). Run at most two or three implementing agents at a time, each with
+`isolation: "worktree"`, one browser-driving agent and one emulator at a time;
+more than that saturates the host and the per-commit hooks start timing out.
 
 ### 3a. Defect -> bugfix-issues
 
@@ -96,7 +96,7 @@ issue #N on herold/herold." Instruct it to:
   `getComputedStyle` read, a headless pass over an OS-integration flow).
 - Post the analysis checklist as a SINGLE comment and **edit that same comment**
   with the results — do NOT post a second comment.
-- Push a focused fix-commit to `main` (`re #N`, never an auto-closing keyword).
+- Push a focused fix-commit to `origin/train` (`re #N`, never an auto-closing keyword).
 - **NOT apply the `waiting-for-feedback` label** for a shipped fix — the label is
   applied in step 4 after verification. (For a cannot-reproduce outcome there is
   nothing to verify: the agent asks the reporter in its analysis comment, labels
@@ -116,7 +116,7 @@ touches (`jmap-implementor`, `storage-implementor`, `web-frontend-implementor`,
 - Follow the project's convergence rules: where the feature depends on an
   external service the dev instance does not provide, **the in-tree fake plus its
   CI end-to-end test is the first work item**, not an afterthought.
-- Ship a focused commit to `main` (`re #N`, never an auto-closing keyword), with
+- Ship a focused commit to `origin/train` (`re #N`, never an auto-closing keyword), with
   the acceptance check green.
 - **Post nothing on the ticket** unless it is refining the description.
 
@@ -174,7 +174,22 @@ independent pass is the point.
 Only ONE retry round. A fix that fails twice gets `fix-failed` and is surfaced,
 not endlessly re-attempted.
 
-## 5. Report
+## 5. Ship the train
+
+Work reaches `main` in batches. At the start of the drain run
+`scripts/train.sh open` (it refuses while unshipped commits sit on the train;
+`status` shows them). Agents push to `origin/train`; verifiers check the train
+tip with the targeted tests only. When a wave of fixes has been verified, or
+about every two hours, run `scripts/train.sh verify` (rebases the train onto
+`origin/main`, runs `make verify-batch` in the train worktree with the host
+otherwise idle, records the tip) and then `scripts/train.sh ship`
+(fast-forwards `main`; one CI run and one deploy for the batch). If the gate
+fails, bisect the train (`git bisect run make verify-batch`), drop the culprit
+back to its agent with the failure, and ship the rest. Label
+`waiting-for-feedback` only after the commit is on the train and verified; the
+report names the batch(es) shipped and the CI run that covered each.
+
+## 6. Report
 
 The report is where everything the tickets do not carry goes. When the queue is
 drained, tell me:
