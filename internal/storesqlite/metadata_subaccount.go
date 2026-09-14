@@ -168,6 +168,14 @@ func (m *metadata) RebindJMAPIdentityPrincipal(ctx context.Context, identityID s
 		if n == 0 {
 			return store.ErrNotFound
 		}
+		// Carry the identity's aliases along so none is orphaned under
+		// the old principal or invisible to PrincipalOwnsIdentityAlias
+		// under the new one (REQ-IDENT-01, re #387).
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE jmap_identity_aliases SET principal_id = ? WHERE identity_id = ?`,
+			int64(newPrincipalID), identityID); err != nil {
+			return fmt.Errorf("storesqlite: RebindJMAPIdentityPrincipal: retarget aliases: %w", mapErr(err))
+		}
 		return nil
 	})
 }

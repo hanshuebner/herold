@@ -850,7 +850,17 @@ const CurrentBackupVersion = 1
 //	nullable, NULL meaning unranked). priority is kept a dense
 //	sequence per principal by store.Metadata.ReorderMailboxPriority.
 //	No new table; MailboxRow gains the two fields.
-const CurrentSchemaVersion = 107
+//
+// 108 — 0108_identity_aliases.sql (issue #387, REQ-IDENT-01). Adds the
+//
+//	jmap_identity_aliases child table: an ordered list of additional
+//	email addresses (identity_id, principal_id, address, position)
+//	that select their owning Identity as the reply sender. FK to
+//	jmap_identities(id) ON DELETE CASCADE; a UNIQUE index on
+//	(principal_id, lower(address)) backstops the store's own
+//	pre-write uniqueness checks. New table; JMAPIdentityAliasRow
+//	added to rows.go and registered in tableReg / TableNames.
+const CurrentSchemaVersion = 108
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
@@ -996,6 +1006,10 @@ var TableNames = []string{
 	// REQ-AUTH-EXT-SUBMIT-01..10). FK to jmap_identities(id) ON DELETE
 	// CASCADE; restored after jmap_identities.
 	"identity_submission",
+	// Identity alias addresses (issue #387, REQ-IDENT-01, migration
+	// 0108). FK to jmap_identities(id) ON DELETE CASCADE; restored
+	// after jmap_identities.
+	"jmap_identity_aliases",
 	"tlsrpt_failures",
 	// Phase 2 Wave 2.6 JMAP for Contacts (REQ-PROTO-55). address_books
 	// must precede contacts so the FK-respecting restore order holds.

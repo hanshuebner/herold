@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,6 +201,14 @@ func Run(t *testing.T, f Factory) {
 		{"JMAPIdentity_Delete_NotFoundAfter", testJMAPIdentityDeleteNotFoundAfter},
 		{"JMAPIdentity_Signature_RoundTrip", testJMAPIdentitySignatureRoundTrip},
 		{"JMAPIdentity_SetDefault_SingleDefaultInvariant", testJMAPIdentitySetDefaultSingleDefaultInvariant},
+		// -- Identity alias addresses (issue #387, REQ-IDENT-01) ---
+		{"JMAPIdentity_Aliases_RoundTrip", testJMAPIdentityAliasesRoundTrip},
+		{"JMAPIdentity_Aliases_DuplicateWithinPrincipalRejected", testJMAPIdentityAliasesDuplicateWithinPrincipalRejected},
+		{"JMAPIdentity_Aliases_EqualsPrimaryAddressRejected", testJMAPIdentityAliasesEqualsPrimaryAddressRejected},
+		{"JMAPIdentity_Aliases_MalformedAddressRejected", testJMAPIdentityAliasesMalformedAddressRejected},
+		{"JMAPIdentity_Aliases_CascadeOnDelete", testJMAPIdentityAliasesCascadeOnDelete},
+		{"JMAPIdentity_Aliases_RebindPrincipalCarriesAliases", testJMAPIdentityAliasesRebindPrincipalCarriesAliases},
+		{"PrincipalOwnsIdentityAlias_MatchesAliasNotPrimary", testPrincipalOwnsIdentityAliasMatchesAliasNotPrimary},
 		// -- REQ-IDENT-01..91 Identity verification ---------------
 		{"IdentityVerify_Issue_RoundTrip", testIdentityVerifyIssueRoundTrip},
 		{"IdentityVerify_Issue_RejectsLiveToken", testIdentityVerifyIssueRejectsLiveToken},
@@ -7172,6 +7181,337 @@ func testJMAPIdentitySetDefaultSingleDefaultInvariant(t *testing.T, s store.Stor
 	}
 	if err := s.Meta().SetDefaultJMAPIdentity(ctx, p.ID, "400"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SetDefaultJMAPIdentity foreign: err = %v, want ErrNotFound", err)
+	}
+}
+
+// -- Identity alias addresses (issue #387, REQ-IDENT-01) -------------
+
+// testJMAPIdentityAliasesRoundTrip covers Insert/Get/List/Update
+// round-tripping store.JMAPIdentity.Aliases in order, and that Update
+// fully replaces the list (an alias dropped from the new list is gone,
+// a new one added is present, and the empty list clears it back to
+// nil).
+func testJMAPIdentityAliasesRoundTrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-rt@example.com")
+	row := store.JMAPIdentity{
+		ID:          "1000",
+		PrincipalID: p.ID,
+		Email:       "ji-alias-rt@example.com",
+		Aliases:     []string{"alias1@example.com", "Alias2@Example.com"},
+		MayDelete:   true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "1000")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if !reflect.DeepEqual(got.Aliases, []string{"alias1@example.com", "Alias2@Example.com"}) {
+		t.Fatalf("Aliases after insert = %#v", got.Aliases)
+	}
+	list, err := s.Meta().ListJMAPIdentities(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListJMAPIdentities: %v", err)
+	}
+	if len(list) != 1 || !reflect.DeepEqual(list[0].Aliases, got.Aliases) {
+		t.Fatalf("List Aliases = %#v", list)
+	}
+	// Update replaces the whole list: drop alias1, keep alias2, add alias3.
+	row.Aliases = []string{"Alias2@Example.com", "alias3@example.com"}
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("UpdateJMAPIdentity: %v", err)
+	}
+	got, err = s.Meta().GetJMAPIdentity(ctx, "1000")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity after update: %v", err)
+	}
+	if !reflect.DeepEqual(got.Aliases, []string{"Alias2@Example.com", "alias3@example.com"}) {
+		t.Fatalf("Aliases after update = %#v", got.Aliases)
+	}
+	if ownerID, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, "alias1@example.com"); err != nil || ok {
+		t.Fatalf("dropped alias1 still claimed: owner=%q ok=%v err=%v", ownerID, ok, err)
+	}
+	// Update to an empty list clears Aliases back to nil.
+	row.Aliases = nil
+	if err := s.Meta().UpdateJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("UpdateJMAPIdentity clear: %v", err)
+	}
+	got, err = s.Meta().GetJMAPIdentity(ctx, "1000")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity after clear: %v", err)
+	}
+	if len(got.Aliases) != 0 {
+		t.Fatalf("Aliases after clear = %#v, want empty", got.Aliases)
+	}
+}
+
+// testJMAPIdentityAliasesDuplicateWithinPrincipalRejected covers
+// ErrIdentityAliasConflict for a duplicate inside one Aliases list, for
+// an alias already claimed by a sibling identity's alias, on both
+// Insert and Update, and that a rejected write leaves no partial state.
+func testJMAPIdentityAliasesDuplicateWithinPrincipalRejected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-dup@example.com")
+
+	// Duplicate within the same Aliases list.
+	dupList := store.JMAPIdentity{
+		ID: "1010", PrincipalID: p.ID, Email: "a1010@example.com",
+		Aliases: []string{"x@example.com", "X@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, dupList); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Insert same-list duplicate: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "1010"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected insert left a row: err = %v, want ErrNotFound", err)
+	}
+
+	// Alias already claimed by a sibling identity.
+	first := store.JMAPIdentity{
+		ID: "1011", PrincipalID: p.ID, Email: "a1011@example.com",
+		Aliases: []string{"dup@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, first); err != nil {
+		t.Fatalf("Insert first: %v", err)
+	}
+	second := store.JMAPIdentity{
+		ID: "1012", PrincipalID: p.ID, Email: "a1012@example.com",
+		Aliases: []string{"DUP@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, second); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Insert cross-identity duplicate: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "1012"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected insert left a row: err = %v, want ErrNotFound", err)
+	}
+
+	// Update path: third identity tries to claim first's alias.
+	third := store.JMAPIdentity{
+		ID: "1013", PrincipalID: p.ID, Email: "a1013@example.com", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, third); err != nil {
+		t.Fatalf("Insert third: %v", err)
+	}
+	third.Aliases = []string{"dup@example.com"}
+	if err := s.Meta().UpdateJMAPIdentity(ctx, third); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Update cross-identity duplicate: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "1013")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity third: %v", err)
+	}
+	if len(got.Aliases) != 0 {
+		t.Fatalf("rejected update left aliases: %#v", got.Aliases)
+	}
+}
+
+// testJMAPIdentityAliasesEqualsPrimaryAddressRejected covers the two
+// directions of REQ-IDENT-01's cross-identity invariant: an alias
+// cannot equal any identity's primary address (its own or a sibling's),
+// and a primary address cannot equal an existing alias.
+func testJMAPIdentityAliasesEqualsPrimaryAddressRejected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-eqpri@example.com")
+
+	primaryA := store.JMAPIdentity{
+		ID: "1020", PrincipalID: p.ID, Email: "primary-a@example.com", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, primaryA); err != nil {
+		t.Fatalf("Insert primaryA: %v", err)
+	}
+
+	// Alias equal to a sibling's primary address.
+	siblingClash := store.JMAPIdentity{
+		ID: "1021", PrincipalID: p.ID, Email: "b1021@example.com",
+		Aliases: []string{"primary-a@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, siblingClash); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Insert alias==sibling primary: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "1021"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected insert left a row: err = %v, want ErrNotFound", err)
+	}
+
+	// Alias equal to the identity's own primary address.
+	selfClash := store.JMAPIdentity{
+		ID: "1022", PrincipalID: p.ID, Email: "c1022@example.com",
+		Aliases: []string{"c1022@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, selfClash); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Insert alias==own primary: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "1022"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected insert left a row: err = %v, want ErrNotFound", err)
+	}
+
+	// Reverse direction: a new identity's primary address is already a
+	// sibling's registered alias.
+	withAlias := store.JMAPIdentity{
+		ID: "1023", PrincipalID: p.ID, Email: "d1023@example.com",
+		Aliases: []string{"d-alias@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, withAlias); err != nil {
+		t.Fatalf("Insert withAlias: %v", err)
+	}
+	primaryClashesAlias := store.JMAPIdentity{
+		ID: "1024", PrincipalID: p.ID, Email: "d-alias@example.com", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, primaryClashesAlias); !errors.Is(err, store.ErrIdentityAliasConflict) {
+		t.Fatalf("Insert primary==sibling alias: err = %v, want ErrIdentityAliasConflict", err)
+	}
+	if _, err := s.Meta().GetJMAPIdentity(ctx, "1024"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected insert left a row: err = %v, want ErrNotFound", err)
+	}
+}
+
+// testJMAPIdentityAliasesMalformedAddressRejected covers
+// ErrInvalidArgument for a syntactically invalid alias, on both Insert
+// and Update, with no partial state left behind.
+func testJMAPIdentityAliasesMalformedAddressRejected(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-bad@example.com")
+
+	for _, tc := range []struct {
+		name  string
+		alias string
+	}{
+		{"no-at-sign", "not-an-email"},
+		{"empty", ""},
+		{"display-name-wrapper", "Display Name <foo@example.com>"},
+	} {
+		row := store.JMAPIdentity{
+			ID: "103" + tc.name[:1], PrincipalID: p.ID,
+			Email: "ok-" + tc.name + "@example.com", Aliases: []string{tc.alias}, MayDelete: true,
+		}
+		if err := s.Meta().InsertJMAPIdentity(ctx, row); !errors.Is(err, store.ErrInvalidArgument) {
+			t.Fatalf("Insert %s: err = %v, want ErrInvalidArgument", tc.name, err)
+		}
+	}
+
+	// Update path: a clean identity rejects a malformed alias and keeps
+	// its (empty) alias list.
+	clean := store.JMAPIdentity{
+		ID: "1035", PrincipalID: p.ID, Email: "clean1035@example.com", MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, clean); err != nil {
+		t.Fatalf("Insert clean: %v", err)
+	}
+	clean.Aliases = []string{"still not an email"}
+	if err := s.Meta().UpdateJMAPIdentity(ctx, clean); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("Update malformed alias: err = %v, want ErrInvalidArgument", err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "1035")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity clean: %v", err)
+	}
+	if len(got.Aliases) != 0 {
+		t.Fatalf("rejected update left aliases: %#v", got.Aliases)
+	}
+}
+
+// testJMAPIdentityAliasesCascadeOnDelete covers ON DELETE CASCADE:
+// deleting an identity removes every alias row with it, freeing the
+// address for a fresh claim.
+func testJMAPIdentityAliasesCascadeOnDelete(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-cascade@example.com")
+	row := store.JMAPIdentity{
+		ID: "1040", PrincipalID: p.ID, Email: "e1040@example.com",
+		Aliases: []string{"cascade1@example.com", "cascade2@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	for _, a := range row.Aliases {
+		if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, a); err != nil || !ok {
+			t.Fatalf("alias %q not claimed before delete: ok=%v err=%v", a, ok, err)
+		}
+	}
+	if err := s.Meta().DeleteJMAPIdentity(ctx, "1040"); err != nil {
+		t.Fatalf("DeleteJMAPIdentity: %v", err)
+	}
+	for _, a := range row.Aliases {
+		if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, a); err != nil || ok {
+			t.Fatalf("alias %q still claimed after delete: ok=%v err=%v", a, ok, err)
+		}
+	}
+	// The freed address can be claimed by a brand new identity.
+	again := store.JMAPIdentity{
+		ID: "1041", PrincipalID: p.ID, Email: "f1041@example.com",
+		Aliases: []string{"cascade1@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, again); err != nil {
+		t.Fatalf("Insert reclaiming freed alias: %v", err)
+	}
+}
+
+// testJMAPIdentityAliasesRebindPrincipalCarriesAliases covers the
+// #227 sub-account promotion/demotion path: RebindJMAPIdentityPrincipal
+// retargets an identity's alias rows along with the identity itself, so
+// the alias is visible under the new principal and gone from the old
+// one.
+func testJMAPIdentityAliasesRebindPrincipalCarriesAliases(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p1 := mustInsertPrincipal(t, s, "ji-alias-rebind-1@example.com")
+	p2 := mustInsertPrincipal(t, s, "ji-alias-rebind-2@example.com")
+	row := store.JMAPIdentity{
+		ID: "1050", PrincipalID: p1.ID, Email: "g1050@example.com",
+		Aliases: []string{"carry@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if err := s.Meta().RebindJMAPIdentityPrincipal(ctx, "1050", p2.ID); err != nil {
+		t.Fatalf("RebindJMAPIdentityPrincipal: %v", err)
+	}
+	if ownerID, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p2.ID, "carry@example.com"); err != nil || !ok || ownerID != "1050" {
+		t.Fatalf("alias not visible under new principal: owner=%q ok=%v err=%v", ownerID, ok, err)
+	}
+	if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p1.ID, "carry@example.com"); err != nil || ok {
+		t.Fatalf("alias still visible under old principal: ok=%v err=%v", ok, err)
+	}
+	got, err := s.Meta().GetJMAPIdentity(ctx, "1050")
+	if err != nil {
+		t.Fatalf("GetJMAPIdentity: %v", err)
+	}
+	if got.PrincipalID != p2.ID {
+		t.Fatalf("PrincipalID = %d, want %d", got.PrincipalID, p2.ID)
+	}
+	if !reflect.DeepEqual(got.Aliases, []string{"carry@example.com"}) {
+		t.Fatalf("Aliases after rebind = %#v", got.Aliases)
+	}
+}
+
+// testPrincipalOwnsIdentityAliasMatchesAliasNotPrimary covers
+// PrincipalOwnsIdentityAlias directly: it matches a registered alias
+// case-insensitively, never the identity's primary address, and is
+// scoped to the queried principal.
+func testPrincipalOwnsIdentityAliasMatchesAliasNotPrimary(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "ji-alias-owns@example.com")
+	other := mustInsertPrincipal(t, s, "ji-alias-owns-other@example.com")
+	row := store.JMAPIdentity{
+		ID: "1060", PrincipalID: p.ID, Email: "primary@example.com",
+		Aliases: []string{"alias@example.com"}, MayDelete: true,
+	}
+	if err := s.Meta().InsertJMAPIdentity(ctx, row); err != nil {
+		t.Fatalf("InsertJMAPIdentity: %v", err)
+	}
+	if ownerID, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, "alias@example.com"); err != nil || !ok || ownerID != "1060" {
+		t.Fatalf("alias lookup: owner=%q ok=%v err=%v", ownerID, ok, err)
+	}
+	if ownerID, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, "ALIAS@EXAMPLE.COM"); err != nil || !ok || ownerID != "1060" {
+		t.Fatalf("case-insensitive alias lookup: owner=%q ok=%v err=%v", ownerID, ok, err)
+	}
+	if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, "primary@example.com"); err != nil || ok {
+		t.Fatalf("primary address matched as alias: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, other.ID, "alias@example.com"); err != nil || ok {
+		t.Fatalf("alias visible under unrelated principal: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := s.Meta().PrincipalOwnsIdentityAlias(ctx, p.ID, "nonexistent@example.com"); err != nil || ok {
+		t.Fatalf("nonexistent address matched: ok=%v err=%v", ok, err)
 	}
 }
 

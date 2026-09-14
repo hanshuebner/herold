@@ -142,6 +142,7 @@ var tableReg = map[string]tableDesc{
 	"jmap_email_submissions":     {&JMAPEmailSubmissionRow{}, "id"},
 	"jmap_identities":            {&JMAPIdentityRow{}, "id"},
 	"identity_submission":        {&IdentitySubmissionRow{}, "identity_id"},
+	"jmap_identity_aliases":      {&JMAPIdentityAliasRow{}, "identity_id, position"},
 	"tlsrpt_failures":            {&TLSRPTFailureRow{}, "id"},
 	"address_books":              {&AddressBookRow{}, "id"},
 	"contacts":                   {&ContactRow{}, "id"},

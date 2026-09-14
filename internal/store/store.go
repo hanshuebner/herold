@@ -58,6 +58,17 @@ var (
 	// "too_many_shares" error token.
 	ErrTooManyShares = errors.New("store: too many shares")
 
+	// ErrIdentityAliasConflict is returned by InsertJMAPIdentity /
+	// UpdateJMAPIdentity when a candidate Identity alias address
+	// collides with another address already claimed within the same
+	// principal: a duplicate entry in the same alias list, another
+	// identity's alias, another identity's primary address, or (in
+	// the reverse direction) the identity's own primary address
+	// already registered as someone's alias (REQ-IDENT-01, re #387).
+	// Distinct from ErrConflict so JMAP Identity/set can surface a
+	// dedicated SetError type for the aliases property.
+	ErrIdentityAliasConflict = errors.New("store: identity alias conflict")
+
 	// ErrShareNotConfirmable is returned by FileShares.Confirm when the
 	// share is in state revoked or does not exist, and therefore cannot
 	// be transitioned to active. Confirming an already-active share is
@@ -1746,24 +1757,59 @@ type Metadata interface {
 	// InsertJMAPIdentity persists a new identity overlay row. The
 	// caller assigns ID; ErrConflict on duplicate (id) or
 	// (principal_id, email) collisions, depending on backend rules.
+	//
+	// row.Aliases (REQ-IDENT-01, re #387), when non-empty, is written
+	// to jmap_identity_aliases in the caller's order (position 0..n-1)
+	// in the same transaction as the identity row. Each entry is
+	// validated with ValidateEmailAddressSyntax (ErrInvalidArgument on
+	// a malformed address) and checked against every other identity
+	// owned by row.PrincipalID: a duplicate within row.Aliases, an
+	// alias equal to row.Email, an alias equal to another identity's
+	// primary address, or an alias equal to another identity's
+	// existing alias all fail the whole call with
+	// ErrIdentityAliasConflict and write nothing. row.Email is also
+	// checked against every other identity's existing aliases in the
+	// principal (the reverse direction of the same invariant).
 	InsertJMAPIdentity(ctx context.Context, row JMAPIdentity) error
 
-	// GetJMAPIdentity returns one row by id, or ErrNotFound.
+	// GetJMAPIdentity returns one row by id, or ErrNotFound. row.Aliases
+	// is populated in position order (REQ-IDENT-01, re #387).
 	GetJMAPIdentity(ctx context.Context, id string) (JMAPIdentity, error)
 
 	// ListJMAPIdentities returns the principal's overlay rows in
-	// ascending CreatedAtUs / ID order. Default identities are NOT
-	// returned — they are synthesised by the JMAP layer.
+	// ascending CreatedAtUs / ID order, each with Aliases populated
+	// (REQ-IDENT-01, re #387). Default identities are NOT returned —
+	// they are synthesised by the JMAP layer.
 	ListJMAPIdentities(ctx context.Context, principal PrincipalID) ([]JMAPIdentity, error)
 
 	// UpdateJMAPIdentity replaces the mutable fields (Name, ReplyToJSON,
 	// BccJSON, TextSignature, HTMLSignature) on the row identified by
 	// row.ID. Returns ErrNotFound when the row is missing.
+	//
+	// row.Aliases (REQ-IDENT-01, re #387) fully replaces the
+	// identity's alias list (existing alias rows are deleted and
+	// row.Aliases is reinserted in order, in the same transaction as
+	// the field update). The same validation and conflict checks as
+	// InsertJMAPIdentity apply, checked against the identity's actual
+	// stored Email (row.Email is not itself mutable via this method);
+	// a failure leaves both the fields and the alias list unchanged.
 	UpdateJMAPIdentity(ctx context.Context, row JMAPIdentity) error
 
 	// DeleteJMAPIdentity removes the row identified by id. Returns
-	// ErrNotFound when the row is missing.
+	// ErrNotFound when the row is missing. Every jmap_identity_aliases
+	// row owned by id is removed with it (ON DELETE CASCADE,
+	// REQ-IDENT-01, re #387); no orphaned alias row can outlive its
+	// identity.
 	DeleteJMAPIdentity(ctx context.Context, id string) error
+
+	// PrincipalOwnsIdentityAlias reports whether addr (matched
+	// case-insensitively) is registered as an alias — never the
+	// primary address — of some persisted identity owned by
+	// principalID, returning that identity's wire id when found
+	// (REQ-IDENT-01, re #387). A hit does not imply verification or
+	// send authority; callers such as internal/auth/sendpolicy decide
+	// how a matched alias affects ownership or reply-sender selection.
+	PrincipalOwnsIdentityAlias(ctx context.Context, principalID PrincipalID, addr string) (identityID string, ok bool, err error)
 
 	// SetDefaultJMAPIdentity makes the identity owned by principalID the
 	// principal's default, enforcing the single-default invariant
@@ -3198,8 +3244,12 @@ type Metadata interface {
 	// RebindJMAPIdentityPrincipal moves a persisted jmap_identities row
 	// to a different owning principal, in place (the Identity's own id
 	// and every other field are unchanged). Used by SeparateIdentity
-	// (parent -> sub) and RemoveSubAccount(keep) (sub -> parent).
-	// Returns ErrNotFound if identityID does not exist.
+	// (parent -> sub) and RemoveSubAccount(keep) (sub -> parent). Every
+	// jmap_identity_aliases row owned by identityID is retargeted to
+	// newPrincipalID in the same transaction (REQ-IDENT-01, re #387)
+	// so an alias is never orphaned under the identity's old principal
+	// nor left invisible to PrincipalOwnsIdentityAlias under the new
+	// one. Returns ErrNotFound if identityID does not exist.
 	RebindJMAPIdentityPrincipal(ctx context.Context, identityID string, newPrincipalID PrincipalID) error
 
 	// RebindIMAPImportAccountPrincipal moves an imapimport_account row's

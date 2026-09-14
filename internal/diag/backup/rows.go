@@ -1169,6 +1169,18 @@ type IdentitySubmissionRow struct {
 	UpdatedAtUs         int64   `json:"updated_at_us"`
 }
 
+// JMAPIdentityAliasRow mirrors the jmap_identity_aliases table
+// introduced in migration 0108 (issue #387, REQ-IDENT-01). PK is
+// (identity_id, position); FK to jmap_identities(id) ON DELETE
+// CASCADE. principal_id is a denormalized copy of the owning
+// Identity's principal, kept in step by RebindJMAPIdentityPrincipal.
+type JMAPIdentityAliasRow struct {
+	IdentityID  string `json:"identity_id"`
+	PrincipalID int64  `json:"principal_id"`
+	Address     string `json:"address"`
+	Position    int64  `json:"position"`
+}
+
 // SieveNamedScriptRow mirrors the sieve_named_scripts table introduced
 // in migration 0042 (ManageSieve named-script storage, RFC 5804). PK is
 // (principal_id, name); is_active flags the currently active script for

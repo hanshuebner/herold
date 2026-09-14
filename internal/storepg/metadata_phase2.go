@@ -2025,6 +2025,129 @@ const jmapIdentitySelectColumnsPG = `
 	verified_at_us, verification_token_hash, verification_code_hash,
 	verification_token_expires_at_us, is_default`
 
+// attachJMAPIdentityAliasesPG populates id.Aliases from
+// jmap_identity_aliases in position order (REQ-IDENT-01, re #387).
+// Called after every scan of a jmap_identities row so Get, List, and
+// the verification lookups all round-trip the alias list.
+func (m *metadata) attachJMAPIdentityAliasesPG(ctx context.Context, id *store.JMAPIdentity) error {
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT address FROM jmap_identity_aliases WHERE identity_id = $1 ORDER BY position ASC`,
+		id.ID)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer rows.Close()
+	var aliases []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return mapErr(err)
+		}
+		aliases = append(aliases, a)
+	}
+	if err := rows.Err(); err != nil {
+		return mapErr(err)
+	}
+	id.Aliases = aliases
+	return nil
+}
+
+// validateJMAPIdentityAliasesPG mirrors the sqlite-side
+// validateJMAPIdentityAliases (see that docstring for the full
+// invariant). Runs inside tx so the checks are consistent with the
+// write that follows.
+func validateJMAPIdentityAliasesPG(ctx context.Context, tx pgx.Tx, principalID store.PrincipalID, selfID, email string, aliases []string) ([]string, error) {
+	emailLower := strings.ToLower(strings.TrimSpace(email))
+	seen := make(map[string]struct{}, len(aliases))
+	normalized := make([]string, 0, len(aliases))
+	for _, a := range aliases {
+		a = strings.TrimSpace(a)
+		if err := store.ValidateEmailAddressSyntax(a); err != nil {
+			return nil, err
+		}
+		lower := strings.ToLower(a)
+		if _, dup := seen[lower]; dup {
+			return nil, fmt.Errorf("%w: alias %q listed more than once", store.ErrIdentityAliasConflict, a)
+		}
+		seen[lower] = struct{}{}
+		if lower == emailLower {
+			return nil, fmt.Errorf("%w: alias %q is this identity's own primary address", store.ErrIdentityAliasConflict, a)
+		}
+		normalized = append(normalized, a)
+	}
+
+	emailRows, err := tx.Query(ctx,
+		`SELECT id, email FROM jmap_identities WHERE principal_id = $1 AND id != $2`,
+		int64(principalID), selfID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	otherEmails := make(map[string]string)
+	for emailRows.Next() {
+		var otherID, otherEmail string
+		if err := emailRows.Scan(&otherID, &otherEmail); err != nil {
+			emailRows.Close()
+			return nil, mapErr(err)
+		}
+		otherEmails[strings.ToLower(otherEmail)] = otherID
+	}
+	if err := emailRows.Err(); err != nil {
+		emailRows.Close()
+		return nil, mapErr(err)
+	}
+	emailRows.Close()
+	for _, a := range normalized {
+		if otherID, ok := otherEmails[strings.ToLower(a)]; ok {
+			return nil, fmt.Errorf("%w: alias %q is identity %s's primary address", store.ErrIdentityAliasConflict, a, otherID)
+		}
+	}
+
+	aliasRows, err := tx.Query(ctx,
+		`SELECT identity_id, address FROM jmap_identity_aliases WHERE principal_id = $1 AND identity_id != $2`,
+		int64(principalID), selfID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	otherAliases := make(map[string]string)
+	for aliasRows.Next() {
+		var otherID, addr string
+		if err := aliasRows.Scan(&otherID, &addr); err != nil {
+			aliasRows.Close()
+			return nil, mapErr(err)
+		}
+		otherAliases[strings.ToLower(addr)] = otherID
+	}
+	if err := aliasRows.Err(); err != nil {
+		aliasRows.Close()
+		return nil, mapErr(err)
+	}
+	aliasRows.Close()
+	for _, a := range normalized {
+		if otherID, ok := otherAliases[strings.ToLower(a)]; ok {
+			return nil, fmt.Errorf("%w: alias %q already claimed by identity %s", store.ErrIdentityAliasConflict, a, otherID)
+		}
+	}
+	if otherID, ok := otherAliases[emailLower]; ok {
+		return nil, fmt.Errorf("%w: primary address %q is already claimed as identity %s's alias", store.ErrIdentityAliasConflict, email, otherID)
+	}
+
+	return normalized, nil
+}
+
+// insertJMAPIdentityAliasesPG writes aliases for identityID in order
+// (position 0..n-1). Callers run this after
+// validateJMAPIdentityAliasesPG inside the same transaction.
+func insertJMAPIdentityAliasesPG(ctx context.Context, tx pgx.Tx, principalID store.PrincipalID, identityID string, aliases []string) error {
+	for i, a := range aliases {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO jmap_identity_aliases (identity_id, principal_id, address, position) VALUES ($1, $2, $3, $4)`,
+			identityID, int64(principalID), a, i); err != nil {
+			return mapErr(err)
+		}
+	}
+	return nil
+}
+
 func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
 	if row.ID == "" {
 		return fmt.Errorf("storepg: InsertJMAPIdentity: empty id")
@@ -2069,7 +2192,11 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		tokenExpArg = row.VerificationTokenExpiresAtUs
 	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
+		aliases, err := validateJMAPIdentityAliasesPG(ctx, tx, row.PrincipalID, row.ID, row.Email, row.Aliases)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO jmap_identities
 			  (id, principal_id, name, email, reply_to_json, bcc_json,
 			   text_signature, html_signature, may_delete, created_at_us, updated_at_us,
@@ -2089,14 +2216,21 @@ func (m *metadata) InsertJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 			}
 			return mapErr(err)
 		}
-		return nil
+		return insertJMAPIdentityAliasesPG(ctx, tx, row.PrincipalID, row.ID, aliases)
 	})
 }
 
 func (m *metadata) GetJMAPIdentity(ctx context.Context, id string) (store.JMAPIdentity, error) {
 	row := m.s.pool.QueryRow(ctx,
 		`SELECT `+jmapIdentitySelectColumnsPG+` FROM jmap_identities WHERE id = $1`, id)
-	return scanJMAPIdentityPG(row)
+	out, err := scanJMAPIdentityPG(row)
+	if err != nil {
+		return store.JMAPIdentity{}, err
+	}
+	if err := m.attachJMAPIdentityAliasesPG(ctx, &out); err != nil {
+		return store.JMAPIdentity{}, err
+	}
+	return out, nil
 }
 
 func (m *metadata) ListJMAPIdentities(ctx context.Context, principal store.PrincipalID) ([]store.JMAPIdentity, error) {
@@ -2117,7 +2251,15 @@ func (m *metadata) ListJMAPIdentities(ctx context.Context, principal store.Princ
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if err := m.attachJMAPIdentityAliasesPG(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentity) error {
@@ -2139,6 +2281,21 @@ func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		avatarHash = row.AvatarBlobHash
 	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
+		var principalID int64
+		var email string
+		err := tx.QueryRow(ctx,
+			`SELECT principal_id, email FROM jmap_identities WHERE id = $1`, row.ID).
+			Scan(&principalID, &email)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+		aliases, err := validateJMAPIdentityAliasesPG(ctx, tx, store.PrincipalID(principalID), row.ID, email, row.Aliases)
+		if err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE jmap_identities
 			   SET name = $1, reply_to_json = $2, bcc_json = $3,
@@ -2156,12 +2313,19 @@ func (m *metadata) UpdateJMAPIdentity(ctx context.Context, row store.JMAPIdentit
 		if tag.RowsAffected() == 0 {
 			return store.ErrNotFound
 		}
-		return nil
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM jmap_identity_aliases WHERE identity_id = $1`, row.ID); err != nil {
+			return mapErr(err)
+		}
+		return insertJMAPIdentityAliasesPG(ctx, tx, store.PrincipalID(principalID), row.ID, aliases)
 	})
 }
 
 func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 	return m.runTx(ctx, func(tx pgx.Tx) error {
+		// jmap_identity_aliases rows are removed by the ON DELETE
+		// CASCADE foreign key (REQ-IDENT-01, re #387); no explicit
+		// DELETE is needed here.
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM jmap_identities WHERE id = $1`, id)
 		if err != nil {
@@ -2172,6 +2336,25 @@ func (m *metadata) DeleteJMAPIdentity(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+}
+
+// PrincipalOwnsIdentityAlias reports whether addr matches an alias
+// (never the primary address) of some identity owned by principalID
+// (REQ-IDENT-01, re #387). Matching is case-insensitive.
+func (m *metadata) PrincipalOwnsIdentityAlias(ctx context.Context, principalID store.PrincipalID, addr string) (string, bool, error) {
+	var identityID string
+	err := m.s.pool.QueryRow(ctx,
+		`SELECT identity_id FROM jmap_identity_aliases
+		  WHERE principal_id = $1 AND lower(address) = lower($2)
+		  LIMIT 1`,
+		int64(principalID), addr).Scan(&identityID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, mapErr(err)
+	}
+	return identityID, true, nil
 }
 
 // SetDefaultJMAPIdentity enforces the single-default invariant

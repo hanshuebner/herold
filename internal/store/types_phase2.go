@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"fmt"
+	"net/mail"
 	"time"
 )
 
@@ -35,6 +36,27 @@ func ValidateIdentitySubmissionCTs(sub IdentitySubmission) error {
 			return fmt.Errorf("%w: identity_submission: %s does not look like a sealed ciphertext (missing v1: prefix); refusing to store",
 				ErrInvalidArgument, f.name)
 		}
+	}
+	return nil
+}
+
+// ValidateEmailAddressSyntax rejects addr unless it parses as exactly
+// one bare RFC 5322 addr-spec — no display name, no comment, no
+// surrounding whitespace. This is the syntactic check the Identity
+// alias store methods run on every candidate address before it
+// reaches jmap_identity_aliases (REQ-IDENT-01, re #387); it lives here
+// in the store package rather than a separate validator package so
+// both backends share one implementation without an extra import.
+func ValidateEmailAddressSyntax(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("%w: empty email address", ErrInvalidArgument)
+	}
+	parsed, err := mail.ParseAddress(addr)
+	if err != nil {
+		return fmt.Errorf("%w: %q is not a syntactically valid email address: %v", ErrInvalidArgument, addr, err)
+	}
+	if parsed.Address != addr {
+		return fmt.Errorf("%w: %q is not a bare email address (no display name, comments, or surrounding whitespace allowed)", ErrInvalidArgument, addr)
 	}
 	return nil
 }
@@ -1329,6 +1351,19 @@ type JMAPIdentity struct {
 	// by the store on insert / update.
 	CreatedAtUs int64
 	UpdatedAtUs int64
+	// Aliases lists additional email addresses (REQ-IDENT-01, re #387)
+	// that select this identity as the reply sender, ordered as the
+	// caller supplied them. Never includes Email itself; empty/nil
+	// means the identity carries no aliases. Populated on every read
+	// (Get/List/verification lookups) and fully replaced on every
+	// InsertJMAPIdentity / UpdateJMAPIdentity call — see those methods'
+	// docstrings on store.Metadata for the validation and uniqueness
+	// rules applied before a write. Aliases are match-only: they never
+	// become a From address on the wire, and matching them for
+	// send-authority or reply-sender purposes is a caller decision
+	// (internal/auth/sendpolicy.StoreChecker.PrincipalOwnsAddress and
+	// friends), not something this store enforces.
+	Aliases []string
 	// IsDefault backs the herold JMAP Identity.isDefault extension
 	// property (REQ-IDENT-70). True for the one persisted row that is
 	// the principal's default identity. The single-default invariant is

@@ -196,7 +196,14 @@ func (m *metadata) GetIdentityByVerificationTokenHash(ctx context.Context, token
 		   FROM jmap_identities
 		  WHERE verification_token_hash = ?`,
 		tokenHash)
-	return scanJMAPIdentity(row)
+	out, err := scanJMAPIdentity(row)
+	if err != nil {
+		return store.JMAPIdentity{}, err
+	}
+	if err := m.attachJMAPIdentityAliases(ctx, &out); err != nil {
+		return store.JMAPIdentity{}, err
+	}
+	return out, nil
 }
 
 // GetIdentityByVerificationCodeHash returns the identity row whose id
@@ -224,6 +231,9 @@ func (m *metadata) GetIdentityByVerificationCodeHash(ctx context.Context, identi
 	if !bytes.Equal(out.VerificationCodeHash, codeHash) {
 		return store.JMAPIdentity{}, store.ErrNotFound
 	}
+	if err := m.attachJMAPIdentityAliases(ctx, &out); err != nil {
+		return store.JMAPIdentity{}, err
+	}
 	return out, nil
 }
 
@@ -250,7 +260,15 @@ func (m *metadata) ListUnverifiedIdentitiesOlderThan(ctx context.Context, before
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if err := m.attachJMAPIdentityAliases(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // ListExpiredVerificationTokens returns identities whose token has
@@ -277,7 +295,15 @@ func (m *metadata) ListExpiredVerificationTokens(ctx context.Context, before tim
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if err := m.attachJMAPIdentityAliases(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // GetVerificationResendStats returns the per-Identity resend bookkeeping
