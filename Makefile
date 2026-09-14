@@ -6,6 +6,10 @@ GO ?= go
 GOFLAGS ?=
 LDFLAGS := -trimpath
 BUILDFLAGS := -buildvcs=true $(LDFLAGS)
+# The default build is CGO-free (pure-Go SQLite, Postgres, Bleve, NATS);
+# exporting it keeps builds independent of a C toolchain. Race-detector
+# runs (test-server, the gate's race lane) need cgo and set it themselves.
+export CGO_ENABLED ?= 0
 
 PKGS := ./...
 FUZZTIME ?= 30s
@@ -96,7 +100,7 @@ test: test-server
 # first). Tests that need the real suite assets bring up their own
 # asset_dir override.
 test-server: prep-web
-	$(GO) test -race -count=1 $(GOFLAGS) $(PKGS)
+	CGO_ENABLED=1 $(GO) test -race -count=1 $(GOFLAGS) $(PKGS)
 
 # test-web runs the workspace-side checks (svelte-check today; vitest
 # / playwright are added incrementally per-app via the package.json
@@ -109,7 +113,7 @@ test-web:
 	pnpm --dir web run lint
 
 test-short: prep-web
-	$(GO) test -race -count=1 -short $(GOFLAGS) $(PKGS)
+	CGO_ENABLED=1 $(GO) test -race -count=1 -short $(GOFLAGS) $(PKGS)
 
 vet: prep-web
 	$(GO) vet $(PKGS)

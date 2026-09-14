@@ -24,11 +24,11 @@ norace=$(comm -23 <(echo "$all") <(echo "$race"))
 # that database (the Postgres lanes below run those packages serialised).
 echo "test-lanes: sqlite race lane, $(echo "$race" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite go test -race -count=1 -timeout 30m $race
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite CGO_ENABLED=1 go test -race -count=1 -timeout 30m $race
 
 echo "test-lanes: sqlite fast lane, $(echo "$norace" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite go test -count=1 -timeout 15m $norace
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=sqlite CGO_ENABLED=0 go test -count=1 -timeout 15m $norace
 
 if [ -z "${HEROLD_PG_DSN:-}" ]; then
     echo "test-lanes: HEROLD_PG_DSN unset, postgres lanes skipped" >&2
@@ -36,7 +36,7 @@ if [ -z "${HEROLD_PG_DSN:-}" ]; then
 fi
 
 echo "test-lanes: postgres serialised lane"
-HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
+HEROLD_TEST_STORE=postgres CGO_ENABLED=0 go test -count=1 -timeout 20m -p 1 ./internal/storepg/... ./internal/diag/migrate/... ./test/e2e/...
 
 # The CI postgres lane runs the remaining packages without the DSN (only
 # HEROLD_TEST_STORE=postgres), so their Postgres variants skip there; the
@@ -45,4 +45,4 @@ HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m -p 1 ./internal/storepg
 rest=$(echo "$all" | grep -vE '/(internal/storepg|internal/diag/migrate|test/e2e)($|/)')
 echo "test-lanes: postgres parallel lane, $(echo "$rest" | wc -l | tr -d ' ') packages"
 # shellcheck disable=SC2086
-env -u HEROLD_PG_DSN HEROLD_TEST_STORE=postgres go test -count=1 -timeout 20m $rest
+env -u HEROLD_PG_DSN HEROLD_TEST_STORE=postgres CGO_ENABLED=0 go test -count=1 -timeout 20m $rest
