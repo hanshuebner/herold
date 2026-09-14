@@ -58,6 +58,16 @@
  *       `Delivered-To` domain, `X-Original-To` exact address,
  *       `X-Original-To` domain. Each match is gated by the same
  *       verification requirement as steps 2/3.
+ *   3c. Alias fallback (issue #387): only when none of steps 1..3b
+ *       produced a hit, `Identity.aliases` -- additional addr-spec
+ *       strings that select the owning identity as the reply sender,
+ *       alongside its primary `email`, but never a From address on the
+ *       wire -- are checked against the same sources and in the same
+ *       order as steps 2/3/3b: To, Cc, X-Herold-Recipient,
+ *       Delivered-To, X-Original-To (exact address only, no domain
+ *       fallback). Because this runs strictly after every primary-
+ *       address step, a primary-address match always wins over an
+ *       alias belonging to a different identity.
  *   4. Final fallback: the supplied default identity (REQ-MAIL-12).
  *
  * Verification gate: Unverified Identities NEVER win the To/Cc scan
@@ -115,6 +125,28 @@ function identitiesByEmail(identities: readonly Identity[]): Map<string, Identit
     const key = (id.email ?? '').toLowerCase().trim();
     if (!key) continue;
     if (!map.has(key)) map.set(key, id);
+  }
+  return map;
+}
+
+/**
+ * Build a lower-cased lookup table from alias address to the identity
+ * that claims it (issue #387, `Identity.aliases`). Every alias in every
+ * identity's list is a candidate; the server's own uniqueness
+ * constraint (`store.ErrIdentityAliasConflict`) already guarantees no
+ * two identities can claim the same alias and no alias can equal any
+ * identity's primary address, so a collision here should not occur in
+ * practice. If one does anyway (a legacy or inconsistent server), the
+ * first identity encountered wins, mirroring `identitiesByEmail`.
+ */
+function identitiesByAlias(identities: readonly Identity[]): Map<string, Identity> {
+  const map = new Map<string, Identity>();
+  for (const id of identities) {
+    for (const raw of id.aliases ?? []) {
+      const key = raw.toLowerCase().trim();
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, id);
+    }
   }
   return map;
 }
@@ -217,6 +249,44 @@ function firstVerifiedMatch(
   return null;
 }
 
+/**
+ * Look up a single already-lower-cased address against a lookup table,
+ * gated by the verification requirement. Used for the single-address
+ * header sources (`X-Herold-Recipient`, `Delivered-To`, `X-Original-To`)
+ * where `firstVerifiedMatch`'s list-walking shape does not apply.
+ */
+function verifiedLookup(
+  addr: string | null,
+  byEmail: Map<string, Identity>,
+): Identity | null {
+  if (!addr) return null;
+  const id = byEmail.get(addr);
+  return id && isVerified(id) ? id : null;
+}
+
+/**
+ * Match `parent` against every identity's `aliases` list (issue #387),
+ * scanning the same sources and in the same precedence order as the
+ * primary-address heuristics: To, then Cc, then `X-Herold-Recipient`,
+ * then `Delivered-To`, then `X-Original-To`. No domain fallback --
+ * aliases are exact addresses only.
+ *
+ * Returns null when no identity declares any aliases, or none of them
+ * match.
+ */
+function matchByAlias(parent: Email, identities: readonly Identity[]): Identity | null {
+  const byAlias = identitiesByAlias(identities);
+  if (byAlias.size === 0) return null;
+
+  return (
+    firstVerifiedMatch(parent.to ?? null, byAlias) ??
+    firstVerifiedMatch(parent.cc ?? null, byAlias) ??
+    verifiedLookup(readHeraldRecipient(parent), byAlias) ??
+    verifiedLookup(readDeliveredTo(parent), byAlias) ??
+    verifiedLookup(readXOriginalTo(parent), byAlias)
+  );
+}
+
 /** Lower-cased domain (part after `@`) of an email address, or null. */
 function domainOf(email: string): string | null {
   const at = email.indexOf('@');
@@ -268,11 +338,14 @@ function firstDomainMatch(
 }
 
 /**
- * Select the From identity for a reply / reply-all / forward against
- * `parent`. See the file header for the spec reference (REQ-MAIL-12a).
+ * Match `parent` against the primary-address heuristics (REQ-MAIL-12a
+ * steps 1..3b). Extracted from `selectReplyIdentity` so the alias
+ * matching (issue #387) can run strictly below it -- see that
+ * function's header comment for why. Returns null when none of the
+ * steps produce a hit, leaving the terminal default fallback to the
+ * caller.
  *
- * The four-step algorithm is implemented inline so the precedence is
- * easy to audit:
+ * The steps are implemented inline so the precedence is easy to audit:
  *
  *   1. Own-sent: no X-Herold-Recipient header (genuinely outbound, see
  *      REQ-FLOW-35) AND parent.from[0].email matches an identity (any
@@ -290,18 +363,11 @@ function firstDomainMatch(
  *       match): Delivered-To exact match, then Delivered-To domain
  *       match, then X-Original-To exact match, then X-Original-To
  *       domain match — each gated by the verification requirement.
- *   4. Fallback to `defaultIdentity`.
- *
- * Callers (compose's openReply / openReplyAll / openForward) pass the
- * full identity list and the user's default identity (typically
- * `mail.primaryIdentity`). The returned identity is what the compose
- * pre-selects in its From field; the user is free to override.
  */
-export function selectReplyIdentity(
+function matchByPrimaryHeuristics(
   parent: Email,
   identities: readonly Identity[],
-  defaultIdentity: Identity,
-): Identity {
+): Identity | null {
   const byEmail = identitiesByEmail(identities);
 
   // Read once — used to gate step 1 and, when step 1 doesn't apply, to
@@ -398,7 +464,39 @@ export function selectReplyIdentity(
     }
   }
 
-  // Step 4 — terminal fallback.
+  return null;
+}
+
+/**
+ * Select the From identity for a reply / reply-all / forward against
+ * `parent`. See the file header for the spec reference (REQ-MAIL-12a)
+ * and `matchByPrimaryHeuristics` for steps 1..3b.
+ *
+ * Alias matching (issue #387): before falling back to `defaultIdentity`,
+ * every identity's `aliases` list (`Identity.aliases`, match-only,
+ * never a From address on the wire) is checked against the same
+ * sources as the primary heuristics -- To, Cc, X-Herold-Recipient,
+ * Delivered-To, X-Original-To -- via `matchByAlias`. This runs strictly
+ * after `matchByPrimaryHeuristics`, so a primary-address match always
+ * wins over an alias match belonging to a different identity: aliases
+ * only ever resolve a message that none of steps 1..3b already claimed.
+ *
+ * Callers (compose's openReply / openReplyAll / openForward) pass the
+ * full identity list and the user's default identity (typically
+ * `mail.primaryIdentity`). The returned identity is what the compose
+ * pre-selects in its From field; the user is free to override.
+ */
+export function selectReplyIdentity(
+  parent: Email,
+  identities: readonly Identity[],
+  defaultIdentity: Identity,
+): Identity {
+  const primaryMatch = matchByPrimaryHeuristics(parent, identities);
+  if (primaryMatch) return primaryMatch;
+
+  const aliasMatch = matchByAlias(parent, identities);
+  if (aliasMatch) return aliasMatch;
+
   return defaultIdentity;
 }
 
@@ -573,6 +671,7 @@ export function localAliasesForCc(
 export const _internals_forTest = {
   isVerified,
   identitiesByEmail,
+  identitiesByAlias,
   readHeraldRecipient,
   readDeliveredTo,
   readXOriginalTo,
@@ -580,4 +679,6 @@ export const _internals_forTest = {
   firstVerifiedMatch,
   firstVerifiedIdentityByDomain,
   firstDomainMatch,
+  matchByAlias,
+  matchByPrimaryHeuristics,
 };

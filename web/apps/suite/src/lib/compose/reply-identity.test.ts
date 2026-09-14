@@ -679,6 +679,128 @@ describe('selectReplyIdentity — REQ-MAIL-12a acceptance/contract test (pins th
   });
 });
 
+// ── Alias-address matching (issue #387) ─────────────────────────────────
+
+describe('selectReplyIdentity — alias-address matching (issue #387)', () => {
+  it('selects the owning identity when the To address is registered only as an alias, not the primary', () => {
+    const withAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'vorsitz@classic-computing.de' }],
+    });
+    const got = selectReplyIdentity(parent, [withAlias, BOB], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local');
+  });
+
+  it('selects the owning identity when only X-Herold-Recipient names an alias (Bcc/list mail)', () => {
+    const withAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'stranger@external.test' }],
+      to: [{ name: null, email: 'some-list@mailing.example' }],
+      'header:X-Herold-Recipient:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [withAlias], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local');
+  });
+
+  it('selects the owning identity when only Delivered-To names an alias (upstream alias forward)', () => {
+    const withAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'info@classic-computing.org' }],
+      'header:Delivered-To:asText': 'vorsitz@classic-computing.de',
+    });
+    const got = selectReplyIdentity(parent, [withAlias], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local');
+  });
+
+  it('matches an alias case-insensitively', () => {
+    const withAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'Vorsitz@Classic-Computing.DE' }],
+    });
+    const got = selectReplyIdentity(parent, [withAlias], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local');
+  });
+
+  it('a primary still wins over an alias of another identity when both appear', () => {
+    // To carries both BOB's primary address and ALICE's alias
+    // (registered for a different identity than BOB). The primary
+    // match must win.
+    const aliceWithAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [
+        { name: null, email: 'vorsitz@classic-computing.de' }, // alice's alias
+        { name: null, email: 'bob@example.local' }, // bob's primary
+      ],
+    });
+    const got = selectReplyIdentity(parent, [aliceWithAlias, BOB], DEFAULT_ID);
+    expect(got.email).toBe('bob@example.local');
+  });
+
+  it('a primary match via X-Herold-Recipient still wins over an alias match seen elsewhere', () => {
+    const aliceWithAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'vorsitz@classic-computing.de' }], // alice's alias
+      'header:X-Herold-Recipient:asText': 'bob@example.local', // bob's primary
+    });
+    // Step 2 (To scan) only sees the alias, which is not a primary match,
+    // so it misses; step 3 (X-Herold-Recipient) finds bob's primary match
+    // and must win over the alias step that runs after it.
+    const got = selectReplyIdentity(parent, [aliceWithAlias, BOB], DEFAULT_ID);
+    expect(got.email).toBe('bob@example.local');
+  });
+
+  it('does not pick an unverified identity via its alias', () => {
+    const unverifiedWithAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+      verifiedAt: null,
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'vorsitz@classic-computing.de' }],
+    });
+    const got = selectReplyIdentity(parent, [unverifiedWithAlias], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local'); // falls through to default
+  });
+
+  it('falls back to the default identity when no primary or alias matches', () => {
+    const withAlias = makeIdentity('alice@example.local', {
+      aliases: ['vorsitz@classic-computing.de'],
+    });
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'unrelated@nowhere.test' }],
+    });
+    const got = selectReplyIdentity(parent, [withAlias], DEFAULT_ID);
+    expect(got.email).toBe('alice@example.local'); // default
+  });
+
+  it('is unaffected when no identity declares any aliases (aliases undefined)', () => {
+    const parent = makeEmail({
+      from: [{ name: null, email: 'external@elsewhere.test' }],
+      to: [{ name: null, email: 'alice+work@example.local' }],
+    });
+    const got = selectReplyIdentity(parent, [ALICE, ALICE_WORK], DEFAULT_ID);
+    expect(got.email).toBe('alice+work@example.local');
+  });
+});
+
 // ── localAliasesForCc ───────────────────────────────────────────────────
 
 describe('localAliasesForCc', () => {
