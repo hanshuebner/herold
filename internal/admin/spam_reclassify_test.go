@@ -506,6 +506,121 @@ func testSpamReclassifyReusesDeliveryAuthResults(t *testing.T, newStore func() s
 	}
 }
 
+// TestSpamReclassify_OmitsHeroldsOwnPriorVerdict is the re #389
+// regression test: a message that was already classified once carries
+// herold's own "x-herold-spam=" method as part of its stamped delivery
+// Authentication-Results header (re #385's deliveryAuthResults recovers
+// that same header). Reclassifying that message must not hand the
+// model its own prior verdict as auth_results input.
+func TestSpamReclassify_OmitsHeroldsOwnPriorVerdict_SQLite(t *testing.T) {
+	testSpamReclassifyOmitsHeroldsOwnPriorVerdict(t, func() store.Store { return sqlitetest.Open(t, clock.NewReal()) })
+}
+
+func TestSpamReclassify_OmitsHeroldsOwnPriorVerdict_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	testSpamReclassifyOmitsHeroldsOwnPriorVerdict(t, func() store.Store {
+		st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clock.NewReal())
+		if err != nil {
+			t.Skipf("storepg.Open: %v", err)
+		}
+		if tr, ok := st.(interface {
+			TruncateAll(ctx context.Context) error
+		}); ok {
+			if err := tr.TruncateAll(context.Background()); err != nil {
+				_ = st.Close()
+				t.Fatalf("TruncateAll: %v", err)
+			}
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return st
+	})
+}
+
+func testSpamReclassifyOmitsHeroldsOwnPriorVerdict(t *testing.T, newStore func() store.Store) {
+	if testing.Short() {
+		t.Skip("builds and runs a real plugin child process")
+	}
+	ctx := context.Background()
+	clk := clock.NewReal()
+	st := newStore()
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "prior-verdict@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	if _, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk}); err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	// The stamped header a prior classification run left on the stored
+	// blob: it carries herold's own verdict as an x-herold-spam method,
+	// exactly as renderAuthResults (internal/protosmtp/deliver.go) writes
+	// it at delivery time once a classifier plugin has run.
+	const rawAuthResults = "mx.test.example; dkim=pass header.d=example.test header.s=s1; " +
+		"spf=pass smtp.mailfrom=sender@example.test; dmarc=pass header.from=example.test; " +
+		"x-herold-spam=spam (score=0.92) x-herold-spam-engine=spam-llm"
+	const subject = "prior-verdict-message"
+	body := "Authentication-Results: " + rawAuthResults + "\r\n" +
+		"From: sender@example.test\r\nTo: prior-verdict@example.test\r\nSubject: " + subject + "\r\n\r\nbody\r\n"
+	blob, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         blob.Size,
+		Blob:         blob,
+		Envelope:     store.Envelope{Subject: subject},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := findSpamVerdictMessageBySubject(t, st, []store.PrincipalID{p.ID}, subject)
+
+	cls, plugName, shutdown := startReclassifyPlugin(t, clk, "ham")
+	defer shutdown()
+
+	sum, err := reclassifySpam(ctx, st, clk, cls, plugName, p.ID, spamReclassifyOptions{UnclassifiedOnly: true})
+	if err != nil {
+		t.Fatalf("reclassifySpam: %v", err)
+	}
+	want := SpamReclassifySummary{Selected: 1, Classified: 1, Ham: 1}
+	if sum != want {
+		t.Fatalf("summary = %+v, want %+v", sum, want)
+	}
+
+	rec, err := st.Meta().GetLLMClassification(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	if strings.Contains(*rec.SpamPromptApplied, "x-herold-spam") {
+		t.Fatalf("spam_prompt_applied leaked herold's own prior verdict: %s", *rec.SpamPromptApplied)
+	}
+	var req spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &req); err != nil {
+		t.Fatalf("unmarshal SpamPromptApplied: %v", err)
+	}
+	if req.SPF != "pass" || req.DKIM != "pass" || req.DMARC != "pass" {
+		t.Fatalf("auth verdicts = spf=%q dkim=%q dmarc=%q, want pass/pass/pass matching the stamped header",
+			req.SPF, req.DKIM, req.DMARC)
+	}
+}
+
 // TestSpamReclassify_IgnoresForeignAuthResults is the re #385 negative
 // regression test: a message whose IngestSource is anything other than
 // store.IngestSourceSMTP -- an IMAP import, or a pre-ingest-source row

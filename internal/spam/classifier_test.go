@@ -500,6 +500,63 @@ func TestBuildRequest_AuthResultsFallsBackToUpstreamWhenNilAuth(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_AuthResultsOmitsHeroldsOwnSpamVerdict is the #389
+// regression test: a reclassification recovers herold's own delivery-time
+// Authentication-Results header, which by then carries the verdict from
+// the PREVIOUS classification run as an "x-herold-spam=" method (per
+// RFC 8601 §2.7 extensibility, rendered by renderAuthResults in
+// internal/protosmtp/deliver.go). Rendering that verbatim into
+// auth_results hands the model its own prior verdict as if it were
+// external corroboration. The rendered auth_results must keep every
+// other method (spf, dkim, dmarc, arc) intact and omit only herold's own
+// x-herold-spam / x-herold-spam-engine tokens.
+func TestBuildRequest_AuthResultsOmitsHeroldsOwnSpamVerdict(t *testing.T) {
+	auth := &mailauth.AuthResults{
+		SPF:  mailauth.SPFResult{Status: mailauth.AuthPass, From: "sender@example.com"},
+		DKIM: []mailauth.DKIMResult{{Status: mailauth.AuthPass, Domain: "example.com"}},
+		DMARC: mailauth.DMARCResult{
+			Status:     mailauth.AuthPass,
+			HeaderFrom: "accountprotection.microsoft.com",
+		},
+		ARC: mailauth.ARCResult{Status: mailauth.AuthFail},
+		Raw: "mx.netzhansa.com; spf=pass smtp.mailfrom=sender@example.com; " +
+			"dkim=pass header.d=example.com; " +
+			"dmarc=pass header.from=accountprotection.microsoft.com; arc=fail; " +
+			"x-herold-spam=spam (score=0.92) x-herold-spam-engine=spam-llm",
+	}
+	req := BuildRequest(buildMessage(t, canonMsg), auth)
+	if strings.Contains(req.AuthResults, "x-herold-spam") {
+		t.Fatalf("auth_results leaked herold's own prior verdict: %q", req.AuthResults)
+	}
+	for _, want := range []string{
+		"spf=pass smtp.mailfrom=sender@example.com",
+		"dkim=pass header.d=example.com",
+		"dmarc=pass header.from=accountprotection.microsoft.com",
+		"arc=fail",
+	} {
+		if !strings.Contains(req.AuthResults, want) {
+			t.Fatalf("auth_results dropped %q: got %q", want, req.AuthResults)
+		}
+	}
+}
+
+// TestBuildRequest_AuthResultsUnaffectedBeforeSpamStamped confirms the
+// delivery-time request (built before the classifier runs, hence before
+// the Authentication-Results header carries any x-herold-spam token) is
+// byte-for-byte unchanged by the #389 fix -- there is nothing to strip
+// yet, so BuildRequest must not alter a Raw value that never had the
+// token in the first place.
+func TestBuildRequest_AuthResultsUnaffectedBeforeSpamStamped(t *testing.T) {
+	auth := &mailauth.AuthResults{
+		SPF: mailauth.SPFResult{Status: mailauth.AuthPass, From: "sender@example.com"},
+		Raw: "mx.netzhansa.com; spf=pass smtp.mailfrom=sender@example.com",
+	}
+	req := BuildRequest(buildMessage(t, canonMsg), auth)
+	if req.AuthResults != auth.Raw {
+		t.Fatalf("auth_results: got %q, want unchanged %q", req.AuthResults, auth.Raw)
+	}
+}
+
 // TestBuildRequest_AuthSummaryStatesAlignedPassAsAuthoritative is the
 // #383 regression test: a DMARC-aligned pass must render as an
 // authoritative statement of verified identity, not as a bare token a

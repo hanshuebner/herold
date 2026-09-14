@@ -569,15 +569,24 @@ type Request struct {
 // the caller has a verified auth result: the classifier data grant
 // (docs/design/server/implementation/08-classifier-plugin.md) specifies
 // the server's own SPF/DKIM/DMARC verdict, not a forgeable upstream
-// header. auth.Raw is populated before classification runs and therefore
-// never carries the x-herold-spam token (the verdict does not exist
-// yet). A nil auth argument — the IMAP import path, which stores bytes
-// as-synced and performs no server-side verification (REQ-IMAP-IMP-33)
-// — falls back to msg.AuthResultsRaw, the upstream header content as
-// received, and sets SPF/DKIM/DMARC to "none" (not evaluated) and
-// FromDomain to "" (re #298, re #385). "none" is never rendered as a
-// failure: it means herold has no opinion on this message's
-// authentication, not that authentication was attempted and failed.
+// header. At delivery time auth.Raw is populated before classification
+// runs and therefore never carries the x-herold-spam token (the verdict
+// does not exist yet); a reclassify or apply-verdicts run, however,
+// recovers auth.Raw from the message's already-stamped stored header
+// (deliveryAuthResults, internal/admin/spam_reclassify.go, re #385),
+// which by then carries the PREVIOUS run's verdict as an
+// "x-herold-spam=" method. stripHeroldSpamToken removes that token
+// (and its "x-herold-spam-engine=" companion, rendered as part of the
+// same method) before assignment so the classifier is never handed its
+// own prior verdict as corroborating evidence (re #389); every other
+// method (spf, dkim, dmarc, arc, and any foreign one) is left intact. A
+// nil auth argument — the IMAP import path, which stores bytes as-synced
+// and performs no server-side verification (REQ-IMAP-IMP-33) — falls
+// back to msg.AuthResultsRaw, the upstream header content as received,
+// and sets SPF/DKIM/DMARC to "none" (not evaluated) and FromDomain to ""
+// (re #298, re #385). "none" is never rendered as a failure: it means
+// herold has no opinion on this message's authentication, not that
+// authentication was attempted and failed.
 func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 	from := addrsToStrings(msg.Envelope.From)
 	to := addrsToStrings(msg.Envelope.To)
@@ -607,7 +616,7 @@ func BuildRequest(msg mailparse.Message, auth *mailauth.AuthResults) Request {
 		req.DKIM = authVerdictToken(auth.BestDKIMStatus())
 		req.DMARC = authVerdictToken(auth.DMARC.Status)
 		req.FromDomain = auth.FromDomain()
-		req.AuthResults = auth.Raw
+		req.AuthResults = stripHeroldSpamToken(auth.Raw)
 	}
 	req.AuthSummary = authSummary(req.DMARC, req.FromDomain)
 	return req
@@ -643,6 +652,29 @@ func authSummary(dmarc, fromDomain string) string {
 	default:
 		return ""
 	}
+}
+
+// stripHeroldSpamToken removes herold's own "x-herold-spam=" method
+// token -- including its "x-herold-spam-engine=" companion, rendered as
+// part of the same semicolon-delimited segment by renderAuthResults
+// (internal/protosmtp/deliver.go) -- from a raw Authentication-Results
+// value. Every other method (the authserv-id, spf, dkim, dmarc, arc, and
+// any foreign method a future extension might add) is left byte-for-byte
+// intact, including its original spacing, because the token is dropped
+// by segment rather than reconstructed from parsed fields (re #389).
+func stripHeroldSpamToken(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	segments := strings.Split(raw, ";")
+	kept := segments[:0]
+	for _, seg := range segments {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(seg)), "x-herold-spam=") {
+			continue
+		}
+		kept = append(kept, seg)
+	}
+	return strings.Join(kept, ";")
 }
 
 // authVerdictToken collapses a mailauth.AuthStatus to the three-state

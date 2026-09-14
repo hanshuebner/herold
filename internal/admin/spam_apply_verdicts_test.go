@@ -491,6 +491,117 @@ func testApplySpamVerdictsReusesDeliveryAuthResults(t *testing.T, st store.Store
 	}
 }
 
+// TestApplySpamVerdicts_OmitsHeroldsOwnPriorVerdict is the re #389
+// regression test for the apply-verdicts path: a message that was
+// already classified once carries herold's own "x-herold-spam=" method
+// as part of its stamped delivery Authentication-Results header.
+// Applying a (possibly different) batch verdict must not record a
+// spam_prompt_applied whose auth_results hands the model its own prior
+// verdict.
+func TestApplySpamVerdicts_OmitsHeroldsOwnPriorVerdict_SQLite(t *testing.T) {
+	testApplySpamVerdictsOmitsHeroldsOwnPriorVerdict(t, sqlitetest.Open(t, clock.NewReal()))
+}
+
+func TestApplySpamVerdicts_OmitsHeroldsOwnPriorVerdict_Postgres(t *testing.T) {
+	dsn := os.Getenv("HEROLD_PG_DSN")
+	if dsn == "" {
+		t.Skip("HEROLD_PG_DSN not set; skipping Postgres leg")
+	}
+	st, err := storepg.Open(context.Background(), dsn, t.TempDir(), nil, clock.NewReal())
+	if err != nil {
+		t.Skipf("storepg.Open: %v", err)
+	}
+	if tr, ok := st.(interface {
+		TruncateAll(ctx context.Context) error
+	}); ok {
+		if err := tr.TruncateAll(context.Background()); err != nil {
+			_ = st.Close()
+			t.Fatalf("TruncateAll: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	testApplySpamVerdictsOmitsHeroldsOwnPriorVerdict(t, st)
+}
+
+func testApplySpamVerdictsOmitsHeroldsOwnPriorVerdict(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC))
+
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "apply-prior-verdict@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inbox, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox})
+	if err != nil {
+		t.Fatalf("InsertMailbox INBOX: %v", err)
+	}
+	if _, err := st.Meta().InsertMailbox(ctx, store.Mailbox{PrincipalID: p.ID, Name: "Junk", Attributes: store.MailboxAttrJunk}); err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+
+	// The stamped header a prior classification run left on the stored
+	// blob: it carries herold's own verdict as an x-herold-spam method,
+	// exactly as renderAuthResults (internal/protosmtp/deliver.go) writes
+	// it at delivery time once a classifier plugin has run.
+	const rawAuthResults = "mx.test.example; dkim=pass header.d=example.test header.s=s1; " +
+		"spf=pass smtp.mailfrom=sender@example.test; dmarc=pass header.from=example.test; " +
+		"x-herold-spam=spam (score=0.92) x-herold-spam-engine=spam-llm"
+	const subject = "apply-prior-verdict-message"
+	body := "Authentication-Results: " + rawAuthResults + "\r\n" +
+		"From: sender@example.test\r\nTo: apply-prior-verdict@example.test\r\nSubject: " + subject + "\r\n\r\nbody\r\n"
+	blob, err := st.Blobs().Put(ctx, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID:  p.ID,
+		InternalDate: time.Now(),
+		ReceivedAt:   time.Now(),
+		Size:         blob.Size,
+		Blob:         blob,
+		Envelope:     store.Envelope{Subject: subject},
+		IngestSource: store.IngestSourceSMTP,
+	}, []store.MessageMailbox{{MailboxID: inbox.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	mid := findSpamVerdictMessageBySubject(t, st, []store.PrincipalID{p.ID}, subject)
+
+	csvBody := "id,verdict,confidence,reason\n" + itoaMsg(mid) + ",ham,90,looks fine\n"
+	rows, err := parseSpamVerdictsCSV(strings.NewReader(csvBody))
+	if err != nil {
+		t.Fatalf("parseSpamVerdictsCSV: %v", err)
+	}
+	sum, err := applySpamVerdicts(ctx, st, clk, p.ID, rows, spamApplyVerdictsOptions{Engine: "batch:test"})
+	if err != nil {
+		t.Fatalf("applySpamVerdicts: %v", err)
+	}
+	if sum.Applied != 1 {
+		t.Fatalf("summary = %+v, want Applied=1", sum)
+	}
+
+	rec, err := st.Meta().GetLLMClassification(ctx, mid)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamPromptApplied == nil {
+		t.Fatal("SpamPromptApplied is nil, want the recorded spam.Request JSON")
+	}
+	if strings.Contains(*rec.SpamPromptApplied, "x-herold-spam") {
+		t.Fatalf("spam_prompt_applied leaked herold's own prior verdict: %s", *rec.SpamPromptApplied)
+	}
+	var req spam.Request
+	if err := json.Unmarshal([]byte(*rec.SpamPromptApplied), &req); err != nil {
+		t.Fatalf("unmarshal SpamPromptApplied: %v", err)
+	}
+	if req.SPF != "pass" || req.DKIM != "pass" || req.DMARC != "pass" {
+		t.Fatalf("auth verdicts = spf=%q dkim=%q dmarc=%q, want pass/pass/pass matching the stamped header",
+			req.SPF, req.DKIM, req.DMARC)
+	}
+}
+
 // TestApplySpamVerdicts_IgnoresForeignAuthResults is the re #385
 // negative regression test for the apply-verdicts path: a message whose
 // IngestSource is anything other than store.IngestSourceSMTP -- an IMAP
