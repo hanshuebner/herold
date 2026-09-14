@@ -30,8 +30,6 @@ data the instance does not create on its own.
 
 Seed what the suite expects beyond its own deliveries:
 
-- `SearchAcceptanceTest` searches for messages whose subject starts with
-  `seed message`; deliver two or three over the instance's SMTP listener.
 - `ComposeAcceptanceTest#t22` needs two accounts. The seed leaves the
   identity separable, not separated, so the suite's setup separates it
   itself over JMAP; all it needs from the instance is the
