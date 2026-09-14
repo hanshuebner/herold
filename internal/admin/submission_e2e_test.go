@@ -20,6 +20,7 @@ import (
 	"github.com/hanshuebner/herold/internal/mailauth/keymgmt"
 	"github.com/hanshuebner/herold/internal/store"
 	"github.com/hanshuebner/herold/internal/storesqlite"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -47,6 +48,11 @@ func TestSubmissionListener_E2E_NonLocalRecipient_RoutesThroughQueue(t *testing.
 	dir := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
 	systomlPath := filepath.Join(dir, "system.toml")
+	dbPath := filepath.Join(dir, "db.sqlite")
+	// Materialise the store from the per-process migrated template
+	// (re #395) so both the seeding Open below and StartServer's own
+	// Open find every migration already applied under -race.
+	sqlitetest.PrepareAt(t, dbPath)
 	rxHost, rxPortStr, _ := net.SplitHostPort(rx.Addr())
 	systomlBody := fmt.Sprintf(`
 [server]
@@ -111,7 +117,7 @@ log_format = "text"
 log_level = "warn"
 metrics_bind = ""
 `,
-		dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, filepath.Join(dir, "db.sqlite"),
+		dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, dbPath,
 		rxHost, rxPortStr,
 		certPath, keyPath, certPath, keyPath)
 	if err := os.WriteFile(systomlPath, []byte(systomlBody), 0o600); err != nil {
@@ -127,7 +133,7 @@ metrics_bind = ""
 	t.Cleanup(cancel)
 	clk := clock.NewReal()
 	st, err := storesqlite.Open(ctx,
-		filepath.Join(dir, "db.sqlite"),
+		dbPath,
 		discardLogger(),
 		clk)
 	if err != nil {
@@ -179,11 +185,7 @@ metrics_bind = ""
 			t.Errorf("server did not shut down within grace window")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		t.Fatalf("server did not become ready")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	subAddr := addrs["smtp-submission"]
 	addrsMu.Unlock()

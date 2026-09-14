@@ -37,6 +37,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/hanshuebner/herold/internal/observe"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -193,6 +194,8 @@ func startClientlogServer(t *testing.T, otlpEndpoint string, publicOTLPEgress bo
 
 	d := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, d, []string{"localhost"})
+	dbPath := filepath.Join(d, "db.sqlite")
+	sqlitetest.PrepareAt(t, dbPath)
 
 	otlpBlock := ""
 	if otlpEndpoint != "" {
@@ -263,7 +266,7 @@ metrics_bind = ""
 
 [clientlog.public]
 otlp_egress = %s
-`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, dbPath,
 		signingKeyEnvVar,
 		certPath, keyPath,
 		certPath, keyPath,
@@ -302,12 +305,7 @@ otlp_egress = %s
 		}
 	}()
 
-	select {
-	case <-readyCh:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, readyCh, doneCh)
 
 	return addrsMap, cl, doneCh, cancelFn
 }

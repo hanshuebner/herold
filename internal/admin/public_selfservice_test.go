@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -51,6 +52,8 @@ func startTestServerWithCookies(t *testing.T) (addrs map[string]string, doneCh <
 
 	d := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, d, []string{"localhost"})
+	dbPath := filepath.Join(d, "db.sqlite")
+	sqlitetest.PrepareAt(t, dbPath)
 
 	secureFalse := false
 	_ = secureFalse // referenced in TOML as literal false
@@ -111,7 +114,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, dbPath,
 		signingKeyEnvVar,
 		certPath, keyPath, certPath, keyPath)
 
@@ -142,12 +145,7 @@ metrics_bind = ""
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	return addrsMap, done, cancelFn
 }
 
@@ -345,6 +343,8 @@ func startTestServerNoCookieKey(t *testing.T) (addrs map[string]string, doneCh <
 
 	d := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, d, []string{"localhost"})
+	dbPath := filepath.Join(d, "db.sqlite")
+	sqlitetest.PrepareAt(t, dbPath)
 
 	cfgTOML := fmt.Sprintf(`
 [server]
@@ -398,7 +398,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, filepath.Join(d, "db.sqlite"),
+`, d, filepath.Join(d, "ports.toml"), certPath, keyPath, dbPath,
 		certPath, keyPath, certPath, keyPath)
 
 	cfgPath := filepath.Join(d, "system.toml")
@@ -428,12 +428,7 @@ metrics_bind = ""
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	return addrsMap, done, cancelFn
 }
 

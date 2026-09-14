@@ -14,6 +14,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -37,6 +38,8 @@ func TestPortReportFile_BootWritesAndShutdownRemoves(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
 	reportPath := filepath.Join(dir, "ports.toml")
+	dbPath := filepath.Join(dir, "db.sqlite")
+	sqlitetest.PrepareAt(t, dbPath)
 
 	tomlContent := fmt.Sprintf(`
 [server]
@@ -74,7 +77,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, dir, reportPath, certPath, keyPath, filepath.Join(dir, "db.sqlite"))
+`, dir, reportPath, certPath, keyPath, dbPath)
 
 	systomlPath := filepath.Join(dir, "system.toml")
 	if err := os.WriteFile(systomlPath, []byte(tomlContent), 0o600); err != nil {
@@ -105,12 +108,7 @@ metrics_bind = ""
 	}()
 
 	// Wait for ready (the port report file is written before ready).
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancel()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 
 	// The port report file must exist.
 	raw, err := os.ReadFile(reportPath)

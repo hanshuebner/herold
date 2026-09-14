@@ -29,8 +29,26 @@ import (
 	"github.com/hanshuebner/herold/internal/directory"
 	"github.com/hanshuebner/herold/internal/directoryoidc"
 	"github.com/hanshuebner/herold/internal/protoadmin"
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
+
+// waitForReady blocks until a StartServer boot signals readiness via
+// ready, or exits (successfully or with an error) via done -- whichever
+// happens first. It applies no wall-clock cap of its own: migration
+// time under -race scales with host load (re #395), so a fixed timeout
+// races the boot rather than observing it. A genuine hang is caught by
+// go test's own -timeout, which reports a goroutine dump; a boot that
+// exits before signaling ready fails immediately with a clear cause
+// instead of the ambiguous "did not become ready" message.
+func waitForReady(t *testing.T, ready <-chan struct{}, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ready:
+	case <-done:
+		t.Fatalf("server exited before becoming ready (see StartServer log above)")
+	}
+}
 
 // minimalConfigFixture writes a system.toml and the associated cert/key
 // pair under a temp dir. It returns the system.toml path and the resolved
@@ -40,6 +58,12 @@ func minimalConfigFixture(t *testing.T) (string, *sysconfig.Config) {
 	dir := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
 	systomlPath := filepath.Join(dir, "system.toml")
+	dbPath := filepath.Join(dir, "db.sqlite")
+	// Materialise the store from the per-process migrated template
+	// (re #395) instead of letting StartServer apply all embedded
+	// migrations from scratch: under -race on a loaded host that took
+	// long enough to blow the boot-readiness wait.
+	sqlitetest.PrepareAt(t, dbPath)
 	// port_report_file is required whenever any listener uses port 0
 	// (REQ-OPS: sysconfig port-report-file validation). Point it into the
 	// temp dir so tests can discover kernel-assigned ports when needed.
@@ -95,7 +119,7 @@ tls = "none"
 log_format = "text"
 log_level = "warn"
 metrics_bind = ""
-`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, filepath.Join(dir, "db.sqlite"),
+`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, dbPath,
 		certPath, keyPath, certPath, keyPath)
 	if err := os.WriteFile(systomlPath, []byte(toml), 0o600); err != nil {
 		t.Fatalf("write system.toml: %v", err)
@@ -140,12 +164,7 @@ func startTestServerWithConfig(t *testing.T, cfg *sysconfig.Config) (addrs map[s
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	return addrs, done, cancelFn
 }
 

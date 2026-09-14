@@ -152,6 +152,26 @@ func OpenAt(tb testing.TB, path string, clk clock.Clock) store.Store {
 	return s
 }
 
+// PrepareAt materialises the per-process migrated template at path
+// without opening it. Use this when the caller (typically a full server
+// boot through code the test does not control, e.g. StartServer) opens
+// the store itself and only needs the file to already carry every
+// migration applied -- opening it here as well would contend for the
+// SQLite file lock and double the boot's own migration-skip scan.
+//
+// Unlike Open/OpenAt, PrepareAt returns no store.Store and registers no
+// close cleanup: the caller owns the resulting file exclusively.
+func PrepareAt(tb testing.TB, path string) {
+	tb.Helper()
+	tpl, err := templateFile()
+	if err != nil {
+		tb.Fatalf("sqlitetest: %v", err)
+	}
+	if err := copyFile(path, tpl); err != nil {
+		tb.Fatalf("sqlitetest: copy template to %s: %v", path, err)
+	}
+}
+
 // OpenWithRand is like Open but injects an explicit entropy source for
 // the IMAP UIDVALIDITY salt (storesqlite.OpenWithRand). Tests that
 // care about deterministic UIDVALIDITY values across runs use this.

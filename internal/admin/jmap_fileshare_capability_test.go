@@ -56,12 +56,7 @@ func bootServerWithShares(t *testing.T) (addrs map[string]string, doneCh <-chan 
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	return addrMap, done, cancelFn
 }
 
@@ -148,12 +143,7 @@ func TestFileShareCapabilityAbsentWhenDisabled(t *testing.T) {
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	t.Cleanup(func() {
 		cancelFn()
 		select {
@@ -223,12 +213,7 @@ func TestFileShareCapabilityAbsentWithoutPublicBaseURL(t *testing.T) {
 			t.Logf("StartServer exited: %v", err)
 		}
 	}()
-	select {
-	case <-ready:
-	case <-time.After(15 * time.Second):
-		cancelFn()
-		t.Fatalf("server did not become ready within timeout")
-	}
+	waitForReady(t, ready, done)
 	t.Cleanup(func() {
 		cancelFn()
 		select {
