@@ -33,6 +33,7 @@ export interface IMAPImportWorkerStatus {
   next_poll_at?: string;
   messages_fetched: number;
   flags_propagated: number;
+  write_back_failures: number;
   last_error?: string;
   debug_log: boolean;
 }

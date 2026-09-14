@@ -1477,6 +1477,101 @@ func TestDedupHitOnArchivedSentCopySkipsInbox(t *testing.T) {
 	}
 }
 
+// TestArchiveThenFailedWriteBackThenSyncNoInboxResurface reproduces the
+// literal sequence #377's acceptance criteria call out: a principal archives
+// an imported message in herold; the write-back UID MOVE to the upstream
+// fails permanently (the upstream account has no CREATE permission, so even
+// the TRYCREATE recovery cannot succeed); a subsequent regular sync poll
+// must not resurface an INBOX membership for the message, even though the
+// upstream copy is still sitting, unmoved, in INBOX.
+func TestArchiveThenFailedWriteBackThenSyncNoInboxResurface(t *testing.T) {
+	for _, be := range ownSentDedupBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			ts := startTestIMAPServer(t)
+			ts.addUser("u26", "pw")
+			// No "Archive" mailbox upstream.
+
+			ha, _ := testharness.Start(t, testharness.Options{Store: be.st, Clock: be.clk})
+			acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+				email:               "u26@example.test",
+				username:            "u26",
+				credentialPlaintext: "pw",
+			}, nil)
+
+			_, ms := setupSyncedMessage(t, ha, ts, acc, "INBOX", "archive-then-sync@test", nil)
+
+			ctx := context.Background()
+			archiveMB, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+				PrincipalID: store.PrincipalID(acc.PrincipalID),
+				Name:        "Archive",
+				Attributes:  store.MailboxAttrArchive,
+			})
+			if err != nil {
+				t.Fatalf("InsertMailbox Archive: %v", err)
+			}
+
+			// Archive the message in herold -- this queues the write-back
+			// UID MOVE.
+			heroldMsg, _ := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+			if err := ha.Store.Meta().MoveMessage(ctx, heroldMsg.ID, heroldMsg.MailboxID, archiveMB.ID); err != nil {
+				t.Fatalf("MoveMessage: %v", err)
+			}
+
+			// Run write-back with a conn whose CREATE always fails, so the
+			// move stays permanently unresolved: the upstream copy is left
+			// in INBOX, unmoved.
+			w := newAccountWorker(accountWorkerOpts{
+				account: acc,
+				store:   ha.Store,
+				dataKey: testDataKey(t),
+				cfg:     sysconfig.IMAPImportConfig{},
+				log:     newTestLogger(t),
+				clk:     ha.Clock,
+				dialer: &wrapDialer{
+					inner: &fakeDialer{ts: ts},
+					wrap:  func(c Conn) Conn { return &createFailingConn{Conn: c} },
+				},
+				categoriser: noopCategoriser{},
+			})
+			wbCtx, wbCancel := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				w.runWriteBack(wbCtx)
+			}()
+			time.Sleep(300 * time.Millisecond)
+			wbCancel()
+			<-done
+
+			if snap := w.status.snapshot(); snap.WriteBackFailures != 1 {
+				t.Fatalf("precondition: WriteBackFailures = %d; want 1 (write-back must have failed permanently)", snap.WriteBackFailures)
+			}
+
+			// Precondition: herold already shows Archive only; upstream
+			// still has the message in INBOX (the failed move never
+			// happened).
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+				t.Fatalf("precondition: herold INBOX has %d messages; want 0", got)
+			}
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Archive"); got != 1 {
+				t.Fatalf("precondition: herold Archive has %d messages; want 1", got)
+			}
+
+			// A subsequent regular sync poll must not resurface INBOX.
+			if err := runSyncOnce(t, ha, ts, acc, nil); err != nil {
+				t.Fatalf("subsequent sync: %v", err)
+			}
+
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "INBOX"); got != 0 {
+				t.Errorf("subsequent sync resurfaced an INBOX membership: herold INBOX has %d messages; want 0 (re #377)", got)
+			}
+			if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Archive"); got != 1 {
+				t.Errorf("herold Archive has %d messages after subsequent sync; want 1", got)
+			}
+		})
+	}
+}
+
 // TestInternalDatePreserved verifies that the upstream INTERNALDATE is
 // used as both InternalDate and ReceivedAt in the herold store.
 func TestInternalDatePreserved(t *testing.T) {

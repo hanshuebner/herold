@@ -252,6 +252,14 @@
                 <dd class="text-error">{worker.consecutive_failures}</dd>
               </div>
             {/if}
+            {#if worker.write_back_failures > 0}
+              <div class="detail-row">
+                <dt>{t('imapImports.field.writeBackFailures')}</dt>
+                <dd class="text-error" data-testid="worker-write-back-failures"
+                  >{worker.write_back_failures}</dd
+                >
+              </div>
+            {/if}
             {#if worker.current_folder}
               <div class="detail-row">
                 <dt>{t('imapImports.field.currentFolder')}</dt>

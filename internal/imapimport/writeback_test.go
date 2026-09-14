@@ -483,6 +483,185 @@ func TestWriteBackMoveConflictCounted(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Test: MOVE to a non-existent upstream mailbox (NO [TRYCREATE])
+// --------------------------------------------------------------------------
+
+// TestWriteBackMoveTryCreateCreatesTargetAndRetries reproduces #377:
+// archiving a message in herold triggers a write-back UID MOVE to an
+// upstream "Archive" mailbox that does not exist yet. The upstream answers
+// NO [TRYCREATE]; write-back must create the mailbox and retry the MOVE
+// once rather than leaving the two sides permanently divergent.
+// REQ-IMAP-IMP-43, re #377.
+func TestWriteBackMoveTryCreateCreatesTargetAndRetries(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("wb10", "pw")
+	// Deliberately do NOT create "Archive" upstream -- the failure
+	// condition from the issue.
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "wb10@example.test",
+		username:            "wb10",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	_, ms := setupSyncedMessage(t, ha, ts, acc, "INBOX", "wb-trycreate@test", nil)
+
+	ctx := context.Background()
+
+	archiveMB, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: store.PrincipalID(acc.PrincipalID),
+		Name:        "Archive",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Archive: %v", err)
+	}
+
+	heroldMsg, _ := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+	if err := ha.Store.Meta().MoveMessage(ctx, heroldMsg.ID, heroldMsg.MailboxID, archiveMB.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+
+	before := testutil.ToFloat64(observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(acc.ID, "move"))
+
+	runOneWriteBackPass(t, ha, ts, acc)
+
+	// The upstream now has an "Archive" mailbox holding the message; INBOX
+	// is empty.
+	conn := dialFakeConn(t, ts, "wb10", "pw")
+	defer conn.Logout()
+	defer conn.Close()
+
+	archiveSI, err := conn.Select(ctx, "Archive")
+	if err != nil {
+		t.Fatalf("Select Archive: %v", err)
+	}
+	if archiveSI.NumMessages != 1 {
+		t.Errorf("upstream Archive NumMessages = %d; want 1 (TRYCREATE should create the mailbox and the retried MOVE should land the message)", archiveSI.NumMessages)
+	}
+	inboxSI, err := conn.Select(ctx, "INBOX")
+	if err != nil {
+		t.Fatalf("Select INBOX: %v", err)
+	}
+	if inboxSI.NumMessages != 0 {
+		t.Errorf("upstream INBOX NumMessages = %d; want 0 (message should have moved)", inboxSI.NumMessages)
+	}
+
+	// Message state reflects the new folder; this was a genuine success, not
+	// a permanent failure, so the failures counter must not move.
+	ms2, found, err := ha.Store.Meta().GetIMAPImportMessageState(ctx, acc.ID, "Archive", uint32(ms.UpstreamUID))
+	if err != nil || !found {
+		t.Fatalf("GetIMAPImportMessageState(Archive): found=%v err=%v", found, err)
+	}
+	if ms2.HeroldMailboxID != archiveMB.ID {
+		t.Errorf("HeroldMailboxID = %d; want %d (Archive)", ms2.HeroldMailboxID, archiveMB.ID)
+	}
+
+	after := testutil.ToFloat64(observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(acc.ID, "move"))
+	if after != before {
+		t.Errorf("writeback_failures_total{kind=move} changed by %v; want 0 (this was a successful create+retry)", after-before)
+	}
+}
+
+// createFailingConn wraps a real Conn but makes Create always fail,
+// simulating an upstream account without CREATE permission -- the target
+// mailbox can never be brought into existence, so the TRYCREATE recovery
+// path in moveWithTryCreate cannot succeed.
+type createFailingConn struct {
+	Conn
+}
+
+func (c *createFailingConn) Create(_ context.Context, _ string) error {
+	return fmt.Errorf("injected CREATE failure (no permission)")
+}
+
+// TestWriteBackMoveTryCreatePermanentFailureSurfaced verifies that when the
+// upstream rejects both the MOVE (NO [TRYCREATE]) and the follow-up CREATE,
+// the failure is counted as permanent -- distinct from an ordinary move
+// conflict -- via writeback_failures_total and the live per-account
+// WorkerStatus counter, so it is visible through the same admin API/UI
+// surface that already reports import health (re #377).
+func TestWriteBackMoveTryCreatePermanentFailureSurfaced(t *testing.T) {
+	ts := startTestIMAPServer(t)
+	ts.addUser("wb11", "pw")
+	// No "Archive" upstream: the MOVE will get NO [TRYCREATE], and the
+	// wrapped conn's Create always fails, so recovery is impossible.
+
+	ha, _ := testharness.Start(t, testharness.Options{})
+	acc := makeAccountWithFloor(t, ha.Store, ts, accountCfg{
+		email:               "wb11@example.test",
+		username:            "wb11",
+		credentialPlaintext: "pw",
+	}, nil)
+
+	_, ms := setupSyncedMessage(t, ha, ts, acc, "INBOX", "wb-trycreate-fail@test", nil)
+
+	ctx := context.Background()
+
+	archiveMB, err := ha.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: store.PrincipalID(acc.PrincipalID),
+		Name:        "Archive",
+		Attributes:  store.MailboxAttrArchive,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Archive: %v", err)
+	}
+
+	heroldMsg, _ := ha.Store.Meta().GetMessage(ctx, ms.HeroldMessageID)
+	if err := ha.Store.Meta().MoveMessage(ctx, heroldMsg.ID, heroldMsg.MailboxID, archiveMB.ID); err != nil {
+		t.Fatalf("MoveMessage: %v", err)
+	}
+
+	conflictsBefore := testutil.ToFloat64(observe.IMAPImportConflictsTotal.WithLabelValues(acc.ID, "move"))
+	failuresBefore := testutil.ToFloat64(observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(acc.ID, "move"))
+
+	w := newAccountWorker(accountWorkerOpts{
+		account: acc,
+		store:   ha.Store,
+		dataKey: testDataKey(t),
+		cfg:     sysconfig.IMAPImportConfig{},
+		log:     newTestLogger(t),
+		clk:     ha.Clock,
+		dialer: &wrapDialer{
+			inner: &fakeDialer{ts: ts},
+			wrap:  func(c Conn) Conn { return &createFailingConn{Conn: c} },
+		},
+		categoriser: noopCategoriser{},
+	})
+	wbCtx, wbCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.runWriteBack(wbCtx)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	wbCancel()
+	<-done
+
+	conflictsAfter := testutil.ToFloat64(observe.IMAPImportConflictsTotal.WithLabelValues(acc.ID, "move"))
+	if conflictsAfter-conflictsBefore != 1 {
+		t.Errorf("conflicts_total{kind=move} delta = %v; want 1", conflictsAfter-conflictsBefore)
+	}
+	failuresAfter := testutil.ToFloat64(observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(acc.ID, "move"))
+	if failuresAfter-failuresBefore != 1 {
+		t.Errorf("writeback_failures_total{kind=move} delta = %v; want 1 (permanent failure)", failuresAfter-failuresBefore)
+	}
+
+	snap := w.status.snapshot()
+	if snap.WriteBackFailures != 1 {
+		t.Errorf("WorkerStatus.WriteBackFailures = %d; want 1", snap.WriteBackFailures)
+	}
+
+	// The message stays in herold Archive regardless (herold-side move is
+	// unconditional); the upstream copy is left in INBOX, unmoved, for the
+	// next reconcile attempt.
+	if got := countMailboxMessages(t, ha.Store, acc.PrincipalID, "Archive"); got != 1 {
+		t.Errorf("herold Archive has %d messages; want 1", got)
+	}
+}
+
+// --------------------------------------------------------------------------
 // Test: DESTROY with DeletePropagates=true
 // --------------------------------------------------------------------------
 

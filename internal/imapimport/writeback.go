@@ -27,6 +27,7 @@ package imapimport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -380,7 +381,7 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		return
 	}
 
-	if moveErr := conn.UIDMove(ctx, imap.UID(ms.UpstreamUID), newUpstreamFolder); moveErr != nil {
+	if moveErr, permanent := w.moveWithTryCreate(ctx, conn, imap.UID(ms.UpstreamUID), newUpstreamFolder); moveErr != nil {
 		log.Warn("imapimport: write-back: UID MOVE failed (best-effort)",
 			slog.String("account_id", account.ID),
 			slog.Uint64("uid", uint64(ms.UpstreamUID)),
@@ -394,6 +395,17 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 		// "move" kind so it is observable alongside flag conflicts
 		// (REQ-IMAP-IMP-63). Do not update state — retry next reconcile.
 		observe.IMAPImportConflictsTotal.WithLabelValues(account.ID, "move").Inc()
+		if permanent {
+			// moveWithTryCreate already tried to create the missing target
+			// mailbox and retry once; a permanent failure means the target
+			// still cannot be reached (e.g. the upstream account has no
+			// permission to create mailboxes). Surface it as a per-account
+			// counter distinct from the generic move-conflict signal above,
+			// so an operator can tell "the two sides briefly disagreed" from
+			// "this account's write-back is stuck" (re #377).
+			observe.IMAPImportWriteBackFailuresTotal.WithLabelValues(account.ID, "move").Inc()
+			w.status.incWriteBackFailures(1)
+		}
 		return
 	}
 
@@ -401,6 +413,35 @@ func (w *accountWorker) writeBackMove(ctx context.Context, conn Conn, ms store.I
 	ms.UpstreamFolder = newUpstreamFolder
 	ms.HeroldMailboxID = heroldMsg.MailboxID
 	w.upsertMessageState(ctx, ms)
+}
+
+// moveWithTryCreate issues UID MOVE to destMailbox on the currently-selected
+// mailbox. When the upstream responds NO [TRYCREATE] (RFC 3501: the target
+// mailbox does not exist), it issues CREATE for destMailbox once and retries
+// the MOVE. Returns the final error (nil on success) and whether the failure
+// is permanent: true when CREATE itself failed, or the retried MOVE still
+// failed after a successful CREATE -- both cases need operator attention,
+// unlike an ordinary move conflict (the message already moved or was
+// expunged upstream) where the upstream-authoritative reconcile fixes herold
+// on its own. REQ-IMAP-IMP-43, re #377.
+func (w *accountWorker) moveWithTryCreate(ctx context.Context, conn Conn, uid imap.UID, destMailbox string) (err error, permanent bool) {
+	moveErr := conn.UIDMove(ctx, uid, destMailbox)
+	if moveErr == nil {
+		return nil, false
+	}
+
+	var imapErr *imap.Error
+	if !errors.As(moveErr, &imapErr) || imapErr.Code != imap.ResponseCodeTryCreate {
+		return moveErr, false
+	}
+
+	if createErr := conn.Create(ctx, destMailbox); createErr != nil {
+		return fmt.Errorf("imapimport: CREATE %q after TRYCREATE: %w (move error: %s)", destMailbox, createErr, moveErr), true
+	}
+	if retryErr := conn.UIDMove(ctx, uid, destMailbox); retryErr != nil {
+		return fmt.Errorf("imapimport: UID MOVE -> %q after CREATE: %w", destMailbox, retryErr), true
+	}
+	return nil, false
 }
 
 // writeBackDestroy handles a ChangeOpDestroyed change on the herold side.

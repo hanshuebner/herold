@@ -592,6 +592,7 @@ export const de = {
   'imapImports.field.messagesFetched': 'Nachrichten abgerufen',
   'imapImports.field.flagsPropagated': 'Flags propagiert',
   'imapImports.field.consecutiveFailures': 'Aufeinanderfolgende Fehler',
+  'imapImports.field.writeBackFailures': 'Rückschreibfehler',
   'imapImports.field.currentFolder': 'Aktueller Ordner',
   'imapImports.field.nextPoll': 'Nächster Poll',
   'imapImports.field.accountId': 'Konto-ID',

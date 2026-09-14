@@ -47,6 +47,7 @@ func (a imapImportPoolStatusAdapter) Snapshot() []protoadmin.IMAPImportWorkerSta
 			NextPollAt:          s.NextPollAt,
 			MessagesFetched:     s.MessagesFetched,
 			FlagsPropagated:     s.FlagsPropagated,
+			WriteBackFailures:   s.WriteBackFailures,
 			LastError:           s.LastError,
 			DebugLog:            s.DebugLog,
 		}

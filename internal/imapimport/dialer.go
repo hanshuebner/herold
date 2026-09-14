@@ -464,6 +464,14 @@ func (c *prodConn) UIDMove(_ context.Context, uid imap.UID, destMailbox string) 
 	return nil
 }
 
+// Create issues IMAP CREATE for the named mailbox. REQ-IMAP-IMP-43, re #377.
+func (c *prodConn) Create(_ context.Context, mailbox string) error {
+	if err := c.client.Create(mailbox, nil).Wait(); err != nil {
+		return fmt.Errorf("imapimport: CREATE %q: %w", mailbox, err)
+	}
+	return nil
+}
+
 // UIDExpunge expunges the given UID from the currently-selected mailbox.
 // When the server advertises UIDPLUS, uses UID EXPUNGE; otherwise falls back
 // to plain EXPUNGE. REQ-IMAP-IMP-44.

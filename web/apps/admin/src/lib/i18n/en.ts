@@ -590,6 +590,7 @@ export const en = {
   'imapImports.field.messagesFetched': 'Messages fetched',
   'imapImports.field.flagsPropagated': 'Flags propagated',
   'imapImports.field.consecutiveFailures': 'Consecutive failures',
+  'imapImports.field.writeBackFailures': 'Write-back failures',
   'imapImports.field.currentFolder': 'Current folder',
   'imapImports.field.nextPoll': 'Next poll',
   'imapImports.field.accountId': 'Account ID',

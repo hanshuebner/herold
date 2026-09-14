@@ -160,6 +160,7 @@ func (c *fakeLabelsConn) UIDStoreFlags(context.Context, imap.UID, imap.StoreFlag
 	return nil
 }
 func (c *fakeLabelsConn) UIDMove(context.Context, imap.UID, string) error { return nil }
+func (c *fakeLabelsConn) Create(context.Context, string) error            { return nil }
 func (c *fakeLabelsConn) UIDExpunge(context.Context, imap.UID) error      { return nil }
 func (c *fakeLabelsConn) Noop(context.Context) error                      { return nil }
 func (c *fakeLabelsConn) Idle(context.Context) (idleHandle, error)        { return nil, nil }

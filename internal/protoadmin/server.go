@@ -82,8 +82,14 @@ type IMAPImportWorkerStatus struct {
 	NextPollAt          *time.Time `json:"next_poll_at,omitempty"`
 	MessagesFetched     int64      `json:"messages_fetched"`
 	FlagsPropagated     int64      `json:"flags_propagated"`
-	LastError           string     `json:"last_error,omitempty"`
-	DebugLog            bool       `json:"debug_log"`
+	// WriteBackFailures is the cumulative count of permanent write-back
+	// failures this run (e.g. a UID MOVE whose target mailbox could not be
+	// created after a NO [TRYCREATE] response) -- distinct from an ordinary
+	// move conflict, which the upstream-authoritative reconcile resolves on
+	// its own. Nonzero means the account needs operator attention (re #377).
+	WriteBackFailures int64  `json:"write_back_failures"`
+	LastError         string `json:"last_error,omitempty"`
+	DebugLog          bool   `json:"debug_log"`
 }
 
 // IMAPImportStatusProvider is the interface the admin server uses to obtain

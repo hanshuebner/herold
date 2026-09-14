@@ -1261,16 +1261,20 @@ func RegisterTaggedAddressMetrics() {
 //   - kind (conflicts_total): "flag" | "move" | "delete".
 //   - kind (connection_errors_total): "auth" | "network" | "tls" |
 //     "rate_limit" | "other".
+//   - kind (writeback_failures_total): "move" (the write-back UID MOVE
+//     failed permanently even after a NO [TRYCREATE] create-and-retry,
+//     re #377).
 var (
 	imapImportMetricsOnce sync.Once
 
-	IMAPImportMessagesFetchedTotal  *prometheus.CounterVec
-	IMAPImportFlagsPropagatedTotal  *prometheus.CounterVec
-	IMAPImportConflictsTotal        *prometheus.CounterVec
-	IMAPImportIdleSeconds           *prometheus.GaugeVec
-	IMAPImportFetchDurationSeconds  *prometheus.HistogramVec
-	IMAPImportConnectionErrorsTotal *prometheus.CounterVec
-	IMAPImportBackfillRemaining     *prometheus.GaugeVec
+	IMAPImportMessagesFetchedTotal   *prometheus.CounterVec
+	IMAPImportFlagsPropagatedTotal   *prometheus.CounterVec
+	IMAPImportConflictsTotal         *prometheus.CounterVec
+	IMAPImportIdleSeconds            *prometheus.GaugeVec
+	IMAPImportFetchDurationSeconds   *prometheus.HistogramVec
+	IMAPImportConnectionErrorsTotal  *prometheus.CounterVec
+	IMAPImportBackfillRemaining      *prometheus.GaugeVec
+	IMAPImportWriteBackFailuresTotal *prometheus.CounterVec
 )
 
 // RegisterIMAPImportMetrics registers the IMAP import worker collector set;
@@ -1308,6 +1312,10 @@ func RegisterIMAPImportMetrics() {
 			Name: "herold_imapimport_backfill_remaining",
 			Help: "Approximate number of upstream UIDs below the high-water mark still to be fetched in the initial backfill, by account.",
 		}, []string{"account"})
+		IMAPImportWriteBackFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herold_imapimport_writeback_failures_total",
+			Help: "Total write-back operations that failed permanently (need operator attention, e.g. the upstream target mailbox could not be created), by account and kind (move).",
+		}, []string{"account", "kind"})
 		MustRegister(
 			IMAPImportMessagesFetchedTotal,
 			IMAPImportFlagsPropagatedTotal,
@@ -1316,6 +1324,7 @@ func RegisterIMAPImportMetrics() {
 			IMAPImportFetchDurationSeconds,
 			IMAPImportConnectionErrorsTotal,
 			IMAPImportBackfillRemaining,
+			IMAPImportWriteBackFailuresTotal,
 		)
 	})
 }

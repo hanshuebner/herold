@@ -168,6 +168,11 @@ type Conn interface {
 	// +FLAGS \Deleted + UID EXPUNGE per RFC 6851. REQ-IMAP-IMP-43.
 	UIDMove(ctx context.Context, uid imap.UID, destMailbox string) error
 
+	// Create issues IMAP CREATE for the named mailbox. Used by the
+	// write-back path to satisfy a NO [TRYCREATE] response to UID MOVE
+	// before retrying it once (RFC 3501, REQ-IMAP-IMP-43, re #377).
+	Create(ctx context.Context, mailbox string) error
+
 	// UIDExpunge expunges the message identified by uid from the
 	// currently-selected mailbox. Requires UID EXPUNGE (UIDPLUS). On
 	// servers without UIDPLUS it is equivalent to EXPUNGE (which expunges

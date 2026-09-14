@@ -900,6 +900,14 @@ func (w *accountWorker) placeExistingMessage(
 	// any membership is touched, and reports the existing Archive
 	// membership so fetchAndIngest still records a message_state row
 	// addressable by (folder, uid), same as the Junk case (re #319).
+	//
+	// Scoped to principalSent (unlike the Junk-wins check above): a message
+	// that genuinely lives in two upstream folders at once -- e.g. the
+	// account's own Archive and INBOX both hold a copy, independent of any
+	// herold-side action -- gets both herold memberships by design (the
+	// multi-mailbox dedup placement this function implements); only the
+	// principal's-own-sent-mail case has "was already filed away" semantics
+	// strong enough to suppress the INBOX placement (re #376, re #377).
 	if targetMB.Attributes&store.MailboxAttrInbox != 0 && principalSent {
 		for _, mm := range existing.Mailboxes {
 			if attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {

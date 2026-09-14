@@ -96,6 +96,13 @@ type WorkerStatus struct {
 	// FlagsPropagated is the number of flag changes pushed upstream this run
 	// (cumulative, up direction only — REQ-IMAP-IMP-63).
 	FlagsPropagated int64
+	// WriteBackFailures is the number of write-back operations that failed
+	// permanently this run (cumulative) — e.g. a UID MOVE whose target
+	// mailbox could not be created after a NO [TRYCREATE] response. Distinct
+	// from an ordinary move conflict (the upstream-authoritative reconcile
+	// fixes those on its own): a nonzero count here means the account needs
+	// operator attention (re #377).
+	WriteBackFailures int64
 
 	// LastError is the redacted last error string. Never contains credential
 	// material (REQ-IMAP-IMP-71).
@@ -156,6 +163,7 @@ type workerStatus struct {
 	nextPollAt    *time.Time
 	msgFetched    int64
 	flagPropag    int64
+	wbFailures    int64
 	lastError     string
 	debugLog      bool
 }
@@ -179,6 +187,7 @@ func (ws *workerStatus) snapshot() WorkerStatus {
 		ConsecutiveFailures: ws.consFailures,
 		MessagesFetched:     ws.msgFetched,
 		FlagsPropagated:     ws.flagPropag,
+		WriteBackFailures:   ws.wbFailures,
 		LastError:           ws.lastError,
 		DebugLog:            ws.debugLog,
 	}
@@ -296,5 +305,16 @@ func (ws *workerStatus) incPropagated(n int64) {
 	}
 	ws.mu.Lock()
 	ws.flagPropag += n
+	ws.mu.Unlock()
+}
+
+// incWriteBackFailures adds n to the cumulative permanent-write-back-failure
+// counter (re #377).
+func (ws *workerStatus) incWriteBackFailures(n int64) {
+	if n == 0 {
+		return
+	}
+	ws.mu.Lock()
+	ws.wbFailures += n
 	ws.mu.Unlock()
 }
