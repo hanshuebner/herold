@@ -339,11 +339,16 @@ type ServerConfig struct {
 	// the scope check; this is the dev-only "trust the operator"
 	// posture). Production deployments MUST leave DevMode off and
 	// configure both listeners explicitly.
-	DevMode            bool                     `toml:"dev_mode,omitempty"`
-	AdminTLS           AdminTLSConfig           `toml:"admin_tls"`
-	Storage            StorageConfig            `toml:"storage"`
-	Snooze             SnoozeConfig             `toml:"snooze,omitempty"`
-	UI                 UIConfig                 `toml:"ui,omitempty"`
+	DevMode  bool           `toml:"dev_mode,omitempty"`
+	AdminTLS AdminTLSConfig `toml:"admin_tls"`
+	Storage  StorageConfig  `toml:"storage"`
+	Snooze   SnoozeConfig   `toml:"snooze,omitempty"`
+	UI       UIConfig       `toml:"ui,omitempty"`
+	// Auth configures authentication-lifetime knobs that are not tied to
+	// the web-session cookies in UI above -- currently the OAuth2
+	// native-client grant's token TTLs (issue #358). An omitted section
+	// yields the documented defaults.
+	Auth               AuthConfig               `toml:"auth,omitempty"`
 	ImageProxy         ImageProxyConfig         `toml:"image_proxy,omitempty"`
 	Chat               ChatConfig               `toml:"chat,omitempty"`
 	Call               CallConfig               `toml:"call,omitempty"`
@@ -1446,6 +1451,35 @@ type ImageProxyConfig struct {
 	PerUserConcurrent int `toml:"per_user_concurrent,omitempty"`
 }
 
+// AuthConfig configures OAuth2 native-client grant token lifetimes
+// (docs/design/server/requirements/02-identity-and-auth.md REQ-AND-AUTH-02,
+// REQ-AUTH-71, issue #358). Both knobs were compile-time constants
+// (internal/directory.DefaultAccessTokenTTL / DefaultRefreshTokenTTL)
+// until this section made them operator-settable, so an operator can
+// shorten access-token lifetime for a stricter posture, or a dev/test
+// deployment can make expiry happen quickly to exercise the client's
+// refresh path.
+//
+// Example (system.toml):
+//
+//	[server.auth]
+//	oauth2_access_token_ttl  = "1h"    # default; 1m floor
+//	oauth2_refresh_token_ttl = "720h"  # default (30 days)
+type AuthConfig struct {
+	// OAuth2AccessTokenTTL is the lifetime of the "hk_..." Bearer access
+	// token minted by the OAuth2 authorization-code and refresh grants
+	// (internal/directory/oauth2.go). Accepts standard Go durations.
+	// Default "1h" (DefaultAccessTokenTTL). Validate rejects anything
+	// below a 1-minute floor.
+	OAuth2AccessTokenTTL Duration `toml:"oauth2_access_token_ttl,omitempty"`
+	// OAuth2RefreshTokenTTL is the absolute lifetime of the "hr_..."
+	// refresh token, independent of rotation -- a refresh chain stops
+	// working after this long even if used continuously. Accepts
+	// standard Go durations. Default "720h", 30 days
+	// (DefaultRefreshTokenTTL).
+	OAuth2RefreshTokenTTL Duration `toml:"oauth2_refresh_token_ttl,omitempty"`
+}
+
 // UIConfig configures the session-cookie and CSRF substrate shared by the
 // JSON login endpoints (/api/v1/auth/login on both listeners) and the admin
 // SPA mount at /admin/.
@@ -2438,6 +2472,15 @@ func applyDefaults(c *Config) {
 		t := true
 		c.Server.UI.SecureCookies = &t
 	}
+	// OAuth2 native-client grant token TTLs (REQ-AND-AUTH-02, issue
+	// #358). Defaults match internal/directory's former compile-time
+	// constants.
+	if c.Server.Auth.OAuth2AccessTokenTTL == 0 {
+		c.Server.Auth.OAuth2AccessTokenTTL = Duration(time.Hour)
+	}
+	if c.Server.Auth.OAuth2RefreshTokenTTL == 0 {
+		c.Server.Auth.OAuth2RefreshTokenTTL = Duration(30 * 24 * time.Hour)
+	}
 	if c.Server.UI.ElevationTTL == 0 {
 		c.Server.UI.ElevationTTL = Duration(15 * time.Minute)
 	}
@@ -3020,6 +3063,17 @@ func Validate(c *Config) error {
 	}
 	if idle, abs := c.Server.UI.AdminIdleTTL.AsDuration(), c.Server.UI.AdminAbsoluteTTL.AsDuration(); idle > abs {
 		return fmt.Errorf("sysconfig: [server.ui] admin_idle_ttl %s exceeds admin_absolute_ttl %s", idle, abs)
+	}
+	// OAuth2 access-token TTL floor (REQ-AND-AUTH-02, issue #358): below
+	// one minute, a client could not reliably use a token before it
+	// expires (the browser round trip alone can take longer). Both
+	// fields have been defaulted by applyDefaults at this point, so a
+	// zero here would be a coding bug rather than operator config.
+	if dur := c.Server.Auth.OAuth2AccessTokenTTL.AsDuration(); dur < time.Minute {
+		return fmt.Errorf("sysconfig: [server.auth] oauth2_access_token_ttl %s below the 1m floor", dur)
+	}
+	if dur := c.Server.Auth.OAuth2RefreshTokenTTL.AsDuration(); dur < time.Minute {
+		return fmt.Errorf("sysconfig: [server.auth] oauth2_refresh_token_ttl %s below the 1m floor", dur)
 	}
 	// Spam classify budget (Wave 4.1, REQ-FILT-40/42, issue #301). Bounded
 	// to (0s, 60s]: zero/negative would either disable the timeout

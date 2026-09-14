@@ -233,6 +233,10 @@ The seed always provisions:
   `filip@example.local`, `bob@example.local`
 - password (all four): `testpass123...` — the three trailing dots
   are part of the password, not an ellipsis
+- a two-minute `[server.auth] oauth2_access_token_ttl` (re #358), so the
+  Android OAuth2 client's refresh path is exercised by real token
+  expiry within one verification session instead of only by deleting
+  the access token's API-key row through the self-service API
 
 These are dev-only credentials in an ephemeral SQLite store; not
 secrets, not deployed, never persisted between runs.

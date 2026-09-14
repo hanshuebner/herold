@@ -338,6 +338,10 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 
 	// Directory + OIDC + mail-auth verifiers.
 	dir := directory.New(st.Meta(), logger.With("subsystem", "directory"), clk, nil)
+	// OAuth2 native-client grant token TTLs (REQ-AND-AUTH-02, issue
+	// #358): sysconfig has already applied the [server.auth] defaults by
+	// this point, so both durations here are always positive.
+	dir = dir.WithOAuthTokenTTLs(cfg.Server.Auth.OAuth2AccessTokenTTL.AsDuration(), cfg.Server.Auth.OAuth2RefreshTokenTTL.AsDuration())
 	// Bound the OIDC HTTP client: discovery and JWKS fetches against a
 	// hung IdP must not stall the auth hot path. STANDARDS §5 "Deadlines
 	// on every network call". Matches directoryoidc/rp_test.go fixtures.

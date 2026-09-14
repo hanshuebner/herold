@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/observe"
@@ -96,6 +97,14 @@ type Directory struct {
 	// the sign-in flow), and keeps this package free of any
 	// cross-process key-coordination requirement.
 	oauthReqKey []byte
+
+	// accessTokenTTL and refreshTokenTTL are the OAuth2 native-client
+	// grant's token lifetimes (oauth2.go), operator-settable via
+	// [server.auth] oauth2_access_token_ttl / oauth2_refresh_token_ttl
+	// (issue #358). New defaults them to DefaultAccessTokenTTL /
+	// DefaultRefreshTokenTTL; WithOAuthTokenTTLs overrides them.
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
 }
 
 // New constructs a Directory bound to the given metadata repository. The
@@ -125,13 +134,33 @@ func New(meta store.Metadata, logger *slog.Logger, clk clock.Clock, rnd io.Reade
 		panic(fmt.Sprintf("directory: read oauth request signing key: %v", err))
 	}
 	return &Directory{
-		meta:        meta,
-		logger:      logger,
-		clk:         clk,
-		rand:        rnd,
-		rl:          newRateLimiter(clk),
-		oauthReqKey: oauthReqKey,
+		meta:            meta,
+		logger:          logger,
+		clk:             clk,
+		rand:            rnd,
+		rl:              newRateLimiter(clk),
+		oauthReqKey:     oauthReqKey,
+		accessTokenTTL:  DefaultAccessTokenTTL,
+		refreshTokenTTL: DefaultRefreshTokenTTL,
 	}
+}
+
+// WithOAuthTokenTTLs returns a Directory whose OAuth2 native-client
+// grant (oauth2.go) mints access and refresh tokens with the given
+// lifetimes instead of DefaultAccessTokenTTL / DefaultRefreshTokenTTL.
+// Callers pass the already-defaulted [server.auth] values from
+// sysconfig (issue #358); zero is never observed there, but a zero
+// argument here is treated as "leave the current value" so a caller
+// wiring only one of the two knobs cannot accidentally zero the other.
+func (d *Directory) WithOAuthTokenTTLs(accessTTL, refreshTTL time.Duration) *Directory {
+	cp := *d
+	if accessTTL > 0 {
+		cp.accessTokenTTL = accessTTL
+	}
+	if refreshTTL > 0 {
+		cp.refreshTokenTTL = refreshTTL
+	}
+	return &cp
 }
 
 // CreatePrincipal hashes the password with Argon2id and persists a new

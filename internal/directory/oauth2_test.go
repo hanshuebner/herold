@@ -102,8 +102,8 @@ func TestOAuth2_FullFlow(t *testing.T) {
 	if result.AccessToken == "" || result.RefreshToken == "" {
 		t.Fatalf("empty token in result: %+v", result)
 	}
-	if result.ExpiresIn != int(directory.AccessTokenTTL.Seconds()) {
-		t.Fatalf("ExpiresIn = %d, want %d", result.ExpiresIn, int(directory.AccessTokenTTL.Seconds()))
+	if result.ExpiresIn != int(directory.DefaultAccessTokenTTL.Seconds()) {
+		t.Fatalf("ExpiresIn = %d, want %d", result.ExpiresIn, int(directory.DefaultAccessTokenTTL.Seconds()))
 	}
 
 	// The access token verifies through the store lookup exactly as

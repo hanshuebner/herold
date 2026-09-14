@@ -241,6 +241,13 @@ enabled = true
 [server.ui]
 secure_cookies = false
 
+# The Android client's OAuth2 refresh path (re #358) is exercised by
+# real token expiry rather than deleting the access token's API-key row
+# through the self-service API: a two-minute access-token lifetime
+# forces a refresh grant within one verification session.
+[server.auth]
+oauth2_access_token_ttl = "2m"
+
 # Snooze wakes are swept every 5 s (the configuration floor) so a snooze
 # flow completes inside one verification session. HEROLD_DEV_SNOOZE_POLL
 # overrides it.

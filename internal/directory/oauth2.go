@@ -15,9 +15,11 @@ package directory
 //   - Access token: an "hk_..." Bearer token, bit-for-bit the same
 //     mechanism as device tokens and operator API keys (protojmap's and
 //     protoadmin's Bearer-verification code paths need zero changes),
-//     but with a populated ExpiresAt (AccessTokenTTL, default 1 hour --
-//     REQ-AND-AUTH-02/REQ-AUTH-71). GenerateDeviceToken is reused
-//     verbatim for the plaintext+hash generation.
+//     but with a populated ExpiresAt (Directory.accessTokenTTL, default
+//     1 hour, operator-settable via [server.auth]
+//     oauth2_access_token_ttl -- REQ-AND-AUTH-02/REQ-AUTH-71, issue
+//     #358). GenerateDeviceToken is reused verbatim for the
+//     plaintext+hash generation.
 //   - Refresh token: a distinct "hr_..." opaque secret, hashed at rest
 //     the same way, persisted as a store.OAuthRefreshToken row carrying
 //     a FamilyID (the rotation-chain identity). Every refresh rotates:
@@ -84,15 +86,19 @@ const (
 	// immediate (no user-facing delay to accommodate).
 	AuthorizationCodeTTL = 60 * time.Second
 
-	// AccessTokenTTL is the OAuth2 access token lifetime (REQ-AND-AUTH-02,
-	// REQ-AUTH-71 default: 1 hour).
-	AccessTokenTTL = time.Hour
+	// DefaultAccessTokenTTL is the OAuth2 access token lifetime
+	// (REQ-AND-AUTH-02, REQ-AUTH-71 default: 1 hour) a Directory uses when
+	// no [server.auth] oauth2_access_token_ttl override is applied via
+	// WithOAuthTokenTTLs (issue #358).
+	DefaultAccessTokenTTL = time.Hour
 
-	// RefreshTokenTTL is the OAuth2 refresh token absolute lifetime
-	// (REQ-AND-AUTH-02, REQ-AUTH-71 default: 30 days), independent of
-	// rotation -- a refresh chain stops working after this long even if
-	// used continuously.
-	RefreshTokenTTL = 30 * 24 * time.Hour
+	// DefaultRefreshTokenTTL is the OAuth2 refresh token absolute
+	// lifetime (REQ-AND-AUTH-02, REQ-AUTH-71 default: 30 days),
+	// independent of rotation -- a refresh chain stops working after
+	// this long even if used continuously -- a Directory uses when no
+	// [server.auth] oauth2_refresh_token_ttl override is applied via
+	// WithOAuthTokenTTLs (issue #358).
+	DefaultRefreshTokenTTL = 30 * 24 * time.Hour
 
 	// RefreshTokenPrefix distinguishes a refresh-token plaintext from an
 	// access-token / device-token / API-key plaintext ("hk_...") so a
@@ -447,7 +453,7 @@ func (d *Directory) RefreshOAuthToken(ctx context.Context, clientID, clientSecre
 	}
 
 	// Best-effort: delete the access-token API key this refresh token
-	// was paired with. It is short-lived (AccessTokenTTL) and would
+	// was paired with. It is short-lived (d.accessTokenTTL) and would
 	// expire on its own, but deleting it immediately on rotation keeps
 	// exactly one live access token per chain generation.
 	if row.AccessKeyID != 0 {
@@ -472,7 +478,7 @@ func (d *Directory) mintOAuthTokenPair(ctx context.Context, pid PrincipalID, cli
 		Hash:        atHash,
 		Name:        deviceTokenNamePrefix + "oauth2:" + clientID,
 		ScopeJSON:   scopeJSON,
-		ExpiresAt:   now.Add(AccessTokenTTL),
+		ExpiresAt:   now.Add(d.accessTokenTTL),
 	})
 	if err != nil {
 		return OAuthTokenResult{}, fmt.Errorf("directory: insert oauth2 access token: %w", err)
@@ -489,7 +495,7 @@ func (d *Directory) mintOAuthTokenPair(ctx context.Context, pid PrincipalID, cli
 		ClientID:    clientID,
 		ScopeJSON:   scopeJSON,
 		AccessKeyID: insertedKey.ID,
-		ExpiresAt:   now.Add(RefreshTokenTTL),
+		ExpiresAt:   now.Add(d.refreshTokenTTL),
 	}); err != nil {
 		return OAuthTokenResult{}, fmt.Errorf("directory: insert oauth2 refresh token: %w", err)
 	}
@@ -500,7 +506,7 @@ func (d *Directory) mintOAuthTokenPair(ctx context.Context, pid PrincipalID, cli
 	return OAuthTokenResult{
 		AccessToken:  atPlain,
 		RefreshToken: rtPlain,
-		ExpiresIn:    int(AccessTokenTTL.Seconds()),
+		ExpiresIn:    int(d.accessTokenTTL.Seconds()),
 		Scope:        scopes,
 	}, nil
 }

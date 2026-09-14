@@ -159,10 +159,73 @@ func TestSession_OAuth2AccessToken_ExpiresAfterTTL(t *testing.T) {
 		t.Fatalf("fresh access token: status = %d, want 200", res.StatusCode)
 	}
 
-	f.clk.Advance(directory.AccessTokenTTL + time.Minute)
+	f.clk.Advance(directory.DefaultAccessTokenTTL + time.Minute)
 
 	res2, _ := f.doRequest("GET", "/.well-known/jmap", result.AccessToken, nil)
 	if res2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expired access token: status = %d, want 401", res2.StatusCode)
+	}
+}
+
+// TestSession_OAuth2AccessToken_ConfigurableTTL exercises the
+// operator-settable [server.auth] oauth2_access_token_ttl (issue #358):
+// a Directory built with a two-minute override -- the value
+// scripts/dev-instance.sh writes into a dev instance's system.toml --
+// issues a token whose expires_in is 120, rejects it two minutes later,
+// and the refresh grant still works past that point.
+func TestSession_OAuth2AccessToken_ConfigurableTTL(t *testing.T) {
+	f := newFixture(t)
+	// Override the access-token TTL the way internal/admin.StartServer
+	// does from sysconfig's already-defaulted [server.auth] values; leave
+	// the refresh-token TTL at its default (0 here means "unchanged").
+	f.dir = f.dir.WithOAuthTokenTTLs(2*time.Minute, 0)
+	ctx := context.Background()
+	mustRegisterJMAPAndroidClient(t, f.dir)
+
+	verifier, challenge := oauth2JMAPPKCE(t)
+	redirectURI := "net.netzhansa.herold:/oauth2redirect"
+	authReq := directory.AuthorizeRequest{
+		ClientID: "herold-android", RedirectURI: redirectURI,
+		CodeChallenge: challenge, CodeChallengeMethod: "S256",
+		CSRFToken: "csrf", ExpiresAt: f.clk.Now().Add(directory.AuthorizeRequestTTL),
+	}
+	code, err := f.dir.IssueAuthorizationCode(ctx, "alice@example.com", "correct-horse-battery-staple-1", "", authReq)
+	if err != nil {
+		t.Fatalf("IssueAuthorizationCode: %v", err)
+	}
+	result, err := f.dir.ExchangeAuthorizationCode(ctx, "herold-android", "", code, redirectURI, verifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode: %v", err)
+	}
+	if result.ExpiresIn != 120 {
+		t.Fatalf("ExpiresIn = %d, want 120", result.ExpiresIn)
+	}
+
+	res, _ := f.doRequest("GET", "/.well-known/jmap", result.AccessToken, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fresh access token: status = %d, want 200", res.StatusCode)
+	}
+
+	f.clk.Advance(2*time.Minute + time.Second)
+
+	res2, _ := f.doRequest("GET", "/.well-known/jmap", result.AccessToken, nil)
+	if res2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired access token: status = %d, want 401", res2.StatusCode)
+	}
+
+	// The refresh grant still works past the short access-token TTL
+	// (only the access token expired; the refresh token's own TTL --
+	// unchanged here, 30 days -- is far from elapsed), and the newly
+	// minted access token carries the same 120s TTL.
+	refreshed, err := f.dir.RefreshOAuthToken(ctx, "herold-android", "", result.RefreshToken)
+	if err != nil {
+		t.Fatalf("RefreshOAuthToken after access-token expiry: %v", err)
+	}
+	if refreshed.ExpiresIn != 120 {
+		t.Fatalf("refreshed ExpiresIn = %d, want 120", refreshed.ExpiresIn)
+	}
+	res3, _ := f.doRequest("GET", "/.well-known/jmap", refreshed.AccessToken, nil)
+	if res3.StatusCode != http.StatusOK {
+		t.Fatalf("refreshed access token: status = %d, want 200", res3.StatusCode)
 	}
 }

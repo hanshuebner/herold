@@ -626,6 +626,25 @@ a local upload key. The list is empty by default, in which case the
 route is not served at all (404) -- operators who do not ship an
 Android client need not think about this key.
 
+### `[server.auth]` - OAuth2 native-client grant token lifetimes
+
+```toml
+[server.auth]
+oauth2_access_token_ttl  = "1h"    # default; 1m floor
+oauth2_refresh_token_ttl = "720h"  # default (30 days); 1m floor
+```
+
+Controls the lifetime of the tokens the OAuth2 authorization-code grant
+for native clients (issue #199) mints and rotates -- the Android app's
+sign-in and token-refresh flow. `oauth2_access_token_ttl` bounds how
+long the short-lived Bearer access token authenticates JMAP/admin
+requests before the client must use its refresh token; validation
+rejects a value below the one-minute floor. `oauth2_refresh_token_ttl`
+is the absolute lifetime of a refresh-token rotation chain, independent
+of how often it is used; a chain still stops working once this elapses.
+Both keys are optional; an omitted section uses the defaults shown
+above.
+
 ### `[server.directory_autocomplete]` - compose To-field autocomplete
 
 ```toml
