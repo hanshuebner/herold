@@ -4710,6 +4710,83 @@ class MailStore {
   }
 
   /**
+   * "Not spam" (issue #382, REQ-FILT-02a): moves a Junk-mailbox email to
+   * Inbox and clears the $junk / $phishing keywords -- the reverse of
+   * reportSpam. Optimistic with undo, matching reportSpam's UX.
+   *
+   * Returns true when the server accepted the move, false on failure
+   * (already toasted). NotSpamDialog awaits this before creating the
+   * accompanying never-spam managed rule, so a failed move never leaves a
+   * dangling filter for a message that is still sitting in Junk.
+   */
+  async notSpam(emailId: string): Promise<boolean> {
+    const email = this.emails.get(emailId);
+    const inboxMailbox = this.inbox;
+    if (!email) return false;
+
+    const prevMailboxIds = { ...email.mailboxIds };
+    const prevKeywords = { ...email.keywords };
+    const prevListIds = [...this.listEmailIds];
+    const prevFocused = this.listFocusedIndex;
+    const hadPhishing = Boolean(prevKeywords.$phishing);
+
+    // Optimistic apply: drop $junk / $phishing, move to Inbox.
+    const nextKeywords: Record<string, true | undefined> = { ...prevKeywords };
+    delete nextKeywords.$junk;
+    delete nextKeywords.$phishing;
+    const nextMailboxIds = inboxMailbox
+      ? { [inboxMailbox.id]: true as const }
+      : { ...prevMailboxIds };
+
+    this.#patchEmail(emailId, { keywords: nextKeywords, mailboxIds: nextMailboxIds });
+    this.#removeFromList(emailId);
+
+    const revert = (): void => {
+      this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
+      this.listEmailIds = prevListIds;
+      this.listFocusedIndex = prevFocused;
+    };
+
+    try {
+      const patches: Record<string, unknown> = { 'keywords/$junk': null };
+      if (hadPhishing) patches['keywords/$phishing'] = null;
+      if (inboxMailbox) patches.mailboxIds = { [inboxMailbox.id]: true };
+      await this.#emailSetUpdate(emailId, patches);
+    } catch (err) {
+      revert();
+      toast.show({
+        message: errMessage(err, 'Move to Inbox failed'),
+        kind: 'error',
+        timeoutMs: 6000,
+      });
+      return false;
+    }
+
+    toast.show({
+      message: 'Moved to Inbox',
+      undo: async () => {
+        try {
+          const undoPatches: Record<string, unknown> = {
+            'keywords/$junk': true,
+            mailboxIds: prevMailboxIds,
+          };
+          if (hadPhishing) undoPatches['keywords/$phishing'] = true;
+          await this.#emailSetUpdate(emailId, undoPatches);
+          this.#patchEmail(emailId, { keywords: prevKeywords, mailboxIds: prevMailboxIds });
+          this.listEmailIds = prevListIds;
+        } catch (err) {
+          toast.show({
+            message: errMessage(err, 'Undo failed'),
+            kind: 'error',
+            timeoutMs: 6000,
+          });
+        }
+      },
+    });
+    return true;
+  }
+
+  /**
    * Post a spam-feedback signal to the server. The endpoint
    * (/api/v1/spam-feedback) is advisory and not yet implemented server-side
    * in Wave 3.15 (gap documented in implementation report). Errors are

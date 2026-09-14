@@ -32,6 +32,8 @@
   import SpamIcon from '../icons/SpamIcon.svelte';
   import PhishingIcon from '../icons/PhishingIcon.svelte';
   import BlockIcon from '../icons/BlockIcon.svelte';
+  import NotSpamIcon from '../icons/NotSpamIcon.svelte';
+  import NotSpamDialog from './NotSpamDialog.svelte';
   import type { Email } from './types';
 
   interface Props {
@@ -55,6 +57,7 @@
 
   let inboxId = $derived(mail.inbox?.id);
   let trashId = $derived(mail.trash?.id);
+  let junkId = $derived(mail.junk?.id);
   // Derive all emails in the thread so isInInbox reflects the full
   // conversation. A thread where the latest message is the user's own reply
   // (in Sent) should still show Archive when earlier messages are in the
@@ -67,6 +70,10 @@
   );
   let isInInbox = $derived(inboxEmailIds.length > 0);
   let isInTrash = $derived(Boolean(trashId && latest.mailboxIds[trashId]));
+  // "Not spam" (issue #382) is only offered on a message actually filed
+  // to Junk -- mirrors isInTrash's latest-only check rather than
+  // isInInbox's whole-thread check, since Not spam operates on `latest`.
+  let isInJunk = $derived(Boolean(junkId && latest.mailboxIds[junkId]));
 
   // Mute state for the thread — used by the mute/unmute action.
   let isMuted = $derived(managedRules.isThreadMuted(threadId));
@@ -166,6 +173,25 @@
     leaveThread();
   }
 
+  // "Not spam" dialog state (issue #382). Unlike the other thread actions,
+  // this one does not leave the thread on click -- it opens a chooser
+  // (NotSpamDialog) and only navigates away once the user confirms the
+  // move, matching the block-sender confirm pattern below.
+  let notSpamDialogOpen = $state(false);
+
+  function openNotSpamDialog(): void {
+    notSpamDialogOpen = true;
+  }
+
+  function closeNotSpamDialog(): void {
+    notSpamDialogOpen = false;
+  }
+
+  function handleNotSpamMoved(): void {
+    notSpamDialogOpen = false;
+    leaveThread();
+  }
+
   function openBlockConfirm(): void {
     blockError = null;
     blockConfirmOpen = true;
@@ -201,6 +227,7 @@
     | 'moveThread'
     | 'labelThread'
     | 'muteThread'
+    | 'notSpam'
     | 'reportSpam'
     | 'reportPhishing'
     | 'blockSender'
@@ -261,6 +288,11 @@
       label: isMuted ? t('msg.unmuteThread') : t('msg.muteThread'),
       onclick: () => void handleMuteToggle(),
       ariaPressed: isMuted,
+    },
+    notSpam: {
+      visible: isInJunk,
+      label: t('msg.notSpam'),
+      onclick: openNotSpamDialog,
     },
     reportSpam: {
       visible: true,
@@ -342,6 +374,8 @@
         <LabelIcon size={16} />
       {:else if id === 'muteThread'}
         {#if isMuted}<UnmuteIcon size={16} />{:else}<MuteIcon size={16} />{/if}
+      {:else if id === 'notSpam'}
+        <NotSpamIcon size={16} />
       {:else if id === 'reportSpam'}
         <SpamIcon size={16} />
       {:else if id === 'reportPhishing'}
@@ -356,6 +390,16 @@
 
   <span class="spacer" aria-hidden="true"></span>
 </div>
+
+<!-- "Not spam" dialog (issue #382): move to Inbox + optional never-spam rule. -->
+{#if notSpamDialogOpen}
+  <NotSpamDialog
+    emailId={latest.id}
+    senderEmail={senderEmail}
+    onclose={closeNotSpamDialog}
+    onmoved={handleNotSpamMoved}
+  />
+{/if}
 
 <!-- Block sender confirmation modal for thread toolbar. -->
 {#if blockConfirmOpen}

@@ -315,6 +315,7 @@ export const en = {
   'msg.unmuteThread': 'Unmute thread',
   'msg.reportSpam': 'Report spam',
   'msg.reportPhishing': 'Report phishing',
+  'msg.notSpam': 'Not spam',
   'msg.blockSender': 'Block sender',
   'msg.imagesBlocked': 'External images are blocked.',
   'msg.loadImages': 'Load images',
@@ -784,6 +785,7 @@ export const en = {
   'settings.filters.action.applyLabel': 'Apply label',
   'settings.filters.action.delete': 'Move to Trash',
   'settings.filters.action.forward': 'Forward to address',
+  'settings.filters.action.neverSpam': 'Never classify as spam (skip Junk filing)',
 
   // Sieve form (re #97)
   'settings.sieve.noAccount': 'No Mail account on this session',
@@ -1724,6 +1726,24 @@ export const en = {
   'mail.llm.classifiedAt': 'Classified at',
   'mail.llm.prompt': 'Prompt used for this message',
   'mail.llm.close': 'Close',
+  // Delivery override note (REQ-FILT-02a, issue #382): shown when a
+  // never-spam managed rule kept a spam/suspect verdict out of Junk.
+  'mail.llm.deliveryOverride':
+    'Classifier said {verdict}, delivered by your filter "{filterName}".',
+
+  // "Not spam" dialog (NotSpamDialog.svelte, issue #382, REQ-FLT-16)
+  'mail.notSpam.title': 'Not spam',
+  'mail.notSpam.body': 'This message will move to your Inbox.',
+  'mail.notSpam.scopeHeading': 'Also keep future mail from this sender out of Junk',
+  'mail.notSpam.scopeNone': 'Just this message',
+  'mail.notSpam.scopeAddress': 'This address ({address})',
+  'mail.notSpam.scopeDomain': 'This domain ({domain})',
+  'mail.notSpam.confirm': 'Move to Inbox',
+  'mail.notSpam.moving': 'Moving…',
+  'mail.notSpam.ruleNameAddress': 'Allow {address}',
+  'mail.notSpam.ruleNameDomain': 'Allow {domain}',
+  'mail.notSpam.ruleCreated': 'Filter created: mail from this sender is never sent to Junk',
+  'mail.notSpam.error': 'Could not move this message to Inbox',
 
   // advanced search panel (AdvancedSearchPanel.svelte)
   'search.advanced.label.from': 'From',

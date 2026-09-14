@@ -24,7 +24,7 @@ import type { Email, Mailbox } from './types';
 
 // ── hoisted fixtures ───────────────────────────────────────────────────────────
 
-const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX } = vi.hoisted(
+const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX } = vi.hoisted(
   () => {
     const INBOX_MBX: Mailbox = {
       id: 'mbx-inbox',
@@ -74,12 +74,25 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX } = vi
       unreadThreads: 0,
     };
 
+    const JUNK_MBX: Mailbox = {
+      id: 'mbx-junk',
+      name: 'Junk',
+      role: 'junk',
+      parentId: null,
+      sortOrder: 4,
+      totalEmails: 0,
+      unreadEmails: 0,
+      totalThreads: 0,
+      unreadThreads: 0,
+    };
+
     // mailMock is mutated per-test via mailMock.threadEmails and
     // mailMock.trash; the bulkArchive spy is shared across tests.
     const mailMock = {
       inbox: INBOX_MBX as Mailbox | null,
       trash: null as Mailbox | null,
       archive: ARCHIVE_MBX as Mailbox | null,
+      junk: null as Mailbox | null,
       listFolder: 'inbox' as string,
       threadEmails: (_tid: string): Email[] => [],
       bulkArchive: vi.fn().mockResolvedValue(undefined),
@@ -87,11 +100,12 @@ const { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX } = vi
       restoreFromTrash: vi.fn().mockResolvedValue(undefined),
       markThreadSeen: vi.fn().mockResolvedValue(undefined),
       reportSpam: vi.fn().mockResolvedValue(undefined),
+      notSpam: vi.fn().mockResolvedValue(true),
     };
 
     const routerMock = { parts: ['mail'] as readonly string[], navigate: vi.fn() };
 
-    return { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX };
+    return { mailMock, routerMock, INBOX_MBX, SENT_MBX, ARCHIVE_MBX, TRASH_MBX, JUNK_MBX };
   },
 );
 
@@ -112,8 +126,11 @@ vi.mock('../settings/managed-rules.svelte', () => ({
     muteThread: vi.fn().mockResolvedValue(undefined),
     unmuteThread: vi.fn().mockResolvedValue(undefined),
     blockSender: vi.fn().mockResolvedValue(undefined),
+    rules: [] as { order: number }[],
+    create: vi.fn().mockResolvedValue({ id: 'new1' }),
   },
 }));
+vi.mock('../toast/toast.svelte', () => ({ toast: { show: vi.fn() } }));
 
 // Import the mocked singletons so we can assert on them.
 import { movePicker } from './move-picker.svelte';
@@ -134,6 +151,7 @@ vi.mock('../icons/SpamIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PhishingIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/BlockIcon.svelte', () => ({ default: () => null }));
 vi.mock('../icons/PrintIcon.svelte', () => ({ default: () => null }));
+vi.mock('../icons/NotSpamIcon.svelte', () => ({ default: () => null }));
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -319,6 +337,77 @@ describe('ThreadToolbar formerly-overflow actions (re #117)', () => {
     expect(
       screen.queryByRole('button', { name: /actions\.moreActions/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── "Not spam" action (issue #382) ──────────────────────────────────────────────
+
+describe('ThreadToolbar "Not spam" action (issue #382)', () => {
+  beforeEach(() => {
+    mailMock.inbox = INBOX_MBX;
+    mailMock.junk = null;
+    mailMock.notSpam.mockClear();
+    vi.mocked(managedRules.create).mockClear();
+    routerMock.navigate.mockClear();
+  });
+
+  it('hides Not spam when the thread is not in Junk', () => {
+    const email = makeEmail('e-ns0', 'tid-ns0', { 'mbx-inbox': true });
+    mailMock.junk = JUNK_MBX;
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-ns0' ? [email] : []);
+
+    renderToolbar(email);
+
+    expect(screen.queryByRole('button', { name: 'msg.notSpam' })).not.toBeInTheDocument();
+  });
+
+  it('shows Not spam for a Junk thread and moves it to Inbox on confirm', async () => {
+    const email = makeEmail('e-ns1', 'tid-ns1', { 'mbx-junk': true });
+    mailMock.junk = JUNK_MBX;
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-ns1' ? [email] : []);
+
+    renderToolbar(email);
+
+    const btn = screen.getByRole('button', { name: 'msg.notSpam' });
+    await fireEvent.click(btn);
+
+    expect(screen.getByRole('dialog', { name: 'mail.notSpam.title' })).toBeInTheDocument();
+
+    const confirmBtn = screen.getByRole('button', { name: 'mail.notSpam.confirm' });
+    await fireEvent.click(confirmBtn);
+
+    await vi.waitFor(() => {
+      expect(mailMock.notSpam).toHaveBeenCalledWith('e-ns1');
+    });
+    // Default scope is "just this message" -- no rule is created.
+    expect(vi.mocked(managedRules.create)).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(routerMock.navigate).toHaveBeenCalledWith('/mail');
+    });
+  });
+
+  it('creates a never-spam rule scoped to the domain when that option is chosen', async () => {
+    const email = makeEmail('e-ns2', 'tid-ns2', { 'mbx-junk': true });
+    email.from = [{ name: 'Notify', email: 'notify@accountprotection.microsoft.com' }];
+    mailMock.junk = JUNK_MBX;
+    mailMock.threadEmails = (tid: string) => (tid === 'tid-ns2' ? [email] : []);
+
+    renderToolbar(email);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'msg.notSpam' }));
+    await fireEvent.click(screen.getByTestId('not-spam-dialog-scope-domain'));
+    await fireEvent.click(screen.getByRole('button', { name: 'mail.notSpam.confirm' }));
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(managedRules.create)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conditions: [
+            { field: 'from-domain', op: 'equals', value: 'accountprotection.microsoft.com' },
+          ],
+          actions: [{ kind: 'never-spam' }],
+        }),
+      );
+    });
   });
 });
 

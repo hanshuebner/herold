@@ -113,6 +113,7 @@
     { value: 'apply-label', label: t('settings.filters.action.applyLabel') },
     { value: 'delete', label: t('settings.filters.action.delete') },
     { value: 'forward', label: t('settings.filters.action.forward') },
+    { value: 'never-spam', label: t('settings.filters.action.neverSpam') },
   ]);
 
   function addCondition(): void {

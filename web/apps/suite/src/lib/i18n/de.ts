@@ -314,6 +314,7 @@ export const de = {
   'msg.unmuteThread': 'Stummschaltung aufheben',
   'msg.reportSpam': 'Spam melden',
   'msg.reportPhishing': 'Phishing melden',
+  'msg.notSpam': 'Kein Spam',
   'msg.blockSender': 'Absender blockieren',
   'msg.imagesBlocked': 'Externe Bilder werden blockiert.',
   'msg.loadImages': 'Bilder laden',
@@ -796,6 +797,7 @@ export const de = {
   'settings.filters.action.applyLabel': 'Label zuweisen',
   'settings.filters.action.delete': 'In Papierkorb verschieben',
   'settings.filters.action.forward': 'An Adresse weiterleiten',
+  'settings.filters.action.neverSpam': 'Nie als Spam einstufen (nicht in Junk zustellen)',
 
   // Sieve-Formular (re #97)
   'settings.sieve.noAccount': 'Kein Mail-Konto in dieser Sitzung',
@@ -1744,6 +1746,22 @@ export const de = {
   'mail.llm.classifiedAt': 'Klassifiziert am',
   'mail.llm.prompt': 'Für diese Nachricht verwendeter Prompt',
   'mail.llm.close': 'Schließen',
+  'mail.llm.deliveryOverride':
+    'Klassifizierer meldete {verdict}, zugestellt durch Ihren Filter "{filterName}".',
+
+  // "Kein Spam"-Dialog (NotSpamDialog.svelte, issue #382, REQ-FLT-16)
+  'mail.notSpam.title': 'Kein Spam',
+  'mail.notSpam.body': 'Diese Nachricht wird in Ihren Posteingang verschoben.',
+  'mail.notSpam.scopeHeading': 'Künftige Post von diesem Absender ebenfalls nicht in Junk einstufen',
+  'mail.notSpam.scopeNone': 'Nur diese Nachricht',
+  'mail.notSpam.scopeAddress': 'Diese Adresse ({address})',
+  'mail.notSpam.scopeDomain': 'Diese Domain ({domain})',
+  'mail.notSpam.confirm': 'In Posteingang verschieben',
+  'mail.notSpam.moving': 'Wird verschoben…',
+  'mail.notSpam.ruleNameAddress': 'Zulassen: {address}',
+  'mail.notSpam.ruleNameDomain': 'Zulassen: {domain}',
+  'mail.notSpam.ruleCreated': 'Filter erstellt: Post von diesem Absender wird nie in Junk einsortiert',
+  'mail.notSpam.error': 'Nachricht konnte nicht in den Posteingang verschoben werden',
 
   // advanced search panel (AdvancedSearchPanel.svelte)
   'search.advanced.label.from': 'Von',

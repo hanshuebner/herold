@@ -68,6 +68,17 @@
     if (confidence < 0 || confidence > 1) return null;
     return `${Math.round(confidence * 100)}%`;
   }
+
+  /**
+   * Strip the "filter:" wire prefix off SpamDeliveryOverride
+   * (REQ-FILT-02a, issue #382) to get the plain rule name/id to show the
+   * user. Returns the raw value unchanged if the prefix is absent, so an
+   * unexpected wire shape still renders something rather than nothing.
+   */
+  function deliveryOverrideFilterName(override: string): string {
+    const prefix = 'filter:';
+    return override.startsWith(prefix) ? override.slice(prefix.length) : override;
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -158,6 +169,14 @@
               <p class="prompt-header">{t('mail.llm.prompt')}</p>
               <pre class="prompt-text">{result.spam.promptApplied}</pre>
             </div>
+            {#if result.spam.deliveryOverride}
+              <p class="delivery-override" role="status">
+                {t('mail.llm.deliveryOverride', {
+                  verdict: result.spam.verdict,
+                  filterName: deliveryOverrideFilterName(result.spam.deliveryOverride),
+                })}
+              </p>
+            {/if}
           </section>
         {/if}
       {/if}
@@ -311,6 +330,16 @@
     margin: 0;
     max-height: 240px;
     overflow-y: auto;
+  }
+
+  .delivery-override {
+    background: var(--layer-01);
+    border-left: 3px solid var(--support-success, #24a148);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-03) var(--spacing-04);
+    margin: 0;
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
   }
 
   .disclosure-note {

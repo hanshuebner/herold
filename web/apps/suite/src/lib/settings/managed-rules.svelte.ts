@@ -60,7 +60,8 @@ export type ActionKind =
   | 'skip-inbox'
   | 'mark-read'
   | 'delete'
-  | 'forward';
+  | 'forward'
+  | 'never-spam';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 

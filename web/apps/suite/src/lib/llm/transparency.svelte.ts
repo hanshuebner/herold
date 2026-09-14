@@ -35,6 +35,10 @@ export interface MessageLLMInspect {
     promptApplied: string;
     model: string;
     classifiedAt: string;
+    /** "filter:<rule name or id>" when a never-spam managed rule kept a
+     * spam/suspect verdict out of Junk (REQ-FILT-02a, issue #382); absent
+     * when no override applied. */
+    deliveryOverride?: string;
   };
   category?: {
     assigned: string;
