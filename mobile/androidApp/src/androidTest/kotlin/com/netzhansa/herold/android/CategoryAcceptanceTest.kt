@@ -149,12 +149,21 @@ class CategoryAcceptanceTest {
             up()
         }
         compose.waitForIdle()
-        compose.captureScreen("m4-category-reorder")
 
         val moved = awaitServerMailbox(client, accountId, labels.getValue(PIN_SECOND)) { it.priority == 0 }
         assertEquals(0, moved.priority)
         val demoted = awaitServerMailbox(client, accountId, labels.getValue(PIN_FIRST)) { it.priority == 1 }
         assertEquals("the server renumbers the label that did not move", 1, demoted.priority)
+
+        // The list the drain refreshed shows the order the server holds.
+        compose.waitUntil(TIMEOUT_MS) {
+            val first = compose.onAllNodesWithTag("category-pinned-$PIN_SECOND").fetchSemanticsNodes()
+                .firstOrNull()?.boundsInRoot?.top ?: return@waitUntil false
+            val second = compose.onAllNodesWithTag("category-pinned-$PIN_FIRST").fetchSemanticsNodes()
+                .firstOrNull()?.boundsInRoot?.top ?: return@waitUntil false
+            first < second
+        }
+        compose.captureScreen("m4-category-reorder")
     }
 
     @Test
