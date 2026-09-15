@@ -247,7 +247,11 @@ metrics_bind = ""
 	}
 
 	// Boot StartServer against the seeded store; the [[plugin]] block
-	// above makes it spawn the real herold-spam-llm binary.
+	// above makes it spawn the real herold-spam-llm binary. The logger is
+	// wrapped so the test can wait for the plugin's own "state changed"
+	// signal (re #397) instead of guessing how long its handshake +
+	// configure round trip takes.
+	sig := newPluginSignalState()
 	addrs := make(map[string]string)
 	addrsMu := &sync.Mutex{}
 	ready := make(chan struct{})
@@ -255,7 +259,7 @@ metrics_bind = ""
 	go func() {
 		defer close(done)
 		if err := StartServer(ctx, cfg, StartOpts{
-			Logger:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+			Logger:           slog.New(newPluginSignalHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}), sig)),
 			Ready:            ready,
 			ListenerAddrs:    addrs,
 			ListenerAddrsMu:  addrsMu,
@@ -272,17 +276,20 @@ metrics_bind = ""
 			t.Errorf("server did not shut down within grace window")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("server did not become ready within 30 s")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	smtpAddr := addrs["smtp"]
 	addrsMu.Unlock()
 	if smtpAddr == "" {
 		t.Fatalf("smtp listener not bound; addrs=%+v", addrs)
 	}
+
+	// The spam-llm-e2e plugin spawns and configures on its own goroutine
+	// (internal/plugin.Manager.Start does not block Ready on it); wait
+	// for it to report healthy before delivering, or a message can reach
+	// the classify call before configure lands and get a permanent
+	// "plugin not configured" verdict under host load (re #397).
+	waitForPluginHealthy(t, sig, done)
 
 	deliverSpamLLME2EMessage(t, smtpAddr, domain)
 
@@ -292,11 +299,22 @@ metrics_bind = ""
 	verifySt := openStoreForBackend(false)
 	defer func() { _ = verifySt.Close() }()
 
-	deadline := time.Now().Add(15 * time.Second)
+	// SMTP DATA is not acknowledged until the whole per-recipient pipeline
+	// (classify, insert, persist the transparency record) has completed
+	// synchronously in the same session, so deliverSpamLLME2EMessage
+	// returning already implies the record exists; this loop only
+	// absorbs a fresh store handle's own connect/read latency. It applies
+	// no wall-clock cap of its own -- go test's own -timeout is the only
+	// cap (re #397) -- and fails immediately if the server exits first.
 	var rec store.LLMClassificationRecord
 	var found bool
 	var lastErr string
-	for time.Now().Before(deadline) {
+	for !found {
+		select {
+		case <-done:
+			t.Fatalf("server exited before the spam classification record was persisted; last: %s", lastErr)
+		default:
+		}
 		// A spam verdict files into Junk by default (REQ-FILT-02).
 		mb, err := verifySt.Meta().GetMailboxByName(ctx, pid, "Junk")
 		if err != nil {
@@ -317,10 +335,6 @@ metrics_bind = ""
 			continue
 		}
 		found = true
-		break
-	}
-	if !found {
-		t.Fatalf("no spam classification record found for delivered message; last: %s", lastErr)
 	}
 	if *rec.SpamVerdict != "spam" {
 		t.Fatalf("SpamVerdict = %q, want %q", *rec.SpamVerdict, "spam")

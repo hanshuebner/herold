@@ -55,6 +55,10 @@ type classifyMatrixHarness struct {
 	domain     string
 	pid        store.PrincipalID
 	logBuf     *syncBuffer
+	// done closes when the StartServer boot goroutine exits, letting
+	// verification helpers bound their polling on the server's own
+	// lifetime instead of a fixed wall-clock deadline (re #397).
+	done <-chan struct{}
 	// openVerifyStore reopens the store backing the running server for
 	// read-only verification; it must not truncate (the server is still
 	// running against it).
@@ -210,7 +214,8 @@ metrics_bind = ""
 	}
 
 	logBuf := &syncBuffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	sig := newPluginSignalState()
+	logger := slog.New(newPluginSignalHandler(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}), sig))
 
 	addrs := make(map[string]string)
 	addrsMu := &sync.Mutex{}
@@ -236,11 +241,7 @@ metrics_bind = ""
 			t.Errorf("server did not shut down within grace window")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("server did not become ready within 30 s")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	smtpAddr := addrs["smtp"]
 	publicAddr := addrs["public"]
@@ -251,6 +252,15 @@ metrics_bind = ""
 	if publicAddr == "" {
 		t.Fatalf("public listener not bound; addrs=%+v", addrs)
 	}
+	if pluginTOML != "" {
+		// The classifier subprocess spawns and configures on its own
+		// goroutine (internal/plugin.Manager.Start does not block Ready
+		// on it); wait for it to report healthy before any scenario
+		// delivers a message, or the classify call can reach the plugin
+		// before configure lands and get a permanent "plugin not
+		// configured" verdict under host load (re #397).
+		waitForPluginHealthy(t, sig, done)
+	}
 
 	return &classifyMatrixHarness{
 		smtpAddr:   smtpAddr,
@@ -258,6 +268,7 @@ metrics_bind = ""
 		domain:     domain,
 		pid:        pid,
 		logBuf:     logBuf,
+		done:       done,
 		openVerifyStore: func(t *testing.T) store.Store {
 			t.Helper()
 			return openStore(false)
@@ -332,14 +343,23 @@ func deliverClassifyMatrixMessage(t *testing.T, h *classifyMatrixHarness, extraH
 }
 
 // waitForMessageInMailbox polls until mailboxName owned by h.pid holds at
-// least one message, returning it. Fails the test after 15s.
+// least one message, returning it. deliverClassifyMatrixMessage's caller
+// already waited out the full synchronous delivery pipeline (SMTP DATA is
+// not acknowledged until classify+insert+persist complete), so this loop
+// only absorbs a fresh store handle's own connect/read latency; it applies
+// no wall-clock cap of its own -- go test's own -timeout is the only cap
+// (re #397) -- and fails immediately if the server exits first.
 func waitForMessageInMailbox(t *testing.T, h *classifyMatrixHarness, mailboxName string) store.Message {
 	t.Helper()
 	st := h.openVerifyStore(t)
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
+		select {
+		case <-h.done:
+			t.Fatalf("server exited before a message appeared in %s (see StartServer log above)", mailboxName)
+		default:
+		}
 		mb, err := st.Meta().GetMailboxByName(ctx, h.pid, mailboxName)
 		if err == nil {
 			msgs, err := st.Meta().ListMessages(ctx, mb.ID, store.MessageFilter{Limit: 10})
@@ -349,8 +369,6 @@ func waitForMessageInMailbox(t *testing.T, h *classifyMatrixHarness, mailboxName
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("no message appeared in %s within 15s", mailboxName)
-	return store.Message{}
 }
 
 // countCallLogLines counts non-empty lines in a classifierfixture

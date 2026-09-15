@@ -50,6 +50,87 @@ func waitForReady(t *testing.T, ready <-chan struct{}, done <-chan struct{}) {
 	}
 }
 
+// pluginSignalState is the shared state behind pluginSignalHandler: a
+// StartServer boot's Ready channel fires once its listeners are bound,
+// but a long-running plugin (e.g. herold-spam-llm) finishes its own
+// handshake+configure JSON-RPC round trip on a separate goroutine
+// (internal/plugin.Manager.Start) that Ready does not wait for (re
+// #397). Under host load, that round trip can still be in flight when a
+// test delivers its first message, so the classify call reaches the
+// plugin before its configure landed and gets a permanent
+// "plugin not configured" verdict for that message -- no amount of
+// polling afterwards recovers it. healthyCh closes on the plugin
+// subsystem's own "plugin state changed" to=healthy log line, giving
+// tests a real readiness signal to wait on instead of guessing a delay.
+type pluginSignalState struct {
+	healthyOnce sync.Once
+	healthyCh   chan struct{}
+}
+
+func newPluginSignalState() *pluginSignalState {
+	return &pluginSignalState{healthyCh: make(chan struct{})}
+}
+
+// pluginSignalHandler wraps a test's slog.Handler to observe the plugin
+// subsystem's lifecycle log lines without changing what is printed:
+// Enabled reports true for slog.LevelInfo and above (the level the
+// "plugin state changed" line is emitted at) purely so Handle sees the
+// record; whether it is actually written to underlying still follows
+// underlying's own Enabled check.
+type pluginSignalHandler struct {
+	underlying slog.Handler
+	state      *pluginSignalState
+}
+
+func newPluginSignalHandler(underlying slog.Handler, state *pluginSignalState) *pluginSignalHandler {
+	return &pluginSignalHandler{underlying: underlying, state: state}
+}
+
+func (h *pluginSignalHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo || h.underlying.Enabled(ctx, level)
+}
+
+func (h *pluginSignalHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == "plugin state changed" {
+		var to string
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "to" {
+				to = a.Value.String()
+			}
+			return true
+		})
+		if to == "healthy" {
+			h.state.healthyOnce.Do(func() { close(h.state.healthyCh) })
+		}
+	}
+	if h.underlying.Enabled(ctx, r.Level) {
+		return h.underlying.Handle(ctx, r)
+	}
+	return nil
+}
+
+func (h *pluginSignalHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &pluginSignalHandler{underlying: h.underlying.WithAttrs(attrs), state: h.state}
+}
+
+func (h *pluginSignalHandler) WithGroup(name string) slog.Handler {
+	return &pluginSignalHandler{underlying: h.underlying.WithGroup(name), state: h.state}
+}
+
+// waitForPluginHealthy blocks until the plugin subsystem reports a
+// plugin reaching StateHealthy (state.healthyCh, closed by
+// pluginSignalHandler), or the server exits via done -- whichever
+// happens first. Like waitForReady, it applies no wall-clock cap of its
+// own (re #397): go test's own -timeout is the only cap.
+func waitForPluginHealthy(t *testing.T, state *pluginSignalState, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-state.healthyCh:
+	case <-done:
+		t.Fatalf("server exited before any plugin reached state healthy (see StartServer log above)")
+	}
+}
+
 // minimalConfigFixture writes a system.toml and the associated cert/key
 // pair under a temp dir. It returns the system.toml path and the resolved
 // *sysconfig.Config.
