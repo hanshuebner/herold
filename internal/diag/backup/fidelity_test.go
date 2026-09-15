@@ -597,11 +597,15 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO llm_classifications (message_id, principal_id,
 	        spam_verdict, spam_confidence, spam_reason, spam_prompt_applied,
 	        spam_model, spam_classified_at_us,
-	        category_assigned, category_prompt_applied, category_model, category_classified_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        category_assigned, category_prompt_applied, category_model, category_classified_at_us,
+	        spam_signals_json, spam_ham_signals_json, spam_inconsistent)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		1, 1, "ham", 0.95, "looks legit", "prompt-v1",
 		"gpt-4", int64(1000000),
-		"newsletter", "cat-prompt-v1", "gpt-4", int64(2000000))
+		"newsletter", "cat-prompt-v1", "gpt-4", int64(2000000),
+		// spam_verdict="ham" alongside a non-empty spam_signals_json makes
+		// this row the Inconsistent=1 case (migration 0111, re #396).
+		`["urgent action required","suspicious link"]`, `["known sender"]`, int64(1))
 	// A second row with the same message but all nullable classification fields NULL.
 	// We reuse message_id=1 with a different principal to avoid a FK failure
 	// (llm_classifications PK is (message_id, principal_id) implicitly via unique combo).
@@ -619,9 +623,10 @@ func seedFidelityRows(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO llm_classifications (message_id, principal_id,
 	        spam_verdict, spam_confidence, spam_reason, spam_prompt_applied,
 	        spam_model, spam_classified_at_us,
-	        category_assigned, category_prompt_applied, category_model, category_classified_at_us)
-	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		2, 2, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	        category_assigned, category_prompt_applied, category_model, category_classified_at_us,
+	        spam_signals_json, spam_ham_signals_json, spam_inconsistent)
+	      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		2, 2, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// seen_addresses
 	exec(`INSERT INTO seen_addresses (id, principal_id, email, display_name, first_seen_at_us, last_used_at_us, send_count, received_count)
