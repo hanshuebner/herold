@@ -70,10 +70,20 @@ very next request rather than at the next expiry.
 
 **Sessions.** `GET /api/v1/auth/credentials` and
 `DELETE /api/v1/auth/credentials/{kind}/{id}` — the endpoints the Suite's
-session management uses (issue #224). Two gaps the client works around, both
-recorded in `parity-matrix.md` § Server gaps: the list never marks an
-`oauth2_grant` as `is_current` for a bearer caller, and no `step_up_required`
-response is reachable by one.
+session management uses (issue #224). The list marks the credential the
+request authenticated with as `is_current` (issue #356), which is how the
+client knows which entry is this device.
+
+**Step-up.** A self-service operation the server elevates (REQ-AUTH-78:
+create an API key, create an app password, change the password, disable
+TOTP) answers a bearer caller with `403 step_up_required` /
+`elevation_scope: "self-service"`. `POST /api/v1/auth/step-up` with
+`{totp_code}` elevates the calling credential - a device token or an
+OAuth2 access token - for the same window a cookie session gets, and
+answers `{elevation_expires_at}` (REQ-AUTH-79, issue #357). A wrong code
+is a `401`, a locked-out attempt a `429`, and a principal with no TOTP
+enrolled a `400` carrying `enroll_required`. Revoking a credential is
+deliberately NOT elevated.
 
 ### Push (delta from § Web Push)
 

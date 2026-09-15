@@ -54,6 +54,14 @@ object AccountApi {
             ?.getString("id")
             ?: error("no OAuth2 grant for $clientId")
 
+    /** The entry the server marks as the caller's own credential (issue #356). */
+    fun currentGrantId(baseUrl: String, token: String): String =
+        credentials(baseUrl, token)
+            .filter { it.optBoolean("is_current") && it.optString("kind") == "oauth2_grant" }
+            .map { it.getString("id") }
+            .singleOrNull()
+            ?: error("the server marks no single current OAuth2 grant")
+
     fun revokeCredential(baseUrl: String, token: String, kind: String, id: String): Int =
         request("DELETE", "$baseUrl/api/v1/auth/credentials/$kind/$id", token).first
 

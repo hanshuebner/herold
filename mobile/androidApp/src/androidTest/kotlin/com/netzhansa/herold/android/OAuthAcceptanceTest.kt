@@ -132,8 +132,8 @@ class OAuthAcceptanceTest {
         // A second session of the same principal - a device token the
         // harness mints - revokes this device's grant.
         assertEquals(
-            "the client marked a grant the server does not call the newest",
-            AccountApi.ownGrantId(DevInstance.baseUrl, token, DevInstance.oauthClientId),
+            "the client marked a grant the server does not call current",
+            AccountApi.currentGrantId(DevInstance.baseUrl, token),
             grantId,
         )
         val other = runBlocking { DevInstance.deviceToken(DevInstance.totpEmail) }

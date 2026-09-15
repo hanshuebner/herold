@@ -101,6 +101,21 @@ fallback the same prompt offers.
       -e heroldOauthClientId <OAUTH2_CLIENT_ID> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`StepUpAcceptanceTest` drives the six-digit step-up sheet against
+`POST /api/v1/auth/step-up` (issue #401). It signs in as the instance's
+TOTP-enrolled principal, so it needs the printed `ADMIN_TOTP_SECRET`:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.StepUpAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldTotpSecret <ADMIN_TOTP_SECRET> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+`t77` spends one wrong code before the right one. The server locks a
+principal out after five consecutive wrong TOTP attempts, so re-running
+it repeatedly against the same instance eventually meets the lockout
+rather than the sheet.
+
 ### Registering the OAuth2 client on a real instance
 
 `scripts/dev-instance.sh` registers the client itself. A production
