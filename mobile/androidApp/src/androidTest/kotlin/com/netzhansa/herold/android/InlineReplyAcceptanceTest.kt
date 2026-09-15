@@ -109,20 +109,7 @@ class InlineReplyAcceptanceTest {
     fun t77_aTypedReplyIsQueuedAndReachesTheRecipient() {
         val target = awaitInbox(subject)
         val posted = postNotificationFor(target)
-        val action = posted.notification.actions.orEmpty()
-            .first { it.remoteInputs?.isNotEmpty() == true }
-
-        val text = "Confirmed, the schedule works."
-        val results = Bundle().apply { putCharSequence(MailNotifier.REPLY_RESULT_KEY, text) }
-        val fillIn = Intent()
-        RemoteInput.addResultsToIntent(
-            action.remoteInputs!!.map {
-                RemoteInput.Builder(it.resultKey).setLabel(it.label).build()
-            }.toTypedArray(),
-            fillIn,
-            results,
-        )
-        action.actionIntent.send(context, 0, fillIn)
+        sendInlineReply(posted, "Confirmed, the schedule works.")
 
         // The reply is durable before anything leaves the device, and it
         // waits out the undo window there.
@@ -134,9 +121,6 @@ class InlineReplyAcceptanceTest {
             "the notification must report the reply as sending",
             awaitNotificationTitle(MailNotifier.SENDING_TITLE),
         )
-        device.openNotification()
-        captureDeviceScreen("17-shade-reply-sending")
-        device.pressBack()
 
         val arrived = runBlocking { awaitDelivered("Re: " + target.subject) }
         assertTrue(
@@ -152,7 +136,73 @@ class InlineReplyAcceptanceTest {
             awaitNotificationTitle(MailNotifier.SENT_TITLE),
         )
         device.openNotification()
+        assertTrue(
+            "the shade must show the reply as sent",
+            device.wait(Until.hasObject(By.text(MailNotifier.SENT_TITLE)), TIMEOUT_MS),
+        )
         captureDeviceScreen("18-shade-reply-sent")
+    }
+
+    /**
+     * The undo window is the reply's, too (issue #354): while it lasts the
+     * shade says the reply is sending and offers to take it back, and
+     * taking it leaves nothing queued and puts the message back.
+     */
+    @Test
+    fun t78_aReplyCanBeTakenBackWhileItIsHeld() {
+        UndoSendPreference.remember(context, UndoSendWindow.THIRTY)
+        val target = awaitInbox(subject)
+        val posted = postNotificationFor(target)
+        sendInlineReply(posted, "On second thought, let me check first.")
+
+        val queued = awaitOutboxEntry("Re: " + target.subject)
+        device.openNotification()
+        assertTrue(
+            "the shade must show the reply as sending",
+            device.wait(Until.hasObject(By.text(MailNotifier.SENDING_TITLE)), TIMEOUT_MS),
+        )
+        captureDeviceScreen("17-shade-reply-sending")
+
+        device.wait(Until.findObject(By.text(MailNotifier.UNDO_TITLE)), TIMEOUT_MS)!!.click()
+
+        // Nothing is left to send, and the message is back in the shade.
+        val dropped = device.wait(
+            Until.hasObject(By.textContains(target.subject)),
+            TIMEOUT_MS,
+        )
+        assertTrue("the message's own notification must come back", dropped)
+        captureDeviceScreen("19-shade-reply-taken-back")
+        runBlocking {
+            repeat(OUTBOX_POLLS) {
+                if (app.container.outbox.entry(queued.id) == null) return@runBlocking
+                Thread.sleep(POLL_MS)
+            }
+            error("the reply stayed queued after the undo: ${app.container.outbox.list()}")
+        }
+        // The window is 30 s; well inside it, nothing has reached bob.
+        assertTrue(
+            "an undone reply must not reach the recipient",
+            runBlocking { delivered("Re: " + target.subject) } == null,
+        )
+    }
+
+    /** Sends [text] through the notification's inline reply, as the shade does. */
+    private fun sendInlineReply(
+        posted: android.service.notification.StatusBarNotification,
+        text: String,
+    ) {
+        val action = posted.notification.actions.orEmpty()
+            .first { it.remoteInputs?.isNotEmpty() == true }
+        val results = Bundle().apply { putCharSequence(MailNotifier.REPLY_RESULT_KEY, text) }
+        val fillIn = Intent()
+        RemoteInput.addResultsToIntent(
+            action.remoteInputs!!.map {
+                RemoteInput.Builder(it.resultKey).setLabel(it.label).build()
+            }.toTypedArray(),
+            fillIn,
+            results,
+        )
+        action.actionIntent.send(context, 0, fillIn)
     }
 
     /** Injects the push for [email] and returns the notification it posted. */
