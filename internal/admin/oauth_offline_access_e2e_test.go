@@ -484,12 +484,7 @@ func startOfflineE2EServer(t *testing.T, cfg *sysconfig.Config) (publicAddr, adm
 			t.Errorf("offline e2e: server did not shut down")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(20 * time.Second):
-		cancel()
-		t.Fatalf("offline e2e: server not ready")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	publicAddr = addrs["public"]
 	adminAddr = addrs["admin"]

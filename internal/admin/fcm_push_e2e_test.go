@@ -341,12 +341,7 @@ func startFCMPushServer(t *testing.T, cfg *sysconfig.Config) (publicAddr, smtpAd
 			t.Errorf("server did not shut down within grace window")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(20 * time.Second):
-		cancel()
-		t.Fatalf("server did not become ready")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	publicAddr = addrs["public"]
 	smtpAddr = addrs["smtp"]

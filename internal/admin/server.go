@@ -112,6 +112,15 @@ type StartOpts struct {
 	// to accept traffic. Tests synchronise against it; production leaves it
 	// nil and relies on sd_notify.
 	Ready chan<- struct{}
+	// MetricsReady, when non-nil, is closed right after the metrics HTTP
+	// listener binds -- before the synchronous initial ACME
+	// cert-provisioning call runs. Ready fires much later (after ACME
+	// returns and every other listener binds), so it cannot stand in for
+	// this signal; MetricsReady lets a test observe the metrics-before-
+	// ACME ordering (re #268) without a wall-clock guess at how long
+	// migration + ACME provisioning will take. Left nil in production and
+	// by every other test.
+	MetricsReady chan<- struct{}
 	// ListenerAddrs, when non-nil, is populated with the resolved
 	// net.Listener addresses keyed by listener name. Lets tests discover
 	// the ephemeral port allocated by "127.0.0.1:0" binds.
@@ -502,6 +511,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 				} else {
 					opts.ListenerAddrs["metrics"] = ln.Addr().String()
 				}
+			}
+			if opts.MetricsReady != nil {
+				close(opts.MetricsReady)
 			}
 			g.Go(func() error {
 				if err := srv.Serve(ln); err != nil &&

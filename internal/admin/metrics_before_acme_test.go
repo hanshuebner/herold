@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/storesqlite/sqlitetest"
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -44,6 +45,14 @@ func TestMetricsReachable_WhileACMEProvisioningBlocks(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := generateSelfSignedCert(t, dir, []string{"localhost"})
 	systomlPath := filepath.Join(dir, "system.toml")
+	dbPath := filepath.Join(dir, "db.sqlite")
+	// Materialise the store from the per-process migrated template
+	// (re #395) instead of letting StartServer apply all embedded
+	// migrations from scratch: under -race on a loaded host that
+	// migration walk alone can outlast this test's readiness wait,
+	// making the assertion below blame ACME provisioning for a delay
+	// that is actually mid-migration (re #403).
+	sqlitetest.PrepareAt(t, dbPath)
 	toml := fmt.Sprintf(`
 [server]
 hostname = "test.local"
@@ -100,7 +109,7 @@ metrics_bind = "127.0.0.1:0"
 [acme]
 email = "ops@example.com"
 directory_url = %q
-`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, filepath.Join(dir, "db.sqlite"),
+`, dir, filepath.Join(dir, "ports.toml"), certPath, keyPath, dbPath,
 		certPath, keyPath, certPath, keyPath, acmeSrv.URL)
 	if err := os.WriteFile(systomlPath, []byte(toml), 0o600); err != nil {
 		t.Fatalf("write system.toml: %v", err)
@@ -113,6 +122,7 @@ directory_url = %q
 	ctx, cancel := context.WithCancel(context.Background())
 	addrs := make(map[string]string)
 	addrsMu := &sync.Mutex{}
+	metricsReady := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -120,6 +130,7 @@ directory_url = %q
 			Logger:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 			ListenerAddrs:    addrs,
 			ListenerAddrsMu:  addrsMu,
+			MetricsReady:     metricsReady,
 			ExternalShutdown: true,
 		}); err != nil {
 			t.Logf("StartServer exited: %v", err)
@@ -134,27 +145,33 @@ directory_url = %q
 		}
 	})
 
-	// Poll for the metrics listener's resolved address. It must appear
-	// well before the hung ACME directory fetch above ever unblocks.
-	var metricsAddr string
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		addrsMu.Lock()
-		metricsAddr = addrs["metrics"]
-		addrsMu.Unlock()
-		if metricsAddr != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait on the boot's own metrics-bound signal rather than a fixed
+	// wall-clock deadline: migration time under -race scales with host
+	// load (re #403, following #395's pattern for the package's other
+	// fixtures), so a fixed timeout races the boot instead of observing
+	// it. A genuine hang is caught by go test's own -timeout; a boot
+	// that exits before binding metrics fails immediately via done with
+	// a clear cause.
+	select {
+	case <-metricsReady:
+	case <-done:
+		t.Fatalf("server exited before the metrics listener bound (see StartServer log above)")
 	}
+	addrsMu.Lock()
+	metricsAddr := addrs["metrics"]
+	addrsMu.Unlock()
 	if metricsAddr == "" {
-		t.Fatalf("metrics listener did not bind within timeout; ACME provisioning is blocking it (re #268)")
+		t.Fatalf("metrics listener signaled ready but addrs[\"metrics\"] is empty")
 	}
 
 	// Confirm initial ACME provisioning has NOT completed yet: the admin
 	// listener (bound only after the synchronous ACME block returns)
-	// must still be absent, proving the metrics check above happened
-	// while provisioning was genuinely in progress.
+	// must still be absent. This is guaranteed by StartServer's own
+	// sequencing -- the metrics bind, the synchronous EnsureCert call,
+	// and the admin-listener bind happen in that order on one goroutine
+	// -- so observing metricsReady already proves EnsureCert has not
+	// returned; the check below is a direct assertion of that ordering,
+	// not a race against it.
 	addrsMu.Lock()
 	adminAddr := addrs["admin"]
 	addrsMu.Unlock()

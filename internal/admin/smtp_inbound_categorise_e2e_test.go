@@ -183,11 +183,7 @@ metrics_bind = ""
 			t.Errorf("server did not shut down within grace window")
 		}
 	})
-	select {
-	case <-ready:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("server did not become ready within 30 s")
-	}
+	waitForReady(t, ready, done)
 	addrsMu.Lock()
 	smtpAddr := addrs["smtp"]
 	addrsMu.Unlock()
