@@ -247,11 +247,13 @@ metrics_bind = ""
 	}
 
 	// Boot StartServer against the seeded store; the [[plugin]] block
-	// above makes it spawn the real herold-spam-llm binary. The logger is
-	// wrapped so the test can wait for the plugin's own "state changed"
-	// signal (re #397) instead of guessing how long its handshake +
-	// configure round trip takes.
-	sig := newPluginSignalState()
+	// above makes it spawn the real herold-spam-llm binary. StartServer
+	// itself now waits for every configured spam/classify plugin to
+	// reach StateHealthy before binding any listener or closing Ready
+	// (re #398), so waitForReady alone is the correct and sufficient
+	// signal that the plugin is ready to classify -- delivering
+	// immediately after Ready is the acceptance case, not a race to
+	// avoid.
 	addrs := make(map[string]string)
 	addrsMu := &sync.Mutex{}
 	ready := make(chan struct{})
@@ -259,7 +261,7 @@ metrics_bind = ""
 	go func() {
 		defer close(done)
 		if err := StartServer(ctx, cfg, StartOpts{
-			Logger:           slog.New(newPluginSignalHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}), sig)),
+			Logger:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 			Ready:            ready,
 			ListenerAddrs:    addrs,
 			ListenerAddrsMu:  addrsMu,
@@ -283,13 +285,6 @@ metrics_bind = ""
 	if smtpAddr == "" {
 		t.Fatalf("smtp listener not bound; addrs=%+v", addrs)
 	}
-
-	// The spam-llm-e2e plugin spawns and configures on its own goroutine
-	// (internal/plugin.Manager.Start does not block Ready on it); wait
-	// for it to report healthy before delivering, or a message can reach
-	// the classify call before configure lands and get a permanent
-	// "plugin not configured" verdict under host load (re #397).
-	waitForPluginHealthy(t, sig, done)
 
 	deliverSpamLLME2EMessage(t, smtpAddr, domain)
 

@@ -336,6 +336,35 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		}
 	}
 
+	// Wait for every configured spam/mail.classify plugin to reach
+	// StateHealthy before any listener binds and before Ready closes (re
+	// #398). pluginMgr.Start above only launches the handshake+configure
+	// JSON-RPC round trip on the plugin's own supervise goroutine and
+	// returns at once; without this wait, a message delivered in the
+	// window between Ready and that round trip landing reaches the
+	// classify call before configure does and gets a permanent
+	// "plugin not configured" verdict that no later retry reclassifies.
+	// The wait is bounded by the supervisor's own per-attempt RPC budget
+	// (HandshakeTimeout+ConfigureTimeout) plus a fixed margin for process
+	// spawn scheduling delay under host load, not an unbounded retry: a
+	// plugin that fails its first attempt (bad path, rejected manifest,
+	// failed configure) surfaces a clear boot error here instead of
+	// silently retrying through the crash-restart backoff ladder while
+	// listeners stay unbound.
+	if classifyPlugins := pluginNamesOfType(cfg.Plugin, "spam", "classifier"); len(classifyPlugins) > 0 {
+		waitBound := plugin.HandshakeTimeout + plugin.ConfigureTimeout + 5*time.Second
+		waitCtx, waitCancel := context.WithTimeout(ctx, waitBound)
+		waitStart := clk.Now()
+		waitErr := pluginMgr.WaitHealthy(waitCtx, classifyPlugins)
+		waitCancel()
+		if waitErr != nil {
+			return fmt.Errorf("admin: spam/classify plugin did not become healthy before boot: %w", waitErr)
+		}
+		logger.LogAttrs(ctx, slog.LevelInfo, "spam/classify plugins healthy; binding listeners next",
+			slog.Any("plugins", classifyPlugins),
+			slog.Duration("wait", clk.Now().Sub(waitStart)))
+	}
+
 	// Directory + OIDC + mail-auth verifiers.
 	dir := directory.New(st.Meta(), logger.With("subsystem", "directory"), clk, nil)
 	// OAuth2 native-client grant token TTLs (REQ-AND-AUTH-02, issue
@@ -2424,6 +2453,24 @@ func firstPluginOfType(plugins []sysconfig.PluginConfig, kinds ...string) string
 		}
 	}
 	return ""
+}
+
+// pluginNamesOfType returns the Name of every configured plugin whose
+// Type matches any of kinds, in configuration order. Used at boot (re
+// #398) to find every spam/classify plugin StartServer must wait on
+// before accepting mail, as opposed to firstPluginOfType's single-match
+// lookup used by the delivery-time classifier wiring.
+func pluginNamesOfType(plugins []sysconfig.PluginConfig, kinds ...string) []string {
+	var names []string
+	for _, p := range plugins {
+		for _, k := range kinds {
+			if p.Type == k {
+				names = append(names, p.Name)
+				break
+			}
+		}
+	}
+	return names
 }
 
 // spamStatusProvider builds the protoadmin.SpamStatusProvider backing GET

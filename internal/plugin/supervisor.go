@@ -28,6 +28,17 @@ const (
 	actInternal = observe.ActivityInternal
 )
 
+// HandshakeTimeout bounds the initialize RPC runOnce issues right after a
+// plugin process starts. Exported so a caller waiting for a plugin to
+// become healthy (Manager.WaitHealthy) can bound that wait using the
+// supervisor's own per-attempt budget instead of guessing a wall-clock
+// duration (re #398).
+const HandshakeTimeout = 10 * time.Second
+
+// ConfigureTimeout bounds the configure RPC runOnce issues immediately
+// after a successful handshake. See HandshakeTimeout.
+const ConfigureTimeout = 10 * time.Second
+
 // State is the lifecycle state of a supervised plugin.
 type State int32
 
@@ -183,6 +194,43 @@ func (m *Manager) Get(name string) *Plugin {
 	return m.plugins[name]
 }
 
+// WaitHealthy blocks until every named plugin first reaches StateHealthy,
+// or returns a descriptive error for the first one that does not before
+// ctx is done (re #398). Callers bound ctx using HandshakeTimeout and
+// ConfigureTimeout -- the supervisor's own per-attempt RPC budgets --
+// rather than an arbitrary wall-clock guess, so a plugin that is merely
+// slow to spawn under host load still gets its full single-attempt
+// window before the caller gives up.
+func (m *Manager) WaitHealthy(ctx context.Context, names []string) error {
+	for _, name := range names {
+		p := m.Get(name)
+		if p == nil {
+			return fmt.Errorf("plugin: %q not found", name)
+		}
+		if err := p.waitHealthy(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// waitHealthy blocks until p first reaches StateHealthy (healthyCh),
+// until its supervise loop exits without ever doing so (doneCh -- e.g.
+// StateDisabled after exhausting its crash budget), or until ctx is
+// done. Every branch names the plugin, its current state, and its
+// LastError so a boot failure is actionable without attaching a
+// debugger.
+func (p *Plugin) waitHealthy(ctx context.Context) error {
+	select {
+	case <-p.healthyCh:
+		return nil
+	case <-p.doneCh:
+		return fmt.Errorf("plugin %q exited before becoming healthy (state=%s): %s", p.spec.Name, p.State(), p.LastError())
+	case <-ctx.Done():
+		return fmt.Errorf("plugin %q did not become healthy in time (state=%s): %s", p.spec.Name, p.State(), p.LastError())
+	}
+}
+
 // List returns a snapshot of the plugins currently registered.
 func (m *Manager) List() []*Plugin {
 	m.mu.Lock()
@@ -239,6 +287,14 @@ type Plugin struct {
 	// #317: a six-hour reject loop must not also flood the log sink).
 	manifestRejectLogged sync.Once
 
+	// healthyCh closes the first time the plugin reaches StateHealthy, so
+	// WaitHealthy has a real completion signal instead of polling State()
+	// (re #398: StartServer needs to block SMTP/IMAP acceptance on a
+	// spam/mail.classify plugin's own handshake+configure round trip
+	// rather than assuming it lands before the listeners bind).
+	healthyOnce sync.Once
+	healthyCh   chan struct{}
+
 	mu           sync.Mutex
 	cmd          *exec.Cmd
 	client       *Client
@@ -251,11 +307,12 @@ type Plugin struct {
 
 func newPlugin(m *Manager, spec Spec) *Plugin {
 	return &Plugin{
-		mgr:    m,
-		spec:   spec,
-		logger: m.opts.Logger.With("subsystem", "plugin", "plugin", spec.Name),
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		mgr:       m,
+		spec:      spec,
+		logger:    m.opts.Logger.With("subsystem", "plugin", "plugin", spec.Name),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+		healthyCh: make(chan struct{}),
 	}
 }
 
@@ -309,6 +366,7 @@ func (p *Plugin) setState(s State) {
 	}
 	if s == StateHealthy {
 		p.setLastError(nil)
+		p.healthyOnce.Do(func() { close(p.healthyCh) })
 	}
 	if observe.PluginUp != nil {
 		if s == StateHealthy {
@@ -535,7 +593,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 
 	// Handshake.
 	p.setState(StateInitializing)
-	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	handshakeCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	var initRes InitializeResult
 	err = client.Call(handshakeCtx, MethodInitialize, InitializeParams{
 		ServerVersion: p.mgr.opts.ServerVersion,
@@ -583,7 +641,7 @@ func (p *Plugin) runOnce(ctx context.Context) error {
 
 	// Configure.
 	p.setState(StateConfiguring)
-	configCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	configCtx, cancel := context.WithTimeout(ctx, ConfigureTimeout)
 	err = client.Call(configCtx, MethodConfigure, ConfigureParams{Options: p.spec.Options}, nil)
 	cancel()
 	if err != nil {
