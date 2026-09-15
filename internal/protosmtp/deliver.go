@@ -821,6 +821,21 @@ func (sess *session) persistLLMRecord(
 			reason := classification.Reason
 			rec.SpamReason = &reason
 		}
+		// SpamModel records the configured classifier plugin's name (re
+		// #396): sess.srv.spamPlug is only non-empty when this block was
+		// reached via an actual attempted call (deliverOne gates on it,
+		// classifyMessage only sets Attempted when spamPlug != ""), so it
+		// is always the plugin that produced this verdict. The
+		// RawResponse check is kept as a defensive override for a future
+		// plugin contract that reports its own model name on the wire --
+		// no shipped plugin does today, which is exactly why this field
+		// was NULL on every live-delivery row before this fix (the
+		// reclassify path, internal/admin/spam_reclassify.go's
+		// recordReclassifyVerdict, already records pluginName this way).
+		if sess.srv.spamPlug != "" {
+			engine := sess.srv.spamPlug
+			rec.SpamModel = &engine
+		}
 		if raw := classification.RawResponse; raw != nil {
 			if mdl, ok := raw["model"].(string); ok && mdl != "" {
 				rec.SpamModel = &mdl
