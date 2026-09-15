@@ -81,11 +81,11 @@ class CustomTabSignInTest {
         captureDeviceScreen("71-custom-tab-login-page")
 
         Browser.signIn(device, DevInstance.totpEmail, DevInstance.password)
-        // The principal has TOTP enrolled, so the page comes back with
-        // the six-digit field added and the form is resent.
-        assertTrue("the login page never asked for the code", Browser.awaitTotpField(device))
+        // The principal has TOTP enrolled, so the page comes back
+        // asking for the six-digit code alone (server issue #372).
+        assertTrue("the login page never asked for the code", Browser.awaitCodeForm(device))
         captureDeviceScreen("72-custom-tab-totp-step")
-        Browser.signIn(device, DevInstance.totpEmail, DevInstance.password, Totp.code(secret))
+        Browser.signIn(device, Totp.code(secret))
 
         // The redirect brought the shell back and the exchange ran.
         val held = awaitTokens()

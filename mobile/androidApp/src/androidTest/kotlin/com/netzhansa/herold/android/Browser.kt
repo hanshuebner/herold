@@ -83,11 +83,19 @@ object Browser {
         device.waitForIdle()
     }
 
-    /** True once the page carries the six-digit code field as well. */
-    fun awaitTotpField(device: UiDevice): Boolean {
+    /**
+     * True once the password step has been accepted and the page has
+     * come back asking for the six-digit code alone (server issue
+     * #372: the second pass carries the code field only, the
+     * password binding travelling in the signed `req`).
+     */
+    fun awaitCodeForm(device: UiDevice): Boolean {
         val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        val label = Pattern.compile(".*authentication code.*", Pattern.CASE_INSENSITIVE or Pattern.DOTALL)
         while (System.currentTimeMillis() < deadline) {
-            if (device.findObjects(By.clazz("android.widget.EditText")).orEmpty().size >= 3) return true
+            val asked = device.findObjects(By.text(label)).orEmpty().isNotEmpty()
+            val fields = device.findObjects(By.clazz("android.widget.EditText")).orEmpty()
+            if (asked && fields.isNotEmpty()) return true
             Thread.sleep(POLL_MS)
         }
         return false
