@@ -283,6 +283,17 @@ type SpamClassifyResult struct {
 	Verdict    string  `json:"verdict"`
 	Confidence float64 `json:"confidence"`
 	Reason     string  `json:"reason,omitempty"`
+	// SpamSignals and HamSignals are the model-identified traits arguing
+	// for and against a spam verdict respectively (re #396): short names
+	// such as "unsolicited_bulk_marketing" or "passing_authentication".
+	// Optional -- a json_object/none response_format model that omits
+	// them leaves both nil; only json_schema mode requires the model to
+	// always populate them. internal/spam.Classifier uses a non-empty
+	// SpamSignals alongside a "ham" Verdict to flag the record
+	// inconsistent (the verdict must follow from the signals the model
+	// itself named).
+	SpamSignals []string `json:"spam_signals,omitempty"`
+	HamSignals  []string `json:"ham_signals,omitempty"`
 }
 
 // SpamHealthResult is the shape spam.health returns.
@@ -337,6 +348,11 @@ type MailClassifyResult struct {
 	Confidence float64 `json:"confidence"`
 	Reason     string  `json:"reason,omitempty"`
 	Category   string  `json:"category,omitempty"`
+	// SpamSignals and HamSignals mirror SpamClassifyResult's fields
+	// (re #396): the structured traits the model relied on, alongside
+	// the free-text Reason.
+	SpamSignals []string `json:"spam_signals,omitempty"`
+	HamSignals  []string `json:"ham_signals,omitempty"`
 }
 
 // EventsSubscribeParams is sent once at configure time.

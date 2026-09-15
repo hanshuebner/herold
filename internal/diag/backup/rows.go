@@ -850,6 +850,20 @@ type LLMClassificationRow struct {
 	// kept this message out of Junk (migration 0108, REQ-FILT-02a /
 	// REQ-FLT-16, issue #382): "filter:<rule name or id>".
 	DeliveryOverride *string `json:"delivery_override,omitempty"`
+	// SpamSignalsJSON and SpamHamSignalsJSON (migration 0111, re #396)
+	// hold the classifier's reported spam_signals/ham_signals lists as
+	// JSON-array-of-string text, nil when the classifier's response
+	// carried neither key.
+	SpamSignalsJSON    *string `json:"spam_signals_json,omitempty"`
+	SpamHamSignalsJSON *string `json:"spam_ham_signals_json,omitempty"`
+	// SpamInconsistent (migration 0111, re #396) is non-nil exactly when
+	// a spam sub-record was written; 1 means SpamVerdict was "ham" while
+	// SpamSignalsJSON named at least one spam signal, 0 means it was not.
+	// int64 (not bool) because this generic row-reflection layer only
+	// supports *int64/*string/*float64 nullable pointer kinds
+	// (classifyField, engine.go), matching the underlying nullable
+	// INTEGER sqlite column.
+	SpamInconsistent *int64 `json:"spam_inconsistent,omitempty"`
 }
 
 // SeenAddressRow mirrors the seen_addresses table introduced in

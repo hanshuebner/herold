@@ -2796,6 +2796,14 @@ func sanitiseDerivedCategories(in []string) []string {
 // -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------
 
 func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassificationRecord) error {
+	spamSignalsJSON, err := marshalOptStringList(rec.SpamSignals)
+	if err != nil {
+		return fmt.Errorf("storesqlite: encode spam_signals_json: %w", err)
+	}
+	hamSignalsJSON, err := marshalOptStringList(rec.HamSignals)
+	if err != nil {
+		return fmt.Errorf("storesqlite: encode spam_ham_signals_json: %w", err)
+	}
 	return m.runTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO llm_classifications
@@ -2803,9 +2811,10 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			   spam_verdict, spam_confidence, spam_reason,
 			   spam_prompt_applied, spam_model, spam_classified_at_us,
 			   delivery_override,
+			   spam_signals_json, spam_ham_signals_json, spam_inconsistent,
 			   category_assigned, category_prompt_applied,
 			   category_model, category_classified_at_us)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(message_id) DO UPDATE SET
 			  spam_verdict             = COALESCE(excluded.spam_verdict, spam_verdict),
 			  spam_confidence          = COALESCE(excluded.spam_confidence, spam_confidence),
@@ -2814,6 +2823,9 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			  spam_model               = COALESCE(excluded.spam_model, spam_model),
 			  spam_classified_at_us    = COALESCE(excluded.spam_classified_at_us, spam_classified_at_us),
 			  delivery_override        = COALESCE(excluded.delivery_override, delivery_override),
+			  spam_signals_json        = COALESCE(excluded.spam_signals_json, spam_signals_json),
+			  spam_ham_signals_json    = COALESCE(excluded.spam_ham_signals_json, spam_ham_signals_json),
+			  spam_inconsistent        = COALESCE(excluded.spam_inconsistent, spam_inconsistent),
 			  category_assigned        = COALESCE(excluded.category_assigned, category_assigned),
 			  category_prompt_applied  = COALESCE(excluded.category_prompt_applied, category_prompt_applied),
 			  category_model           = COALESCE(excluded.category_model, category_model),
@@ -2822,10 +2834,66 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			rec.SpamVerdict, rec.SpamConfidence, rec.SpamReason,
 			rec.SpamPromptApplied, rec.SpamModel, optTimeToUs(rec.SpamClassifiedAt),
 			rec.SpamDeliveryOverride,
+			spamSignalsJSON, hamSignalsJSON, optBoolToInt64(rec.SpamInconsistent),
 			rec.CategoryAssigned, rec.CategoryPromptApplied,
 			rec.CategoryModel, optTimeToUs(rec.CategoryClassifiedAt))
 		return mapErr(err)
 	})
+}
+
+// marshalOptStringList JSON-encodes list into a *string for a nullable
+// TEXT column, matching the pattern jmap_categorisation_config.derived_
+// categories_json already uses: a nil or empty list stores SQL NULL
+// (COALESCE in the upsert then leaves any existing value alone) rather
+// than the literal "[]", so an unset field never clobbers the other
+// backend's or a prior run's data with an ON CONFLICT update.
+func marshalOptStringList(list *[]string) (*string, error) {
+	if list == nil || len(*list) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(*list)
+	if err != nil {
+		return nil, err
+	}
+	s := string(b)
+	return &s, nil
+}
+
+// optBoolToInt64 converts the SpamInconsistent tri-state (nil = "no spam
+// sub-record in this call", non-nil = the determination) into a nullable
+// INTEGER bind value, mirroring boolToInt/nullable's pattern elsewhere in
+// this package for a *bool store field backed by a nullable column.
+func optBoolToInt64(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	if *b {
+		return int64(1)
+	}
+	return int64(0)
+}
+
+// optInt64ToBool is optBoolToInt64's inverse for a scanned
+// sql.NullInt64.
+func optInt64ToBool(v sql.NullInt64) *bool {
+	if !v.Valid {
+		return nil
+	}
+	b := v.Int64 != 0
+	return &b
+}
+
+// unmarshalOptStringList decodes a nullable JSON-array-of-string TEXT
+// column back into *[]string. Returns (nil, nil) for a NULL/empty column.
+func unmarshalOptStringList(s sql.NullString) (*[]string, error) {
+	if !s.Valid || s.String == "" {
+		return nil, nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(s.String), &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
 }
 
 func (m *metadata) GetLLMClassification(ctx context.Context, msgID store.MessageID) (store.LLMClassificationRecord, error) {
@@ -2854,6 +2922,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 		     spam_verdict, spam_confidence, spam_reason,
 		     spam_prompt_applied, spam_model, spam_classified_at_us,
 		     delivery_override,
+		     spam_signals_json, spam_ham_signals_json, spam_inconsistent,
 		     category_assigned, category_prompt_applied,
 		     category_model, category_classified_at_us
 		  FROM llm_classifications
@@ -2874,6 +2943,9 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			spamModel              sql.NullString
 			spamClassifiedAtUs     sql.NullInt64
 			deliveryOverride       sql.NullString
+			spamSignalsJSON        sql.NullString
+			spamHamSignalsJSON     sql.NullString
+			spamInconsistent       sql.NullInt64
 			categoryAssigned       sql.NullString
 			categoryPromptApplied  sql.NullString
 			categoryModel          sql.NullString
@@ -2883,6 +2955,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			&spamVerdict, &spamConfidence, &spamReason,
 			&spamPromptApplied, &spamModel, &spamClassifiedAtUs,
 			&deliveryOverride,
+			&spamSignalsJSON, &spamHamSignalsJSON, &spamInconsistent,
 			&categoryAssigned, &categoryPromptApplied,
 			&categoryModel, &categoryClassifiedAtUs); err != nil {
 			return nil, mapErr(err)
@@ -2891,6 +2964,17 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			MessageID:   store.MessageID(msgID),
 			PrincipalID: store.PrincipalID(pidInt),
 		}
+		if sl, err := unmarshalOptStringList(spamSignalsJSON); err != nil {
+			return nil, fmt.Errorf("storesqlite: decode spam_signals_json for message %d: %w", msgID, err)
+		} else {
+			rec.SpamSignals = sl
+		}
+		if sl, err := unmarshalOptStringList(spamHamSignalsJSON); err != nil {
+			return nil, fmt.Errorf("storesqlite: decode spam_ham_signals_json for message %d: %w", msgID, err)
+		} else {
+			rec.HamSignals = sl
+		}
+		rec.SpamInconsistent = optInt64ToBool(spamInconsistent)
 		if spamVerdict.Valid {
 			v := spamVerdict.String
 			rec.SpamVerdict = &v

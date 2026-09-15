@@ -1513,6 +1513,21 @@ type LLMClassificationRecord struct {
 	// the reader can show "classifier said spam, delivered by your
 	// filter". Nil when no override applied to this message.
 	SpamDeliveryOverride *string
+	// SpamSignals and HamSignals (re #396) are the model-identified
+	// traits arguing for and against a spam verdict respectively (JSON
+	// arrays of short snake_case names, e.g. "unsolicited_bulk_marketing").
+	// Nil when the classifier's response carried neither key.
+	SpamSignals *[]string
+	HamSignals  *[]string
+	// SpamInconsistent is non-nil exactly when this call carries a spam
+	// sub-record (mirroring SpamConfidence's nil-vs-set convention): true
+	// when SpamVerdict is "ham" while SpamSignals names at least one spam
+	// signal (re #396), meaning the classifier's own stated reasoning
+	// contradicts its verdict. Never changes the verdict; surfaced for
+	// the transparency record and an operator log line only. Nil on a
+	// category-only call so it never clobbers a previously-stored spam
+	// sub-record's value via COALESCE.
+	SpamInconsistent *bool
 
 	// -- Categorisation (nil when categorisation was not run or produced no category) --
 

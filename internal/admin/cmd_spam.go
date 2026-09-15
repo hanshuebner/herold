@@ -184,6 +184,15 @@ func llmClassificationRecordToMap(rec store.LLMClassificationRecord) map[string]
 	if rec.SpamDeliveryOverride != nil {
 		out["delivery_override"] = *rec.SpamDeliveryOverride
 	}
+	if rec.SpamSignals != nil {
+		out["spam_signals"] = *rec.SpamSignals
+	}
+	if rec.HamSignals != nil {
+		out["ham_signals"] = *rec.HamSignals
+	}
+	if rec.SpamInconsistent != nil {
+		out["spam_inconsistent"] = *rec.SpamInconsistent
+	}
 	if rec.CategoryAssigned != nil {
 		out["category_assigned"] = *rec.CategoryAssigned
 	}

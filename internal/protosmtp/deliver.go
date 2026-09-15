@@ -826,6 +826,10 @@ func (sess *session) persistLLMRecord(
 				rec.SpamModel = &mdl
 			}
 		}
+		rec.SpamSignals = spam.OptStringSlice(classification.SpamSignals)
+		rec.HamSignals = spam.OptStringSlice(classification.HamSignals)
+		inconsistent := classification.Inconsistent
+		rec.SpamInconsistent = &inconsistent
 		// Build the user-visible prompt-as-applied from the spam.Request.
 		// The spam.Request is the structured context sent to the plugin —
 		// this is the content visible to users. The plugin's system prompt

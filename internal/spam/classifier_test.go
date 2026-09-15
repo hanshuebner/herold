@@ -813,6 +813,171 @@ func TestClassify_OwnAddressNotSpamSignal(t *testing.T) {
 	}
 }
 
+// coldMarketingPitchRaw is the #396 message shape: an unsolicited
+// commercial pitch from a sender with no relationship to the recipient,
+// authentication passing, and a proper List-Unsubscribe header -- the
+// exact combination the motivating report's model treated as legitimacy
+// signals outweighing the unsolicited-marketing content, scoring the
+// message ham=0.15 while its own reason text named every criterion the
+// prompt lists for spam.
+const coldMarketingPitchRaw = "From: Creativa Marketing <sales@chopscarnesyparrillas.com>\r\n" +
+	"To: Hans <hans@huebner.org>\r\n" +
+	"Subject: Boost your business with our email marketing campaigns\r\n" +
+	"Date: Mon, 14 Sep 2026 22:28:28 +0000\r\n" +
+	"List-Unsubscribe: <mailto:unsubscribe@chopscarnesyparrillas.com>\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"\r\n" +
+	"We noticed your business could benefit from our email marketing services.\r\n" +
+	"Contact us for pricing, or call us today to get started.\r\n"
+
+// TestClassify_ColdMarketingPitchWithSpamSignalsIsSpam is the #396
+// evaluation case (Acceptance item 1): a message shaped like the
+// reported one -- cold marketing pitch, DMARC-aligned pass, a proper
+// List-Unsubscribe header, sender with no relationship to the recipient
+// -- must (a) carry list_unsubscribe and the "verified" auth_summary on
+// the wire and (b) classify Spam at or above the configured threshold
+// when the model reports the unsolicited-bulk-marketing signal at a
+// score that respects it.
+//
+// This is the deterministic half of the acceptance criterion, mirroring
+// TestClassify_PasswordResetDMARCPassMessageShape (#383): no live or
+// recorded LLM response exists for this shape (the internal/llmtest
+// fixture for KindSpamClassify is empty), so this proves the wiring --
+// the wire payload the fix adds reaches the classifier, and Classify's
+// threshold/verdict logic correctly reports Spam when the model returns
+// a high score alongside the unsolicited_bulk_marketing signal -- not
+// what herold's actually-configured production model outputs for this
+// exact message. Whether a live model spontaneously reports the
+// unsolicited_bulk_marketing signal AND scores it above threshold stays
+// model-dependent; the response-contract prompt wording (see
+// builtinClassifySystemPrompt) is the lever for that, not this test.
+func TestClassify_ColdMarketingPitchWithSpamSignalsIsSpam(t *testing.T) {
+	msg := buildMessage(t, coldMarketingPitchRaw)
+	auth := newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "chopscarnesyparrillas.com")
+
+	// (a) the wire payload for this exact shape carries the
+	// List-Unsubscribe header and the authoritative auth_summary
+	// statement -- the two signals the reported bug misread as
+	// legitimacy overriding the unsolicited-marketing content.
+	req := BuildRequest(msg, auth)
+	if req.ListUnsubscribe == "" {
+		t.Fatalf("list_unsubscribe missing from wire payload: %+v", req)
+	}
+	if !strings.Contains(req.AuthSummary, "verified") {
+		t.Fatalf("auth_summary for the reported message shape: %q", req.AuthSummary)
+	}
+
+	// (b) Classify reports Spam when the model names the
+	// unsolicited-bulk-marketing signal and scores at/above threshold --
+	// the threshold/verdict wiring this fix depends on.
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"spam","score":0.85,"reason":"unsolicited commercial pitch from an unknown sender despite passing authentication and a List-Unsubscribe header","spam_signals":["unsolicited_bulk_marketing"],"ham_signals":["passing_authentication","list_unsubscribe_present"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Spam {
+		t.Fatalf("verdict = %v, want Spam for a model score at/above threshold naming unsolicited_bulk_marketing", r.Verdict)
+	}
+	if !reflect.DeepEqual(r.SpamSignals, []string{"unsolicited_bulk_marketing"}) {
+		t.Fatalf("SpamSignals = %v, want [unsolicited_bulk_marketing]", r.SpamSignals)
+	}
+	// A Spam verdict with spam_signals present is not a contradiction --
+	// Inconsistent only fires for a Ham verdict alongside spam_signals.
+	if r.Inconsistent {
+		t.Fatalf("Inconsistent = true for a Spam verdict, want false")
+	}
+}
+
+// TestClassify_HamVerdictWithSpamSignalsIsFlaggedInconsistent is the
+// #396 regression test for the reported contradiction itself: a model
+// that returns verdict=ham alongside a spam_signals entry naming
+// unsolicited bulk marketing (the reported reason text) must have that
+// contradiction surfaced -- logged and flagged on the Classification --
+// without the server ever overriding the verdict.
+func TestClassify_HamVerdictWithSpamSignalsIsFlaggedInconsistent(t *testing.T) {
+	msg := buildMessage(t, coldMarketingPitchRaw)
+	auth := newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "chopscarnesyparrillas.com")
+
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.15,"reason":"promotional content with an unsubscribe link and passing authentication","spam_signals":["unsolicited_bulk_marketing"],"ham_signals":[]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, auth, "herold-spam-llm", ClassifyContext{}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	// The verdict is surfaced as reported, never overridden server-side.
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham (the server never overrides the plugin's verdict)", r.Verdict)
+	}
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true for a Ham verdict naming a spam signal")
+	}
+}
+
+// TestClassify_HamVerdictNoSpamSignalsNotInconsistent verifies a normal
+// Ham verdict with no reported spam signals is never flagged.
+func TestClassify_HamVerdictNoSpamSignalsNotInconsistent(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("p", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"known correspondent","ham_signals":["known_correspondent"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Inconsistent {
+		t.Fatalf("Inconsistent = true, want false for a Ham verdict with no spam_signals")
+	}
+}
+
+// TestParseClassification_SpamAndHamSignals verifies the structured
+// spam_signals/ham_signals lists decode from the plugin's raw JSON
+// response into Classification (re #396).
+func TestParseClassification_SpamAndHamSignals(t *testing.T) {
+	raw := map[string]any{
+		"verdict":      "spam",
+		"score":        0.9,
+		"reason":       "x",
+		"spam_signals": []any{"unsolicited_bulk_marketing", "urgency_pressure"},
+		"ham_signals":  []any{"passing_authentication"},
+	}
+	cl, err := parseClassification(raw)
+	if err != nil {
+		t.Fatalf("parseClassification: %v", err)
+	}
+	if !reflect.DeepEqual(cl.SpamSignals, []string{"unsolicited_bulk_marketing", "urgency_pressure"}) {
+		t.Fatalf("SpamSignals = %v", cl.SpamSignals)
+	}
+	if !reflect.DeepEqual(cl.HamSignals, []string{"passing_authentication"}) {
+		t.Fatalf("HamSignals = %v", cl.HamSignals)
+	}
+}
+
+// TestParseClassification_SignalsAbsentAreNil verifies a plugin response
+// carrying neither key (json_object/none response_format, re #396)
+// decodes to nil signal lists, never an error or an empty-but-non-nil
+// slice.
+func TestParseClassification_SignalsAbsentAreNil(t *testing.T) {
+	raw := map[string]any{"verdict": "ham", "score": 0.1, "reason": "x"}
+	cl, err := parseClassification(raw)
+	if err != nil {
+		t.Fatalf("parseClassification: %v", err)
+	}
+	if cl.SpamSignals != nil {
+		t.Fatalf("SpamSignals = %v, want nil", cl.SpamSignals)
+	}
+	if cl.HamSignals != nil {
+		t.Fatalf("HamSignals = %v, want nil", cl.HamSignals)
+	}
+}
+
 // TestBuildRequest_ExcerptDecodesEntities verifies numeric and named
 // HTML entities left over from stripHTMLTags are decoded rather than
 // forwarded to the classifier as raw entity text (re #299).

@@ -124,10 +124,11 @@ const (
 // (a raw JSON-RPC client, not the herold server) still gets the
 // verdict-only shape.
 const builtinSystemPrompt = `You are a spam classifier. Return ONLY a single JSON object with this shape:
-{"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "..."}
+{"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "...", "spam_signals": ["..."], "ham_signals": ["..."]}
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
+spam_signals lists every trait you relied on that argues the message is spam (e.g. "unsolicited_bulk_marketing", "urgency_pressure"); ham_signals lists every trait arguing it is not (e.g. "known_correspondent", "passing_authentication"). Use short snake_case names. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.`
 
@@ -138,10 +139,11 @@ When the request carries "own_addresses", every "to"/"cc" address listed there b
 // prompt, with any operator guardrail prepended) are appended to the
 // user turn by trimClassifyPayload, not hardcoded here.
 const builtinClassifySystemPrompt = `You are a spam classifier and mail categoriser. Return ONLY a single JSON object with this shape:
-{"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "...", "category": "<name>" | ""}
+{"verdict": "spam" | "ham", "score": 0.0..1.0, "reason": "...", "category": "<name>" | "", "spam_signals": ["..."], "ham_signals": ["..."]}
 Do not include any other text.
 Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
+spam_signals lists every trait you relied on that argues the message is spam (e.g. "unsolicited_bulk_marketing", "urgency_pressure"); ham_signals lists every trait arguing it is not (e.g. "known_correspondent", "passing_authentication"). Use short snake_case names. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
 When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.
@@ -474,7 +476,7 @@ func (h *handler) SpamClassify(ctx context.Context, in sdk.SpamClassifyParams) (
 	}
 
 	started := time.Now()
-	verdict, score, reason, err := h.callLLM(callCtx, opts, userJSON)
+	mv, err := h.callLLM(callCtx, opts, userJSON)
 	elapsed := time.Since(started)
 
 	labels := map[string]string{"model": opts.model}
@@ -485,15 +487,17 @@ func (h *handler) SpamClassify(ctx context.Context, in sdk.SpamClassifyParams) (
 	}
 
 	final := sdk.SpamClassifyResult{
-		Verdict:    verdict,
-		Confidence: score,
-		Reason:     reason,
+		Verdict:     mv.Verdict,
+		Confidence:  mv.Score,
+		Reason:      mv.Reason,
+		SpamSignals: mv.SpamSignals,
+		HamSignals:  mv.HamSignals,
 	}
 	// Apply threshold: if the LLM reported "spam" with a score below the
 	// operator's threshold, downgrade to ham. Likewise a "ham" verdict
 	// with an alarmingly high spam score is promoted. This keeps the
 	// threshold a single operator-visible knob.
-	if score >= opts.spamThreshold {
+	if mv.Score >= opts.spamThreshold {
 		final.Verdict = "spam"
 	} else {
 		final.Verdict = "ham"
@@ -564,9 +568,11 @@ func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (
 	}
 
 	final := sdk.MailClassifyResult{
-		Confidence: mc.Score,
-		Reason:     mc.Reason,
-		Category:   mc.Category,
+		Confidence:  mc.Score,
+		Reason:      mc.Reason,
+		Category:    mc.Category,
+		SpamSignals: mc.SpamSignals,
+		HamSignals:  mc.HamSignals,
 	}
 	// Apply threshold: same single operator-visible knob SpamClassify
 	// uses, so the two methods never disagree about what counts as spam.
@@ -705,10 +711,16 @@ type chatResponse struct {
 }
 
 // modelVerdict is the JSON shape the model is instructed to emit.
+// SpamSignals/HamSignals (re #396) are optional under json_object/none
+// response_format -- a model that omits them decodes to nil slices,
+// never an error -- and required (possibly empty arrays) under
+// json_schema.
 type modelVerdict struct {
-	Verdict string  `json:"verdict"`
-	Score   float64 `json:"score"`
-	Reason  string  `json:"reason"`
+	Verdict     string   `json:"verdict"`
+	Score       float64  `json:"score"`
+	Reason      string   `json:"reason"`
+	SpamSignals []string `json:"spam_signals"`
+	HamSignals  []string `json:"ham_signals"`
 }
 
 // spamVerdictJSONSchema is the schema advertised to json_schema-mode
@@ -724,8 +736,17 @@ var spamVerdictJSONSchema = map[string]any{
 		// plugin compares the score against spam_threshold anyway.
 		"score":  map[string]any{"type": "number", "description": "probability that the message is spam, 0.0 to 1.0"},
 		"reason": map[string]any{"type": "string"},
+		// spam_signals / ham_signals (re #396): the structured traits the
+		// model relied on, so the verdict is checkable against its own
+		// stated reasoning rather than resting on free-text "reason"
+		// alone. Required (not merely present-if-relevant) because strict
+		// json_schema mode demands every declared property be listed in
+		// "required"; an empty array is a valid, meaningful answer ("no
+		// signals of this kind").
+		"spam_signals": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is spam, e.g. unsolicited_bulk_marketing"},
+		"ham_signals":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is not spam, e.g. known_correspondent"},
 	},
-	"required":             []string{"verdict", "score", "reason"},
+	"required":             []string{"verdict", "score", "reason", "spam_signals", "ham_signals"},
 	"additionalProperties": false,
 }
 
@@ -759,6 +780,9 @@ type modelClassification struct {
 	Score    float64 `json:"score"`
 	Reason   string  `json:"reason"`
 	Category string  `json:"category"`
+	// SpamSignals/HamSignals mirror modelVerdict's fields (re #396).
+	SpamSignals []string `json:"spam_signals"`
+	HamSignals  []string `json:"ham_signals"`
 }
 
 // classifyJSONSchema builds the schema advertised to json_schema-mode
@@ -783,8 +807,11 @@ func classifyJSONSchema(categoryNames []string) map[string]any {
 			"score":    map[string]any{"type": "number", "description": "probability that the message is spam, 0.0 to 1.0"},
 			"reason":   map[string]any{"type": "string"},
 			"category": category,
+			// spam_signals / ham_signals (re #396): see spamVerdictJSONSchema.
+			"spam_signals": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is spam, e.g. unsolicited_bulk_marketing"},
+			"ham_signals":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "short snake_case traits arguing this message is not spam, e.g. known_correspondent"},
 		},
-		"required":             []string{"verdict", "score", "reason", "category"},
+		"required":             []string{"verdict", "score", "reason", "category", "spam_signals", "ham_signals"},
 		"additionalProperties": false,
 	}
 }
@@ -882,18 +909,13 @@ func (h *handler) doChatCompletion(ctx context.Context, opts options, systemProm
 }
 
 // callLLM performs the spam.classify model call and parses the model's
-// reply. It returns (verdict, score, reason, error); error is non-nil on
-// any transport, HTTP, or parse failure.
-func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (string, float64, string, error) {
+// reply. error is non-nil on any transport, HTTP, or parse failure.
+func (h *handler) callLLM(ctx context.Context, opts options, userJSON []byte) (modelVerdict, error) {
 	content, err := h.doChatCompletion(ctx, opts, opts.systemPrompt, userJSON, responseFormatPayload(opts.responseFormat))
 	if err != nil {
-		return "", 0, "", err
+		return modelVerdict{}, err
 	}
-	mv, err := parseModelVerdict(content)
-	if err != nil {
-		return "", 0, "", err
-	}
-	return mv.Verdict, mv.Score, mv.Reason, nil
+	return parseModelVerdict(content)
 }
 
 // callClassify performs the mail.classify model call (Wave 4.3, issue

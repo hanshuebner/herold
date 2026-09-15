@@ -879,7 +879,16 @@ const CurrentBackupVersion = 1
 //	/api/v1/auth/step-up when the caller authenticated via Bearer token,
 //	gating requireSelfServiceElevation for that credential the same way
 //	session_elevations gates it for a cookie session.
-const CurrentSchemaVersion = 110
+//
+// 111 — 0111_llm_classification_signals.sql (issue #396). Adds
+//
+//	llm_classifications.spam_signals_json / spam_ham_signals_json (text,
+//	nullable JSON-array-of-string) and spam_inconsistent (bool, not
+//	null, default false): the classifier's structured spam_signals /
+//	ham_signals response fields, and a marker for a ham verdict whose own
+//	reported spam_signals contradict it. No new table;
+//	LLMClassificationRow gains the three fields.
+const CurrentSchemaVersion = 111
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can

@@ -207,6 +207,17 @@ type jmapSpamDetail struct {
 	// "filter:<rule name or id>", naming the ManagedRule responsible.
 	// Empty when no override applied.
 	DeliveryOverride string `json:"deliveryOverride,omitempty"`
+	// SpamSignals and HamSignals (re #396) are the classifier's reported
+	// structured traits arguing for and against a spam verdict
+	// respectively. Both empty when the classifier's response carried
+	// neither key.
+	SpamSignals []string `json:"spamSignals,omitempty"`
+	HamSignals  []string `json:"hamSignals,omitempty"`
+	// Inconsistent is true when Verdict is "ham" while SpamSignals names
+	// at least one spam signal (re #396): the classifier's own reported
+	// reasoning contradicts its verdict. The verdict itself is never
+	// overridden; this is a visible marker only.
+	Inconsistent bool `json:"inconsistent,omitempty"`
 }
 
 // jmapCategoryDetail is the categorisation sub-record in an llmInspect
@@ -316,6 +327,9 @@ func (i *llmInspectHandler) Execute(ctx context.Context, args json.RawMessage) (
 				Model:            derefStr(rec.SpamModel),
 				ClassifiedAt:     formatTime(rec.SpamClassifiedAt),
 				DeliveryOverride: derefStr(rec.SpamDeliveryOverride),
+				SpamSignals:      derefStrSlice(rec.SpamSignals),
+				HamSignals:       derefStrSlice(rec.HamSignals),
+				Inconsistent:     rec.SpamInconsistent != nil && *rec.SpamInconsistent,
 			}
 		}
 		if rec.CategoryPromptApplied != nil {
@@ -364,6 +378,13 @@ func parseMessageID(jid string) (store.MessageID, error) {
 func derefStr(p *string) string {
 	if p == nil {
 		return ""
+	}
+	return *p
+}
+
+func derefStrSlice(p *[]string) []string {
+	if p == nil {
+		return nil
 	}
 	return *p
 }

@@ -2631,6 +2631,14 @@ func sanitiseDerivedCategories(in []string) []string {
 // -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------
 
 func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassificationRecord) error {
+	spamSignalsJSON, err := pgMarshalOptStringList(rec.SpamSignals)
+	if err != nil {
+		return fmt.Errorf("storepg: encode spam_signals_json: %w", err)
+	}
+	hamSignalsJSON, err := pgMarshalOptStringList(rec.HamSignals)
+	if err != nil {
+		return fmt.Errorf("storepg: encode spam_ham_signals_json: %w", err)
+	}
 	return m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO llm_classifications
@@ -2638,9 +2646,10 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			   spam_verdict, spam_confidence, spam_reason,
 			   spam_prompt_applied, spam_model, spam_classified_at_us,
 			   delivery_override,
+			   spam_signals_json, spam_ham_signals_json, spam_inconsistent,
 			   category_assigned, category_prompt_applied,
 			   category_model, category_classified_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 			ON CONFLICT (message_id) DO UPDATE SET
 			  spam_verdict             = COALESCE(EXCLUDED.spam_verdict, llm_classifications.spam_verdict),
 			  spam_confidence          = COALESCE(EXCLUDED.spam_confidence, llm_classifications.spam_confidence),
@@ -2649,6 +2658,9 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			  spam_model               = COALESCE(EXCLUDED.spam_model, llm_classifications.spam_model),
 			  spam_classified_at_us    = COALESCE(EXCLUDED.spam_classified_at_us, llm_classifications.spam_classified_at_us),
 			  delivery_override        = COALESCE(EXCLUDED.delivery_override, llm_classifications.delivery_override),
+			  spam_signals_json        = COALESCE(EXCLUDED.spam_signals_json, llm_classifications.spam_signals_json),
+			  spam_ham_signals_json    = COALESCE(EXCLUDED.spam_ham_signals_json, llm_classifications.spam_ham_signals_json),
+			  spam_inconsistent        = COALESCE(EXCLUDED.spam_inconsistent, llm_classifications.spam_inconsistent),
 			  category_assigned        = COALESCE(EXCLUDED.category_assigned, llm_classifications.category_assigned),
 			  category_prompt_applied  = COALESCE(EXCLUDED.category_prompt_applied, llm_classifications.category_prompt_applied),
 			  category_model           = COALESCE(EXCLUDED.category_model, llm_classifications.category_model),
@@ -2657,10 +2669,38 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			rec.SpamVerdict, rec.SpamConfidence, rec.SpamReason,
 			rec.SpamPromptApplied, rec.SpamModel, pgOptTimeToUs(rec.SpamClassifiedAt),
 			rec.SpamDeliveryOverride,
+			spamSignalsJSON, hamSignalsJSON, rec.SpamInconsistent,
 			rec.CategoryAssigned, rec.CategoryPromptApplied,
 			rec.CategoryModel, pgOptTimeToUs(rec.CategoryClassifiedAt))
 		return mapErr(err)
 	})
+}
+
+// pgMarshalOptStringList mirrors storesqlite's marshalOptStringList: a
+// nil/empty list stores SQL NULL so an unset field never clobbers the
+// other sub-record's independent upsert via COALESCE.
+func pgMarshalOptStringList(list *[]string) (*string, error) {
+	if list == nil || len(*list) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(*list)
+	if err != nil {
+		return nil, err
+	}
+	s := string(b)
+	return &s, nil
+}
+
+// pgUnmarshalOptStringList is pgMarshalOptStringList's inverse.
+func pgUnmarshalOptStringList(s *string) (*[]string, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(*s), &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
 }
 
 func (m *metadata) GetLLMClassification(ctx context.Context, msgID store.MessageID) (store.LLMClassificationRecord, error) {
@@ -2689,6 +2729,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 		     spam_verdict, spam_confidence, spam_reason,
 		     spam_prompt_applied, spam_model, spam_classified_at_us,
 		     delivery_override,
+		     spam_signals_json, spam_ham_signals_json, spam_inconsistent,
 		     category_assigned, category_prompt_applied,
 		     category_model, category_classified_at_us
 		  FROM llm_classifications
@@ -2709,6 +2750,9 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			spamModel              *string
 			spamClassifiedAtUs     *int64
 			deliveryOverride       *string
+			spamSignalsJSON        *string
+			spamHamSignalsJSON     *string
+			spamInconsistent       *bool
 			categoryAssigned       *string
 			categoryPromptApplied  *string
 			categoryModel          *string
@@ -2718,9 +2762,18 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			&spamVerdict, &spamConfidence, &spamReason,
 			&spamPromptApplied, &spamModel, &spamClassifiedAtUs,
 			&deliveryOverride,
+			&spamSignalsJSON, &spamHamSignalsJSON, &spamInconsistent,
 			&categoryAssigned, &categoryPromptApplied,
 			&categoryModel, &categoryClassifiedAtUs); err != nil {
 			return nil, mapErr(err)
+		}
+		spamSignals, serr := pgUnmarshalOptStringList(spamSignalsJSON)
+		if serr != nil {
+			return nil, fmt.Errorf("storepg: decode spam_signals_json for message %d: %w", msgIDInt, serr)
+		}
+		hamSignals, herr := pgUnmarshalOptStringList(spamHamSignalsJSON)
+		if herr != nil {
+			return nil, fmt.Errorf("storepg: decode spam_ham_signals_json for message %d: %w", msgIDInt, herr)
 		}
 		rec := store.LLMClassificationRecord{
 			MessageID:             store.MessageID(msgIDInt),
@@ -2731,6 +2784,9 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			SpamPromptApplied:     spamPromptApplied,
 			SpamModel:             spamModel,
 			SpamDeliveryOverride:  deliveryOverride,
+			SpamSignals:           spamSignals,
+			HamSignals:            hamSignals,
+			SpamInconsistent:      spamInconsistent,
 			CategoryAssigned:      categoryAssigned,
 			CategoryPromptApplied: categoryPromptApplied,
 			CategoryModel:         categoryModel,

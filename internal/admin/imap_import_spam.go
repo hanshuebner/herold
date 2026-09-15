@@ -248,6 +248,10 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 			rec.SpamModel = &mdl
 		}
 	}
+	rec.SpamSignals = spam.OptStringSlice(classification.SpamSignals)
+	rec.HamSignals = spam.OptStringSlice(classification.HamSignals)
+	inconsistent := classification.Inconsistent
+	rec.SpamInconsistent = &inconsistent
 	// Build the user-visible prompt-as-applied the same way protosmtp's
 	// persistLLMRecord does: the structured spam.Request context sent to
 	// the plugin, not the plugin's system prompt.

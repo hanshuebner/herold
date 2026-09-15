@@ -335,6 +335,8 @@ func Run(t *testing.T, f Factory) {
 		{"LLMClassification_UnclassifiedWithReason", testLLMClassificationUnclassifiedWithReason},
 		{"LLMClassification_DeliveryOverride_RoundTrip", testLLMClassificationDeliveryOverrideRoundTrip},
 		{"LLMClassification_DeliveryOverride_NilByDefault", testLLMClassificationDeliveryOverrideNilByDefault},
+		{"LLMClassification_Signals_RoundTrip", testLLMClassificationSignalsRoundtrip},
+		{"LLMClassification_Signals_NilByDefault", testLLMClassificationSignalsNilByDefault},
 		// -- Wave 2.7 JMAP for Calendars (REQ-PROTO-54) -----------
 		{"Calendar_InsertGet_Roundtrip", testCalendarInsertGetRoundtrip},
 		{"Calendar_List_FilterAndPagination", testCalendarListFilterAndPagination},
@@ -8632,6 +8634,100 @@ func testLLMClassificationDeliveryOverrideRoundTrip(t *testing.T, s store.Store)
 	}
 	if brec.SpamDeliveryOverride == nil || *brec.SpamDeliveryOverride != override {
 		t.Fatalf("batch SpamDeliveryOverride = %v, want %q", brec.SpamDeliveryOverride, override)
+	}
+}
+
+// testLLMClassificationSignalsRoundtrip covers migration 0111 (re #396):
+// the classifier's structured spam_signals/ham_signals lists and the
+// ham-verdict-vs-spam-signals inconsistency marker round-trip through
+// both Set/GetLLMClassification and BatchGetLLMClassifications.
+func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-signals@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-signals@host")
+
+	verdict := "ham"
+	confidence := 0.15
+	spamSignals := []string{"unsolicited_bulk_marketing", "urgency_pressure"}
+	hamSignals := []string{"passing_authentication"}
+	inconsistent := true
+
+	rec := store.LLMClassificationRecord{
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
+		SpamVerdict:      &verdict,
+		SpamConfidence:   &confidence,
+		SpamSignals:      &spamSignals,
+		HamSignals:       &hamSignals,
+		SpamInconsistent: &inconsistent,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamSignals == nil || !reflect.DeepEqual(*got.SpamSignals, spamSignals) {
+		t.Fatalf("SpamSignals = %v, want %v", got.SpamSignals, spamSignals)
+	}
+	if got.HamSignals == nil || !reflect.DeepEqual(*got.HamSignals, hamSignals) {
+		t.Fatalf("HamSignals = %v, want %v", got.HamSignals, hamSignals)
+	}
+	if got.SpamInconsistent == nil || !*got.SpamInconsistent {
+		t.Fatalf("SpamInconsistent = %v, want true", got.SpamInconsistent)
+	}
+
+	// BatchGet must surface the same fields.
+	batch, err := s.Meta().BatchGetLLMClassifications(ctx, []store.MessageID{msg.ID})
+	if err != nil {
+		t.Fatalf("BatchGetLLMClassifications: %v", err)
+	}
+	brec, ok := batch[msg.ID]
+	if !ok {
+		t.Fatalf("BatchGetLLMClassifications: message %d missing from result", msg.ID)
+	}
+	if brec.SpamSignals == nil || !reflect.DeepEqual(*brec.SpamSignals, spamSignals) {
+		t.Fatalf("batch SpamSignals = %v, want %v", brec.SpamSignals, spamSignals)
+	}
+	if brec.SpamInconsistent == nil || !*brec.SpamInconsistent {
+		t.Fatalf("batch SpamInconsistent = %v, want true", brec.SpamInconsistent)
+	}
+}
+
+// testLLMClassificationSignalsNilByDefault covers the common case -- a
+// classifier response that carried neither spam_signals nor ham_signals
+// -- staying nil rather than an empty list, and a ham verdict with no
+// spam signals staying not-inconsistent.
+func testLLMClassificationSignalsNilByDefault(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "llm-signals-nil@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "llm-signals-nil@host")
+
+	verdict := "ham"
+	inconsistent := false
+	if err := s.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
+		SpamVerdict:      &verdict,
+		SpamInconsistent: &inconsistent,
+	}); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+	got, err := s.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if got.SpamSignals != nil {
+		t.Fatalf("SpamSignals = %v, want nil", *got.SpamSignals)
+	}
+	if got.HamSignals != nil {
+		t.Fatalf("HamSignals = %v, want nil", *got.HamSignals)
+	}
+	if got.SpamInconsistent == nil || *got.SpamInconsistent {
+		t.Fatalf("SpamInconsistent = %v, want false", got.SpamInconsistent)
 	}
 }
 

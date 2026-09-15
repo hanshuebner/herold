@@ -337,6 +337,126 @@ func TestMailClassify_SpamVerdictStillClassifies(t *testing.T) {
 	}
 }
 
+// TestMailClassify_SignalsRequestedAndReturned is the re #396 plugin
+// unit test: the json_schema response_format requires the model to
+// report spam_signals/ham_signals as required array-of-string
+// properties (requested), and a response carrying them flows through
+// mail.classify's result unchanged (returned).
+func TestMailClassify_SignalsRequestedAndReturned(t *testing.T) {
+	var captured map[string]any
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Errorf("decode captured request body: %v (raw=%s)", err, body)
+		}
+		mu.Lock()
+		captured = decoded
+		mu.Unlock()
+		replyJSON(w, `{"verdict":"spam","score":0.9,"reason":"cold pitch","category":"",`+
+			`"spam_signals":["unsolicited_bulk_marketing","urgency_pressure"],"ham_signals":["passing_authentication"]}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":        llm.endpoint(),
+		"model":           "fake",
+		"spam_threshold":  0.7,
+		"response_format": "json_schema",
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.mailClassify(ctx, canonicalPayload("check out our marketing services"))
+	if err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+
+	// Requested: spam_signals/ham_signals are required array-of-string
+	// properties in the schema sent to the endpoint.
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	rf, _ := body["response_format"].(map[string]any)
+	js, _ := rf["json_schema"].(map[string]any)
+	schema, _ := js["schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	for _, name := range []string{"spam_signals", "ham_signals"} {
+		prop, ok := props[name].(map[string]any)
+		if !ok || prop["type"] != "array" {
+			t.Fatalf("schema.properties.%s = %#v, want array-typed property", name, props[name])
+		}
+	}
+	required, _ := schema["required"].([]any)
+	gotRequired := map[string]bool{}
+	for _, r := range required {
+		gotRequired[fmt.Sprint(r)] = true
+	}
+	for _, name := range []string{"spam_signals", "ham_signals"} {
+		if !gotRequired[name] {
+			t.Fatalf("schema.required = %v, missing %q", required, name)
+		}
+	}
+
+	// Returned: the model's spam_signals/ham_signals reach the
+	// mail.classify result verbatim.
+	gotSpamSignals, _ := res["spam_signals"].([]any)
+	if len(gotSpamSignals) != 2 || fmt.Sprint(gotSpamSignals[0]) != "unsolicited_bulk_marketing" || fmt.Sprint(gotSpamSignals[1]) != "urgency_pressure" {
+		t.Fatalf("spam_signals = %v, want [unsolicited_bulk_marketing urgency_pressure]", res["spam_signals"])
+	}
+	gotHamSignals, _ := res["ham_signals"].([]any)
+	if len(gotHamSignals) != 1 || fmt.Sprint(gotHamSignals[0]) != "passing_authentication" {
+		t.Fatalf("ham_signals = %v, want [passing_authentication]", res["ham_signals"])
+	}
+}
+
+// TestClassify_SignalsOptionalUnderJSONObject verifies a json_object
+// (non-strict) response that omits spam_signals/ham_signals entirely
+// still classifies successfully -- the fields are optional under this
+// response_format (re #396); only json_schema mode requires the model
+// to always populate them.
+func TestClassify_SignalsOptionalUnderJSONObject(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		replyJSON(w, `{"verdict":"ham","score":0.1,"reason":"no signals reported"}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.5,
+		// response_format left at the default (json_object).
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.classify(ctx, canonicalPayload("hello"))
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if got, _ := res["verdict"].(string); got != "ham" {
+		t.Fatalf("verdict = %q, want ham (full=%v)", got, res)
+	}
+	if _, present := res["spam_signals"]; present {
+		t.Fatalf("spam_signals present in result = %v, want omitted (omitempty, no signals reported)", res["spam_signals"])
+	}
+}
+
 // TestClassify_FullPayloadReachesLLM asserts that every field
 // produced by internal/spam.BuildRequest survives the sdk unmarshal
 // and lands in the LLM's user-turn JSON. Before Wave 3 the plugin

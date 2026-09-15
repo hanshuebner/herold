@@ -92,6 +92,22 @@ type Classification struct {
 	// LLMClassificationRecord.SpamDeliveryOverride for the transparency
 	// record (REQ-FILT-66).
 	DeliveryOverride string
+	// SpamSignals and HamSignals (re #396) are the model-identified
+	// traits arguing for and against a spam verdict respectively, e.g.
+	// "unsolicited_bulk_marketing" or "passing_authentication". Both are
+	// nil when the plugin's response carried neither key (a json_object
+	// or "none" response_format model is not required to report them).
+	SpamSignals []string
+	HamSignals  []string
+	// Inconsistent is true when Verdict is Ham while SpamSignals names at
+	// least one spam signal (re #396): the model's own stated reasoning
+	// contradicts the verdict it returned (the motivating report: a cold
+	// unsolicited marketing pitch scored ham while the reason text named
+	// every criterion the prompt lists for unsolicited bulk marketing).
+	// Set by Classify, logged at warn level there, and persisted onto the
+	// transparency record for display; it never changes Verdict -- the
+	// contradiction is surfaced, not resolved, on the server side.
+	Inconsistent bool
 }
 
 // PluginInvoker is the minimum plugin-supervisor surface Classifier needs:
@@ -366,6 +382,20 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			"category", cl.Category)
 		cl.Category = ""
 	}
+	// re #396: the model's own stated reasoning must not contradict its
+	// verdict. A Ham verdict alongside at least one reported spam signal
+	// is exactly the reported bug shape (a cold marketing pitch scored
+	// ham=0.15 while the reason text named every spam criterion the
+	// prompt lists) -- surfaced here, not corrected: the server never
+	// overrides a plugin's verdict, it only flags the contradiction for
+	// the transparency record and an operator-visible log line.
+	if cl.Verdict == Ham && len(cl.SpamSignals) > 0 {
+		cl.Inconsistent = true
+		log.WarnContext(ctx, "spam classifier: ham verdict contradicts its own reported spam signals",
+			"activity", observe.ActivitySystem,
+			"score", cl.Score,
+			"spam_signals", cl.SpamSignals)
+	}
 	log.DebugContext(ctx, "spam classification verdict",
 		"activity", observe.ActivitySystem,
 		"verdict", cl.Verdict.String(),
@@ -480,10 +510,50 @@ func parseClassification(raw map[string]any) (Classification, error) {
 	if cat, ok := raw["category"].(string); ok {
 		out.Category = strings.TrimSpace(cat)
 	}
+	out.SpamSignals = stringListFromAny(raw["spam_signals"])
+	out.HamSignals = stringListFromAny(raw["ham_signals"])
 	if out.Verdict == Unclassified {
 		return out, ErrUnparseableVerdict
 	}
 	return out, nil
+}
+
+// OptStringSlice adapts a Classification.SpamSignals/HamSignals value
+// (nil or a populated []string) to the *[]string shape
+// store.LLMClassificationRecord.SpamSignals/HamSignals wants (re #396):
+// nil in, nil out -- never a pointer to an empty slice -- so the store
+// layer's COALESCE-on-NULL upsert semantics leave a previously-stored
+// value alone rather than overwriting it with an empty list on a call
+// that carries no signals of that kind.
+func OptStringSlice(s []string) *[]string {
+	if len(s) == 0 {
+		return nil
+	}
+	return &s
+}
+
+// stringListFromAny converts a generically-decoded JSON value (a
+// []any of strings, since raw came through map[string]any) into a
+// []string, dropping any non-string entry. Returns nil for a missing
+// key, a null, or any other shape -- a plugin using json_object/none
+// response_format is not required to report spam_signals/ham_signals
+// (re #396), and this must never error the whole classification over an
+// optional field.
+func stringListFromAny(v any) []string {
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Request is the JSON shape sent to the plugin. Fields follow

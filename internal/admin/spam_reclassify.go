@@ -298,6 +298,10 @@ func recordReclassifyVerdict(
 	}
 	engine := pluginName
 	rec.SpamModel = &engine
+	rec.SpamSignals = spam.OptStringSlice(cl.SpamSignals)
+	rec.HamSignals = spam.OptStringSlice(cl.HamSignals)
+	inconsistent := cl.Inconsistent
+	rec.SpamInconsistent = &inconsistent
 	classifiedAt := clk.Now()
 	rec.SpamClassifiedAt = &classifiedAt
 	req := spam.BuildRequest(parsed, auth)
