@@ -4,10 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
-import io.ktor.http.isSuccess
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -53,53 +50,40 @@ private val wireJson = Json { ignoreUnknownKeys = true }
 class CredentialsClient(
     private val httpClient: HttpClient,
     private val baseUrl: String,
-    private val tokens: TokenProvider,
+    private val calls: BearerCalls,
 ) {
 
     suspend fun list(): List<Credential> {
-        val response = authorized { token ->
+        val answered = calls.call { token ->
             httpClient.get("${baseUrl.trimEnd('/')}$PATH") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
         }
-        val text = response.bodyAsText()
-        if (!response.status.isSuccess()) {
-            throw SessionExpiredException("the sessions list failed (${response.status.value})")
+        if (!answered.isSuccess) {
+            throw SessionExpiredException("the sessions list failed (${answered.status})")
         }
-        return wireJson.decodeFromString(CredentialPage.serializer(), text).items
+        return wireJson.decodeFromString(CredentialPage.serializer(), answered.body).items
     }
 
     /** Revokes one credential. Returns true when the server dropped it. */
-    suspend fun revoke(kind: String, id: String): Boolean {
-        val response = authorized { token ->
+    suspend fun revoke(kind: String, id: String): Boolean =
+        calls.call { token ->
             httpClient.delete("${baseUrl.trimEnd('/')}$PATH/$kind/$id") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
-        }
-        return response.status.isSuccess()
-    }
+        }.isSuccess
 
     /**
-     * The grant this install signed in under: the newest one issued to
-     * our own client id. Read once, right after the code exchange, and
-     * kept - a family id survives every refresh-token rotation, so it
-     * stays this device's handle for the life of the session.
+     * The grant this install signed in under, as the server names it:
+     * the entry it marks `is_current` for the token the call carried
+     * (server issue #356). Read once, right after the code exchange,
+     * and kept - a family id survives every refresh-token rotation, so
+     * it stays this device's handle for the life of the session.
      */
-    suspend fun ownGrantId(clientId: String): String? =
-        list().filter { it.kind == Credential.KIND_OAUTH2_GRANT && it.clientId == clientId }
-            .maxByOrNull { it.createdAt }
-            ?.id
-
-    private suspend fun authorized(request: suspend (String) -> HttpResponse): HttpResponse {
-        val token = tokens.accessToken()
-        val response = request(token)
-        if (response.status.value != UNAUTHORIZED) return response
-        val refreshed = tokens.refreshAfterUnauthorized(token) ?: return response
-        return request(refreshed)
-    }
+    suspend fun currentGrantId(): String? =
+        list().firstOrNull { it.kind == Credential.KIND_OAUTH2_GRANT && it.isCurrent }?.id
 
     private companion object {
         const val PATH = "/api/v1/auth/credentials"
-        const val UNAUTHORIZED = 401
     }
 }
