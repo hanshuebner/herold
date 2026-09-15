@@ -871,6 +871,187 @@ func testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.
 	}
 }
 
+// TestEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership
+// pins the re #402 verifier-round follow-up: listAccountMessages'
+// merged store.Message must expose the SAME membership's Flags/
+// Keywords that Email/get renders (GetMessage's ORDER BY mailbox_id
+// tie-break), for a message filed under mailboxes whose insertion
+// order (MailboxID) differs from their name order (the order
+// ListMailboxes returns them in). "Zeta" is inserted before "Alpha" so
+// Zeta gets the lower MailboxID -- the canonical membership -- while
+// Alpha sorts first alphabetically; $seen is set on Zeta only. Before
+// this fix, listAccountMessages kept whichever membership
+// ListMailboxes (ORDER BY name) visited first -- Alpha, which does not
+// carry $seen -- so AND(inMailbox alpha, inMailbox zeta, hasKeyword
+// $seen) returned nothing even though Email/get reported $seen: true
+// for the same message.
+func TestEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership(t *testing.T) {
+	testEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership(t, setupFixture(t))
+}
+
+// TestEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership_Postgres
+// is the Postgres leg: the fix touches listAccountMessages, which is
+// backend-agnostic Go code layered over store.Metadata, so both
+// backends need direct coverage. Skips when HEROLD_PG_DSN is not set.
+func TestEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership_Postgres(t *testing.T) {
+	testEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_KeywordPredicates_AgreeWithEmailGet_AcrossMultiMembership(t *testing.T, f *fixture) {
+	ctx := context.Background()
+
+	// Insertion order (Zeta, then Alpha) gives Zeta the lower
+	// MailboxID; ListMailboxes' ORDER BY name returns Alpha first.
+	zeta, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Zeta",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Zeta: %v", err)
+	}
+	alpha, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Alpha",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Alpha: %v", err)
+	}
+	if alpha.ID <= zeta.ID {
+		t.Fatalf("test precondition broken: want alpha.ID (%d) > zeta.ID (%d)", alpha.ID, zeta.ID)
+	}
+
+	// insertMessage always files the new message in f.inbox; add zeta
+	// and alpha memberships first, then remove the inbox one (removing
+	// a message's only remaining membership deletes the message row),
+	// so the message's only mailboxes are zeta and alpha and
+	// f.inbox's MailboxID (allocated before zeta/alpha, so necessarily
+	// lower) cannot become the tie-break's canonical membership by
+	// accident.
+	m := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: seen-in-canonical\r\n\r\nbody",
+		"seen-in-canonical", "a@example.test", "b@example.test", nil, "")
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, zeta.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox zeta: %v", err)
+	}
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, alpha.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox alpha: %v", err)
+	}
+	if err := f.srv.Store.Meta().RemoveMessageFromMailbox(ctx, m.ID, f.inbox.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox inbox: %v", err)
+	}
+	// $seen only on the canonical (lowest-MailboxID) membership.
+	if _, err := f.srv.Store.Meta().UpdateMessageFlags(ctx, m.ID, zeta.ID, store.MessageFlagSeen, 0, nil, nil, 0); err != nil {
+		t.Fatalf("UpdateMessageFlags zeta: %v", err)
+	}
+	wantID := fmt.Sprintf("%d", m.ID)
+
+	// A sibling message, not $seen, also filed under both mailboxes
+	// (and not inbox, for the same reason as above): pins that the
+	// hasKeyword sort below is not vacuously true.
+	sibling := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: not-seen\r\n\r\nbody",
+		"not-seen", "a@example.test", "b@example.test", nil, "")
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, sibling.ID, zeta.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox zeta (sibling): %v", err)
+	}
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, sibling.ID, alpha.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox alpha (sibling): %v", err)
+	}
+	if err := f.srv.Store.Meta().RemoveMessageFromMailbox(ctx, sibling.ID, f.inbox.ID); err != nil {
+		t.Fatalf("RemoveMessageFromMailbox inbox (sibling): %v", err)
+	}
+	siblingID := fmt.Sprintf("%d", sibling.ID)
+
+	alphaJmapID := fmt.Sprintf("%d", alpha.ID)
+	zetaJmapID := fmt.Sprintf("%d", zeta.ID)
+
+	// Email/get must report $seen: true for m -- the ground truth
+	// Email/query's hasKeyword/notKeyword predicates below must agree
+	// with.
+	_, raw := f.invoke(t, "Email/get", map[string]any{
+		"accountId":  protojmap.AccountIDForPrincipal(f.pid),
+		"ids":        []string{wantID},
+		"properties": []string{"keywords"},
+	})
+	var getResp struct {
+		List []struct {
+			Keywords map[string]bool `json:"keywords"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &getResp); err != nil {
+		t.Fatalf("unmarshal Email/get: %v: %s", err, raw)
+	}
+	if len(getResp.List) != 1 || !getResp.List[0].Keywords["$seen"] {
+		t.Fatalf("Email/get keywords = %v, want $seen=true (raw=%s)", getResp.List, raw)
+	}
+
+	// AND(inMailbox alpha, inMailbox zeta, hasKeyword $seen) must match
+	// m, agreeing with Email/get.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": alphaJmapID},
+				map[string]any{"inMailbox": zetaJmapID},
+				map[string]any{"hasKeyword": "$seen"},
+			},
+		},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(alpha,zeta,hasKeyword $seen): %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 1 || resp.IDs[0] != wantID {
+		t.Fatalf("AND(inMailbox alpha, inMailbox zeta, hasKeyword $seen) ids = %v, want [%s] (raw=%s)", resp.IDs, wantID, raw)
+	}
+
+	// AND(inMailbox alpha, inMailbox zeta, notKeyword $seen) must
+	// exclude m -- it IS $seen per the canonical membership -- and
+	// match the sibling instead.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": alphaJmapID},
+				map[string]any{"inMailbox": zetaJmapID},
+				map[string]any{"notKeyword": "$seen"},
+			},
+		},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(alpha,zeta,notKeyword $seen): %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 1 || resp.IDs[0] != siblingID {
+		t.Fatalf("AND(inMailbox alpha, inMailbox zeta, notKeyword $seen) ids = %v, want [%s] (raw=%s)", resp.IDs, siblingID, raw)
+	}
+
+	// Sorted by hasKeyword $seen descending, m (has $seen) comes before
+	// the not-$seen sibling.
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": alphaJmapID},
+				map[string]any{"inMailbox": zetaJmapID},
+			},
+		},
+		"sort": []any{
+			map[string]any{"property": "hasKeyword", "keyword": "$seen", "isAscending": false},
+		},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal sort by hasKeyword $seen desc: %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 2 || resp.IDs[0] != wantID || resp.IDs[1] != siblingID {
+		t.Fatalf("sort by hasKeyword $seen desc ids = %v, want [%s %s] (raw=%s)", resp.IDs, wantID, siblingID, raw)
+	}
+}
+
 // TestEmail_Query_ThreadKeywordFilter_Refused asserts that
 // someInThreadHaveKeyword and noneInThreadHaveKeyword filters are
 // refused with unsupportedFilter per REQ-PERF-INDEX-03.

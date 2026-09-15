@@ -144,9 +144,23 @@ func aclRightsForCaller(
 // caller (the Email/query filter matcher) can evaluate inMailbox /
 // inMailboxOtherThan against the message's complete mailbox set per
 // RFC 8621 section 4.4.1 instead of one row's single MailboxID (re
-// #402). The first-seen row's convenience fields (MailboxID / UID /
-// Flags / Keywords / …) are kept unchanged for callers that still read
-// them directly (sorting, keyword predicates).
+// #402).
+//
+// Convenience-field tie-break (re #402 verifier round): once every
+// membership is merged, the convenience fields (MailboxID / UID /
+// ModSeq / Flags / Keywords / SnoozedUntil / ReceivedTo) are
+// overwritten from the membership with the lowest MailboxID -- the
+// same ORDER BY mailbox_id tie-break storesqlite/storepg loadMailboxes
+// applies for an unscoped GetMessage (mailboxID==0). Email/get always
+// renders keywords via GetMessage, so Email/query's keyword predicates
+// (hasKeyword, notKeyword, the hasKeyword sort comparator, all of
+// which read the convenience fields off store.Message rather than
+// iterating Mailboxes) now agree with what Email/get reports for the
+// same message, independent of which mailbox ListMailboxes happened to
+// return first. Per-mailbox flags/keywords otherwise stay independent
+// (UpdateMessageFlags contract above); this tie-break only decides
+// which single membership's state a mailbox-independent JMAP property
+// exposes for a message filed under several mailboxes.
 func listAccountMessages(
 	ctx context.Context,
 	meta store.Metadata,
@@ -187,5 +201,34 @@ func listAccountMessages(
 			cursor = batch[len(batch)-1].UID
 		}
 	}
+	for i := range out {
+		applyCanonicalMembership(&out[i])
+	}
 	return out, nil
+}
+
+// applyCanonicalMembership overwrites m's convenience fields
+// (MailboxID / UID / ModSeq / Flags / Keywords / SnoozedUntil /
+// ReceivedTo) from the entry in m.Mailboxes with the lowest MailboxID,
+// matching the ORDER BY mailbox_id tie-break storesqlite/storepg
+// loadMailboxes uses for an unscoped GetMessage. A no-op when Mailboxes
+// has zero or one entry (the merge above always leaves at least the
+// row's own membership in place).
+func applyCanonicalMembership(m *store.Message) {
+	if len(m.Mailboxes) == 0 {
+		return
+	}
+	canonical := m.Mailboxes[0]
+	for _, mm := range m.Mailboxes[1:] {
+		if mm.MailboxID < canonical.MailboxID {
+			canonical = mm
+		}
+	}
+	m.MailboxID = canonical.MailboxID
+	m.UID = canonical.UID
+	m.ModSeq = canonical.ModSeq
+	m.Flags = canonical.Flags
+	m.Keywords = canonical.Keywords
+	m.SnoozedUntil = canonical.SnoozedUntil
+	m.ReceivedTo = canonical.ReceivedTo
 }

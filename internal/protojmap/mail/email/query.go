@@ -942,6 +942,19 @@ func andLeafQuery(a, b store.Query) store.Query {
 	return q
 }
 
+// messageHasKeyword reads the mailbox-independent convenience fields
+// (m.Flags / m.Keywords), not m.Mailboxes: RFC 8621 keywords are a
+// per-Email property, but herold stores them per mailbox membership
+// (RFC 9051 style), so a message filed under several mailboxes needs
+// one membership picked as canonical for this and every other
+// mailbox-independent keyword read (the hasKeyword/notKeyword filter
+// predicates below, the hasKeyword sort comparator, and
+// keywordsFromMessage's Email/get rendering). Every candidate source
+// (listAccountMessages's applyCanonicalMembership,
+// storesqlite/storepg loadMailboxes for an unscoped GetMessage) picks
+// the membership with the lowest MailboxID, so Email/query's keyword
+// predicates and Email/get's rendered keywords agree for the same
+// message (re #402 verifier round).
 func messageHasKeyword(m store.Message, kw string) bool {
 	kw = strings.ToLower(kw)
 	switch kw {
