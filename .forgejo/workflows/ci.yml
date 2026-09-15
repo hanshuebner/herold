@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, train]
   pull_request:
   workflow_dispatch:
 
@@ -10,6 +10,10 @@ permissions:
   contents: read
   packages: write
 
+# Grouped per ref, so a push to `train` only ever cancels an
+# in-flight run of `train` and a push to `main` only ever cancels an
+# in-flight run of `main` -- the two never share a group and never
+# cancel each other.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -614,6 +618,11 @@ jobs:
     # registry. On pushes to main and on git tags we additionally push a
     # multi-arch manifest to the code.netzhansa.com container registry so
     # both amd64 and arm64 operators can `docker pull` the same tag.
+    #
+    # A push to `train` runs the rest of this workflow (the batch gate
+    # for scripts/train.sh verify) but skips this job entirely: the
+    # train never builds or publishes an image, only main does.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -747,11 +756,12 @@ jobs:
 
   binaries:
     name: binaries (linux/darwin x amd64/arm64)
-    # Only build artefacts for non-PR events: push to main and manual
-    # dispatches. PR CI runs are gated for correctness by the test and
-    # web jobs above; cross-compiling every PR commit doubles runner
-    # load with no consumer.
-    if: github.event_name != 'pull_request'
+    # Only build artefacts for main: push to main, or a manual dispatch
+    # run against main. PR CI runs are gated for correctness by the test
+    # and web jobs above; cross-compiling every PR commit doubles runner
+    # load with no consumer. A push to `train` runs the batch gate but
+    # never produces release artefacts -- only main does.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, netzhansa, amd64]
     timeout-minutes: 30
     needs: [pre-commit, lint, web, test]

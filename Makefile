@@ -230,10 +230,12 @@ precommit-all:
 	  exit 1; }
 	pre-commit run --all-files
 
-# verify-batch is the train's batch gate (scripts/train.sh verify): the
-# manual-stage pre-commit hooks, both Go builds, the CI test lanes
-# (scripts/test-lanes.sh; the Postgres lanes need HEROLD_PG_DSN) and the
-# web checks. Runs once per shipped batch on an otherwise idle host.
+# verify-batch runs the batch gate locally: the manual-stage pre-commit
+# hooks, both Go builds, the CI test lanes (scripts/test-lanes.sh; the
+# Postgres lanes need HEROLD_PG_DSN) and the web checks. CI's pre-commit
+# job runs the same manual-stage hooks; `scripts/train.sh verify --local`
+# runs this target directly when the CI-based gate (the default
+# `scripts/train.sh verify`) isn't an option.
 verify-batch: prep-web
 	pre-commit run --all-files --hook-stage manual
 	$(GO) build -trimpath ./...

@@ -181,11 +181,13 @@ Work reaches `main` in batches. At the start of the drain run
 `status` shows them). Agents push to `origin/train`; verifiers check the train
 tip with the targeted tests only. When a wave of fixes has been verified, or
 about every two hours, run `scripts/train.sh verify` (rebases the train onto
-`origin/main`, runs `make verify-batch` in the train worktree with the host
-otherwise idle, records the tip) and then `scripts/train.sh ship`
-(fast-forwards `main`; one CI run and one deploy for the batch). If the gate
-fails, bisect the train (`git bisect run make verify-batch`), drop the culprit
-back to its agent with the failure, and ship the rest. Label
+`origin/main`, pushes, and watches the `ci.yml` run that push triggers on the
+train tip through to `success`, then records the tip) and then
+`scripts/train.sh ship` (fast-forwards `main`; the train's CI run already
+proved the batch, and the run on `main` after the ship covers the release and
+deploy). If the gate fails, `scripts/train.sh verify` prints the failed job
+names; bisect the train (`git bisect run scripts/train.sh verify --local`),
+drop the culprit back to its agent with the failure, and ship the rest. Label
 `waiting-for-feedback` only after the commit is on the train and verified; the
 report names the batch(es) shipped and the CI run that covered each.
 

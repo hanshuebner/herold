@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 # train.sh -- the batch train.
 #
-# Agent commits land on the `train` branch. The orchestrator verifies the
-# whole batch once with `train.sh verify` (the CI test lanes, the heavy
-# pre-commit hooks and the web checks, run in a dedicated worktree on a
-# host that is otherwise idle) and fast-forwards `main` with
-# `train.sh ship`. One CI run and one deploy then cover the batch.
+# Agent commits land on the `train` branch. `.forgejo/workflows/ci.yml`
+# runs on every push to `train`, the same jobs it runs on `main` (test,
+# lint, pre-commit, conformance, fuzz, web, e2e), except the jobs that
+# publish an artefact (docker, binaries, release), which run for `main`
+# only. `train.sh verify` rebases the train onto origin/main, pushes, and
+# watches that CI run to completion; `train.sh ship` then fast-forwards
+# `main` to the verified tip. Because the train's CI run already proved
+# the batch, the CI run that fires on `main` right after a ship is the
+# run that produces the release and triggers the deploy -- it re-runs the
+# same suite, but nothing further is gated on it passing again.
 #
 # Commands:
 #   open              reset `train` to origin/main (refuses while unshipped
 #                     commits sit on the train)
-#   status            what is on the train, whether main moved, verify stamp
+#   status            what is on the train, whether main moved, verify
+#                     stamp, and the CI run for the tip when one exists
 #   land <sha>...     cherry-pick commits onto the train and push them
-#   verify            rebase the train onto origin/main, run `make
-#                     verify-batch` in the train worktree, record the tip
+#   verify            rebase the train onto origin/main, push, wait for
+#                     the ci.yml run on the train tip to reach `success`,
+#                     record the tip
+#   verify --local    the old path: run `make verify-batch` in the train
+#                     worktree instead of waiting on CI
 #   ship              fast-forward main to the verified commit (the train
 #                     may already carry newer, unverified commits)
 #   abort             drop the train's unshipped commits (needs --yes)
@@ -22,12 +31,19 @@
 #   TRAIN_BRANCH      branch name (default: train)
 #   TRAIN_WORKTREE    worktree used by verify/land
 #                     (default: <repo>/.claude/worktrees/train)
-#   HEROLD_PG_DSN     Postgres DSN for the batch gate; when unset, verify
-#                     creates the throwaway database herold_train through
-#                     `psql -U <user> -d postgres` and uses that
+#   TRAIN_API_BASE    Forgejo API base URL (default:
+#                     https://code.netzhansa.com/api/v1); override to
+#                     point `verify`'s polling at a stub for testing
+#   TRAIN_CI_POLL_INTERVAL
+#                     seconds between CI status polls (default: 30)
+#   FORGEJO_TOKEN     Forgejo API token for reading run/job status; falls
+#                     back to ~/.config/cilog/token when unset
+#   HEROLD_PG_DSN     Postgres DSN for `verify --local`'s batch gate; when
+#                     unset, that path creates the throwaway database
+#                     herold_train through `psql -U <user> -d postgres`
 #   TRAIN_PG_ADMIN_USER
 #                     psql superuser for creating the throwaway database
-#                     (default: the current user)
+#                     used by `verify --local` (default: the current user)
 #
 # Contributors push with:
 #   git fetch origin && git rebase origin/train && git push origin HEAD:train
@@ -46,8 +62,14 @@ esac
 stamp_file="$common_dir/train-verified"
 worktree=${TRAIN_WORKTREE:-$repo_root/.claude/worktrees/train}
 
+api_base=${TRAIN_API_BASE:-https://code.netzhansa.com/api/v1}
+poll_interval=${TRAIN_CI_POLL_INTERVAL:-30}
+ci_repo_owner=herold
+ci_repo_name=herold
+ci_workflow_id=ci.yml
+
 usage() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -72,6 +94,112 @@ unshipped() {
 main_ahead() {
     # Commits on main that the train does not have.
     git rev-list "$REMOTE/$TRAIN..$REMOTE/main"
+}
+
+# forgejo_token prints the API token on stdout and returns 0, or returns 1
+# with nothing printed when none is configured. It does not die: callers
+# that need the token (verify's CI wait) check explicitly and die with a
+# clear message; callers for whom CI info is a nice-to-have (status) treat
+# a missing token as "skip the CI line" rather than a hard failure.
+forgejo_token() {
+    if [ -n "${FORGEJO_TOKEN:-}" ]; then
+        printf '%s' "$FORGEJO_TOKEN"
+        return 0
+    fi
+    if [ -f "$HOME/.config/cilog/token" ]; then
+        cat "$HOME/.config/cilog/token"
+        return 0
+    fi
+    return 1
+}
+
+# api_get <path> issues an authenticated GET against $api_base and prints
+# the JSON body. A generous timeout: the runs-listing endpoint embeds each
+# run's full event_payload, which makes an unfiltered or large --limit
+# request slow (tens of seconds for a couple dozen runs); find_ci_run
+# below avoids that cost by filtering server-side instead.
+api_get() {
+    curl -fsS --max-time 90 -H "Authorization: token $(forgejo_token 2>/dev/null)" "${api_base}$1"
+}
+
+urlencode() {
+    jq -rn --arg v "$1" '$v | @uri'
+}
+
+# find_ci_run <sha> prints the numeric run id of the ci.yml run for commit
+# <sha> on the $TRAIN ref, or fails. The runs-listing endpoint supports
+# server-side workflow_id/head_sha/ref filters, so this is a single small
+# request rather than a client-side scan of the (event_payload-heavy)
+# unfiltered listing.
+find_ci_run() {
+    local sha=$1 body id
+    body=$(api_get "/repos/${ci_repo_owner}/${ci_repo_name}/actions/runs?workflow_id=$(urlencode "$ci_workflow_id")&head_sha=$(urlencode "$sha")&ref=$(urlencode "refs/heads/$TRAIN")") || return 1
+    id=$(printf '%s' "$body" | jq -r '.workflow_runs[0]?.id // empty')
+    [ -n "$id" ] || return 1
+    printf '%s\n' "$id"
+}
+
+run_get() {
+    api_get "/repos/${ci_repo_owner}/${ci_repo_name}/actions/runs/$1"
+}
+
+run_jobs() {
+    api_get "/repos/${ci_repo_owner}/${ci_repo_name}/actions/runs/$1/jobs"
+}
+
+# ci_run_in_progress <status> returns 0 (true) while the run is still
+# queued or executing. Anything else -- success, failure, cancelled, or a
+# status this script doesn't know about -- is treated as terminal so
+# `verify` never polls forever on an unrecognised state.
+ci_run_in_progress() {
+    case "$1" in
+        waiting | running | blocked | pending | queued) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# print_ci_status <sha> prints a one-line "ci run: ..." summary for the
+# newest ci.yml run of commit <sha>, or nothing at all when no token is
+# configured or no run is found yet -- this is best-effort status
+# decoration, not something `status` should fail over.
+print_ci_status() {
+    local sha=$1 run_id run_json
+    forgejo_token >/dev/null 2>&1 || return 0
+    run_id=$(find_ci_run "$sha" 2>/dev/null) || return 0
+    run_json=$(run_get "$run_id" 2>/dev/null) || return 0
+    echo "ci run:     #$(printf '%s' "$run_json" | jq -r '.index_in_repo') $(printf '%s' "$run_json" | jq -r '.status') ($(printf '%s' "$run_json" | jq -r '.html_url'))"
+}
+
+# wait_for_ci_run <sha> polls the ci.yml run for commit <sha> until it
+# reaches a terminal status, printing job-level progress each poll. On
+# success it records <sha> in the stamp file; on any other terminal
+# status it prints the failed job names and a cilog hint, then exits 1.
+wait_for_ci_run() {
+    local sha=$1 run_id run_json status jobs_json run_number
+    forgejo_token >/dev/null 2>&1 || die "no Forgejo API token: set \$FORGEJO_TOKEN or ~/.config/cilog/token"
+    echo "train: locating the ci.yml run for $(git rev-parse --short "$sha") on $TRAIN..."
+    run_id=$(find_ci_run "$sha") || die "no ci.yml run found yet for $(git rev-parse --short "$sha"); the push may not have registered with Forgejo yet -- retry in a few seconds"
+    run_json=$(run_get "$run_id") || die "could not fetch run $run_id from $api_base"
+    run_number=$(printf '%s' "$run_json" | jq -r '.index_in_repo')
+    echo "train: watching $(printf '%s' "$run_json" | jq -r '.html_url')"
+    while :; do
+        status=$(printf '%s' "$run_json" | jq -r '.status')
+        jobs_json=$(run_jobs "$run_id") || jobs_json='[]'
+        echo "train: [$(date +%H:%M:%S)] run status: $status"
+        printf '%s' "$jobs_json" | jq -r '.[] | "  " + .status + "\t" + .name'
+        ci_run_in_progress "$status" || break
+        sleep "$poll_interval"
+        run_json=$(run_get "$run_id") || die "could not fetch run $run_id from $api_base"
+    done
+    if [ "$status" = "success" ]; then
+        echo "$sha" >"$stamp_file"
+        echo "train: CI run #$run_number succeeded for $(git rev-parse --short "$sha"); run 'train.sh ship'"
+    else
+        echo "train: CI run #$run_number ended with status $status" >&2
+        printf '%s' "$jobs_json" | jq -r '.[] | select(.status != "success") | "  failed job: " + .name' >&2
+        echo "train: inspect with: cilog herold/herold $run_number" >&2
+        exit 1
+    fi
 }
 
 cmd_open() {
@@ -111,6 +239,7 @@ cmd_status() {
     else
         echo "verified:   no"
     fi
+    print_ci_status "$tip"
 }
 
 ensure_worktree() {
@@ -161,6 +290,27 @@ ensure_pg_dsn() {
 }
 
 cmd_verify() {
+    if [ "${1:-}" = "--local" ]; then
+        cmd_verify_local
+        return
+    fi
+    [ $# -eq 0 ] || usage
+    ensure_worktree
+    rebase_train
+    local tip
+    tip=$(git -C "$worktree" rev-parse HEAD)
+    [ "$tip" = "$(git rev-parse "$REMOTE/$TRAIN")" ] || die "train worktree is not at $REMOTE/$TRAIN"
+    if [ -z "$(unshipped)" ]; then
+        echo "train: nothing to verify, train equals main"
+        exit 0
+    fi
+    rm -f "$stamp_file"
+    echo "train: verifying $(unshipped | wc -l | tr -d ' ') commit(s) via CI, tip $(git rev-parse --short "$tip")"
+    git log --oneline "$REMOTE/main..$tip"
+    wait_for_ci_run "$tip"
+}
+
+cmd_verify_local() {
     ensure_worktree
     rebase_train
     local tip
@@ -172,7 +322,7 @@ cmd_verify() {
     fi
     ensure_pg_dsn
     rm -f "$stamp_file"
-    echo "train: verifying $(unshipped | wc -l | tr -d ' ') commit(s), tip $(git rev-parse --short "$tip")"
+    echo "train: verifying $(unshipped | wc -l | tr -d ' ') commit(s) locally, tip $(git rev-parse --short "$tip")"
     git log --oneline "$REMOTE/main..$tip"
     local started
     started=$(date +%s)
