@@ -320,6 +320,28 @@ class MailStore {
    * Drives the loading-indicator row rendered below the last loaded row.
    */
   listLoadingMore = $state<boolean>(false);
+  /**
+   * True while the current list slice was loaded with the Junk/Trash
+   * exclusion (`applyTrashJunkExclusion`, REQ-SRC-06) deliberately
+   * skipped -- the "view without the exclusion" MailView links to from
+   * the hidden-members banner (re #384). `loadFolder(folder, {
+   * unfiltered: true })` sets this; every other load path leaves it
+   * false. MailView reads it to mark the view header so the principal
+   * knows this list includes Junk/Trash members the normal view hides.
+   */
+  listUnfiltered = $state<boolean>(false);
+  /**
+   * Count of the current folder's members that the Junk/Trash exclusion
+   * (REQ-SRC-06) hides from `listEmailIds`, or `null` when the current
+   * folder has no exclusion in play (Junk/Trash itself, a virtual folder,
+   * or a mailbox with no Trash/Junk mailbox to exclude). Computed by a
+   * dedicated `Email/query { calculateTotal: true }` counting the
+   * folder's members that also sit in Junk or Trash -- independent of the
+   * sidebar's `Mailbox.totalEmails`, which already leaves those members
+   * out (#313) and must keep doing so. Drives the "N labelled messages
+   * are in Spam or Trash" banner (re #384).
+   */
+  listHiddenJunkTrashCount = $state<number | null>(null);
 
   /** Per-thread load status keyed by threadId. */
   threadLoadStatus = $state(new Map<string, LoadStatus>());
@@ -472,6 +494,8 @@ class MailStore {
     this.bulkJob = null;
     this.listHasMore = false;
     this.listLoadingMore = false;
+    this.listUnfiltered = false;
+    this.listHiddenJunkTrashCount = null;
     this.threadLoadStatus = new Map();
     this.threadLoadError = new Map();
     this.openThreadId = null;
@@ -1996,11 +2020,14 @@ class MailStore {
    * clear message — the sidebar still renders, the user just sees the
    * cause.
    */
-  async loadFolder(folder: FolderID): Promise<void> {
-    const sameFolder = this.listFolder === folder;
+  async loadFolder(folder: FolderID, opts?: { unfiltered?: boolean }): Promise<void> {
+    const unfiltered = Boolean(opts?.unfiltered);
+    const sameFolder = this.listFolder === folder && this.listUnfiltered === unfiltered;
     if (sameFolder && this.listLoadStatus === 'loading') return;
     if (sameFolder && this.listLoadStatus === 'ready') return;
     this.listFolder = folder;
+    this.listUnfiltered = unfiltered;
+    this.listHiddenJunkTrashCount = null;
     this.listFocusedIndex = -1;
     this.listSelectedIds = new Set();
     this.listSelectAnchorId = null;
@@ -2024,6 +2051,13 @@ class MailStore {
 
       let filter: FilterCondition | FilterOperator | undefined;
       let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
+      // Set only for a filtered (non-`unfiltered`) load of a real label
+      // with a Junk/Trash exclusion in play (re #384): the two extra
+      // Email/query calls below count what that exclusion hides so the
+      // folder view can show the "N labelled messages are in Spam or
+      // Trash" banner instead of silently rendering the empty state.
+      let hiddenCountFilters: { visible: FilterCondition | FilterOperator; raw: FilterCondition } | null =
+        null;
       if (folder === 'important') {
         // Virtual folder: every email with the $important keyword,
         // regardless of which mailbox it lives in.
@@ -2047,7 +2081,14 @@ class MailStore {
         } else {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
-        filter = buildFolderViewFilter(mailboxId, this.mailboxes);
+        if (unfiltered) {
+          filter = { inMailbox: mailboxId };
+        } else {
+          filter = buildFolderViewFilter(mailboxId, this.mailboxes);
+          if (hasHiddenJunkTrashExclusion(mailboxId, this.mailboxes)) {
+            hiddenCountFilters = buildHiddenJunkTrashCountFilters(mailboxId, this.mailboxes);
+          }
+        }
         // Sent / Drafts have no externally-set receivedAt the way inbound
         // mail does; sentAt is the natural ordering.
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
@@ -2101,6 +2142,24 @@ class MailStore {
           },
           [Capability.Mail],
         );
+        // Hidden-members count (re #384): two zero-limit calculateTotal
+        // queries -- the folder view's own (exclusion-applied) filter and
+        // the label's raw, unfiltered membership -- so the banner has a
+        // number without fetching the hidden messages themselves. See
+        // buildHiddenJunkTrashCountFilters for why this is two flat
+        // queries subtracted client-side rather than one combined query.
+        if (hiddenCountFilters) {
+          b.call(
+            'Email/query',
+            { accountId, filter: hiddenCountFilters.visible, limit: 0, calculateTotal: true },
+            [Capability.Mail],
+          );
+          b.call(
+            'Email/query',
+            { accountId, filter: hiddenCountFilters.raw, limit: 0, calculateTotal: true },
+            [Capability.Mail],
+          );
+        }
       });
       strict(responses);
 
@@ -2110,6 +2169,13 @@ class MailStore {
       );
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
+      this.listHiddenJunkTrashCount = hiddenCountFilters
+        ? Math.max(
+            0,
+            (invocationArgs<{ total?: number }>(responses[5]).total ?? 0) -
+              (invocationArgs<{ total?: number }>(responses[4]).total ?? 0),
+          )
+        : null;
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
@@ -2355,6 +2421,10 @@ class MailStore {
 
     let filter: FilterCondition | FilterOperator | undefined;
     let sortProperty: 'receivedAt' | 'sentAt' = 'receivedAt';
+    // See loadFolder's matching comment (re #384).
+    let hiddenCountFilters: { visible: FilterCondition | FilterOperator; raw: FilterCondition } | null =
+      null;
+    const unfiltered = this.listUnfiltered;
     try {
       if (folder === 'important') {
         filter = { hasKeyword: '$important' };
@@ -2374,7 +2444,14 @@ class MailStore {
         } else {
           throw new Error(`Unknown mailbox: ${folder}`);
         }
-        filter = buildFolderViewFilter(mailboxId, this.mailboxes);
+        if (unfiltered) {
+          filter = { inMailbox: mailboxId };
+        } else {
+          filter = buildFolderViewFilter(mailboxId, this.mailboxes);
+          if (hasHiddenJunkTrashExclusion(mailboxId, this.mailboxes)) {
+            hiddenCountFilters = buildHiddenJunkTrashCountFilters(mailboxId, this.mailboxes);
+          }
+        }
         if (folder === 'sent' || folder === 'drafts') sortProperty = 'sentAt';
       }
 
@@ -2425,12 +2502,31 @@ class MailStore {
           },
           [Capability.Mail],
         );
+        // Hidden-members count (re #384) — see loadFolder's matching call.
+        if (hiddenCountFilters) {
+          b.call(
+            'Email/query',
+            { accountId, filter: hiddenCountFilters.visible, limit: 0, calculateTotal: true },
+            [Capability.Mail],
+          );
+          b.call(
+            'Email/query',
+            { accountId, filter: hiddenCountFilters.raw, limit: 0, calculateTotal: true },
+            [Capability.Mail],
+          );
+        }
       });
       strict(responses);
 
       // Guard: if the user navigated away while the query was in flight,
       // discard stale results rather than overwriting the new folder.
-      if (this.listFolder !== folder || this.listLoadStatus !== 'ready') return;
+      if (
+        this.listFolder !== folder ||
+        this.listUnfiltered !== unfiltered ||
+        this.listLoadStatus !== 'ready'
+      ) {
+        return;
+      }
 
       const queryResult = invocationArgs<{ ids: string[] }>(responses[0]);
       const getResult = invocationArgs<{ list: Email[]; state: string }>(
@@ -2438,6 +2534,13 @@ class MailStore {
       );
       const threadResult = invocationArgs<{ list: Thread[] }>(responses[2]);
       const memberGetResult = invocationArgs<{ list: Email[] }>(responses[3]);
+      this.listHiddenJunkTrashCount = hiddenCountFilters
+        ? Math.max(
+            0,
+            (invocationArgs<{ total?: number }>(responses[5]).total ?? 0) -
+              (invocationArgs<{ total?: number }>(responses[4]).total ?? 0),
+          )
+        : null;
 
       const next = new Map(this.emails);
       for (const e of getResult.list) next.set(e.id, mergeEmailListFetch(next.get(e.id), e));
@@ -3681,6 +3784,11 @@ class MailStore {
     if (folder === 'all') return undefined;
     const mailboxId = this.listMailboxId;
     if (mailboxId === null) return undefined;
+    // The unfiltered linked view (re #384) keeps pagination and
+    // whole-mailbox bulk actions scoped to the plain `inMailbox` query it
+    // was loaded with -- reapplying the Junk/Trash exclusion here would
+    // silently drop the very members that view exists to show.
+    if (this.listUnfiltered) return { inMailbox: mailboxId };
     return buildFolderViewFilter(mailboxId, this.mailboxes);
   }
 
@@ -5259,6 +5367,61 @@ export function buildFolderViewFilter(
     return { inMailbox: mailboxId };
   }
   return applyTrashJunkExclusion({ inMailbox: mailboxId }, mailboxes);
+}
+
+/**
+ * True when `mailboxId`'s folder view can hide members via the
+ * Junk/Trash exclusion (re #384) -- `mailboxId` is a genuine user label
+ * (`role === null`) and the principal has a Junk or a Trash mailbox to
+ * exclude. Callers use this to decide whether the extra round trips
+ * `buildHiddenJunkTrashCountFilters` needs are worth issuing at all.
+ *
+ * Scoped to genuine user labels: a system-role mailbox (Inbox, Sent,
+ * Drafts, Archive) is not what the "N labelled messages are in Spam or
+ * Trash" banner is talking about, and the vast majority of accounts
+ * never have a message that is simultaneously Inbox-resident and
+ * Junk/Trash-resident, so the extra round trip would be dead weight on
+ * every load of those folders.
+ */
+export function hasHiddenJunkTrashExclusion(
+  mailboxId: string,
+  mailboxes: Map<string, Mailbox>,
+): boolean {
+  const mailbox = mailboxes.get(mailboxId);
+  if (!mailbox || mailbox.role !== null) return false;
+  for (const m of mailboxes.values()) {
+    if (m.role === 'trash' || m.role === 'junk') return true;
+  }
+  return false;
+}
+
+/**
+ * Build the pair of `Email/query` filters the hidden-members count (re
+ * #384) is computed from: `visible` is the exact filter the folder view
+ * itself queries with (`buildFolderViewFilter`'s Junk/Trash exclusion
+ * applied); `raw` is the label's plain, unfiltered membership. Both are
+ * flat, single-mailbox-per-row conditions -- `{ inMailbox }` alone, or
+ * `{ inMailbox, inMailboxOtherThan }` together -- because that is the
+ * only shape the query engine's per-row match evaluates correctly
+ * against a message with several mailbox memberships; a query ANDing
+ * two independent `inMailbox` conditions (`{AND: [{inMailbox:A},
+ * {inMailbox:B}]}` or nested inside an OR) can never match, since each
+ * candidate row the store produces carries only the one mailbox it was
+ * listed from (`internal/protojmap/mail/email/load.go:listAccountMessages`,
+ * one `ListMessages` call per mailbox) -- there is no single row for the
+ * matcher to test both conditions against. `hiddenCount` is then
+ * `raw.total - visible.total` at the call site, computed with two
+ * `calculateTotal` round trips instead of one combined query for that
+ * structural reason, not as a style preference.
+ */
+export function buildHiddenJunkTrashCountFilters(
+  mailboxId: string,
+  mailboxes: Map<string, Mailbox>,
+): { visible: FilterCondition | FilterOperator; raw: FilterCondition } {
+  return {
+    visible: buildFolderViewFilter(mailboxId, mailboxes),
+    raw: { inMailbox: mailboxId },
+  };
 }
 
 function formatSnoozeTarget(d: Date): string {

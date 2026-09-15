@@ -64,6 +64,13 @@
   let isSearchRoute = $derived(router.matches('mail', 'search'));
   let isInboxRoute = $derived(folder === 'inbox');
   let folderLabel = $derived(folder ? mail.listFolderLabel : '');
+  /**
+   * `?unfiltered=1` on a folder route (re #384): the hidden-members
+   * banner's link into the same folder without the Junk/Trash exclusion
+   * (REQ-SRC-06). Read here rather than trusted from `mail.listUnfiltered`
+   * alone so a direct/reloaded URL reproduces the same view.
+   */
+  let unfilteredParam = $derived(isListRoute && router.getParam('unfiltered') === '1');
 
   // ── Category tabs (Inbox only, REQ-CAT-10..14) ───────────────────────────
   //
@@ -186,9 +193,10 @@
   // in a tight loop.
   $effect(() => {
     const f = folder;
+    const unfiltered = unfilteredParam;
     if (f) {
       untrack(() => {
-        void mail.loadFolder(f);
+        void mail.loadFolder(f, { unfiltered });
       });
     }
   });
@@ -1283,6 +1291,22 @@
          controls (Empty trash, Refresh) into the always-visible
          list-toolbar so the toolbar height is constant whether or not
          a selection is active. -->
+    {#if mail.listUnfiltered}
+      <!-- The Junk/Trash-exclusion link target (re #384): marks this
+           list as showing folder membership without the REQ-SRC-06
+           exclusion, so a message from the hidden-members banner does
+           not look like an ordinary folder view. -->
+      <header class="unfiltered-marker" role="status">
+        <span>{t('mail.hiddenJunkTrash.viewHeader', { name: folderLabel })}</span>
+        <button
+          type="button"
+          class="banner-btn"
+          onclick={() => router.navigate(folderHref(folder ?? ''))}
+        >
+          {t('mail.hiddenJunkTrash.backToFiltered', { name: folderLabel })}
+        </button>
+      </header>
+    {/if}
     <div class="list-toolbar" role="toolbar" aria-label={t('mail.list.actionsAria')}>
       {#if effectiveListEmails.length > 0}
         <!-- Explicit visibleEmails/visibleIds (re #202 follow-up): SelectChooser's
@@ -1379,6 +1403,29 @@
         ↻
       </button>
     </div>
+
+    <!-- Hidden-members banner (re #384): the REQ-SRC-06 Junk/Trash
+         exclusion can hide every member of a label, and without this the
+         view just renders the empty state with no explanation. Shown
+         only on the filtered (non-unfiltered) view; the linked view
+         carries its own header marker above instead. -->
+    {#if !mail.listUnfiltered && mail.listLoadStatus === 'ready' && (mail.listHiddenJunkTrashCount ?? 0) > 0}
+      {@const hiddenCount = mail.listHiddenJunkTrashCount ?? 0}
+      <div class="whole-mailbox-banner" role="status" aria-live="polite">
+        <span class="banner-text">
+          {t(hiddenCount === 1 ? 'mail.hiddenJunkTrash.bannerOne' : 'mail.hiddenJunkTrash.bannerMany', {
+            n: String(hiddenCount),
+          })}
+        </span>
+        <button
+          type="button"
+          class="banner-btn"
+          onclick={() => router.setParam('unfiltered', '1')}
+        >
+          {t('mail.hiddenJunkTrash.show')}
+        </button>
+      </div>
+    {/if}
 
     <!-- Whole-mailbox selection banner (issue #149). Shown below the toolbar
          as a dedicated row so it does not compete for space with the bulk
@@ -2030,6 +2077,23 @@
     min-height: 48px;
   }
   .list-toolbar-spacer {
+    flex: 1;
+  }
+
+  /* Unfiltered-view header marker (re #384): distinguishes the
+     Junk/Trash-exclusion-free list the hidden-members banner links to
+     from an ordinary folder view. */
+  .unfiltered-marker {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-03);
+    padding: var(--spacing-02) var(--spacing-05);
+    background: var(--layer-03);
+    border-bottom: 1px solid var(--border-subtle-02);
+    font-size: var(--type-body-compact-01-size);
+    color: var(--text-primary);
+  }
+  .unfiltered-marker span {
     flex: 1;
   }
 
