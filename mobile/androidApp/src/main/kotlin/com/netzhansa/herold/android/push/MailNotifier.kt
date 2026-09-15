@@ -11,6 +11,8 @@ import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.PendingIntentCompat
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.content.LocusIdCompat
 import com.netzhansa.herold.android.home.ConversationShortcuts
@@ -28,8 +30,9 @@ import com.netzhansa.herold.shared.push.PushChannels
  * summary headed by the account's address. The shade shows the sender as
  * the title with their picture as the large icon, the subject as the body
  * and the preview under it when expanded, and the message's attachments as
- * chips. Tapping the body deep-links into the thread; Archive and Mark
- * Read run without opening the app; Reply opens the composer on the thread.
+ * chips. Tapping the body deep-links into the thread; Archive, Mark Read
+ * and the inline Reply run without opening the app; "Reply in app" opens
+ * the composer on the thread for a full compose.
  */
 object MailNotifier {
 
@@ -148,14 +151,121 @@ object MailNotifier {
                     actionIntent(context, NotificationActionReceiver.ACTION_MARK_READ, notification),
                 ).build(),
             )
+            .addAction(inlineReplyAction(context, notification))
             .addAction(
                 NotificationCompat.Action.Builder(
                     R.drawable.ic_action_reply,
-                    REPLY_TITLE,
+                    REPLY_IN_APP_TITLE,
                     replyIntent(context, notification),
                 ).build(),
             )
             .build()
+    }
+
+    /**
+     * Reply, typed in the shade (REQ-AND-PUSH-21). The `RemoteInput` the
+     * action carries is what the platform draws the reply field from, and
+     * the text comes back on the broadcast the receiver answers, so the
+     * reply is written and queued with the app closed. The `PendingIntent`
+     * is mutable because the system fills the typed text into it.
+     */
+    private fun inlineReplyAction(
+        context: Context,
+        notification: MailNotification,
+    ): NotificationCompat.Action {
+        val intent = NotificationActionReceiver.intent(
+            context,
+            NotificationActionReceiver.ACTION_REPLY,
+            notification,
+        )
+        val pending = PendingIntentCompat.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT,
+            true,
+        )
+        return NotificationCompat.Action.Builder(R.drawable.ic_action_reply, REPLY_TITLE, pending)
+            .addRemoteInput(RemoteInput.Builder(REPLY_RESULT_KEY).setLabel(REPLY_HINT).build())
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setAllowGeneratedReplies(true)
+            .setShowsUserInterface(false)
+            .build()
+    }
+
+    /**
+     * What the shade shows while a reply typed into it is on its way and
+     * after it has left (REQ-AND-PUSH-21). It replaces the message's own
+     * notification on the same tag, so the thread keeps one entry in the
+     * shade rather than gaining a second one.
+     *
+     * While the send waits out its undo window the notification is ongoing
+     * and offers to take it back; taking it drops the queued send and puts
+     * the message's notification back.
+     */
+    @SuppressLint("MissingPermission")
+    fun postReplyStatus(
+        context: Context,
+        notification: MailNotification,
+        status: ReplyStatus,
+        text: String,
+        entryId: Long = 0,
+        error: String? = null,
+    ) {
+        val manager = NotificationManagerCompat.from(context)
+        if (!manager.areNotificationsEnabled()) return
+        val title = when (status) {
+            ReplyStatus.SENDING -> SENDING_TITLE
+            ReplyStatus.SENT -> SENT_TITLE
+            ReplyStatus.FAILED -> FAILED_TITLE
+        }
+        val line = when (status) {
+            ReplyStatus.FAILED -> error?.takeIf { it.isNotBlank() } ?: FAILED_FALLBACK
+            else -> text
+        }
+        val builder = NotificationCompat.Builder(context, PushChannels.MAIL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ContextCompat.getColor(context, R.color.ic_launcher_background))
+            .setContentTitle(title)
+            .setContentText(line)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(line))
+            .setSubText(notification.body)
+            .setCategory(NotificationCompat.CATEGORY_EMAIL)
+            .setGroup(notification.groupKey)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openThreadIntent(context, notification))
+            .setOngoing(status == ReplyStatus.SENDING)
+            .setAutoCancel(status != ReplyStatus.SENDING)
+        if (status == ReplyStatus.SENDING && entryId > 0) {
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    R.drawable.ic_action_reply,
+                    UNDO_TITLE,
+                    undoIntent(context, notification, entryId),
+                ).build(),
+            )
+        }
+        if (status == ReplyStatus.SENT) builder.setTimeoutAfter(SENT_TIMEOUT_MS)
+        manager.notify(notification.tag, CHILD_ID, builder.build())
+    }
+
+    private fun undoIntent(
+        context: Context,
+        notification: MailNotification,
+        entryId: Long,
+    ): PendingIntent {
+        val intent = NotificationActionReceiver.intent(
+            context,
+            NotificationActionReceiver.ACTION_UNDO_REPLY,
+            notification,
+        ).putExtra(NotificationActionReceiver.EXTRA_ENTRY_ID, entryId)
+        return PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     /**
@@ -285,9 +395,30 @@ object MailNotifier {
     const val ARCHIVE_TITLE = "Archive"
     const val MARK_READ_TITLE = "Mark read"
     const val REPLY_TITLE = "Reply"
+    const val REPLY_IN_APP_TITLE = "Reply in app"
+    const val UNDO_TITLE = "Undo"
+
+    /** Where the typed reply arrives in the broadcast's result bundle. */
+    const val REPLY_RESULT_KEY = "com.netzhansa.herold.android.remoteinput.REPLY"
+
+    /** The hint the shade's reply field carries. */
+    const val REPLY_HINT = "Reply"
+
+    const val SENDING_TITLE = "Sending reply"
+    const val SENT_TITLE = "Reply sent"
+    const val FAILED_TITLE = "Reply not sent"
+
+    /** Shown when a refusal carried no reason of its own. */
+    private const val FAILED_FALLBACK = "The server refused the reply; it is in the outbox."
+
+    /** How long the shade keeps the "Reply sent" confirmation. */
+    private const val SENT_TIMEOUT_MS = 60_000L
 
     private const val DEFAULT_LARGE_ICON_PX = 128
 }
+
+/** Where a reply typed in the shade is (REQ-AND-PUSH-21). */
+enum class ReplyStatus { SENDING, SENT, FAILED }
 
 /**
  * What the device resolves for a notification beyond the payload: the

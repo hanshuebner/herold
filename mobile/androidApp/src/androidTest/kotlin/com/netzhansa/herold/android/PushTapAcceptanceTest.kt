@@ -99,11 +99,13 @@ class PushTapAcceptanceTest {
     }
 
     /**
-     * The shade's Reply action (REQ-AND-PUSH-21): the composer opens on
-     * the message, addressed to its sender, with the quote in the body.
+     * The shade's "Reply in app" action (REQ-AND-PUSH-21, Suite
+     * REQ-PUSH-63): the composer opens on the message, addressed to its
+     * sender, with the quote in the body, for a reply the shade's inline
+     * field is too small for.
      */
     @Test
-    fun theReplyActionOpensTheComposerOnTheMessage() {
+    fun theReplyInAppActionOpensTheComposerOnTheMessage() {
         val target = runBlocking {
             app.container.store.inboxEmails().first().first { it.subject == subject }
         }
@@ -113,7 +115,7 @@ class PushTapAcceptanceTest {
         assertNotNull("no notification was posted for the push", posted)
 
         posted!!.notification.actions.orEmpty()
-            .first { it.title.toString() == MailNotifier.REPLY_TITLE }
+            .first { it.title.toString() == MailNotifier.REPLY_IN_APP_TITLE }
             .actionIntent.send()
 
         assertTrue(

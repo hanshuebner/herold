@@ -132,8 +132,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- Archive and Mark Read from the shade, applied without opening
-             the app (REQ-AND-PUSH-20). -->
+        <!-- Archive, Mark Read and the shade's inline reply, applied
+             without opening the app (REQ-AND-PUSH-20/21). -->
         <receiver
             android:name=".push.NotificationActionReceiver"
             android:exported="false" />

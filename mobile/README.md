@@ -63,6 +63,10 @@ the drain phases time out; switch the probe off once per emulator:
 `UndoSendAcceptanceTest` runs online and needs no phases.
 `t64` needs the foreign-identity seed, so start the instance with
 `HEROLD_DEV_EXTERNAL_SUBMISSION=1`.
+`InlineReplyAcceptanceTest` runs online too: it injects a push, sends a
+`RemoteInput` reply through the notification action's `PendingIntent`,
+and reads the reply back from `bob@example.local`. It sets the undo
+window itself, and the shade shot needs the emulator unlocked.
 
 ### Sign-in, unlock and sessions (issue #352)
 
