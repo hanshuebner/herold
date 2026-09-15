@@ -41,6 +41,7 @@ import com.netzhansa.herold.android.ui.inbox.InboxScreen
 import com.netzhansa.herold.android.ui.outbox.OutboxScreen
 import com.netzhansa.herold.android.ui.search.SearchScreen
 import com.netzhansa.herold.android.ui.settings.SessionsScreen
+import com.netzhansa.herold.android.ui.settings.CategoriesScreen
 import com.netzhansa.herold.android.ui.settings.SettingsScreen
 import com.netzhansa.herold.android.ui.settings.TransparencyScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
@@ -220,7 +221,16 @@ fun HeroldApp(
                     SettingsScreen(
                         unlock = container.unlock,
                         onSessions = { navController.navigate("sessions") },
+                        onCategories = { navController.navigate("categories") },
                         onTransparency = { navController.navigate("transparency") },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("categories") {
+                    CategoriesScreen(
+                        container = container,
+                        session = current,
+                        accountId = filterAccount,
                         onBack = { navController.popBackStack() },
                     )
                 }

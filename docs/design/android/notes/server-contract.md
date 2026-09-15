@@ -95,10 +95,15 @@ absent, so a payload from a server without that change still renders a name.
 The mobile client reads `Mailbox.disposition` and `Mailbox.priority` from the
 server (base contract § Mailbox disposition and priority) to decide inbox
 lanes — pinned tabs (max 5), bundled rows, daily/weekly digests, filed
-labels — and their order, identically to the Suite. This supersedes the
-milestone-1a client-side heuristic (deriving tabs from the first five
-category names) tracked on #327; the client-side switch to the server
-fields is tracked on the Android client tickets, not here.
+labels — and their order, identically to the Suite (#399).
+
+A category is a label, and the two are joined by name: herold case-folds
+keywords, so the messages of the label `Promotions` are the ones carrying
+`$category-promotions`. A category the classifier derives for which the
+principal holds no label therefore has no disposition and gets no lane; it
+sits in the stream like any uncategorised message. The client writes both
+properties with `Mailbox/set` through its outbox and surfaces the
+`tooManyPinned` SetError as "at most 5 categories can be pinned".
 
 ### Identity alias addresses (no divergence from § Identity alias addresses)
 

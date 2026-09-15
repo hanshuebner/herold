@@ -40,14 +40,16 @@ import kotlinx.coroutines.launch
 /**
  * The app's settings: how long a message waits before it goes (issue
  * #354), which transport carries push (REQ-AND-PUSH-05), whether the app
- * locks behind the device's unlock (REQ-AND-AUTH-11), and the way through
- * to the account's active sessions (REQ-AND-AUTH-22).
+ * locks behind the device's unlock (REQ-AND-AUTH-11), and the ways
+ * through to the account's active sessions (REQ-AND-AUTH-22) and its
+ * category settings (suite REQ-CAT-04/05/11).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     unlock: UnlockController,
     onSessions: () -> Unit,
+    onCategories: () -> Unit,
     onTransparency: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -176,6 +178,21 @@ fun SettingsScreen(
                 Text(text = "Sessions", modifier = Modifier.weight(1f))
                 Text(
                     text = "Where this account is signed in",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onCategories)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .testTag("settings-categories"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Categories", modifier = Modifier.weight(1f))
+                Text(
+                    text = "Tabs, bundles and their order",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

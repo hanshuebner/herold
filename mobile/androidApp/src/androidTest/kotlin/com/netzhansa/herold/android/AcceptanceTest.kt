@@ -45,10 +45,9 @@ import org.junit.runners.MethodSorters
  * runs with the emulator's radios turned off.
  *
  * Each check provisions the mail it reads, so the run stands on any
- * instance and in any order. The category-tab check additionally needs the
- * instance's category set to stay within the five lanes the tab row pins
- * (CategoryLanes.PINNED_LIMIT); the dev instance's classifier derives
- * three (primary, promotions, updates).
+ * instance and in any order. The category-tab check additionally pins the
+ * two lanes it reads, since a tab is a label the server holds at
+ * disposition "pinned" (issue #399).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -399,12 +398,43 @@ class AcceptanceTest {
      * from the instance's own classification path. On an instance with no
      * classifier the keyword is written afterwards with the same
      * `Email/set` on `$category-*` the suite's picker fires (REQ-CAT-20),
-     * clearing whatever category the message carries: a message belongs to
-     * one lane, and the client reads the first `$category-` keyword it
-     * finds, so a second one would shadow the lane under test.
+     * clearing whatever category the message carries: a message shows in
+     * the lane of its highest-priority category, so a second one would
+     * shadow the lane under test.
      */
     private fun provisionCategoryLanes() = runBlocking {
         val session = app.container.session.value!!
+        // The lanes are the server's: a category is a tab because its
+        // label carries disposition "pinned" (issue #399). The two lanes
+        // this check reads are pinned here, through the same Mailbox/set
+        // the settings screen writes.
+        val accountId = session.client.session().mailAccountId!!
+        val labels = session.client.mailboxGet(accountId, null).list
+        listOf(CATEGORY_A, CATEGORY_B).forEachIndexed { rank, category ->
+            val existing = labels.firstOrNull { it.role == null && it.name.equals(category, true) }
+            if (existing == null) {
+                session.client.mailboxSet(
+                    accountId,
+                    create = mapOf(
+                        category to buildJsonObject {
+                            put("name", category)
+                            put("disposition", "pinned")
+                            put("priority", rank)
+                        },
+                    ),
+                )
+            } else {
+                session.client.mailboxSet(
+                    accountId,
+                    update = mapOf(
+                        existing.id to buildJsonObject {
+                            put("disposition", "pinned")
+                            put("priority", rank)
+                        },
+                    ),
+                )
+            }
+        }
         listOf(CATEGORY_A to PROMOTIONS_MARKER, CATEGORY_B to UPDATES_MARKER).forEach { (category, marker) ->
             val subject = "acceptance $category lane $marker ${System.nanoTime()}"
             DevInstance.deliverMail(subject = subject, body = "One message for the $category lane.")

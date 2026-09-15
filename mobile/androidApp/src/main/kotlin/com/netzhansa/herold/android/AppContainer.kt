@@ -2,6 +2,7 @@ package com.netzhansa.herold.android
 
 import android.content.Context
 import android.util.Log
+import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
 import com.netzhansa.herold.shared.actions.UndoCenter
@@ -86,6 +87,8 @@ class SessionScope(
     val actions: MailActions,
     /** Filter-rule writes: the filters screen, mute and block (suite REQ-FLT-20). */
     val filters: FilterActions,
+    /** Category settings: a label's disposition and the pinned order (suite REQ-CAT-04/05/11). */
+    val categories: CategoryActions,
     /** The RFC 8058 one-click POST, off the session's own client (REQ-UNS-20). */
     val unsubscribe: UnsubscribeClient,
     /** The prompts, the models and the per-message classifier detail (suite G7). */
@@ -474,6 +477,7 @@ class AppContainer(context: Context) {
             requestDrain = requestDrain,
             actions = MailActions(store, outbox) { requestDrain(0) },
             filters = FilterActions(store, outbox) { requestDrain(0) },
+            categories = CategoryActions(store, outbox) { requestDrain(0) },
             // The unsubscribe POST goes out on the plain client: no auth
             // plugin, no cookie storage, nothing of the account on it.
             unsubscribe = UnsubscribeClient(httpClient),

@@ -39,8 +39,8 @@ presentation-level and not yet built.
 | `04-filters` — mute thread and blocked senders (`Thread/mute`, `BlockedSender/set`) | presentation | done (milestone 3a, #361); both live in the thread overflow and go out through the outbox like every other write | #361 |
 | `04-filters` — test a filter against existing mail (`REQ-FLT-21`) | presentation | todo; the suite's "apply to matching conversations" count has no phone counterpart yet | — |
 | `05-categorisation` — `$category-*` keywords | protocol | n/a | — |
-| `05-categorisation` — pinned tabs and bundled rows | presentation | done (milestone 1a) | #327 |
-| `05-categorisation` — category editing and disposition settings | presentation | todo | — |
+| `05-categorisation` — pinned tabs and bundled rows | presentation | done (milestone 4, #399); the lanes are the server's `Mailbox.disposition` and `Mailbox.priority`: pinned labels are the tabs in priority order, bundled ones collapse to one row, `daily`/`weekly`/`filed` stay out of the stream, and a message in several categories shows once under the highest-priority one | #327, #399 |
+| `05-categorisation` — category editing and disposition settings | presentation | done (milestone 4, #399); Settings > Categories sets a label's disposition and drags the pinned order, writing `Mailbox/set` through the outbox with `tooManyPinned` surfaced | #399 |
 | `05-categorisation` — LLM transparency (suite G7, `REQ-FILT-65..68`) | presentation | done (milestone 3a, #361); "How herold sorts your mail" in Settings renders `LLMTransparency/get` verbatim, and "Why is this here?" in the thread overflow shows `Email/llmInspect` for the open message | #361 |
 | `06-snooze` — snooze data model | protocol | n/a | — |
 | `06-snooze` — snooze picker UI (presets) | presentation | done (milestone 1a) | #327 |
@@ -116,7 +116,7 @@ matrix is a complete picture of mobile scope.
 | `is_current` is never true for an `oauth2_grant` in `GET /api/v1/auth/credentials`: the server derives it from the session cookie id, which a bearer-authenticated caller does not have (`internal/protoadmin/credentials.go`). | The client cannot be told which grant is its own. It reads the newest grant carrying its own `client_id` right after the code exchange and keeps that family id, which survives every refresh rotation. | server (`http-api-implementor`) |
 | Closed (issue #357): `POST /api/v1/auth/step-up` now accepts a bearer caller (device token or OAuth2 access token) and elevates that credential; `requireSelfServiceElevation` returns `step_up_required` for a bearer caller the same way it does for a cookie session. | The native six-digit sheet REQ-AND-AUTH-20 calls for now has a server surface to answer, but the sheet itself is not yet built (#352). TOTP continues to be collected by herold's own `/oauth2/authorize` page in the Custom Tab, and by the debug device-token form, in the meantime. | client (`#352`) |
 | No configurable access-token TTL: `directory.AccessTokenTTL` is a compile-time hour. | The refresh path cannot be exercised by waiting. The acceptance run deletes the access token's `api_keys` row through the self-service API to force the 401. | server (`directory-auth-implementor`) |
-| No disposition property on a category. `CategorySettings` exposes `derivedCategories` names only, so pinned-vs-bundled (suite `REQ-CAT-04/05/11`) has no wire surface. | The client splits lanes itself: the first five names are tabs, the rest bundles. It reads a server disposition as soon as one exists. | server + suite |
+| Closed (issue #333): `Mailbox` carries `disposition` and `priority`, settable through `Mailbox/set` and delivered by `Mailbox/changes`. | The client reads its lanes from the server (#399). A category and its label are joined by name, so a derived category the principal holds no label for has no disposition and gets no lane. | server + suite |
 
 ## Behaviour the two clients share by copying, not by protocol
 
