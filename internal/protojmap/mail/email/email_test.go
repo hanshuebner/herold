@@ -694,6 +694,183 @@ func TestEmail_Query_AndOfBeforeAndInMailboxOtherThan_FastPath(t *testing.T) {
 	}
 }
 
+// TestEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage pins
+// re #402: a message that is a member of several mailboxes (Gmail-style
+// labels) must match an AND of distinct inMailbox conditions naming
+// mailboxes it actually belongs to, and must not match an AND naming a
+// mailbox it does not belong to. Before the fix, listAccountMessages
+// surfaced the message as one store.Message row per mailbox membership,
+// each carrying only that row's own MailboxID, so the Go-side matcher
+// could never satisfy two different inMailbox conditions on the same
+// row and the AND was unsatisfiable.
+func TestEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.T) {
+	testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t, setupFixture(t))
+}
+
+// TestEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage_Postgres
+// is the Postgres leg: the fix touches listAccountMessages, which is
+// backend-agnostic Go code layered over store.Metadata.ListMessages /
+// AddMessageToMailbox, so both backends need direct coverage. Skips
+// when HEROLD_PG_DSN is not set.
+func TestEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage_Postgres(t *testing.T) {
+	testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t, setupFixturePostgres(t))
+}
+
+func testEmail_Query_AndOfTwoInMailbox_MatchesMultiMembershipMessage(t *testing.T, f *fixture) {
+	ctx := context.Background()
+
+	label, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Label",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Label: %v", err)
+	}
+	junk, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Junk",
+		Attributes:  store.MailboxAttrJunk,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Junk: %v", err)
+	}
+	other, err := f.srv.Store.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: f.pid,
+		Name:        "Other",
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox Other: %v", err)
+	}
+
+	// The message lives in both the label mailbox and Junk, but not in
+	// "Other".
+	m := f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: multi\r\n\r\nbody",
+		"multi", "a@example.test", "b@example.test", nil, "")
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, label.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox label: %v", err)
+	}
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, m.ID, junk.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox junk: %v", err)
+	}
+	wantID := fmt.Sprintf("%d", m.ID)
+
+	// A second message that only sits in the label mailbox, to prove
+	// the AND(label, junk) case below does not just return "everything
+	// in the label mailbox".
+	f.insertMessage(t,
+		"From: a@example.test\r\nTo: b@example.test\r\nSubject: label-only\r\n\r\nbody",
+		"label-only", "a@example.test", "b@example.test", nil, "")
+	labelOnlyID := mostRecentMessageID(t, f)
+	if _, _, err := f.srv.Store.Meta().AddMessageToMailbox(ctx, labelOnlyID, label.ID); err != nil {
+		t.Fatalf("AddMessageToMailbox label (label-only msg): %v", err)
+	}
+
+	labelJmapID := fmt.Sprintf("%d", label.ID)
+	junkJmapID := fmt.Sprintf("%d", junk.ID)
+	otherJmapID := fmt.Sprintf("%d", other.ID)
+
+	// AND(inMailbox label, inMailbox junk) matches only the
+	// multi-membership message.
+	_, raw := f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": labelJmapID},
+				map[string]any{"inMailbox": junkJmapID},
+			},
+		},
+	})
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(label,junk): %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 1 || resp.IDs[0] != wantID {
+		t.Fatalf("AND(inMailbox label, inMailbox junk) ids = %v, want [%s] (raw=%s)", resp.IDs, wantID, raw)
+	}
+
+	// The exact wire shape from the report: AND(inMailbox label,
+	// OR(inMailbox junk, inMailbox other)).
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": labelJmapID},
+				map[string]any{
+					"operator": "OR",
+					"conditions": []any{
+						map[string]any{"inMailbox": junkJmapID},
+						map[string]any{"inMailbox": otherJmapID},
+					},
+				},
+			},
+		},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(label,OR(junk,other)): %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 1 || resp.IDs[0] != wantID {
+		t.Fatalf("AND(inMailbox label, OR(inMailbox junk, inMailbox other)) ids = %v, want [%s] (raw=%s)", resp.IDs, wantID, raw)
+	}
+
+	// AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) also
+	// matches the multi-membership message -- it is in at least one of
+	// {label, junk}. (The label-only message also satisfies this same
+	// filter for the same reason, so this checks presence rather than
+	// exclusivity; exclusivity of the multi-membership match is already
+	// covered by the AND(inMailbox label, inMailbox junk) case above.)
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": labelJmapID},
+				map[string]any{
+					"operator": "NOT",
+					"conditions": []any{
+						map[string]any{"inMailboxOtherThan": []string{labelJmapID, junkJmapID}},
+					},
+				},
+			},
+		},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(label,NOT inMailboxOtherThan): %v: %s", err, raw)
+	}
+	found := false
+	for _, id := range resp.IDs {
+		if id == wantID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AND(inMailbox label, NOT inMailboxOtherThan [label, junk]) ids = %v, want to include %s (raw=%s)", resp.IDs, wantID, raw)
+	}
+
+	// AND(inMailbox label, inMailbox other) matches nothing: the
+	// message is not in "Other".
+	_, raw = f.invoke(t, "Email/query", map[string]any{
+		"accountId": protojmap.AccountIDForPrincipal(f.pid),
+		"filter": map[string]any{
+			"operator": "AND",
+			"conditions": []any{
+				map[string]any{"inMailbox": labelJmapID},
+				map[string]any{"inMailbox": otherJmapID},
+			},
+		},
+	})
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal AND(label,other): %v: %s", err, raw)
+	}
+	if len(resp.IDs) != 0 {
+		t.Fatalf("AND(inMailbox label, inMailbox other) ids = %v, want [] (raw=%s)", resp.IDs, raw)
+	}
+}
+
 // TestEmail_Query_ThreadKeywordFilter_Refused asserts that
 // someInThreadHaveKeyword and noneInThreadHaveKeyword filters are
 // refused with unsupportedFilter per REQ-PERF-INDEX-03.

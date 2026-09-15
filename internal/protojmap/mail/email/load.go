@@ -126,13 +126,27 @@ func aclRightsForCaller(
 }
 
 // listAccountMessages returns every message the caller can see in the
-// requested owner account (REQ-PROTO-33). callerPID and ownerPID are
-// the same for the caller's own account (the prior listPrincipalMessages
-// path); for a foreign account it scopes to mailboxes owned by
-// ownerPID and visible to callerPID via ACL. The implementation is
-// keyset-paged per mailbox so a principal with millions of messages
-// does not hold the whole list in memory at once at the storage layer;
-// the returned slice is bounded only by the caller.
+// requested owner account (REQ-PROTO-33), one store.Message per message
+// -- not per mailbox membership. callerPID and ownerPID are the same
+// for the caller's own account (the prior listPrincipalMessages path);
+// for a foreign account it scopes to mailboxes owned by ownerPID and
+// visible to callerPID via ACL. The implementation is keyset-paged per
+// mailbox so a principal with millions of messages does not hold the
+// whole list in memory at once at the storage layer; the returned
+// slice is bounded only by the caller.
+//
+// meta.ListMessages is scoped to a single mailbox, so a message that
+// belongs to several mailboxes (Gmail-style labels) surfaces once per
+// owned mailbox it sits in, each row's Mailboxes carrying only that
+// row's own membership (see storesqlite/storepg scanMessage). Those
+// rows are merged here into one store.Message per message ID whose
+// Mailboxes field carries the union of every membership, so the
+// caller (the Email/query filter matcher) can evaluate inMailbox /
+// inMailboxOtherThan against the message's complete mailbox set per
+// RFC 8621 section 4.4.1 instead of one row's single MailboxID (re
+// #402). The first-seen row's convenience fields (MailboxID / UID /
+// Flags / Keywords / …) are kept unchanged for callers that still read
+// them directly (sorting, keyword predicates).
 func listAccountMessages(
 	ctx context.Context,
 	meta store.Metadata,
@@ -143,6 +157,7 @@ func listAccountMessages(
 		return nil, err
 	}
 	const page = 1000
+	seen := make(map[store.MessageID]int)
 	var out []store.Message
 	for _, mb := range mailboxes {
 		var cursor store.UID
@@ -158,7 +173,14 @@ func listAccountMessages(
 			if ferr != nil {
 				return nil, fmt.Errorf("email: list messages: %w", ferr)
 			}
-			out = append(out, batch...)
+			for _, m := range batch {
+				if idx, dup := seen[m.ID]; dup {
+					out[idx].Mailboxes = append(out[idx].Mailboxes, m.Mailboxes...)
+					continue
+				}
+				seen[m.ID] = len(out)
+				out = append(out, m)
+			}
 			if len(batch) < page {
 				break
 			}

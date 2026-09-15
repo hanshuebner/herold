@@ -513,18 +513,41 @@ func matchOperatorWithAttachments(m store.Message, f *emailFilter, all []store.M
 	return false
 }
 
+// messageInMailbox reports whether m belongs to mailboxID, evaluated
+// against the message's complete mailbox-membership set (m.Mailboxes)
+// per RFC 8621 section 4.4.1, rather than only the convenience
+// MailboxID field of whatever per-mailbox row m happens to be. Every
+// Email/query candidate source (listAccountMessages's merged rows,
+// loadMessageForPrincipal's GetMessage) populates the full Mailboxes
+// set, so an AND of two distinct inMailbox conditions -- previously
+// unsatisfiable because each row carried only one membership -- now
+// evaluates against everything the message is filed under (re #402).
+// Falls back to MailboxID when Mailboxes is empty (defensive; no
+// current candidate source produces that).
+func messageInMailbox(m store.Message, mailboxID store.MailboxID) bool {
+	if len(m.Mailboxes) == 0 {
+		return m.MailboxID == mailboxID
+	}
+	for _, mm := range m.Mailboxes {
+		if mm.MailboxID == mailboxID {
+			return true
+		}
+	}
+	return false
+}
+
 // matchConditionWithAttachments evaluates a FilterCondition against m
 // with precomputed blob filter data.
 func matchConditionWithAttachments(m store.Message, f *emailFilter, all []store.Message, fd *filterData) bool {
 	if f.InMailbox != nil {
 		want, ok := mailboxIDFromJMAP(*f.InMailbox)
-		if !ok || m.MailboxID != want {
+		if !ok || !messageInMailbox(m, want) {
 			return false
 		}
 	}
 	if len(f.InMailboxOtherThan) > 0 {
 		for _, raw := range f.InMailboxOtherThan {
-			if id, ok := mailboxIDFromJMAP(raw); ok && id == m.MailboxID {
+			if id, ok := mailboxIDFromJMAP(raw); ok && messageInMailbox(m, id) {
 				return false
 			}
 		}
