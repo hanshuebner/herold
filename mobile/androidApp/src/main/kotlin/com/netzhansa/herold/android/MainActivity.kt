@@ -43,6 +43,7 @@ import com.netzhansa.herold.android.ui.search.SearchScreen
 import com.netzhansa.herold.android.ui.settings.SessionsScreen
 import com.netzhansa.herold.android.ui.settings.CategoriesScreen
 import com.netzhansa.herold.android.ui.settings.SettingsScreen
+import com.netzhansa.herold.android.ui.settings.StepUpSheet
 import com.netzhansa.herold.android.ui.settings.TransparencyScreen
 import com.netzhansa.herold.android.ui.signin.SignInScreen
 import com.netzhansa.herold.android.links.IntentRouting
@@ -412,6 +413,11 @@ fun HeroldApp(
                     )
                 }
             }
+
+            // Over every screen: the operation the server refused until
+            // the credential is elevated waits on this sheet, wherever
+            // it was started from (REQ-AND-AUTH-20).
+            StepUpSheet(current.stepUp)
         }
     }
 }

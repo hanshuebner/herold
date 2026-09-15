@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,6 +35,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.shared.auth.AppPassword
+import com.netzhansa.herold.shared.auth.AppPasswordResult
 import com.netzhansa.herold.shared.auth.Credential
 import kotlinx.coroutines.launch
 
@@ -41,33 +44,38 @@ import kotlinx.coroutines.launch
  * The account's active sessions and grants, read from the same
  * endpoint the Suite's session management reads
  * (`GET /api/v1/auth/credentials`, REQ-AS-30..33; REQ-AND-AUTH-22).
- * This device's own grant is marked. Revoking it signs the app out:
- * the server drops the access token with the family, so the next call
- * comes back 401 and the refresh is refused.
+ * The server marks the credential the request carried as `is_current`,
+ * which is this device. Revoking it signs the app out: the server drops
+ * the access token with the family, so the next call comes back 401 and
+ * the refresh is refused.
+ *
+ * The screen also mints app passwords - a key another mail client signs
+ * in with over IMAP and SMTP. That is a self-service operation the
+ * server elevates (REQ-AUTH-78), so for an account with an
+ * authenticator app the six-digit sheet answers before the key is
+ * created (REQ-AND-AUTH-20).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionsScreen(container: AppContainer, session: SessionScope, onBack: () -> Unit) {
     var entries by remember { mutableStateOf<List<Credential>>(emptyList()) }
-    var ownGrantId by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloads by remember { mutableStateOf(0) }
+    var minting by remember { mutableStateOf(false) }
+    var minted by remember { mutableStateOf<AppPassword?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(reloads) {
         loading = true
-        ownGrantId = container.tokenStore.grantId()
-        val own = ownGrantId
         runCatching { session.credentials.list() }
             .onSuccess { loaded ->
                 // This device first, then the most recently used, so
                 // the row the user is most likely looking for is the
                 // one they see without scrolling.
                 entries = loaded.sortedWith(
-                    compareByDescending<Credential> {
-                        it.kind == Credential.KIND_OAUTH2_GRANT && it.id == own
-                    }.thenByDescending { it.lastUsedAt.ifBlank { it.createdAt } },
+                    compareByDescending<Credential> { it.isCurrent }
+                        .thenByDescending { it.lastUsedAt.ifBlank { it.createdAt } },
                 )
                 error = null
             }
@@ -104,9 +112,27 @@ fun SessionsScreen(container: AppContainer, session: SessionScope, onBack: () ->
                     modifier = Modifier.padding(16.dp).testTag("sessions-error"),
                 )
             }
+            TextButton(
+                enabled = !minting,
+                onClick = {
+                    minting = true
+                    error = null
+                    scope.launch {
+                        when (val result = session.appPasswords.create(appPasswordLabel())) {
+                            is AppPasswordResult.Created -> minted = result.password
+                            AppPasswordResult.Cancelled -> Unit
+                            is AppPasswordResult.Failed -> error = result.message
+                        }
+                        minting = false
+                    }
+                },
+                modifier = Modifier.padding(horizontal = 8.dp).testTag("sessions-new-app-password"),
+            ) {
+                Text("New app password")
+            }
             LazyColumn(modifier = Modifier.fillMaxSize().testTag("sessions-list")) {
                 items(entries, key = { it.kind + ":" + it.id }) { entry ->
-                    val isThisDevice = entry.kind == Credential.KIND_OAUTH2_GRANT && entry.id == ownGrantId
+                    val isThisDevice = entry.isCurrent
                     CredentialRow(
                         entry = entry,
                         isThisDevice = isThisDevice,
@@ -129,7 +155,43 @@ fun SessionsScreen(container: AppContainer, session: SessionScope, onBack: () ->
             }
         }
     }
+
+    // The key is readable once, here: the server keeps only its hash.
+    minted?.let { password ->
+        AlertDialog(
+            onDismissRequest = { minted = null },
+            modifier = Modifier.testTag("app-password-dialog"),
+            title = { Text("App password") },
+            text = {
+                Column {
+                    Text(password.label)
+                    Text(
+                        text = password.secret,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.testTag("app-password-secret"),
+                    )
+                    Text(
+                        text = "Copy it now - it is not shown again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { minted = null },
+                    modifier = Modifier.testTag("app-password-done"),
+                ) {
+                    Text("Done")
+                }
+            },
+        )
+    }
 }
+
+/** What the new key is called in the account's key list. */
+private fun appPasswordLabel(): String =
+    "Phone app password " + android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", java.util.Date())
 
 @Composable
 private fun CredentialRow(entry: Credential, isThisDevice: Boolean, onRevoke: () -> Unit) {

@@ -9,7 +9,9 @@ import com.netzhansa.herold.shared.actions.UndoCenter
 import com.netzhansa.herold.shared.compose.AddressBook
 import com.netzhansa.herold.shared.compose.Composer
 import com.netzhansa.herold.android.auth.UnlockController
+import com.netzhansa.herold.shared.auth.AppPasswordClient
 import com.netzhansa.herold.shared.auth.AuthClient
+import com.netzhansa.herold.shared.auth.BearerCalls
 import com.netzhansa.herold.shared.auth.Credential
 import com.netzhansa.herold.shared.auth.CredentialsClient
 import com.netzhansa.herold.shared.auth.KeystoreTokenStore
@@ -19,6 +21,8 @@ import com.netzhansa.herold.shared.auth.OAuthSignIn
 import com.netzhansa.herold.shared.auth.OAuthSignInResult
 import com.netzhansa.herold.shared.auth.SessionAuthenticator
 import com.netzhansa.herold.shared.auth.SignInResult
+import com.netzhansa.herold.shared.auth.StepUpClient
+import com.netzhansa.herold.shared.auth.StepUpCoordinator
 import com.netzhansa.herold.shared.createHttpClient
 import com.netzhansa.herold.shared.jmap.EventSourceClient
 import com.netzhansa.herold.shared.jmap.ImageProxyClient
@@ -101,6 +105,10 @@ class SessionScope(
     val search: MailSearch,
     /** The account's active sessions and grants (REQ-AND-AUTH-22). */
     val credentials: CredentialsClient,
+    /** App passwords for other mail clients; minting one needs a step-up. */
+    val appPasswords: AppPasswordClient,
+    /** The six-digit sheet an elevated operation waits on (REQ-AND-AUTH-20). */
+    val stepUp: StepUpCoordinator,
 )
 
 /**
@@ -374,7 +382,7 @@ class AppContainer(context: Context) {
         }
         if (!username.isNullOrBlank()) tokenStore.setPrincipal(username)
         tokenStore.setGrantId(
-            runCatching { session.credentials.ownGrantId(oauthConfig.clientId) }.getOrNull(),
+            runCatching { session.credentials.currentGrantId() }.getOrNull(),
         )
         _signInState.value = SignInState.Idle
         _session.value = session
@@ -448,6 +456,14 @@ class AppContainer(context: Context) {
             unlockGate = unlock,
             onSessionLost = { sessionLost() },
         )
+        // The TOTP sheet an elevated self-service call raises, and the
+        // recovery every REST caller of the account shares
+        // (REQ-AND-AUTH-20).
+        val stepUp = StepUpCoordinator(
+            client = StepUpClient(httpClient, baseUrl, authenticator),
+            now = { System.currentTimeMillis() },
+        )
+        val calls = BearerCalls(authenticator, stepUp)
         val client = JmapClient(httpClient, baseUrl, authenticator)
         val composer = Composer(client, outbox, spool, { System.currentTimeMillis() })
         val drainer = OutboxDrainer(
@@ -493,7 +509,9 @@ class AppContainer(context: Context) {
             composer = composer,
             addressBook = AddressBook(client),
             search = MailSearch(client, store),
-            credentials = CredentialsClient(httpClient, baseUrl, authenticator),
+            credentials = CredentialsClient(httpClient, baseUrl, calls),
+            appPasswords = AppPasswordClient(httpClient, baseUrl, calls),
+            stepUp = stepUp,
         )
     }
 }
