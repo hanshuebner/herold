@@ -103,7 +103,7 @@ class CategoryAcceptanceTest {
                 .fetchSemanticsNodes().isEmpty(),
         )
         compose.captureScreen("m4-pinned-tab")
-        assertEquals(4, labels.size)
+        assertEquals(5, labels.size)
     }
 
     @Test
@@ -216,8 +216,7 @@ class CategoryAcceptanceTest {
             )
         }
         val ids = mine.mapValues { (name, spec) -> ensureLabel(client, accountId, name, spec.first, spec.second) }
-        ensureLabel(client, accountId, PLAIN, "none", null)
-        return ids
+        return ids + (PLAIN to ensureLabel(client, accountId, PLAIN, "none", null))
     }
 
     /** Creates [name] if the account has no such label, then sets its category properties. */
@@ -289,6 +288,8 @@ class CategoryAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("settings-categories").fetchSemanticsNodes().isNotEmpty()
         }
+        compose.onNodeWithTag("settings-screen")
+            .performScrollToNode(hasTestTag("settings-categories"))
         compose.onNodeWithTag("settings-categories").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("categories-screen").fetchSemanticsNodes().isNotEmpty()
