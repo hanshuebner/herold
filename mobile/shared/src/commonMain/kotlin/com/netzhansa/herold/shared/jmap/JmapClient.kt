@@ -95,6 +95,46 @@ class JmapClient(
     override suspend fun mailboxChanges(accountId: String, sinceState: String): ChangesOutcome =
         changes("Mailbox/changes", accountId, sinceState, listOf(Capability.CORE, Capability.MAIL))
 
+    override suspend fun mailboxSet(
+        accountId: String,
+        create: Map<String, JsonObject>,
+        update: Map<String, JsonObject>,
+        destroy: List<String>,
+    ): MailboxSetOutcome {
+        val args = buildJsonObject {
+            put("accountId", accountId)
+            if (create.isNotEmpty()) {
+                putJsonObject("create") { create.forEach { (key, mailbox) -> put(key, mailbox) } }
+            }
+            if (update.isNotEmpty()) {
+                putJsonObject("update") { update.forEach { (id, patch) -> put(id, patch) } }
+            }
+            if (destroy.isNotEmpty()) {
+                putJsonArray("destroy") { destroy.forEach { add(it) } }
+            }
+        }
+        val result = call("Mailbox/set", args, listOf(Capability.CORE, Capability.MAIL))
+        val created = (result["created"] as? JsonObject)?.mapValues { (_, value) ->
+            wireJson.decodeFromJsonElement(WireMailbox.serializer(), value)
+        } ?: emptyMap()
+        val errorTypes = mutableMapOf<String, String>()
+        val errorMessages = mutableMapOf<String, String>()
+        listOf("notCreated", "notUpdated", "notDestroyed").forEach { key ->
+            (result[key] as? JsonObject)?.forEach { (id, value) ->
+                val error = value as? JsonObject
+                errorTypes[id] = error?.get("type")?.jsonPrimitive?.contentOrNull ?: "rejected"
+                errorMessages[id] = error.describe() ?: "rejected"
+            }
+        }
+        return MailboxSetOutcome(
+            created = created,
+            updated = (result["updated"] as? JsonObject)?.keys ?: emptySet(),
+            destroyed = result.idList("destroyed"),
+            errorTypes = errorTypes,
+            errorMessages = errorMessages,
+        )
+    }
+
     override suspend fun emailQueryInbox(accountId: String, mailboxId: String, limit: Int): List<String> {
         val args = buildJsonObject {
             put("accountId", accountId)

@@ -113,8 +113,9 @@ import kotlinx.datetime.TimeZone
 /**
  * The combined inbox: every account's inbox in one date-ordered stream
  * (suite REQ-MAIL-SUB-03) with a scope switcher (REQ-MAIL-SUB-02/04),
- * pinned categories as tabs and bundled ones as collapsed rows
- * (REQ-CAT-10/11). It renders from the local store, so it is populated
+ * pinned categories as tabs and bundled ones as collapsed rows, in the
+ * dispositions the server holds on the category's label
+ * (REQ-CAT-04/05/10/11). It renders from the local store, so it is populated
  * before the first network call of a cold start (REQ-AND-SYNC-03).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -141,7 +142,6 @@ fun InboxScreen(
     }
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
-    val categories by session.syncEngine.categories.collectAsStateSafely(emptyList())
     val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
     val offline by container.offline.collectAsStateSafely(false)
     val pending by container.outbox.pendingCount.collectAsStateSafely(0)
@@ -170,9 +170,7 @@ fun InboxScreen(
             pendingThreads = pendingThreads,
         )
     }
-    val lanes = remember(categories, emails) {
-        CategoryLanes.from(categories, InboxAssembler.observedCategories(emails))
-    }
+    val lanes = remember(mailboxes, accountScope) { CategoryLanes.from(mailboxes, accountScope) }
     val stream = remember(rows, lanes, selectedCategory) {
         InboxAssembler.stream(rows, lanes, selectedCategory)
     }

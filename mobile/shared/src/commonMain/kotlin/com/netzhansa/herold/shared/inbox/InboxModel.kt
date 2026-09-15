@@ -1,6 +1,7 @@
 package com.netzhansa.herold.shared.inbox
 
 import com.netzhansa.herold.shared.domain.Account
+import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Mailbox
 
@@ -18,7 +19,8 @@ data class ThreadRow(
     val isUnread: Boolean,
     val isFlagged: Boolean,
     val labels: List<String>,
-    val category: String?,
+    /** Every category the conversation's messages carry (REQ-CAT-01). */
+    val categories: List<String>,
     val emailIds: List<String>,
     /** The wake time the server holds for the conversation, when it sleeps. */
     val wakeAt: String? = null,
@@ -50,31 +52,92 @@ sealed interface InboxItem {
 }
 
 /**
- * Which categories are tabs and which collapse into bundles.
+ * The inbox lanes, as the server's `Mailbox.disposition` and
+ * `Mailbox.priority` define them (issue #333, suite REQ-CAT-04/05/10/11).
  *
- * herold advertises category *names* (`CategorySettings.derivedCategories`
- * plus the `$category-<name>` keywords on messages) but no disposition
- * property, so the split is made here: the first [PINNED_LIMIT] names are
- * tabs (suite REQ-CAT-11's maximum), the rest are bundles (REQ-CAT-10).
- * When the server grows a disposition property this reads it instead.
+ * A category is a label, so its lane is a property of the label's mailbox:
+ * `pinned` labels are the tabs above the stream in priority order,
+ * `bundled` ones collapse to one row each, `daily`, `weekly` and `filed`
+ * keep their messages out of the inbox stream, and `none` gives the
+ * category no lane at all. [order] is the principal's one priority list,
+ * which resolves a message carrying several categories to a single lane
+ * (REQ-CAT-01/05).
  */
 data class CategoryLanes(
     val pinned: List<String>,
     val bundled: List<String>,
+    /** Categories whose messages the inbox stream leaves out. */
+    val hidden: List<String> = emptyList(),
+    /** Every known category, highest priority first. */
+    val order: List<String> = pinned + bundled + hidden,
+    val dispositions: Map<String, CategoryDisposition> = buildMap {
+        pinned.forEach { put(it, CategoryDisposition.PINNED) }
+        bundled.forEach { put(it, CategoryDisposition.BUNDLED) }
+        hidden.forEach { put(it, CategoryDisposition.FILED) }
+    },
 ) {
-    companion object {
-        const val PINNED_LIMIT = 5
+    /**
+     * The category that decides where a message carrying [categories]
+     * goes: the highest-priority one it holds (REQ-CAT-05). Null when it
+     * carries none.
+     */
+    fun resolve(categories: Collection<String>): String? =
+        categories.minWithOrNull(compareBy({ rank(it) }, { it }))
 
-        fun from(derived: List<String>, observed: Collection<String>): CategoryLanes {
-            val names = LinkedHashSet<String>()
-            derived.forEach { names.add(it.lowercase()) }
-            observed.map { it.lowercase() }.sorted().forEach { names.add(it) }
-            val ordered = names.toList()
+    /** [category]'s disposition, `none` for one the account has no label for. */
+    fun dispositionOf(category: String?): CategoryDisposition =
+        category?.let { dispositions[it] } ?: CategoryDisposition.NONE
+
+    /** Where [category] sits in the priority list; an unranked one sorts last. */
+    private fun rank(category: String): Int =
+        order.indexOf(category).takeIf { it >= 0 } ?: Int.MAX_VALUE
+
+    companion object {
+        const val PINNED_LIMIT = CategoryDisposition.PINNED_LIMIT
+
+        /** No lanes at all, for a store that holds no labels yet. */
+        val EMPTY = CategoryLanes(pinned = emptyList(), bundled = emptyList())
+
+        /**
+         * The lanes the account's labels define. [accountScope] narrows to
+         * one account; in the combined view the labels of every account
+         * fold together by name, since a category's identity on the wire
+         * is its case-folded name (the `$category-<name>` keyword).
+         */
+        fun from(mailboxes: List<Mailbox>, accountScope: String? = null): CategoryLanes {
+            val folded = mailboxes
+                .filter { it.role == null && (accountScope == null || it.accountId == accountScope) }
+                .groupBy { it.categoryName }
+                .mapValues { (_, rows) -> fold(rows) }
+            val ordered = folded.entries
+                .sortedWith(compareBy({ it.value.priority ?: Int.MAX_VALUE }, { it.key }))
+            val dispositions = ordered.associate { it.key to it.value.disposition }
             return CategoryLanes(
-                pinned = ordered.take(PINNED_LIMIT),
-                bundled = ordered.drop(PINNED_LIMIT),
+                pinned = ordered.filter { it.value.disposition == CategoryDisposition.PINNED }
+                    .map { it.key }.take(PINNED_LIMIT),
+                bundled = ordered.filter { it.value.disposition == CategoryDisposition.BUNDLED }
+                    .map { it.key },
+                hidden = ordered.filter { it.value.disposition.hidesFromInbox }.map { it.key },
+                order = ordered.map { it.key },
+                dispositions = dispositions,
             )
         }
+
+        /**
+         * One category out of the same-named labels of several accounts:
+         * the strongest disposition any of them carries, at the best rank
+         * any of them holds.
+         */
+        private fun fold(rows: List<Mailbox>): Lane {
+            val ranked = rows.sortedWith(compareBy({ it.priority ?: Int.MAX_VALUE }, { it.accountId }))
+            return Lane(
+                disposition = ranked.firstOrNull { it.disposition != CategoryDisposition.NONE }
+                    ?.disposition ?: CategoryDisposition.NONE,
+                priority = ranked.firstNotNullOfOrNull { it.priority },
+            )
+        }
+
+        private data class Lane(val disposition: CategoryDisposition, val priority: Int?)
     }
 }
 
@@ -154,7 +217,7 @@ object InboxAssembler {
                     labels = ordered.flatMap { email ->
                         email.mailboxIds.mapNotNull { labelNames[email.accountId to it] }
                     }.distinct(),
-                    category = ordered.firstNotNullOfOrNull { it.category },
+                    categories = ordered.flatMap { it.categories }.distinct().sorted(),
                     emailIds = ordered.map { it.id },
                     wakeAt = ordered.firstNotNullOfOrNull { it.snoozedUntil },
                     hasDraft = key in draftThreads || key.second in pendingThreads,
@@ -164,21 +227,28 @@ object InboxAssembler {
 
     /**
      * The stream for the selected tab. [selectedCategory] null is the
-     * complete stream: pinned categories stay inline, bundled ones collapse
-     * to one row each.
+     * complete stream: a `pinned` or plain conversation stays inline, a
+     * `bundled` category collapses to one row, and a category the server
+     * defers or files keeps its conversations out (REQ-CAT-10/16).
+     *
+     * A conversation carrying several categories appears once, under the
+     * highest-priority one (REQ-CAT-01).
      */
     fun stream(
         rows: List<ThreadRow>,
         lanes: CategoryLanes,
         selectedCategory: String? = null,
     ): List<InboxItem> {
+        val laneOf = rows.associateWith { lanes.resolve(it.categories) }
+        val visible = rows.filter { !lanes.dispositionOf(laneOf[it]).hidesFromInbox }
         if (selectedCategory != null) {
-            return rows.filter { it.category == selectedCategory }
-                .map { InboxItem.Conversation(it) }
+            return visible.filter { laneOf[it] == selectedCategory }.map { InboxItem.Conversation(it) }
         }
-        val bundledRows = rows.filter { it.category != null && lanes.bundled.contains(it.category) }
-        val plainRows = rows.filter { it !in bundledRows }
-        val bundles = bundledRows.groupBy { it.category!! }.map { (category, threads) ->
+        val bundledRows = visible.filter {
+            lanes.dispositionOf(laneOf[it]) == CategoryDisposition.BUNDLED
+        }
+        val plainRows = visible.filter { it !in bundledRows }
+        val bundles = bundledRows.groupBy { laneOf[it]!! }.map { (category, threads) ->
             InboxItem.Bundle(
                 BundleRow(
                     category = category,
@@ -195,7 +265,7 @@ object InboxAssembler {
             .sortedByDescending { it.receivedAt }
     }
 
-    /** Category names carried by the synced messages, for lane discovery. */
+    /** Every category name the synced messages carry. */
     fun observedCategories(emails: List<Email>): Set<String> =
-        emails.mapNotNull { it.category }.toSet()
+        emails.flatMap { it.categories }.toSet()
 }

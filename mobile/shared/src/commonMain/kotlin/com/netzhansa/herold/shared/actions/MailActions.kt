@@ -305,6 +305,8 @@ class MailActions(
         const val MARK_UNREAD = "Mark unread"
         const val LABEL = "Labels"
         const val CATEGORISE = "Category"
+        const val CATEGORY_DISPOSITION = "Category setting"
+        const val CATEGORY_ORDER = "Category order"
         const val UNDO = "Undo"
         const val FILTER_CREATE = "New filter"
         const val FILTER_UPDATE = "Filter"

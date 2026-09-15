@@ -1,6 +1,7 @@
 package com.netzhansa.herold.shared.sync
 
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.MailAddress
@@ -32,7 +33,12 @@ internal fun WireMailbox.toDomain(accountId: String) = Mailbox(
     sortOrder = sortOrder.toInt(),
     totalEmails = totalEmails.toInt(),
     unreadEmails = unreadEmails.toInt(),
+    disposition = CategoryDisposition.from(disposition),
+    priority = priority,
 )
+
+/** The mailbox mapping, for a caller outside the engine (tests, the drain). */
+fun WireMailbox.toStoreRow(accountId: String): Mailbox = toDomain(accountId)
 
 internal fun WireThread.toDomain(accountId: String) = Thread(
     accountId = accountId,

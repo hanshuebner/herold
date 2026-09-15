@@ -17,6 +17,9 @@ enum class OutboxKind {
 
     /** A filter-rule write: `ManagedRule/set`, `Thread/mute` or `BlockedSender/set`. */
     RULE,
+
+    /** A label write: `Mailbox/set` carrying disposition and priority. */
+    MAILBOX,
     ;
 
     companion object {
@@ -125,6 +128,18 @@ data class RulePayload(
      * The patches an update carries, by rule id. A reorder moves several
      * rules at once, so they go out as one `ManagedRule/set`.
      */
+    val updates: Map<String, JsonObject> = emptyMap(),
+)
+
+/**
+ * A label write waiting to go out (issue #399): the `Mailbox/set` patches
+ * a disposition change or a reorder of the pinned categories produces. A
+ * reorder moves several labels, so they travel as one call and the server
+ * renumbers the ranked set densely around them.
+ */
+@Serializable
+data class MailboxPayload(
+    val accountId: String,
     val updates: Map<String, JsonObject> = emptyMap(),
 )
 

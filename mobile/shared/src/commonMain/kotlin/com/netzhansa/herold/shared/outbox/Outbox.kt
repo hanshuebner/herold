@@ -67,6 +67,28 @@ class Outbox(
     )
 
     /**
+     * Queues a label write (issue #399): the `Mailbox/set` that changes a
+     * category's disposition or its rank. The local rows are written by
+     * the caller, so the settings screen reflects the change at once and
+     * the server's answer replaces it when the drain reads the labels
+     * back.
+     */
+    suspend fun enqueueMailbox(
+        accountId: String,
+        label: String,
+        payload: MailboxPayload,
+    ): Long = store.enqueueOutbox(
+        NewOutboxEntry(
+            accountId = accountId,
+            kind = OutboxKind.MAILBOX,
+            label = label,
+            payload = outboxJson.encodeToString(payload),
+            entityIds = payload.updates.keys.toList(),
+            createdAt = now(),
+        ),
+    )
+
+    /**
      * Queues a composed message. [holdUntilMs] is the instant the drain may
      * first submit it, which is how the undo window after Send is realised
      * (issue #354): until then the entry sits in the queue and an undo

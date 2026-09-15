@@ -1,12 +1,14 @@
 package com.netzhansa.herold.shared.inbox
 
 import com.netzhansa.herold.shared.domain.Account
+import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val accounts = listOf(
@@ -18,6 +20,20 @@ private val mailboxes = listOf(
     Mailbox(accountId = "acct-a", id = "inbox-1", name = "Inbox", role = MailboxRoles.INBOX),
     Mailbox(accountId = "acct-a", id = "label-1", name = "Projects"),
     Mailbox(accountId = "acct-b", id = "inbox-2", name = "Inbox", role = MailboxRoles.INBOX),
+)
+
+/** A category label as the server hands it over: a label with a disposition. */
+private fun label(
+    name: String,
+    disposition: CategoryDisposition,
+    priority: Int? = null,
+    accountId: String = "acct-a",
+) = Mailbox(
+    accountId = accountId,
+    id = "label-${name.lowercase()}",
+    name = name,
+    disposition = disposition,
+    priority = priority,
 )
 
 private fun email(
@@ -125,7 +141,12 @@ class InboxAssemblerTest {
 
     @Test
     fun aPinnedTabFiltersTheStreamToItsCategory() {
-        val lanes = CategoryLanes.from(listOf("Primary", "Promotions"), emptyList())
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.PINNED, priority = 1),
+            ),
+        )
         val emails = listOf(
             email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Primary"))),
             email("e2", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
@@ -145,7 +166,12 @@ class InboxAssemblerTest {
 
     @Test
     fun aBundledCategoryCollapsesToOneRowPositionedByItsNewestMember() {
-        val lanes = CategoryLanes(pinned = listOf("primary"), bundled = listOf("promotions"))
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 1),
+            ),
+        )
         val emails = listOf(
             email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
             email("e2", receivedAt = 2500, keywords = setOf(Keywords.categoryKeyword("Promotions"), Keywords.SEEN)),
@@ -164,14 +190,131 @@ class InboxAssemblerTest {
     }
 
     @Test
-    fun lanesTakeTheFirstFiveCategoriesAsTabsAndBundleTheRest() {
+    fun lanesComeFromTheServersDispositionInPriorityOrder() {
         val lanes = CategoryLanes.from(
-            derived = listOf("Primary", "Social", "Promotions", "Updates", "Forums"),
-            observed = listOf("Hobby"),
+            listOf(
+                Mailbox(accountId = "acct-a", id = "inbox-1", name = "Inbox", role = MailboxRoles.INBOX),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 3),
+                label("Hobby", CategoryDisposition.PINNED, priority = 2),
+                label("Primary", CategoryDisposition.PINNED, priority = 0),
+                label("Newsletters", CategoryDisposition.FILED, priority = 4),
+                label("Receipts", CategoryDisposition.WEEKLY, priority = 5),
+                label("Projects", CategoryDisposition.NONE),
+            ),
         )
 
-        assertEquals(listOf("primary", "social", "promotions", "updates", "forums"), lanes.pinned)
-        assertEquals(listOf("hobby"), lanes.bundled)
+        assertEquals(listOf("primary", "hobby"), lanes.pinned, "tabs are the pinned set in priority order")
+        assertEquals(listOf("promotions"), lanes.bundled)
+        assertEquals(listOf("newsletters", "receipts"), lanes.hidden)
+        assertEquals(CategoryDisposition.NONE, lanes.dispositionOf("projects"))
+        assertEquals(CategoryDisposition.NONE, lanes.dispositionOf("unknown"))
+    }
+
+    @Test
+    fun atMostFiveCategoriesBecomeTabs() {
+        val lanes = CategoryLanes.from(
+            (0..5).map { label("Cat$it", CategoryDisposition.PINNED, priority = it) },
+        )
+
+        assertEquals(CategoryLanes.PINNED_LIMIT, lanes.pinned.size)
+        assertEquals(listOf("cat0", "cat1", "cat2", "cat3", "cat4"), lanes.pinned)
+    }
+
+    @Test
+    fun aMessageInSeveralCategoriesShowsOnceUnderItsHighestPriorityOne() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Hobby", CategoryDisposition.PINNED, priority = 0),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 1),
+            ),
+        )
+        val emails = listOf(
+            email(
+                "e1",
+                receivedAt = 3000,
+                keywords = setOf(
+                    Keywords.categoryKeyword("Hobby"),
+                    Keywords.categoryKeyword("Promotions"),
+                ),
+            ),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals(listOf("hobby", "promotions"), rows.single().categories)
+        val stream = InboxAssembler.stream(rows, lanes)
+        assertEquals(1, stream.size, "the message appears once")
+        assertTrue(stream.single() is InboxItem.Conversation, "its lane is the pinned one, so it stays inline")
+        assertEquals(
+            listOf("t-e1"),
+            InboxAssembler.stream(rows, lanes, selectedCategory = "hobby")
+                .filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
+        )
+        assertEquals(
+            emptyList(),
+            InboxAssembler.stream(rows, lanes, selectedCategory = "promotions"),
+            "the lower-priority category does not show it a second time",
+        )
+    }
+
+    @Test
+    fun aFiledOrDeferredCategoryNeverEntersTheInboxStream() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Newsletters", CategoryDisposition.FILED, priority = 0),
+                label("Receipts", CategoryDisposition.DAILY, priority = 1),
+                label("Promotions", CategoryDisposition.BUNDLED, priority = 2),
+            ),
+        )
+        val emails = listOf(
+            email("e1", receivedAt = 4000, keywords = setOf(Keywords.categoryKeyword("Newsletters"))),
+            email("e2", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Receipts"))),
+            email("e3", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e4", receivedAt = 1000),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        val stream = InboxAssembler.stream(rows, lanes)
+
+        assertEquals(2, stream.size, "only the bundle and the uncategorised message remain")
+        assertEquals("promotions", (stream.first() as InboxItem.Bundle).row.category)
+        assertEquals("t-e4", (stream[1] as InboxItem.Conversation).row.threadId)
+    }
+
+    @Test
+    fun aCategoryWithNoDispositionGetsNoLane() {
+        val lanes = CategoryLanes.from(listOf(label("Hobby", CategoryDisposition.NONE, priority = 0)))
+        val emails = listOf(email("e1", receivedAt = 1000, keywords = setOf(Keywords.categoryKeyword("Hobby"))))
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertTrue(lanes.pinned.isEmpty() && lanes.bundled.isEmpty())
+        assertEquals(1, InboxAssembler.stream(rows, lanes).size)
+        assertTrue(InboxAssembler.stream(rows, lanes).single() is InboxItem.Conversation)
+    }
+
+    @Test
+    fun anUnrankedCategorySortsBehindTheRankedOnes() {
+        val lanes = CategoryLanes.from(
+            listOf(
+                label("Zeta", CategoryDisposition.PINNED, priority = 1),
+                label("Alpha", CategoryDisposition.PINNED, priority = null),
+                label("Beta", CategoryDisposition.PINNED, priority = 0),
+            ),
+        )
+
+        assertEquals(listOf("beta", "zeta", "alpha"), lanes.pinned)
+        assertEquals("beta", lanes.resolve(listOf("alpha", "beta")))
+        assertNull(lanes.resolve(emptyList()))
+    }
+
+    @Test
+    fun aLabelOfAnotherAccountLeavesTheScopedLanesAlone() {
+        val all = listOf(
+            label("Hobby", CategoryDisposition.PINNED, priority = 0, accountId = "acct-a"),
+            label("Promotions", CategoryDisposition.PINNED, priority = 0, accountId = "acct-b"),
+        )
+
+        assertEquals(listOf("hobby"), CategoryLanes.from(all, accountScope = "acct-a").pinned)
+        assertEquals(listOf("hobby", "promotions"), CategoryLanes.from(all).pinned)
     }
 
     @Test

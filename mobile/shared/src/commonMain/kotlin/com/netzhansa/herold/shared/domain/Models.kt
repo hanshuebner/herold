@@ -33,7 +33,57 @@ data class Mailbox(
     val sortOrder: Int = 0,
     val totalEmails: Int = 0,
     val unreadEmails: Int = 0,
-)
+    /** How the label's category appears in the inbox (issue #333). */
+    val disposition: CategoryDisposition = CategoryDisposition.NONE,
+    /** The label's rank in the principal's priority list; null is unranked. */
+    val priority: Int? = null,
+) {
+    /**
+     * The category keyword identity of this label: herold case-folds
+     * keywords, so a label named "Promotions" carries the messages
+     * tagged `$category-promotions`.
+     */
+    val categoryName: String get() = name.lowercase()
+}
+
+/**
+ * A label's inbox disposition, as `Mailbox.disposition` carries it
+ * (server contract section "Mailbox disposition and priority", suite
+ * REQ-CAT-04/05/10/11). The server owns the setting; the client reads it
+ * and never derives it.
+ */
+enum class CategoryDisposition(val wire: String, val label: String) {
+    /** No lane: the messages sit in the stream like any other (REQ-CAT-04). */
+    NONE("none", "Normal"),
+
+    /** A tab above the stream; at most five (REQ-CAT-11). */
+    PINNED("pinned", "Pinned tab"),
+
+    /** One collapsed row, positioned by its newest member (REQ-CAT-10). */
+    BUNDLED("bundled", "Bundled"),
+
+    /** Deferred to a daily digest, so out of the stream (REQ-CAT-16). */
+    DAILY("daily", "Daily digest"),
+
+    /** Deferred to a weekly digest (REQ-CAT-16). */
+    WEEKLY("weekly", "Weekly digest"),
+
+    /** Labelled and archived: never in the inbox. */
+    FILED("filed", "Filed"),
+    ;
+
+    /** True when the category's messages are kept out of the inbox stream. */
+    val hidesFromInbox: Boolean get() = this == DAILY || this == WEEKLY || this == FILED
+
+    companion object {
+        /** At most five labels may be pinned (REQ-CAT-11, `tooManyPinned`). */
+        const val PINNED_LIMIT = 5
+
+        /** The disposition [value] names; an unknown one reads as [NONE]. */
+        fun from(value: String?): CategoryDisposition =
+            entries.firstOrNull { it.wire.equals(value, ignoreCase = true) } ?: NONE
+    }
+}
 
 /**
  * A mail address as a header carries it. Compose needs the structured
@@ -104,6 +154,12 @@ data class Email(
 
     /** The category this message carries, from its `$category-<name>` keyword. */
     val category: String? get() = keywords.firstNotNullOfOrNull { Keywords.categoryName(it) }
+
+    /**
+     * Every category the message carries. A message may be in several
+     * (REQ-CAT-01); the lane it shows in is decided by their priority.
+     */
+    val categories: Set<String> get() = keywords.mapNotNull { Keywords.categoryName(it) }.toSet()
 
     val senderDisplay: String get() = fromName.ifBlank { fromEmail }
 

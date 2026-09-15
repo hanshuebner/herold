@@ -22,6 +22,7 @@ import com.netzhansa.herold.shared.jmap.WireMailbox
 import com.netzhansa.herold.shared.jmap.WireManagedRule
 import com.netzhansa.herold.shared.jmap.WireSeenAddress
 import com.netzhansa.herold.shared.jmap.WireSnippet
+import com.netzhansa.herold.shared.jmap.MailboxSetOutcome
 import com.netzhansa.herold.shared.jmap.WireThread
 import kotlinx.serialization.json.JsonObject
 
@@ -63,11 +64,15 @@ class FakeJmapApi(
     /** What a `ManagedRule/set` answers; refusals go in its `errors`. */
     var ruleSetOutcome: RuleSetOutcome = RuleSetOutcome()
 
+    /** What `Mailbox/set` answers, and what it was called with. */
+    var mailboxSetOutcome: MailboxSetOutcome = MailboxSetOutcome()
+
     var sieve: String? = null
     var transparency: WireLlmTransparency? = null
     var inspect: List<WireLlmInspect> = emptyList()
 
     val ruleSetCalls = mutableListOf<Triple<Map<String, JsonObject>, Map<String, JsonObject>, List<String>>>()
+    val mailboxSetCalls = mutableListOf<Map<String, JsonObject>>()
     val threadMuteCalls = mutableListOf<Pair<String, Boolean>>()
     val blockedSenderCalls = mutableListOf<String>()
     var ruleGetCalls = 0
@@ -133,6 +138,17 @@ class FakeJmapApi(
     }
 
     override suspend fun mailboxChanges(accountId: String, sinceState: String): ChangesOutcome = mailboxChanges
+
+    override suspend fun mailboxSet(
+        accountId: String,
+        create: Map<String, JsonObject>,
+        update: Map<String, JsonObject>,
+        destroy: List<String>,
+    ): MailboxSetOutcome {
+        setFailure?.let { throw it }
+        mailboxSetCalls.add(update)
+        return mailboxSetOutcome
+    }
 
     override suspend fun emailQueryInbox(accountId: String, mailboxId: String, limit: Int): List<String> {
         inboxQueryCalls++

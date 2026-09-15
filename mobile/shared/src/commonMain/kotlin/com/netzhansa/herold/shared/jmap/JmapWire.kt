@@ -70,7 +70,43 @@ data class WireMailbox(
     val sortOrder: Long = 0,
     val totalEmails: Long = 0,
     val unreadEmails: Long = 0,
+    /**
+     * The category properties of issue #333: how the label appears in the
+     * inbox and where it ranks in the principal's priority list. A server
+     * that does not carry them leaves the defaults, which read as an
+     * unranked `none`.
+     */
+    val disposition: String = "none",
+    val priority: Int? = null,
 )
+
+/** What a `Mailbox/set` did, by mailbox id or creation key. */
+data class MailboxSetOutcome(
+    val created: Map<String, WireMailbox> = emptyMap(),
+    val updated: Set<String> = emptySet(),
+    val destroyed: List<String> = emptyList(),
+    /** Why an entry was refused, keyed the same way; the SetError type. */
+    val errorTypes: Map<String, String> = emptyMap(),
+    /** The refusal's description, for the message the user reads. */
+    val errorMessages: Map<String, String> = emptyMap(),
+) {
+    val errorType: String? get() = errorTypes.values.firstOrNull()
+
+    val errorMessage: String? get() = errorMessages.values.firstOrNull()
+
+    /**
+     * True when the server refused because the principal already holds
+     * five pinned labels (REQ-CAT-11); the client says so in the user's
+     * terms rather than repeating the wire word.
+     */
+    val isTooManyPinned: Boolean get() = errorTypes.values.any { it == SetErrors.TOO_MANY_PINNED }
+}
+
+/** SetError types the client acts on by name. */
+object SetErrors {
+    /** A sixth pinned label (`Mailbox/set`, REQ-CAT-11). */
+    const val TOO_MANY_PINNED = "tooManyPinned"
+}
 
 @Serializable
 data class WireAddress(

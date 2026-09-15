@@ -1,5 +1,6 @@
 package com.netzhansa.herold.shared.outbox
 
+import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.compose.AttachmentStatus
 import com.netzhansa.herold.shared.compose.ComposeAttachment
 import com.netzhansa.herold.shared.compose.ComposeMode
@@ -195,6 +196,36 @@ class OutboxDrainer(
         OutboxKind.DRAFT -> submitCompose(entry, submitToQueue = false)
         OutboxKind.SEND -> submitCompose(entry, submitToQueue = true)
         OutboxKind.RULE -> submitRule(entry)
+        OutboxKind.MAILBOX -> submitMailbox(entry)
+    }
+
+    /**
+     * A label write (issue #399). The server owns the ranked set - it
+     * renumbers every other ranked label around the one that moved - so
+     * the account's labels are read back on both outcomes: after a write
+     * that took, to pick up the renumbering, and after a refusal, to put
+     * the settings screen back on the server's truth.
+     */
+    private suspend fun submitMailbox(entry: OutboxEntry): StepResult {
+        val payload = runCatching {
+            outboxJson.decodeFromString<MailboxPayload>(entry.payload)
+        }.getOrNull() ?: return StepResult.Rejected("the queued label change could not be read")
+        if (payload.updates.isEmpty()) return StepResult.Done
+        val outcome = try {
+            api.mailboxSet(payload.accountId, update = payload.updates)
+        } catch (t: Throwable) {
+            return failureOf(t)
+        }
+        refreshMailboxes(payload.accountId)
+        if (outcome.isTooManyPinned) return StepResult.Rejected(CategoryActions.TOO_MANY_PINNED)
+        outcome.errorMessage?.let { return StepResult.Rejected(it) }
+        return StepResult.Done
+    }
+
+    /** Takes the server's labels into the store after a label write. */
+    private suspend fun refreshMailboxes(accountId: String) {
+        val fetched = runCatching { api.mailboxGet(accountId, null) }.getOrNull() ?: return
+        store.upsertMailboxes(fetched.list.map { it.toStoreRow(accountId) })
     }
 
     /**

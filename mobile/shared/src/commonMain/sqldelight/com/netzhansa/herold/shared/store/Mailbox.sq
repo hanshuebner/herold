@@ -12,6 +12,11 @@ CREATE TABLE mailbox (
     sortOrder INTEGER NOT NULL DEFAULT 0,
     totalEmails INTEGER NOT NULL DEFAULT 0,
     unreadEmails INTEGER NOT NULL DEFAULT 0,
+    -- The category properties the server owns (issue #333): how the
+    -- label appears in the inbox, and its rank in the principal's one
+    -- priority list. The inbox reads its lanes from these.
+    disposition TEXT NOT NULL DEFAULT 'none',
+    priority INTEGER,
     PRIMARY KEY (accountId, id)
 );
 
@@ -24,8 +29,8 @@ selectForAccount:
 SELECT * FROM mailbox WHERE accountId = ? ORDER BY sortOrder, name;
 
 upsert:
-INSERT OR REPLACE INTO mailbox(accountId, id, name, role, parentId, sortOrder, totalEmails, unreadEmails)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO mailbox(accountId, id, name, role, parentId, sortOrder, totalEmails, unreadEmails, disposition, priority)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteById:
 DELETE FROM mailbox WHERE accountId = ? AND id = ?;

@@ -15,6 +15,19 @@ interface JmapApi {
 
     suspend fun mailboxChanges(accountId: String, sinceState: String): ChangesOutcome
 
+    /**
+     * `Mailbox/set`. The client writes the category properties of issue
+     * #333 with it - a label's `disposition` and its `priority` - and a
+     * reorder moves several labels in one call, so a drag costs one round
+     * trip. A `priority` of JSON null unranks the label.
+     */
+    suspend fun mailboxSet(
+        accountId: String,
+        create: Map<String, JsonObject> = emptyMap(),
+        update: Map<String, JsonObject> = emptyMap(),
+        destroy: List<String> = emptyList(),
+    ): MailboxSetOutcome
+
     /** Inbox ids newest first (`Email/query` with a receivedAt sort). */
     suspend fun emailQueryInbox(accountId: String, mailboxId: String, limit: Int): List<String>
 

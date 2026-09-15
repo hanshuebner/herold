@@ -1,0 +1,7 @@
+-- Schema 7 -> 8: a label's category disposition and its rank in the
+-- principal's priority list (issue #399, server issue #333, suite
+-- REQ-CAT-04/05/10/11). Additive: an install keeps its synced mail, and
+-- both columns fill with the server's values on the next Mailbox/get.
+
+ALTER TABLE mailbox ADD COLUMN disposition TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE mailbox ADD COLUMN priority INTEGER;

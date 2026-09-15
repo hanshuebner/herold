@@ -3,6 +3,7 @@ package com.netzhansa.herold.shared.store
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import com.netzhansa.herold.shared.domain.Attachment
+import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.MailAddress
 import com.netzhansa.herold.shared.outbox.NewOutboxEntry
 import com.netzhansa.herold.shared.outbox.OutboxEntry
@@ -105,6 +106,8 @@ class SqlDelightLocalStore(
                     sortOrder = mailbox.sortOrder.toLong(),
                     totalEmails = mailbox.totalEmails.toLong(),
                     unreadEmails = mailbox.unreadEmails.toLong(),
+                    disposition = mailbox.disposition.wire,
+                    priority = mailbox.priority?.toLong(),
                 )
             }
         }
@@ -521,6 +524,8 @@ private fun Mailbox.toDomain() = DomainMailbox(
     sortOrder = sortOrder.toInt(),
     totalEmails = totalEmails.toInt(),
     unreadEmails = unreadEmails.toInt(),
+    disposition = CategoryDisposition.from(disposition),
+    priority = priority?.toInt(),
 )
 
 private fun Email.toDomain() = DomainEmail(
