@@ -239,6 +239,7 @@ verify-batch: prep-web
 	$(GO) build -trimpath ./...
 	$(GO) build -trimpath -tags nofrontend ./...
 	./scripts/test-lanes.sh
+	pnpm --dir web install --frozen-lockfile
 	pnpm --dir web run check
 	pnpm --dir web run test
 
