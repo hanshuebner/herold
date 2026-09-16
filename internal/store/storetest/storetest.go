@@ -332,6 +332,12 @@ func Run(t *testing.T, f Factory) {
 		{"CategorisationConfig_PromptChangeClearsDerived", testCategorisationConfigPromptChangeClearsDerived},
 		{"CategorisationConfig_EpochGuard_StaleWriteDropped", testCategorisationConfigEpochGuardStaleWriteDropped},
 		{"CategorisationConfig_EpochGuard_PromptChangeBumpsEpoch", testCategorisationConfigEpochBumpsOnPromptChange},
+		// -- issue #406: derived categories get a label mailbox ---
+		{"SetDerivedCategories_CreatesLabelMailboxes", testSetDerivedCategoriesCreatesLabelMailboxes},
+		{"SetDerivedCategories_AdoptsExistingLabel", testSetDerivedCategoriesAdoptsExistingLabel},
+		{"SetDerivedCategories_UserDispositionSurvivesRecompute", testSetDerivedCategoriesUserDispositionSurvivesRecompute},
+		{"SetLLMClassification_CreatesLabelMailboxes", testSetLLMClassificationCreatesLabelMailboxes},
+		{"SetLLMClassification_DoesNotCreateLabelWithNoCategory", testSetLLMClassificationDoesNotCreateLabelWithNoCategory},
 		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
 		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},
 		{"LLMClassification_SetGet_CategoryOnly", testLLMClassificationCategoryOnly},

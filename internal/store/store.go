@@ -2167,6 +2167,17 @@ type Metadata interface {
 	// calls with the same expected epoch are also safe: exactly one wins and
 	// the others are silently dropped — correct behaviour, since only the latest
 	// persisted categories are meaningful once the prompt has not changed.
+	//
+	// When the write actually takes effect (expectedEpoch matches), the same
+	// transaction ensures a label Mailbox exists for every name in
+	// categories (issue #406, ADR-0004 "a category is a label"): a name with
+	// no existing mailbox is created with Disposition ==
+	// MailboxDispositionPinned and the next dense Priority in categories'
+	// order; a name that already has a mailbox (hand-created by the user or
+	// left over from an earlier recompute) is adopted untouched — its
+	// Disposition and Priority are never rewritten by this method. A name
+	// absent from a later call is not touched: its label and disposition
+	// stay exactly as they are.
 	SetDerivedCategories(ctx context.Context, pid PrincipalID, categories []string, expectedEpoch int64) (bool, error)
 
 	// SetLLMClassification upserts the per-message LLM classification
