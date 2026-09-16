@@ -8647,16 +8647,22 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
 	msg := mustInsertMessage(t, s, mb.ID, "llm-signals@host")
 
-	verdict := "ham"
+	verdict := "spam"
+	modelVerdict := "ham"
 	confidence := 0.15
 	spamSignals := []string{"unsolicited_bulk_marketing", "urgency_pressure"}
 	hamSignals := []string{"passing_authentication"}
 	inconsistent := true
 
+	// verdict="spam" / modelVerdict="ham" mirrors migration 0112 (re
+	// #396, second round): SpamVerdict holds what herold actually
+	// applied after server-side resolution, SpamModelVerdict preserves
+	// the plugin's own original answer.
 	rec := store.LLMClassificationRecord{
 		MessageID:        msg.ID,
 		PrincipalID:      p.ID,
 		SpamVerdict:      &verdict,
+		SpamModelVerdict: &modelVerdict,
 		SpamConfidence:   &confidence,
 		SpamSignals:      &spamSignals,
 		HamSignals:       &hamSignals,
@@ -8678,6 +8684,9 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	if got.SpamInconsistent == nil || !*got.SpamInconsistent {
 		t.Fatalf("SpamInconsistent = %v, want true", got.SpamInconsistent)
 	}
+	if got.SpamModelVerdict == nil || *got.SpamModelVerdict != modelVerdict {
+		t.Fatalf("SpamModelVerdict = %v, want %q", got.SpamModelVerdict, modelVerdict)
+	}
 
 	// BatchGet must surface the same fields.
 	batch, err := s.Meta().BatchGetLLMClassifications(ctx, []store.MessageID{msg.ID})
@@ -8693,6 +8702,9 @@ func testLLMClassificationSignalsRoundtrip(t *testing.T, s store.Store) {
 	}
 	if brec.SpamInconsistent == nil || !*brec.SpamInconsistent {
 		t.Fatalf("batch SpamInconsistent = %v, want true", brec.SpamInconsistent)
+	}
+	if brec.SpamModelVerdict == nil || *brec.SpamModelVerdict != modelVerdict {
+		t.Fatalf("batch SpamModelVerdict = %v, want %q", brec.SpamModelVerdict, modelVerdict)
 	}
 }
 
@@ -8728,6 +8740,9 @@ func testLLMClassificationSignalsNilByDefault(t *testing.T, s store.Store) {
 	}
 	if got.SpamInconsistent == nil || *got.SpamInconsistent {
 		t.Fatalf("SpamInconsistent = %v, want false", got.SpamInconsistent)
+	}
+	if got.SpamModelVerdict != nil {
+		t.Fatalf("SpamModelVerdict = %v, want nil (no server-side resolution happened)", *got.SpamModelVerdict)
 	}
 }
 

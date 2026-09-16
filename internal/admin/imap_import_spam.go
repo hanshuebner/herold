@@ -243,6 +243,19 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 			rec.SpamReason = &reason
 		}
 	}
+	// SpamModel records the configured classifier plugin's name (re #396,
+	// mirroring protosmtp's persistLLMRecord fix): a.plugin is only
+	// non-empty when RecordVerdict is reached via an actual attempted
+	// call (Classify gates on it), so it is always the plugin that
+	// produced this verdict. The RawResponse check is kept as a
+	// defensive override for a future plugin contract that reports its
+	// own model name on the wire -- no shipped plugin does today, which
+	// is exactly why this field stayed NULL on the import path after the
+	// first round's fix covered only the SMTP path.
+	if a.plugin != "" {
+		engine := a.plugin
+		rec.SpamModel = &engine
+	}
 	if raw := classification.RawResponse; raw != nil {
 		if mdl, ok := raw["model"].(string); ok && mdl != "" {
 			rec.SpamModel = &mdl
@@ -252,12 +265,21 @@ func (a *imapImportSpamAdapter) RecordVerdict(ctx context.Context, principalID s
 	rec.HamSignals = spam.OptStringSlice(classification.HamSignals)
 	inconsistent := classification.Inconsistent
 	rec.SpamInconsistent = &inconsistent
+	// SpamModelVerdict (re #396, second round) preserves the plugin's own
+	// verdict when Classify server-resolved a Ham verdict to Spam/Suspect
+	// on a decisive spam signal; nil (untouched) when no resolution
+	// happened.
+	if classification.ModelVerdict != spam.Unclassified {
+		mv := classification.ModelVerdict.String()
+		rec.SpamModelVerdict = &mv
+	}
 	// Build the user-visible prompt-as-applied the same way protosmtp's
 	// persistLLMRecord does: the structured spam.Request context sent to
 	// the plugin, not the plugin's system prompt.
 	req := spam.BuildRequest(msg, nil)
 	if own, oerr := spam.ResolveOwnAddresses(ctx, a.st.Meta(), principalID, nil); oerr == nil {
 		req.OwnAddresses = own
+		req.RecipientNotOwn = spam.RecipientNotOwn(msg, own)
 	} else {
 		a.logger.WarnContext(ctx, "imap-import spam: resolve own addresses",
 			slog.Uint64("principal_id", uint64(principalID)),

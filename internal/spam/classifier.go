@@ -99,15 +99,23 @@ type Classification struct {
 	// or "none" response_format model is not required to report them).
 	SpamSignals []string
 	HamSignals  []string
-	// Inconsistent is true when Verdict is Ham while SpamSignals names at
-	// least one spam signal (re #396): the model's own stated reasoning
-	// contradicts the verdict it returned (the motivating report: a cold
-	// unsolicited marketing pitch scored ham while the reason text named
-	// every criterion the prompt lists for unsolicited bulk marketing).
-	// Set by Classify, logged at warn level there, and persisted onto the
-	// transparency record for display; it never changes Verdict -- the
-	// contradiction is surfaced, not resolved, on the server side.
+	// Inconsistent is true when Verdict (as reported by the plugin,
+	// before any server-side resolution below) was Ham while SpamSignals
+	// names at least one spam signal (re #396): the model's own stated
+	// reasoning contradicts the verdict it returned. Set by Classify,
+	// logged at warn level there, and persisted onto the transparency
+	// record for display. It is a marker of the contradiction, not of
+	// whether Verdict was resolved away from it -- see ModelVerdict.
 	Inconsistent bool
+	// ModelVerdict is Unclassified unless Classify server-resolved a Ham
+	// verdict to Spam or Suspect because SpamSignals matched a decisive
+	// signal rule (re #396, second round: flagging alone left every
+	// contradictory ham verdict delivered to the Inbox). When non-
+	// Unclassified, it carries the plugin's own original verdict (always
+	// Ham) so the transparency record keeps both: Verdict is what herold
+	// actually applied, ModelVerdict is what the classifier itself
+	// reported.
+	ModelVerdict Verdict
 }
 
 // PluginInvoker is the minimum plugin-supervisor surface Classifier needs:
@@ -261,6 +269,106 @@ type ClassifyContext struct {
 	Categories []CategoryOption
 }
 
+// DefaultDecisiveSpamSignals is the starting decisive-signal set (re
+// #396, second round): a Ham verdict whose SpamSignals match one of
+// these entries is resolved to Spam (or Suspect, see
+// WithSuspectBelowConfidence) rather than delivered as Ham -- flagging
+// the contradiction alone (the first round's fix) left every one of it
+// delivered to the Inbox regardless. Each entry is one or more
+// "+"-joined signal names; every name in an entry must be present in
+// SpamSignals (AND) for that entry to match, and any entry matching is
+// enough (OR across entries). Matched case-insensitively.
+// "unauthenticated_sender+dmarc_fail" requires both together: either
+// alone is common on legitimately forwarded mail and not, by itself,
+// decisive.
+var DefaultDecisiveSpamSignals = []string{
+	"unsolicited_bulk_marketing",
+	"recipient_not_own",
+	"unauthenticated_sender+dmarc_fail",
+	"phishing",
+}
+
+// parseDecisiveSignals splits each raw entry on "+" into an AND-group of
+// lower-cased, trimmed signal names, dropping empty names and empty
+// groups. The wire/config representation (a flat []string, each entry
+// optionally "+"-joined) is chosen to keep system.toml's
+// decisive_spam_signals a plain string array rather than a nested table.
+func parseDecisiveSignals(raw []string) [][]string {
+	out := make([][]string, 0, len(raw))
+	for _, entry := range raw {
+		parts := strings.Split(entry, "+")
+		rule := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.ToLower(strings.TrimSpace(p))
+			if p != "" {
+				rule = append(rule, p)
+			}
+		}
+		if len(rule) > 0 {
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+// matchDecisiveSignal reports whether signals satisfies any rule in
+// rules (AND within a rule, OR across rules), matching names case-
+// insensitively, and returns the first matching rule rendered as
+// "sig1+sig2" for logging.
+func matchDecisiveSignal(signals []string, rules [][]string) (string, bool) {
+	if len(rules) == 0 || len(signals) == 0 {
+		return "", false
+	}
+	have := make(map[string]struct{}, len(signals))
+	for _, s := range signals {
+		have[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
+	}
+	for _, rule := range rules {
+		matched := true
+		for _, want := range rule {
+			if _, ok := have[want]; !ok {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return strings.Join(rule, "+"), true
+		}
+	}
+	return "", false
+}
+
+// RecipientNotOwn reports whether msg has at least one recipient
+// context to judge (ownAddresses is non-empty) and none of its To/Cc
+// addresses appear in ownAddresses (re #396, second round): the
+// request-level fact BuildRequest cannot compute on its own since it
+// does not resolve own_addresses. Callers set Request.RecipientNotOwn
+// from this after resolving ownAddresses; it is also used to rebuild
+// the transparency record's "prompt as applied" so that byte-matches
+// what the plugin actually received. Always false when ownAddresses is
+// empty -- no local recipient was resolved, so there is no ownership
+// fact to assert either way.
+func RecipientNotOwn(msg mailparse.Message, ownAddresses []string) bool {
+	if len(ownAddresses) == 0 {
+		return false
+	}
+	own := make(map[string]struct{}, len(ownAddresses))
+	for _, a := range ownAddresses {
+		own[strings.ToLower(strings.TrimSpace(a))] = struct{}{}
+	}
+	for _, a := range msg.Envelope.To {
+		if _, ok := own[strings.ToLower(strings.TrimSpace(a.Address))]; ok {
+			return false
+		}
+	}
+	for _, a := range msg.Envelope.Cc {
+		if _, ok := own[strings.ToLower(strings.TrimSpace(a.Address))]; ok {
+			return false
+		}
+	}
+	return true
+}
+
 // Classifier orchestrates one classify call. Callers construct a single
 // Classifier and reuse it across deliveries; it is safe for concurrent
 // use.
@@ -269,6 +377,12 @@ type Classifier struct {
 	logger  *slog.Logger
 	clock   clock.Clock
 	timeout time.Duration
+	// decisiveSignals and suspectBelow implement the server-side
+	// resolution of an inconsistent Ham verdict (re #396, second
+	// round). See DefaultDecisiveSpamSignals, WithDecisiveSpamSignals,
+	// WithSuspectBelowConfidence.
+	decisiveSignals [][]string
+	suspectBelow    float64
 }
 
 // New returns a Classifier that invokes methods on the supplied
@@ -282,10 +396,11 @@ func New(invoker PluginInvoker, logger *slog.Logger, clk clock.Clock) *Classifie
 		clk = clock.NewReal()
 	}
 	return &Classifier{
-		invoker: invoker,
-		logger:  logger,
-		clock:   clk,
-		timeout: DefaultTimeout,
+		invoker:         invoker,
+		logger:          logger,
+		clock:           clk,
+		timeout:         DefaultTimeout,
+		decisiveSignals: parseDecisiveSignals(DefaultDecisiveSpamSignals),
 	}
 }
 
@@ -294,6 +409,33 @@ func New(invoker PluginInvoker, logger *slog.Logger, clk clock.Clock) *Classifie
 func (c *Classifier) WithTimeout(d time.Duration) *Classifier {
 	cp := *c
 	cp.timeout = d
+	return &cp
+}
+
+// WithDecisiveSpamSignals returns a Classifier that resolves a Ham
+// verdict to Spam/Suspect when SpamSignals matches one of rules instead
+// of DefaultDecisiveSpamSignals (re #396, second round; operator-
+// configurable via system.toml [spam].decisive_spam_signals). A nil or
+// empty rules disables server-side resolution entirely -- Inconsistent
+// is still flagged, but Verdict is never overridden -- matching the
+// first round's behaviour for an operator who wants the model's verdict
+// respected outright.
+func (c *Classifier) WithDecisiveSpamSignals(rules []string) *Classifier {
+	cp := *c
+	cp.decisiveSignals = parseDecisiveSignals(rules)
+	return &cp
+}
+
+// WithSuspectBelowConfidence returns a Classifier that resolves a
+// decisive-signal Ham verdict to Suspect, rather than Spam, when the
+// plugin's reported score (its own confidence that the message is
+// spam) is below v (re #396, second round, REQ-FILT-02). The zero value
+// (the New default) means every decisive-signal resolution lands on
+// Spam regardless of score -- the safer default when the operator has
+// not tuned this.
+func (c *Classifier) WithSuspectBelowConfidence(v float64) *Classifier {
+	cp := *c
+	cp.suspectBelow = v
 	return &cp
 }
 
@@ -335,6 +477,10 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 	built := BuildRequest(msg, auth)
 	built.TimeoutMs = c.remainingBudgetMs(ctx)
 	built.OwnAddresses = ownAddresses
+	// re #396 (second round): make the recipient signal impossible for
+	// the model to miss, rather than relying on it to notice a To/Cc
+	// address absent from own_addresses on its own.
+	built.RecipientNotOwn = RecipientNotOwn(msg, ownAddresses)
 
 	method := ClassifyMethod
 	var req any = built
@@ -395,6 +541,27 @@ func (c *Classifier) Classify(ctx context.Context, msg mailparse.Message, auth *
 			"activity", observe.ActivitySystem,
 			"score", cl.Score,
 			"spam_signals", cl.SpamSignals)
+		// re #396 (second round): flagging alone left every one of
+		// these delivered to the Inbox -- the maintainer's hand-back on
+		// the first round's fix reported this directly (29 flagged rows,
+		// all four spam-signal-bearing ham verdicts delivered to the
+		// Inbox regardless). A decisive signal resolves the verdict
+		// herold actually applies; ModelVerdict keeps the plugin's own
+		// answer for the transparency record. Non-decisive signals stay
+		// flagged-only, matching the first round's behaviour.
+		if rule, ok := matchDecisiveSignal(cl.SpamSignals, c.decisiveSignals); ok {
+			resolved := Spam
+			if c.suspectBelow > 0 && cl.Score >= 0 && cl.Score < c.suspectBelow {
+				resolved = Suspect
+			}
+			cl.ModelVerdict = Ham
+			cl.Verdict = resolved
+			log.WarnContext(ctx, "spam classifier: resolving ham verdict against decisive spam signal",
+				"activity", observe.ActivitySystem,
+				"score", cl.Score,
+				"decisive_signal", rule,
+				"resolved_verdict", resolved.String())
+		}
 	}
 	log.DebugContext(ctx, "spam classification verdict",
 		"activity", observe.ActivitySystem,
@@ -611,6 +778,16 @@ type Request struct {
 	// account as scraped. Populated by spam.ResolveOwnAddresses; empty
 	// when the message has no local recipient to resolve one for.
 	OwnAddresses []string `json:"own_addresses,omitempty"`
+	// RecipientNotOwn is true when none of the message's To/Cc addresses
+	// appear in OwnAddresses (re #396, second round): set by Classify via
+	// RecipientNotOwn, not by BuildRequest, since BuildRequest does not
+	// resolve own addresses. Omitted (false) whenever OwnAddresses itself
+	// is empty -- no local recipient was resolved, so there is no
+	// ownership fact to assert. Sent explicitly so a classifier plugin
+	// can add "recipient_not_own" to its own spam_signals deterministically
+	// rather than relying on the model to notice an address missing from
+	// own_addresses on its own.
+	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this RPC, in
 	// milliseconds, as of the moment the request was built (issue #331).
 	// The plugin SDK's per-request context wiring (plugins/sdk/sdk.go's

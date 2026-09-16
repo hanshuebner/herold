@@ -457,6 +457,117 @@ func TestClassify_SignalsOptionalUnderJSONObject(t *testing.T) {
 	}
 }
 
+// TestMailClassify_RecipientNotOwnAppendedDeterministically is the
+// #396 second-round plugin unit test for item 2: when the request
+// carries recipient_not_own: true, the plugin appends
+// "recipient_not_own" to spam_signals itself, even though the model's
+// own response (deliberately, here) never mentions it -- the decision
+// does not depend on the model noticing.
+func TestMailClassify_RecipientNotOwnAppendedDeterministically(t *testing.T) {
+	var captured string
+	var mu sync.Mutex
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(body)
+		mu.Unlock()
+		// The model's own reason/signals say nothing about the
+		// recipient -- mirrors the reported message 3637 shape.
+		replyJSON(w, `{"verdict":"ham","score":0.08,"reason":"automated acknowledgment from a legitimate business","category":""}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.7,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("Vielen Dank fuer Ihre Anfrage.")
+	payload["own_addresses"] = []string{"hans@huebner.org"}
+	payload["recipient_not_own"] = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.mailClassify(ctx, payload)
+	if err != nil {
+		t.Fatalf("mail.classify: %v", err)
+	}
+
+	// The LLM was told the fact (defense in depth: the model may weigh
+	// it even though the server does not rely on that).
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	if !strings.Contains(body, `\"recipient_not_own\":true`) {
+		t.Fatalf("LLM body missing recipient_not_own; got %s", body)
+	}
+
+	// The plugin's own result carries the signal regardless of what the
+	// model reported.
+	gotSpamSignals, _ := res["spam_signals"].([]any)
+	found := false
+	for _, s := range gotSpamSignals {
+		if fmt.Sprint(s) == "recipient_not_own" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("spam_signals = %v, want recipient_not_own present (appended deterministically)", res["spam_signals"])
+	}
+}
+
+// TestClassify_RecipientNotOwnNotDuplicatedWhenModelAlreadyReportsIt
+// verifies appendSignalIfMissing's idempotency: a model that already
+// named recipient_not_own itself does not end up with it twice.
+func TestClassify_RecipientNotOwnNotDuplicatedWhenModelAlreadyReportsIt(t *testing.T) {
+	llm := newFakeLLM(t)
+	llm.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		replyJSON(w, `{"verdict":"ham","score":0.08,"reason":"x","spam_signals":["recipient_not_own"]}`)
+	})
+
+	bin := buildPlugin(t)
+	p := spawnPlugin(t, bin)
+	defer p.close()
+
+	p.initialize(t)
+	if err := p.configure(t, map[string]any{
+		"endpoint":       llm.endpoint(),
+		"model":          "fake",
+		"spam_threshold": 0.7,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	payload := canonicalPayload("x")
+	payload["own_addresses"] = []string{"hans@huebner.org"}
+	payload["recipient_not_own"] = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.classify(ctx, payload)
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	gotSpamSignals, _ := res["spam_signals"].([]any)
+	count := 0
+	for _, s := range gotSpamSignals {
+		if fmt.Sprint(s) == "recipient_not_own" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("spam_signals = %v, want exactly one recipient_not_own entry, got %d", res["spam_signals"], count)
+	}
+}
+
 // TestClassify_FullPayloadReachesLLM asserts that every field
 // produced by internal/spam.BuildRequest survives the sdk unmarshal
 // and lands in the LLM's user-turn JSON. Before Wave 3 the plugin

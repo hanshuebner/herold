@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -892,13 +893,17 @@ func TestClassify_ColdMarketingPitchWithSpamSignalsIsSpam(t *testing.T) {
 	}
 }
 
-// TestClassify_HamVerdictWithSpamSignalsIsFlaggedInconsistent is the
-// #396 regression test for the reported contradiction itself: a model
-// that returns verdict=ham alongside a spam_signals entry naming
-// unsolicited bulk marketing (the reported reason text) must have that
-// contradiction surfaced -- logged and flagged on the Classification --
-// without the server ever overriding the verdict.
-func TestClassify_HamVerdictWithSpamSignalsIsFlaggedInconsistent(t *testing.T) {
+// TestClassify_HamVerdictWithDecisiveSpamSignalResolvedToSpam is the
+// #396 regression test for the reported contradiction itself, second
+// round: a model that returns verdict=ham, score=0.15 (a low spam
+// probability, matching the reported "ham with high confidence")
+// alongside a spam_signals entry naming unsolicited bulk marketing (the
+// reported reason text) must have that verdict resolved to Spam --
+// flagging alone (the first round's fix) left it delivered to the Inbox,
+// which the maintainer's hand-back reported directly (29 flagged rows in
+// production, all four of them still delivered). ModelVerdict keeps the
+// plugin's own Ham answer for the transparency record.
+func TestClassify_HamVerdictWithDecisiveSpamSignalResolvedToSpam(t *testing.T) {
 	msg := buildMessage(t, coldMarketingPitchRaw)
 	auth := newAuth(mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthPass, mailauth.AuthNone, "chopscarnesyparrillas.com")
 
@@ -911,9 +916,36 @@ func TestClassify_HamVerdictWithSpamSignalsIsFlaggedInconsistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	// The verdict is surfaced as reported, never overridden server-side.
+	if r.Verdict != Spam {
+		t.Fatalf("verdict = %v, want Spam (a decisive spam signal on a Ham verdict must be resolved)", r.Verdict)
+	}
+	if r.ModelVerdict != Ham {
+		t.Fatalf("ModelVerdict = %v, want Ham (the plugin's own verdict is preserved for the transparency record)", r.ModelVerdict)
+	}
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true for a Ham verdict naming a spam signal")
+	}
+}
+
+// TestClassify_HamVerdictWithNonDecisiveSpamSignalOnlyFlagged verifies
+// the first round's flag-only behaviour still applies to a spam_signals
+// entry that is not in the decisive set: surfaced (Inconsistent), never
+// overridden.
+func TestClassify_HamVerdictWithNonDecisiveSpamSignalOnlyFlagged(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("p", ClassifyMethod, func(_ context.Context, _ any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.4,"reason":"a little pushy but plausible","spam_signals":["urgency_pressure"],"ham_signals":["known_correspondent"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
 	if r.Verdict != Ham {
-		t.Fatalf("verdict = %v, want Ham (the server never overrides the plugin's verdict)", r.Verdict)
+		t.Fatalf("verdict = %v, want Ham (urgency_pressure is not a decisive signal)", r.Verdict)
+	}
+	if r.ModelVerdict != Unclassified {
+		t.Fatalf("ModelVerdict = %v, want Unclassified (no resolution happened)", r.ModelVerdict)
 	}
 	if !r.Inconsistent {
 		t.Fatalf("Inconsistent = false, want true for a Ham verdict naming a spam signal")
@@ -934,6 +966,159 @@ func TestClassify_HamVerdictNoSpamSignalsNotInconsistent(t *testing.T) {
 	}
 	if r.Inconsistent {
 		t.Fatalf("Inconsistent = true, want false for a Ham verdict with no spam_signals")
+	}
+}
+
+// TestClassify_RecipientNotOwnAppendedByPluginResolvesHamToSpam is the
+// #396 second-round evaluation case for the relayed-auto-reply shape
+// (the hand-back's message 3637: a Google Group relay to an address the
+// principal does not own, verdict ham, score 0.08, no spam_signals the
+// model itself thought to name). A classifier plugin that -- per
+// Request.RecipientNotOwn / item 2 of the hand-back -- deterministically
+// adds "recipient_not_own" to its own spam_signals must have that
+// resolved to Spam here exactly as a model-supplied decisive signal
+// would be; Classify does not care which side added the name.
+func TestClassify_RecipientNotOwnAppendedByPluginResolvesHamToSpam(t *testing.T) {
+	const raw = "From: Jamestown <no-reply@jamestown.example>\r\n" +
+		"To: 3rc@xxdz88.com\r\n" +
+		"List-Id: <3rc.xxdz88.com>\r\n" +
+		"Precedence: list\r\n" +
+		"Subject: Ihr Anliegen\r\n" +
+		"Date: Wed, 16 Sep 2026 08:52:00 +0000\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"Vielen Dank fuer Ihre Anfrage.\r\n"
+	msg := buildMessage(t, raw)
+	own := []string{"hans@huebner.org"}
+
+	var gotReq Request
+	invoker := newFakeInvoker()
+	invoker.handle("herold-spam-llm", ClassifyMethod, func(_ context.Context, params any) (json.RawMessage, error) {
+		gotReq = params.(Request)
+		return json.RawMessage(`{"verdict":"ham","score":0.08,"reason":"automated acknowledgment from a legitimate business","spam_signals":["recipient_not_own"],"ham_signals":[]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+	r, err := c.Classify(context.Background(), msg, nil, "herold-spam-llm", ClassifyContext{}, own)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if !gotReq.RecipientNotOwn {
+		t.Fatalf("request recipient_not_own = false, want true: To is 3rc@xxdz88.com, own_addresses is %v", own)
+	}
+	if r.Verdict != Spam {
+		t.Fatalf("verdict = %v, want Spam (recipient_not_own is a decisive signal)", r.Verdict)
+	}
+	if r.ModelVerdict != Ham {
+		t.Fatalf("ModelVerdict = %v, want Ham", r.ModelVerdict)
+	}
+}
+
+// TestClassify_RequestCarriesRecipientNotOwn verifies
+// Request.RecipientNotOwn (re #396 item 2) is set exactly when
+// own_addresses is non-empty and no To/Cc address is in it, mirroring
+// TestClassify_OwnAddressNotSpamSignal's own_addresses wiring check.
+func TestClassify_RequestCarriesRecipientNotOwn(t *testing.T) {
+	cases := []struct {
+		name string
+		to   string
+		own  []string
+		want bool
+	}{
+		{name: "recipient owned", to: "hans@huebner.org", own: []string{"hans@huebner.org"}, want: false},
+		{name: "recipient not owned", to: "someone-else@example.test", own: []string{"hans@huebner.org"}, want: true},
+		{name: "no own_addresses resolved", to: "someone-else@example.test", own: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "From: a@b.test\r\nTo: " + tc.to + "\r\nSubject: s\r\n\r\nbody\r\n"
+			msg := buildMessage(t, raw)
+			var gotReq Request
+			invoker := newFakeInvoker()
+			invoker.handle("p", ClassifyMethod, func(_ context.Context, params any) (json.RawMessage, error) {
+				gotReq = params.(Request)
+				return json.RawMessage(`{"verdict":"ham","score":0.05,"reason":"x"}`), nil
+			})
+			c := New(invoker, silentLogger(), clock.NewFake(time.Now()))
+			if _, err := c.Classify(context.Background(), msg, nil, "p", ClassifyContext{}, tc.own); err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if gotReq.RecipientNotOwn != tc.want {
+				t.Fatalf("RecipientNotOwn = %v, want %v", gotReq.RecipientNotOwn, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassify_SuspectBelowConfidenceDowngradesDecisiveResolution
+// verifies WithSuspectBelowConfidence (re #396 item 1, REQ-FILT-02): a
+// decisive-signal Ham verdict whose score is below the configured
+// threshold resolves to Suspect, not Spam; at/above it, Spam.
+func TestClassify_SuspectBelowConfidenceDowngradesDecisiveResolution(t *testing.T) {
+	respond := func(score float64) func(context.Context, any) (json.RawMessage, error) {
+		return func(context.Context, any) (json.RawMessage, error) {
+			return json.RawMessage(fmt.Sprintf(`{"verdict":"ham","score":%v,"reason":"x","spam_signals":["phishing"]}`, score)), nil
+		}
+	}
+	t.Run("below threshold resolves suspect", func(t *testing.T) {
+		invoker := newFakeInvoker()
+		invoker.handle("p", ClassifyMethod, respond(0.1))
+		c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithSuspectBelowConfidence(0.3)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if r.Verdict != Suspect {
+			t.Fatalf("verdict = %v, want Suspect (score 0.1 < threshold 0.3)", r.Verdict)
+		}
+	})
+	t.Run("at or above threshold resolves spam", func(t *testing.T) {
+		invoker := newFakeInvoker()
+		invoker.handle("p", ClassifyMethod, respond(0.5))
+		c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithSuspectBelowConfidence(0.3)
+		r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if r.Verdict != Spam {
+			t.Fatalf("verdict = %v, want Spam (score 0.5 >= threshold 0.3)", r.Verdict)
+		}
+	})
+}
+
+// TestClassify_WithDecisiveSpamSignalsEmptyDisablesResolution verifies
+// an operator can opt back into the first round's flag-only behaviour by
+// configuring an empty decisive set.
+func TestClassify_WithDecisiveSpamSignalsEmptyDisablesResolution(t *testing.T) {
+	invoker := newFakeInvoker()
+	invoker.handle("p", ClassifyMethod, func(context.Context, any) (json.RawMessage, error) {
+		return json.RawMessage(`{"verdict":"ham","score":0.1,"reason":"x","spam_signals":["unsolicited_bulk_marketing"]}`), nil
+	})
+	c := New(invoker, silentLogger(), clock.NewFake(time.Now())).WithDecisiveSpamSignals(nil)
+	r, err := c.Classify(context.Background(), buildMessage(t, canonMsg), nil, "p", ClassifyContext{}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if r.Verdict != Ham {
+		t.Fatalf("verdict = %v, want Ham (decisive resolution disabled)", r.Verdict)
+	}
+	if !r.Inconsistent {
+		t.Fatalf("Inconsistent = false, want true (flagging is independent of resolution)")
+	}
+}
+
+// TestMatchDecisiveSignal_ANDGroupRequiresAllNames verifies a "+"-joined
+// decisive entry only matches when every named signal is present, not
+// on a partial match.
+func TestMatchDecisiveSignal_ANDGroupRequiresAllNames(t *testing.T) {
+	rules := parseDecisiveSignals([]string{"unauthenticated_sender+dmarc_fail"})
+	if _, ok := matchDecisiveSignal([]string{"unauthenticated_sender"}, rules); ok {
+		t.Fatalf("matched on unauthenticated_sender alone, want no match (AND requires both)")
+	}
+	if _, ok := matchDecisiveSignal([]string{"dmarc_fail"}, rules); ok {
+		t.Fatalf("matched on dmarc_fail alone, want no match (AND requires both)")
+	}
+	if _, ok := matchDecisiveSignal([]string{"DMARC_Fail", "Unauthenticated_Sender"}, rules); !ok {
+		t.Fatalf("did not match with both names present (case-insensitively), want match")
 	}
 }
 

@@ -213,11 +213,17 @@ type jmapSpamDetail struct {
 	// neither key.
 	SpamSignals []string `json:"spamSignals,omitempty"`
 	HamSignals  []string `json:"hamSignals,omitempty"`
-	// Inconsistent is true when Verdict is "ham" while SpamSignals names
-	// at least one spam signal (re #396): the classifier's own reported
-	// reasoning contradicts its verdict. The verdict itself is never
-	// overridden; this is a visible marker only.
+	// Inconsistent is true when the classifier's own reported reasoning
+	// contradicted its verdict (re #396): its SpamSignals named at least
+	// one spam signal alongside a Ham verdict. Set regardless of whether
+	// ModelVerdict below shows the contradiction was resolved.
 	Inconsistent bool `json:"inconsistent,omitempty"`
+	// ModelVerdict (re #396, second round) is present exactly when the
+	// server resolved a Ham verdict to Spam/Suspect because SpamSignals
+	// matched a decisive signal: it carries the classifier's own
+	// original verdict ("ham"), while Verdict above carries what herold
+	// actually applied. Absent when no such resolution happened.
+	ModelVerdict string `json:"modelVerdict,omitempty"`
 }
 
 // jmapCategoryDetail is the categorisation sub-record in an llmInspect
@@ -330,6 +336,7 @@ func (i *llmInspectHandler) Execute(ctx context.Context, args json.RawMessage) (
 				SpamSignals:      derefStrSlice(rec.SpamSignals),
 				HamSignals:       derefStrSlice(rec.HamSignals),
 				Inconsistent:     rec.SpamInconsistent != nil && *rec.SpamInconsistent,
+				ModelVerdict:     derefStr(rec.SpamModelVerdict),
 			}
 		}
 		if rec.CategoryPromptApplied != nil {

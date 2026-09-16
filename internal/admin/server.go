@@ -403,6 +403,17 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 	if d := cfg.Spam.ClassifyTimeout.AsDuration(); d > 0 {
 		spamClassifier = spamClassifier.WithTimeout(d)
 	}
+	// re #396 (second round): server-side resolution of an inconsistent
+	// (ham verdict, decisive spam signal) classification. An operator-
+	// configured decisive set overrides spam.DefaultDecisiveSpamSignals;
+	// SuspectBelowConfidence (default 0, always Spam) is applied
+	// regardless.
+	if len(cfg.Spam.DecisiveSpamSignals) > 0 {
+		spamClassifier = spamClassifier.WithDecisiveSpamSignals(cfg.Spam.DecisiveSpamSignals)
+	}
+	if cfg.Spam.SuspectBelowConfidence > 0 {
+		spamClassifier = spamClassifier.WithSuspectBelowConfidence(cfg.Spam.SuspectBelowConfidence)
+	}
 	// issue #304 Decision 3: a "classifier"-typed plugin is the mail.classify
 	// contract's operator-facing name; "spam" is accepted for one release
 	// against the same binary (see compatiblePluginType in internal/plugin).

@@ -177,7 +177,12 @@ func TestCLI_SpamShow_SignalsAndInconsistent(t *testing.T) {
 	}
 	msgIDA, msgIDB := msgs[0].ID, msgs[1].ID
 
-	verdictHam := "ham"
+	// verdictA="spam" / modelVerdictA="ham" (migration 0112, re #396
+	// second round): SpamVerdict is what herold applied after
+	// server-side resolution; SpamModelVerdict preserves the plugin's
+	// own original verdict.
+	verdictA := "spam"
+	modelVerdictA := "ham"
 	confA := 0.4
 	spamSignals := []string{"urgent action required", "suspicious link"}
 	hamSignals := []string{"known sender"}
@@ -185,7 +190,8 @@ func TestCLI_SpamShow_SignalsAndInconsistent(t *testing.T) {
 	if err := st.Meta().SetLLMClassification(ctx, store.LLMClassificationRecord{
 		MessageID:        msgIDA,
 		PrincipalID:      p.ID,
-		SpamVerdict:      &verdictHam,
+		SpamVerdict:      &verdictA,
+		SpamModelVerdict: &modelVerdictA,
 		SpamConfidence:   &confA,
 		SpamSignals:      &spamSignals,
 		HamSignals:       &hamSignals,
@@ -241,9 +247,15 @@ func TestCLI_SpamShow_SignalsAndInconsistent(t *testing.T) {
 	if v, ok := outA["spam_inconsistent"].(bool); !ok || !v {
 		t.Errorf("spam_inconsistent = %v, want true", outA["spam_inconsistent"])
 	}
+	if v, ok := outA["spam_model_verdict"].(string); !ok || v != modelVerdictA {
+		t.Errorf("spam_model_verdict = %v, want %q", outA["spam_model_verdict"], modelVerdictA)
+	}
+	if v, ok := outA["spam_verdict"].(string); !ok || v != verdictA {
+		t.Errorf("spam_verdict = %v, want %q", outA["spam_verdict"], verdictA)
+	}
 
 	outB := runShow(msgIDB)
-	for _, key := range []string{"spam_signals", "ham_signals", "spam_inconsistent"} {
+	for _, key := range []string{"spam_signals", "ham_signals", "spam_inconsistent", "spam_model_verdict"} {
 		if v, has := outB[key]; has {
 			t.Errorf("%s must be absent for a record with no signal lists, got %v", key, v)
 		}

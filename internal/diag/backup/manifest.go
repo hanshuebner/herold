@@ -888,7 +888,18 @@ const CurrentBackupVersion = 1
 //	ham_signals response fields, and a marker for a ham verdict whose own
 //	reported spam_signals contradict it. No new table;
 //	LLMClassificationRow gains the three fields.
-const CurrentSchemaVersion = 111
+//
+// 112 — 0112_llm_classification_model_verdict.sql (issue #396, second
+//
+//	round). Adds llm_classifications.spam_model_verdict (text,
+//	nullable): the plugin's own original verdict, preserved when the
+//	server resolved a Ham verdict to Spam/Suspect because its
+//	spam_signals matched a decisive-signal rule (internal/spam.
+//	Classifier.Classify). NULL on every row where no such resolution
+//	happened, including every row classified before this migration.
+//	spam_verdict itself now holds the verdict herold actually applied.
+//	No new table; LLMClassificationRow gains the one field.
+const CurrentSchemaVersion = 112
 
 // Manifest is the metadata block written to <bundle>/manifest.json. It
 // summarises the backup so operators (and the verify subcommand) can
