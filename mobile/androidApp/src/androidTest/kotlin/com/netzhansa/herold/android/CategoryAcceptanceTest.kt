@@ -107,6 +107,29 @@ class CategoryAcceptanceTest {
     }
 
     @Test
+    fun t06_aTabWithNoConversationsSaysSoRatherThanShowingNothing(): Unit = runBlocking {
+        signInAndSync()
+        val client = DevInstance.serverClient()
+        val accountId = client.session().mailAccountId!!
+        // A pinned category no message carries: the stream under its tab
+        // is empty, and an empty stream is a screen with words on it
+        // rather than a blank one (issue #405).
+        ensureLabel(client, accountId, EMPTY_LANE, "pinned", 0)
+        app.container.session.value!!.syncEngine.syncAll()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-tab-$EMPTY_LANE").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("inbox-tab-$EMPTY_LANE").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-empty").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.captureScreen("m4-empty-lane")
+        compose.onNodeWithTag("inbox-tab-all").performClick()
+        compose.waitForIdle()
+    }
+
+    @Test
     fun t10_theServersDispositionsDecideTheInboxLanes(): Unit = runBlocking {
         signInAndSync()
         val client = DevInstance.serverClient()
@@ -494,5 +517,7 @@ class CategoryAcceptanceTest {
         const val DERIVED_PROMOTIONS = "promotions"
         const val DERIVED_UPDATES = "updates"
 
+        /** A pinned category no delivered message carries. */
+        const val EMPTY_LANE = "catempty"
     }
 }
