@@ -1,5 +1,6 @@
 package com.netzhansa.herold.shared.inbox
 
+import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.domain.Account
 import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Email
@@ -8,6 +9,7 @@ import com.netzhansa.herold.shared.domain.Mailbox
 import com.netzhansa.herold.shared.domain.MailboxRoles
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -348,5 +350,150 @@ class InboxAssemblerTest {
 
         val withQueued = InboxAssembler.threadRows(inbox, accounts, mailboxes, pendingThreads = setOf("t-1"))
         assertTrue(withQueued.single().hasDraft)
+    }
+
+    @Test
+    fun derivedCategoriesAreTabsOnAnAccountWithNoLabels() {
+        val derived = listOf("primary", "social", "promotions", "updates", "forums")
+
+        val lanes = CategoryLanes.from(mailboxes, derived)
+
+        assertEquals(derived, lanes.pinned, "the server's order is the tab order")
+        assertEquals(emptyList(), lanes.bundled)
+        assertEquals(emptyList(), lanes.hidden)
+        assertEquals(CategoryDisposition.PINNED, lanes.dispositionOf("promotions"))
+    }
+
+    @Test
+    fun derivedCategoriesKeepTheirTabsWhenTheStreamIsAssembled() {
+        val lanes = CategoryLanes.from(mailboxes, listOf("primary", "promotions"))
+        val emails = listOf(
+            email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e2", receivedAt = 2000),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals(2, InboxAssembler.stream(rows, lanes).size, "a pinned category stays inline")
+        assertEquals(
+            listOf("t-e1"),
+            InboxAssembler.stream(rows, lanes, selectedCategory = "promotions")
+                .filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
+        )
+    }
+
+    @Test
+    fun aLabelledDispositionOverridesTheDerivedDefault() {
+        val derived = listOf("primary", "social", "promotions")
+        val labels = mailboxes + listOf(
+            label("Promotions", CategoryDisposition.BUNDLED, priority = 0),
+            label("Social", CategoryDisposition.NONE),
+        )
+
+        val lanes = CategoryLanes.from(labels, derived)
+
+        assertEquals(listOf("primary"), lanes.pinned, "only the category with no label keeps the default")
+        assertEquals(listOf("promotions"), lanes.bundled)
+        assertEquals(CategoryDisposition.NONE, lanes.dispositionOf("social"))
+    }
+
+    @Test
+    fun aBundledLabelCollapsesADerivedCategory() {
+        val derived = listOf("primary", "promotions")
+        val lanes = CategoryLanes.from(
+            mailboxes + label("Promotions", CategoryDisposition.BUNDLED, priority = 0),
+            derived,
+        )
+        val emails = listOf(
+            email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e2", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+        )
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        val stream = InboxAssembler.stream(rows, lanes)
+
+        assertEquals(1, stream.size)
+        assertEquals("promotions", (stream.single() as InboxItem.Bundle).row.category)
+    }
+
+    @Test
+    fun atMostFiveDerivedCategoriesBecomeTabs() {
+        val lanes = CategoryLanes.from(
+            mailboxes + label("Hobby", CategoryDisposition.PINNED, priority = 0),
+            listOf("primary", "social", "promotions", "updates", "forums"),
+        )
+
+        assertEquals(CategoryLanes.PINNED_LIMIT, lanes.pinned.size)
+        assertEquals(
+            listOf("hobby", "primary", "social", "promotions", "updates"),
+            lanes.pinned,
+            "the labelled tab leads, the derived defaults follow in server order",
+        )
+    }
+
+    @Test
+    fun uncategorisedMailFallsToThePrimaryCategory() {
+        val lanes = CategoryLanes.from(mailboxes, listOf("primary", "promotions"))
+        val emails = listOf(email("e1", receivedAt = 1000))
+        val rows = InboxAssembler.threadRows(emails, accounts, mailboxes)
+
+        assertEquals("primary", lanes.resolve(emptyList()))
+        assertEquals(
+            listOf("t-e1"),
+            InboxAssembler.stream(rows, lanes, selectedCategory = "primary")
+                .filterIsInstance<InboxItem.Conversation>().map { it.row.threadId },
+        )
+    }
+
+    @Test
+    fun anAccountWithNeitherLabelsNorDerivedCategoriesHasNoLanes() {
+        val lanes = CategoryLanes.from(
+            listOf(Mailbox(accountId = "acct-a", id = "inbox-1", name = "Inbox", role = MailboxRoles.INBOX)),
+            emptyList(),
+        )
+
+        assertTrue(lanes.pinned.isEmpty() && lanes.bundled.isEmpty() && lanes.order.isEmpty())
+        assertNull(lanes.resolve(emptyList()))
+    }
+
+    @Test
+    fun theSettingsListCarriesDerivedCategoriesWithTheirEffectiveLane() {
+        val labels = mailboxes + label("Promotions", CategoryDisposition.BUNDLED, priority = 0)
+
+        val entries = CategoryActions.entries(
+            labels,
+            listOf("primary", "promotions", "updates"),
+            accountId = "acct-a",
+        )
+
+        val byName = entries.associateBy { it.category }
+        assertEquals(CategoryDisposition.BUNDLED, byName.getValue("promotions").disposition)
+        assertNotNull(byName.getValue("promotions").label)
+        assertEquals(CategoryDisposition.PINNED, byName.getValue("primary").disposition)
+        assertNull(byName.getValue("primary").label, "a derived category has no label yet")
+        assertEquals(listOf("promotions", "projects", "primary", "updates"), entries.map { it.category })
+    }
+
+    @Test
+    fun aCategoryTheMailCarriesEarnsATabWhenTheServerNamesNoDerivedSet() {
+        val emails = listOf(
+            email("e1", receivedAt = 3000, keywords = setOf(Keywords.categoryKeyword("Promotions"))),
+            email("e2", receivedAt = 2000, keywords = setOf(Keywords.categoryKeyword("Primary"))),
+        )
+        val observed = InboxAssembler.observedCategories(emails)
+
+        val lanes = CategoryLanes.from(mailboxes, emptyList(), observed)
+
+        assertEquals(listOf("primary", "promotions"), lanes.pinned)
+    }
+
+    @Test
+    fun theClassifiersOrderLeadsTheCategoriesTheMailCarries() {
+        val lanes = CategoryLanes.from(
+            mailboxes,
+            derivedCategories = listOf("primary", "social"),
+            observedCategories = setOf("promotions", "social"),
+        )
+
+        assertEquals(listOf("primary", "social", "promotions"), lanes.pinned)
     }
 }

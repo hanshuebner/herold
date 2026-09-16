@@ -179,6 +179,60 @@ class CategoryActionsTest {
     }
 
     @Test
+    fun aDerivedCategoryWithNoLabelGetsOneWithTheChosenDisposition() = runTest {
+        val h = Harness()
+        h.store.upsertMailboxes(listOf(label("Hobby", CategoryDisposition.PINNED, priority = 0)))
+
+        val id = h.categories.createWithDisposition(
+            accountId = "acct-a",
+            category = "promotions",
+            disposition = CategoryDisposition.BUNDLED,
+            all = h.store.mailboxList(),
+        )
+
+        val placeholder = CategoryActions.placeholderId("acct-a", "promotions")
+        val row = h.store.mailboxList().first { it.id == placeholder }
+        assertEquals("promotions", row.name, "the label is named after the category keyword")
+        assertEquals(CategoryDisposition.BUNDLED, row.disposition)
+        val created = payload(h.outbox, id).creates.getValue(placeholder)
+        assertEquals("promotions", created["name"]?.jsonPrimitive?.content)
+        assertEquals("bundled", created["disposition"]?.jsonPrimitive?.content)
+        assertNull(created["priority"], "only a pinned category takes a rank")
+    }
+
+    @Test
+    fun theDrainSwapsThePlaceholderForTheServersLabel() = runTest {
+        val h = Harness()
+        h.api.mailboxes = listOf(
+            WireMailbox(id = "mb-promotions", name = "promotions", disposition = "pinned", priority = 0),
+        )
+        h.api.mailboxSetOutcome = MailboxSetOutcome(
+            created = mapOf(
+                CategoryActions.placeholderId("acct-a", "promotions") to
+                    WireMailbox(id = "mb-promotions", name = "promotions", disposition = "pinned", priority = 0),
+            ),
+        )
+
+        h.categories.createWithDisposition(
+            accountId = "acct-a",
+            category = "promotions",
+            disposition = CategoryDisposition.PINNED,
+            all = emptyList(),
+        )
+        val outcome = h.drainer.drain()
+
+        assertEquals(1, outcome.submitted)
+        val created = h.api.mailboxCreateCalls.single().values.single()
+        assertEquals("promotions", created["name"]?.jsonPrimitive?.content)
+        assertEquals("pinned", created["disposition"]?.jsonPrimitive?.content)
+        assertEquals(
+            listOf("mb-promotions"),
+            h.store.mailboxList().map { it.id },
+            "the placeholder goes when the server's own row arrives",
+        )
+    }
+
+    @Test
     fun theSettingsListOffersTheAccountsLabelsInPriorityOrder() {
         val all = listOf(
             Mailbox(accountId = "acct-a", id = "inbox", name = "Inbox", role = MailboxRoles.INBOX),

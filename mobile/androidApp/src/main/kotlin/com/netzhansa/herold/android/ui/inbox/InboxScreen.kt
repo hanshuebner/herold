@@ -141,6 +141,10 @@ fun InboxScreen(
         queued.filter { it.isPending }.pendingMarkersByThread().keys
     }
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
+    // The classifier's own categories. A derived category with no label
+    // is still a tab, which is what an account that has never touched
+    // category settings shows (issue #404).
+    val derivedCategories by session.syncEngine.categories.collectAsStateSafely(emptyList())
     val accounts by container.store.accounts().collectAsStateSafely(emptyList())
     val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
     val offline by container.offline.collectAsStateSafely(false)
@@ -170,7 +174,13 @@ fun InboxScreen(
             pendingThreads = pendingThreads,
         )
     }
-    val lanes = remember(mailboxes, accountScope) { CategoryLanes.from(mailboxes, accountScope) }
+    // A category the mail carries but the classifier's set does not name
+    // still earns its tab, which is what keeps the lanes on a server
+    // that has not published its derived set yet (issue #404).
+    val observedCategories = remember(emails) { InboxAssembler.observedCategories(emails) }
+    val lanes = remember(mailboxes, derivedCategories, observedCategories, accountScope) {
+        CategoryLanes.from(mailboxes, derivedCategories, observedCategories, accountScope)
+    }
     val stream = remember(rows, lanes, selectedCategory) {
         InboxAssembler.stream(rows, lanes, selectedCategory)
     }
