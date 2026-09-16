@@ -3,14 +3,20 @@ package com.netzhansa.herold.android
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -30,6 +37,7 @@ import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.netzhansa.herold.android.auth.LockScreen
@@ -55,6 +63,7 @@ import com.netzhansa.herold.android.ui.thread.ThreadScreen
 import com.netzhansa.herold.shared.compose.ComposeMode
 import com.netzhansa.herold.shared.sync.SyncStatus
 import com.netzhansa.herold.shared.sync.SyncTypes
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -130,21 +139,28 @@ fun HeroldApp(
     LaunchedEffect(Unit) { container.restore() }
 
     val current = session
-    when {
-        !restored -> Box(
-            modifier = Modifier.fillMaxSize().testTag("app-restoring"),
-            contentAlignment = Alignment.Center,
-        ) {
-            CircularProgressIndicator()
-        }
+    // Which of the four shells is on screen, in the log. A report of a
+    // screen showing nothing is answerable only if the log says what the
+    // shell believed it was drawing (issue #405).
+    val state = when {
+        !restored -> "restoring"
+        current == null -> "sign-in"
+        locked -> "locked"
+        else -> "mail"
+    }
+    LaunchedEffect(state) { Log.i(SHELL_TAG, "shell state=$state") }
 
-        current == null -> SignInScreen(container)
+    when (state) {
+        "restoring" -> RestoringScreen()
+
+        "sign-in" -> SignInScreen(container)
 
         // The unlock is ahead of every screen and every network call:
         // the token is not released until it succeeds (REQ-AND-AUTH-11).
-        locked -> LockScreen(container.unlock)
+        "locked" -> LockScreen(container.unlock)
 
         else -> {
+            val current = current ?: return
             val navController = rememberNavController()
             // Filters and the transparency page are per principal: the
             // scoped account when the user picked one, the primary
@@ -414,11 +430,46 @@ fun HeroldApp(
                 }
             }
 
+            // A back stack with nothing on it composes nothing, which
+            // is a window with no content and no way back (issue #405).
+            // The shell puts the inbox back rather than leaving it.
+            val entry by navController.currentBackStackEntryAsState()
+            LaunchedEffect(entry) {
+                if (entry != null) return@LaunchedEffect
+                delay(EMPTY_BACK_STACK_GRACE_MS)
+                if (navController.currentBackStackEntry != null) return@LaunchedEffect
+                Log.w(SHELL_TAG, "the navigation back stack is empty; reopening the inbox")
+                navController.navigate("inbox") { popUpTo(0) { inclusive = true } }
+            }
+
             // Over every screen: the operation the server refused until
             // the credential is elevated waits on this sheet, wherever
             // it was started from (REQ-AND-AUTH-20).
             StepUpSheet(current.stepUp)
         }
+    }
+}
+
+/**
+ * What the shell shows while the stored credential is being read
+ * (REQ-AND-AUTH-10). It says so in words: a screen that draws only a
+ * spinner is indistinguishable from a screen that draws nothing, which
+ * is what made issue #405 unreadable from a screenshot.
+ */
+@Composable
+private fun RestoringScreen() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp).testTag("app-restoring"),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CircularProgressIndicator()
+        Text(text = "herold", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            text = "Opening your mailbox.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -496,3 +547,13 @@ private fun PushEngagement(container: AppContainer, session: SessionScope) {
 }
 
 private const val RECONNECT_DELAY_MS = 5_000L
+
+/** The log tag the shell's own state goes out under. */
+private const val SHELL_TAG = "herold.shell"
+
+/**
+ * How long an empty back stack is left alone. The first composition of
+ * the host has no entry yet, so the shell waits for the graph to settle
+ * before treating an empty stack as one to rebuild.
+ */
+private const val EMPTY_BACK_STACK_GRACE_MS = 750L

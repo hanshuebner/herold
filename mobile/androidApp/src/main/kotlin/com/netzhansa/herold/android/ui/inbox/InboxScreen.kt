@@ -500,6 +500,16 @@ fun InboxScreen(
                 }
             }
 
+            if (stream.isEmpty()) {
+                Text(
+                    text = if (selectedCategory == null) {
+                        "Your inbox is empty."
+                    } else {
+                        "Nothing in this category."
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("inbox-empty"),
+                )
+            }
             LazyColumn(modifier = Modifier.fillMaxSize().testTag("inbox-list")) {
                 items(stream, key = { item ->
                     when (item) {
