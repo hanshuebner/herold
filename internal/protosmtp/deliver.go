@@ -845,6 +845,14 @@ func (sess *session) persistLLMRecord(
 		rec.HamSignals = spam.OptStringSlice(classification.HamSignals)
 		inconsistent := classification.Inconsistent
 		rec.SpamInconsistent = &inconsistent
+		// SpamModelVerdict (re #396, second round) preserves the plugin's
+		// own verdict when Classify server-resolved a Ham verdict to
+		// Spam/Suspect on a decisive spam signal; nil (untouched) when no
+		// resolution happened.
+		if classification.ModelVerdict != spam.Unclassified {
+			mv := classification.ModelVerdict.String()
+			rec.SpamModelVerdict = &mv
+		}
 		// Build the user-visible prompt-as-applied from the spam.Request.
 		// The spam.Request is the structured context sent to the plugin —
 		// this is the content visible to users. The plugin's system prompt
@@ -852,6 +860,7 @@ func (sess *session) persistLLMRecord(
 		// the per-account user-editable text returned by LLMTransparency/get.
 		req := spam.BuildRequest(msg, &authResults)
 		req.OwnAddresses = ownAddresses
+		req.RecipientNotOwn = spam.RecipientNotOwn(msg, ownAddresses)
 		if b, jerr := req.Canonical(); jerr == nil {
 			s := string(b)
 			rec.SpamPromptApplied = &s

@@ -266,6 +266,13 @@ type SpamClassifyParams struct {
 	// fire against an address listed here. Empty when the message had
 	// no local recipient to resolve one for.
 	OwnAddresses []string `json:"own_addresses,omitempty"`
+	// RecipientNotOwn is true when no To/Cc address is in OwnAddresses
+	// (re #396, second round): mirrors internal/spam.Request field-for-
+	// field. A conforming plugin adds "recipient_not_own" to its own
+	// SpamSignals/HamSignals response when this is true, deterministically
+	// -- the server's decisive-signal resolution then does not depend on
+	// the model noticing the fact itself.
+	RecipientNotOwn bool `json:"recipient_not_own,omitempty"`
 	// TimeoutMs is the caller's remaining time budget for this call, in
 	// milliseconds, as of when the server built the request (issue #331).
 	// Run's per-request context wiring (extractTimeout) already reads

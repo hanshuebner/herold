@@ -2647,9 +2647,10 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			   spam_prompt_applied, spam_model, spam_classified_at_us,
 			   delivery_override,
 			   spam_signals_json, spam_ham_signals_json, spam_inconsistent,
+			   spam_model_verdict,
 			   category_assigned, category_prompt_applied,
 			   category_model, category_classified_at_us)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 			ON CONFLICT (message_id) DO UPDATE SET
 			  spam_verdict             = COALESCE(EXCLUDED.spam_verdict, llm_classifications.spam_verdict),
 			  spam_confidence          = COALESCE(EXCLUDED.spam_confidence, llm_classifications.spam_confidence),
@@ -2661,6 +2662,7 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			  spam_signals_json        = COALESCE(EXCLUDED.spam_signals_json, llm_classifications.spam_signals_json),
 			  spam_ham_signals_json    = COALESCE(EXCLUDED.spam_ham_signals_json, llm_classifications.spam_ham_signals_json),
 			  spam_inconsistent        = COALESCE(EXCLUDED.spam_inconsistent, llm_classifications.spam_inconsistent),
+			  spam_model_verdict       = COALESCE(EXCLUDED.spam_model_verdict, llm_classifications.spam_model_verdict),
 			  category_assigned        = COALESCE(EXCLUDED.category_assigned, llm_classifications.category_assigned),
 			  category_prompt_applied  = COALESCE(EXCLUDED.category_prompt_applied, llm_classifications.category_prompt_applied),
 			  category_model           = COALESCE(EXCLUDED.category_model, llm_classifications.category_model),
@@ -2670,6 +2672,7 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			rec.SpamPromptApplied, rec.SpamModel, pgOptTimeToUs(rec.SpamClassifiedAt),
 			rec.SpamDeliveryOverride,
 			spamSignalsJSON, hamSignalsJSON, rec.SpamInconsistent,
+			rec.SpamModelVerdict,
 			rec.CategoryAssigned, rec.CategoryPromptApplied,
 			rec.CategoryModel, pgOptTimeToUs(rec.CategoryClassifiedAt))
 		return mapErr(err)
@@ -2730,6 +2733,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 		     spam_prompt_applied, spam_model, spam_classified_at_us,
 		     delivery_override,
 		     spam_signals_json, spam_ham_signals_json, spam_inconsistent,
+		     spam_model_verdict,
 		     category_assigned, category_prompt_applied,
 		     category_model, category_classified_at_us
 		  FROM llm_classifications
@@ -2753,6 +2757,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			spamSignalsJSON        *string
 			spamHamSignalsJSON     *string
 			spamInconsistent       *bool
+			spamModelVerdict       *string
 			categoryAssigned       *string
 			categoryPromptApplied  *string
 			categoryModel          *string
@@ -2763,6 +2768,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			&spamPromptApplied, &spamModel, &spamClassifiedAtUs,
 			&deliveryOverride,
 			&spamSignalsJSON, &spamHamSignalsJSON, &spamInconsistent,
+			&spamModelVerdict,
 			&categoryAssigned, &categoryPromptApplied,
 			&categoryModel, &categoryClassifiedAtUs); err != nil {
 			return nil, mapErr(err)
@@ -2787,6 +2793,7 @@ func (m *metadata) BatchGetLLMClassifications(ctx context.Context, msgIDs []stor
 			SpamSignals:           spamSignals,
 			HamSignals:            hamSignals,
 			SpamInconsistent:      spamInconsistent,
+			SpamModelVerdict:      spamModelVerdict,
 			CategoryAssigned:      categoryAssigned,
 			CategoryPromptApplied: categoryPromptApplied,
 			CategoryModel:         categoryModel,

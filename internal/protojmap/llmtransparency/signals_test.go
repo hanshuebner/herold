@@ -79,7 +79,12 @@ func testLLMInspectSignalsPresent(t *testing.T, h *handlerSet, st store.Store, p
 	mb := insertMailboxForPrincipal(t, st, p.ID, "INBOX")
 	msgID := insertMessage(t, st, mb, fmt.Sprintf("signals-present-%d@example.test", time.Now().UnixNano()))
 
-	verdict := "ham"
+	// verdict="spam" / modelVerdict="ham" (migration 0112, re #396
+	// second round): SpamVerdict is what herold actually applied after
+	// server-side resolution; SpamModelVerdict preserves the plugin's
+	// own original answer for the transparency record.
+	verdict := "spam"
+	modelVerdict := "ham"
 	conf := 0.4
 	spamSignals := []string{"urgent action required", "suspicious link"}
 	hamSignals := []string{"known sender"}
@@ -89,6 +94,7 @@ func testLLMInspectSignalsPresent(t *testing.T, h *handlerSet, st store.Store, p
 		MessageID:        msgID,
 		PrincipalID:      p.ID,
 		SpamVerdict:      &verdict,
+		SpamModelVerdict: &modelVerdict,
 		SpamConfidence:   &conf,
 		SpamSignals:      &spamSignals,
 		HamSignals:       &hamSignals,
@@ -110,6 +116,12 @@ func testLLMInspectSignalsPresent(t *testing.T, h *handlerSet, st store.Store, p
 	if !spam.Inconsistent {
 		t.Errorf("Inconsistent = false, want true")
 	}
+	if spam.ModelVerdict != modelVerdict {
+		t.Errorf("ModelVerdict = %q, want %q", spam.ModelVerdict, modelVerdict)
+	}
+	if spam.Verdict != verdict {
+		t.Errorf("Verdict = %q, want %q", spam.Verdict, verdict)
+	}
 
 	// Also check the wire encoding directly: omitempty must not swallow a
 	// populated, non-empty list or a true bool.
@@ -126,6 +138,9 @@ func testLLMInspectSignalsPresent(t *testing.T, h *handlerSet, st store.Store, p
 	}
 	if want := `"inconsistent":true`; !strings.Contains(jsStr, want) {
 		t.Errorf("wire inconsistent missing/wrong: %s", jsStr)
+	}
+	if want := `"modelVerdict":"ham"`; !strings.Contains(jsStr, want) {
+		t.Errorf("wire modelVerdict missing/wrong: %s", jsStr)
 	}
 }
 
@@ -169,7 +184,7 @@ func testLLMInspectSignalsAbsent(t *testing.T, h *handlerSet, st store.Store, p 
 		t.Fatalf("marshal spam detail: %v", err)
 	}
 	jsStr := string(js)
-	for _, key := range []string{`"spamSignals"`, `"hamSignals"`, `"inconsistent"`} {
+	for _, key := range []string{`"spamSignals"`, `"hamSignals"`, `"inconsistent"`, `"modelVerdict"`} {
 		if strings.Contains(jsStr, key) {
 			t.Errorf("wire response carries %s despite no signals being set: %s", key, jsStr)
 		}

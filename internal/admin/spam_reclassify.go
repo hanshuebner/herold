@@ -302,10 +302,19 @@ func recordReclassifyVerdict(
 	rec.HamSignals = spam.OptStringSlice(cl.HamSignals)
 	inconsistent := cl.Inconsistent
 	rec.SpamInconsistent = &inconsistent
+	// SpamModelVerdict (re #396, second round) preserves the plugin's own
+	// verdict when Classify server-resolved a Ham verdict to Spam/Suspect
+	// on a decisive spam signal; nil (untouched) when no resolution
+	// happened.
+	if cl.ModelVerdict != spam.Unclassified {
+		mv := cl.ModelVerdict.String()
+		rec.SpamModelVerdict = &mv
+	}
 	classifiedAt := clk.Now()
 	rec.SpamClassifiedAt = &classifiedAt
 	req := spam.BuildRequest(parsed, auth)
 	req.OwnAddresses = ownAddresses
+	req.RecipientNotOwn = spam.RecipientNotOwn(parsed, ownAddresses)
 	if raw, err := req.Canonical(); err == nil {
 		s := string(raw)
 		rec.SpamPromptApplied = &s

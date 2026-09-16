@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -552,6 +553,72 @@ tls = "starttls"
 	}
 	if !strings.Contains(err.Error(), "classify_timeout") {
 		t.Fatalf("error %q should mention classify_timeout", err.Error())
+	}
+}
+
+// TestParse_SpamDecisiveSignalsAndSuspectBelowConfidence covers re #396
+// (second round): the operator-configurable decisive-signal set and
+// suspect-resolution threshold.
+func TestParse_SpamDecisiveSignalsAndSuspectBelowConfidence(t *testing.T) {
+	const good = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[spam]
+decisive_spam_signals = ["phishing", "unauthenticated_sender+dmarc_fail"]
+suspect_below_confidence = 0.3
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	cfg, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"phishing", "unauthenticated_sender+dmarc_fail"}
+	if !reflect.DeepEqual(cfg.Spam.DecisiveSpamSignals, want) {
+		t.Fatalf("decisive_spam_signals = %v, want %v", cfg.Spam.DecisiveSpamSignals, want)
+	}
+	if got := cfg.Spam.SuspectBelowConfidence; got != 0.3 {
+		t.Fatalf("suspect_below_confidence = %v, want 0.3", got)
+	}
+}
+
+func TestValidate_RejectsSuspectBelowConfidenceOutOfRange(t *testing.T) {
+	const bad = `
+[server]
+hostname = "mail.example.com"
+data_dir = "/var/lib/herold"
+
+[server.admin_tls]
+source = "file"
+cert_file = "/a"
+key_file = "/b"
+
+[spam]
+suspect_below_confidence = 1.5
+
+[[listener]]
+name = "l"
+address = ":25"
+protocol = "smtp"
+tls = "starttls"
+`
+	_, err := Parse([]byte(bad))
+	if err == nil {
+		t.Fatalf("expected error for suspect_below_confidence=1.5, got nil")
+	}
+	if !strings.Contains(err.Error(), "suspect_below_confidence") {
+		t.Fatalf("error %q should mention suspect_below_confidence", err.Error())
 	}
 }
 

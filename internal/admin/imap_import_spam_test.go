@@ -75,6 +75,29 @@ func TestIMAPImportSpamAdapter_Classify(t *testing.T) {
 	}
 }
 
+// TestIMAPImportSpamAdapter_Classify_DecisiveSignalResolvesHamToSpam is
+// the #396 (second round) regression test for the import path: a Ham
+// verdict whose spam_signals match a decisive signal must resolve to
+// Spam through the real spam.Classifier the adapter wraps, exactly as
+// the SMTP delivery path does (internal/protosmtp's
+// deliver_llm_decisive_signal_test.go).
+func TestIMAPImportSpamAdapter_Classify_DecisiveSignalResolvesHamToSpam(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	invoker := &fakeSpamInvoker{plugin: "spam-plug", raw: json.RawMessage(`{"verdict":"ham","score":0.15,"reason":"promo","spam_signals":["unsolicited_bulk_marketing"]}`)}
+	cls := spam.New(invoker, slog.Default(), clk)
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(cls, "spam-plug", st, clk, slog.Default())
+
+	msg := buildSpamTestMessage(t)
+	got := adapter.Classify(context.Background(), store.PrincipalID(1), msg)
+	if got.Verdict != spam.Spam {
+		t.Fatalf("Verdict = %v, want spam.Spam (decisive signal on a Ham verdict)", got.Verdict)
+	}
+	if got.ModelVerdict != spam.Ham {
+		t.Fatalf("ModelVerdict = %v, want spam.Ham", got.ModelVerdict)
+	}
+}
+
 // TestIMAPImportSpamAdapter_ClassifyDegradesOnPluginError verifies a plugin
 // error (simulating a timeout or crash) degrades to
 // spam.Classification{Verdict: spam.Unclassified}, matching protosmtp's
@@ -215,6 +238,76 @@ func TestIMAPImportSpamAdapter_RecordVerdict(t *testing.T) {
 	}
 	if rec.SpamClassifiedAt == nil || !rec.SpamClassifiedAt.Equal(clk.Now()) {
 		t.Errorf("SpamClassifiedAt = %v, want %v", rec.SpamClassifiedAt, clk.Now())
+	}
+}
+
+// TestIMAPImportSpamAdapter_RecordVerdict_SpamModelFallsBackToPluginName
+// is the #396 (second round, item 3) regression test: a response
+// carrying no "model" key -- the shape every shipped classifier plugin's
+// SpamClassifyResult/MailClassifyResult produces on the wire -- must
+// still record SpamModel as the adapter's configured plugin name,
+// mirroring protosmtp's persistLLMRecord fix from the first round. The
+// sibling TestIMAPImportSpamAdapter_RecordVerdict above cannot catch
+// this: it always supplies a "model" key in RawResponse, exercising only
+// the (never-shipped) defensive override.
+func TestIMAPImportSpamAdapter_RecordVerdict_SpamModelFallsBackToPluginName(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(nil, "spam-plug", st, clk, slog.Default())
+
+	p, msg := seedPrincipalAndMessage(t, ctx, st, "spam-record-model-01@example.com")
+
+	parsedMsg := buildSpamTestMessage(t)
+	classification := spam.Classification{
+		Verdict:     spam.Spam,
+		Score:       0.9,
+		RawResponse: map[string]any{"reason": "bulk sender"},
+	}
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification)
+
+	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamModel == nil || *rec.SpamModel != "spam-plug" {
+		t.Fatalf("SpamModel = %v, want %q (the configured plugin name -- the import path must record a model like the SMTP path does)", rec.SpamModel, "spam-plug")
+	}
+}
+
+// TestIMAPImportSpamAdapter_RecordVerdict_ModelVerdictPreserved is the
+// #396 (second round, item 1) regression test for the transparency
+// record on the import path: when Classify server-resolved a Ham
+// verdict to Spam on a decisive spam signal, RecordVerdict must persist
+// the plugin's own original verdict as SpamModelVerdict alongside the
+// applied SpamVerdict.
+func TestIMAPImportSpamAdapter_RecordVerdict_ModelVerdictPreserved(t *testing.T) {
+	ctx := context.Background()
+	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	st := sqlitetest.Open(t, clk)
+	adapter := newIMAPImportSpamAdapter(nil, "spam-plug", st, clk, slog.Default())
+
+	p, msg := seedPrincipalAndMessage(t, ctx, st, "spam-record-model-02@example.com")
+
+	parsedMsg := buildSpamTestMessage(t)
+	classification := spam.Classification{
+		Verdict:      spam.Spam,
+		ModelVerdict: spam.Ham,
+		Score:        0.15,
+		SpamSignals:  []string{"unsolicited_bulk_marketing"},
+		Inconsistent: true,
+	}
+	adapter.RecordVerdict(ctx, p.ID, msg.ID, parsedMsg, classification)
+
+	rec, err := st.Meta().GetLLMClassification(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetLLMClassification: %v", err)
+	}
+	if rec.SpamVerdict == nil || *rec.SpamVerdict != "spam" {
+		t.Fatalf("SpamVerdict = %v, want spam", rec.SpamVerdict)
+	}
+	if rec.SpamModelVerdict == nil || *rec.SpamModelVerdict != "ham" {
+		t.Fatalf("SpamModelVerdict = %v, want ham (the plugin's own original verdict)", rec.SpamModelVerdict)
 	}
 }
 

@@ -76,6 +76,24 @@ type SpamConfig struct {
 	// zero (internal/spam.DefaultTimeout). Only applies when the
 	// caller's context carries no deadline of its own.
 	ClassifyTimeout Duration `toml:"classify_timeout,omitempty"`
+	// DecisiveSpamSignals overrides internal/spam.DefaultDecisiveSpamSignals
+	// (re #396, second round): a Ham verdict whose spam_signals match one
+	// of these entries is resolved to Spam (or Suspect, see
+	// SuspectBelowConfidence) rather than delivered as Ham. Each entry is
+	// one or more "+"-joined signal names (every name in an entry must be
+	// present, AND; any entry matching is enough, OR), matched case-
+	// insensitively. Empty (the default) applies the built-in starting
+	// set; an explicit empty array in TOML is not distinguishable from
+	// "unset" -- an operator who wants server-side resolution off
+	// entirely uses a single implausible name instead.
+	DecisiveSpamSignals []string `toml:"decisive_spam_signals,omitempty"`
+	// SuspectBelowConfidence (re #396, second round, REQ-FILT-02): when a
+	// decisive signal resolves a Ham verdict, deliver as Suspect instead
+	// of Spam if the plugin's reported score (its own confidence that
+	// the message is spam) is below this value. Zero (the default) means
+	// every decisive-signal resolution lands on Spam regardless of
+	// score.
+	SuspectBelowConfidence float64 `toml:"suspect_below_confidence,omitempty"`
 }
 
 // PerformanceConfig configures the response-time budget enforced by
@@ -3083,6 +3101,13 @@ func Validate(c *Config) error {
 	// like a hang to the sending MTA.
 	if dur := c.Spam.ClassifyTimeout.AsDuration(); dur < 0 || dur > time.Minute {
 		return fmt.Errorf("sysconfig: [spam] classify_timeout %s must be between 0 (default 5s) and 60s", dur)
+	}
+	// SuspectBelowConfidence (re #396, second round) is a score
+	// threshold; the classifier's score is defined on [0,1] (REQ-FILT-20
+	// / the plugin's "score" field), so any other value is an operator
+	// typo.
+	if v := c.Spam.SuspectBelowConfidence; v < 0 || v > 1 {
+		return fmt.Errorf("sysconfig: [spam] suspect_below_confidence %v must be between 0 and 1", v)
 	}
 	// Elevation TTL (REQ-AUTH-74, issue #79). Bounded to [1m, 1h] to
 	// prevent operator misconfiguration that would either lock admins out

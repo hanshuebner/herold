@@ -130,7 +130,8 @@ Score is your confidence that the message is spam.
 Consider: authentication results (DKIM/SPF/DMARC), subject, from, body text.
 spam_signals lists every trait you relied on that argues the message is spam (e.g. "unsolicited_bulk_marketing", "urgency_pressure"); ham_signals lists every trait arguing it is not (e.g. "known_correspondent", "passing_authentication"). Use short snake_case names. Your verdict and score MUST follow from the balance of these signals: a message whose spam_signals include unsolicited bulk marketing is spam even when authentication passes and a List-Unsubscribe header is present -- passing authentication and an unsubscribe link are not, by themselves, ham signals that outweigh unsolicited commercial content.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
-When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.`
+When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.
+When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.`
 
 // builtinClassifySystemPrompt is the mail.classify instruction (Wave
 // 4.3, issue #304): one model call answers both the spam verdict and
@@ -147,7 +148,8 @@ spam_signals lists every trait you relied on that argues the message is spam (e.
 When the request carries "auth_summary", treat it as an authoritative, already-verified statement about the sender's identity: do not contradict it, and never describe a sender it says is verified as spoofed, forged, or impersonating. Judge such a message on its content, not on its identity.
 When the request carries a "categories" array, choose "category" from exactly one of those names, or return "" if none fit -- never invent a name outside the supplied set. When "categories" is absent or empty, always return "category": "".
 When the request carries a "policy" string, it is the principal's own instructions for what belongs in each category; follow it.
-When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.`
+When the request carries "own_addresses", every "to"/"cc" address listed there belongs to the mailbox owner. Never cite such an address as "scraped", "not one the owner uses", or any variant of that signal -- the owner receives mail there.
+When the request carries "recipient_not_own": true, no "to"/"cc" address belongs to the mailbox owner; herold has already determined this and will record "recipient_not_own" in spam_signals regardless of your answer, so weigh it as a real fact about the message, not merely a possibility to consider.`
 
 // knownOptions enumerates every option key the plugin accepts. Any other
 // key in the configure map is rejected so typos surface immediately
@@ -502,6 +504,13 @@ func (h *handler) SpamClassify(ctx context.Context, in sdk.SpamClassifyParams) (
 	} else {
 		final.Verdict = "ham"
 	}
+	// re #396 (second round, item 2): the recipient-ownership signal
+	// must not depend on the model noticing own_addresses -- it is
+	// appended here deterministically whenever the server told us the
+	// recipient is not one of the owner's addresses.
+	if in.RecipientNotOwn {
+		final.SpamSignals = appendSignalIfMissing(final.SpamSignals, "recipient_not_own")
+	}
 	labels["verdict"] = final.Verdict
 	sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
 
@@ -581,6 +590,11 @@ func (h *handler) MailClassify(ctx context.Context, in sdk.MailClassifyParams) (
 	} else {
 		final.Verdict = "ham"
 	}
+	// re #396 (second round, item 2): see SpamClassify's identical
+	// append -- mail.classify gets the same deterministic signal.
+	if in.RecipientNotOwn {
+		final.SpamSignals = appendSignalIfMissing(final.SpamSignals, "recipient_not_own")
+	}
 	labels["verdict"] = final.Verdict
 	sdk.Metric("spam.latency_ms", labels, float64(elapsed.Milliseconds()))
 
@@ -649,6 +663,9 @@ func trimPayload(in sdk.SpamClassifyParams, maxBody int) map[string]any {
 	if len(in.OwnAddresses) > 0 {
 		out["own_addresses"] = in.OwnAddresses
 	}
+	if in.RecipientNotOwn {
+		out["recipient_not_own"] = true
+	}
 	body := in.BodyExcerpt
 	if maxBody > 0 && len(body) > maxBody {
 		body = body[:maxBody]
@@ -683,6 +700,19 @@ func trimClassifyPayload(in sdk.MailClassifyParams, maxBody int) map[string]any 
 		out["categories"] = cats
 	}
 	return out
+}
+
+// appendSignalIfMissing appends signal to signals unless it is already
+// present (case-insensitively), so a model that independently reported
+// the same trait (e.g. under whatever wording it chose) is not double-
+// counted, and a repeated call across retries stays idempotent.
+func appendSignalIfMissing(signals []string, signal string) []string {
+	for _, s := range signals {
+		if strings.EqualFold(s, signal) {
+			return signals
+		}
+	}
+	return append(signals, signal)
 }
 
 // chatMessage is one entry in an OpenAI chat-completions request.

@@ -864,6 +864,12 @@ type LLMClassificationRow struct {
 	// (classifyField, engine.go), matching the underlying nullable
 	// INTEGER sqlite column.
 	SpamInconsistent *int64 `json:"spam_inconsistent,omitempty"`
+	// SpamModelVerdict (migration 0112, re #396 second round) is the
+	// plugin's own original verdict, non-nil exactly when the server
+	// resolved a Ham verdict to Spam/Suspect because SpamSignalsJSON
+	// matched a decisive signal; nil otherwise, including every row
+	// classified before this column existed.
+	SpamModelVerdict *string `json:"spam_model_verdict,omitempty"`
 }
 
 // SeenAddressRow mirrors the seen_addresses table introduced in

@@ -1528,6 +1528,16 @@ type LLMClassificationRecord struct {
 	// category-only call so it never clobbers a previously-stored spam
 	// sub-record's value via COALESCE.
 	SpamInconsistent *bool
+	// SpamModelVerdict (re #396, second round) is the plugin's own
+	// original verdict string ("ham"), non-nil exactly when Classifier.
+	// Classify server-resolved that Ham verdict to Spam or Suspect
+	// because SpamSignals matched a decisive signal: SpamVerdict then
+	// holds what herold actually applied, and this field keeps the
+	// model's own answer for the transparency record. Nil whenever no
+	// such resolution happened -- including a non-decisive Inconsistent
+	// row (flagged only) and every row classified before this field
+	// existed.
+	SpamModelVerdict *string
 
 	// -- Categorisation (nil when categorisation was not run or produced no category) --
 
