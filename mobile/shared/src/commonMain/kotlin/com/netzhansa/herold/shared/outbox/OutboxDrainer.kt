@@ -378,7 +378,7 @@ class OutboxDrainer(
                     mailFrom = payload.identityEmail,
                     rcptTo = payload.recipients.map { it.email }.filter { it.isNotBlank() }.distinct(),
                 ),
-                onSuccessUpdate = onSuccessUpdate(payload),
+                onSuccessUpdate = onSuccessUpdate(payload, resolveSentLabels(payload)),
                 parentId = payload.parentId,
                 parentKeyword = payload.parentKeyword,
             )
@@ -389,12 +389,30 @@ class OutboxDrainer(
         return StepResult.Done
     }
 
-    /** The patch that moves a sent draft into Sent, as compose writes it. */
-    private fun onSuccessUpdate(payload: ComposePayload): JsonObject = buildJsonObject {
+    /**
+     * The patch that moves a sent draft into Sent, as compose writes it,
+     * plus the labels the payload files the sent copy under.
+     */
+    private fun onSuccessUpdate(payload: ComposePayload, labelIds: List<String>): JsonObject = buildJsonObject {
         put("mailboxIds/${payload.draftsMailboxId}", JsonPrimitive(null as String?))
         payload.sentMailboxId?.let { put("mailboxIds/$it", true) }
+        labelIds.forEach { put("mailboxIds/$it", true) }
         put("keywords/${Keywords.DRAFT}", JsonPrimitive(null as String?))
-        put("keywords/${Keywords.SEEN}", true)
+        if (!payload.sentUnread) put("keywords/${Keywords.SEEN}", true)
+    }
+
+    /**
+     * The mailbox ids of the labels the payload names. A name the
+     * account holds no mailbox for is dropped: the label's own entry
+     * queued ahead of this one has not taken, and the message still
+     * belongs in Sent.
+     */
+    private suspend fun resolveSentLabels(payload: ComposePayload): List<String> {
+        if (payload.sentLabels.isEmpty()) return emptyList()
+        val mailboxes = store.mailboxList().filter { it.accountId == payload.accountId }
+        return payload.sentLabels.mapNotNull { name ->
+            mailboxes.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
+        }
     }
 
     /**

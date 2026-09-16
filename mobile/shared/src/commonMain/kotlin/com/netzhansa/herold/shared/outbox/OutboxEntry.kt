@@ -193,6 +193,19 @@ data class ComposePayload(
     val attachments: List<OutboxAttachment> = emptyList(),
     val draftsMailboxId: String,
     val sentMailboxId: String? = null,
+    /**
+     * Labels the sent copy is filed under, by name. The names are
+     * resolved against the account's mailboxes when the send drains, so
+     * a label queued for creation just ahead of the message is the one
+     * the sent copy lands in (issue #407).
+     */
+    val sentLabels: List<String> = emptyList(),
+    /**
+     * Leaves the sent copy unread. A bug report is filed for a mailbox
+     * poller to pick up, and the poller reads the unread messages of its
+     * label (`herold bug-fetch`, issue #408).
+     */
+    val sentUnread: Boolean = false,
     /** The server-side draft, once an earlier attempt created it. */
     val draftId: String? = null,
     /** The conversation a reply belongs to, so the thread can show it queued (issue #369). */
