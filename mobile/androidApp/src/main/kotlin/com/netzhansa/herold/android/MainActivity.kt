@@ -3,7 +3,7 @@ package com.netzhansa.herold.android
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -41,6 +41,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.netzhansa.herold.android.auth.LockScreen
+import com.netzhansa.herold.android.ui.diag.BugReportHost
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.android.ui.compose.ComposeScreen
 import com.netzhansa.herold.android.ui.filters.FilterEditorScreen
@@ -148,7 +149,7 @@ fun HeroldApp(
         locked -> "locked"
         else -> "mail"
     }
-    LaunchedEffect(state) { Log.i(SHELL_TAG, "shell state=$state") }
+    LaunchedEffect(state) { DiagLog.i(SHELL_TAG, "shell state=$state") }
 
     when (state) {
         "restoring" -> RestoringScreen()
@@ -231,6 +232,7 @@ fun HeroldApp(
                         onOutbox = { navController.navigate("outbox") },
                         onSettings = { navController.navigate("settings") },
                         onFilters = { navController.navigate("filters") },
+                        onReportProblem = { container.requestBugReport() },
                         onSignOut = { scope.launch { container.signOut() } },
                     )
                 }
@@ -240,6 +242,7 @@ fun HeroldApp(
                         onSessions = { navController.navigate("sessions") },
                         onCategories = { navController.navigate("categories") },
                         onTransparency = { navController.navigate("transparency") },
+                        onReportProblem = { container.requestBugReport() },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -352,6 +355,7 @@ fun HeroldApp(
                             navController.navigate("compose-unsubscribe")
                         },
                         onOutbox = { navController.navigate("outbox") },
+                        onReportProblem = { container.requestBugReport() },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -438,7 +442,7 @@ fun HeroldApp(
                 if (entry != null) return@LaunchedEffect
                 delay(EMPTY_BACK_STACK_GRACE_MS)
                 if (navController.currentBackStackEntry != null) return@LaunchedEffect
-                Log.w(SHELL_TAG, "the navigation back stack is empty; reopening the inbox")
+                DiagLog.w(SHELL_TAG, "the navigation back stack is empty; reopening the inbox")
                 navController.navigate("inbox") { popUpTo(0) { inclusive = true } }
             }
 
@@ -446,6 +450,11 @@ fun HeroldApp(
             // the credential is elevated waits on this sheet, wherever
             // it was started from (REQ-AND-AUTH-20).
             StepUpSheet(current.stepUp)
+
+            // And over every screen: the bug reporter, which captures
+            // the window and the app's state before its sheet opens
+            // (REQ-AND-SYS-50/51).
+            BugReportHost(container = container, session = current, navController = navController)
         }
     }
 }

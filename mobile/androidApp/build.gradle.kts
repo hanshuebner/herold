@@ -105,6 +105,24 @@ val androidVersionTag: String? = nearestAndroidTag()
 
 val releaseVersionName: String = androidVersionTag ?: "0.1.0"
 
+// The commit the build came from, so a bug report names the tree it was
+// built from and not only its version (issue #407). CI passes it in the
+// environment; a local build reads it from git and an export has none.
+fun buildCommit(): String {
+    System.getenv("HEROLD_BUILD_COMMIT")?.takeIf { it.isNotBlank() }?.let { return it.trim() }
+    System.getenv("GITHUB_SHA")?.takeIf { it.isNotBlank() }?.let { return it.trim().take(8) }
+    return runCatching {
+        val process = ProcessBuilder("git", "rev-parse", "--short=8", "HEAD")
+            .directory(rootDir).redirectErrorStream(false).start()
+        val out = process.inputStream.bufferedReader().readText().trim()
+        process.waitFor()
+        if (process.exitValue() == 0) out else ""
+    }.getOrDefault("")
+}
+
+val buildCommit: String = buildCommit()
+
+
 // A monotonic code from the tag's semantic version: 1.4.2 -> 10402. An
 // untagged build stays at 1, so installing one never outranks a release.
 val releaseVersionCode: Int = androidVersionTag?.let { tag ->
@@ -222,6 +240,7 @@ android {
         buildConfigField("String", "FIREBASE_API_KEY", "\"${firebaseConfig.apiKey}\"")
         buildConfigField("String", "FIREBASE_PROJECT_NUMBER", "\"${firebaseConfig.projectNumber}\"")
         buildConfigField("String", "ACCEPTANCE_TLS_PASSWORD", "\"$acceptanceTlsPassword\"")
+        buildConfigField("String", "GIT_COMMIT", "\"$buildCommit\"")
     }
 
     signingConfigs {
@@ -286,6 +305,7 @@ tasks.register("printBuildFacts") {
     val version = "$releaseVersionName ($releaseVersionCode)"
     doLast {
         println("version: $version")
+        println("commit: ${buildCommit.ifBlank { "(unknown)" }}")
         println("release signing: ${if (signed) "configured" else "absent"}")
         println("firebase: ${if (firebase) "configured" else "absent"}")
     }

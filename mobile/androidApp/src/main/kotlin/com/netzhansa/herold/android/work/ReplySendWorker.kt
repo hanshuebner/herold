@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.work
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -71,7 +71,7 @@ class ReplySendWorker(
                 }
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "reply drain failed: ${t.message}")
+            DiagLog.w(TAG, "reply drain failed: ${t.message}")
             Result.retry()
         }
     }

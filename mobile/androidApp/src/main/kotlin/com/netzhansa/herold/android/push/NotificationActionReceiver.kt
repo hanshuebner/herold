@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import androidx.core.app.RemoteInput
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.SessionScope
@@ -50,7 +50,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
             try {
                 withdraw = apply(app, context, action, accountId, emailId, intent)
             } catch (t: Throwable) {
-                Log.w(TAG, "notification action $action failed: ${t.message}")
+                DiagLog.w(TAG, "notification action $action failed: ${t.message}")
             } finally {
                 // A reply keeps the thread's notification: it is what
                 // reports the send. Everything else resolved the message,
@@ -86,7 +86,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         // The action is in the store and in the outbox; the drain here is
         // what carries it to the server while the receiver is still alive.
         val outcome = session.syncEngine.drainOutbox()
-        if (outcome.rejected > 0) Log.w(TAG, "notification action $action was refused")
+        if (outcome.rejected > 0) DiagLog.w(TAG, "notification action $action was refused")
         return true
     }
 

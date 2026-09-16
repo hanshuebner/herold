@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.shared.jmap.PushTransport
 import com.netzhansa.herold.shared.push.RegistrationOutcome
@@ -100,8 +100,8 @@ class PushController(
         val registrar = container.session.value?.pushRegistrar ?: return null
         val outcome = registrar.register(token)
         when (outcome) {
-            is RegistrationOutcome.Rejected -> Log.w(TAG, "push registration rejected: ${outcome.message}")
-            is RegistrationOutcome.Failed -> Log.w(TAG, "push registration failed: ${outcome.message}")
+            is RegistrationOutcome.Rejected -> DiagLog.w(TAG, "push registration rejected: ${outcome.message}")
+            is RegistrationOutcome.Failed -> DiagLog.w(TAG, "push registration failed: ${outcome.message}")
             else -> Unit
         }
         return outcome

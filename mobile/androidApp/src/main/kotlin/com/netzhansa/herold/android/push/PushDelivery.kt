@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.SessionScope
@@ -65,7 +65,7 @@ class PushDelivery(private val context: Context) {
                 session.syncEngine.syncAccount(accountId, types)
                 if (notification != null) presentation = present(session, container, notification)
             }
-            if (outcome == null) Log.w(TAG, "reconcile pass for $accountId exceeded its budget")
+            if (outcome == null) DiagLog.w(TAG, "reconcile pass for $accountId exceeded its budget")
         }
 
         if (notification == null) return null
