@@ -65,7 +65,13 @@ type jmapCategorySettings struct {
 	// DerivedCategories is the server-derived list of category names from the
 	// most recent successful classifier response (REQ-FILT-217). Nil/empty when
 	// no successful classifier call has occurred since the last prompt change.
-	// Read-only to the user; the prompt is the lever.
+	// Read-only to the user; the prompt is the lever. Each name here is backed
+	// by a Mailbox of the same name (issue #406): store.Metadata.
+	// SetDerivedCategories ensures the label mailbox exists (creating it
+	// pinned with the next dense priority, or adopting one the user already
+	// has) in the same transaction that persists this list, so a client
+	// reading the Mailbox collection always finds a disposition/priority
+	// carrier for every entry.
 	DerivedCategories []string `json:"derivedCategories"`
 }
 

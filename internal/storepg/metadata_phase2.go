@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -2579,6 +2580,10 @@ func (m *metadata) UpdateCategorisationConfig(ctx context.Context, cfg store.Cat
 //
 // Returns (true, nil) when the row was updated, (false, nil) when the epoch
 // guard rejected the write (stale call — prompt changed under us).
+//
+// When the row is updated, the same transaction ensures a label mailbox
+// exists for every entry in cats (issue #406, ADR-0004) — see
+// ensureCategoryLabelMailboxesPG for the adoption/creation rule.
 func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.PrincipalID, categories []string, expectedEpoch int64) (bool, error) {
 	cats := sanitiseDerivedCategories(categories)
 	var derivedJSON *string
@@ -2602,9 +2607,66 @@ func (m *metadata) SetDerivedCategories(ctx context.Context, pid store.Principal
 			return mapErr(err)
 		}
 		updated = res.RowsAffected() > 0
-		return nil
+		if !updated {
+			return nil
+		}
+		return ensureCategoryLabelMailboxesPG(ctx, tx, m.s.clock.Now().UTC(), m.s.randReader, pid, cats)
 	})
 	return updated, err
+}
+
+// ensureCategoryLabelMailboxesPG ensures a label mailbox exists for every
+// name in cats, in the same transaction as the derived_categories_json
+// write that names them (issue #406). Names already backed by a mailbox
+// (any disposition, any priority — adopted from a prior recompute or
+// hand-created by the user) are left untouched. A name with no mailbox
+// yet gets one created with MailboxDispositionPinned and the next dense
+// priority rank after the principal's current ranked labels, in cats
+// order, so the standard set's tabs come up pinned and densely ordered
+// the first time a principal's mail is categorised.
+func ensureCategoryLabelMailboxesPG(ctx context.Context, tx pgx.Tx, now time.Time, randReader io.Reader, pid store.PrincipalID, cats []string) error {
+	if len(cats) == 0 {
+		return nil
+	}
+	var nextRank int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM mailboxes WHERE principal_id = $1 AND priority IS NOT NULL`,
+		int64(pid)).Scan(&nextRank); err != nil {
+		return mapErr(err)
+	}
+	seen := make(map[string]bool, len(cats))
+	for _, name := range cats {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		var exists int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM mailboxes WHERE principal_id = $1 AND name = $2`,
+			int64(pid), name).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		if exists > 0 {
+			continue
+		}
+		uidValidity := newUIDValidity(now, randReader)
+		var id int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO mailboxes (principal_id, parent_id, name, attributes, uidvalidity,
+			  uidnext, highest_modseq, created_at_us, updated_at_us, color_hex, sort_order,
+			  disposition, priority)
+			VALUES ($1, 0, $2, 0, $3, 1, 0, $4, $5, NULL, 0, $6, $7) RETURNING id`,
+			int64(pid), name, int64(uidValidity), usMicros(now), usMicros(now),
+			string(store.MailboxDispositionPinned), nextRank).Scan(&id); err != nil {
+			return fmt.Errorf("storepg: category label mailbox %q: %w", name, mapErr(err))
+		}
+		if err := appendStateChange(ctx, tx, pid, store.EntityKindMailbox, uint64(id), 0,
+			store.ChangeOpCreated, now); err != nil {
+			return err
+		}
+		nextRank++
+	}
+	return nil
 }
 
 // sanitiseDerivedCategories enforces the per-entry and total bounds defined
@@ -2630,6 +2692,16 @@ func sanitiseDerivedCategories(in []string) []string {
 
 // -- LLM classification records (REQ-FILT-66 / REQ-FILT-216) ----------
 
+// SetLLMClassification persists rec and, when rec carries a category
+// assignment, best-effort ensures the principal's derived category set
+// (and its backing label mailboxes, issue #406) reflects the
+// principal's configured category vocabulary. This is the hook for the
+// live mail.classify plugin delivery path (internal/protosmtp, the
+// IMAP-import adapter, and the admin spam-reclassify/apply-verdicts
+// batch tools): none of those callers make the direct
+// SetDerivedCategories call internal/categorise's HTTP-LLM flow makes,
+// so without this hook a category assigned by the plugin path would
+// never get a backing Mailbox. See ensureDerivedCategoryFromAssignment.
 func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassificationRecord) error {
 	spamSignalsJSON, err := pgMarshalOptStringList(rec.SpamSignals)
 	if err != nil {
@@ -2639,7 +2711,7 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 	if err != nil {
 		return fmt.Errorf("storepg: encode spam_ham_signals_json: %w", err)
 	}
-	return m.runTx(ctx, func(tx pgx.Tx) error {
+	err = m.runTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO llm_classifications
 			  (message_id, principal_id,
@@ -2677,6 +2749,61 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 			rec.CategoryModel, pgOptTimeToUs(rec.CategoryClassifiedAt))
 		return mapErr(err)
 	})
+	if err != nil {
+		return err
+	}
+	if rec.CategoryAssigned != nil && *rec.CategoryAssigned != "" {
+		m.ensureDerivedCategoryFromAssignment(ctx, rec.PrincipalID, *rec.CategoryAssigned)
+	}
+	return nil
+}
+
+// ensureDerivedCategoryFromAssignment is the best-effort follow-up
+// SetLLMClassification runs when rec carries a category assignment
+// (issue #406): it loads the principal's configured category
+// vocabulary (CategorisationConfig.CategorySet, falling back to just
+// the assigned name when the vocabulary is empty) and, when that
+// differs from the persisted DerivedCategories, calls
+// SetDerivedCategories -- which in turn ensures a label mailbox exists
+// per name. Errors are swallowed: this is supplementary state that
+// self-heals on the next classified message, matching the existing
+// best-effort seed write in GetCategorisationConfig, and must never
+// turn a successful classification-record write into a caller-visible
+// failure.
+func (m *metadata) ensureDerivedCategoryFromAssignment(ctx context.Context, pid store.PrincipalID, assigned string) {
+	cfg, err := m.GetCategorisationConfig(ctx, pid)
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(cfg.CategorySet)+1)
+	seen := make(map[string]bool, len(cfg.CategorySet)+1)
+	for _, c := range cfg.CategorySet {
+		if c.Name == "" || seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		names = append(names, c.Name)
+	}
+	if !seen[assigned] {
+		names = append(names, assigned)
+	}
+	if len(names) == 0 || stringSliceEqualPG(names, cfg.DerivedCategories) {
+		return
+	}
+	_, _ = m.SetDerivedCategories(ctx, pid, names, cfg.DerivedCategoriesEpoch)
+}
+
+// stringSliceEqualPG reports whether a and b are element-wise equal.
+func stringSliceEqualPG(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // pgMarshalOptStringList mirrors storesqlite's marshalOptStringList: a

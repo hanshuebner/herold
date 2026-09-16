@@ -113,6 +113,14 @@ Both are settable through `Mailbox/set`, on create and on update:
 
 `CategorySettings/get`'s `derivedCategories` is unaffected — it stays the server-derived list of category names from the classifier, independent of the disposition/priority wire surface.
 
+### Derived categories are backed by a Mailbox (issue #406)
+
+Each name in `CategorySettings/get`'s `derivedCategories` is backed by a `Mailbox` of the same name, so it carries a `disposition` and `priority` like any other label:
+
+- The first time the classifier's derived category set for a principal successfully (re)computes, the server ensures a `Mailbox` exists for every name in the set. A name with no existing mailbox is created with `disposition: "pinned"` and the next dense `priority` in the set's order (0, 1, 2, ...); a name that already has a mailbox — hand-created by the user or left over from an earlier recompute — is adopted as-is.
+- Adoption never rewrites an existing mailbox's `disposition` or `priority`. A user who has since changed either property keeps their setting through every later recompute, including one that renames the category vocabulary or drops the category from the set entirely — the label and its disposition stay exactly as the user left them.
+- A category dropped from a later derived set is not deleted or reset; its label persists as an ordinary user-owned `Mailbox` until the user removes it via `Mailbox/set{destroy}`.
+
 ### Image proxy (resolved Q4)
 
 For inline `<img>` references in HTML mail, the suite renders the image via a server-side proxy URL of the shape `<origin>/proxy/image?url=<encoded-original>`. The proxy fetches the image, strips tracking-relevant request headers, enforces caps, and serves the result back. Same origin as the JMAP API so the CSP can `img-src 'self'` (`../requirements/13-nonfunctional.md` REQ-SEC-07).
