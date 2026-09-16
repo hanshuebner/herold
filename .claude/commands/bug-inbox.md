@@ -3,9 +3,12 @@ description: Triage local herold-triage drops in ~/herold-bugs -- file reports a
 argument-hint: (none) | <drop-id>
 ---
 
-Process drops captured by the in-browser herold-triage panel. The extension
-writes each drop to disk with no server: a self-contained bundle lands in
-`~/Downloads/herold-bugs/<id>.heroldbug.json`. A drop is one of two kinds:
+Process drops captured by the in-browser herold-triage panel and by the
+Android app's in-app reporter. The extension writes each drop to disk with no
+server: a self-contained bundle lands in
+`~/Downloads/herold-bugs/<id>.heroldbug.json`. The phone sends its bundle as a
+mail to the maintainer's own address under the "Bug reports" label; step 0
+fetches those over JMAP. A drop is one of two kinds:
 
 - a **report** (`meta.kind` is `bug` or `feature`) -- file it as a new ticket;
 - a **review hand-back** (`meta.kind` is `review`) -- comment on the named
@@ -38,7 +41,37 @@ structural properties, and the identifiers a developer can act on (UID, folder,
 Message-ID, account id). Never paste a third party's personal data into a ticket,
 and instruct the ticket-clerk of the same when you dispatch it.
 
-## 0. Expand downloaded bundles
+## 0. Fetch phone bug-report mails
+
+The Android reporter mails its bundle to the maintainer's own address under the
+"Bug reports" label. `herold bug-fetch` pulls every unread message in that label
+over JMAP, expands each into `~/herold-bugs/mail-<message-id>/` in the drop
+layout below, and marks the message read. It authenticates with the admin API
+key and server URL in `~/.herold/credentials.toml` (or `$HEROLD_API_KEY` with
+`--server-url`), so skip this step cleanly when neither is available:
+
+```sh
+if [ -f ~/.herold/credentials.toml ] || [ -n "${HEROLD_API_KEY:-}" ]; then
+  bin/herold bug-fetch --label "Bug reports" --out ~/herold-bugs \
+    || echo "BUG-FETCH FAILED"
+else
+  echo "bug-fetch skipped: no ~/.herold/credentials.toml and no HEROLD_API_KEY"
+fi
+```
+
+Build `bin/herold` first (`make build-server`) if it is missing or stale; a
+missing binary is a failure to report, not a reason to skip. `bug-fetch` prints
+one `bug-fetch: wrote <dir>` line per new drop, `no unread messages` when the
+label is drained, and `no mailbox named "Bug reports"` when the phone has not
+sent a report yet -- all three are normal. A `BUG-FETCH FAILED` line means the
+mailbox could not be read: report it, do not treat it as "no phone reports".
+`--dry-run` lists the messages without downloading, writing, or marking.
+
+The fetched drops carry the same files as a browser drop, so from step 1 on
+they are processed identically. A phone mail that carries no `report.json`
+gets one synthesised from its subject and body (`kind: bug`).
+
+## 0b. Expand downloaded bundles
 
 **Prove the drop directory is readable before concluding it is empty.** macOS TCC
 can deny `readdir` on `~/Downloads` while still allowing reads of an
@@ -74,8 +107,9 @@ into your reasoning or output.
 
 List `~/herold-bugs/*/` whose `STATUS` file contains `new`, oldest first by
 directory name. If `$ARGUMENTS` names a specific drop id, process only that one.
-If nothing is `new`, say so and stop -- but only after step 0's enumeration
-succeeded, so that "nothing is new" is an observation and not a swallowed error.
+If nothing is `new`, say so and stop -- but only after step 0's fetch and step
+0b's enumeration succeeded, so that "nothing is new" is an observation and not
+a swallowed error.
 
 For each drop, read `report.json` and note `meta.kind`. Report the work-list to
 the maintainer before acting:

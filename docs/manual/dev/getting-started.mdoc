@@ -354,6 +354,29 @@ Override the per-target budget with `FUZZTIME`:
 FUZZTIME=5s make fuzz-short
 ```
 
+## Bug-report tooling
+
+Bug reports reach the maintainer as drop directories under `~/herold-bugs/<id>/`
+(`report.json`, `report.md`, `logs.txt`, `screenshot-N.png`, `private/`,
+`STATUS`), which the `/bug-inbox` command in `.claude/commands/` turns into
+Forgejo tickets. Two subcommands of the `herold` binary feed that directory:
+
+- `herold bug-sink` serves a loopback-only `POST /report` endpoint for the
+  herold-triage browser extension and writes each bundle as a drop.
+- `herold bug-fetch` pulls the Android app's bug-report mails out of the
+  maintainer's "Bug reports" label over JMAP, writes each unread message as a
+  drop named `mail-<message-id>`, and marks the message read. It authenticates
+  with the admin API key and server URL from `~/.herold/credentials.toml`
+  (or `--api-key` / `$HEROLD_API_KEY` and `--server-url`).
+
+```bash
+bin/herold bug-fetch --dry-run                       # list unread reports, change nothing
+bin/herold bug-fetch --label "Bug reports" --out ~/herold-bugs
+```
+
+`scripts/herold-agents.sh` starts the sink together with the Claude sessions
+that drain drops (`/watch-drops`) and tickets (`/work-tickets`).
+
 ## Where to go next
 
 **Design baseline** -- read these before changing any subsystem:
