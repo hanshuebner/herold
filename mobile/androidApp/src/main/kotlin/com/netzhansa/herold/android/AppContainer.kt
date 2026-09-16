@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.actions.MailActions
@@ -24,6 +24,7 @@ import com.netzhansa.herold.shared.auth.SignInResult
 import com.netzhansa.herold.shared.auth.StepUpClient
 import com.netzhansa.herold.shared.auth.StepUpCoordinator
 import com.netzhansa.herold.shared.createHttpClient
+import com.netzhansa.herold.shared.diag.BugReportSender
 import com.netzhansa.herold.shared.jmap.EventSourceClient
 import com.netzhansa.herold.shared.jmap.ImageProxyClient
 import com.netzhansa.herold.android.push.PushController
@@ -52,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +72,12 @@ private const val PUSH_UNREGISTER_TIMEOUT_MS = 5_000L
 
 /** Where the drain's transport failures go: the log, never the screen. */
 private const val OUTBOX_TAG = "HeroldOutbox"
+
+/** What the reconciler is doing, in the diagnostic ring. */
+private const val SYNC_TAG = "herold.sync"
+
+/** What the session is doing, in the diagnostic ring. */
+private const val AUTH_TAG = "herold.auth"
 
 /**
  * Everything a signed-in session owns. It exists only while a bearer token
@@ -178,6 +186,22 @@ class AppContainer(context: Context) {
     /** The durable queue of pending mutations (REQ-AND-SYNC-20..25). */
     val outbox = Outbox(store) { System.currentTimeMillis() }
 
+    /** The bug reporter's send path: mail to self through the outbox (REQ-AND-SYS-53). */
+    val bugReports = BugReportSender(store, outbox, spool) { System.currentTimeMillis() }
+
+    /**
+     * True while a "Report a problem" or a shake is waiting for the
+     * shell to take its capture (REQ-AND-SYS-50/51). It is held here
+     * because the menu items that raise it are on several screens and
+     * the capture belongs to the one host that can read the window.
+     */
+    val bugReportRequested = MutableStateFlow(false)
+
+    /** Asks the shell for a bug report, from a menu item or a shake. */
+    fun requestBugReport() {
+        bugReportRequested.value = true
+    }
+
     /**
      * A compose the user took back within its undo window, waiting for
      * the shell to reopen the composer on it (issue #354).
@@ -273,6 +297,15 @@ class AppContainer(context: Context) {
                 // drain that follows is what decides again.
                 reachability.reached()
                 session.value?.requestDrain?.invoke(0)
+            }
+        }
+        // What the reconciler last did is the first thing a report of
+        // "nothing arrives" has to answer, so it goes in the ring.
+        appScope.launch {
+            session.collectLatest { current ->
+                current?.syncEngine?.status?.collect { status ->
+                    DiagLog.i(SYNC_TAG, "sync $status")
+                }
             }
         }
     }
@@ -384,6 +417,7 @@ class AppContainer(context: Context) {
         tokenStore.setGrantId(
             runCatching { session.credentials.currentGrantId() }.getOrNull(),
         )
+        DiagLog.i(AUTH_TAG, "session opened against $baseUrl")
         _signInState.value = SignInState.Idle
         _session.value = session
     }
@@ -395,6 +429,7 @@ class AppContainer(context: Context) {
      * (REQ-AND-AUTH-04/20).
      */
     private suspend fun sessionLost() {
+        DiagLog.w(AUTH_TAG, "the session ended server-side")
         _session.value = null
         accountScope.value = null
         tokenStore.setGrantId(null)
@@ -423,6 +458,7 @@ class AppContainer(context: Context) {
         authClient.signOut()
         oauthSignIn.abandon()
         unlock.unlocked()
+        DiagLog.i(AUTH_TAG, "signed out; the account's local rows are dropped")
         _signInState.value = SignInState.Idle
         store.clearAll()
     }
@@ -473,7 +509,7 @@ class AppContainer(context: Context) {
             spool = spool,
             composer = composer,
             reachability = reachability,
-            log = { message -> Log.i(OUTBOX_TAG, message) },
+            log = { message -> DiagLog.i(OUTBOX_TAG, message) },
             now = { System.currentTimeMillis() },
         )
         val syncEngine = SyncEngine(

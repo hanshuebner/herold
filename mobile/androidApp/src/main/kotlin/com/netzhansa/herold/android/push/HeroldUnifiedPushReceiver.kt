@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.shared.push.PushDecryptionException
 import com.netzhansa.herold.shared.push.PushEnvelope
 import com.netzhansa.herold.shared.push.PushVerification
@@ -32,7 +32,7 @@ class HeroldUnifiedPushReceiver : MessagingReceiver() {
         runBlocking {
             withTimeoutOrNull(WORK_BUDGET_MS) {
                 runCatching { controller(context).registerEndpoint(endpoint) }
-                    .onFailure { Log.w(TAG, "UnifiedPush endpoint registration failed: ${it.message}") }
+                    .onFailure { DiagLog.w(TAG, "UnifiedPush endpoint registration failed: ${it.message}") }
             }
         }
     }
@@ -47,17 +47,17 @@ class HeroldUnifiedPushReceiver : MessagingReceiver() {
         runBlocking {
             val keys = controller(context).keys()
             if (keys == null) {
-                Log.w(TAG, "push arrived before this install held subscription keys")
+                DiagLog.w(TAG, "push arrived before this install held subscription keys")
                 return@runBlocking
             }
             val json = try {
                 WebPushEnvelope.decryptToText(message, keys)
             } catch (e: PushDecryptionException) {
-                Log.w(TAG, "push envelope rejected: ${e.message}")
+                DiagLog.w(TAG, "push envelope rejected: ${e.message}")
                 return@runBlocking
             }
             runCatching { PushDelivery(context.applicationContext).deliver(dataMap(json)) }
-                .onFailure { Log.w(TAG, "push delivery failed: ${it.message}") }
+                .onFailure { DiagLog.w(TAG, "push delivery failed: ${it.message}") }
         }
     }
 
@@ -66,14 +66,14 @@ class HeroldUnifiedPushReceiver : MessagingReceiver() {
         runBlocking {
             withTimeoutOrNull(WORK_BUDGET_MS) {
                 runCatching { controller(context).forgetEndpoint() }
-                    .onFailure { Log.w(TAG, "dropping the UnifiedPush subscription failed: ${it.message}") }
+                    .onFailure { DiagLog.w(TAG, "dropping the UnifiedPush subscription failed: ${it.message}") }
             }
         }
     }
 
     /** The distributor refused to register this app; settings shows the transport as unavailable. */
     override fun onRegistrationFailed(context: Context, instance: String) {
-        Log.w(TAG, "the distributor refused to register this app")
+        DiagLog.w(TAG, "the distributor refused to register this app")
         runBlocking { runCatching { controller(context).forgetEndpoint() } }
     }
 

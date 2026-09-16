@@ -1,6 +1,6 @@
 package com.netzhansa.herold.android.push
 
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.netzhansa.herold.android.HeroldApplication
@@ -25,7 +25,7 @@ open class HeroldMessagingService : FirebaseMessagingService() {
     final override fun onMessageReceived(message: RemoteMessage) {
         runBlocking {
             runCatching { PushDelivery(applicationContext).deliver(message.data) }
-                .onFailure { Log.w(TAG, "push delivery failed: ${it.message}") }
+                .onFailure { DiagLog.w(TAG, "push delivery failed: ${it.message}") }
         }
     }
 
@@ -37,7 +37,7 @@ open class HeroldMessagingService : FirebaseMessagingService() {
         val container = (applicationContext as HeroldApplication).container
         runBlocking {
             runCatching { container.push.register(token) }
-                .onFailure { Log.w(TAG, "re-registration after token rotation failed: ${it.message}") }
+                .onFailure { DiagLog.w(TAG, "re-registration after token rotation failed: ${it.message}") }
         }
     }
 

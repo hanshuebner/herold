@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.messaging.FirebaseMessaging
@@ -40,7 +40,7 @@ object FirebaseSetup {
             .setGcmSenderId(BuildConfig.FIREBASE_PROJECT_NUMBER.ifBlank { null })
             .build()
         return runCatching { FirebaseApp.initializeApp(context, options) != null }
-            .onFailure { Log.w(TAG, "Firebase initialisation failed: ${it.message}") }
+            .onFailure { DiagLog.w(TAG, "Firebase initialisation failed: ${it.message}") }
             .getOrDefault(false)
     }
 
@@ -55,7 +55,7 @@ object FirebaseSetup {
                 if (task.isSuccessful) {
                     continuation.resume(task.result)
                 } else {
-                    Log.w(TAG, "FCM token request failed: ${task.exception?.message}")
+                    DiagLog.w(TAG, "FCM token request failed: ${task.exception?.message}")
                     continuation.resume(null)
                 }
             }

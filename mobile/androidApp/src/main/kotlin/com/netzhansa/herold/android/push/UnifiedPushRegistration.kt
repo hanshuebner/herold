@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.push
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.shared.jmap.PushTransport
 import com.netzhansa.herold.shared.push.RegistrationOutcome
@@ -24,7 +24,7 @@ class UnifiedPushRegistration(private val context: Context) {
      */
     suspend fun keys(): WebPushKeys? =
         runCatching { container.tokenStore.pushKeysOrGenerate() }
-            .onFailure { Log.w(TAG, "push keys unavailable: ${it.message}") }
+            .onFailure { DiagLog.w(TAG, "push keys unavailable: ${it.message}") }
             .getOrNull()
 
     /**
@@ -46,9 +46,9 @@ class UnifiedPushRegistration(private val context: Context) {
         val outcome = registrar.registerUnifiedPush(endpoint, keys)
         when (outcome) {
             is RegistrationOutcome.Rejected ->
-                Log.w(TAG, "UnifiedPush registration rejected: ${outcome.message}")
+                DiagLog.w(TAG, "UnifiedPush registration rejected: ${outcome.message}")
             is RegistrationOutcome.Failed ->
-                Log.w(TAG, "UnifiedPush registration failed: ${outcome.message}")
+                DiagLog.w(TAG, "UnifiedPush registration failed: ${outcome.message}")
             else -> Unit
         }
         return outcome

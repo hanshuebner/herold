@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Drafts
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -129,6 +130,7 @@ fun InboxScreen(
     onOutbox: () -> Unit,
     onSettings: () -> Unit,
     onFilters: () -> Unit,
+    onReportProblem: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val emails by container.store.inboxEmails().collectAsStateSafely(emptyList())
@@ -374,6 +376,21 @@ fun InboxScreen(
                     },
                     modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-settings"),
                 )
+                // The report captures the screen behind the drawer, so
+                // the drawer is closed before the capture is asked for
+                // (REQ-AND-SYS-50).
+                NavigationDrawerItem(
+                    label = { Text("Report a problem") },
+                    selected = false,
+                    icon = { Icon(Icons.Filled.BugReport, contentDescription = null) },
+                    onClick = {
+                        scope.launch {
+                            drawer.close()
+                            onReportProblem()
+                        }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("drawer-report-problem"),
+                )
               }
             }
         },
@@ -421,7 +438,11 @@ fun InboxScreen(
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                     }
-                    OverflowMenu(onOutbox = onOutbox, onSignOut = onSignOut)
+                    OverflowMenu(
+                        onOutbox = onOutbox,
+                        onReportProblem = onReportProblem,
+                        onSignOut = onSignOut,
+                    )
                 },
             )
         },
@@ -716,7 +737,11 @@ private fun AccountScopeSwitcher(
 }
 
 @Composable
-private fun OverflowMenu(onOutbox: () -> Unit, onSignOut: () -> Unit) {
+private fun OverflowMenu(
+    onOutbox: () -> Unit,
+    onReportProblem: () -> Unit,
+    onSignOut: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }, modifier = Modifier.testTag("inbox-overflow")) {
         Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -726,6 +751,11 @@ private fun OverflowMenu(onOutbox: () -> Unit, onSignOut: () -> Unit) {
             text = { Text("Outbox") },
             onClick = { open = false; onOutbox() },
             modifier = Modifier.testTag("menu-outbox"),
+        )
+        DropdownMenuItem(
+            text = { Text("Report a problem") },
+            onClick = { open = false; onReportProblem() },
+            modifier = Modifier.testTag("menu-report-problem"),
         )
         DropdownMenuItem(
             text = { Text("Sign out") },

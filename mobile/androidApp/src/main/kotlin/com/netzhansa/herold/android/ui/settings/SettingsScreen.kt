@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.netzhansa.herold.android.HeroldApplication
 import com.netzhansa.herold.android.auth.IdlePeriod
+import com.netzhansa.herold.android.diag.DiagPreferences
 import com.netzhansa.herold.android.auth.UnlockController
 import com.netzhansa.herold.android.push.PushTransportChoice
 import com.netzhansa.herold.shared.llm.TransparencyText
@@ -40,9 +41,10 @@ import kotlinx.coroutines.launch
 /**
  * The app's settings: how long a message waits before it goes (issue
  * #354), which transport carries push (REQ-AND-PUSH-05), whether the app
- * locks behind the device's unlock (REQ-AND-AUTH-11), and the ways
- * through to the account's active sessions (REQ-AND-AUTH-22) and its
- * category settings (suite REQ-CAT-04/05/11).
+ * locks behind the device's unlock (REQ-AND-AUTH-11), how a problem is
+ * reported (REQ-AND-SYS-50..52), and the ways through to the account's
+ * active sessions (REQ-AND-AUTH-22) and its category settings (suite
+ * REQ-CAT-04/05/11).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +53,7 @@ fun SettingsScreen(
     onSessions: () -> Unit,
     onCategories: () -> Unit,
     onTransparency: () -> Unit,
+    onReportProblem: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -212,7 +215,85 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            ReportingSection(onReportProblem = onReportProblem)
         }
+    }
+}
+
+/**
+ * How a problem reaches the maintainer (REQ-AND-SYS-50..53): the report
+ * sheet, the shake that opens it, and whether the app keeps the
+ * diagnostic log a report carries. Turning the log off empties it, so
+ * the setting is a decision about what the phone holds and not only
+ * about what a report includes.
+ */
+@Composable
+private fun ReportingSection(onReportProblem: () -> Unit) {
+    val context = LocalContext.current
+    var shake by remember { mutableStateOf(DiagPreferences.shakeToReport(context)) }
+    var keepLog by remember { mutableStateOf(DiagPreferences.keepLog(context)) }
+
+    Text(
+        text = "Reporting",
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
+    Text(
+        text = "A report goes to your own mailbox under \"Bug reports\", with a screenshot, " +
+            "what the app was doing and the diagnostic log.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .testTag("shake-to-report-row"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = "Shake to report", modifier = Modifier.weight(1f))
+        Switch(
+            checked = shake,
+            onCheckedChange = {
+                shake = it
+                DiagPreferences.setShakeToReport(context, it)
+            },
+            modifier = Modifier.testTag("shake-to-report"),
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .testTag("keep-diagnostic-log-row"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = "Keep diagnostic log", modifier = Modifier.weight(1f))
+        Switch(
+            checked = keepLog,
+            onCheckedChange = {
+                keepLog = it
+                DiagPreferences.setKeepLog(context, it)
+            },
+            modifier = Modifier.testTag("keep-diagnostic-log"),
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onReportProblem)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .testTag("settings-report-problem"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = "Report a problem", modifier = Modifier.weight(1f))
+        Text(
+            text = "Send what the app knows",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

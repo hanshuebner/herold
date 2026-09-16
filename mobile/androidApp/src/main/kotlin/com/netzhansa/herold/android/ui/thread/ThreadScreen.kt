@@ -124,6 +124,7 @@ fun ThreadScreen(
     onComposeTo: (to: String, subject: String, body: String) -> Unit,
     /** Opens the outbox, which is where a queued message is acted on (issue #369). */
     onOutbox: () -> Unit,
+    onReportProblem: () -> Unit,
     onBack: () -> Unit,
 ) {
     val messages by container.store.threadEmails(accountId, threadId).collectAsStateSafely(emptyList())
@@ -333,6 +334,7 @@ fun ThreadScreen(
                             onCreateFilter(newest?.fromEmail.orEmpty(), newest?.subject.orEmpty())
                         },
                         onInspect = { inspecting = (conversation.lastOrNull { it.id == expandedId } ?: conversation.lastOrNull())?.id },
+                        onReportProblem = onReportProblem,
                     )
                 },
             )
@@ -645,6 +647,7 @@ private fun ThreadOverflow(
     onBlock: () -> Unit,
     onCreateFilter: () -> Unit,
     onInspect: () -> Unit,
+    onReportProblem: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }, modifier = Modifier.testTag("thread-overflow")) {
@@ -683,6 +686,14 @@ private fun ThreadOverflow(
                 onInspect()
             },
             modifier = Modifier.testTag("thread-why"),
+        )
+        DropdownMenuItem(
+            text = { Text("Report a problem") },
+            onClick = {
+                open = false
+                onReportProblem()
+            },
+            modifier = Modifier.testTag("thread-report-problem"),
         )
     }
 }

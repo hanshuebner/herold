@@ -1,7 +1,7 @@
 package com.netzhansa.herold.android.work
 
 import android.content.Context
-import android.util.Log
+import com.netzhansa.herold.android.diag.DiagLog
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -43,7 +43,7 @@ class OutboxWorker(
             if (outcome.submitted > 0) session.syncEngine.syncAll()
             if (outcome.hasMore) Result.retry() else Result.success()
         } catch (t: Throwable) {
-            Log.w(TAG, "outbox drain failed: ${t.message}")
+            DiagLog.w(TAG, "outbox drain failed: ${t.message}")
             Result.retry()
         }
     }

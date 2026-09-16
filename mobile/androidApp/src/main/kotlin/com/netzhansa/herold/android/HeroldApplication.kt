@@ -1,6 +1,8 @@
 package com.netzhansa.herold.android
 
 import android.app.Application
+import com.netzhansa.herold.android.diag.DiagLog
+import com.netzhansa.herold.android.diag.DiagPreferences
 import com.netzhansa.herold.android.home.HomeSurfaces
 import com.netzhansa.herold.android.push.FirebaseSetup
 import com.netzhansa.herold.android.push.NotificationChannels
@@ -19,6 +21,15 @@ class HeroldApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Whether anything is kept in the diagnostic ring is the user's
+        // setting, and it applies from the first line of the process
+        // (REQ-AND-SYS-52).
+        DiagPreferences.apply(this)
+        DiagLog.i(
+            TAG,
+            "herold ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_COMMIT}) starting on " +
+                "Android ${android.os.Build.VERSION.RELEASE} ${android.os.Build.MODEL}",
+        )
         // The per-kind channels exist before the first notification, so the
         // user finds them in system settings straight away (REQ-AND-PUSH-10).
         NotificationChannels.create(this)
@@ -30,5 +41,9 @@ class HeroldApplication : Application() {
         // local store, so a push, a sync or an action the user took is
         // reflected on the home screen (REQ-AND-SYS-20/22).
         HomeSurfaces(this, container, CoroutineScope(SupervisorJob() + Dispatchers.Default)).start()
+    }
+
+    private companion object {
+        const val TAG = "herold.app"
     }
 }
