@@ -51,6 +51,62 @@ class CategoryAcceptanceTest {
         .targetContext.applicationContext as HeroldApplication
 
     @Test
+    fun t05_derivedCategoriesAreTabsWithoutALabelAndCollapseWhenGivenOne(): Unit = runBlocking {
+        signInAndSync()
+        val client = DevInstance.serverClient()
+        val accountId = client.session().mailAccountId!!
+        // The production shape of issue #404: the classifier's categories
+        // ride on the messages and the account has no label for any of
+        // them, so nothing on the wire carries a disposition.
+        dropLabels(client, accountId)
+        val promo = "+promo derived ${System.nanoTime()}"
+        val updates = "+updates derived ${System.nanoTime()}"
+        DevInstance.deliverMail(subject = promo, body = "A sale.")
+        DevInstance.deliverMail(subject = updates, body = "A receipt.")
+        awaitInbox(promo)
+        awaitInbox(updates)
+        // The classifier's two categories are the only ones the account
+        // carries, so the pinned budget is not spent on a category an
+        // earlier check assigned by hand.
+        clearOtherCategories(client, accountId, setOf(promo, updates))
+        app.container.session.value!!.syncEngine.syncAll()
+
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-tab-$DERIVED_PROMOTIONS").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue(
+            "a derived category with no label is still a tab",
+            compose.onAllNodesWithTag("inbox-tab-$DERIVED_UPDATES").fetchSemanticsNodes().isNotEmpty(),
+        )
+        compose.captureScreen("m4-derived-tabs")
+
+        // Settings lists the same categories, and choosing a lane for one
+        // creates the label the disposition lives on.
+        openCategories()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("category-row-$DERIVED_PROMOTIONS").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.captureScreen("m4-derived-category-settings")
+        compose.onNodeWithTag("category-row-$DERIVED_PROMOTIONS").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("category-choice-bundled").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("category-choice-bundled").performClick()
+        compose.waitForIdle()
+
+        val created = awaitServerLabel(client, accountId, DERIVED_PROMOTIONS) { it.disposition == "bundled" }
+        assertEquals("bundled", created.disposition)
+
+        backToInbox()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-tab-$DERIVED_PROMOTIONS").fetchSemanticsNodes().isEmpty()
+        }
+        compose.onNodeWithTag("inbox-list")
+            .performScrollToNode(hasTestTag("bundle-row-$DERIVED_PROMOTIONS"))
+        compose.captureScreen("m4-derived-bundle")
+    }
+
+    @Test
     fun t10_theServersDispositionsDecideTheInboxLanes(): Unit = runBlocking {
         signInAndSync()
         val client = DevInstance.serverClient()
@@ -283,6 +339,22 @@ class CategoryAcceptanceTest {
         }
     }
 
+    /** Walks back from Settings > Categories to the message list. */
+    private fun backToInbox() {
+        if (compose.onAllNodesWithTag("categories-back").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("categories-back").performClick()
+            compose.waitUntil(TIMEOUT_MS) {
+                compose.onAllNodesWithTag("settings-back").fetchSemanticsNodes().isNotEmpty()
+            }
+        }
+        if (compose.onAllNodesWithTag("settings-back").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("settings-back").performClick()
+        }
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("inbox-list").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
     /** Opens Settings > Categories from wherever the shell is. */
     private fun openCategories() {
         while (compose.onAllNodesWithTag("inbox-drawer-open").fetchSemanticsNodes().isEmpty()) {
@@ -303,6 +375,54 @@ class CategoryAcceptanceTest {
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("categories-screen").fetchSemanticsNodes().isNotEmpty()
         }
+    }
+
+    /**
+     * Strips the `$category-*` keywords from every cached message other
+     * than [keep], so the categories under test are the account's whole
+     * set.
+     */
+    private suspend fun clearOtherCategories(
+        client: JmapClient,
+        accountId: String,
+        keep: Set<String>,
+    ) {
+        val patches = app.container.store.emailList()
+            .filter { it.subject !in keep && it.categories.isNotEmpty() }
+            .associate { email ->
+                email.id to buildJsonObject {
+                    email.keywords.filter { Keywords.categoryName(it) != null }.forEach {
+                        put("keywords/$it", JsonPrimitive(null as String?))
+                    }
+                }
+            }
+        if (patches.isEmpty()) return
+        client.emailSet(accountId, patches)
+    }
+
+    /** Destroys every label of the account, leaving only the system mailboxes. */
+    private suspend fun dropLabels(client: JmapClient, accountId: String) {
+        val labels = client.mailboxGet(accountId, null).list.filter { it.role == null }
+        if (labels.isEmpty()) return
+        client.mailboxSet(accountId, destroy = labels.map { it.id })
+    }
+
+    /** The server's own view of a label found by name, polled until it matches. */
+    private suspend fun awaitServerLabel(
+        client: JmapClient,
+        accountId: String,
+        name: String,
+        matches: (WireMailbox) -> Boolean,
+    ): WireMailbox {
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        var seen: WireMailbox? = null
+        while (System.currentTimeMillis() < deadline) {
+            seen = client.mailboxGet(accountId, null).list
+                .firstOrNull { it.role == null && it.name.equals(name, ignoreCase = true) }
+            if (seen != null && matches(seen)) return seen
+            Thread.sleep(POLL_MS)
+        }
+        error("the server never held $name as asked; it holds ${seen?.disposition}")
     }
 
     /** The server's own view of one mailbox, polled until it matches. */
@@ -368,5 +488,11 @@ class CategoryAcceptanceTest {
         const val BUNDLED = "catbundled"
         const val FILED = "catfiled"
         const val PLAIN = "catplain"
+
+        // The classifier's own categories, as the fake classifier
+        // assigns them from a subject (`+promo`, `+updates`).
+        const val DERIVED_PROMOTIONS = "promotions"
+        const val DERIVED_UPDATES = "updates"
+
     }
 }

@@ -136,11 +136,16 @@ data class RulePayload(
  * a disposition change or a reorder of the pinned categories produces. A
  * reorder moves several labels, so they travel as one call and the server
  * renumbers the ranked set densely around them.
+ *
+ * [creates] carries the label a derived category needs before it can hold
+ * a disposition (issue #404), keyed by the placeholder id the store holds
+ * for it until the server's own row arrives.
  */
 @Serializable
 data class MailboxPayload(
     val accountId: String,
     val updates: Map<String, JsonObject> = emptyMap(),
+    val creates: Map<String, JsonObject> = emptyMap(),
 )
 
 /** The `Email/set` patches an action entry submits, by message id. */

@@ -52,15 +52,18 @@ sealed interface InboxItem {
 }
 
 /**
- * The inbox lanes, as the server's `Mailbox.disposition` and
- * `Mailbox.priority` define them (issue #333, suite REQ-CAT-04/05/10/11).
+ * The inbox lanes: which categories are tabs, which collapse to a
+ * bundle, and which keep their mail out of the stream (issue #333,
+ * suite REQ-CAT-03/04/05/10/11).
  *
- * A category is a label, so its lane is a property of the label's mailbox:
- * `pinned` labels are the tabs above the stream in priority order,
- * `bundled` ones collapse to one row each, `daily`, `weekly` and `filed`
- * keep their messages out of the inbox stream, and `none` gives the
- * category no lane at all. [order] is the principal's one priority list,
- * which resolves a message carrying several categories to a single lane
+ * A category is a label, so a label carrying a `disposition` states its
+ * lane outright and that statement wins. A category the classifier
+ * derives has no label until the user gives it one, and those default
+ * to `pinned`: first the account's `CategorySettings.derivedCategories`
+ * in the order the server lists them, then any further category the
+ * synced mail carries. That default is what puts the tabs above a fresh
+ * account's inbox. [order] is the principal's one priority list, which
+ * resolves a message carrying several categories to a single lane
  * (REQ-CAT-01/05).
  */
 data class CategoryLanes(
@@ -77,14 +80,21 @@ data class CategoryLanes(
     },
 ) {
     /**
+     * The category uncategorised mail belongs to (REQ-CAT-03): the one
+     * holding the `primary` role, when the account has it.
+     */
+    val primary: String? get() = PRIMARY_ROLE.takeIf { it in order }
+
+    /**
      * The category that decides where a message carrying [categories]
-     * goes: the highest-priority one it holds (REQ-CAT-05). Null when it
-     * carries none.
+     * goes: the highest-priority one it holds (REQ-CAT-05). A message
+     * carrying none falls to the primary-role category (REQ-CAT-03),
+     * and is laneless on an account without one.
      */
     fun resolve(categories: Collection<String>): String? =
-        categories.minWithOrNull(compareBy({ rank(it) }, { it }))
+        categories.minWithOrNull(compareBy({ rank(it) }, { it })) ?: primary
 
-    /** [category]'s disposition, `none` for one the account has no label for. */
+    /** [category]'s disposition, `none` for one the account has no lane for. */
     fun dispositionOf(category: String?): CategoryDisposition =
         category?.let { dispositions[it] } ?: CategoryDisposition.NONE
 
@@ -95,32 +105,69 @@ data class CategoryLanes(
     companion object {
         const val PINNED_LIMIT = CategoryDisposition.PINNED_LIMIT
 
+        /** The category uncategorised mail falls to (REQ-CAT-03). */
+        const val PRIMARY_ROLE = "primary"
+
         /** No lanes at all, for a store that holds no labels yet. */
         val EMPTY = CategoryLanes(pinned = emptyList(), bundled = emptyList())
 
         /**
-         * The lanes the account's labels define. [accountScope] narrows to
-         * one account; in the combined view the labels of every account
-         * fold together by name, since a category's identity on the wire
-         * is its case-folded name (the `$category-<name>` keyword).
+         * The lanes of the account's categories. A label states its own
+         * lane through its `disposition`; [derivedCategories] - the
+         * classifier's own set, which the sync engine reads from
+         * `CategorySettings/get` - and [observedCategories] - the
+         * `$category-<name>` keywords the synced mail carries - take
+         * `pinned` where no label states one, behind the labels that do
+         * (issue #404). [accountScope] narrows to one account; in the
+         * combined view the labels of every account fold together by
+         * name, since a category's identity on the wire is its
+         * case-folded name.
          */
-        fun from(mailboxes: List<Mailbox>, accountScope: String? = null): CategoryLanes {
+        fun from(
+            mailboxes: List<Mailbox>,
+            derivedCategories: List<String> = emptyList(),
+            observedCategories: Collection<String> = emptyList(),
+            accountScope: String? = null,
+        ): CategoryLanes {
             val folded = mailboxes
                 .filter { it.role == null && (accountScope == null || it.accountId == accountScope) }
                 .groupBy { it.categoryName }
                 .mapValues { (_, rows) -> fold(rows) }
-            val ordered = folded.entries
+            val labelled = folded.entries
                 .sortedWith(compareBy({ it.value.priority ?: Int.MAX_VALUE }, { it.key }))
-            val dispositions = ordered.associate { it.key to it.value.disposition }
+            val stated = labelled.filter { it.value.disposition != CategoryDisposition.NONE }
+            val silent = labelled.filter { it.value.disposition == CategoryDisposition.NONE }
+            val derived = defaulted(derivedCategories, observedCategories, folded.keys)
+            val dispositions = buildMap {
+                stated.forEach { put(it.key, it.value.disposition) }
+                derived.forEach { put(it, CategoryDisposition.PINNED) }
+                silent.forEach { put(it.key, CategoryDisposition.NONE) }
+            }
+            val order = stated.map { it.key } + derived + silent.map { it.key }
             return CategoryLanes(
-                pinned = ordered.filter { it.value.disposition == CategoryDisposition.PINNED }
-                    .map { it.key }.take(PINNED_LIMIT),
-                bundled = ordered.filter { it.value.disposition == CategoryDisposition.BUNDLED }
-                    .map { it.key },
-                hidden = ordered.filter { it.value.disposition.hidesFromInbox }.map { it.key },
-                order = ordered.map { it.key },
+                pinned = order.filter { dispositions[it] == CategoryDisposition.PINNED }
+                    .take(PINNED_LIMIT),
+                bundled = order.filter { dispositions[it] == CategoryDisposition.BUNDLED },
+                hidden = order.filter { dispositions[it]?.hidesFromInbox == true },
+                order = order,
                 dispositions = dispositions,
             )
+        }
+
+        /**
+         * The categories that take the pinned default: the classifier's
+         * own set in the server's order, then whatever further category
+         * the mail carries, and none that a label already speaks for.
+         */
+        private fun defaulted(
+            derivedCategories: List<String>,
+            observedCategories: Collection<String>,
+            labelled: Set<String>,
+        ): List<String> {
+            val derived = derivedCategories.map { it.lowercase() }.distinct()
+            val observed = observedCategories.map { it.lowercase() }.distinct()
+                .filter { it !in derived }.sorted()
+            return (derived + observed).filter { it !in labelled }
         }
 
         /**
