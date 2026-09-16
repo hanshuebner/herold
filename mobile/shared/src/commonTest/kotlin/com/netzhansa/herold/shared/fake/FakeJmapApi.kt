@@ -73,6 +73,7 @@ class FakeJmapApi(
 
     val ruleSetCalls = mutableListOf<Triple<Map<String, JsonObject>, Map<String, JsonObject>, List<String>>>()
     val mailboxSetCalls = mutableListOf<Map<String, JsonObject>>()
+    val mailboxCreateCalls = mutableListOf<Map<String, JsonObject>>()
     val threadMuteCalls = mutableListOf<Pair<String, Boolean>>()
     val blockedSenderCalls = mutableListOf<String>()
     var ruleGetCalls = 0
@@ -147,6 +148,7 @@ class FakeJmapApi(
     ): MailboxSetOutcome {
         setFailure?.let { throw it }
         mailboxSetCalls.add(update)
+        if (create.isNotEmpty()) mailboxCreateCalls.add(create)
         return mailboxSetOutcome
     }
 

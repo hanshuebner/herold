@@ -49,6 +49,7 @@ import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.CategoryActions
 import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Mailbox
+import com.netzhansa.herold.shared.inbox.InboxAssembler
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -56,13 +57,16 @@ import kotlin.math.roundToInt
 private val ROW_HEIGHT = 56.dp
 
 /**
- * Category settings (suite REQ-CAT-04/05/11): a label's disposition and
- * the order of the pinned ones.
+ * Category settings (suite REQ-CAT-04/05/11): a category's disposition
+ * and the order of the pinned ones.
  *
- * The server owns both properties, so the screen renders the local
- * store's mailbox rows and writes `Mailbox/set` through the outbox. A
- * refusal - the sixth pinned category the server answers `tooManyPinned`
- * to - arrives from the drain and is shown here.
+ * The screen lists the account's labels and the classifier's derived
+ * categories together, each showing the lane in force (issue #404). The
+ * server owns both properties, so the screen renders the local store's
+ * rows and writes `Mailbox/set` through the outbox - which for a derived
+ * category with no label yet creates the label the disposition needs to
+ * live on. A refusal - the sixth pinned category the server answers
+ * `tooManyPinned` to - arrives from the drain and is shown here.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,7 +77,12 @@ fun CategoriesScreen(
     onBack: () -> Unit,
 ) {
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
-    val labels = remember(mailboxes, accountId) { CategoryActions.categoryLabels(mailboxes, accountId) }
+    val derivedCategories by session.syncEngine.categories.collectAsStateSafely(emptyList())
+    val inboxEmails by container.store.inboxEmails().collectAsStateSafely(emptyList())
+    val observedCategories = remember(inboxEmails) { InboxAssembler.observedCategories(inboxEmails) }
+    val entries = remember(mailboxes, derivedCategories, observedCategories, accountId) {
+        CategoryActions.entries(mailboxes, derivedCategories, observedCategories, accountId)
+    }
     val pinned = remember(mailboxes, accountId) { CategoryActions.pinnedLabels(mailboxes, accountId) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -103,7 +112,7 @@ fun CategoriesScreen(
                 .testTag("categories-screen"),
         ) {
             Text(
-                text = "How a label appears in the inbox. A pinned category is a tab, " +
+                text = "How a category appears in the inbox. A pinned category is a tab, " +
                     "a bundled one collapses to a single row, and a filed or deferred one " +
                     "stays out of the stream.",
                 style = MaterialTheme.typography.bodySmall,
@@ -124,23 +133,38 @@ fun CategoriesScreen(
             }
 
             Text(
-                text = "Labels",
+                text = "Categories",
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             )
-            if (labels.isEmpty()) {
+            if (entries.isEmpty()) {
                 Text(
-                    text = "This account has no labels yet.",
+                    text = "This account has no categories yet. They appear once the " +
+                        "server has classified some mail, or when you create a label.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp).testTag("categories-empty"),
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .testTag("categories-empty"),
                 )
             }
-            labels.forEach { label ->
+            entries.forEach { entry ->
                 DispositionRow(
-                    label = label,
+                    entry = entry,
                     onChoose = { disposition ->
-                        scope.launch { session.categories.setDisposition(label, disposition, mailboxes) }
+                        scope.launch {
+                            val label = entry.label
+                            if (label != null) {
+                                session.categories.setDisposition(label, disposition, mailboxes)
+                            } else {
+                                session.categories.createWithDisposition(
+                                    accountId = accountId,
+                                    category = entry.category,
+                                    disposition = disposition,
+                                    all = mailboxes,
+                                )
+                            }
+                        }
                     },
                 )
                 HorizontalDivider()
@@ -215,11 +239,11 @@ private fun PinnedOrder(pinned: List<Mailbox>, onMove: (Int, Int) -> Unit) {
     }
 }
 
-/** One label with the disposition menu behind it. */
+/** One category with the disposition menu behind it. */
 @Composable
-private fun DispositionRow(label: Mailbox, onChoose: (CategoryDisposition) -> Unit) {
+private fun DispositionRow(entry: CategoryActions.Companion.Entry, onChoose: (CategoryDisposition) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    val key = label.categoryName
+    val key = entry.category
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -229,9 +253,9 @@ private fun DispositionRow(label: Mailbox, onChoose: (CategoryDisposition) -> Un
             .padding(horizontal = 16.dp, vertical = 14.dp)
             .testTag("category-row-$key"),
     ) {
-        Text(text = label.name, modifier = Modifier.weight(1f))
+        Text(text = entry.title, modifier = Modifier.weight(1f))
         Text(
-            text = label.disposition.label,
+            text = entry.disposition.label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("category-disposition-$key"),

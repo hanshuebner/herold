@@ -210,11 +210,21 @@ class OutboxDrainer(
         val payload = runCatching {
             outboxJson.decodeFromString<MailboxPayload>(entry.payload)
         }.getOrNull() ?: return StepResult.Rejected("the queued label change could not be read")
-        if (payload.updates.isEmpty()) return StepResult.Done
+        if (payload.updates.isEmpty() && payload.creates.isEmpty()) return StepResult.Done
         val outcome = try {
-            api.mailboxSet(payload.accountId, update = payload.updates)
+            api.mailboxSet(
+                payload.accountId,
+                create = payload.creates,
+                update = payload.updates,
+            )
         } catch (t: Throwable) {
             return failureOf(t)
+        }
+        // The placeholder row stood in for the label until the server
+        // made one; the fetch below brings the real row, whatever the
+        // server decided, so the placeholder goes either way.
+        if (payload.creates.isNotEmpty()) {
+            store.deleteMailboxes(payload.accountId, payload.creates.keys.toList())
         }
         refreshMailboxes(payload.accountId)
         if (outcome.isTooManyPinned) return StepResult.Rejected(CategoryActions.TOO_MANY_PINNED)

@@ -2,6 +2,7 @@ package com.netzhansa.herold.shared.actions
 
 import com.netzhansa.herold.shared.domain.CategoryDisposition
 import com.netzhansa.herold.shared.domain.Mailbox
+import com.netzhansa.herold.shared.inbox.CategoryLanes
 import com.netzhansa.herold.shared.outbox.MailboxPayload
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.store.LocalStore
@@ -76,6 +77,51 @@ class CategoryActions(
         )
     }
 
+    /**
+     * Sets the lane of a derived category the account has no label for
+     * (issue #404). The disposition lives on a mailbox, so the write
+     * creates one named after the category - herold case-folds keywords,
+     * so the new label carries the category's mail from the moment it
+     * exists. A placeholder row stands in until the drain brings the
+     * server's own.
+     */
+    suspend fun createWithDisposition(
+        accountId: String,
+        category: String,
+        disposition: CategoryDisposition,
+        all: List<Mailbox>,
+    ): Long {
+        val rank = if (disposition == CategoryDisposition.PINNED) nextRank(all, accountId) else null
+        val placeholder = placeholderId(accountId, category)
+        store.upsertMailboxes(
+            listOf(
+                Mailbox(
+                    accountId = accountId,
+                    id = placeholder,
+                    name = category,
+                    disposition = disposition,
+                    priority = rank,
+                ),
+            ),
+        )
+        val id = outbox.enqueueMailbox(
+            accountId = accountId,
+            label = MailActions.Labels.CATEGORY_DISPOSITION,
+            payload = MailboxPayload(
+                accountId = accountId,
+                creates = mapOf(
+                    placeholder to buildJsonObject {
+                        put("name", category)
+                        put("disposition", disposition.wire)
+                        if (rank != null) put("priority", rank)
+                    },
+                ),
+            ),
+        )
+        requestDrain()
+        return id
+    }
+
     private suspend fun enqueue(
         accountId: String,
         label: String,
@@ -92,6 +138,19 @@ class CategoryActions(
 
     companion object {
         /**
+         * A category as the settings screen lists it (REQ-CAT-13): the
+         * label that carries it where one exists, and the lane in force
+         * either way - which for a derived category with no label is the
+         * default the inbox gives it (issue #404).
+         */
+        data class Entry(
+            val category: String,
+            val title: String,
+            val label: Mailbox?,
+            val disposition: CategoryDisposition,
+        )
+
+        /**
          * What the user is told when the server refuses a sixth pinned
          * category (`tooManyPinned`, REQ-CAT-11).
          */
@@ -103,6 +162,34 @@ class CategoryActions(
             mailboxes
                 .filter { it.role == null && (accountId == null || it.accountId == accountId) }
                 .sortedWith(compareBy({ it.priority ?: Int.MAX_VALUE }, { it.name.lowercase() }))
+
+        /**
+         * Every category of the account: its labels, then the classifier's
+         * derived categories the account has no label for, each with the
+         * lane the inbox gives it.
+         */
+        fun entries(
+            mailboxes: List<Mailbox>,
+            derivedCategories: List<String>,
+            observedCategories: Collection<String> = emptyList(),
+            accountId: String? = null,
+        ): List<Entry> {
+            val labels = categoryLabels(mailboxes, accountId)
+            val named = labels.map { it.categoryName }.toSet()
+            val lanes = CategoryLanes.from(mailboxes, derivedCategories, observedCategories, accountId)
+            return labels.map {
+                Entry(it.categoryName, it.name, it, it.disposition)
+            } + lanes.order.filter { it !in named }.map {
+                Entry(it, it, null, lanes.dispositionOf(it))
+            }
+        }
+
+        /**
+         * The store id a category's label carries until the server's own
+         * row replaces it.
+         */
+        fun placeholderId(accountId: String, category: String): String =
+            "pending-category:$accountId:$category"
 
         /** The pinned labels in tab order, the list a drag reorders. */
         fun pinnedLabels(mailboxes: List<Mailbox>, accountId: String?): List<Mailbox> =
