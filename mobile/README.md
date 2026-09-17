@@ -156,6 +156,27 @@ Run the classes in a few invocations rather than one: a single invocation of
 the whole suite loads the emulator enough that a delivery wait or the
 editor's readiness check can exceed its 30 s budget.
 
+### The bug reporter (issue #407)
+
+`BugReportAcceptanceTest` drives the in-app reporter against the dev
+instance: a one-tap report from a thread overflow, a described one, the
+shake, and the filed copy under the "Bug reports" label. Run it in its
+own invocation:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BugReportAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      -e heroldEmulatorToken "$(cat ~/.emulator_console_auth_token)" \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+The shake is injected through the emulator console rather than by hand:
+`adb emu` talks to a telnet listener on the host's loopback, which the
+device reaches at `10.0.2.2:5554`, and the listener wants the token in
+`~/.emulator_console_auth_token`. `heroldEmulatorConsole` overrides the
+address. Without `heroldEmulatorToken` the shake check skips, so the
+class still runs on a physical device.
+
 ### UnifiedPush (issue #229)
 
 `UnifiedPushAcceptanceTest` and `PushTransportSettingsTest` need a

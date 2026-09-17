@@ -48,6 +48,19 @@ web-platform integrations in `docs/design/web/requirements/24-mobile-and-touch.m
 | REQ-AND-SYS-42 | Per-app language preference (Android 13+) is supported over the client's localisation set (`../00-scope.md` Defaults). |
 | REQ-AND-SYS-43 | TalkBack navigates every surface, including swipe actions and bottom sheets, with appropriate announcements (parallels Suite `REQ-MOB-101`). No action is gesture-only; each has a reachable button/menu equivalent (Suite `REQ-MOB-102`). |
 
+## Diagnostics and bug reporting
+
+The phone-side counterpart of the herold-triage browser panel (issue #407).
+Transport is the existing outbox, so a report is an ordinary queued send and
+needs no server surface of its own.
+
+| ID | Requirement |
+|----|-------------|
+| REQ-AND-SYS-50 | "Report a problem" is reachable from the navigation drawer, from every screen's overflow menu and from settings. It opens one sheet, whichever entry point raised it. |
+| REQ-AND-SYS-51 | Shaking the device opens the same sheet. Detection runs only while the shell is resumed, counts a sample as accelerating past 13 m/s^2, declares a shake when at least four of the last 500 ms are accelerating and three quarters of that window is, and holds a cooldown so one shake is one report. A settings toggle "Shake to report" controls it, default on and remembered when turned off. |
+| REQ-AND-SYS-52 | The app keeps a bounded in-memory ring of a few hundred lines fed by its own loggers (shell, sync, outbox, push, auth, the reporter). It holds no credential and no message content: every line is redacted on the way in, and a subject carried by an outbox label is dropped. The ring is never written to disk and does not outlive the process. A settings toggle "Keep diagnostic log" controls it, default on; turning it off empties it. |
+| REQ-AND-SYS-53 | A report captures, before the sheet opens, the window as a PNG, the route and its arguments, the account in scope and the thread, the app version and commit, the Android version and device, the reconciler's state and last error, the outbox by state with subjects dropped, the push transport and registration, and the log ring. The sheet shows the capture and sends it with no typing required: the title and the note are optional and the description is added on the desktop (`herold bug-fetch`, issue #408). The bundle goes to the user's own address through the outbox under the undo window, in the drop layout the triage tooling expands (`report.json`, `report.md`, `logs.txt`, `screenshot-N.png`, and `private.json` only when the maintainer asks for the session details), and the sent copy is filed under a "Bug reports" label the client creates if the account lacks it, left unread so a mailbox poller finds it. |
+
 ## Out of scope
 
 - Wear OS / watch companions, Android Auto (`../00-scope.md` mobile out-of-scope; revisit post-v1).
