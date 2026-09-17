@@ -75,7 +75,7 @@ func newAPIKeyCmd() *cobra.Command {
 		"comma-separated scope list (one or more of "+
 			"end-user, admin, mail.send, mail.receive, "+
 			"chat.read, chat.write, cal.read, cal.write, "+
-			"contacts.read, contacts.write, webhook.publish)")
+			"contacts.read, contacts.write, webhook.publish, bug-reports)")
 	createCmd.Flags().Bool("allow-admin-scope", false,
 		"required when --scope contains admin (REQ-AUTH-SCOPE-04)")
 	c.AddCommand(createCmd)

@@ -1117,6 +1117,9 @@ func StartServer(ctx context.Context, cfg *sysconfig.Config, opts StartOpts) err
 		// spamClassifier uses, so the admin surface never drifts from
 		// what delivery is actually doing.
 		SpamStatus: spamStatusProvider(spamPluginName, pluginMgr),
+		// Bug reports (issue #416): each report is a directory drop
+		// under <data_dir>/bug-reports/<id>/, created on first POST.
+		BugReportsDir: filepath.Join(cfg.Server.DataDir, "bug-reports"),
 	}
 	// External-submission retryer: redelivers submissions parked
 	// held-for-reauth once the identity's auth recovers (re #70,

@@ -70,6 +70,14 @@ const (
 	// (operator-issued API keys for transactional senders that POST
 	// from external services).
 	ScopeWebhookPublish Scope = "webhook.publish"
+	// ScopeBugReports gates the bug-reports REST surface (list,
+	// download, delete — POST is gated on ScopeEndUser instead, since
+	// reports are submitted by the reporting principal, not the
+	// maintainer's fetch credential). Issued only to an operator-minted
+	// API key (`herold api-key create --scope bug-reports`) used by
+	// `herold bug-fetch`; never carried by a session cookie or device
+	// token (issue #416).
+	ScopeBugReports Scope = "bug-reports"
 )
 
 // AllScopes is the canonical ordered slice for serialisation +
@@ -87,6 +95,7 @@ var AllScopes = []Scope{
 	ScopeContactsRead,
 	ScopeContactsWrite,
 	ScopeWebhookPublish,
+	ScopeBugReports,
 }
 
 // AllEndUserScopes is the default set for human-issued cookies on the

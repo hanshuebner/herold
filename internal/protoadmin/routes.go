@@ -388,6 +388,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/clientlog/livetail", authAdmin(s.handleAdminClientLogLivetailSet))
 	mux.HandleFunc("DELETE /api/v1/admin/clientlog/livetail/{user_id}", authAdmin(s.handleAdminClientLogLivetailClear))
 	mux.HandleFunc("GET /api/v1/admin/clientlog/stats", authAdmin(s.handleAdminClientLogStats))
+
+	// Bug reports (issue #416, REQ-ADM-320..324). POST is gated on the
+	// caller's ScopeEndUser inside the handler (session cookie or bearer
+	// device token, same credential the Android reporter and the Suite's
+	// self-service surfaces use) so it is registered with auth1, not
+	// authAdmin. GET/DELETE require ScopeBugReports or ScopeAdmin, also
+	// checked inside the handler via requireBugReportsScope, so the
+	// maintainer's `herold bug-fetch` credential (scope bug-reports
+	// only) can list, download, and delete without admin elevation.
+	mux.HandleFunc("POST /api/v1/bug-reports", auth1(s.handleCreateBugReport))
+	mux.HandleFunc("GET /api/v1/bug-reports", auth1(s.handleListBugReports))
+	mux.HandleFunc("GET /api/v1/bug-reports/{id}", auth1(s.handleGetBugReport))
+	mux.HandleFunc("DELETE /api/v1/bug-reports/{id}", auth1(s.handleDeleteBugReport))
 }
 
 // RegisterSelfServiceRoutes registers the self-service subset of the

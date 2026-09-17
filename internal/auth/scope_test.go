@@ -36,6 +36,26 @@ func TestAllEndUserScopes_NoAdminNoWebhook(t *testing.T) {
 		if s == auth.ScopeWebhookPublish {
 			t.Fatalf("AllEndUserScopes contains webhook.publish: %v", auth.AllEndUserScopes)
 		}
+		if s == auth.ScopeBugReports {
+			t.Fatalf("AllEndUserScopes contains bug-reports: %v", auth.AllEndUserScopes)
+		}
+	}
+}
+
+func TestScopeBugReports_InClosedEnum(t *testing.T) {
+	t.Parallel()
+	sc, err := auth.ParseScope("bug-reports")
+	if err != nil || sc != auth.ScopeBugReports {
+		t.Fatalf("ParseScope(bug-reports) = %v, %v, want ScopeBugReports, nil", sc, err)
+	}
+	found := false
+	for _, s := range auth.AllScopes {
+		if s == auth.ScopeBugReports {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AllScopes missing bug-reports: %v", auth.AllScopes)
 	}
 }
 

@@ -405,6 +405,13 @@ type Options struct {
 	// (/etc/herold/system.toml) and is never mutated at runtime, so
 	// there is no corresponding write endpoint.
 	Push *sysconfig.PushConfig
+
+	// BugReportsDir is the directory bug-report bundles are stored under
+	// (one subdirectory per report, named by id), backing POST/GET/DELETE
+	// /api/v1/bug-reports (issue #416). Production wiring sets this to
+	// <data_dir>/bug-reports. Empty leaves those endpoints returning 501
+	// not_implemented.
+	BugReportsDir string
 }
 
 // ClientlogOptions configures the client-log ingest pipeline parameters.

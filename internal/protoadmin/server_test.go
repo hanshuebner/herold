@@ -45,8 +45,26 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithOpts(t, nil)
+}
+
+// newHarnessWithOpts is newHarness with an optional Options mutator, for
+// tests that need to set fields newHarness leaves at their zero value
+// (e.g. BugReportsDir).
+func newHarnessWithOpts(t *testing.T, mutate func(*protoadmin.Options)) *harness {
+	t.Helper()
 	clk := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fs := sqlitetest.Open(t, clk)
+	return newHarnessWithStoreOpts(t, fs, clk, mutate)
+}
+
+// newHarnessWithStoreOpts is newHarnessWithOpts against a caller-supplied
+// store and clock (mlist_test.go's newHarnessWithStore without the
+// Options mutator), so tests that need both a specific backend (e.g.
+// Postgres via HEROLD_PG_DSN) and a non-default Option (e.g.
+// BugReportsDir) can get both. The caller owns the store's lifecycle.
+func newHarnessWithStoreOpts(t *testing.T, fs store.Store, clk *clock.FakeClock, mutate func(*protoadmin.Options)) *harness {
+	t.Helper()
 	h, _ := testharness.Start(t, testharness.Options{
 		Store: fs,
 		Clock: clk,
@@ -56,11 +74,15 @@ func newHarness(t *testing.T) *harness {
 	})
 	dir := directory.New(fs.Meta(), nil, clk, nil)
 	rp := directoryoidc.New(fs.Meta(), nil, &http.Client{Timeout: 5 * time.Second}, clk)
-	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, protoadmin.Options{
+	opts := protoadmin.Options{
 		BootstrapPerWindow:      1,
 		BootstrapWindow:         5 * time.Minute,
 		RequestsPerMinutePerKey: 100,
-	})
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	srv := protoadmin.NewServer(fs, dir, rp, nil, clk, opts)
 	if err := h.AttachAdmin("admin", srv, protoadmin.ListenerModePlain); err != nil {
 		t.Fatalf("AttachAdmin: %v", err)
 	}

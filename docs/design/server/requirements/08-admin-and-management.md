@@ -120,6 +120,46 @@ The audit log is the security/compliance record of *actor-initiated* actions. It
 - **REQ-ADM-306** Message research is the retrospective, operator-facing tool that answers "what happened to a given message" end-to-end, for non-technical mail operators. It offers flexible, combinable search filters — sender address, recipient address, date range, and Message-ID. There is no subject filter: the Subject header is message content, not envelope metadata, and never appears in the filters, the timeline, or the API response. The endpoint joins three sources into a per-message timeline: (1) received mail from the messages store, carrying the ingest source (`ingest_source`: `smtp`, `imap-import`, `jmap-import`, `imap-append`, `imap-copy`, `mailing-list-archive`, `gmail-import`, empty = not recorded, with `ingest_source_ref` naming the import account or mailing list for the paths that have one), the delivery disposition recorded once at ingest (immutable regardless of later moves; empty means not recorded — a row that predates disposition recording or a write path that does not decide one), every mailbox the message currently sits in (`mailboxes`, each with its Junk attribute), and the spam verdict; (2) the inbound accept / reject / defer trail from the System events stream (REQ-ADM-304), which is the only record of mail rejected or deferred at SMTP time that never became a stored message — the `smtp.accept` entry carries the envelope's `mail_from` and `rcpt_to`; (3) outbound send outcomes from queue history. This is distinct from **Queue**, which is the live operational management view of the outbound pipeline. Message research is admin-scoped and its access is audit-logged (REQ-ADM-300); the surface exposes envelope metadata and disposition only — never message bodies, attachment content, or subject lines. It is subject to the operator domain scope of REQ-ADM-307.
 - **REQ-ADM-307** An operator sees only data for the domains they manage. Every observability surface that exposes per-domain mail-flow data — **System events** (REQ-ADM-304), **Queue**, **Message research** (REQ-ADM-306), and the per-domain slice of the **Audit log** (REQ-ADM-300) — filters its results to the caller's managed-domain set, enforced server-side. The authorization model has two roles: a global **super-admin**, who sees all domains and performs server-wide administration (server config, DKIM keys, creating operators), and **domain-scoped operators**, each linked through a principal-to-domain association to the set of domains they manage. A surface MUST fail closed (show nothing) rather than leak cross-domain data if the caller's managed-domain set cannot be resolved. Existing all-or-nothing admins are super-admins. This model is a prerequisite for the domain-scoped surfaces. **[Generalised by `07-access-control.md` (REQ-AC-30/31/12): super-admin becomes `server:superadmin`, domain-scoped operator becomes a `domain:operator` grant, and the principal-to-domain association becomes a grant row. Fail-closed filtering preserved and extended to all resource kinds.]**
 
+## Bug reports
+
+Bug-report bundles (the Android in-app reporter, issue #407; a future browser
+reporter) reach the maintainer through the server instead of a mailbox. Four
+endpoints on the public listener, all audit-logged (REQ-ADM-300):
+
+- **REQ-ADM-320** `POST /api/v1/bug-reports` accepts a bundle from an
+  authenticated end-user credential (session cookie or bearer device token
+  carrying `end-user` scope, REQ-AUTH-SCOPE-01) — the same credential kind
+  the Suite's self-service surfaces accept. The body is either
+  `multipart/form-data` with one part per drop file (`report.json`,
+  `report.md`, `logs.txt`, `screenshot-N.png`, optional `private.json`) or a
+  single `zip` part holding the same entries. `report.json` is required;
+  every other part is optional. The server writes
+  `<data_dir>/bug-reports/<id>/` holding the submitted files verbatim plus a
+  server-written `meta.json` (`principal_id`, `email`, `received_at`, and
+  each part's size), and answers `201 {"id": "<id>"}`. Size caps: 8 MiB per
+  screenshot, 4 MiB per other part, 20 screenshots, 40 MiB total request
+  body; a request over any cap is rejected (400 for an unexpected part or a
+  missing `report.json`, 413 for an oversized part or body) before anything
+  is written to disk.
+- **REQ-ADM-321** `GET /api/v1/bug-reports` lists every stored report,
+  newest first: `id`, `received_at`, `principal_id`, `email` (from
+  `meta.json`), and `title` (the first non-blank line of `report.json`'s
+  `sketch`), `route` (`report.json`'s `context.route`), `description_entered`,
+  and `screenshot_count` (`report.json`'s `descriptionEntered` /
+  `screenshotCount`) so a triage tool can render a work list without
+  downloading every drop.
+- **REQ-ADM-322** `GET /api/v1/bug-reports/{id}` returns the drop as a zip
+  archive (the stored files plus `meta.json`), ready for `herold bug-fetch`
+  to extract verbatim into a local drop directory.
+- **REQ-ADM-323** `DELETE /api/v1/bug-reports/{id}` removes the drop.
+- **REQ-ADM-324** GET (list, by id) and DELETE require the `bug-reports` or
+  `admin` scope (REQ-AUTH-SCOPE-01, REQ-AUTH-SCOPE-04); a credential with
+  neither is refused with 403. This is the surface `herold bug-fetch` drives
+  with an operator-minted `bug-reports`-scoped API key
+  (`herold api-key create --scope bug-reports`), which the maintainer's
+  machine uses to list, download, and delete reports without any other
+  privilege on the server.
+
 ## Bootstrap and DNS assistance
 
 Setting up a mail server correctly has many DNS touch-points (MX, SPF, DKIM TXT, DMARC TXT, MTA-STS record and HTTPS vhost, TLS-RPT, DANE TLSA). The admin tooling reduces the pain:
