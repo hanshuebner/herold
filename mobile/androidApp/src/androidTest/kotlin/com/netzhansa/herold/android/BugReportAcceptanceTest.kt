@@ -171,7 +171,14 @@ class BugReportAcceptanceTest {
         }
         compose.onNodeWithTag("bug-send").performClick()
         val arrived = awaitReport(known) { it.route.startsWith("inbox") }
-        assertTrue("the report is not named after the inbox", arrived.title.startsWith("inbox "))
+        // The listing's title is the sketch's first line, so an
+        // undescribed report lists blank; the report's own name is in
+        // report.json, which is what /bug-inbox reads.
+        val meta = BugReportsApi.reportJson(DevInstance.baseUrl, key, arrived.id)
+        assertTrue(
+            "the report is not named after the inbox: ${meta.getString("title")}",
+            meta.getString("title").startsWith("inbox "),
+        )
 
         // The other end: the client created no label for it and filed no
         // copy of it (issue #417 replaced the mail transport).
