@@ -108,7 +108,7 @@ data class BugSubmission(
     val descriptionEntered: Boolean get() = title.isNotBlank() || note.isNotBlank()
 }
 
-/** One part of the bundle as the mail carries it. */
+/** One file of the bundle, as the request carries it. */
 data class BugBundleFile(val name: String, val type: String, val bytes: ByteArray) {
     override fun equals(other: Any?): Boolean =
         other is BugBundleFile && name == other.name && type == other.type && bytes.contentEquals(other.bytes)
@@ -116,28 +116,27 @@ data class BugBundleFile(val name: String, val type: String, val bytes: ByteArra
     override fun hashCode(): Int = (name.hashCode() * 31 + type.hashCode()) * 31 + bytes.contentHashCode()
 }
 
-/** The mail a report becomes: its subject, its body, and its parts. */
+/** The drop a report becomes: what it is called, and its files. */
 data class BugBundle(
-    val subject: String,
-    val bodyText: String,
+    val title: String,
     val files: List<BugBundleFile>,
-)
+) {
+    /** One file's bytes, by its drop name. */
+    fun bytes(name: String): ByteArray? = files.firstOrNull { it.name == name }?.bytes
+
+    /** `report.md`, which is what a ticket is written from. */
+    val markdown: String get() = bytes("report.md")?.decodeToString().orEmpty()
+}
 
 /**
  * Builds the drop `herold bug-fetch` expands (`internal/admin/cmd_bugfetch.go`):
  * `report.json` in the browser panel's public-meta shape, `report.md`,
  * `logs.txt`, `screenshot-N.png`, and `private.json` when the maintainer
- * asked for the session details. The mail carries them as separate parts
- * and its body is `report.md`, so a report reads as mail even before the
- * triage tooling touches it.
+ * asked for the session details. They travel as the parts of one
+ * `POST /api/v1/bug-reports` (issue #416), each under its drop name, and
+ * the server writes the drop directory under those names.
  */
 object BugBundleWriter {
-    /** What the reporter puts in front of the title. */
-    const val SUBJECT_PREFIX = "herold bug:"
-
-    /** The label the sent copy is filed under, which the fetch queries. */
-    const val LABEL = "Bug reports"
-
     /** The bundle shape's version, as the drop's `protocol` field. */
     const val PROTOCOL = "herold-bug-mail/1"
 
@@ -173,28 +172,24 @@ object BugBundleWriter {
                 (json.encodeToString(JsonObject.serializer(), private) + "\n").encodeToByteArray(),
             )
         }
-        return BugBundle(
-            subject = subject(submission, capture, createdAt),
-            bodyText = markdown,
-            files = files,
-        )
+        return BugBundle(title = title(submission, capture, createdAt), files = files)
     }
 
     /**
-     * The mail's subject, which is also how the fetch recognises a
-     * report. A described report is named by its title; an undescribed
-     * one by where it was raised and when, so a Sent folder of one-tap
-     * reports still distinguishes them.
+     * What the report is called, in `report.json` and on the outbox row.
+     * A described report is named by its title; an undescribed one by
+     * where it was raised and when, so a queue of one-tap reports still
+     * distinguishes them.
      */
-    fun subject(submission: BugSubmission, capture: BugCapture, createdAt: String): String {
+    fun title(submission: BugSubmission, capture: BugCapture, createdAt: String): String {
         val title = submission.title.trim()
-        if (title.isNotEmpty()) return "$SUBJECT_PREFIX $title"
-        return "$SUBJECT_PREFIX ${routeLabel(capture.route)} $createdAt"
+        if (title.isNotEmpty()) return title
+        return "${routeLabel(capture.route)} $createdAt"
     }
 
     /**
-     * The route without its ids, for a subject line: `thread` rather
-     * than `thread/{accountId}/{threadId}`.
+     * The route without its ids, for a title: `thread` rather than
+     * `thread/{accountId}/{threadId}`.
      */
     fun routeLabel(route: String): String =
         route.trim().trimStart('/').substringBefore('/').ifBlank { "unknown" }
@@ -220,6 +215,9 @@ object BugBundleWriter {
         put("protocol", PROTOCOL)
         put("createdAt", createdAt)
         put("kind", submission.kind.wire)
+        // What the report is called, which is the row /bug-inbox and
+        // `herold bug-fetch` list it by.
+        put("title", title(submission, capture, createdAt))
         // Whether the sketch is the maintainer's words or a blank the
         // desktop has to fill in (issue #408).
         put("descriptionEntered", submission.descriptionEntered)
@@ -312,9 +310,9 @@ object BugBundleWriter {
     }
 
     /**
-     * The mail's body, in the sections `herold bug-sink` renders a
-     * browser drop into, so a phone report and a browser report read the
-     * same way in a ticket.
+     * `report.md`, in the sections `herold bug-sink` renders a browser
+     * drop into, so a phone report and a browser report read the same
+     * way in a ticket.
      */
     fun reportMarkdown(
         submission: BugSubmission,

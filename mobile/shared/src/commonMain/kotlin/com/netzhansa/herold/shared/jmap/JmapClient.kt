@@ -5,6 +5,8 @@ import com.netzhansa.herold.shared.auth.StoredTokenProvider
 import com.netzhansa.herold.shared.auth.TokenProvider
 import com.netzhansa.herold.shared.auth.TokenStore
 import io.ktor.client.HttpClient
+import io.ktor.client.request.forms.MultiPartFormDataContent
+import io.ktor.client.request.forms.formData
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -13,7 +15,9 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
+import io.ktor.http.content.PartData
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.sync.Mutex
@@ -50,13 +54,15 @@ private val wireJson = Json {
  * the sync engine.
  *
  * The session descriptor is fetched once and cached; capabilities are pinned
- * from it for the lifetime of the client.
+ * from it for the lifetime of the client. The same transport carries the
+ * bug reporter's bundle to `POST /api/v1/bug-reports`, which is the
+ * server's REST surface on the same origin and the same token.
  */
 class JmapClient(
     private val httpClient: HttpClient,
     val baseUrl: String,
     private val tokens: TokenProvider,
-) : JmapApi {
+) : JmapApi, BugReportApi {
 
     /** A client over a token that cannot be refreshed (tooling, tests). */
     constructor(httpClient: HttpClient, baseUrl: String, tokenStore: TokenStore) :
@@ -475,6 +481,59 @@ class JmapClient(
         return wireJson.decodeFromString(UploadedBlob.serializer(), text)
     }
 
+    /**
+     * `POST /api/v1/bug-reports` (REQ-ADM-320): the reporter's bundle as
+     * one multipart request, each drop file its own part named and
+     * filed under the name it carries in the drop, so the server writes
+     * the directory `herold bug-fetch` expands verbatim.
+     */
+    override suspend fun postBugReport(parts: List<BugReportPart>): String {
+        val url = "${baseUrl.trimEnd('/')}$BUG_REPORTS_PATH"
+        val response = authorized { token ->
+            httpClient.post(url) {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                setBody(MultiPartFormDataContent(bugReportForm(parts)))
+            }
+        }
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) {
+            throw JmapException(
+                "the bug report was refused: ${problemDetail(text) ?: response.status}",
+                status = response.status.value,
+            )
+        }
+        return wireJson.parseToJsonElement(text).jsonObject["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    }
+
+    /**
+     * The multipart body of a bug report: the part's form name and its
+     * filename are both the drop filename, which is how the server
+     * recognises it as a drop file rather than a form field.
+     */
+    private fun bugReportForm(parts: List<BugReportPart>): List<PartData> = formData {
+        parts.forEach { part ->
+            append(
+                key = part.name,
+                value = part.bytes,
+                headers = Headers.build {
+                    append(HttpHeaders.ContentType, part.type.ifBlank { "application/octet-stream" })
+                    append(HttpHeaders.ContentDisposition, "filename=\"${part.name}\"")
+                },
+            )
+        }
+    }
+
+    /**
+     * What an RFC 7807 problem body says, for the reason a refused entry
+     * carries. Null when the body is not one.
+     */
+    private fun problemDetail(body: String): String? {
+        val problem = runCatching { wireJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        val detail = problem["detail"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val title = problem["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        return listOfNotNull(title, detail).joinToString(": ").takeIf { it.isNotBlank() }
+    }
+
     override suspend fun emailCreate(accountId: String, email: JsonObject): EmailWriteOutcome {
         val args = buildJsonObject {
             put("accountId", accountId)
@@ -808,6 +867,9 @@ class JmapClient(
         private const val DRAFT_CREATE_KEY = "draft1"
         private const val SUBMISSION_CREATE_KEY = "sub1"
         private const val MAX_CHANGES = 256
+
+        /** Where a bug report bundle is posted (issue #416). */
+        private const val BUG_REPORTS_PATH = "/api/v1/bug-reports"
         private const val UNAUTHORIZED = 401
         private const val MAX_BODY_VALUE_BYTES = 512 * 1024
 
