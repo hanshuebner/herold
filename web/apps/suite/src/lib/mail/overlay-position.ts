@@ -1,10 +1,12 @@
 /**
- * Coordinate math for the G16 inline-image download overlay (issue #311).
+ * Coordinate math for the G16 inline-image download overlay (issue #311,
+ * #410).
  *
  * `HtmlBody.svelte` renders one `<a class="img-download">` per resolved
  * inline `<img>`, absolutely positioned in the OUTER page above the
- * sandboxed iframe, sized and placed to cover that image so a single
- * click downloads it (REQ-ATT-26).
+ * sandboxed iframe: a small square anchored to the image's top-right
+ * corner (REQ-ATT-26), sized and placed by `overlayButtonRect` +
+ * `downloadButtonRect` below.
  */
 
 /** The subset of `DOMRect` this module reads. */
@@ -52,5 +54,34 @@ export function overlayButtonRect(
     left: frameOffsetLeft + imgRect.left,
     width: imgRect.width,
     height: imgRect.height,
+  };
+}
+
+/**
+ * Side length (px) of the discoverable download control laid over an
+ * inline image's top-right corner (issue #410).
+ */
+export const DOWNLOAD_BUTTON_SIZE = 44;
+
+/**
+ * Shrink a full-image rect (as returned by `overlayButtonRect`) to the
+ * small square, anchored to the image's top-right corner, that carries the
+ * download affordance (issue #410). Clamped to the image's own dimensions
+ * so it never exceeds a small image.
+ *
+ * The rest of the image's area is left uncovered by the caller so a click
+ * there reaches the sender's own HTML underneath -- the wrapping `<a>`
+ * when the image is a link, or HtmlBody's own click-to-lightbox listener
+ * when it is not. A prior version of this overlay covered the full image
+ * area, which put every click on a linked inline image onto the download
+ * button instead of the sender's link.
+ */
+export function downloadButtonRect(imageRect: RectLike): RectLike {
+  const size = Math.max(0, Math.min(DOWNLOAD_BUTTON_SIZE, imageRect.width, imageRect.height));
+  return {
+    top: imageRect.top,
+    left: imageRect.left + imageRect.width - size,
+    width: size,
+    height: size,
   };
 }

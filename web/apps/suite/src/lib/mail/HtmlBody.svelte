@@ -34,13 +34,26 @@
    *     escape-sandbox ensures the new tab is NOT itself sandboxed,
    *     so the destination page works normally.
    *
-   * G16 inline-image overlay (REQ-ATT-26):
+   * G16 inline-image overlay (REQ-ATT-26, issue #410):
    *   After the iframe loads we scan its contentDocument for <img> elements
    *   that have a resolved src (i.e. cid: images that were successfully
-   *   mapped to blob URLs). For each we track the image's bounding box
-   *   relative to the wrapper and render a download button in an absolutely-
-   *   positioned overlay layer. A ResizeObserver keeps the overlay in sync
-   *   when the iframe reflowsoverlay.
+   *   mapped to download URLs). For each we track the image's bounding box
+   *   relative to the wrapper and render a small download button, anchored
+   *   to the image's top-right corner, in an absolutely-positioned overlay
+   *   layer (`overlay-position.ts`'s `downloadButtonRect`). A ResizeObserver
+   *   keeps the overlay in sync when the iframe reflows.
+   *
+   *   The corner button is deliberately small: it is a secondary
+   *   affordance, not a click target covering the whole image. A click
+   *   anywhere else on the image reaches the sender's own HTML underneath
+   *   -- the wrapping <a> (issue #410's forum-attachment link case) via the
+   *   iframe's native target="_blank" navigation, or nothing at all when
+   *   there is no wrapping anchor. For that un-linked case,
+   *   `wireInlineImageLightboxClicks()` attaches a click listener directly
+   *   to the <img> (the sandboxed iframe has no allow-scripts, so nothing
+   *   inside it reacts to clicks on its own) that opens the shared
+   *   Lightbox component, matching the affordance AttachmentList.svelte
+   *   gives non-inline image attachments.
    *
    *   This approach avoids injecting DOM into the sandboxed document while
    *   still giving the user a single-action download per inline image.
@@ -59,7 +72,8 @@
   import { findScrollParent } from './scroll-parent';
   import { t } from '../i18n/i18n.svelte';
   import { inlineImageDecodeStatus } from './image-decode';
-  import { overlayButtonRect } from './overlay-position';
+  import { overlayButtonRect, downloadButtonRect } from './overlay-position';
+  import Lightbox from '../preview/Lightbox.svelte';
 
   interface Props {
     html: string;
@@ -192,6 +206,13 @@
   }
   let overlayButtons = $state<OverlayButton[]>([]);
 
+  /** State for the shared Lightbox opened by a click on an un-linked inline image. */
+  let imageLightbox = $state<{ url: string; name: string } | null>(null);
+
+  function closeImageLightbox(): void {
+    imageLightbox = null;
+  }
+
   function computeOverlay(): void {
     const frame = frameEl;
     const wrapper = wrapperEl;
@@ -220,7 +241,8 @@
       if (!meta) continue;
       const imgRect = img.getBoundingClientRect();
       if (imgRect.width === 0 || imgRect.height === 0) continue;
-      const rect = overlayButtonRect(wrapperRect, frameRect, imgRect, scrollY);
+      const fullRect = overlayButtonRect(wrapperRect, frameRect, imgRect, scrollY);
+      const rect = downloadButtonRect(fullRect);
       buttons.push({
         ...rect,
         downloadUrl: meta.downloadUrl,
@@ -274,6 +296,41 @@
     }
   }
 
+  /**
+   * Inline images already wired for the lightbox-click behaviour this
+   * srcdoc load, mirroring `decodeCheckedImages` above.
+   */
+  let lightboxWiredImages = new WeakSet<HTMLImageElement>();
+
+  /**
+   * Wire the click-to-lightbox behaviour (issue #410): an inline `<img>`
+   * the overlay tracks (via `inlineImageMeta`) that the sender did NOT wrap
+   * in an `<a>` opens the shared Lightbox on click, matching the affordance
+   * AttachmentList.svelte gives non-inline image attachments. An image the
+   * sender DID wrap in a link is left alone here -- the overlay no longer
+   * covers its full area (see `downloadButtonRect`), so the click already
+   * reaches that anchor's own target="_blank" navigation natively; adding a
+   * second handler on the image itself would fight it.
+   */
+  function wireInlineImageLightboxClicks(): void {
+    const doc = frameEl?.contentDocument;
+    if (!doc?.body) return;
+    if (!inlineImageMeta || Object.keys(inlineImageMeta).length === 0) return;
+    for (const img of doc.querySelectorAll<HTMLImageElement>('img[src]')) {
+      const src = img.getAttribute('src');
+      if (!src) continue;
+      const meta = inlineImageMeta[src];
+      if (!meta) continue;
+      if (lightboxWiredImages.has(img)) continue;
+      lightboxWiredImages.add(img);
+      if (img.closest('a')) continue;
+      img.style.cursor = 'zoom-in';
+      img.addEventListener('click', () => {
+        imageLightbox = { url: src, name: meta.name };
+      });
+    }
+  }
+
   function recomputeHeight(): void {
     const doc = frameEl?.contentDocument;
     if (!doc?.body) return;
@@ -311,6 +368,8 @@
     // srcdoc load can still be tracked.
     decodeCheckedImages = new WeakSet<HTMLImageElement>();
     wireInlineImageDecodeChecks();
+    lightboxWiredImages = new WeakSet<HTMLImageElement>();
+    wireInlineImageLightboxClicks();
     requestAnimationFrame(() => {
       recomputeHeight();
     });
@@ -432,8 +491,10 @@
     onload={onLoad}
   ></iframe>
 
-  <!-- Overlay layer: positioned absolutely over the iframe. Each button
-       sits over the matching <img> in the iframe body (G16). The overlay
+  <!-- Overlay layer: positioned absolutely over the iframe. Each button is
+       a small square anchored to the matching <img>'s top-right corner
+       (G16, issue #410) -- NOT a click target covering the whole image, so
+       a sender's own link around the image stays reachable. The overlay
        pointer-events are 'none' by default; individual buttons opt in. -->
   {#if overlayButtons.length > 0}
     <div class="overlay" aria-hidden="true" style:height="{height}px">
@@ -456,6 +517,15 @@
     </div>
   {/if}
 </div>
+
+{#if imageLightbox}
+  <Lightbox
+    src={imageLightbox.url}
+    name={imageLightbox.name}
+    kind="image"
+    onClose={closeImageLightbox}
+  />
+{/if}
 
 <style>
   .frame-wrapper {

@@ -10,7 +10,7 @@
  * 40x40 avatar image near the top and a 300x150 promo image further down.
  */
 import { describe, it, expect } from 'vitest';
-import { overlayButtonRect } from './overlay-position';
+import { overlayButtonRect, downloadButtonRect, DOWNLOAD_BUTTON_SIZE } from './overlay-position';
 
 // Measured via puppeteer against a running dev instance: wrapper and frame
 // coincide (the iframe is the only element in the wrapper's normal flow).
@@ -57,5 +57,40 @@ describe('issue #311 -- overlayButtonRect places the download button over its ow
     const imgRect = { top: 50, left: 10, width: 20, height: 20 };
     const rect = overlayButtonRect(wrapperRect, frameRect, imgRect, 15);
     expect(rect.top).toBe(frameRect.top - wrapperRect.top + imgRect.top + 15);
+  });
+});
+
+describe('issue #410 -- downloadButtonRect occupies a corner, not the full image area', () => {
+  it('a large image gets a DOWNLOAD_BUTTON_SIZE square anchored to the top-right corner', () => {
+    const imageRect = { top: 100, left: 50, width: 300, height: 200 };
+    const rect = downloadButtonRect(imageRect);
+    expect(rect.width).toBe(DOWNLOAD_BUTTON_SIZE);
+    expect(rect.height).toBe(DOWNLOAD_BUTTON_SIZE);
+    // Anchored top-right: same top as the image, right edge coincides with
+    // the image's right edge.
+    expect(rect.top).toBe(imageRect.top);
+    expect(rect.left).toBe(imageRect.left + imageRect.width - DOWNLOAD_BUTTON_SIZE);
+    expect(rect.left + rect.width).toBe(imageRect.left + imageRect.width);
+    // The button covers only a fraction of the image area -- not the full
+    // image, which is the defect this geometry replaces.
+    expect(rect.width).toBeLessThan(imageRect.width);
+    expect(rect.height).toBeLessThan(imageRect.height);
+  });
+
+  it('a small image clamps the button to the image dimensions instead of overflowing it', () => {
+    const imageRect = { top: 10, left: 10, width: 20, height: 20 };
+    const rect = downloadButtonRect(imageRect);
+    expect(rect.width).toBe(20);
+    expect(rect.height).toBe(20);
+    expect(rect.left).toBe(imageRect.left);
+    expect(rect.top).toBe(imageRect.top);
+  });
+
+  it('a wide-but-short image clamps to the shorter dimension so the button stays square-ish and inside the image', () => {
+    const imageRect = { top: 0, left: 0, width: 300, height: 30 };
+    const rect = downloadButtonRect(imageRect);
+    expect(rect.width).toBe(30);
+    expect(rect.height).toBe(30);
+    expect(rect.left).toBe(270);
   });
 });
