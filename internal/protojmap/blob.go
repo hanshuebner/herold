@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 
@@ -361,6 +362,39 @@ func resolvePartByParse(ctx context.Context, blobs store.Blobs, msgHash string, 
 	return found, nil
 }
 
+// dispositionFilename returns the Content-Disposition filename for a
+// download, appending an extension derived from the content type when the
+// requested name has none (issue #409). Chrome prefers the server-supplied
+// Content-Disposition filename over a download anchor's `download`
+// attribute, so a URL name with no extension (the Suite's default name for
+// an unnamed inline part) saved an extension-less file even when the
+// client-side download attribute carried one.
+func dispositionFilename(name, contentType string) string {
+	if name == "" || path.Ext(name) != "" {
+		return name
+	}
+	ext := extensionFromContentType(contentType)
+	if ext == "" {
+		return name
+	}
+	return name + "." + ext
+}
+
+// extensionFromContentType derives a bare extension (no leading dot) from
+// a MIME type's subtype, e.g. "image/webp" -> "webp". Returns "" when the
+// type carries no usable subtype.
+func extensionFromContentType(contentType string) string {
+	t := contentType
+	if i := strings.Index(t, ";"); i >= 0 {
+		t = t[:i]
+	}
+	parts := strings.SplitN(strings.TrimSpace(t), "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return ""
+	}
+	return parts[1]
+}
+
 // handleDownload streams a blob back to the client. The path bears the
 // accountId, blobId, content type, and human-friendly filename per the
 // JMAP downloadUrl template.
@@ -473,7 +507,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		if name != "" {
 			w.Header().Set("Content-Disposition",
-				fmt.Sprintf(`%s; filename=%q`, disposition, name))
+				fmt.Sprintf(`%s; filename=%q`, disposition, dispositionFilename(name, contentType)))
 		}
 		w.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(w, bytes.NewReader(part.data)); err != nil {
@@ -565,7 +599,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(totalSize, 10))
 	if name != "" {
 		w.Header().Set("Content-Disposition",
-			fmt.Sprintf(`%s; filename=%q`, disposition, name))
+			fmt.Sprintf(`%s; filename=%q`, disposition, dispositionFilename(name, contentType)))
 	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, bodyReader); err != nil {

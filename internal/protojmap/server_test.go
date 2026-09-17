@@ -829,6 +829,53 @@ func TestDownload_RejectsUnknownDisposition(t *testing.T) {
 	}
 }
 
+// TestDownload_ContentDispositionBlobFilename_AppendsExtensionWhenMissing
+// asserts issue #409: a download URL whose name segment carries no
+// extension (the Suite's default name for an unnamed inline part) gets
+// one derived from the content type in the Content-Disposition header, so
+// Chrome's preference for the server-supplied filename over the anchor's
+// `download` attribute cannot save an extension-less file.
+func TestDownload_ContentDispositionBlobFilename_AppendsExtensionWhenMissing(t *testing.T) {
+	f := newFixture(t)
+	body := []byte("fake webp bytes")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/%s/image%%2Fwebp/inline-1", accountID, ref.Hash)
+	res, _ := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	got := res.Header.Get("Content-Disposition")
+	if !strings.Contains(got, `filename="inline-1.webp"`) {
+		t.Fatalf("Content-Disposition = %q, want filename=%q", got, "inline-1.webp")
+	}
+}
+
+// TestDownload_ContentDispositionBlobFilename_LeavesExtensionAlone asserts
+// the converse of the above: a request name that already carries an
+// extension is passed through unchanged rather than gaining a second one.
+func TestDownload_ContentDispositionBlobFilename_LeavesExtensionAlone(t *testing.T) {
+	f := newFixture(t)
+	body := []byte("fake webp bytes")
+	ref, err := f.store.Blobs().Put(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("blob put: %v", err)
+	}
+	accountID := protojmap.AccountIDForPrincipal(f.pid)
+	url := fmt.Sprintf("/jmap/download/%s/%s/image%%2Fwebp/photo.webp", accountID, ref.Hash)
+	res, _ := f.doRequest("GET", url, f.apiKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	got := res.Header.Get("Content-Disposition")
+	if !strings.Contains(got, `filename="photo.webp"`) {
+		t.Fatalf("Content-Disposition = %q, want filename=%q", got, "photo.webp")
+	}
+}
+
 // TestDownload_CrossAccount_ChatMember_Allowed asserts the chat-fanout
 // auth path: when a chat message embeds an inline image as
 // <img src="/jmap/download/{senderAccountId}/.../{blobHash}/...">, the

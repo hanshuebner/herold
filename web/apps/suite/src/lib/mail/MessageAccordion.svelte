@@ -55,6 +55,7 @@
   import MessageKebabMenu, { type KebabItem } from './MessageKebabMenu.svelte';
   import RawSourceModal from './RawSourceModal.svelte';
   import { emlDownloadFilename } from './download-filename';
+  import { defaultInlineName, buildCidDefaultNames } from './inline-part-name';
   import { sanitizeHtml } from './sanitize';
   import { printMessage } from './print-message';
   import { t, localeTag, i18n } from '../i18n/i18n.svelte';
@@ -283,6 +284,16 @@
     `(${relativeTimeAgo(new Date(email.receivedAt))})`,
   );
 
+  // Default name (issue #409) for a cid part with no `name`, keyed by
+  // cid. Computed once so the cid download URL below and the download
+  // overlay's `download` attribute in `inlineImageMeta` agree on the same
+  // extension-bearing name for the same part — a divergence here is what
+  // let Chrome's Content-Disposition preference save an extension-less
+  // file even though the overlay computed a `.webp`-suffixed name.
+  let cidDefaultNames = $derived.by<Record<string, string>>(() =>
+    buildCidDefaultNames(email.attachments ?? []),
+  );
+
   // Build a cid -> downloadUrl map from the email's attachments. Inline
   // images referenced by Content-ID land in the body as `cid:<id>`; the
   // sanitiser uses this map to rewrite them to a same-origin JMAP blob URL.
@@ -296,7 +307,7 @@
         accountId,
         blobId: part.blobId,
         type: part.type,
-        name: part.name ?? 'inline',
+        name: part.name ?? cidDefaultNames[part.cid] ?? 'inline',
       });
       if (url) out[part.cid] = url;
     }
@@ -327,15 +338,13 @@
     Record<string, { name: string; downloadUrl: string }>
   >(() => {
     const out: Record<string, { name: string; downloadUrl: string }> = {};
-    let idx = 0;
     for (const part of email.attachments ?? []) {
       if (part.disposition !== 'inline') continue;
       if (!part.cid || !part.blobId) continue;
       const url = cidMap[part.cid];
       if (!url) continue;
-      const ext = part.type.split('/')[1] ?? 'bin';
       out[url] = {
-        name: part.name ?? `inline-${++idx}.${ext}`,
+        name: part.name ?? cidDefaultNames[part.cid] ?? defaultInlineName(part.type, 1),
         downloadUrl: url,
       };
     }
