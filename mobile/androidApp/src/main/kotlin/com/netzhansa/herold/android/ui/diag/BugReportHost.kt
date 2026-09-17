@@ -89,7 +89,11 @@ fun BugReportHost(
             capture = null
             val hold = UndoSendPreference.current(context).millis
             scope.launch {
-                when (val result = reporter.send(submission, pending, hold)) {
+                val outcome = runCatching { reporter.send(submission, pending, hold) }
+                outcome.exceptionOrNull()?.let { failure ->
+                    DiagLog.w(TAG, "the report could not be queued: ${failure.message}")
+                }
+                when (val result = outcome.getOrNull() ?: ComposeResult.Failed("the report could not be queued")) {
                     is ComposeResult.Queued -> {
                         container.undo.offer(SENDING, windowMs = hold.takeIf { it > 0 }) {
                             container.outbox.remove(result.entryId)
@@ -97,8 +101,10 @@ fun BugReportHost(
                         session?.requestDrain?.invoke(hold)
                     }
 
-                    is ComposeResult.Failed ->
+                    is ComposeResult.Failed -> {
+                        DiagLog.w(TAG, "the report was not queued: ${result.message}")
                         container.undo.offer(result.message, windowMs = null, actionLabel = "Dismiss") {}
+                    }
 
                     is ComposeResult.Saved -> Unit
                 }
