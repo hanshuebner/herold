@@ -64,6 +64,10 @@ the **`/bug-inbox`** flow end to end, fully autonomously:
   hard rule -- all still apply).
 - Do NOT report a work-list for confirmation and do NOT wait for approval:
   process to completion, then post a short summary of what was filed/commented.
+- A phone drop without a description (`descriptionEntered: false` in its
+  `report.json`) is never filed unattended: set its `STATUS` to
+  `needs-description`, name it in the summary, and leave the description to
+  the next interactive `/bug-inbox` run (its step 1b asks the maintainer).
 
 This files tickets and posts Forgejo comments unattended. That is intended for
 this command.

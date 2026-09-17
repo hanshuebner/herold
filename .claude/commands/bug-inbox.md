@@ -68,8 +68,10 @@ mailbox could not be read: report it, do not treat it as "no phone reports".
 `--dry-run` lists the messages without downloading, writing, or marking.
 
 The fetched drops carry the same files as a browser drop, so from step 1 on
-they are processed identically. A phone mail that carries no `report.json`
-gets one synthesised from its subject and body (`kind: bug`).
+they are processed identically, with one addition: typing on the phone is
+optional, so a phone drop may arrive without a description and gets one from
+the maintainer in step 1b before it is filed. A phone mail that carries no
+`report.json` gets one synthesised from its subject and body (`kind: bug`).
 
 ## 0b. Expand downloaded bundles
 
@@ -105,8 +107,8 @@ into your reasoning or output.
 
 ## 1. Build the work-list
 
-List `~/herold-bugs/*/` whose `STATUS` file contains `new`, oldest first by
-directory name. If `$ARGUMENTS` names a specific drop id, process only that one.
+List `~/herold-bugs/*/` whose `STATUS` file contains `new` or
+`needs-description`, oldest first by directory name. If `$ARGUMENTS` names a specific drop id, process only that one.
 If nothing is `new`, say so and stop -- but only after step 0's fetch and step
 0b's enumeration succeeded, so that "nothing is new" is an observation and not
 a swallowed error.
@@ -114,11 +116,40 @@ a swallowed error.
 For each drop, read `report.json` and note `meta.kind`. Report the work-list to
 the maintainer before acting:
 
-- reports: drop id, kind (bug/feature), the first line of `meta.sketch`, the app
-  + principal, and the screenshot count;
+- reports: drop id, kind (bug/feature), the first line of `meta.sketch` (or
+  "no description entered on the phone" when `meta.descriptionEntered` is
+  false), the app + principal, and the screenshot count;
 - reviews: drop id, `kind=review`, the target issue `#meta.review.issue`, and
   the screenshot count. These are hand-backs; the reviewer's note is
   `meta.review.comment`.
+
+## 1b. Undescribed phone drops: get the description from the maintainer
+
+A phone report whose `report.json` has `descriptionEntered: false` carries
+only what the app captured: the route, the app version, the sync and outbox
+state, the log ring, and the screenshot. The maintainer describes it on the
+Mac before it is filed, so for each such drop, in work-list order:
+
+1. Show the captured context in the session: the route and its arguments,
+   the app version, the sync state and last error, the outbox summary, and
+   the log lines from `report.json`; open every `screenshot-*.png` for the
+   maintainer (`open <path>` on macOS) so the description can be written
+   against the picture.
+2. Ask for the description with `AskUserQuestion` (free text, one question
+   per drop): what went wrong and what was expected. Offer "skip for now" as
+   an option.
+3. A given description becomes `meta.sketch` for the rest of this flow; write
+   it back into `report.json` (`sketch` set, `descriptionEntered` set to
+   `true`) so a re-run does not ask again. A skipped drop gets `STATUS`
+   `needs-description` and is left out of steps 2a and 2b; it is asked about
+   again on the next run. A ticket is never filed for an undescribed drop.
+
+Under `/watch-drops` (unattended), an undescribed phone drop is not filed:
+mark it `needs-description`, report it in the summary, and let the next
+interactive `/bug-inbox` run collect the description.
+
+A drop with a description entered on the phone (`descriptionEntered: true`,
+or a browser drop, or a synthesised `report.json`) goes straight to step 2a.
 
 ## 2a. Report drops: dedup, then file
 
@@ -197,6 +228,8 @@ Relay, per drop:
   and the label stripped, and whether screenshots were attached.
 
 If any drop failed, leave its `STATUS` as `new` and say which one and why.
+List the drops left at `needs-description` separately: they are waiting for
+the maintainer's description, not failed.
 
 ## Reproducing (only on explicit request)
 
