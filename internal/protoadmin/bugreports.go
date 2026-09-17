@@ -115,6 +115,11 @@ type bugReportServerMeta struct {
 // (mobile/shared BugReport.kt reportJson) and the browser panel's public
 // meta (internal/admin/cmd_bugsink.go bugReportMeta).
 type bugReportPublicMeta struct {
+	// Title is the reporter-supplied name (issue #417): what the
+	// maintainer typed, or "<route> <timestamp>" for an undescribed
+	// one-tap report. Absent on older producers (the browser panel via
+	// `herold bug-sink`), which carry no top-level "title".
+	Title              string `json:"title"`
 	Sketch             string `json:"sketch"`
 	DescriptionEntered bool   `json:"descriptionEntered"`
 	ScreenshotCount    int    `json:"screenshotCount"`
@@ -462,7 +467,17 @@ func (s *Server) readBugReportListItem(r *http.Request, id string) (bugReportLis
 	if reportRaw, err := os.ReadFile(filepath.Join(dir, "report.json")); err == nil {
 		var pub bugReportPublicMeta
 		if err := json.Unmarshal(reportRaw, &pub); err == nil {
-			item.Title = firstNonEmptyLine(pub.Sketch)
+			// The Android reporter (issue #417) writes a top-level
+			// "title" -- what the maintainer typed, or "<route>
+			// <timestamp>" for a one-tap report -- so an undescribed
+			// report still lists with a name. Older producers (the
+			// browser panel via `herold bug-sink`) carry no "title";
+			// fall back to the sketch's first line as before.
+			if pub.Title != "" {
+				item.Title = pub.Title
+			} else {
+				item.Title = firstNonEmptyLine(pub.Sketch)
+			}
 			item.Route = pub.Context.Route
 			item.DescriptionEntered = pub.DescriptionEntered
 			item.ScreenshotCount = pub.ScreenshotCount
