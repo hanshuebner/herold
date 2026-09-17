@@ -24,6 +24,15 @@ func newAPIKeyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// POST /api/v1/api-keys does not exist -- key creation is
+			// scoped under the target principal (POST
+			// /api/v1/principals/{pid}/api-keys); resolve the email/id
+			// argument the same way `api-key list --principal` and the
+			// OIDC commands do.
+			pid, err := resolvePrincipalID(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
 			label, _ := cmd.Flags().GetString("label")
 			scopeRaw, _ := cmd.Flags().GetString("scope")
 			allowAdmin, _ := cmd.Flags().GetBool("allow-admin-scope")
@@ -54,13 +63,12 @@ func newAPIKeyCmd() *cobra.Command {
 				scopeStrs = append(scopeStrs, string(s))
 			}
 			body := map[string]any{
-				"principal":         args[0],
 				"label":             label,
 				"scope":             scopeStrs,
 				"allow_admin_scope": allowAdmin,
 			}
 			var out map[string]any
-			err = client.do(cmd.Context(), "POST", "/api/v1/api-keys", body, &out)
+			err = client.do(cmd.Context(), "POST", "/api/v1/principals/"+pid+"/api-keys", body, &out)
 			if err != nil {
 				return wrapPendingRESTError(err)
 			}
