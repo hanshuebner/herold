@@ -227,6 +227,19 @@ export const Capability = {
    * Both sides MUST be updated together if the URI changes.
    */
   HeroldSubAccounts: 'https://netzhansa.com/jmap/sub-accounts',
+  /**
+   * Server-side RFC 8058 one-click unsubscribe (issue #412,
+   * docs/design/web/requirements/14-unsubscribe.md REQ-UNS-02/04/20).
+   * When present, `Email/unsubscribe` performs the one-click POST
+   * server-side and reports the upstream outcome back over JMAP,
+   * avoiding the CORS failure a direct browser `fetch()` to the
+   * sender's origin always hits.
+   *
+   * Joined wire surface: the Go-side constant lives at
+   * internal/protojmap/registry.go CapabilityEmailUnsubscribe.
+   * Both sides MUST be updated together if the URI changes.
+   */
+  HeroldEmailUnsubscribe: 'https://netzhansa.com/jmap/unsubscribe',
 } as const;
 
 export type CapabilityName = (typeof Capability)[keyof typeof Capability];

@@ -21,6 +21,17 @@
         {toast.current.actionLabel ?? 'Undo'}
       </button>
     {/if}
+    {#if toast.current.secondaryAction}
+      <button
+        type="button"
+        class="undo"
+        onclick={() => {
+          void toast.runSecondaryAction();
+        }}
+      >
+        {toast.current.secondaryActionLabel ?? 'More'}
+      </button>
+    {/if}
     <button
       type="button"
       class="dismiss"

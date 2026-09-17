@@ -51,7 +51,7 @@ When multiple mechanisms are advertised, the suite prefers in this order:
 | ID | Requirement |
 |----|-------------|
 | REQ-UNS-40 | On a successful one-click POST (any 2xx response): toast "Unsubscribed from <sender display name>". |
-| REQ-UNS-41 | On a one-click POST failure (non-2xx, network error): toast "Unsubscribe failed — try the link in the message body" with the original `List-Unsubscribe` URLs revealed in a tooltip. |
+| REQ-UNS-41 | On a one-click POST failure (`Email/unsubscribe` returns `status: "failed"` or `"unsupported"`, or the call itself fails): toast "Unsubscribe failed" with the original `List-Unsubscribe` URL in a tooltip, an "Open link" action that opens the HTTPS URL in a new tab (REQ-UNS-21), and -- when the header also carried a `mailto:` alternative -- a "Send email" action that opens the same prefilled compose window as the `mailto:` mechanism (REQ-UNS-22). Both actions are reachable directly from the toast; the user does not have to go back to the message body. |
 | REQ-UNS-42 | On opening a plain HTTPS URL: no toast. The user sees the destination tab. |
 | REQ-UNS-43 | On opening a `mailto:`: no toast on open; the toast on send comes from the normal compose-send path (`requirements/02-mail-basics.md` REQ-MAIL-15). |
 

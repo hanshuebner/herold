@@ -285,7 +285,9 @@ export const en = {
   'unsubscribe.cleartextWarning':
     "The sender's unsubscribe link is unencrypted; use the link in the message body if you trust it.",
   'unsubscribe.toast.success': 'Unsubscribed from {sender}',
-  'unsubscribe.toast.failed': 'Unsubscribe failed — try the link in the message body',
+  'unsubscribe.toast.failed': 'Unsubscribe failed',
+  'unsubscribe.toast.openLink': 'Open link',
+  'unsubscribe.toast.sendEmail': 'Send email',
 
   // ── On-demand translation (issue #84) ───────────────────────────────
   // Affordance shown when the message body language differs from the

@@ -3,9 +3,13 @@
  *
  * Covers: absence when no message advertises a mechanism (REQ-UNS-03),
  * thread-scoped (not per-message) sourcing (REQ-UNS-11), the one-click
- * flow with no confirmation dialog (REQ-UNS-20/30) and its
- * success/failure toasts (REQ-UNS-40/41), plain-https (REQ-UNS-21),
- * mailto (REQ-UNS-22), and the cleartext refusal (REQ-UNS-04).
+ * flow with no confirmation dialog (REQ-UNS-20/30) calling
+ * `Email/unsubscribe` through the JMAP client (issue #412) and its
+ * success/failure toasts (REQ-UNS-40/41) -- the failure toast offering
+ * both the HTTPS link (REQ-UNS-21) and the mailto fallback (REQ-UNS-22)
+ * -- capability-gated fallback to the plain-link behaviour, plain-https
+ * (REQ-UNS-21), mailto (REQ-UNS-22), and the cleartext refusal
+ * (REQ-UNS-04).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -18,18 +22,39 @@ vi.mock('../i18n/i18n.svelte', () => ({
     params ? `${key}:${JSON.stringify(params)}` : key,
 }));
 
-const { composeMock, toastMock, postOneClickMock, recordUnsubscribedMock } = vi.hoisted(() => {
+const {
+  composeMock,
+  toastMock,
+  postOneClickMock,
+  recordUnsubscribedMock,
+  hasCapabilityMock,
+  mailMock,
+} = vi.hoisted(() => {
   const composeMock = { openWith: vi.fn() };
   const toastMock = { show: vi.fn() };
   const postOneClickMock = vi.fn();
   const recordUnsubscribedMock = vi.fn();
-  return { composeMock, toastMock, postOneClickMock, recordUnsubscribedMock };
+  const hasCapabilityMock = vi.fn(() => true);
+  const mailMock = {
+    emailAccountId: new Map<string, string>(),
+    mailAccountId: 'acct-1',
+  };
+  return {
+    composeMock,
+    toastMock,
+    postOneClickMock,
+    recordUnsubscribedMock,
+    hasCapabilityMock,
+    mailMock,
+  };
 });
 
 vi.mock('../compose/compose.svelte', () => ({ compose: composeMock }));
 vi.mock('../toast/toast.svelte', () => ({ toast: toastMock }));
 vi.mock('./unsubscribe', () => ({ postOneClickUnsubscribe: postOneClickMock }));
 vi.mock('./unsubscribed-from', () => ({ recordUnsubscribed: recordUnsubscribedMock }));
+vi.mock('../jmap/client', () => ({ jmap: { hasCapability: hasCapabilityMock } }));
+vi.mock('./store.svelte', () => ({ mail: mailMock }));
 
 function makeEmail(overrides: Partial<Email> = {}): Email {
   return {
@@ -54,6 +79,10 @@ beforeEach(() => {
   toastMock.show.mockClear();
   postOneClickMock.mockReset();
   recordUnsubscribedMock.mockClear();
+  hasCapabilityMock.mockReset();
+  hasCapabilityMock.mockReturnValue(true);
+  mailMock.emailAccountId = new Map();
+  mailMock.mailAccountId = 'acct-1';
   vi.restoreAllMocks();
 });
 
@@ -73,19 +102,20 @@ describe('UnsubscribeButton: presence (REQ-UNS-03/11)', () => {
   });
 });
 
-describe('UnsubscribeButton: one-click (REQ-UNS-20/30/40/41)', () => {
-  function oneClickEmail(): Email {
+describe('UnsubscribeButton: one-click (REQ-UNS-20/30/40/41), issue #412', () => {
+  function oneClickEmail(overrides: Partial<Email> = {}): Email {
     return makeEmail({
       'header:List-Unsubscribe:asText': '<https://example.com/unsub?id=1>',
       'header:List-Unsubscribe-Post:asText': 'List-Unsubscribe=One-Click',
+      ...overrides,
     });
   }
 
-  it('POSTs immediately with no confirmation dialog and toasts success', async () => {
-    postOneClickMock.mockResolvedValue({ ok: true });
+  it('calls Email/unsubscribe via the JMAP client with no confirmation dialog and toasts success', async () => {
+    postOneClickMock.mockResolvedValue({ emailId: 'e1', status: 'ok', httpStatus: 200 });
     render(UnsubscribeButton, { props: { emails: [oneClickEmail()] } });
     await fireEvent.click(screen.getByRole('button'));
-    expect(postOneClickMock).toHaveBeenCalledWith('https://example.com/unsub?id=1');
+    expect(postOneClickMock).toHaveBeenCalledWith('acct-1', 'e1');
     // No dialog/confirm affordance of any kind appears.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await waitFor(() => expect(toastMock.show).toHaveBeenCalled());
@@ -95,9 +125,31 @@ describe('UnsubscribeButton: one-click (REQ-UNS-20/30/40/41)', () => {
     );
   });
 
-  it('toasts failure with the fallback detail on a non-2xx / network error', async () => {
-    postOneClickMock.mockResolvedValue({ ok: false });
+  it('uses the per-email account tag when the row was folded in from a sub-account view', async () => {
+    postOneClickMock.mockResolvedValue({ emailId: 'e1', status: 'ok' });
+    mailMock.emailAccountId = new Map([['e1', 'acct-sub']]);
     render(UnsubscribeButton, { props: { emails: [oneClickEmail()] } });
+    await fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(postOneClickMock).toHaveBeenCalledWith('acct-sub', 'e1'));
+  });
+
+  it('toasts failure with link + mailto fallback actions on status "failed"', async () => {
+    postOneClickMock.mockResolvedValue({
+      emailId: 'e1',
+      status: 'failed',
+      httpStatus: 500,
+      error: 'upstream returned 500 Internal Server Error',
+    });
+    render(UnsubscribeButton, {
+      props: {
+        emails: [
+          oneClickEmail({
+            'header:List-Unsubscribe:asText':
+              '<https://example.com/unsub?id=1>, <mailto:unsub@example.com>',
+          }),
+        ],
+      },
+    });
     await fireEvent.click(screen.getByRole('button'));
     await waitFor(() =>
       expect(toastMock.show).toHaveBeenCalledWith(
@@ -105,10 +157,67 @@ describe('UnsubscribeButton: one-click (REQ-UNS-20/30/40/41)', () => {
           message: 'unsubscribe.toast.failed',
           kind: 'error',
           detail: 'https://example.com/unsub?id=1',
+          actionLabel: 'unsubscribe.toast.openLink',
+          secondaryActionLabel: 'unsubscribe.toast.sendEmail',
         }),
       ),
     );
     expect(recordUnsubscribedMock).not.toHaveBeenCalled();
+
+    // The HTTPS link action opens the URL in a new tab.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const spec = toastMock.show.mock.calls.at(-1)?.[0];
+    spec.undo();
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://example.com/unsub?id=1',
+      '_blank',
+      'noopener,noreferrer',
+    );
+
+    // The mailto fallback opens a prefilled compose window.
+    spec.secondaryAction();
+    expect(composeMock.openWith).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'unsub@example.com' }),
+    );
+  });
+
+  it('toasts failure on status "unsupported" too', async () => {
+    postOneClickMock.mockResolvedValue({
+      emailId: 'e1',
+      status: 'unsupported',
+      error: 'no HTTPS List-Unsubscribe URL',
+    });
+    render(UnsubscribeButton, { props: { emails: [oneClickEmail()] } });
+    await fireEvent.click(screen.getByRole('button'));
+    await waitFor(() =>
+      expect(toastMock.show).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'unsubscribe.toast.failed', kind: 'error' }),
+      ),
+    );
+  });
+
+  it('toasts failure when the JMAP call throws', async () => {
+    postOneClickMock.mockRejectedValue(new Error('network down'));
+    render(UnsubscribeButton, { props: { emails: [oneClickEmail()] } });
+    await fireEvent.click(screen.getByRole('button'));
+    await waitFor(() =>
+      expect(toastMock.show).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'unsubscribe.toast.failed', kind: 'error' }),
+      ),
+    );
+  });
+
+  it('falls back to opening the link directly when the server lacks the capability', async () => {
+    hasCapabilityMock.mockReturnValue(false);
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(UnsubscribeButton, { props: { emails: [oneClickEmail()] } });
+    await fireEvent.click(screen.getByRole('button'));
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://example.com/unsub?id=1',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    expect(postOneClickMock).not.toHaveBeenCalled();
   });
 });
 
@@ -147,7 +256,7 @@ describe('UnsubscribeButton: mailto (REQ-UNS-22/23)', () => {
   });
 
   it('prefers one-click silently when both one-click and mailto are present', async () => {
-    postOneClickMock.mockResolvedValue({ ok: true });
+    postOneClickMock.mockResolvedValue({ emailId: 'e1', status: 'ok' });
     render(UnsubscribeButton, {
       props: {
         emails: [
@@ -160,7 +269,7 @@ describe('UnsubscribeButton: mailto (REQ-UNS-22/23)', () => {
       },
     });
     await fireEvent.click(screen.getByRole('button'));
-    expect(postOneClickMock).toHaveBeenCalledWith('https://example.com/unsub');
+    expect(postOneClickMock).toHaveBeenCalledWith('acct-1', 'e1');
     expect(composeMock.openWith).not.toHaveBeenCalled();
   });
 });

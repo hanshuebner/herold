@@ -285,7 +285,9 @@ export const de = {
   'unsubscribe.cleartextWarning':
     'Der Abbestell-Link des Absenders ist unverschlüsselt; verwenden Sie den Link in der Nachricht, wenn Sie ihm vertrauen.',
   'unsubscribe.toast.success': 'Von {sender} abbestellt',
-  'unsubscribe.toast.failed': 'Abbestellen fehlgeschlagen — bitte den Link in der Nachricht verwenden',
+  'unsubscribe.toast.failed': 'Abbestellen fehlgeschlagen',
+  'unsubscribe.toast.openLink': 'Link öffnen',
+  'unsubscribe.toast.sendEmail': 'E-Mail senden',
 
   // ── Auf-Abruf-Übersetzung (issue #84) ───────────────────────────────
   // Schaltfläche erscheint, wenn die erkannte Sprache des Nachrichtentexts

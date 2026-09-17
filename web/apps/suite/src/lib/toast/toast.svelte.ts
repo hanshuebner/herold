@@ -34,6 +34,16 @@ export interface ToastSpec {
    * URLs without cluttering the toast body (REQ-UNS-41).
    */
   detail?: string;
+  /**
+   * Optional second action button, independent of `undo`. Clicking it
+   * dismisses the toast and invokes this callback; does not retry the
+   * primary action. Used by the one-click unsubscribe failure toast to
+   * offer the mailto fallback (REQ-UNS-22) alongside the HTTPS link
+   * action carried in `undo`/`actionLabel` (REQ-UNS-21).
+   */
+  secondaryAction?: () => void | Promise<void>;
+  /** Label for the second action button. */
+  secondaryActionLabel?: string;
 }
 
 class ToastStore {
@@ -72,6 +82,14 @@ class ToastStore {
         timeoutMs: 6000,
       });
     }
+  }
+
+  async runSecondaryAction(): Promise<void> {
+    const t = this.current;
+    if (!t?.secondaryAction) return;
+    const fn = t.secondaryAction;
+    this.dismiss();
+    await fn();
   }
 }
 

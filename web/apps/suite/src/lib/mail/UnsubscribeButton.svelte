@@ -11,9 +11,13 @@
   import { compose } from '../compose/compose.svelte';
   import { toast } from '../toast/toast.svelte';
   import { t } from '../i18n/i18n.svelte';
+  import { jmap } from '../jmap/client';
+  import { Capability } from '../jmap/types';
   import type { Email } from './types';
+  import { mail } from './store.svelte';
   import {
     chooseUnsubscribeMechanism,
+    parseAngleBracketUrls,
     parseMailtoUri,
     type UnsubscribeMechanism,
   } from './list-headers';
@@ -50,24 +54,75 @@
     return from?.name?.trim() || from?.email || '';
   }
 
+  /**
+   * The mailto: fallback alongside a one-click mechanism, when the
+   * same `List-Unsubscribe` header also advertised one (REQ-UNS-22).
+   * Independent of the chosen mechanism -- RFC 8058 senders commonly
+   * list an HTTPS one-click URL and a mailto alternative together.
+   */
+  function mailtoFallback(email: Email): string | null {
+    const urls = parseAngleBracketUrls(email['header:List-Unsubscribe:asText']);
+    return urls.find((u) => u.scheme === 'mailto')?.url ?? null;
+  }
+
+  function openMailtoCompose(uri: string): void {
+    const fields = parseMailtoUri(uri);
+    compose.openWith({
+      to: fields.to,
+      subject: fields.subject,
+      body: fields.body,
+      skipSignature: true,
+    });
+  }
+
+  /**
+   * Show the failure toast for a one-click POST that did not succeed
+   * (`status: "failed"` or `"unsupported"`, or a thrown transport/method
+   * error). Offers the HTTPS link in a new tab (REQ-UNS-21) and, when
+   * present, the mailto fallback (REQ-UNS-22) directly from the toast.
+   */
+  function showFailureToast(url: string, email: Email): void {
+    const mailto = mailtoFallback(email);
+    toast.show({
+      message: t('unsubscribe.toast.failed'),
+      kind: 'error',
+      timeoutMs: 8000,
+      detail: url,
+      actionLabel: t('unsubscribe.toast.openLink'),
+      undo: () => {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      },
+      ...(mailto
+        ? {
+            secondaryActionLabel: t('unsubscribe.toast.sendEmail'),
+            secondaryAction: () => {
+              openMailtoCompose(mailto);
+            },
+          }
+        : {}),
+    });
+  }
+
   async function runOneClick(url: string, email: Email): Promise<void> {
+    const accountId = mail.emailAccountId.get(email.id) ?? mail.mailAccountId;
+    if (!accountId) {
+      showFailureToast(url, email);
+      return;
+    }
     inFlight = true;
     try {
-      const result = await postOneClickUnsubscribe(url);
-      if (result.ok) {
+      const result = await postOneClickUnsubscribe(accountId, email.id);
+      if (result.status === 'ok') {
         const sender = email.from?.[0]?.email;
         if (sender) recordUnsubscribed(sender);
         toast.show({
           message: t('unsubscribe.toast.success', { sender: senderDisplay(email) }),
         });
       } else {
-        toast.show({
-          message: t('unsubscribe.toast.failed'),
-          kind: 'error',
-          timeoutMs: 8000,
-          detail: url,
-        });
+        showFailureToast(url, email);
       }
+    } catch {
+      showFailureToast(url, email);
     } finally {
       inFlight = false;
     }
@@ -78,8 +133,15 @@
     if (!src || inFlight) return;
     const { mechanism, email } = src;
     if (mechanism.kind === 'one-click') {
-      // REQ-UNS-30: no confirmation dialog -- the whole point of RFC 8058.
-      void runOneClick(mechanism.url, email);
+      if (jmap.hasCapability(Capability.HeroldEmailUnsubscribe)) {
+        // REQ-UNS-30: no confirmation dialog -- the whole point of RFC 8058.
+        void runOneClick(mechanism.url, email);
+      } else {
+        // The server does not support Email/unsubscribe: fall back to
+        // the plain-https behaviour (REQ-UNS-21) rather than a browser
+        // fetch that CORS would silently discard the response of.
+        window.open(mechanism.url, '_blank', 'noopener,noreferrer');
+      }
       return;
     }
     if (mechanism.kind === 'https') {
@@ -89,13 +151,7 @@
     }
     if (mechanism.kind === 'mailto') {
       // REQ-UNS-32: confirmation-by-send -- the user must still hit Send.
-      const fields = parseMailtoUri(mechanism.url);
-      compose.openWith({
-        to: fields.to,
-        subject: fields.subject,
-        body: fields.body,
-        skipSignature: true,
-      });
+      openMailtoCompose(mechanism.url);
       return;
     }
     // REQ-UNS-04: cleartext-only -- never auto-click, just warn.
