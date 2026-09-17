@@ -3,9 +3,10 @@ package admin
 // cmd_bugfetch.go — `herold bug-fetch`: pulls bug-report bundles off the
 // server's POST /api/v1/bug-reports queue (issue #416) and expands each
 // one into a drop directory in the layout `herold bug-sink` writes
-// (report.json, report.md, logs.txt, screenshot-N.png, optional
-// private.json, meta.json, STATUS), so /bug-inbox processes a phone
-// report exactly like a browser drop.
+// (report.json, report.md, logs.txt, screenshot-N.png, meta.json,
+// STATUS, and an optional private/private.json holding repro-only
+// secrets), so /bug-inbox processes a phone report exactly like a
+// browser drop.
 //
 // Authentication is a bug-reports-scoped API key
 // (`herold api-key create --scope bug-reports`), read from
@@ -258,9 +259,13 @@ func runBugFetch(ctx context.Context, w io.Writer, client bugFetchServer, opts b
 }
 
 // writeBugReportDrop extracts zipData's entries into dir (0700), each
-// file 0600, and stamps STATUS=new. Only the entry's basename is ever
-// used as the target filename, so a maliciously-crafted archive entry
-// cannot escape dir.
+// file 0600, and stamps STATUS=new. An entry's relative path is
+// preserved (not flattened to its basename) so private/private.json --
+// the drop layout's repro-secrets subdirectory
+// (.claude/commands/bug-inbox.md, "every drop has a private/
+// subdirectory") -- lands at the same path bug-inbox expects, with the
+// directory itself created 0700. safeZipEntryPath rejects any entry that
+// would escape dir.
 func writeBugReportDrop(dir string, zipData []byte) error {
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
@@ -273,7 +278,16 @@ func writeBugReportDrop(dir string, zipData []byte) error {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		name := path.Base(f.Name)
+		rel, ok := safeZipEntryPath(f.Name)
+		if !ok {
+			return fmt.Errorf("unsafe entry %q in report zip", f.Name)
+		}
+		target := filepath.Join(dir, filepath.FromSlash(rel))
+		if parent := filepath.Dir(target); parent != dir {
+			if err := os.MkdirAll(parent, 0o700); err != nil {
+				return fmt.Errorf("create %s: %w", parent, err)
+			}
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return fmt.Errorf("open %s: %w", f.Name, err)
@@ -283,14 +297,25 @@ func writeBugReportDrop(dir string, zipData []byte) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.Name, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), content, 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
+		if err := os.WriteFile(target, content, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "STATUS"), []byte("new"), 0o600); err != nil {
 		return fmt.Errorf("write STATUS: %w", err)
 	}
 	return nil
+}
+
+// safeZipEntryPath cleans a zip entry name and rejects anything that
+// would resolve outside the extraction directory: an absolute path, or
+// a relative path whose cleaned form still starts with "..".
+func safeZipEntryPath(name string) (string, bool) {
+	clean := path.Clean(name)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		return "", false
+	}
+	return clean, true
 }
 
 // ---- bug-reports REST client ---------------------------------------------

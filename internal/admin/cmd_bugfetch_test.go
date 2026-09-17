@@ -71,15 +71,19 @@ func (f *fakeBugReportsServer) delete(_ context.Context, id string) error {
 
 var _ bugFetchServer = (*fakeBugReportsServer)(nil)
 
+// minimalReportZip builds a zip matching what GET /api/v1/bug-reports/{id}
+// actually serves: private/private.json nested under the repro-secrets
+// subdirectory, not a flat private.json (re #416 coordinator correction).
 func minimalReportZip(t *testing.T, sketch string) []byte {
 	t.Helper()
 	meta := fmt.Sprintf(`{"kind":"bug","sketch":%q,"descriptionEntered":true,"screenshotCount":1,"context":{"route":"thread/t1"}}`, sketch)
 	return zipBundleFiles(t, map[string][]byte{
-		"report.json":      []byte(meta),
-		"report.md":        []byte("# " + sketch + "\n"),
-		"logs.txt":         []byte("log line\n"),
-		"screenshot-1.png": []byte("\x89PNG\r\n\x1a\nfake"),
-		"meta.json":        []byte(`{"principal_id":1,"email":"alice@example.local"}`),
+		"report.json":          []byte(meta),
+		"report.md":            []byte("# " + sketch + "\n"),
+		"logs.txt":             []byte("log line\n"),
+		"screenshot-1.png":     []byte("\x89PNG\r\n\x1a\nfake"),
+		"meta.json":            []byte(`{"principal_id":1,"email":"alice@example.local"}`),
+		"private/private.json": []byte(`{"session":"do-not-leak"}`),
 	})
 }
 
@@ -144,6 +148,19 @@ func TestRunBugFetch_RealRun_WritesAndDeletes(t *testing.T) {
 	}
 	if st, err := os.Stat(dir); err != nil || st.Mode().Perm() != 0o700 {
 		t.Errorf("drop dir mode = %v err=%v, want 0700", st.Mode(), err)
+	}
+	// private/private.json -- the drop layout's repro-secrets
+	// subdirectory (.claude/commands/bug-inbox.md) -- is extracted at
+	// its nested path, not flattened to the drop root.
+	privateDir := filepath.Join(dir, "private")
+	if st, err := os.Stat(privateDir); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("private/ = %v err=%v, want a 0700 directory", st, err)
+	}
+	if st, err := os.Stat(filepath.Join(privateDir, "private.json")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("private/private.json mode = %v err=%v, want 0600", st, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "private.json")); !os.IsNotExist(err) {
+		t.Errorf("private.json extracted flat (err=%v), want only under private/", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "STATUS")); string(got) != "new" {
 		t.Errorf("STATUS = %q, want new", got)
@@ -263,6 +280,24 @@ func zipBundleFiles(t *testing.T, entries map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
+func TestWriteBugReportDrop_RejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	archive := zipBundleFiles(t, map[string][]byte{
+		"report.json":      []byte(`{"kind":"bug"}`),
+		"../../etc/passwd": []byte("root:x:0:0"),
+	})
+	dir := filepath.Join(root, "drop")
+	err := writeBugReportDrop(dir, archive)
+	if err == nil || !strings.Contains(err.Error(), "unsafe entry") {
+		t.Fatalf("writeBugReportDrop with a traversal entry = %v, want an unsafe-entry error", err)
+	}
+	// Nothing escaped root: no "passwd" file anywhere under or above dir
+	// within the temp root.
+	if _, statErr := os.Stat(filepath.Join(root, "..", "etc", "passwd")); !os.IsNotExist(statErr) {
+		t.Fatalf("traversal entry escaped the drop dir")
+	}
+}
+
 // ---- end-to-end CLI round trip -------------------------------------------
 
 // TestBugFetch_EndToEnd drives `herold bug-fetch` against a fully wired
@@ -322,10 +357,13 @@ func TestBugFetch_EndToEnd(t *testing.T) {
 		if !strings.Contains(got, "bug-fetch: wrote "+dir) {
 			t.Errorf("output does not report %s:\n%s", dir, got)
 		}
-		for _, p := range []string{"report.json", "screenshot-1.png", "meta.json", "STATUS"} {
+		for _, p := range []string{"report.json", "screenshot-1.png", "meta.json", "STATUS", filepath.Join("private", "private.json")} {
 			if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 				t.Errorf("%s: missing %s: %v", id, p, err)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "private.json")); !os.IsNotExist(err) {
+			t.Errorf("%s: private.json extracted flat (err=%v), want only under private/", id, err)
 		}
 	}
 	if remaining := listBugReportsHTTP(t, publicAddr, bugKey); len(remaining) != 0 {
@@ -438,6 +476,7 @@ func postBugReportHTTP(t *testing.T, publicAddr, bearer, sketch string) string {
 	for name, content := range map[string][]byte{
 		"report.json":      []byte(meta),
 		"screenshot-1.png": []byte("\x89PNG\r\n\x1a\nfake"),
+		"private.json":     []byte(`{"session":"do-not-leak"}`),
 	} {
 		fw, err := mw.CreateFormFile(name, name)
 		if err != nil {

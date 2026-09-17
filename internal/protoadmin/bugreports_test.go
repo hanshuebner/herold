@@ -221,7 +221,7 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	}
 
 	dropDir := filepath.Join(br.dir, out.ID)
-	for _, name := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "private.json", "meta.json"} {
+	for _, name := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "meta.json"} {
 		if _, err := os.Stat(filepath.Join(dropDir, name)); err != nil {
 			t.Errorf("missing %s: %v", name, err)
 		}
@@ -230,6 +230,22 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	if err != nil || string(got) != bugReportTestMeta {
 		t.Errorf("report.json not verbatim: err=%v got=%s", err, got)
 	}
+
+	// private.json is submitted flat but stored under private/ (0700), the
+	// drop layout every producer of a drop uses for repro-only secrets
+	// (.claude/commands/bug-inbox.md); it must never be a top-level file.
+	if _, err := os.Stat(filepath.Join(dropDir, "private.json")); !os.IsNotExist(err) {
+		t.Errorf("private.json stored flat (err=%v), want only under private/", err)
+	}
+	privateDir := filepath.Join(dropDir, "private")
+	if st, err := os.Stat(privateDir); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("private/ = %v err=%v, want a 0700 directory", st, err)
+	}
+	privJSON, err := os.ReadFile(filepath.Join(privateDir, "private.json"))
+	if err != nil || string(privJSON) != `{"session": "do-not-leak"}` {
+		t.Errorf("private/private.json = %q err=%v, want the submitted content verbatim", privJSON, err)
+	}
+
 	metaRaw, err := os.ReadFile(filepath.Join(dropDir, "meta.json"))
 	if err != nil {
 		t.Fatalf("read meta.json: %v", err)
@@ -247,17 +263,28 @@ func TestBugReports_Create_SeparateParts(t *testing.T) {
 	if meta.Sizes["screenshot-1.png"] != int64(len(bugReportTestPNG)) {
 		t.Errorf("meta.json sizes[screenshot-1.png] = %d, want %d", meta.Sizes["screenshot-1.png"], len(bugReportTestPNG))
 	}
+	if _, ok := meta.Sizes["private.json"]; ok {
+		t.Errorf("meta.json sizes carries a flat private.json key, want private/private.json")
+	}
+	if size, ok := meta.Sizes["private/private.json"]; !ok || size != int64(len(`{"session": "do-not-leak"}`)) {
+		t.Errorf("meta.json sizes[private/private.json] = %d ok=%v, want %d", size, ok, len(`{"session": "do-not-leak"}`))
+	}
 }
 
 func TestBugReports_Create_ZipBundle(t *testing.T) {
 	br := newBugReportsHarness(t)
 	h := br.h
 
+	// A zip entry may itself be nested under "private/" (as a browser or
+	// mail-drop bundle would carry it); unzipBugReportBundle reduces it to
+	// its basename before storage decides the final path, same as a flat
+	// "private.json" entry would.
 	archive := zipBundle(t, map[string][]byte{
-		"report.json":      []byte(bugReportTestMeta),
-		"report.md":        []byte("# Bug: zipped\n"),
-		"logs.txt":         []byte("zipped log\n"),
-		"screenshot-1.png": bugReportTestPNG,
+		"report.json":          []byte(bugReportTestMeta),
+		"report.md":            []byte("# Bug: zipped\n"),
+		"logs.txt":             []byte("zipped log\n"),
+		"screenshot-1.png":     bugReportTestPNG,
+		"private/private.json": []byte(`{"session": "do-not-leak"}`),
 	})
 	res, buf := h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
 		"zip": archive,
@@ -276,6 +303,15 @@ func TestBugReports_Create_ZipBundle(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dropDir, name)); err != nil {
 			t.Errorf("missing %s: %v", name, err)
 		}
+	}
+	if st, err := os.Stat(filepath.Join(dropDir, "private")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("private/ = %v err=%v, want a 0700 directory", st, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dropDir, "private", "private.json")); err != nil || string(got) != `{"session": "do-not-leak"}` {
+		t.Errorf("private/private.json = %q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dropDir, "private.json")); !os.IsNotExist(err) {
+		t.Errorf("private.json stored flat (err=%v), want only under private/", err)
 	}
 }
 
@@ -336,6 +372,7 @@ func (br *bugReportsHarness) createBugReport(t *testing.T) string {
 	res, buf := br.h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
 		"report.json":      []byte(bugReportTestMeta),
 		"screenshot-1.png": bugReportTestPNG,
+		"private.json":     []byte(`{"session": "do-not-leak"}`),
 	})
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("createBugReport: %d: %s", res.StatusCode, buf)
@@ -441,10 +478,16 @@ func TestBugReports_Get_ReturnsZip(t *testing.T) {
 	for _, f := range zr.File {
 		names[f.Name] = true
 	}
-	for _, want := range []string{"report.json", "screenshot-1.png", "meta.json"} {
+	// private/private.json (not a flat private.json) carries the drop
+	// layout's repro-secrets subdirectory into the downloaded zip, so
+	// bug-fetch extracts it back to the same path.
+	for _, want := range []string{"report.json", "screenshot-1.png", "meta.json", "private/private.json"} {
 		if !names[want] {
 			t.Errorf("zip missing %s; entries=%v", want, names)
 		}
+	}
+	if names["private.json"] {
+		t.Errorf("zip carries a flat private.json entry; entries=%v", names)
 	}
 }
 

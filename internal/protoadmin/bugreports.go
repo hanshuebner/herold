@@ -84,6 +84,23 @@ func bugReportPartLimit(name string) int64 {
 	return bugReportMaxTextPartBytes
 }
 
+// bugReportStoredRelPath maps a received part name to the drop-relative
+// path it is stored and served at. Every part is stored flat except
+// private.json: the drop layout (.claude/commands/bug-inbox.md, "every
+// drop has a private/ subdirectory holding repro-only secrets") requires
+// repro secrets to live under a private/ subdirectory so /bug-inbox's
+// hard rule -- never read private/ into a ticket -- can be enforced by
+// path alone. The wire form stays flat (a "private.json" multipart part,
+// or a "private.json" / "private/private.json" zip entry both collapse
+// to the same key via unzipBugReportBundle's path.Base) so the sender
+// doesn't need to know the server-side layout.
+func bugReportStoredRelPath(name string) string {
+	if name == "private.json" {
+		return "private/private.json"
+	}
+	return name
+}
+
 // bugReportServerMeta is meta.json, written by the server (never by the
 // caller): who submitted the report, when, and how large each part was.
 type bugReportServerMeta struct {
@@ -137,7 +154,9 @@ func requireBugReportsScope(w http.ResponseWriter, r *http.Request) bool {
 // or bearer device token carrying ScopeEndUser. The body is either
 // multipart/form-data with one part per drop file (report.json,
 // report.md, logs.txt, screenshot-N.png, optional private.json), or a
-// single "zip" part holding the same entries.
+// single "zip" part holding the same entries. private.json is stored at
+// private/private.json (bugReportStoredRelPath), matching the drop
+// layout every other producer uses for repro-only secrets.
 func (s *Server) handleCreateBugReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := auth.RequireScope(ctx, auth.ScopeEndUser); err != nil {
@@ -190,14 +209,27 @@ func (s *Server) handleCreateBugReport(w http.ResponseWriter, r *http.Request) {
 	}
 	sizes := make(map[string]int64, len(files))
 	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(dropDir, name), data, 0o600); err != nil {
+		relPath := bugReportStoredRelPath(name)
+		target := filepath.Join(dropDir, filepath.FromSlash(relPath))
+		if dir := filepath.Dir(target); dir != dropDir {
+			// private/ (0700, matching the drop layout every other
+			// producer of a drop uses for the repro-secrets subdirectory).
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				_ = os.RemoveAll(dropDir)
+				s.loggerFrom(ctx).Error("protoadmin.bugreports.mkdir_failed", "err", err, "name", name)
+				writeProblem(w, r, http.StatusInternalServerError, "internal_error",
+					"failed to store report", "")
+				return
+			}
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
 			_ = os.RemoveAll(dropDir)
 			s.loggerFrom(ctx).Error("protoadmin.bugreports.write_failed", "err", err, "name", name)
 			writeProblem(w, r, http.StatusInternalServerError, "internal_error",
 				"failed to store report", "")
 			return
 		}
-		sizes[name] = int64(len(data))
+		sizes[relPath] = int64(len(data))
 	}
 	meta := bugReportServerMeta{
 		PrincipalID: uint64(caller.ID),
@@ -477,8 +509,7 @@ func (s *Server) handleGetBugReport(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "not_found", "bug report not found", "")
 		return
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if _, err := os.Stat(dir); err != nil {
 		writeProblem(w, r, http.StatusNotFound, "not_found", "bug report not found", "")
 		return
 	}
@@ -489,26 +520,40 @@ func (s *Server) handleGetBugReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, id))
 	w.WriteHeader(http.StatusOK)
 	zw := zip.NewWriter(w)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+	// Walk recursively (not a flat os.ReadDir) so private/private.json is
+	// carried in the zip at its stored path, preserving the drop layout
+	// end to end: `herold bug-fetch` extracts this zip verbatim.
+	walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
 			s.loggerFrom(r.Context()).Warn("protoadmin.bugreports.zip_read_failed",
-				"id", id, "name", e.Name(), "err", err)
-			continue
+				"id", id, "name", rel, "err", readErr)
+			return nil
 		}
-		fw, err := zw.Create(e.Name())
-		if err != nil {
+		fw, createErr := zw.Create(filepath.ToSlash(rel))
+		if createErr != nil {
 			s.loggerFrom(r.Context()).Warn("protoadmin.bugreports.zip_create_failed",
-				"id", id, "name", e.Name(), "err", err)
-			continue
+				"id", id, "name", rel, "err", createErr)
+			return nil
 		}
-		if _, err := fw.Write(data); err != nil {
+		if _, writeErr := fw.Write(data); writeErr != nil {
 			s.loggerFrom(r.Context()).Warn("protoadmin.bugreports.zip_write_failed",
-				"id", id, "name", e.Name(), "err", err)
+				"id", id, "name", rel, "err", writeErr)
 		}
+		return nil
+	})
+	if walkErr != nil {
+		s.loggerFrom(r.Context()).Warn("protoadmin.bugreports.zip_walk_failed", "id", id, "err", walkErr)
 	}
 	if err := zw.Close(); err != nil {
 		s.loggerFrom(r.Context()).Warn("protoadmin.bugreports.zip_close_failed", "id", id, "err", err)
