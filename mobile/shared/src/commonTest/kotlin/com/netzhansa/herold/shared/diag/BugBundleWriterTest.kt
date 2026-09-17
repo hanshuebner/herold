@@ -89,7 +89,62 @@ class BugBundleWriterTest {
     @Test
     fun theSubjectCarriesThePrefixTheFetchStrips() {
         assertEquals("herold bug: the thread view is blank", build().subject)
-        assertEquals("herold bug: (no title)", BugBundleWriter.subject("   "))
+    }
+
+    @Test
+    fun anUndescribedReportIsNamedByWhereAndWhenItWasRaised() {
+        val bundle = build(submission = BugSubmission())
+        assertEquals("herold bug: thread 2023-11-14T22:13:22Z", bundle.subject)
+    }
+
+    @Test
+    fun theRouteLabelDropsTheIds() {
+        assertEquals("thread", BugBundleWriter.routeLabel("thread/{accountId}/{threadId}"))
+        assertEquals("inbox", BugBundleWriter.routeLabel("inbox"))
+        assertEquals("compose", BugBundleWriter.routeLabel("/compose/{mode}/{accountId}/{emailId}"))
+        assertEquals("unknown", BugBundleWriter.routeLabel(""))
+    }
+
+    @Test
+    fun aDescribedReportSaysSoAndCarriesTheText() {
+        val meta = build().meta()
+        assertEquals(true, meta["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(
+            build().bodyText.startsWith("# Bug: the thread view is blank"),
+            build().bodyText,
+        )
+        assertTrue(build().bodyText.contains("## Description"))
+    }
+
+    @Test
+    fun aReportSentWithOneTapSaysNothingWasEntered() {
+        val bundle = build(submission = BugSubmission())
+        val meta = bundle.meta()
+        assertEquals(false, meta["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals("", meta["sketch"]?.jsonPrimitive?.content)
+        assertEquals(
+            BugBundleWriter.NO_DESCRIPTION,
+            bundle.bodyText.lineSequence().first(),
+        )
+        // The capture still travels: the report is a capture with no words on it.
+        assertTrue(bundle.bodyText.contains("## Page"), bundle.bodyText)
+        assertTrue(bundle.bodyText.contains("## State"), bundle.bodyText)
+        assertFalse(bundle.bodyText.contains("## Description"), bundle.bodyText)
+        assertEquals(
+            "thread/{accountId}/{threadId}",
+            meta["context"]!!.jsonObject["route"]?.jsonPrimitive?.content,
+        )
+        assertEquals("1.4.2 (abc1234)", meta["app"]!!.jsonObject["version"]?.jsonPrimitive?.content)
+        assertEquals(1, meta["screenshotCount"]?.jsonPrimitive?.content?.toInt())
+    }
+
+    @Test
+    fun aNoteWithoutATitleStillCountsAsDescribed() {
+        val bundle = build(submission = BugSubmission(note = "it went blank after a sync"))
+        assertEquals(true, bundle.meta()["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals("it went blank after a sync", bundle.meta()["sketch"]?.jsonPrimitive?.content)
+        // With no title the subject still names the place and the time.
+        assertEquals("herold bug: thread 2023-11-14T22:13:22Z", bundle.subject)
     }
 
     @Test
@@ -196,6 +251,7 @@ class BugBundleWriterTest {
     fun aReportWithNoNoteStillReads() {
         val bundle = build(submission = BugSubmission(title = "widget shows nothing", note = ""))
         assertEquals("widget shows nothing", bundle.meta()["sketch"]?.jsonPrimitive?.content)
-        assertTrue(bundle.bodyText.contains("## Description\n\n(none)"))
+        assertTrue(bundle.bodyText.contains("## Description\n\nwidget shows nothing"), bundle.bodyText)
+        assertEquals("herold bug: widget shows nothing", bundle.subject)
     }
 }

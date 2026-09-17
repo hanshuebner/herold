@@ -90,15 +90,23 @@ data class BugCapture(
     val sessionDetails: Map<String, String> = emptyMap(),
 )
 
-/** What the maintainer typed and ticked in the sheet. */
+/**
+ * What the maintainer ticked in the sheet, and the text they typed if
+ * they typed any. Both texts are optional: a report is sent with one
+ * tap and described on the desktop, where there is a keyboard
+ * (`/bug-inbox`, issue #408).
+ */
 data class BugSubmission(
-    val title: String,
+    val title: String = "",
     val note: String = "",
     val kind: BugKind = BugKind.BUG,
     val includeScreenshot: Boolean = true,
     val includeLogs: Boolean = true,
     val includeSessionDetails: Boolean = false,
-)
+) {
+    /** True when the maintainer described the problem on the phone. */
+    val descriptionEntered: Boolean get() = title.isNotBlank() || note.isNotBlank()
+}
 
 /** One part of the bundle as the mail carries it. */
 data class BugBundleFile(val name: String, val type: String, val bytes: ByteArray) {
@@ -165,18 +173,41 @@ object BugBundleWriter {
                 (json.encodeToString(JsonObject.serializer(), private) + "\n").encodeToByteArray(),
             )
         }
-        return BugBundle(subject = subject(submission.title), bodyText = markdown, files = files)
+        return BugBundle(
+            subject = subject(submission, capture, createdAt),
+            bodyText = markdown,
+            files = files,
+        )
     }
 
-    /** The mail's subject, which is also how the fetch recognises a report. */
-    fun subject(title: String): String =
-        SUBJECT_PREFIX + " " + title.trim().ifBlank { "(no title)" }
+    /**
+     * The mail's subject, which is also how the fetch recognises a
+     * report. A described report is named by its title; an undescribed
+     * one by where it was raised and when, so a Sent folder of one-tap
+     * reports still distinguishes them.
+     */
+    fun subject(submission: BugSubmission, capture: BugCapture, createdAt: String): String {
+        val title = submission.title.trim()
+        if (title.isNotEmpty()) return "$SUBJECT_PREFIX $title"
+        return "$SUBJECT_PREFIX ${routeLabel(capture.route)} $createdAt"
+    }
 
-    /** What the sketch reads: the title, then the note under it. */
+    /**
+     * The route without its ids, for a subject line: `thread` rather
+     * than `thread/{accountId}/{threadId}`.
+     */
+    fun routeLabel(route: String): String =
+        route.trim().trimStart('/').substringBefore('/').ifBlank { "unknown" }
+
+    /**
+     * What the sketch reads: the title, then the note under it. Empty
+     * when neither was typed, which is what `descriptionEntered` says
+     * and what the desktop fills in.
+     */
     fun sketch(submission: BugSubmission): String {
-        val title = submission.title.trim().ifBlank { "(no title)" }
+        val title = submission.title.trim()
         val note = submission.note.trim()
-        return if (note.isBlank()) title else "$title\n\n$note"
+        return listOf(title, note).filter { it.isNotEmpty() }.joinToString("\n\n")
     }
 
     private fun reportJson(
@@ -189,6 +220,9 @@ object BugBundleWriter {
         put("protocol", PROTOCOL)
         put("createdAt", createdAt)
         put("kind", submission.kind.wire)
+        // Whether the sketch is the maintainer's words or a blank the
+        // desktop has to fill in (issue #408).
+        put("descriptionEntered", submission.descriptionEntered)
         put("sketch", sketch(submission))
         putJsonObject("page") {
             put("url", routeUrl(capture))
@@ -288,12 +322,17 @@ object BugBundleWriter {
         createdAt: String,
         logs: List<LogLine>,
     ): String = buildString {
-        val title = submission.title.trim().ifBlank { "(no title)" }
+        if (!submission.descriptionEntered) append(NO_DESCRIPTION).append("\n\n")
+        val heading = submission.title.trim().ifBlank {
+            routeLabel(capture.route) + " " + createdAt
+        }
         append("# ").append(submission.kind.wire.replaceFirstChar { it.uppercase() })
-        append(": ").append(title).append("\n\n")
+        append(": ").append(heading).append("\n\n")
 
-        append("## Description\n\n")
-        append(submission.note.trim().ifBlank { "(none)" }).append("\n\n")
+        if (submission.descriptionEntered) {
+            append("## Description\n\n")
+            append(sketch(submission)).append("\n\n")
+        }
 
         append("## Page\n\n")
         append("- URL: ").append(routeUrl(capture)).append("\n")
@@ -351,6 +390,13 @@ object BugBundleWriter {
         val ctx = if (line.ctx.isBlank()) "" else "[${line.ctx}] "
         return (at + " " + line.level.uppercase() + " " + ctx + line.message).trim()
     }
+
+    /**
+     * What `report.md` opens with when the report was sent with one tap.
+     * `/bug-inbox` reads it as the prompt to ask for the description on
+     * the desktop (issue #408).
+     */
+    const val NO_DESCRIPTION = "No description entered on the phone."
 
     /** How many log lines the mail body repeats; `logs.txt` carries them all. */
     private const val MARKDOWN_LOG_TAIL = 50
