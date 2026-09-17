@@ -6,11 +6,13 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/authsession"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/store"
@@ -87,8 +89,11 @@ func SessionIDFromContext(ctx context.Context) string {
 //     only speak Basic (Thunderbird's autoconfig flow, k-9 mail) work
 //     against the same surface as power users with API keys.
 //
-// On success the principal is attached to the request context. On
-// failure a 401 problem is written and the request short-circuits.
+// On success the principal is attached to the request context, along
+// with an auth.AuthContext carrying the credential's scope set
+// (REQ-AUTH-SCOPE-01) so requireScope and per-method gates (dispatch.go)
+// can enforce REQ-AUTH-SCOPE-02. On failure a 401 problem is written
+// and the request short-circuits.
 //
 // The WWW-Authenticate challenge advertises only Bearer, not Basic,
 // even though the server accepts Basic credentials when they are sent
@@ -100,7 +105,7 @@ func SessionIDFromContext(ctx context.Context) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		principal, key, sessID, ok := s.authenticate(ctx, r)
+		principal, key, sessID, scope, ok := s.authenticate(ctx, r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="jmap"`)
 			WriteJMAPError(w, http.StatusUnauthorized,
@@ -115,60 +120,97 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if sessID != "" {
 			ctx = context.WithValue(ctx, ctxKeySessionID, sessID)
 		}
+		ctx = auth.WithContext(ctx, &auth.AuthContext{
+			PrincipalID: uint64(principal.ID),
+			Scopes:      scope,
+			Listener:    "public",
+		})
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// requireScope wraps next with a REQ-AUTH-SCOPE-02 gate: the credential
+// attached to ctx by requireAuth must carry scope, or auth.ScopeAdmin
+// (an operator-issued admin key or admin session always passes every
+// JMAP gate). Must be applied behind requireAuth so an auth.AuthContext
+// is present; a missing one is treated as insufficient scope rather
+// than panicking. On denial it writes a 403 RFC 7807 problem detail
+// (NOT 401 — the caller IS authenticated, just not authorised for this
+// scope, matching protoadmin's insufficient_scope shape).
+func (s *Server) requireScope(scope auth.Scope, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if auth.RequireScope(ctx, scope) != nil && auth.RequireScope(ctx, auth.ScopeAdmin) != nil {
+			WriteJMAPError(w, http.StatusForbidden,
+				"insufficient_scope", "credential lacks required scope "+string(scope))
+			return
+		}
+		next(w, r)
 	}
 }
 
 // authenticate parses the Authorization header and resolves the
 // requesting principal. On success it returns the principal, the API
 // key (non-nil only for Bearer-authenticated sessions), the session_id
-// (non-empty only for cookie-authenticated sessions), and true.
-// Returns false on any failure (no information leak through
-// differentiated reasons).
+// (non-empty only for cookie-authenticated sessions), the credential's
+// scope set (REQ-AUTH-SCOPE-01), and true. Returns false on any failure
+// (no information leak through differentiated reasons).
 //
 // When no Authorization header is present and a SessionResolver is
 // configured, cookie-based authentication is attempted (suite-session
 // cookie from the public-listener login flow). Bearer / Basic always
 // take precedence over the cookie when both are present.
-func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, string, bool) {
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (store.Principal, *store.APIKey, string, auth.ScopeSet, bool) {
 	h := r.Header.Get("Authorization")
 	if h != "" {
 		switch {
 		case strings.HasPrefix(h, "Bearer "):
 			p, key, ok := s.authenticateBearer(ctx, strings.TrimSpace(h[len("Bearer "):]))
-			return p, key, "", ok
+			if !ok {
+				return store.Principal{}, nil, "", nil, false
+			}
+			return p, key, "", ParseAPIKeyScope(key.ScopeJSON), true
 		case strings.HasPrefix(h, "Basic "):
+			// A directly password-authenticated request (Thunderbird's
+			// autoconfig flow, k-9 mail) is equivalent to a fresh Suite
+			// login: it carries the full end-user scope set, matching
+			// what a session cookie issued at login would carry
+			// (REQ-AUTH-SCOPE-01). Only Bearer API keys can be scoped
+			// down to less than that.
 			p, ok := s.authenticateBasic(ctx, strings.TrimSpace(h[len("Basic "):]))
-			return p, nil, "", ok
+			if !ok {
+				return store.Principal{}, nil, "", nil, false
+			}
+			return p, nil, "", auth.NewScopeSet(auth.AllEndUserScopes...), true
 		default:
-			return store.Principal{}, nil, "", false
+			return store.Principal{}, nil, "", nil, false
 		}
 	}
 	// No Authorization header: try the Suite session cookie if the
 	// server is configured with a resolver (public listener only).
 	if s.sessionResolver != nil {
-		pid, _, ok := s.sessionResolver(r)
+		pid, scope, ok := s.sessionResolver(r)
 		if ok {
 			p, err := s.store.Meta().GetPrincipalByID(ctx, pid)
 			if err != nil {
 				s.log.Warn("auth.cookie_principal_lookup_failed",
 					"err", err, "principal_id", pid)
-				return store.Principal{}, nil, "", false
+				return store.Principal{}, nil, "", nil, false
 			}
 			// REQ-SUBACCT-02: a sub-principal is never authenticatable, on
 			// any credential kind. IsAuthenticatable also covers
 			// PrincipalFlagDisabled.
 			if !p.IsAuthenticatable() {
-				return store.Principal{}, nil, "", false
+				return store.Principal{}, nil, "", nil, false
 			}
 			// Extract the CSRF token (session_id) from the cookie when a
 			// SessionCookieConfig is available, so the clientlog-meta
 			// middleware can look up the sessions table row.
 			sessID := s.extractSessionID(r)
-			return p, nil, sessID, true
+			return p, nil, sessID, scope, true
 		}
 	}
-	return store.Principal{}, nil, "", false
+	return store.Principal{}, nil, "", nil, false
 }
 
 // extractSessionID decodes the suite-session cookie and returns its
@@ -248,6 +290,32 @@ func AuthenticateBearerToken(ctx context.Context, st store.Store, lookup APIKeyL
 	}
 	_ = st.Meta().TouchAPIKey(ctx, key.ID, clk.Now())
 	return p, key, true
+}
+
+// ParseAPIKeyScope decodes the JSON-encoded scope list stored on an
+// APIKey row (REQ-AUTH-SCOPE-01). Unlike protoadmin's parseAPIKeyScope
+// (whose legacy fallback grants the admin surface's pre-scope-column
+// rows full admin scope), JMAP's fallback is least-privilege: an
+// empty, malformed, or empty-array scope value reads back as
+// [mail.send], which passes protosend's HTTP send API but is refused
+// by every JMAP read/EventSource/download/upload gate that requires
+// mail.receive. In production every row is backfilled to a concrete
+// scope at INSERT time (storesqlite/storepg InsertAPIKey), so this
+// path only fires for a genuinely pre-scope-column legacy row or a
+// test fixture that predates the scope column.
+//
+// Exported so internal/admin's public-listener Bearer-or-cookie
+// resolver (the image proxy's auth path, re #332) applies the same
+// gate without re-deriving the fallback rules.
+func ParseAPIKeyScope(raw string) auth.ScopeSet {
+	if raw == "" {
+		return auth.NewScopeSet(auth.ScopeMailSend)
+	}
+	var s auth.ScopeSet
+	if err := json.Unmarshal([]byte(raw), &s); err != nil || len(s) == 0 {
+		return auth.NewScopeSet(auth.ScopeMailSend)
+	}
+	return s
 }
 
 func (s *Server) authenticateBasic(ctx context.Context, encoded string) (store.Principal, bool) {

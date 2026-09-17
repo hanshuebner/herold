@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protojmap"
 	"github.com/hanshuebner/herold/internal/store"
@@ -27,11 +28,15 @@ import (
 //     protojmap.AuthenticateBearerToken applies the same "hk_" prefix
 //     check, stored-hash match, ExpiresAt bound (short-lived OAuth2
 //     access tokens), and principal.IsAuthenticatable rule JMAP requests
-//     go through -- and returns that principal. An Authorization header
-//     that fails validation is rejected outright; it does NOT fall
-//     through to the cookie, matching protojmap.Server.authenticate's
-//     precedence (Bearer / Basic always win over the cookie when
-//     present).
+//     go through -- and returns that principal. The key's scope set is
+//     then checked with the same mail.receive-or-admin gate protojmap
+//     applies to its own download endpoint (REQ-AUTH-SCOPE-02, issue
+//     #418): a key minted for another surface (e.g. `--scope
+//     bug-reports`) authenticates but is refused here too. An
+//     Authorization header that fails validation, or whose scope is
+//     insufficient, is rejected outright; it does NOT fall through to
+//     the cookie, matching protojmap.Server.authenticate's precedence
+//     (Bearer / Basic always win over the cookie when present).
 //  2. Otherwise delegates to cookieResolver (the suite-session-cookie
 //     resolver), so browser clients are unaffected.
 //
@@ -54,8 +59,12 @@ func newPublicBearerOrCookieResolver(
 			return cookieResolver(r)
 		}
 		token := strings.TrimSpace(h[len("Bearer "):])
-		p, _, ok := protojmap.AuthenticateBearerToken(r.Context(), st, lookup, clk, logger, token)
+		p, key, ok := protojmap.AuthenticateBearerToken(r.Context(), st, lookup, clk, logger, token)
 		if !ok {
+			return 0, false
+		}
+		scope := protojmap.ParseAPIKeyScope(key.ScopeJSON)
+		if !scope.Has(auth.ScopeMailReceive) && !scope.Has(auth.ScopeAdmin) {
 			return 0, false
 		}
 		return p.ID, true
