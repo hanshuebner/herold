@@ -362,12 +362,17 @@ func seedDevSinkStore(
 	if err != nil {
 		t.Fatalf("insert principal: %v", err)
 	}
+	// The test drives GET /.well-known/jmap (to discover accountId) and
+	// then EmailSubmission/set through this key, exactly as a real JMAP
+	// client submitting mail would: session discovery needs
+	// mail.receive, submission needs mail.send (REQ-AUTH-SCOPE-01/02,
+	// issue #418).
 	if _, err := st.Meta().InsertAPIKey(ctx, store.APIKey{
 		PrincipalID: alice.ID,
 		Hash:        protoadmin.HashAPIKey(apiKeyPlain),
 		Name:        "devsink-e2e",
 		CreatedAt:   clk.Now(),
-		ScopeJSON:   `["mail.send","end-user"]`,
+		ScopeJSON:   `["mail.send","mail.receive","end-user"]`,
 	}); err != nil {
 		t.Fatalf("insert api key: %v", err)
 	}
