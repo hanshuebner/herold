@@ -50,6 +50,23 @@ const bugReportTestMeta = `{
   "screenshotCount": 1
 }`
 
+// bugReportTestMetaWithTitle carries the top-level "title" field the
+// Android reporter (issue #417) writes, distinct from the sketch's
+// first line so a test can tell which one the list prefers.
+const bugReportTestMetaWithTitle = `{
+  "protocol": "herold-android/1",
+  "createdAt": "2026-09-17T09:00:00.000Z",
+  "kind": "bug",
+  "title": "inbox 2026-09-17T09:00:00Z",
+  "descriptionEntered": false,
+  "sketch": "",
+  "app": {"id": "herold-android", "name": "Herold Android", "version": "0.6.1"},
+  "principal": {"id": "p1", "label": "alice@example.local"},
+  "context": {"route": "inbox"},
+  "logs": [],
+  "screenshotCount": 0
+}`
+
 var bugReportTestPNG = []byte("\x89PNG\r\n\x1a\nfake-png-bytes")
 
 // createScopedAPIKey mints an API key with an arbitrary scope list,
@@ -420,6 +437,8 @@ func TestBugReports_List_RequiresBugReportsOrAdminScope(t *testing.T) {
 		t.Fatalf("list items = %+v, want one item with id %s", out.Items, id)
 	}
 	item := out.Items[0]
+	// bugReportTestMeta carries no top-level "title" (the browser-panel
+	// shape), so the list falls back to the sketch's first line.
 	if item.Title != "Thread list jumps after sync" {
 		t.Errorf("title = %q", item.Title)
 	}
@@ -442,6 +461,48 @@ func TestBugReports_List_RequiresBugReportsOrAdminScope(t *testing.T) {
 	res, buf = h.doRequest("GET", "/api/v1/bug-reports", adminScopedKey, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("list with admin-scoped key: %d: %s", res.StatusCode, buf)
+	}
+}
+
+// TestBugReports_List_PrefersTitleOverSketch proves a report.json
+// carrying a top-level "title" (the Android reporter, issue #417) lists
+// under that name rather than the sketch's first line, so an
+// undescribed one-tap report -- whose sketch is empty -- still lists
+// with a name instead of "" (the coordinator's #416 follow-up).
+func TestBugReports_List_PrefersTitleOverSketch(t *testing.T) {
+	br := newBugReportsHarness(t)
+	h := br.h
+
+	res, buf := h.doMultipart("POST", "/api/v1/bug-reports", br.aliceToken, map[string][]byte{
+		"report.json": []byte(bugReportTestMetaWithTitle),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST bug-reports: %d: %s", res.StatusCode, buf)
+	}
+
+	res, buf = h.doRequest("GET", "/api/v1/bug-reports", br.bugReportKey, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d: %s", res.StatusCode, buf)
+	}
+	var out struct {
+		Items []struct {
+			Title              string `json:"title"`
+			Route              string `json:"route"`
+			DescriptionEntered bool   `json:"description_entered"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(buf, &out); err != nil || len(out.Items) != 1 {
+		t.Fatalf("list = %s, want exactly one item (err=%v)", buf, err)
+	}
+	item := out.Items[0]
+	if item.Title != "inbox 2026-09-17T09:00:00Z" {
+		t.Errorf("title = %q, want the report.json title field, not the (empty) sketch", item.Title)
+	}
+	if item.Route != "inbox" {
+		t.Errorf("route = %q", item.Route)
+	}
+	if item.DescriptionEntered {
+		t.Errorf("description_entered = true, want false")
 	}
 }
 
