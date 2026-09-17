@@ -273,6 +273,9 @@ export const en = {
   'mail.thread.fromYou': 'You',
 
   // ── Mailing-list chip (docs/design/web/requirements/16-mailing-lists.md) ──
+  'mailingList.genericLabel': 'Newsletter',
+  'mailingList.chipTooltip': 'Mailing list -- open list actions',
+  'mailingList.rawId': 'List ID: {id}',
   'mailingList.action.viewArchive': 'View archive',
   'mailingList.action.getHelp': 'Get help',
   'mailingList.action.replyToList': 'Reply to list',

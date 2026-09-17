@@ -1,9 +1,12 @@
 /**
- * Component tests for ListChip (REQ-LIST-10..12, 20..22).
+ * Component tests for ListChip (REQ-LIST-02, 10..12, 20..22).
  *
- * Covers: absence when no List-ID header, label rendering (REQ-LIST-02),
- * hover-reveals-popover (REQ-LIST-11), hide-action-when-header-absent
- * (REQ-LIST-20/21/22), and the click behaviours for each action kind.
+ * Covers: absence when no List-ID header, derived/generic label
+ * rendering for a description-less List-ID with the raw token confined
+ * to the popover (REQ-LIST-02, issue #415), click/keyboard popover
+ * activation and focusability (issue #415), hide-action-when-header-
+ * absent (REQ-LIST-20/21/22), and the click behaviours for each action
+ * kind.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -11,8 +14,12 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import ListChip from './ListChip.svelte';
 import type { Email } from './types';
 
+// Every key renders as itself (as before); a call site passing `params`
+// (only `mailingList.rawId` does) appends them so tests can assert the
+// interpolated value (e.g. the raw List-ID token) reached the DOM.
 vi.mock('../i18n/i18n.svelte', () => ({
-  t: (key: string) => key,
+  t: (key: string, params?: Record<string, string | number>) =>
+    params ? `${key}:${Object.values(params).join(',')}` : key,
 }));
 
 const { composeMock, toastMock } = vi.hoisted(() => {
@@ -62,7 +69,7 @@ describe('ListChip: presence (REQ-LIST-12)', () => {
     expect(screen.queryByTestId('list-chip-anchor')).not.toBeInTheDocument();
   });
 
-  it('renders the chip with the description-part label when List-ID is present', () => {
+  it('renders the chip with the description-part label when List-ID is present (described case is unchanged)', () => {
     render(ListChip, {
       props: {
         email: makeEmail({
@@ -72,12 +79,112 @@ describe('ListChip: presence (REQ-LIST-12)', () => {
     });
     expect(screen.getByText('Project X discuss')).toBeInTheDocument();
   });
+});
 
-  it('falls back to the local part of the identifier when no description', () => {
+describe('ListChip: description-less label derivation (REQ-LIST-02, issue #415)', () => {
+  it('never renders the raw List-ID token as the chip label', () => {
     render(ListChip, {
-      props: { email: makeEmail({ 'header:List-ID:asText': '<projectx-discuss.example.com>' }) },
+      props: {
+        email: makeEmail({
+          'header:List-ID:asText': '<3IYSMFU7-4UI13WR.newsletterversand.example>',
+        }),
+      },
     });
-    expect(screen.getByText('projectx-discuss')).toBeInTheDocument();
+    expect(
+      screen.queryByText('3IYSMFU7-4UI13WR.newsletterversand.example'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('3IYSMFU7-4UI13WR')).not.toBeInTheDocument();
+  });
+
+  it('derives the label from the sender display name when present', () => {
+    render(ListChip, {
+      props: {
+        email: makeEmail({
+          from: [{ name: 'DIE ZEIT Newsletter', email: 'noreply@newsletterversand.example' }],
+          'header:List-ID:asText': '<3IYSMFU7-4UI13WR.newsletterversand.example>',
+        }),
+      },
+    });
+    expect(screen.getByText('DIE ZEIT Newsletter')).toBeInTheDocument();
+  });
+
+  it('falls back to the sender email domain when there is no display name', () => {
+    render(ListChip, {
+      props: {
+        email: makeEmail({
+          from: [{ name: null, email: 'noreply@newsletterversand.example' }],
+          'header:List-ID:asText': '<3IYSMFU7-4UI13WR.newsletterversand.example>',
+        }),
+      },
+    });
+    expect(screen.getByText('newsletterversand.example')).toBeInTheDocument();
+  });
+
+  it('falls back to the generic translated label when there is no usable sender info', () => {
+    render(ListChip, {
+      props: {
+        email: makeEmail({
+          from: null,
+          'header:List-ID:asText': '<3IYSMFU7-4UI13WR.newsletterversand.example>',
+        }),
+      },
+    });
+    expect(screen.getByText('mailingList.genericLabel')).toBeInTheDocument();
+  });
+
+  it('shows the raw List-ID identifier only inside the popover, not as the chip label', async () => {
+    render(ListChip, {
+      props: {
+        email: makeEmail({
+          from: null,
+          'header:List-ID:asText': '<3IYSMFU7-4UI13WR.newsletterversand.example>',
+        }),
+      },
+    });
+    expect(screen.queryByTestId('list-chip-raw-id')).not.toBeInTheDocument();
+    await fireEvent.mouseEnter(screen.getByTestId('list-chip-anchor'));
+    expect(screen.getByTestId('list-chip-raw-id')).toHaveTextContent(
+      '3IYSMFU7-4UI13WR.newsletterversand.example',
+    );
+  });
+});
+
+describe('ListChip: affordance and activation (issue #415)', () => {
+  it('the chip is a focusable native button', () => {
+    render(ListChip, {
+      props: { email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }) },
+    });
+    const button = screen.getByRole('button');
+    button.focus();
+    expect(button).toHaveFocus();
+  });
+
+  it('opens the popover on click, without requiring hover first', async () => {
+    render(ListChip, {
+      props: { email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }) },
+    });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('opens the popover on Enter key activation, without requiring hover or click', async () => {
+    render(ListChip, {
+      props: { email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }) },
+    });
+    const button = screen.getByRole('button');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await fireEvent.keyDown(button, { key: 'Enter' });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('opens the popover on Space key activation', async () => {
+    render(ListChip, {
+      props: { email: makeEmail({ 'header:List-ID:asText': '<a.example.com>' }) },
+    });
+    const button = screen.getByRole('button');
+    await fireEvent.keyDown(button, { key: ' ' });
+    expect(screen.getByRole('menu')).toBeInTheDocument();
   });
 });
 

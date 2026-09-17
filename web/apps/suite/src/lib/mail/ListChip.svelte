@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Mailing-list chip (REQ-LIST-10..12, 20..22).
+   * Mailing-list chip (REQ-LIST-02, 10..12, 20..22).
    *
    * Rendered per-message (not per-thread) beside the sender: a message
    * that has no `List-ID` header renders no chip at all, so a thread
@@ -8,9 +8,17 @@
    * REQ-LIST-12) shows the chip only on the messages that actually
    * carry the header.
    *
-   * Hovering (and, for keyboard/touch users, focusing) reveals a
-   * popover with the available `List-*` actions; an action is hidden
-   * entirely when its backing header is absent (REQ-LIST-20/21/22).
+   * The chip label is the `List-ID` description when the header
+   * carries one; otherwise it derives a readable name from the
+   * sender's display name or email domain, falling back to a generic
+   * "Newsletter" / "Mailingliste" label -- the raw campaign/list token
+   * is never shown as the label (issue #415), only in the popover and
+   * the raw-headers ("Show original") view.
+   *
+   * Hovering, focusing, clicking, and keyboard-activating (Enter/Space)
+   * the chip button all reveal a popover with the available `List-*`
+   * actions; an action is hidden entirely when its backing header is
+   * absent (REQ-LIST-20/21/22).
    */
   import { compose } from '../compose/compose.svelte';
   import { toast } from '../toast/toast.svelte';
@@ -18,6 +26,7 @@
   import type { Email } from './types';
   import {
     parseListId,
+    deriveListLabelFromSender,
     parseAngleBracketUrls,
     pickPreferredAction,
     parseListPostAddress,
@@ -31,6 +40,12 @@
   let { email }: Props = $props();
 
   let listInfo = $derived(parseListId(email['header:List-ID:asText']));
+
+  let chipLabel = $derived.by<string>(() => {
+    if (!listInfo) return '';
+    if (listInfo.description) return listInfo.description;
+    return deriveListLabelFromSender(email.from?.[0]) ?? t('mailingList.genericLabel');
+  });
 
   let archiveAction = $derived.by<ListAction | null>(() => {
     const urls = parseAngleBracketUrls(email['header:List-Archive:asText']);
@@ -63,6 +78,31 @@
       open = false;
       closeTimer = null;
     }, 150);
+  }
+
+  /**
+   * Click and keyboard (Enter/Space) activation both open the popover
+   * explicitly (issue #415) rather than toggling it: a real mouse click
+   * is preceded by `mouseenter`, which has already opened it via
+   * `show()`, so a toggle would immediately close what hover just
+   * opened. Closing stays the job of `scheduleHide` (hover/focus out)
+   * and the action buttons below.
+   */
+  function openOnActivation(): void {
+    show();
+  }
+
+  /**
+   * A native `<button>` fires `click` on Enter/Space in a real browser,
+   * so this only needs to stop the default (avoids a page scroll on
+   * Space) -- also makes the behaviour deterministic under jsdom, which
+   * does not implement that default action for a plain `<button>`.
+   */
+  function handleButtonKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      openOnActivation();
+    }
   }
 
   function warnCleartext(): void {
@@ -127,9 +167,40 @@
       class="list-chip"
       aria-haspopup="true"
       aria-expanded={open}
-      title={listInfo.label}
+      title={t('mailingList.chipTooltip')}
+      onclick={openOnActivation}
+      onkeydown={handleButtonKeydown}
     >
-      {listInfo.label}
+      <svg
+        class="list-chip-icon"
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        width="12"
+        height="12"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="M3 7l9 7 9-7" />
+      </svg>
+      <span class="list-chip-label">{chipLabel}</span>
+      <svg
+        class="list-chip-caret"
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        width="10"
+        height="10"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
     </button>
     {#if open}
       <div class="list-popover" role="menu">
@@ -151,6 +222,9 @@
         {#if !archiveAction && !helpAction && !postAddress}
           <span class="no-actions">{t('mailingList.noActions')}</span>
         {/if}
+        <span class="list-popover-id" data-testid="list-chip-raw-id">
+          {t('mailingList.rawId', { id: listInfo.id })}
+        </span>
       </div>
     {/if}
   </span>
@@ -161,22 +235,52 @@
     position: relative;
     display: inline-flex;
     align-items: center;
+    /*
+     * The anchor sits inside MessageAccordion's `.from` flex row
+     * alongside the sender name/email, which is itself `overflow:
+     * hidden`. Without `min-width: 0` a flex item's automatic minimum
+     * width is its max-content size, so the browser never shrinks the
+     * chip -- it overflows `.from` and gets hard-clipped instead of
+     * eliding via the chip's own ellipsis (issue #415: a long derived
+     * sender-domain label exposed this).
+     */
+    min-width: 0;
   }
 
-  /* REQ-LIST-10: --support-info background, small chip beside the sender. */
+  /*
+   * REQ-LIST-10: --support-info background, small chip beside the
+   * sender. The list icon plus trailing caret are the visible
+   * affordance that the chip opens a popover of list actions
+   * (issue #415) -- not just the coloured background.
+   */
   .list-chip {
     display: inline-flex;
     align-items: center;
-    max-width: 160px;
+    gap: var(--spacing-02);
+    min-width: 0;
+    max-width: 200px;
     padding: 1px var(--spacing-03);
     background: var(--support-info);
     color: var(--text-on-color);
+    border: none;
     border-radius: var(--radius-pill);
     font-size: var(--type-body-compact-01-size);
     font-weight: 600;
     white-space: nowrap;
+    cursor: pointer;
+  }
+  .list-chip-icon,
+  .list-chip-caret {
+    flex: 0 0 auto;
+  }
+  .list-chip-caret {
+    opacity: 0.8;
+  }
+  .list-chip-label {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .list-popover {
@@ -209,6 +313,16 @@
     color: var(--text-placeholder);
     font-size: var(--type-body-compact-01-size);
     font-style: italic;
+  }
+  /* REQ-LIST-02: the raw List-ID identifier stays available here even
+     when the chip label is a derived/generic name. */
+  .list-popover-id {
+    margin-top: var(--spacing-01);
+    padding: var(--spacing-02) var(--spacing-03);
+    border-top: 1px solid var(--border-subtle-01);
+    color: var(--text-placeholder);
+    font-size: var(--type-caption-01-size, var(--type-body-compact-01-size));
+    word-break: break-all;
   }
 
   @media print {

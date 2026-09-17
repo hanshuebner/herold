@@ -73,20 +73,27 @@ export function pickPreferredAction(
   return null;
 }
 
-/** REQ-LIST-02: the list's display label plus its raw identifier. */
+/** REQ-LIST-02: the list's raw identifier plus its optional description. */
 export interface ListIdInfo {
   /** The raw content of the angle brackets, e.g. "projectx-discuss.example.com". */
   id: string;
-  /** Human-readable label -- the description part, or a fallback. */
-  label: string;
+  /**
+   * The quoted description part, e.g. "Project X discuss". Null when
+   * the header carried no description -- callers derive a readable
+   * label themselves (REQ-LIST-02) rather than falling back to the
+   * opaque identifier.
+   */
+  description: string | null;
 }
 
 /**
  * Parse the `List-ID` header per REQ-LIST-02:
- * `"Project X discuss" <projectx-discuss.example.com>` -> label
+ * `"Project X discuss" <projectx-discuss.example.com>` -> description
  * "Project X discuss", id "projectx-discuss.example.com". When no
- * quoted description is present, the label falls back to the local
- * part of the identifier (the segment before the first dot).
+ * quoted description is present, `description` is null -- the
+ * identifier itself is a campaign/list token, not a readable name, so
+ * it is never surfaced as the label (only in the popover / raw
+ * headers).
  *
  * Returns null when the header is absent/blank or carries no
  * angle-bracketed identifier at all (a malformed header is treated the
@@ -101,10 +108,28 @@ export function parseListId(raw: string | null | undefined): ListIdInfo | null {
   const id = (m[2] ?? '').trim();
   if (!id) return null;
   const quoted = m[1];
-  const label = quoted
-    ? quoted.replace(/\\(.)/g, '$1').trim()
-    : id.split('.')[0] || id;
-  return { id, label: label || id };
+  const description = quoted ? quoted.replace(/\\(.)/g, '$1').trim() || null : null;
+  return { id, description };
+}
+
+/**
+ * Derive a readable chip label for a description-less `List-ID`
+ * (REQ-LIST-02): the sender's display name, falling back to the
+ * sender's email domain. Returns null when neither is available --
+ * the caller then falls back to a generic translated label ("Newsletter"
+ * / "Mailingliste").
+ */
+export function deriveListLabelFromSender(
+  from: { name?: string | null; email?: string | null } | null | undefined,
+): string | null {
+  if (!from) return null;
+  const name = (from.name ?? '').trim();
+  if (name) return name;
+  const email = (from.email ?? '').trim();
+  const at = email.lastIndexOf('@');
+  if (at === -1) return null;
+  const domain = email.slice(at + 1).trim();
+  return domain || null;
 }
 
 /**

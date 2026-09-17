@@ -10,6 +10,7 @@ import {
   parseAngleBracketUrls,
   pickPreferredAction,
   parseListId,
+  deriveListLabelFromSender,
   parseListPostAddress,
   hasOneClickPost,
   chooseUnsubscribeMechanism,
@@ -87,27 +88,27 @@ describe('pickPreferredAction', () => {
 });
 
 describe('parseListId', () => {
-  it('REQ-LIST-02: uses the quoted description as the label', () => {
+  it('REQ-LIST-02: uses the quoted description', () => {
     expect(
       parseListId('"Project X discuss" <projectx-discuss.example.com>'),
-    ).toEqual({ id: 'projectx-discuss.example.com', label: 'Project X discuss' });
+    ).toEqual({ id: 'projectx-discuss.example.com', description: 'Project X discuss' });
   });
 
-  it('falls back to the local part of the identifier when no description', () => {
+  it('REQ-LIST-02: description is null when the header carries no quoted part (issue #415 -- the raw identifier is never a label)', () => {
     expect(parseListId('<projectx-discuss.example.com>')).toEqual({
       id: 'projectx-discuss.example.com',
-      label: 'projectx-discuss',
+      description: null,
     });
-  });
-
-  it('handles an identifier with no dot at all (fallback is the whole id)', () => {
-    expect(parseListId('<justanid>')).toEqual({ id: 'justanid', label: 'justanid' });
+    expect(parseListId('<3IYSMFU7-4UI13WR.newsletterversand.example>')).toEqual({
+      id: '3IYSMFU7-4UI13WR.newsletterversand.example',
+      description: null,
+    });
   });
 
   it('unescapes a backslash-escaped quote in the description', () => {
     expect(parseListId('"Say \\"hi\\"" <a.example.com>')).toEqual({
       id: 'a.example.com',
-      label: 'Say "hi"',
+      description: 'Say "hi"',
     });
   });
 
@@ -116,6 +117,29 @@ describe('parseListId', () => {
     expect(parseListId(undefined)).toBeNull();
     expect(parseListId('')).toBeNull();
     expect(parseListId('not a list id header')).toBeNull();
+  });
+});
+
+describe('deriveListLabelFromSender (REQ-LIST-02 description-less fallback)', () => {
+  it('uses the sender display name when present', () => {
+    expect(
+      deriveListLabelFromSender({ name: 'DIE ZEIT Newsletter', email: 'noreply@zeit.example' }),
+    ).toBe('DIE ZEIT Newsletter');
+  });
+
+  it('falls back to the sender email domain when no display name', () => {
+    expect(deriveListLabelFromSender({ name: null, email: 'noreply@zeit.example' })).toBe(
+      'zeit.example',
+    );
+    expect(deriveListLabelFromSender({ name: '', email: 'noreply@zeit.example' })).toBe(
+      'zeit.example',
+    );
+  });
+
+  it('returns null when there is no sender or no usable domain', () => {
+    expect(deriveListLabelFromSender(null)).toBeNull();
+    expect(deriveListLabelFromSender(undefined)).toBeNull();
+    expect(deriveListLabelFromSender({ name: null, email: 'not-an-address' })).toBeNull();
   });
 });
 

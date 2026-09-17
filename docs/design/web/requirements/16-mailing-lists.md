@@ -9,14 +9,14 @@ See also: server `../../server/requirements/28-mailing-lists.md` — herold as a
 | ID | Requirement |
 |----|-------------|
 | REQ-LIST-01 | The suite parses the RFC 2369 list-headers when present: `List-ID`, `List-Help`, `List-Subscribe`, `List-Post`, `List-Owner`, `List-Archive`. The presence of `List-ID` is the single signal that "this is a mailing list message". |
-| REQ-LIST-02 | The list's display label is taken from `List-ID`'s description part (`"Project X discuss" <projectx-discuss.example.com>` → "Project X discuss"); fallback to the local part of the angle-bracketed identifier. |
+| REQ-LIST-02 | The list's display label is taken from `List-ID`'s description part (`"Project X discuss" <projectx-discuss.example.com>` → "Project X discuss"). When the header carries no description (most newsletter platforms omit it), the label is never the raw angle-bracketed identifier — it derives from the sender's display name, falling back to the sender's email domain, falling back to a generic "Newsletter" / "Mailingliste" label per locale. The raw identifier remains available in the chip's popover and in the raw-headers ("Show original") view regardless of which label is shown. |
 
 ## Surface
 
 | ID | Requirement |
 |----|-------------|
-| REQ-LIST-10 | A small chip with the list's display label is shown in the thread header area, beside the sender. The chip uses `--support-info` background. |
-| REQ-LIST-11 | Hovering the chip reveals a popover with the available `List-*` actions (see below). |
+| REQ-LIST-10 | A small chip with the list's display label is shown in the thread header area, beside the sender. The chip uses `--support-info` background and carries a visible icon plus caret affordance and a tooltip stating that it opens the list actions, so it reads as interactive rather than as an unexplained badge. |
+| REQ-LIST-11 | Hovering, focusing, clicking, or activating the chip with the keyboard (Enter/Space) reveals a popover with the available `List-*` actions (see below); the popover is not hover-only. |
 | REQ-LIST-12 | The chip appears only on threads where every message carries the same `List-ID`. A thread that's been forwarded out of the list and replied to (so some messages have the list header and some don't) gets the chip on the relevant messages only — not on the thread overall. |
 
 ## Actions
