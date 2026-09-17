@@ -72,8 +72,9 @@ class BugReportController(private val container: AppContainer) {
     }
 
     /**
-     * Builds the bundle and queues it as mail to the user's own address.
-     * The account it goes out on is the one in scope, or the primary.
+     * Builds the bundle and queues it for the server's bug-reports
+     * endpoint. The account it goes out on is the one in scope, or the
+     * primary.
      */
     suspend fun send(submission: BugSubmission, capture: BugCapture, holdMs: Long): ComposeResult {
         val accountId = container.accountScope.value

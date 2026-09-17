@@ -87,14 +87,17 @@ class BugBundleWriterTest {
     }
 
     @Test
-    fun theSubjectCarriesThePrefixTheFetchStrips() {
-        assertEquals("herold bug: the thread view is blank", build().subject)
+    fun theTitleIsWhatWasTypedAndTravelsInTheReport() {
+        val bundle = build()
+        assertEquals("the thread view is blank", bundle.title)
+        assertEquals("the thread view is blank", bundle.meta()["title"]?.jsonPrimitive?.content)
     }
 
     @Test
     fun anUndescribedReportIsNamedByWhereAndWhenItWasRaised() {
         val bundle = build(submission = BugSubmission())
-        assertEquals("herold bug: thread 2023-11-14T22:13:22Z", bundle.subject)
+        assertEquals("thread 2023-11-14T22:13:22Z", bundle.title)
+        assertEquals("thread 2023-11-14T22:13:22Z", bundle.meta()["title"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -110,10 +113,10 @@ class BugBundleWriterTest {
         val meta = build().meta()
         assertEquals(true, meta["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean())
         assertTrue(
-            build().bodyText.startsWith("# Bug: the thread view is blank"),
-            build().bodyText,
+            build().markdown.startsWith("# Bug: the thread view is blank"),
+            build().markdown,
         )
-        assertTrue(build().bodyText.contains("## Description"))
+        assertTrue(build().markdown.contains("## Description"))
     }
 
     @Test
@@ -124,12 +127,12 @@ class BugBundleWriterTest {
         assertEquals("", meta["sketch"]?.jsonPrimitive?.content)
         assertEquals(
             BugBundleWriter.NO_DESCRIPTION,
-            bundle.bodyText.lineSequence().first(),
+            bundle.markdown.lineSequence().first(),
         )
         // The capture still travels: the report is a capture with no words on it.
-        assertTrue(bundle.bodyText.contains("## Page"), bundle.bodyText)
-        assertTrue(bundle.bodyText.contains("## State"), bundle.bodyText)
-        assertFalse(bundle.bodyText.contains("## Description"), bundle.bodyText)
+        assertTrue(bundle.markdown.contains("## Page"), bundle.markdown)
+        assertTrue(bundle.markdown.contains("## State"), bundle.markdown)
+        assertFalse(bundle.markdown.contains("## Description"), bundle.markdown)
         assertEquals(
             "thread/{accountId}/{threadId}",
             meta["context"]!!.jsonObject["route"]?.jsonPrimitive?.content,
@@ -143,8 +146,8 @@ class BugBundleWriterTest {
         val bundle = build(submission = BugSubmission(note = "it went blank after a sync"))
         assertEquals(true, bundle.meta()["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean())
         assertEquals("it went blank after a sync", bundle.meta()["sketch"]?.jsonPrimitive?.content)
-        // With no title the subject still names the place and the time.
-        assertEquals("herold bug: thread 2023-11-14T22:13:22Z", bundle.subject)
+        // With no title the report is still named by the place and the time.
+        assertEquals("thread 2023-11-14T22:13:22Z", bundle.title)
     }
 
     @Test
@@ -231,27 +234,27 @@ class BugBundleWriterTest {
     @Test
     fun theBodyIsTheMarkdownReport() {
         val bundle = build()
-        assertEquals(bundle.bodyText, bundle.text("report.md"))
-        assertTrue(bundle.bodyText.startsWith("# Bug: the thread view is blank"), bundle.bodyText)
-        assertTrue(bundle.bodyText.contains("## Description"))
-        assertTrue(bundle.bodyText.contains("herold Android 1.4.2 (abc1234)"))
-        assertTrue(bundle.bodyText.contains("Android 16 (API 36), Google sdk_gphone64_arm64"))
-        assertTrue(bundle.bodyText.contains("## Logs (tail)"))
-        assertFalse(bundle.bodyText.contains("quarterly numbers"))
+        assertEquals(bundle.markdown, bundle.text("report.md"))
+        assertTrue(bundle.markdown.startsWith("# Bug: the thread view is blank"), bundle.markdown)
+        assertTrue(bundle.markdown.contains("## Description"))
+        assertTrue(bundle.markdown.contains("herold Android 1.4.2 (abc1234)"))
+        assertTrue(bundle.markdown.contains("Android 16 (API 36), Google sdk_gphone64_arm64"))
+        assertTrue(bundle.markdown.contains("## Logs (tail)"))
+        assertFalse(bundle.markdown.contains("quarterly numbers"))
     }
 
     @Test
     fun aFeatureRequestIsTheSameBundleWithAnotherKind() {
         val bundle = build(submission = submission.copy(kind = BugKind.FEATURE))
         assertEquals("feature", bundle.meta()["kind"]?.jsonPrimitive?.content)
-        assertTrue(bundle.bodyText.startsWith("# Feature: "))
+        assertTrue(bundle.markdown.startsWith("# Feature: "))
     }
 
     @Test
     fun aReportWithNoNoteStillReads() {
         val bundle = build(submission = BugSubmission(title = "widget shows nothing", note = ""))
         assertEquals("widget shows nothing", bundle.meta()["sketch"]?.jsonPrimitive?.content)
-        assertTrue(bundle.bodyText.contains("## Description\n\nwidget shows nothing"), bundle.bodyText)
-        assertEquals("herold bug: widget shows nothing", bundle.subject)
+        assertTrue(bundle.markdown.contains("## Description\n\nwidget shows nothing"), bundle.markdown)
+        assertEquals("widget shows nothing", bundle.title)
     }
 }

@@ -10,6 +10,8 @@ import com.netzhansa.herold.shared.compose.ReplyContext
 import com.netzhansa.herold.shared.domain.Identity
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.domain.MailAddress
+import com.netzhansa.herold.shared.jmap.BugReportApi
+import com.netzhansa.herold.shared.jmap.BugReportPart
 import com.netzhansa.herold.shared.jmap.Envelope
 import com.netzhansa.herold.shared.jmap.FailureKind
 import com.netzhansa.herold.shared.jmap.JmapApi
@@ -80,6 +82,13 @@ class OutboxDrainer(
     private val outbox: Outbox,
     private val spool: BlobSpool,
     private val composer: Composer = Composer(api),
+    /**
+     * The bug-reports REST surface of the same server (issue #417). The
+     * JMAP client carries it, so a drain built on one has it; a drain
+     * built on a transport without it refuses a queued report rather
+     * than holding it forever.
+     */
+    private val bugReports: BugReportApi? = api as? BugReportApi,
     private val reachability: Reachability = Reachability(),
     /** Where transport failures go: the developer log, never the screen. */
     private val log: (String) -> Unit = {},
@@ -197,6 +206,35 @@ class OutboxDrainer(
         OutboxKind.SEND -> submitCompose(entry, submitToQueue = true)
         OutboxKind.RULE -> submitRule(entry)
         OutboxKind.MAILBOX -> submitMailbox(entry)
+        OutboxKind.BUG_REPORT -> submitBugReport(entry)
+    }
+
+    /**
+     * A bug report (issue #417): the spooled bundle goes up as one
+     * multipart `POST /api/v1/bug-reports` on the account's bearer
+     * token. The server keeps it for `herold bug-fetch`; nothing of it
+     * lands in the user's mailboxes, so there is no local row to take
+     * back and the entry is simply done.
+     */
+    private suspend fun submitBugReport(entry: OutboxEntry): StepResult {
+        val payload = runCatching {
+            outboxJson.decodeFromString<BugReportPayload>(entry.payload)
+        }.getOrNull() ?: return StepResult.Rejected("the queued report could not be read")
+        val client = bugReports
+            ?: return StepResult.Rejected("this server does not take bug reports")
+        val parts = payload.parts.map { part ->
+            val bytes = spool.read(part.spool)
+                ?: return StepResult.Rejected("the report's ${part.name} is no longer on the device")
+            BugReportPart(part.name, part.type, bytes)
+        }
+        if (parts.isEmpty()) return StepResult.Rejected("the report carries nothing")
+        val id = try {
+            client.postBugReport(parts)
+        } catch (t: Throwable) {
+            return failureOf(t)
+        }
+        log("outbox: the report \"${payload.title}\" is on the server as ${id.ifBlank { "an unnamed report" }}")
+        return StepResult.Done
     }
 
     /**
@@ -386,7 +424,6 @@ class OutboxDrainer(
             return failureOf(t)
         }
         if (outcome.error != null) return StepResult.Rejected(outcome.error)
-        fileSentCopy(payload)
         return StepResult.Done
     }
 
@@ -396,60 +433,6 @@ class OutboxDrainer(
         payload.sentMailboxId?.let { put("mailboxIds/$it", true) }
         put("keywords/${Keywords.DRAFT}", JsonPrimitive(null as String?))
         put("keywords/${Keywords.SEEN}", true)
-    }
-
-    /**
-     * Files the sent copy where the payload asked for it: under the
-     * labels it names, and left unread when it asked for that.
-     *
-     * It is a second call rather than part of the submission's
-     * `onSuccessUpdateEmail`, because that patch moves the message to
-     * one mailbox - the last `mailboxIds/<id>` key in it wins - while an
-     * ordinary `Email/set` adds a membership without disturbing the one
-     * the message already has. So the submission puts the copy in Sent
-     * and this puts the label on it, which is what applying a label is
-     * everywhere else in the client.
-     */
-    private suspend fun fileSentCopy(payload: ComposePayload) {
-        val id = payload.draftId ?: return
-        if (payload.sentLabels.isEmpty() && !payload.sentUnread) return
-        val labelIds = resolveSentLabels(payload)
-        if (labelIds.isEmpty() && !payload.sentUnread) return
-        val patch = buildJsonObject {
-            labelIds.forEach { put("mailboxIds/$it", true) }
-            // The draft was written with $seen on it and the submission
-            // keeps it, so leaving the copy unread means taking the
-            // keyword off afterwards.
-            if (payload.sentUnread) put("keywords/${Keywords.SEEN}", JsonPrimitive(null as String?))
-        }
-        val outcome = runCatching { api.emailSet(payload.accountId, mapOf(id to patch)) }.getOrNull()
-        val refused = outcome?.notUpdated?.values?.firstOrNull()
-        if (outcome == null || refused != null) {
-            // The report is sent either way; only its filing failed, and
-            // saying so is more use than failing the entry.
-            log("outbox: the sent copy of \"${payload.subject}\" was not filed (${refused ?: "no answer"})")
-        }
-    }
-
-    /**
-     * The mailbox ids of the labels the payload names. A name the
-     * account holds no mailbox for is dropped: the label's own entry
-     * queued ahead of this one has not taken, and the message still
-     * belongs in Sent.
-     */
-    private suspend fun resolveSentLabels(payload: ComposePayload): List<String> {
-        if (payload.sentLabels.isEmpty()) return emptyList()
-        val mailboxes = store.mailboxList().filter { it.accountId == payload.accountId }
-        val resolved = payload.sentLabels.mapNotNull { name ->
-            mailboxes.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
-        }
-        if (resolved.size < payload.sentLabels.size) {
-            log(
-                "outbox: ${payload.sentLabels.size - resolved.size} of the sent copy's labels " +
-                    "are not on this account, which holds " + mailboxes.joinToString { it.name },
-            )
-        }
-        return resolved
     }
 
     /**
@@ -489,12 +472,16 @@ class OutboxDrainer(
         outbox.remove(entry.id)
     }
 
-    private fun spooledHandles(entry: OutboxEntry): List<String> {
-        if (entry.kind == OutboxKind.ACTION) return emptyList()
-        val payload = runCatching {
+    private fun spooledHandles(entry: OutboxEntry): List<String> = when (entry.kind) {
+        OutboxKind.SEND, OutboxKind.DRAFT -> runCatching {
             outboxJson.decodeFromString<ComposePayload>(entry.payload)
-        }.getOrNull() ?: return emptyList()
-        return payload.attachments.mapNotNull { it.spool }
+        }.getOrNull()?.attachments?.mapNotNull { it.spool }.orEmpty()
+
+        OutboxKind.BUG_REPORT -> runCatching {
+            outboxJson.decodeFromString<BugReportPayload>(entry.payload)
+        }.getOrNull()?.parts?.map { it.spool }.orEmpty()
+
+        else -> emptyList()
     }
 
     /**

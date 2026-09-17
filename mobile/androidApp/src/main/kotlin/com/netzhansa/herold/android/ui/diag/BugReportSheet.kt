@@ -40,8 +40,8 @@ import com.netzhansa.herold.shared.diag.BugSubmission
  * What the report looks like before it is sent (REQ-AND-SYS-53): the
  * screenshot as it was captured, the checklist of what travels with it,
  * and two optional fields. Nothing on this sheet is guessed - the
- * capture happened before it opened, so what it lists is what the mail
- * will carry.
+ * capture happened before it opened, so what it lists is what the
+ * report will carry.
  *
  * Send needs nothing typed. Describing a problem on a phone keyboard is
  * the slowest part of reporting one, so the phone's job is to capture
@@ -85,9 +85,9 @@ fun BugReportSheet(
                 modifier = Modifier.testTag("bug-sheet-title"),
             )
             Text(
-                text = "This goes to your own mailbox under \"Bug reports\", with what the app " +
-                    "knows about the moment you asked. Say nothing here and describe it later " +
-                    "on the desktop.",
+                text = "This goes to your server for the maintainer to pick up, with what " +
+                    "the app knew the moment you asked. Say nothing here and describe it " +
+                    "later on the desktop.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -114,7 +114,7 @@ fun BugReportHost(
 }
 
 /** What the snackbar says while the report waits out its undo window. */
-private const val SENDING = "Sending the report"
+private const val SENDING = "Sending the report to the server"
 
 private const val TAG = "herold.bugreport"
 

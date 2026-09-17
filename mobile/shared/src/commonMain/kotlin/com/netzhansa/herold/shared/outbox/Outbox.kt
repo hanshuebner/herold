@@ -89,6 +89,27 @@ class Outbox(
     )
 
     /**
+     * Queues a bug report (issue #417). [holdUntilMs] is the instant the
+     * drain may first post it, which is the undo window the reporter
+     * shares with a send: until then the entry sits in the queue and an
+     * undo removes it and its spooled files.
+     */
+    suspend fun enqueueBugReport(
+        label: String,
+        payload: BugReportPayload,
+        holdUntilMs: Long = 0,
+    ): Long = enqueueHeld(
+        NewOutboxEntry(
+            accountId = payload.accountId,
+            kind = OutboxKind.BUG_REPORT,
+            label = label,
+            payload = outboxJson.encodeToString(payload),
+            createdAt = now(),
+        ),
+        holdUntilMs,
+    )
+
+    /**
      * Queues a composed message. [holdUntilMs] is the instant the drain may
      * first submit it, which is how the undo window after Send is realised
      * (issue #354): until then the entry sits in the queue and an undo
@@ -99,16 +120,20 @@ class Outbox(
         label: String,
         payload: ComposePayload,
         holdUntilMs: Long = 0,
-    ): Long {
-        val id = store.enqueueOutbox(
-            NewOutboxEntry(
-                accountId = payload.accountId,
-                kind = kind,
-                label = label,
-                payload = outboxJson.encodeToString(payload),
-                createdAt = now(),
-            ),
-        )
+    ): Long = enqueueHeld(
+        NewOutboxEntry(
+            accountId = payload.accountId,
+            kind = kind,
+            label = label,
+            payload = outboxJson.encodeToString(payload),
+            createdAt = now(),
+        ),
+        holdUntilMs,
+    )
+
+    /** Writes [entry] and holds it back until [holdUntilMs] when there is one. */
+    private suspend fun enqueueHeld(entry: NewOutboxEntry, holdUntilMs: Long): Long {
+        val id = store.enqueueOutbox(entry)
         if (holdUntilMs > 0) {
             store.updateOutboxState(
                 id = id,

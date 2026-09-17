@@ -20,6 +20,9 @@ enum class OutboxKind {
 
     /** A label write: `Mailbox/set` carrying disposition and priority. */
     MAILBOX,
+
+    /** A bug report bundle to post to `/api/v1/bug-reports` (issue #417). */
+    BUG_REPORT,
     ;
 
     companion object {
@@ -148,6 +151,28 @@ data class MailboxPayload(
     val creates: Map<String, JsonObject> = emptyMap(),
 )
 
+/**
+ * A bug report waiting to go out (issue #417). [parts] are the bundle's
+ * files, spooled the way an attachment is, so a report raised with no
+ * connection is posted whole when there is one.
+ */
+@Serializable
+data class BugReportPayload(
+    val accountId: String,
+    /** What the report is called, as `report.json` carries it. */
+    val title: String,
+    val parts: List<BugReportSpooledPart> = emptyList(),
+)
+
+/** One file of a queued report, by its drop name and its spool handle. */
+@Serializable
+data class BugReportSpooledPart(
+    val name: String,
+    val type: String,
+    val size: Long,
+    val spool: String,
+)
+
 /** The `Email/set` patches an action entry submits, by message id. */
 @Serializable
 data class ActionPayload(val patches: Map<String, JsonObject>)
@@ -193,19 +218,6 @@ data class ComposePayload(
     val attachments: List<OutboxAttachment> = emptyList(),
     val draftsMailboxId: String,
     val sentMailboxId: String? = null,
-    /**
-     * Labels the sent copy is filed under, by name. The names are
-     * resolved against the account's mailboxes when the send drains, so
-     * a label queued for creation just ahead of the message is the one
-     * the sent copy lands in (issue #407).
-     */
-    val sentLabels: List<String> = emptyList(),
-    /**
-     * Leaves the sent copy unread. A bug report is filed for a mailbox
-     * poller to pick up, and the poller reads the unread messages of its
-     * label (`herold bug-fetch`, issue #408).
-     */
-    val sentUnread: Boolean = false,
     /** The server-side draft, once an earlier attempt created it. */
     val draftId: String? = null,
     /** The conversation a reply belongs to, so the thread can show it queued (issue #369). */

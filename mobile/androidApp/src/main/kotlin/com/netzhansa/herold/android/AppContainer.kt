@@ -186,8 +186,8 @@ class AppContainer(context: Context) {
     /** The durable queue of pending mutations (REQ-AND-SYNC-20..25). */
     val outbox = Outbox(store) { System.currentTimeMillis() }
 
-    /** The bug reporter's send path: mail to self through the outbox (REQ-AND-SYS-53). */
-    val bugReports = BugReportSender(store, outbox, spool) { System.currentTimeMillis() }
+    /** The bug reporter's send path: the bug-reports API through the outbox (REQ-AND-SYS-53). */
+    val bugReports = BugReportSender(outbox, spool) { System.currentTimeMillis() }
 
     /**
      * True while a "Report a problem" or a shake is waiting for the
@@ -508,6 +508,7 @@ class AppContainer(context: Context) {
             outbox = outbox,
             spool = spool,
             composer = composer,
+            bugReports = client,
             reachability = reachability,
             log = { message -> DiagLog.i(OUTBOX_TAG, message) },
             now = { System.currentTimeMillis() },
