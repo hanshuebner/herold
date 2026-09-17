@@ -315,3 +315,133 @@ func testSetDerivedCategoriesUserDispositionSurvivesRecompute(t *testing.T, s st
 		}
 	}
 }
+
+// testEnsureCategoryLabelMailboxesHealsPreExistingRow reproduces the
+// follow-up to issue #406: a principal whose derived_categories_json was
+// populated before the label-mailbox rule existed (every production
+// principal at the time the fix shipped) has a persisted DerivedCategories
+// slice with no backing mailboxes at all, and SetDerivedCategories' own
+// dedup guard (only run when the new slice differs from the persisted one)
+// never revisits it. UpdateCategorisationConfig writes derived_categories_
+// json directly, bypassing the mailbox-ensure logic in SetDerivedCategories,
+// which is exactly how such a row is produced here. EnsureCategoryLabelMailboxes
+// is the heal: called with the persisted set regardless of whether anything
+// changed, it must create the missing mailboxes without requiring a change.
+func testEnsureCategoryLabelMailboxesHealsPreExistingRow(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-label-heal@example.com")
+
+	cfg, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	cats := []string{"primary", "social", "promotions", "updates", "forums"}
+	cfg.DerivedCategories = cats
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (simulate pre-fix row): %v", err)
+	}
+
+	// Confirm the simulated pre-fix state: the derived set is persisted,
+	// but no label mailbox exists for it.
+	seeded, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (verify seed): %v", err)
+	}
+	if len(seeded.DerivedCategories) != len(cats) {
+		t.Fatalf("DerivedCategories = %v, want %v", seeded.DerivedCategories, cats)
+	}
+	if _, err := s.Meta().GetMailboxByName(ctx, p.ID, "primary"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMailboxByName(primary) before heal = %v, want ErrNotFound", err)
+	}
+
+	if err := s.Meta().EnsureCategoryLabelMailboxes(ctx, p.ID, seeded.DerivedCategories); err != nil {
+		t.Fatalf("EnsureCategoryLabelMailboxes: %v", err)
+	}
+
+	for i, name := range cats {
+		mb, err := s.Meta().GetMailboxByName(ctx, p.ID, name)
+		if err != nil {
+			t.Fatalf("GetMailboxByName(%q) after heal: %v", name, err)
+		}
+		if mb.Disposition != store.MailboxDispositionPinned {
+			t.Errorf("mailbox %q Disposition = %q, want pinned", name, mb.Disposition)
+		}
+		if mb.Priority == nil || *mb.Priority != i {
+			t.Errorf("mailbox %q Priority = %v, want %d", name, mb.Priority, i)
+		}
+	}
+
+	// A second call is idempotent: no duplicate mailboxes and DerivedCategories
+	// itself (the column EnsureCategoryLabelMailboxes never touches) is
+	// unchanged.
+	if err := s.Meta().EnsureCategoryLabelMailboxes(ctx, p.ID, seeded.DerivedCategories); err != nil {
+		t.Fatalf("EnsureCategoryLabelMailboxes (repeat): %v", err)
+	}
+	after, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (after repeat): %v", err)
+	}
+	if len(after.DerivedCategories) != len(cats) {
+		t.Fatalf("DerivedCategories after repeat heal = %v, want unchanged %v", after.DerivedCategories, cats)
+	}
+}
+
+// testSetLLMClassificationHealsPreExistingSteadyState reproduces the
+// SetLLMClassification side of the same gap: ensureDerivedCategoryFromAssignment
+// only called SetDerivedCategories (and so only ensured mailboxes) when the
+// computed vocabulary differed from the persisted DerivedCategories. A
+// principal whose persisted set already equals the vocabulary the classify
+// plugin path derives -- the steady state every production principal
+// reaches after the first classification -- never got its mailboxes
+// created. This reproduces that state directly (UpdateCategorisationConfig
+// again bypasses the mailbox-ensure write path) and verifies a further
+// SetLLMClassification call heals it.
+func testSetLLMClassificationHealsPreExistingSteadyState(t *testing.T, s store.Store) {
+	ctx := ctxT(t)
+	p := mustInsertPrincipal(t, s, "cat-label-llm-heal@example.com")
+	mb := mustInsertMailbox(t, s, p.ID, "INBOX")
+	msg := mustInsertMessage(t, s, mb.ID, "cat-label-llm-heal@host")
+
+	cfg, err := s.Meta().GetCategorisationConfig(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	// The default seeded CategorySet is the 5-category vocabulary; persist
+	// DerivedCategories as exactly that vocabulary, in the same order, to
+	// simulate a row that already reached the classifier's steady state
+	// before the label-mailbox rule existed.
+	names := make([]string, 0, len(cfg.CategorySet))
+	for _, c := range cfg.CategorySet {
+		names = append(names, c.Name)
+	}
+	cfg.DerivedCategories = names
+	if err := s.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (simulate pre-fix steady state): %v", err)
+	}
+	if _, err := s.Meta().GetMailboxByName(ctx, p.ID, "promotions"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMailboxByName(promotions) before heal = %v, want ErrNotFound", err)
+	}
+
+	cat := "promotions"
+	rec := store.LLMClassificationRecord{
+		MessageID:        msg.ID,
+		PrincipalID:      p.ID,
+		CategoryAssigned: &cat,
+	}
+	if err := s.Meta().SetLLMClassification(ctx, rec); err != nil {
+		t.Fatalf("SetLLMClassification: %v", err)
+	}
+
+	for i, name := range names {
+		mbl, err := s.Meta().GetMailboxByName(ctx, p.ID, name)
+		if err != nil {
+			t.Fatalf("GetMailboxByName(%q) after heal: %v", name, err)
+		}
+		if mbl.Disposition != store.MailboxDispositionPinned {
+			t.Errorf("mailbox %q Disposition = %q, want pinned", name, mbl.Disposition)
+		}
+		if mbl.Priority == nil || *mbl.Priority != i {
+			t.Errorf("mailbox %q Priority = %v, want %d", name, mbl.Priority, i)
+		}
+	}
+}

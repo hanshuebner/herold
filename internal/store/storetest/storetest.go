@@ -331,6 +331,8 @@ func Run(t *testing.T, f Factory) {
 		{"SetDerivedCategories_UserDispositionSurvivesRecompute", testSetDerivedCategoriesUserDispositionSurvivesRecompute},
 		{"SetLLMClassification_CreatesLabelMailboxes", testSetLLMClassificationCreatesLabelMailboxes},
 		{"SetLLMClassification_DoesNotCreateLabelWithNoCategory", testSetLLMClassificationDoesNotCreateLabelWithNoCategory},
+		{"EnsureCategoryLabelMailboxes_HealsPreExistingRow", testEnsureCategoryLabelMailboxesHealsPreExistingRow},
+		{"SetLLMClassification_HealsPreExistingSteadyState", testSetLLMClassificationHealsPreExistingSteadyState},
 		// -- REQ-FILT-66 / REQ-FILT-216 / G14 LLM classification records --
 		{"LLMClassification_SetGet_SpamOnly", testLLMClassificationSpamOnly},
 		{"LLMClassification_SetGet_CategoryOnly", testLLMClassificationCategoryOnly},

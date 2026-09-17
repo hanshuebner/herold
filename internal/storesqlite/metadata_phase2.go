@@ -2844,6 +2844,23 @@ func ensureCategoryLabelMailboxes(ctx context.Context, tx *sql.Tx, now time.Time
 	return nil
 }
 
+// EnsureCategoryLabelMailboxes runs ensureCategoryLabelMailboxes in its own
+// transaction, independent of any derived_categories_json write (issue
+// #406). See store.Metadata.EnsureCategoryLabelMailboxes for the contract:
+// this is the heal path callers run on every classification, changed or
+// not, so a principal whose persisted derived-categories row pre-dates the
+// label-mailbox feature still gets its mailboxes on the next classified
+// message rather than only on the next change.
+func (m *metadata) EnsureCategoryLabelMailboxes(ctx context.Context, pid store.PrincipalID, categories []string) error {
+	cats := sanitiseDerivedCategories(categories)
+	if len(cats) == 0 {
+		return nil
+	}
+	return m.runTx(ctx, func(tx *sql.Tx) error {
+		return ensureCategoryLabelMailboxes(ctx, tx, m.s.clock.Now().UTC(), m.s.randReader, pid, cats)
+	})
+}
+
 // sanitiseDerivedCategories enforces the per-entry and total bounds defined
 // by store.MaxDerivedCategoryEntries and store.MaxDerivedCategoryNameBytes.
 // Names are already lowercase ASCII when they arrive from the categoriser;
@@ -2939,14 +2956,20 @@ func (m *metadata) SetLLMClassification(ctx context.Context, rec store.LLMClassi
 // SetLLMClassification runs when rec carries a category assignment
 // (issue #406): it loads the principal's configured category
 // vocabulary (CategorisationConfig.CategorySet, falling back to just
-// the assigned name when the vocabulary is empty) and, when that
-// differs from the persisted DerivedCategories, calls
-// SetDerivedCategories -- which in turn ensures a label mailbox exists
-// per name. Errors are swallowed: this is supplementary state that
-// self-heals on the next classified message, matching the existing
-// best-effort seed write in GetCategorisationConfig, and must never
-// turn a successful classification-record write into a caller-visible
-// failure.
+// the assigned name when the vocabulary is empty) and always runs the
+// label-mailbox heal for that vocabulary via EnsureCategoryLabelMailboxes,
+// whether or not it matches the persisted DerivedCategories -- a
+// principal whose persisted set already equals the steady-state
+// vocabulary (every row written before this heal existed) still gets
+// its mailboxes this way. It calls SetDerivedCategories -- which runs
+// the same mailbox rule inside the write that also updates
+// derived_categories_json -- only when the vocabulary actually differs
+// from what is persisted, so an unchanged vocabulary does not bump the
+// epoch or rewrite the column for no reason. Errors are swallowed: this
+// is supplementary state that self-heals on the next classified
+// message, matching the existing best-effort seed write in
+// GetCategorisationConfig, and must never turn a successful
+// classification-record write into a caller-visible failure.
 func (m *metadata) ensureDerivedCategoryFromAssignment(ctx context.Context, pid store.PrincipalID, assigned string) {
 	cfg, err := m.GetCategorisationConfig(ctx, pid)
 	if err != nil {
@@ -2964,7 +2987,11 @@ func (m *metadata) ensureDerivedCategoryFromAssignment(ctx context.Context, pid 
 	if !seen[assigned] {
 		names = append(names, assigned)
 	}
-	if len(names) == 0 || stringSliceEqualSQ(names, cfg.DerivedCategories) {
+	if len(names) == 0 {
+		return
+	}
+	if stringSliceEqualSQ(names, cfg.DerivedCategories) {
+		_ = m.EnsureCategoryLabelMailboxes(ctx, pid, names)
 		return
 	}
 	_, _ = m.SetDerivedCategories(ctx, pid, names, cfg.DerivedCategoriesEpoch)

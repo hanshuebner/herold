@@ -226,6 +226,69 @@ func TestCategorise_DerivedCategoriesWriteDedup(t *testing.T) {
 	}
 }
 
+// TestCategorise_HealsPreExistingDerivedCategoriesWithNoLabelMailbox
+// reproduces the follow-up to issue #406: a principal whose
+// derived_categories_json was populated before the label-mailbox rule
+// existed -- every production principal at the time the fix shipped -- has
+// a classifier steady state equal to the persisted set. The dedup guard in
+// CategoriseRich (identical to TestCategorise_DerivedCategoriesWriteDedup
+// above) then never calls SetDerivedCategories again, so the mailbox-ensure
+// logic inside it never runs either. UpdateCategorisationConfig seeds that
+// exact pre-existing state directly, bypassing SetDerivedCategories'
+// mailbox-ensure write. A CategoriseRich call whose classifier reply
+// repeats the already-persisted set must still leave the category label
+// mailboxes in place afterwards.
+func TestCategorise_HealsPreExistingDerivedCategoriesWithNoLabelMailbox(t *testing.T) {
+	wantCats := []string{"primary", "social", "promotions", "updates", "forums"}
+	fs := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, newCategoriserReply("primary"))
+	})
+	st, pid := makeStoreAndPrincipal(t)
+	ctx := context.Background()
+
+	cfg, err := st.Meta().GetCategorisationConfig(ctx, pid)
+	if err != nil {
+		t.Fatalf("GetCategorisationConfig (seed): %v", err)
+	}
+	cfg.DerivedCategories = wantCats
+	if err := st.Meta().UpdateCategorisationConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateCategorisationConfig (simulate pre-fix row): %v", err)
+	}
+	// Confirm the simulated pre-fix state: the set is persisted, but no
+	// label mailbox exists for it yet.
+	if _, err := st.Meta().GetMailboxByName(ctx, pid, "primary"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetMailboxByName(primary) before CategoriseRich = %v, want ErrNotFound", err)
+	}
+
+	c := categorise.New(categorise.Options{
+		Store:           st,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:           clock.NewFake(time.Now()),
+		DefaultEndpoint: fs.srv.URL,
+		DefaultModel:    "test-model",
+	})
+	// The classifier returns exactly the already-persisted set, so the
+	// dedup guard suppresses the SetDerivedCategories write -- the heal
+	// path (EnsureCategoryLabelMailboxes) must run anyway.
+	if _, err := c.CategoriseRich(ctx, pid, parsedMessage(t), nil, spam.Ham); err != nil {
+		t.Fatalf("CategoriseRich: %v", err)
+	}
+
+	for i, name := range wantCats {
+		mb, err := st.Meta().GetMailboxByName(ctx, pid, name)
+		if err != nil {
+			t.Fatalf("GetMailboxByName(%q) after CategoriseRich: %v", name, err)
+		}
+		if mb.Disposition != store.MailboxDispositionPinned {
+			t.Errorf("mailbox %q Disposition = %q, want pinned", name, mb.Disposition)
+		}
+		if mb.Priority == nil || *mb.Priority != i {
+			t.Errorf("mailbox %q Priority = %v, want %d", name, mb.Priority, i)
+		}
+	}
+}
+
 // TestCategorise_PromptWriteClears verifies that writing a new prompt
 // via UpdateCategorisationConfig clears DerivedCategories (REQ-FILT-217).
 func TestCategorise_PromptWriteClears(t *testing.T) {
