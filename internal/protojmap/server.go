@@ -388,14 +388,19 @@ func (s *Server) Close() error {
 }
 
 // registerRoutes wires the JMAP HTTP surface onto mux. Every route
-// requires authentication; the session endpoint and dispatcher consume
-// the registry via the common handler chain.
+// requires authentication and the mail.receive scope at minimum
+// (REQ-AUTH-SCOPE-02): a Bearer key minted for another surface (e.g.
+// `--scope bug-reports`, issue #416/#418) authenticates but is refused
+// here. Upload additionally requires mail.send since it stages blobs
+// for outbound mail; a finer per-method gate for EmailSubmission/set
+// lives in dispatch.go since a single mail.receive-gated /jmap request
+// can batch calls that need more than read access.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /.well-known/jmap", s.requireAuth(s.handleSession))
-	mux.HandleFunc("POST /jmap", s.requireAuth(s.handleAPI))
-	mux.HandleFunc("GET /jmap/eventsource", s.requireAuth(s.handleEventSource))
-	mux.HandleFunc("POST /jmap/upload/{accountId}", s.requireAuth(s.handleUpload))
-	mux.HandleFunc("GET /jmap/download/{accountId}/{blobId}/{type}/{name}", s.requireAuth(s.handleDownload))
+	mux.HandleFunc("GET /.well-known/jmap", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleSession)))
+	mux.HandleFunc("POST /jmap", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleAPI)))
+	mux.HandleFunc("GET /jmap/eventsource", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleEventSource)))
+	mux.HandleFunc("POST /jmap/upload/{accountId}", s.requireAuth(s.requireScope(auth.ScopeMailSend, s.handleUpload)))
+	mux.HandleFunc("GET /jmap/download/{accountId}/{blobId}/{type}/{name}", s.requireAuth(s.requireScope(auth.ScopeMailReceive, s.handleDownload)))
 }
 
 // withConcurrencyLimit caps simultaneous in-flight requests with a

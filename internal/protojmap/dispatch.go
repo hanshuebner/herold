@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanshuebner/herold/internal/auth"
 	"github.com/hanshuebner/herold/internal/observe"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -18,6 +19,16 @@ import (
 // bypassDeadlineFlag aliases store.PrincipalFlagBypassResponseDeadline
 // at the package boundary so applyMethodDeadline reads cleanly.
 const bypassDeadlineFlag = store.PrincipalFlagBypassResponseDeadline
+
+// methodScopeRequirements gates individual JMAP methods with a scope
+// finer than the mail.receive floor that got the request onto /jmap at
+// all (REQ-AUTH-SCOPE-02, issue #418). EmailSubmission/set dispatches
+// into the same outbound queue the SMTP submission path uses
+// (REQ-PROTO-42), so a credential that can only read mail must not
+// reach it.
+var methodScopeRequirements = map[string]auth.Scope{
+	"EmailSubmission/set": auth.ScopeMailSend,
+}
 
 // handleAPI is POST /jmap. Decodes the request envelope, validates the
 // "using" capability list, runs each method call in order with
@@ -130,6 +141,14 @@ func (s *Server) dispatchOneMulti(ctx context.Context, log *slog.Logger, call In
 			"method "+call.Name+" requires capability "+string(cap)+" in 'using'")
 		s.logMethodCall(ctx, log, call, nil, err)
 		return []Invocation{errorInvocation(call.CallID, err)}
+	}
+	if reqScope, ok := methodScopeRequirements[call.Name]; ok {
+		if auth.RequireScope(ctx, reqScope) != nil && auth.RequireScope(ctx, auth.ScopeAdmin) != nil {
+			err := NewMethodError("forbidden",
+				"method "+call.Name+" requires "+string(reqScope)+" scope")
+			s.logMethodCall(ctx, log, call, nil, err)
+			return []Invocation{errorInvocation(call.CallID, err)}
+		}
 	}
 	args, refErr := resolveBackReferences(call.Args, prior)
 	if refErr != nil {

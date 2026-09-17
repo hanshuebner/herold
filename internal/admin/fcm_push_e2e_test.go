@@ -300,12 +300,18 @@ func seedFCMPushStore(t *testing.T, st store.Store, clk clock.Clock, email, apiK
 	if err != nil {
 		t.Fatalf("CreatePrincipal: %v", err)
 	}
+	// The test drives PushSubscription/set (Core capability, gated on
+	// end-user scope) alongside real Email/import and upload calls
+	// (mail.receive / mail.send, REQ-AUTH-SCOPE-02, issue #418), so the
+	// seeded key carries the full end-user scope set a real device
+	// token or Suite session cookie would (REQ-AUTH-SCOPE-01) rather
+	// than end-user alone.
 	if _, err := st.Meta().InsertAPIKey(ctx, store.APIKey{
 		PrincipalID: pid,
 		Hash:        protoadmin.HashAPIKey(apiKeyPlain),
 		Name:        "fcm-push-e2e",
 		CreatedAt:   clk.Now(),
-		ScopeJSON:   `["end-user"]`,
+		ScopeJSON:   `["end-user","mail.send","mail.receive","chat.read","chat.write","cal.read","cal.write","contacts.read","contacts.write"]`,
 	}); err != nil {
 		t.Fatalf("insert api key: %v", err)
 	}
