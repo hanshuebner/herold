@@ -363,15 +363,18 @@ Forgejo tickets. Two subcommands of the `herold` binary feed that directory:
 
 - `herold bug-sink` serves a loopback-only `POST /report` endpoint for the
   herold-triage browser extension and writes each bundle as a drop.
-- `herold bug-fetch` pulls the Android app's bug-report mails out of the
-  maintainer's "Bug reports" label over JMAP, writes each unread message as a
-  drop named `mail-<message-id>`, and marks the message read. It authenticates
-  with the admin API key and server URL from `~/.herold/credentials.toml`
-  (or `--api-key` / `$HEROLD_API_KEY` and `--server-url`).
+- `herold bug-fetch` pulls the Android app's bug-report bundles off the
+  server's `POST /api/v1/bug-reports` queue, writes each one as a drop
+  directory named by its report id, and deletes it on the server. It
+  authenticates with a `bug-reports`-scoped API key
+  (`herold api-key create --scope bug-reports`) from
+  `~/.herold/bug-reports.toml` (`server_url`, `api_key`) or
+  `$HEROLD_BUG_REPORTS_KEY` plus `--server-url`.
 
 ```bash
-bin/herold bug-fetch --dry-run                       # list unread reports, change nothing
-bin/herold bug-fetch --label "Bug reports" --out ~/herold-bugs
+bin/herold bug-fetch --dry-run                       # list queued reports, change nothing
+bin/herold bug-fetch --out ~/herold-bugs
+bin/herold bug-fetch --out ~/herold-bugs --keep       # fetch without deleting on the server
 ```
 
 `scripts/herold-agents.sh` starts the sink together with the Claude sessions

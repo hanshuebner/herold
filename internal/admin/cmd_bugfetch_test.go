@@ -1,13 +1,28 @@
 package admin
 
+// cmd_bugfetch_test.go exercises `herold bug-fetch` against POST/GET/DELETE
+// /api/v1/bug-reports (issue #416):
+//
+//   - runBugFetch's dry run lists without writing or deleting.
+//   - runBugFetch's real run downloads each report's zip, writes it as a
+//     drop directory (0700 dir, 0600 files, STATUS=new), and deletes it
+//     on the server unless --keep is set.
+//   - "no reports" is reported when the queue is empty.
+//   - bugFetchCredentials resolves --server-url / bug-reports.toml /
+//     $HEROLD_BUG_REPORTS_KEY per the documented precedence.
+//   - an end-to-end CLI round trip against a real running server: two
+//     reports posted via the multipart API are fetched, written to a
+//     temp dir, and removed from the server.
+
 import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"mime/multipart"
-	"net/textproto"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,26 +30,221 @@ import (
 	"time"
 )
 
-// bugFetchFixtureMeta is the report.json the phone reporter attaches; it
-// mirrors the browser panel's public meta (see cmd_bugsink_test.go).
-const bugFetchFixtureMeta = `{
-  "protocol": "webapp-diagnostics/1",
-  "createdAt": "2026-09-16T09:00:00.000Z",
-  "kind": "bug",
-  "sketch": "Thread list jumps after sync\nSecond line.",
-  "app": {"id": "herold-android", "name": "Herold Android", "version": "0.4.1+ab12cd"},
-  "principal": {"id": "p1", "label": "alice@example.local"},
-  "context": {"route": "thread/t42", "account": "a1"},
-  "logs": [{"ts": 1758013200000, "level": "warn", "msg": "sync: outbox retry", "ctx": "sync"}],
-  "screenshotCount": 1
-}`
+// fakeBugReportsServer is an in-process httptest-free stand-in for the
+// bug-reports REST surface, driving runBugFetch directly against a
+// bugReportsClient without a network round trip. It models exactly the
+// list/download/delete contract POST /api/v1/bug-reports's siblings
+// expose, so runBugFetch's control flow (dry-run, write, delete-unless-keep,
+// failure reporting) is tested independently of protoadmin's HTTP wiring
+// (covered separately by internal/protoadmin/bugreports_test.go and by
+// TestBugFetch_EndToEnd below).
+type fakeBugReportsServer struct {
+	items     []bugReportSummary
+	zips      map[string][]byte
+	deleted   []string
+	failList  bool
+	failGetID string
+}
 
-const bugFetchFixturePrivate = `{"included": true, "session": {"token": "PHONE-SECRET-TOKEN-DO-NOT-LEAK"}}`
+func (f *fakeBugReportsServer) list(_ context.Context) ([]bugReportSummary, error) {
+	if f.failList {
+		return nil, fmt.Errorf("list: status 500: boom")
+	}
+	return f.items, nil
+}
 
-var bugFetchFixturePNG = []byte("\x89PNG\r\n\x1a\nfake-png-bytes")
+func (f *fakeBugReportsServer) download(_ context.Context, id string) ([]byte, error) {
+	if id == f.failGetID {
+		return nil, fmt.Errorf("download: status 500: boom")
+	}
+	data, ok := f.zips[id]
+	if !ok {
+		return nil, fmt.Errorf("download: status 404: not found")
+	}
+	return data, nil
+}
 
-// zipBundle builds a zip in memory from name -> content.
-func zipBundle(t *testing.T, entries map[string][]byte) []byte {
+func (f *fakeBugReportsServer) delete(_ context.Context, id string) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+var _ bugFetchServer = (*fakeBugReportsServer)(nil)
+
+func minimalReportZip(t *testing.T, sketch string) []byte {
+	t.Helper()
+	meta := fmt.Sprintf(`{"kind":"bug","sketch":%q,"descriptionEntered":true,"screenshotCount":1,"context":{"route":"thread/t1"}}`, sketch)
+	return zipBundleFiles(t, map[string][]byte{
+		"report.json":      []byte(meta),
+		"report.md":        []byte("# " + sketch + "\n"),
+		"logs.txt":         []byte("log line\n"),
+		"screenshot-1.png": []byte("\x89PNG\r\n\x1a\nfake"),
+		"meta.json":        []byte(`{"principal_id":1,"email":"alice@example.local"}`),
+	})
+}
+
+func TestRunBugFetch_DryRun_ListsWithoutWriting(t *testing.T) {
+	fake := &fakeBugReportsServer{items: []bugReportSummary{
+		{ID: "r1", ReceivedAt: "2026-09-17T09:00:00Z", Title: "Thread jumps", ScreenshotCount: 1},
+		{ID: "r2", ReceivedAt: "2026-09-17T09:05:00Z", Title: "Compose loses draft", ScreenshotCount: 2},
+	}}
+	out := t.TempDir()
+	buf := &bytes.Buffer{}
+	err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: out, DryRun: true})
+	if err != nil {
+		t.Fatalf("runBugFetch dry-run: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "would fetch r1") || !strings.Contains(got, "would fetch r2") {
+		t.Fatalf("dry run output missing entries: %s", got)
+	}
+	if len(fake.deleted) != 0 {
+		t.Fatalf("dry run deleted reports: %v", fake.deleted)
+	}
+	entries, _ := os.ReadDir(out)
+	if len(entries) != 0 {
+		t.Fatalf("dry run wrote %d entries into --out", len(entries))
+	}
+}
+
+func TestRunBugFetch_NoReports(t *testing.T) {
+	fake := &fakeBugReportsServer{}
+	buf := &bytes.Buffer{}
+	if err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: t.TempDir()}); err != nil {
+		t.Fatalf("runBugFetch: %v", err)
+	}
+	if strings.TrimSpace(buf.String()) != "no reports" {
+		t.Fatalf("output = %q, want %q", buf.String(), "no reports")
+	}
+}
+
+func TestRunBugFetch_RealRun_WritesAndDeletes(t *testing.T) {
+	fake := &fakeBugReportsServer{
+		items: []bugReportSummary{{ID: "r1", Title: "Thread jumps"}},
+		zips:  map[string][]byte{"r1": minimalReportZip(t, "Thread jumps")},
+	}
+	out := t.TempDir()
+	buf := &bytes.Buffer{}
+	if err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: out}); err != nil {
+		t.Fatalf("runBugFetch: %v", err)
+	}
+	dir := filepath.Join(out, "r1")
+	if !strings.Contains(buf.String(), "bug-fetch: wrote "+dir) {
+		t.Fatalf("output missing wrote line: %s", buf.String())
+	}
+	for _, name := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "meta.json", "STATUS"} {
+		st, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("missing %s: %v", name, err)
+			continue
+		}
+		if !st.IsDir() && st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v, want 0600", name, st.Mode().Perm())
+		}
+	}
+	if st, err := os.Stat(dir); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("drop dir mode = %v err=%v, want 0700", st.Mode(), err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "STATUS")); string(got) != "new" {
+		t.Errorf("STATUS = %q, want new", got)
+	}
+	if len(fake.deleted) != 1 || fake.deleted[0] != "r1" {
+		t.Fatalf("deleted = %v, want [r1]", fake.deleted)
+	}
+}
+
+func TestRunBugFetch_Keep_SkipsDelete(t *testing.T) {
+	fake := &fakeBugReportsServer{
+		items: []bugReportSummary{{ID: "r1"}},
+		zips:  map[string][]byte{"r1": minimalReportZip(t, "kept")},
+	}
+	buf := &bytes.Buffer{}
+	if err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: t.TempDir(), Keep: true}); err != nil {
+		t.Fatalf("runBugFetch: %v", err)
+	}
+	if len(fake.deleted) != 0 {
+		t.Fatalf("--keep deleted reports: %v", fake.deleted)
+	}
+}
+
+func TestRunBugFetch_DownloadFailure_ReportsAndReturnsError(t *testing.T) {
+	fake := &fakeBugReportsServer{
+		items:     []bugReportSummary{{ID: "r1"}},
+		failGetID: "r1",
+	}
+	buf := &bytes.Buffer{}
+	err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: t.TempDir()})
+	if err == nil {
+		t.Fatalf("runBugFetch: want error, got nil")
+	}
+	if !strings.Contains(buf.String(), "r1:") {
+		t.Fatalf("output missing failure line: %s", buf.String())
+	}
+	if len(fake.deleted) != 0 {
+		t.Fatalf("failed download still deleted: %v", fake.deleted)
+	}
+}
+
+func TestRunBugFetch_ListFailure_ReturnsClearError(t *testing.T) {
+	fake := &fakeBugReportsServer{failList: true}
+	buf := &bytes.Buffer{}
+	err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "bug-fetch:") {
+		t.Fatalf("runBugFetch list failure = %v, want a bug-fetch-prefixed error", err)
+	}
+}
+
+func TestRunBugFetch_Limit(t *testing.T) {
+	fake := &fakeBugReportsServer{items: []bugReportSummary{
+		{ID: "r1"}, {ID: "r2"}, {ID: "r3"},
+	}}
+	buf := &bytes.Buffer{}
+	err := runBugFetch(context.Background(), buf, fake, bugFetchOptions{OutDir: t.TempDir(), DryRun: true, Limit: 2})
+	if err != nil {
+		t.Fatalf("runBugFetch: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "r1") || !strings.Contains(got, "r2") || strings.Contains(got, "r3") {
+		t.Fatalf("limit not applied: %s", got)
+	}
+}
+
+func TestBugFetchCredentials_Precedence(t *testing.T) {
+	dir := t.TempDir()
+	credPath := filepath.Join(dir, "bug-reports.toml")
+	SetBugReportsCredentialsPath(credPath)
+	t.Cleanup(func() { SetBugReportsCredentialsPath("") })
+
+	// Neither file nor flag/env: clear error.
+	if _, _, err := bugFetchCredentials(""); err == nil {
+		t.Fatalf("want error with no server URL configured")
+	}
+
+	// File supplies both.
+	if err := os.WriteFile(credPath, []byte("server_url = \"http://file.example\"\napi_key = \"hk_file\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, key, err := bugFetchCredentials("")
+	if err != nil || base != "http://file.example" || key != "hk_file" {
+		t.Fatalf("file-sourced creds = %q, %q, %v", base, key, err)
+	}
+
+	// --server-url overrides the file's server_url.
+	base, key, err = bugFetchCredentials("http://flag.example")
+	if err != nil || base != "http://flag.example" || key != "hk_file" {
+		t.Fatalf("flag override = %q, %q, %v", base, key, err)
+	}
+
+	// $HEROLD_BUG_REPORTS_KEY overrides the file's api_key.
+	t.Setenv(bugFetchAPIKeyEnv, "hk_env")
+	base, key, err = bugFetchCredentials("")
+	if err != nil || base != "http://file.example" || key != "hk_env" {
+		t.Fatalf("env override = %q, %q, %v", base, key, err)
+	}
+}
+
+// zipBundleFiles builds a zip archive in memory from name -> content.
+func zipBundleFiles(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
 	buf := &bytes.Buffer{}
 	zw := zip.NewWriter(buf)
@@ -53,329 +263,24 @@ func zipBundle(t *testing.T, entries map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-func TestExpandBugMail_ZipBundle(t *testing.T) {
-	archive := zipBundle(t, map[string][]byte{
-		"bundle/report.json":          []byte(bugFetchFixtureMeta),
-		"bundle/report.md":            []byte("# Bug: Thread list jumps after sync\n"),
-		"bundle/logs.txt":             []byte("2026-09-16T09:00:00Z [sync] WARN: outbox retry\n"),
-		"bundle/screenshot-1.png":     bugFetchFixturePNG,
-		"bundle/private/private.json": []byte(bugFetchFixturePrivate),
-		"bundle/private/state.json":   []byte(`{"draft": "x"}`),
-		"../../etc/passwd":            []byte("root:x:0:0"),
-		"bundle/notes.docx":           []byte("binary"),
-	})
-	mail := bugMail{
-		ID:         "M1",
-		Subject:    "herold bug: Thread list jumps after sync",
-		ReceivedAt: "2026-09-16T09:00:05Z",
-		TextBody:   "# Bug: Thread list jumps after sync\n",
-		Attachments: []bugMailPart{
-			{Name: "bug-report.zip", Type: "application/zip", Data: archive},
-		},
-	}
+// ---- end-to-end CLI round trip -------------------------------------------
 
-	drop := expandBugMail(mail)
-
-	want := map[string]string{
-		"report.json":          bugFetchFixtureMeta,
-		"report.md":            "# Bug: Thread list jumps after sync\n",
-		"logs.txt":             "2026-09-16T09:00:00Z [sync] WARN: outbox retry\n",
-		"screenshot-1.png":     string(bugFetchFixturePNG),
-		"private/private.json": bugFetchFixturePrivate,
-		"private/state.json":   `{"draft": "x"}`,
-	}
-	if len(drop.Files) != len(want) {
-		t.Fatalf("files = %v, want exactly %d entries", keysOf(drop.Files), len(want))
-	}
-	for p, content := range want {
-		if got := string(drop.Files[p]); got != content {
-			t.Errorf("%s = %q, want %q", p, got, content)
-		}
-	}
-	for _, p := range keysOf(drop.Files) {
-		if strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
-			t.Errorf("unsafe drop path %q", p)
-		}
-	}
-	if len(drop.Notes) != 2 {
-		t.Fatalf("notes = %v, want one per ignored entry (passwd, docx)", drop.Notes)
-	}
-}
-
-func TestExpandBugMail_SeparateParts(t *testing.T) {
-	mail := bugMail{
-		ID:         "M2",
-		Subject:    "herold bug: Compose loses draft",
-		ReceivedAt: "2026-09-16T09:10:00Z",
-		TextBody:   "# Bug: Compose loses draft\n\nbody text\n",
-		Attachments: []bugMailPart{
-			{Name: "report.json", Type: "application/json", Data: []byte(bugFetchFixtureMeta)},
-			{Name: "report.md", Type: "text/markdown", Data: []byte("# Bug: Compose loses draft\n")},
-			{Name: "logs.txt", Type: "text/plain", Data: []byte("line\n")},
-			{Name: "screenshot-1.png", Type: "image/png", Data: bugFetchFixturePNG},
-			{Name: "capture-after.png", Type: "image/png", Data: []byte("second-png")},
-			{Name: "private.json", Type: "application/json", Data: []byte(bugFetchFixturePrivate)},
-			{Name: "trace.har", Type: "application/octet-stream", Data: []byte("ignored")},
-		},
-	}
-
-	drop := expandBugMail(mail)
-
-	want := map[string]string{
-		"report.json":          bugFetchFixtureMeta,
-		"report.md":            "# Bug: Compose loses draft\n",
-		"logs.txt":             "line\n",
-		"screenshot-1.png":     string(bugFetchFixturePNG),
-		"screenshot-2.png":     "second-png",
-		"private/private.json": bugFetchFixturePrivate,
-	}
-	if len(drop.Files) != len(want) {
-		t.Fatalf("files = %v, want exactly %d entries", keysOf(drop.Files), len(want))
-	}
-	for p, content := range want {
-		if got := string(drop.Files[p]); got != content {
-			t.Errorf("%s = %q, want %q", p, got, content)
-		}
-	}
-	if len(drop.Notes) != 1 || !strings.Contains(drop.Notes[0], "trace.har") {
-		t.Fatalf("notes = %v, want one for trace.har", drop.Notes)
-	}
-}
-
-func TestExpandBugMail_SynthesisesMissingFiles(t *testing.T) {
-	mail := bugMail{
-		ID:         "M3",
-		Subject:    "herold bug: Crash on open",
-		ReceivedAt: "2026-09-16T09:20:00Z",
-		TextBody:   "It crashed when I opened the thread.",
-		Attachments: []bugMailPart{
-			{Name: "Screenshot_20260916.png", Type: "image/png", Data: bugFetchFixturePNG},
-		},
-	}
-
-	drop := expandBugMail(mail)
-
-	if got := string(drop.Files["report.md"]); got != "It crashed when I opened the thread.\n" {
-		t.Errorf("report.md = %q", got)
-	}
-	if got, ok := drop.Files["logs.txt"]; !ok || len(got) != 0 {
-		t.Errorf("logs.txt = %q, want present and empty", got)
-	}
-	if got := string(drop.Files["screenshot-1.png"]); got != string(bugFetchFixturePNG) {
-		t.Errorf("screenshot-1.png = %q", got)
-	}
-	var meta struct {
-		Kind            string `json:"kind"`
-		Sketch          string `json:"sketch"`
-		CreatedAt       string `json:"createdAt"`
-		ScreenshotCount int    `json:"screenshotCount"`
-	}
-	if err := json.Unmarshal(drop.Files["report.json"], &meta); err != nil {
-		t.Fatalf("report.json: %v: %s", err, drop.Files["report.json"])
-	}
-	if meta.Kind != "bug" || meta.CreatedAt != "2026-09-16T09:20:00Z" || meta.ScreenshotCount != 1 {
-		t.Errorf("synthesised meta = %+v", meta)
-	}
-	if !strings.HasPrefix(meta.Sketch, "Crash on open\n\nIt crashed") {
-		t.Errorf("sketch = %q", meta.Sketch)
-	}
-	if len(drop.Notes) != 1 || !strings.Contains(drop.Notes[0], "synthesised") {
-		t.Errorf("notes = %v", drop.Notes)
-	}
-}
-
-func TestBugDropID(t *testing.T) {
-	cases := map[string]string{
-		"M8f3a":         "mail-M8f3a",
-		"a/b..c":        "mail-a_b..c",
-		"..":            "mail-mail",
-		"x y\x00z":      "mail-x_y_z",
-		"id-1_2.3":      "mail-id-1_2.3",
-		"":              "mail-mail",
-		"\u00e9t\u00e9": "mail-_t_",
-	}
-	for in, want := range cases {
-		if got := bugDropID(in); got != want {
-			t.Errorf("bugDropID(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestWriteBugDrop_LayoutAndIdempotence(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "mail-M1")
-	drop := bugDrop{Files: map[string][]byte{
-		"report.json":          []byte("{}"),
-		"report.md":            []byte("# x\n"),
-		"logs.txt":             {},
-		"screenshot-1.png":     bugFetchFixturePNG,
-		"private/private.json": []byte(bugFetchFixturePrivate),
-	}}
-
-	written, err := writeBugDrop(dir, drop)
-	if err != nil || !written {
-		t.Fatalf("writeBugDrop: written=%v err=%v", written, err)
-	}
-	for _, p := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "private/private.json", "STATUS"} {
-		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
-			t.Errorf("missing %s: %v", p, err)
-		}
-	}
-	if st, err := os.Stat(filepath.Join(dir, "private")); err != nil || st.Mode().Perm() != 0o700 {
-		t.Errorf("private/ mode = %v err=%v, want 0700", st.Mode(), err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "STATUS")); string(got) != "new" {
-		t.Errorf("STATUS = %q", got)
-	}
-
-	// A second write onto an existing drop leaves it alone.
-	if err := os.WriteFile(filepath.Join(dir, "STATUS"), []byte("filed:#1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	written, err = writeBugDrop(dir, drop)
-	if err != nil || written {
-		t.Fatalf("second writeBugDrop: written=%v err=%v, want false/nil", written, err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "STATUS")); string(got) != "filed:#1" {
-		t.Errorf("STATUS after re-run = %q, want untouched", got)
-	}
-}
-
-// buildBugReportMail assembles an RFC 5322 multipart/mixed message with a
-// plain-text body and the given attachments (Content-Disposition:
-// attachment; base64 transfer encoding).
-func buildBugReportMail(t *testing.T, subject, body string, attachments []bugMailPart) []byte {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	mw := multipart.NewWriter(buf)
-	buf.WriteString("From: alice@example.local\r\n")
-	buf.WriteString("To: alice@example.local\r\n")
-	buf.WriteString("Subject: " + subject + "\r\n")
-	buf.WriteString("Date: Wed, 16 Sep 2026 09:00:00 +0000\r\n")
-	buf.WriteString("Message-ID: <" + strings.ReplaceAll(subject, " ", "-") + "@phone.example>\r\n")
-	buf.WriteString("MIME-Version: 1.0\r\n")
-	buf.WriteString("Content-Type: multipart/mixed; boundary=" + mw.Boundary() + "\r\n\r\n")
-
-	textHdr := textproto.MIMEHeader{}
-	textHdr.Set("Content-Type", "text/plain; charset=utf-8")
-	tw, err := mw.CreatePart(textHdr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write([]byte(body)); err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range attachments {
-		hdr := textproto.MIMEHeader{}
-		hdr.Set("Content-Type", a.Type+`; name="`+a.Name+`"`)
-		hdr.Set("Content-Disposition", `attachment; filename="`+a.Name+`"`)
-		hdr.Set("Content-Transfer-Encoding", "base64")
-		pw, err := mw.CreatePart(hdr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		enc := base64.StdEncoding.EncodeToString(a.Data)
-		for len(enc) > 76 {
-			pw.Write([]byte(enc[:76] + "\r\n"))
-			enc = enc[76:]
-		}
-		pw.Write([]byte(enc + "\r\n"))
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-// jmapImportMail uploads raw and imports it into mailboxID, unread.
-func jmapImportMail(t *testing.T, publicAddr, apiKey, accountID, mailboxID string, raw []byte) string {
-	t.Helper()
-	blobID := jmapUploadBlob(t, publicAddr, apiKey, accountID, raw)
-	resp := jmapCall(t, publicAddr, apiKey, "Email/import", map[string]any{
-		"accountId": accountID,
-		"emails": map[string]any{
-			"i1": map[string]any{
-				"blobId":     blobID,
-				"mailboxIds": map[string]bool{mailboxID: true},
-				"keywords":   map[string]bool{},
-			},
-		},
-	})
-	var out struct {
-		Created map[string]struct {
-			ID string `json:"id"`
-		} `json:"created"`
-		NotCreated map[string]json.RawMessage `json:"notCreated"`
-	}
-	if err := json.Unmarshal(resp, &out); err != nil {
-		t.Fatalf("decode Email/import: %v body=%s", err, resp)
-	}
-	id := out.Created["i1"].ID
-	if id == "" {
-		t.Fatalf("Email/import did not create: %s", resp)
-	}
-	return id
-}
-
-func jmapEmailKeywords(t *testing.T, publicAddr, apiKey, accountID, emailID string) map[string]bool {
-	t.Helper()
-	resp := jmapCall(t, publicAddr, apiKey, "Email/get", map[string]any{
-		"accountId":  accountID,
-		"ids":        []string{emailID},
-		"properties": []string{"keywords"},
-	})
-	var out struct {
-		List []struct {
-			Keywords map[string]bool `json:"keywords"`
-		} `json:"list"`
-	}
-	if err := json.Unmarshal(resp, &out); err != nil || len(out.List) != 1 {
-		t.Fatalf("Email/get keywords: err=%v body=%s", err, resp)
-	}
-	return out.List[0].Keywords
-}
-
-// TestBugFetch_EndToEnd drives `herold bug-fetch` against the real server:
-// a "Bug reports" mailbox holding one zipped bundle and one separate-parts
-// bundle, both unread. A dry run lists them and changes nothing; the real
-// run writes both drops and marks both read; a further run finds nothing.
+// TestBugFetch_EndToEnd drives `herold bug-fetch` against a fully wired
+// running server: two bundles are posted via POST /api/v1/bug-reports
+// with an end-user device token, then fetched and deleted with a
+// bug-reports-scoped API key.
 func TestBugFetch_EndToEnd(t *testing.T) {
-	publicAddr, apiKey, accountID := jmapBootstrapFixture(t)
+	publicAddr, adminKey, _ := jmapBootstrapFixture(t)
+	adminPID := whoamiPrincipalID(t, publicAddr, adminKey)
 
-	// Create the label the phone reporter files under.
-	created := jmapCall(t, publicAddr, apiKey, "Mailbox/set", map[string]any{
-		"accountId": accountID,
-		"create":    map[string]any{"m1": map[string]any{"name": "Bug reports"}},
-	})
-	var mbOut struct {
-		Created map[string]struct {
-			ID string `json:"id"`
-		} `json:"created"`
-	}
-	if err := json.Unmarshal(created, &mbOut); err != nil || mbOut.Created["m1"].ID == "" {
-		t.Fatalf("Mailbox/set create: err=%v body=%s", err, created)
-	}
-	mailboxID := mbOut.Created["m1"].ID
+	const aliceEmail = "bugfetch-alice@example.com"
+	const alicePassword = "correct-horse-battery-staple"
+	createPrincipalHTTP(t, publicAddr, adminKey, aliceEmail, alicePassword)
+	aliceToken := deviceTokenHTTP(t, publicAddr, aliceEmail, alicePassword)
+	bugKey := createScopedAPIKeyHTTP(t, publicAddr, adminKey, adminPID, []string{"bug-reports"}, false)
 
-	archive := zipBundle(t, map[string][]byte{
-		"report.json":          []byte(bugFetchFixtureMeta),
-		"report.md":            []byte("# Bug: zipped\n"),
-		"logs.txt":             []byte("zipped log\n"),
-		"screenshot-1.png":     bugFetchFixturePNG,
-		"private/private.json": []byte(bugFetchFixturePrivate),
-	})
-	zippedID := jmapImportMail(t, publicAddr, apiKey, accountID, mailboxID,
-		buildBugReportMail(t, "herold bug: zipped", "# Bug: zipped\n", []bugMailPart{
-			{Name: "bug-report.zip", Type: "application/zip", Data: archive},
-		}))
-	partsID := jmapImportMail(t, publicAddr, apiKey, accountID, mailboxID,
-		buildBugReportMail(t, "herold bug: parts", "# Bug: parts\n", []bugMailPart{
-			{Name: "report.json", Type: "application/json", Data: []byte(bugFetchFixtureMeta)},
-			{Name: "report.md", Type: "text/markdown", Data: []byte("# Bug: parts\n")},
-			{Name: "logs.txt", Type: "text/plain", Data: []byte("parts log\n")},
-			{Name: "screenshot-1.png", Type: "image/png", Data: bugFetchFixturePNG},
-			{Name: "private.json", Type: "application/json", Data: []byte(bugFetchFixturePrivate)},
-		}))
+	id1 := postBugReportHTTP(t, publicAddr, aliceToken, "Thread list jumps")
+	id2 := postBugReportHTTP(t, publicAddr, aliceToken, "Compose loses draft")
 
 	out := t.TempDir()
 	run := func(args ...string) string {
@@ -387,9 +292,9 @@ func TestBugFetch_EndToEnd(t *testing.T) {
 		root.SetArgs(append([]string{
 			"bug-fetch",
 			"--server-url", "http://" + publicAddr,
-			"--api-key", apiKey,
 			"--out", out,
 		}, args...))
+		t.Setenv(bugFetchAPIKeyEnv, bugKey)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := root.ExecuteContext(ctx); err != nil {
@@ -398,75 +303,198 @@ func TestBugFetch_EndToEnd(t *testing.T) {
 		return stdout.String()
 	}
 
-	// Dry run: lists both, writes nothing, marks nothing.
+	// Dry run: lists both, writes and deletes nothing.
 	dry := run("--dry-run")
-	if !strings.Contains(dry, `"herold bug: zipped"`) || !strings.Contains(dry, `"herold bug: parts"`) {
-		t.Fatalf("dry run did not list both messages:\n%s", dry)
-	}
-	if !strings.Contains(dry, "bug-report.zip") || !strings.Contains(dry, "screenshot-1.png") {
-		t.Fatalf("dry run did not list attachments:\n%s", dry)
+	if !strings.Contains(dry, "Thread list jumps") || !strings.Contains(dry, "Compose loses draft") {
+		t.Fatalf("dry run did not list both reports:\n%s", dry)
 	}
 	if entries, _ := os.ReadDir(out); len(entries) != 0 {
 		t.Fatalf("dry run wrote %d entries into --out", len(entries))
 	}
-	for _, id := range []string{zippedID, partsID} {
-		if kw := jmapEmailKeywords(t, publicAddr, apiKey, accountID, id); kw["$seen"] {
-			t.Fatalf("dry run marked %s read", id)
-		}
+	if remaining := listBugReportsHTTP(t, publicAddr, bugKey); len(remaining) != 2 {
+		t.Fatalf("dry run changed the queue: %v", remaining)
 	}
 
-	// Real run: both drops on disk, both messages read.
+	// Real run: both drops on disk, both removed from the server.
 	got := run()
-	for _, id := range []string{zippedID, partsID} {
-		dir := filepath.Join(out, bugDropID(id))
+	for _, id := range []string{id1, id2} {
+		dir := filepath.Join(out, id)
 		if !strings.Contains(got, "bug-fetch: wrote "+dir) {
 			t.Errorf("output does not report %s:\n%s", dir, got)
 		}
-		for _, p := range []string{"report.json", "report.md", "logs.txt", "screenshot-1.png", "private/private.json", "STATUS"} {
+		for _, p := range []string{"report.json", "screenshot-1.png", "meta.json", "STATUS"} {
 			if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 				t.Errorf("%s: missing %s: %v", id, p, err)
 			}
 		}
-		if meta, _ := os.ReadFile(filepath.Join(dir, "report.json")); string(meta) != bugFetchFixtureMeta {
-			t.Errorf("%s: report.json not verbatim:\n%s", id, meta)
-		}
-		if png, _ := os.ReadFile(filepath.Join(dir, "screenshot-1.png")); !bytes.Equal(png, bugFetchFixturePNG) {
-			t.Errorf("%s: screenshot-1.png content mismatch", id)
-		}
-		if md, _ := os.ReadFile(filepath.Join(dir, "report.md")); strings.Contains(string(md), "PHONE-SECRET") {
-			t.Errorf("%s: report.md leaked private content", id)
-		}
-		if priv, _ := os.ReadFile(filepath.Join(dir, "private", "private.json")); string(priv) != bugFetchFixturePrivate {
-			t.Errorf("%s: private/private.json not verbatim: %s", id, priv)
-		}
-		if kw := jmapEmailKeywords(t, publicAddr, apiKey, accountID, id); !kw["$seen"] {
-			t.Errorf("%s: not marked read after fetch: %v", id, kw)
-		}
 	}
-	if md, _ := os.ReadFile(filepath.Join(out, bugDropID(zippedID), "logs.txt")); string(md) != "zipped log\n" {
-		t.Errorf("zipped logs.txt = %q", md)
-	}
-	if md, _ := os.ReadFile(filepath.Join(out, bugDropID(partsID), "logs.txt")); string(md) != "parts log\n" {
-		t.Errorf("parts logs.txt = %q", md)
+	if remaining := listBugReportsHTTP(t, publicAddr, bugKey); len(remaining) != 0 {
+		t.Fatalf("reports still queued after fetch: %v", remaining)
 	}
 
-	// Nothing left unread: the next run is a no-op.
+	// Nothing left: the next run is a no-op.
 	again := run()
-	if !strings.Contains(again, `no unread messages in "Bug reports"`) {
+	if !strings.Contains(again, "no reports") {
 		t.Fatalf("second run should find nothing:\n%s", again)
-	}
-
-	// An absent label is "nothing to fetch", not an error.
-	none := run("--label", "No such label")
-	if !strings.Contains(none, `no mailbox named "No such label"`) {
-		t.Fatalf("absent label:\n%s", none)
 	}
 }
 
-func keysOf(m map[string][]byte) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+func whoamiPrincipalID(t *testing.T, publicAddr, apiKey string) uint64 {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, "http://"+publicAddr+"/api/v1/auth/whoami", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("whoami: %v", err)
 	}
-	return out
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		PrincipalID uint64 `json:"principal_id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("whoami decode: %v body=%s", err, raw)
+	}
+	return out.PrincipalID
+}
+
+func createPrincipalHTTP(t *testing.T, publicAddr, adminKey, email, password string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"email": email, "password": password})
+	req, _ := http.NewRequest(http.MethodPost, "http://"+publicAddr+"/api/v1/principals", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create principal: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create principal: status=%d body=%s", resp.StatusCode, raw)
+	}
+}
+
+func deviceTokenHTTP(t *testing.T, publicAddr, email, password string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"email": email, "password": password, "device_label": "test"})
+	resp, err := http.Post("http://"+publicAddr+"/api/v1/auth/device-token", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("device-token: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("device-token: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("device-token decode: %v body=%s", err, raw)
+	}
+	return out.Token
+}
+
+func createScopedAPIKeyHTTP(t *testing.T, publicAddr, callerKey string, pid uint64, scope []string, allowAdmin bool) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"label":             "bug-fetch-test-key",
+		"scope":             scope,
+		"allow_admin_scope": allowAdmin,
+	})
+	req, _ := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://%s/api/v1/principals/%d/api-keys", publicAddr, pid), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+callerKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create scoped api key: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create scoped api key: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("create scoped api key decode: %v body=%s", err, raw)
+	}
+	return out.Key
+}
+
+// postBugReportHTTP posts a minimal valid multipart bug report and
+// returns its id.
+func postBugReportHTTP(t *testing.T, publicAddr, bearer, sketch string) string {
+	t.Helper()
+	meta := fmt.Sprintf(`{"kind":"bug","sketch":%q,"descriptionEntered":true,"screenshotCount":1,"context":{"route":"thread/t1"}}`, sketch)
+	buf := &bytes.Buffer{}
+	mw := multipart.NewWriter(buf)
+	for name, content := range map[string][]byte{
+		"report.json":      []byte(meta),
+		"screenshot-1.png": []byte("\x89PNG\r\n\x1a\nfake"),
+	} {
+		fw, err := mw.CreateFormFile(name, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://"+publicAddr+"/api/v1/bug-reports", buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post bug report: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("post bug report: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.ID == "" {
+		t.Fatalf("post bug report decode: %v body=%s", err, raw)
+	}
+	return out.ID
+}
+
+func listBugReportsHTTP(t *testing.T, publicAddr, bearer string) []string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, "http://"+publicAddr+"/api/v1/bug-reports", nil)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list bug reports: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list bug reports: status=%d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("list bug reports decode: %v body=%s", err, raw)
+	}
+	ids := make([]string, 0, len(out.Items))
+	for _, it := range out.Items {
+		ids = append(ids, it.ID)
+	}
+	return ids
 }
