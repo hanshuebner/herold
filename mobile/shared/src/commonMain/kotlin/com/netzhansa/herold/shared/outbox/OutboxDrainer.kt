@@ -378,7 +378,7 @@ class OutboxDrainer(
                     mailFrom = payload.identityEmail,
                     rcptTo = payload.recipients.map { it.email }.filter { it.isNotBlank() }.distinct(),
                 ),
-                onSuccessUpdate = onSuccessUpdate(payload, resolveSentLabels(payload)),
+                onSuccessUpdate = onSuccessUpdate(payload),
                 parentId = payload.parentId,
                 parentKeyword = payload.parentKeyword,
             )
@@ -386,19 +386,49 @@ class OutboxDrainer(
             return failureOf(t)
         }
         if (outcome.error != null) return StepResult.Rejected(outcome.error)
+        fileSentCopy(payload)
         return StepResult.Done
     }
 
-    /**
-     * The patch that moves a sent draft into Sent, as compose writes it,
-     * plus the labels the payload files the sent copy under.
-     */
-    private fun onSuccessUpdate(payload: ComposePayload, labelIds: List<String>): JsonObject = buildJsonObject {
+    /** The patch that moves a sent draft into Sent, as compose writes it. */
+    private fun onSuccessUpdate(payload: ComposePayload): JsonObject = buildJsonObject {
         put("mailboxIds/${payload.draftsMailboxId}", JsonPrimitive(null as String?))
         payload.sentMailboxId?.let { put("mailboxIds/$it", true) }
-        labelIds.forEach { put("mailboxIds/$it", true) }
         put("keywords/${Keywords.DRAFT}", JsonPrimitive(null as String?))
-        if (!payload.sentUnread) put("keywords/${Keywords.SEEN}", true)
+        put("keywords/${Keywords.SEEN}", true)
+    }
+
+    /**
+     * Files the sent copy where the payload asked for it: under the
+     * labels it names, and left unread when it asked for that.
+     *
+     * It is a second call rather than part of the submission's
+     * `onSuccessUpdateEmail`, because that patch moves the message to
+     * one mailbox - the last `mailboxIds/<id>` key in it wins - while an
+     * ordinary `Email/set` adds a membership without disturbing the one
+     * the message already has. So the submission puts the copy in Sent
+     * and this puts the label on it, which is what applying a label is
+     * everywhere else in the client.
+     */
+    private suspend fun fileSentCopy(payload: ComposePayload) {
+        val id = payload.draftId ?: return
+        if (payload.sentLabels.isEmpty() && !payload.sentUnread) return
+        val labelIds = resolveSentLabels(payload)
+        if (labelIds.isEmpty() && !payload.sentUnread) return
+        val patch = buildJsonObject {
+            labelIds.forEach { put("mailboxIds/$it", true) }
+            // The draft was written with $seen on it and the submission
+            // keeps it, so leaving the copy unread means taking the
+            // keyword off afterwards.
+            if (payload.sentUnread) put("keywords/${Keywords.SEEN}", JsonPrimitive(null as String?))
+        }
+        val outcome = runCatching { api.emailSet(payload.accountId, mapOf(id to patch)) }.getOrNull()
+        val refused = outcome?.notUpdated?.values?.firstOrNull()
+        if (outcome == null || refused != null) {
+            // The report is sent either way; only its filing failed, and
+            // saying so is more use than failing the entry.
+            log("outbox: the sent copy of \"${payload.subject}\" was not filed (${refused ?: "no answer"})")
+        }
     }
 
     /**
@@ -410,9 +440,16 @@ class OutboxDrainer(
     private suspend fun resolveSentLabels(payload: ComposePayload): List<String> {
         if (payload.sentLabels.isEmpty()) return emptyList()
         val mailboxes = store.mailboxList().filter { it.accountId == payload.accountId }
-        return payload.sentLabels.mapNotNull { name ->
+        val resolved = payload.sentLabels.mapNotNull { name ->
             mailboxes.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
         }
+        if (resolved.size < payload.sentLabels.size) {
+            log(
+                "outbox: ${payload.sentLabels.size - resolved.size} of the sent copy's labels " +
+                    "are not on this account, which holds " + mailboxes.joinToString { it.name },
+            )
+        }
+        return resolved
     }
 
     /**
