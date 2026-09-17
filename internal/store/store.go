@@ -2180,6 +2180,21 @@ type Metadata interface {
 	// stay exactly as they are.
 	SetDerivedCategories(ctx context.Context, pid PrincipalID, categories []string, expectedEpoch int64) (bool, error)
 
+	// EnsureCategoryLabelMailboxes runs the same label-mailbox
+	// creation/adoption rule SetDerivedCategories applies (issue #406,
+	// ADR-0004 "a category is a label"), without touching
+	// derived_categories_json or the epoch. Callers use SetDerivedCategories
+	// only when the classifier's category slice differs from the
+	// persisted one (REQ-FILT-217's de-duplication rule); this method is
+	// the counterpart called on every classification, changed or not, so
+	// a principal whose persisted set already matches the classifier's
+	// steady-state output still gets its backing mailboxes -- including
+	// rows written before this method existed. A name with an existing
+	// mailbox is left untouched; a name with none is created pinned at
+	// the next dense priority in categories' order. A nil or empty
+	// categories is a no-op.
+	EnsureCategoryLabelMailboxes(ctx context.Context, pid PrincipalID, categories []string) error
+
 	// SetLLMClassification upserts the per-message LLM classification
 	// record (REQ-FILT-66 / REQ-FILT-216). The record is written once at
 	// delivery time; subsequent calls are silently treated as upserts so

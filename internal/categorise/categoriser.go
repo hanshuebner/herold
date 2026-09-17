@@ -278,11 +278,25 @@ func (c *Categoriser) CategoriseRich(
 	// return means the write was correctly suppressed — not an error.
 	// This is fire-and-forget: a store error here is logged but never blocks
 	// delivery.
-	if len(mr.Categories) > 0 && !stringSliceEqual(mr.Categories, cfg.DerivedCategories) {
-		if _, serr := c.store.Meta().SetDerivedCategories(ctx, principal, mr.Categories, cfg.DerivedCategoriesEpoch); serr != nil {
-			c.logger.WarnContext(ctx, "categorise: persist derived categories",
-				slog.Uint64("principal_id", uint64(principal)),
-				slog.String("err", serr.Error()))
+	if len(mr.Categories) > 0 {
+		if !stringSliceEqual(mr.Categories, cfg.DerivedCategories) {
+			if _, serr := c.store.Meta().SetDerivedCategories(ctx, principal, mr.Categories, cfg.DerivedCategoriesEpoch); serr != nil {
+				c.logger.WarnContext(ctx, "categorise: persist derived categories",
+					slog.Uint64("principal_id", uint64(principal)),
+					slog.String("err", serr.Error()))
+			}
+		} else {
+			// The classifier's steady-state output already matches the
+			// persisted set, so SetDerivedCategories is skipped above --
+			// but a principal whose row was written before issue #406's
+			// label-mailbox rule existed still needs its mailboxes
+			// created. Heal unconditionally, on every call, not just on
+			// a change.
+			if serr := c.store.Meta().EnsureCategoryLabelMailboxes(ctx, principal, mr.Categories); serr != nil {
+				c.logger.WarnContext(ctx, "categorise: ensure category label mailboxes",
+					slog.Uint64("principal_id", uint64(principal)),
+					slog.String("err", serr.Error()))
+			}
 		}
 	}
 
