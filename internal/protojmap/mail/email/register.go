@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/hanshuebner/herold/internal/clock"
@@ -42,6 +43,15 @@ type handlerSet struct {
 	// t.Cleanup that calls WaitBackgroundWrites before closing the store
 	// so background SQLite writes cannot race t.TempDir RemoveAll.
 	bgWG *sync.WaitGroup
+	// unsubscribeClient overrides the HTTP client Email/unsubscribe
+	// uses for its one-click POST (unsubscribe.go). Nil in production,
+	// where each call builds a fresh SSRF-guarded client from extImg
+	// via extimg.NewGuardedClient. Tests that need a real TLS
+	// handshake against an httptest.NewTLSServer (self-signed, so the
+	// production guarded client's default cert verification would
+	// reject it) substitute a client here via SetUnsubscribeClient
+	// rather than weakening the production TLS posture.
+	unsubscribeClient *http.Client
 }
 
 // RegisterOptions carries optional configuration for the Email/* handler
@@ -117,6 +127,13 @@ func RegisterWithOptions(reg *protojmap.CapabilityRegistry, st store.Store, logg
 	// offering it against the failedImageCount badge property.
 	reg.Register(protojmap.CapabilityEmailImageRetry, retryImagesHandler{h: h})
 	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailImageRetry, struct{}{})
+
+	// Server-side RFC 8058 one-click unsubscribe vendor extension
+	// (issue #412, 14-unsubscribe.md REQ-UNS-02/04/20). Registered
+	// under its own capability so the Suite can detect the affordance
+	// and stop attempting its own (CORS-doomed) browser-side POST.
+	reg.Register(protojmap.CapabilityEmailUnsubscribe, unsubscribeHandler{h: h})
+	reg.RegisterCapabilityDescriptor(protojmap.CapabilityEmailUnsubscribe, struct{}{})
 }
 
 // WaitBackgroundWrites blocks until all background goroutines started by
@@ -133,6 +150,24 @@ func WaitBackgroundWrites(reg *protojmap.CapabilityRegistry) {
 		return
 	}
 	h.h.bgWG.Wait()
+}
+
+// SetUnsubscribeClient overrides the HTTP client Email/unsubscribe uses
+// for its one-click POST (unsubscribe.go). Tests that need to exercise
+// a real HTTPS round-trip against an httptest.NewTLSServer (whose
+// self-signed certificate the production SSRF-guarded client would
+// reject) substitute a client configured to trust it here; the SSRF
+// guard itself (destination validation) is exercised separately by
+// tests that leave this unset and rely on the production
+// extimg.NewGuardedClient path. Production callers leave it alone.
+func SetUnsubscribeClient(reg *protojmap.CapabilityRegistry, client *http.Client) {
+	raw, ok := reg.Resolve("Email/unsubscribe")
+	if !ok {
+		return
+	}
+	if h, ok := raw.(unsubscribeHandler); ok {
+		h.h.unsubscribeClient = client
+	}
 }
 
 // SetParser overrides the body parser injected into the handlers.

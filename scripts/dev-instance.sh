@@ -40,6 +40,11 @@
 #               the seeded identity whose external-submission config
 #               points at the sink above)
 #           FAKEFCM_HTTP_ADDR=127.0.0.1:<port>  (fake FCM's GET/DELETE /messages status API)
+#           FAKE_UNSUBSCRIBE_URL=https://127.0.0.1:<port>  (fake RFC 8058
+#               one-click origin, issue #412; append /ok or /fail to a
+#               seeded message's List-Unsubscribe header to drive
+#               Email/unsubscribe's success/failure paths, GET/DELETE
+#               .../requests to inspect/clear recorded POSTs)
 #
 #       After that line block the script keeps running (so the EXIT
 #       trap can clean up); kill the script to tear down.
@@ -415,6 +420,60 @@ start_fake_fcm() {
     log "fake FCM running: http=$FAKEFCM_HTTP_ADDR send_url=$FAKEFCM_SEND_URL"
 }
 
+# start_fake_unsubscribe DIR — build heroldfakeunsubscribe into
+# DIR/bin/, start it, and wait for its report file. Sets these globals
+# for the caller:
+#   FAKEUNSUBSCRIBE_PID  FAKE_UNSUBSCRIBE_URL  FAKE_UNSUBSCRIBE_SUCCESS_URL
+#   FAKE_UNSUBSCRIBE_FAILURE_URL  FAKE_UNSUBSCRIBE_PORT  FAKE_UNSUBSCRIBE_CERT_FILE
+#
+# Started unconditionally (re #412) — cheap to run, and gives every dev
+# instance a real RFC 8058 one-click origin the Suite / CI can seed a
+# message's List-Unsubscribe header against to drive
+# Email/unsubscribe's success and failure paths deterministically.
+# REQ-UNS-04 requires the URL Email/unsubscribe acts on to be genuine
+# HTTPS, so the fake terminates real TLS with a self-signed
+# certificate; the caller appends the fake's port to
+# [external_images.network] allowed_ports (the guard Email/unsubscribe
+# shares with the external-image fetcher — same Config, issue #412)
+# and points SSL_CERT_FILE at FAKE_UNSUBSCRIBE_CERT_FILE when starting
+# the herold server process so the guarded outbound POST trusts it.
+FAKEUNSUBSCRIBE_PID=""
+FAKE_UNSUBSCRIBE_URL=""
+FAKE_UNSUBSCRIBE_SUCCESS_URL=""
+FAKE_UNSUBSCRIBE_FAILURE_URL=""
+FAKE_UNSUBSCRIBE_PORT=""
+FAKE_UNSUBSCRIBE_CERT_FILE=""
+
+start_fake_unsubscribe() {
+    local dir="$1"
+    local bin="$dir/bin/heroldfakeunsubscribe"
+    mkdir -p "$dir/bin" "$dir/data"
+
+    log "building heroldfakeunsubscribe"
+    ( cd "$REPO_ROOT" && go build -o "$bin" ./cmd/heroldfakeunsubscribe ) \
+        >"$dir/logs/build-fakeunsubscribe.log" 2>&1 \
+        || { cat "$dir/logs/build-fakeunsubscribe.log" >&2; die "go build ./cmd/heroldfakeunsubscribe failed"; }
+
+    local report="$dir/fakeunsubscribe.report"
+    local cert_file="$dir/data/fakeunsubscribe-cert.pem"
+    log "starting heroldfakeunsubscribe"
+    "$bin" --report-file "$report" --cert-file "$cert_file" \
+        >>"$dir/logs/fakeunsubscribe.log" 2>&1 &
+    FAKEUNSUBSCRIBE_PID=$!
+
+    if ! wait_for_file "$report" 10; then
+        kill "$FAKEUNSUBSCRIBE_PID" 2>/dev/null || true
+        die "fake unsubscribe origin did not write report within 10s; see $dir/logs/fakeunsubscribe.log"
+    fi
+    FAKE_UNSUBSCRIBE_URL=$(read_report_key "$report" base_url)
+    FAKE_UNSUBSCRIBE_SUCCESS_URL=$(read_report_key "$report" success_url)
+    FAKE_UNSUBSCRIBE_FAILURE_URL=$(read_report_key "$report" failure_url)
+    FAKE_UNSUBSCRIBE_PORT=$(read_report_key "$report" port)
+    FAKE_UNSUBSCRIBE_CERT_FILE=$(read_report_key "$report" cert_file)
+
+    log "fake unsubscribe origin running: $FAKE_UNSUBSCRIBE_URL (ok=$FAKE_UNSUBSCRIBE_SUCCESS_URL fail=$FAKE_UNSUBSCRIBE_FAILURE_URL)"
+}
+
 # build_fake_classifier DIR — build heroldfakeclassify into DIR/bin/ and
 # append a [[plugin]] block of type "classifier" to DIR/system.toml
 # pointing at it (re #364). Unlike the network-server fakes above, this
@@ -719,6 +778,28 @@ allowed_ports = [$fakefcm_port, $unifiedpush_port]
 EOF
     log "appended [server.push] (fake FCM, UnifiedPush distributor port $unifiedpush_port) to system.toml"
 
+    # Fake RFC 8058 one-click unsubscribe origin (re #412): started
+    # unconditionally, before bootstrap, so system.toml already
+    # allowlists its port and trusts its certificate when the server
+    # starts. Email/unsubscribe's outbound POST shares the extimg SSRF
+    # guard with the external-image fetcher; [external_images.network]
+    # allow_private + allowed_ports admits the fake's 127.0.0.1:<port>
+    # destination the same way [server.push.network] does for the fake
+    # FCM endpoint above. REQ-UNS-04 requires a genuine HTTPS
+    # List-Unsubscribe URL, so the fake terminates real TLS with a
+    # self-signed certificate; extra_ca_file makes the guarded client
+    # trust it (in addition to, not instead of, the system root pool)
+    # without touching process-wide TLS verification.
+    start_fake_unsubscribe "$dir"
+    cat >> "$dir/system.toml" <<EOF
+
+[external_images.network]
+allow_private = true
+allowed_ports = [$FAKE_UNSUBSCRIBE_PORT]
+extra_ca_file = "$FAKE_UNSUBSCRIBE_CERT_FILE"
+EOF
+    log "appended [external_images.network] (fake unsubscribe origin port $FAKE_UNSUBSCRIBE_PORT) to system.toml"
+
     # OIDC first-login auto-provisioning fake IdP (REQ-AUTH-56, issue #230):
     # build and start heroldfakeoidc now (no system.toml dependency, unlike
     # the external-submission fakes below); it is registered as an
@@ -899,6 +980,8 @@ FAKESMTP_PID=${FAKESMTP_PID:-}
 FAKESMTP_HTTP_ADDR=${FAKESMTP_HTTP_ADDR:-}
 FAKEFCM_PID=${FAKEFCM_PID:-}
 FAKEFCM_HTTP_ADDR=${FAKEFCM_HTTP_ADDR:-}
+FAKEUNSUBSCRIBE_PID=${FAKEUNSUBSCRIBE_PID:-}
+FAKE_UNSUBSCRIBE_URL=${FAKE_UNSUBSCRIBE_URL:-}
 FAKEOIDC_PID=${FAKEOIDC_PID:-}
 STATE_DIR=$dir
 BACKEND_URL=$backend_url
@@ -943,6 +1026,11 @@ EOF
     # caller confirms a push reached the fake for a given registration
     # token (re #334).
     echo "FAKEFCM_HTTP_ADDR=$FAKEFCM_HTTP_ADDR"
+    # Fake RFC 8058 one-click unsubscribe origin's base URL (re #412).
+    # Append /ok or /fail to drive Email/unsubscribe's success/failure
+    # paths from a seeded message's List-Unsubscribe header; GET/DELETE
+    # <FAKE_UNSUBSCRIBE_URL>/requests inspects/clears recorded POSTs.
+    echo "FAKE_UNSUBSCRIBE_URL=$FAKE_UNSUBSCRIBE_URL"
 
     if [ "$detach" = "1" ]; then
         log "instance $id detached; supervisor pid $$ exiting"
@@ -951,6 +1039,7 @@ EOF
         [ -n "${FAKEIDP_PID:-}" ] && disown_pids="$disown_pids $FAKEIDP_PID"
         [ -n "${FAKESMTP_PID:-}" ] && disown_pids="$disown_pids $FAKESMTP_PID"
         [ -n "${FAKEFCM_PID:-}" ] && disown_pids="$disown_pids $FAKEFCM_PID"
+        [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && disown_pids="$disown_pids $FAKEUNSUBSCRIBE_PID"
         [ -n "${FAKEOIDC_PID:-}" ] && disown_pids="$disown_pids $FAKEOIDC_PID"
         # shellcheck disable=SC2086
         disown $disown_pids 2>/dev/null || true
@@ -959,7 +1048,7 @@ EOF
 
     # Foreground mode: register cleanup, then block.
     # Capture fake PIDs into local vars so the cleanup closure sees them.
-    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakefcm_pid="${FAKEFCM_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
+    local _fakeidp_pid="${FAKEIDP_PID:-}" _fakesmtp_pid="${FAKESMTP_PID:-}" _fakefcm_pid="${FAKEFCM_PID:-}" _fakeunsubscribe_pid="${FAKEUNSUBSCRIBE_PID:-}" _fakeoidc_pid="${FAKEOIDC_PID:-}"
     cleanup() {
         log "tearing down instance $id"
         kill_tree "$vite_pid" TERM
@@ -967,6 +1056,7 @@ EOF
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" TERM
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" TERM
         [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" TERM
+        [ -n "$_fakeunsubscribe_pid" ] && kill_tree "$_fakeunsubscribe_pid" TERM
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" TERM
         sleep 1
         kill_tree "$vite_pid" KILL
@@ -974,6 +1064,7 @@ EOF
         [ -n "$_fakeidp_pid" ] && kill_tree "$_fakeidp_pid" KILL
         [ -n "$_fakesmtp_pid" ] && kill_tree "$_fakesmtp_pid" KILL
         [ -n "$_fakefcm_pid" ] && kill_tree "$_fakefcm_pid" KILL
+        [ -n "$_fakeunsubscribe_pid" ] && kill_tree "$_fakeunsubscribe_pid" KILL
         [ -n "$_fakeoidc_pid" ] && kill_tree "$_fakeoidc_pid" KILL
         rm -rf "$dir"
     }
@@ -986,6 +1077,7 @@ EOF
     [ -n "$_fakeidp_pid" ] && wait_pids="$wait_pids $_fakeidp_pid"
     [ -n "$_fakesmtp_pid" ] && wait_pids="$wait_pids $_fakesmtp_pid"
     [ -n "$_fakefcm_pid" ] && wait_pids="$wait_pids $_fakefcm_pid"
+    [ -n "$_fakeunsubscribe_pid" ] && wait_pids="$wait_pids $_fakeunsubscribe_pid"
     [ -n "$_fakeoidc_pid" ] && wait_pids="$wait_pids $_fakeoidc_pid"
     # shellcheck disable=SC2086
     wait $wait_pids
@@ -1022,6 +1114,7 @@ cmd_stop() {
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" TERM
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" TERM
     [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" TERM
+    [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill_tree "$FAKEUNSUBSCRIBE_PID" TERM
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" TERM
     local deadline=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -1031,6 +1124,7 @@ cmd_stop() {
         [ -n "${FAKEIDP_PID:-}" ] && kill -0 "$FAKEIDP_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKESMTP_PID:-}" ] && kill -0 "$FAKESMTP_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEFCM_PID:-}" ] && kill -0 "$FAKEFCM_PID" 2>/dev/null && all_dead=0
+        [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill -0 "$FAKEUNSUBSCRIBE_PID" 2>/dev/null && all_dead=0
         [ -n "${FAKEOIDC_PID:-}" ] && kill -0 "$FAKEOIDC_PID" 2>/dev/null && all_dead=0
         [ "$all_dead" = "1" ] && break
         sleep 0.2
@@ -1040,6 +1134,7 @@ cmd_stop() {
     [ -n "${FAKEIDP_PID:-}" ] && kill_tree "$FAKEIDP_PID" KILL
     [ -n "${FAKESMTP_PID:-}" ] && kill_tree "$FAKESMTP_PID" KILL
     [ -n "${FAKEFCM_PID:-}" ] && kill_tree "$FAKEFCM_PID" KILL
+    [ -n "${FAKEUNSUBSCRIBE_PID:-}" ] && kill_tree "$FAKEUNSUBSCRIBE_PID" KILL
     [ -n "${FAKEOIDC_PID:-}" ] && kill_tree "$FAKEOIDC_PID" KILL
     rm -rf "$dir"
 }

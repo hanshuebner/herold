@@ -2,6 +2,7 @@ package sysconfig
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -305,6 +306,22 @@ type ExternalImagesNetwork struct {
 	// for operators with legitimate internal-fetch needs. Documented
 	// as dangerous. (REQ-EXTIMG-33)
 	AllowPrivate bool `toml:"allow_private,omitempty"`
+	// AllowedPorts extends the default 80/443 allowlist enforced by
+	// every guarded fetch built from this Config -- both the image
+	// fetcher and the Email/unsubscribe one-click POST (issue #412),
+	// which shares this guard rather than duplicating it. Empty
+	// leaves only 80/443 active. Test/dev harnesses that bind a fake
+	// origin to a kernel-picked high port are the intended use.
+	AllowedPorts []int `toml:"allowed_ports,omitempty"`
+	// ExtraCAFile names a PEM file of additional trusted root
+	// certificates for every guarded fetch built from this Config --
+	// both the image fetcher and the Email/unsubscribe one-click POST
+	// (issue #412). Combined with the process's system root pool
+	// (never replaces it), so this only ever widens trust for these
+	// specific outbound requests. Test/dev harnesses point this at a
+	// fake origin's self-signed certificate; real operators would use
+	// it for an internal CA signing a private mailing-list host.
+	ExtraCAFile string `toml:"extra_ca_file,omitempty"`
 }
 
 // ExternalImagesDKIM selects what happens to DKIM signatures on a
@@ -3194,6 +3211,20 @@ func Validate(c *Config) error {
 	for _, raw := range ei.Network.DenyCIDRs {
 		if _, _, err := net.ParseCIDR(raw); err != nil {
 			return fmt.Errorf("sysconfig: [external_images.network] deny_cidrs %q: %w", raw, err)
+		}
+	}
+	for _, p := range ei.Network.AllowedPorts {
+		if p <= 0 || p > 65535 {
+			return fmt.Errorf("sysconfig: [external_images.network] allowed_ports %d must be 1..65535", p)
+		}
+	}
+	if ei.Network.ExtraCAFile != "" {
+		pemBytes, err := os.ReadFile(ei.Network.ExtraCAFile)
+		if err != nil {
+			return fmt.Errorf("sysconfig: [external_images.network] extra_ca_file %q: %w", ei.Network.ExtraCAFile, err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(pemBytes) {
+			return fmt.Errorf("sysconfig: [external_images.network] extra_ca_file %q contains no valid PEM certificate", ei.Network.ExtraCAFile)
 		}
 	}
 	switch ei.DKIM.OnModification {

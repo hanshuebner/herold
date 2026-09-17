@@ -191,6 +191,23 @@ const (
 	// or separation affordance. The descriptor carries no additional
 	// properties for v1 (empty object).
 	CapabilitySubAccounts CapabilityID = "https://netzhansa.com/jmap/sub-accounts"
+
+	// CapabilityEmailUnsubscribe is the server-side RFC 8058 one-click
+	// unsubscribe capability (issue #412, docs/design/web/requirements/
+	// 14-unsubscribe.md REQ-UNS-02/04/20). A browser `fetch()` of a
+	// sender's one-click URL is a cross-origin request; the sender's
+	// endpoint never sends an Access-Control-Allow-Origin header (no
+	// sender allow-lists arbitrary webmail origins), so the browser
+	// discards the response and the Suite can never observe success.
+	// `Email/unsubscribe` has the server perform the POST on the
+	// principal's behalf and report the upstream outcome: the server
+	// validates the message carries `List-Unsubscribe-Post:
+	// List-Unsubscribe=One-Click` and an HTTPS `List-Unsubscribe` URL,
+	// then issues the RFC 8058 POST through the same SSRF guard the
+	// external-image fetcher uses (17-external-images.md
+	// REQ-EXTIMG-30..37). Implemented under
+	// internal/protojmap/mail/email (unsubscribe.go).
+	CapabilityEmailUnsubscribe CapabilityID = "https://netzhansa.com/jmap/unsubscribe"
 )
 
 // MethodHandler resolves and executes one method call within a JMAP

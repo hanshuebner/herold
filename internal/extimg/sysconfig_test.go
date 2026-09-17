@@ -77,6 +77,21 @@ tls = "starttls"
 	}
 }
 
+// TestFromSysConfig_AllowedPorts pins the [external_images.network]
+// allowed_ports -> Config.AllowedPorts mapping (issue #412): the
+// Email/unsubscribe one-click POST reuses this same Config as its SSRF
+// guard, and dev/test harnesses need a way to allowlist a fake origin's
+// kernel-picked port through system.toml rather than only via a
+// hand-built Config.
+func TestFromSysConfig_AllowedPorts(t *testing.T) {
+	cfg := FromSysConfig(sysconfig.ExternalImagesConfig{
+		Network: sysconfig.ExternalImagesNetwork{AllowedPorts: []int{18080, 18443}},
+	}, "test.local")
+	if len(cfg.AllowedPorts) != 2 || cfg.AllowedPorts[0] != 18080 || cfg.AllowedPorts[1] != 18443 {
+		t.Fatalf("AllowedPorts = %v, want [18080 18443]", cfg.AllowedPorts)
+	}
+}
+
 // allowedPortOf sets cfg.AllowedPorts to the httptest server's
 // kernel-picked port so the SSRF guard's port allowlist doesn't refuse
 // the test fixture itself.

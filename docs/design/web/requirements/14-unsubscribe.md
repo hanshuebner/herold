@@ -33,7 +33,7 @@ When multiple mechanisms are advertised, the suite prefers in this order:
 
 | ID | Requirement |
 |----|-------------|
-| REQ-UNS-20 | One-click: the suite issues `POST <url>` with body `List-Unsubscribe=One-Click` and `Content-Type: application/x-www-form-urlencoded`. No user-agent, no cookies, no referrer. |
+| REQ-UNS-20 | One-click: the suite calls the herold server's `Email/unsubscribe` JMAP method (capability `https://netzhansa.com/jmap/unsubscribe`); the **server**, not the browser, issues `POST <url>` with body `List-Unsubscribe=One-Click` and `Content-Type: application/x-www-form-urlencoded`, a neutral User-Agent, no cookies, and no referrer, and returns the upstream outcome to the suite. A cross-origin browser `fetch()` of the sender's endpoint is subject to CORS: the sender never allow-lists arbitrary webmail origins, so the browser cannot observe the response even when the POST reached the sender (issue #412). |
 | REQ-UNS-21 | Plain HTTPS URL: the suite opens the URL in a new tab with `rel="noopener noreferrer"`. The unsubscribe state is the user's responsibility from that point. |
 | REQ-UNS-22 | `mailto:`: the suite opens a compose window with `to`, `subject`, and `body` populated from the URI parameters. The user must hit Send to actually unsubscribe; the suite does not auto-send. |
 | REQ-UNS-23 | If both one-click and a `mailto:` are present, the suite uses one-click silently. The fallback is opaque to the user. |

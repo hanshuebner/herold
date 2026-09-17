@@ -1,6 +1,8 @@
 package extimg
 
 import (
+	"os"
+
 	"github.com/hanshuebner/herold/internal/sysconfig"
 )
 
@@ -25,6 +27,7 @@ func FromSysConfig(c sysconfig.ExternalImagesConfig, hostname string) Config {
 		FollowRedirectsMax:     c.Limits.FollowRedirectsMax,
 		DenyCIDRs:              MustParseCIDRs(c.Network.DenyCIDRs),
 		AllowPrivate:           c.Network.AllowPrivate,
+		AllowedPorts:           append([]int(nil), c.Network.AllowedPorts...),
 		DKIM:                   DKIMHandling(c.DKIM.OnModification),
 		AuditLogFetches:        c.Audit.LogFetches,
 		HostHeader:             hostname,
@@ -33,6 +36,15 @@ func FromSysConfig(c sysconfig.ExternalImagesConfig, hostname string) Config {
 		out.RequireHTTPS = *c.Limits.RequireHTTPS
 	} else {
 		out.RequireHTTPS = false
+	}
+	if c.Network.ExtraCAFile != "" {
+		// sysconfig.Validate already confirmed this file exists and
+		// parses as PEM; a read failure here (e.g. removed after
+		// validation, re-exec race) degrades to "no extra trust" rather
+		// than failing config load a second time.
+		if pemBytes, err := os.ReadFile(c.Network.ExtraCAFile); err == nil {
+			out.ExtraCACertPEM = pemBytes
+		}
 	}
 	out.resolveOptional()
 	return out

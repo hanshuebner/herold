@@ -62,6 +62,13 @@ type Config struct {
 	// from non-standard ports (e.g. an internal CDN on :8443 with
 	// AllowPrivate enabled).
 	AllowedPorts []int
+	// ExtraCACertPEM is an additional PEM-encoded root certificate (or
+	// bundle) trusted by every guarded fetch built from this Config --
+	// both the image fetcher and the Email/unsubscribe one-click POST
+	// (issue #412). Combined with the process's system root pool by
+	// NewGuardedClient, never replacing it. Empty means "system roots
+	// only", the production default.
+	ExtraCACertPEM []byte
 
 	// DKIM disposition (REQ-EXTIMG-40..47).
 	DKIM DKIMHandling
