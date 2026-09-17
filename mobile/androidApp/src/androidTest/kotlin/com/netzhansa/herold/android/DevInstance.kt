@@ -60,6 +60,15 @@ object DevInstance {
     val smtpAddr: String get() = argument("heroldSmtpAddr") ?: "10.0.2.2:2525"
 
     /**
+     * A key with the `bug-reports` scope (or admin), for reading back
+     * what the reporter posted (issue #416). Mint one on the instance
+     * with `herold api-key create <principal> --scope bug-reports` and
+     * pass it as `heroldBugReportsKey`; without it the bug-report
+     * checks skip, since the phone's own token cannot list reports.
+     */
+    val bugReportsKey: String? get() = argument("heroldBugReportsKey")
+
+    /**
      * An HTML message carrying an inline PNG, for the reading pane's
      * `cid:` path. Delivered like any other mail, so the client sees the
      * same shape a real sender produces.

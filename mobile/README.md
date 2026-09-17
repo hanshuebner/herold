@@ -156,19 +156,32 @@ Run the classes in a few invocations rather than one: a single invocation of
 the whole suite loads the emulator enough that a delivery wait or the
 editor's readiness check can exceed its 30 s budget.
 
-### The bug reporter (issue #407)
+### The bug reporter (issues #407, #417)
 
 `BugReportAcceptanceTest` drives the in-app reporter against the dev
 instance: a one-tap report from a thread overflow, a described one, the
-shake, and the filed copy under the "Bug reports" label. Run it in its
-own invocation:
+shake, and a report raised from the inbox, each read back from the
+server's `GET /api/v1/bug-reports`. That listing needs a bug-reports
+key, which the instance mints from its bootstrap admin key:
+
+    KEY=$(HEROLD_API_KEY=$(cat <state-dir>/api-key.txt) \
+      bin/herold api-key create admin@example.local \
+        --server-url <admin-url> --scope bug-reports --json | jq -r .key)
+
+Run the class in its own invocation:
 
     adb shell am instrument -w -r \
       -e class com.netzhansa.herold.android.BugReportAcceptanceTest \
       -e heroldBaseUrl http://10.0.2.2:<backend-port> \
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      -e heroldBugReportsKey "$KEY" \
       -e heroldEmulatorToken "$(cat ~/.emulator_console_auth_token)" \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+Without `heroldBugReportsKey` the three server-side checks skip. The
+same key drives `bin/herold bug-fetch --server-url <backend-url>
+--dry-run` with `$HEROLD_BUG_REPORTS_KEY`, which is how the posted
+reports are listed from the maintainer's side.
 
 The shake is injected through the emulator console rather than by hand:
 `adb emu` talks to a telnet listener on the host's loopback, which the

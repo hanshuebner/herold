@@ -3,7 +3,6 @@ package com.netzhansa.herold.android
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -11,18 +10,13 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.netzhansa.herold.shared.auth.SignInResult
-import com.netzhansa.herold.shared.diag.BugBundleWriter
 import com.netzhansa.herold.shared.domain.Email
-import com.netzhansa.herold.shared.jmap.JmapClient
-import com.netzhansa.herold.shared.sync.toStoreRow
+import com.netzhansa.herold.shared.outbox.OutboxKind
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeNotNull
 import org.junit.Before
@@ -33,14 +27,16 @@ import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
 
 /**
- * The in-app bug reporter (issue #407). A report raised from a
- * conversation's overflow reaches the maintainer's own mailbox under
- * the "Bug reports" label, carrying the bundle `herold bug-fetch`
- * expands - `report.json` naming the route and the build, and the
- * window as a PNG.
+ * The in-app bug reporter (issues #407, #417). A report raised from the
+ * app reaches the server's bug-reports queue - `POST /api/v1/bug-reports`
+ * on the account's bearer token - carrying the bundle `herold bug-fetch`
+ * expands: `report.json` naming the route and the build, and the window
+ * as a PNG. Nothing of it is filed in the user's mailboxes.
  *
- * The second check drives the gesture: the emulator's console is told
- * to shake the device and the sheet is expected to open on its own.
+ * The checks read the result back the way the maintainer's Mac does,
+ * with a bug-reports-scoped key (`heroldBugReportsKey`). The shake check
+ * drives the gesture: the emulator's console is told to shake the device
+ * and the sheet is expected to open on its own.
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -52,7 +48,8 @@ class BugReportAcceptanceTest {
     private val app get() = InstrumentationRegistry.getInstrumentation()
         .targetContext.applicationContext as HeroldApplication
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val key: String get() = DevInstance.bugReportsKey
+        ?: error("no heroldBugReportsKey; mint one with `herold api-key create --scope bug-reports`")
 
     @Before
     fun signedIn() {
@@ -73,52 +70,55 @@ class BugReportAcceptanceTest {
 
     /**
      * One tap from a conversation's overflow, with nothing typed. The
-     * report still reaches the account's own address with the capture
-     * on it, and says that the description is still owed.
+     * capture still reaches the server, and the report says that the
+     * description is still owed.
      */
     @Test
     fun t96_aReportSentWithOneTapArrivesWithTheCaptureAndNoDescription() = runBlocking {
+        assumeNotNull("no bug-reports key; skipping", DevInstance.bugReportsKey)
+        val known = reportIds()
         openAThread()
         raiseTheSheet()
         compose.captureScreen("96-bug-report-sheet-one-tap")
         compose.onNodeWithTag("bug-send").performClick()
 
-        // Nothing was typed, so the subject names where and when.
-        val arrived = awaitReport { it.startsWith(BugBundleWriter.SUBJECT_PREFIX + " thread ") }
-        val names = arrived.attachments.map { it.name }
-        assertTrue("the report carries no report.json, saw $names", names.contains("report.json"))
-        assertTrue("the report carries no PNG, saw $names", names.any { it.endsWith(".png") })
-
-        val meta = reportJsonOf(arrived)
-        assertEquals(
-            "an untyped report must say the description is still owed",
-            false,
-            meta["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean(),
-        )
-        assertEquals("", meta["sketch"]?.jsonPrimitive?.content)
-        val route = meta["context"]!!.jsonObject["route"]!!.jsonPrimitive.content
-        assertTrue("report.json names no thread route, saw $route", route.startsWith("thread/"))
-        val version = meta["app"]!!.jsonObject["version"]!!.jsonPrimitive.content
-        assertTrue("report.json names no version, saw \"$version\"", version.isNotBlank())
-
-        // And the copy is filed under the label the triage fetch reads,
-        // left unread so the fetch picks it up.
-        val client = DevInstance.serverClient()
-        val accountId = client.session().mailAccountId!!
-        val filed = filedUnderLabel(client, accountId, arrived.subject)
-        assertNotNull("the sent copy is not under \"${BugBundleWriter.LABEL}\"", filed)
+        // The queue names the report before it leaves.
+        val queued = awaitQueuedReport()
         assertTrue(
-            "the filed report is read; the fetch reads unread mail only",
-            !filed!!.keywords.contains("\$seen"),
+            "the outbox row reads \"${queued.label}\"",
+            queued.label.startsWith("Bug report: thread "),
         )
+
+        val arrived = awaitReport(known) { it.route.startsWith("thread/") }
+        assertFalse("an untyped report must say the description is still owed", arrived.descriptionEntered)
+        assertEquals(DevInstance.email, arrived.email)
+        assertTrue("the report carries no screenshot", arrived.screenshotCount >= 1)
+
+        val drop = BugReportsApi.drop(DevInstance.baseUrl, key, arrived.id)
+        val names = drop.keys.sorted()
+        assertTrue("the drop carries no report.json, saw $names", drop.containsKey("report.json"))
+        assertTrue("the drop carries no PNG, saw $names", names.any { it.endsWith(".png") })
+        val png = drop.entries.first { it.key.endsWith(".png") }.value
+        assertTrue("the screenshot is not a PNG", png.size > 4 && png[1] == 'P'.code.toByte())
+
+        val meta = JSONObject(drop["report.json"]!!.decodeToString())
+        assertFalse(meta.getBoolean("descriptionEntered"))
+        assertEquals("", meta.optString("sketch"))
+        val route = meta.getJSONObject("context").getString("route")
+        assertTrue("report.json names no thread route, saw $route", route.startsWith("thread/"))
+        val version = meta.getJSONObject("app").getString("version")
+        assertTrue("report.json names no version, saw \"$version\"", version.isNotBlank())
+        assertTrue("report.json carries no title", meta.getString("title").startsWith("thread "))
         compose.captureScreen("97-bug-report-sent")
     }
 
     /** A described report carries the words the maintainer typed. */
     @Test
     fun t97_aDescribedReportCarriesItsTitleAndNote() = runBlocking {
+        assumeNotNull("no bug-reports key; skipping", DevInstance.bugReportsKey)
         val title = "described report ${System.currentTimeMillis()}"
         val note = "It went blank right after the sync finished."
+        val known = reportIds()
         openAThread()
         raiseTheSheet()
         compose.onNodeWithTag("bug-title").performTextInput(title)
@@ -126,14 +126,13 @@ class BugReportAcceptanceTest {
         compose.captureScreen("98-bug-report-sheet-described")
         compose.onNodeWithTag("bug-send").performClick()
 
-        val arrived = awaitReport { it == BugBundleWriter.SUBJECT_PREFIX + " " + title }
-        val meta = reportJsonOf(arrived)
-        assertEquals(
-            "a typed report must say so",
-            true,
-            meta["descriptionEntered"]?.jsonPrimitive?.content?.toBoolean(),
-        )
-        assertEquals("$title\n\n$note", meta["sketch"]?.jsonPrimitive?.content)
+        val arrived = awaitReport(known) { it.title == title }
+        assertTrue("a typed report must say so", arrived.descriptionEntered)
+
+        val meta = BugReportsApi.reportJson(DevInstance.baseUrl, key, arrived.id)
+        assertTrue(meta.getBoolean("descriptionEntered"))
+        assertEquals(title, meta.getString("title"))
+        assertEquals("$title\n\n$note", meta.getString("sketch"))
     }
 
     /**
@@ -154,12 +153,14 @@ class BugReportAcceptanceTest {
     }
 
     /**
-     * From the inbox overflow, and then the other end of it: the label
-     * the client created carries the report, which is what
-     * `herold bug-fetch` reads.
+     * From the inbox overflow, and then the other end of it: the report
+     * is on the server and the account's mail is untouched - no "Bug
+     * reports" label, and nothing addressed to the user themselves.
      */
     @Test
-    fun t99_theReportIsReadableUnderTheLabelOnThePhone() = runBlocking {
+    fun t99_theReportGoesToTheServerAndNotToTheMailbox() = runBlocking {
+        assumeNotNull("no bug-reports key; skipping", DevInstance.bugReportsKey)
+        val known = reportIds()
         compose.onNodeWithTag("inbox-overflow").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("menu-report-problem").fetchSemanticsNodes().isNotEmpty()
@@ -169,33 +170,26 @@ class BugReportAcceptanceTest {
             compose.onAllNodesWithTag("bug-sheet").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("bug-send").performClick()
-        val arrived = awaitReport { it.startsWith(BugBundleWriter.SUBJECT_PREFIX + " inbox ") }
+        val arrived = awaitReport(known) { it.route.startsWith("inbox") }
+        assertTrue("the report is not named after the inbox", arrived.title.startsWith("inbox "))
 
-        // The client's own view of the other end: the label it created,
-        // carrying the report it filed there.
-        compose.waitUntil(LABEL_TIMEOUT_MS) {
-            runBlocking { app.container.session.value!!.syncEngine.syncAll() }
-            compose.onAllNodesWithTag("drawer-label-${BugBundleWriter.LABEL}")
-                .fetchSemanticsNodes().isNotEmpty() ||
-                runBlocking {
-                    app.container.store.mailboxList()
-                        .any { it.name == BugBundleWriter.LABEL }
-                }
-        }
-        compose.onNodeWithTag("inbox-drawer-open").performClick()
-        compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("drawer-label-${BugBundleWriter.LABEL}")
-                .fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("inbox-drawer").performScrollToNode(
-            hasTestTag("drawer-label-${BugBundleWriter.LABEL}"),
+        // The other end: the client created no label for it and filed no
+        // copy of it (issue #417 replaced the mail transport).
+        val client = DevInstance.serverClient()
+        val accountId = client.session().mailAccountId!!
+        val mailboxes = client.mailboxGet(accountId).list
+        assertTrue(
+            "the client created a \"Bug reports\" label: ${mailboxes.map { it.name }}",
+            mailboxes.none { it.name.equals("Bug reports", ignoreCase = true) },
         )
-        compose.captureScreen("100-bug-reports-label-in-the-drawer")
-        compose.onNodeWithTag("drawer-label-${BugBundleWriter.LABEL}").performClick()
-        compose.waitUntil(LABEL_TIMEOUT_MS) {
-            compose.onAllNodesWithText(arrived.subject).fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.captureScreen("101-the-report-under-the-label")
+        val inbox = mailboxes.first { it.role == "inbox" }.id
+        val ids = client.emailQueryInbox(accountId, inbox, 20)
+        val subjects = client.emailGet(accountId, ids).list.map { it.subject.orEmpty() }
+        assertTrue(
+            "a report was mailed to the account: $subjects",
+            subjects.none { it.startsWith("herold bug:") },
+        )
+        compose.captureScreen("100-report-raised-from-the-inbox")
     }
 
     /** Opens the reporter from the conversation's overflow. */
@@ -214,15 +208,6 @@ class BugReportAcceptanceTest {
             "the sheet shows no screenshot thumbnail",
             compose.onAllNodesWithTag("bug-thumbnail").fetchSemanticsNodes().isNotEmpty(),
         )
-    }
-
-    /** `report.json` as the arrived mail carries it. */
-    private suspend fun reportJsonOf(mail: Email): JsonObject {
-        val client = DevInstance.serverClient()
-        val accountId = client.session().mailAccountId!!
-        val part = mail.attachments.first { it.name == "report.json" }
-        val bytes = client.downloadBlob(accountId, part.blobId, part.type, part.name).bytes
-        return json.parseToJsonElement(bytes.decodeToString()).jsonObject
     }
 
     /** Seeds a conversation and opens it, so the report has a thread route. */
@@ -248,48 +233,40 @@ class BugReportAcceptanceTest {
         error("the seeded message \"$subject\" never reached the inbox")
     }
 
-    /** The report as it arrived in the account's own inbox. */
-    private suspend fun awaitReport(matches: (String) -> Boolean): Email {
-        val client = DevInstance.serverClient()
-        val accountId = client.session().mailAccountId!!
-        val inbox = client.mailboxGet(accountId).list.first { it.role == "inbox" }.id
+    /** The reports the server already holds, so a new one is recognisable. */
+    private fun reportIds(): Set<String> =
+        BugReportsApi.list(DevInstance.baseUrl, key).map { it.id }.toSet()
+
+    /** The report entry the tap queued, while it waits out its undo window. */
+    private suspend fun awaitQueuedReport(): com.netzhansa.herold.shared.outbox.OutboxEntry {
+        repeat(QUEUE_POLLS) {
+            app.container.outbox.list().firstOrNull { it.kind == OutboxKind.BUG_REPORT }
+                ?.let { return it }
+            Thread.sleep(QUEUE_POLL_MS)
+        }
+        error("no bug report was queued")
+    }
+
+    /** The report as it reached the server, once the drain posted it. */
+    private fun awaitReport(
+        known: Set<String>,
+        matches: (BugReportsApi.Report) -> Boolean,
+    ): BugReportsApi.Report {
         repeat(DELIVERY_POLLS) {
-            val ids = client.emailQueryInbox(accountId, inbox, 20)
-            client.emailGet(accountId, ids, withBody = true).list
-                .map { it.toStoreRow(accountId) }
-                .firstOrNull { matches(it.subject) }
+            BugReportsApi.list(DevInstance.baseUrl, key)
+                .firstOrNull { it.id !in known && matches(it) }
                 ?.let { return it }
             Thread.sleep(DELIVERY_POLL_MS)
         }
-        error("no bug report reached ${DevInstance.email}")
-    }
-
-    /** The sent copy under the "Bug reports" label, once the drain filed it. */
-    private suspend fun filedUnderLabel(
-        client: JmapClient,
-        accountId: String,
-        subject: String,
-    ): Email? {
-        repeat(DELIVERY_POLLS) {
-            val label = client.mailboxGet(accountId).list
-                .firstOrNull { it.name.equals(BugBundleWriter.LABEL, ignoreCase = true) }
-            if (label != null) {
-                val ids = client.emailQueryInbox(accountId, label.id, 20)
-                client.emailGet(accountId, ids).list
-                    .map { it.toStoreRow(accountId) }
-                    .firstOrNull { it.subject == subject }
-                    ?.let { return it }
-            }
-            Thread.sleep(DELIVERY_POLL_MS)
-        }
-        return null
+        error("no bug report reached the server's queue")
     }
 
     private companion object {
         const val TIMEOUT_MS = 30_000L
         const val SHAKE_TIMEOUT_MS = 30_000L
-        const val LABEL_TIMEOUT_MS = 60_000L
         const val DELIVERY_POLLS = 40
         const val DELIVERY_POLL_MS = 1_000L
+        const val QUEUE_POLLS = 20
+        const val QUEUE_POLL_MS = 250L
     }
 }
