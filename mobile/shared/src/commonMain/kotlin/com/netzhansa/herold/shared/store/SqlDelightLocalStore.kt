@@ -53,11 +53,14 @@ private val attachmentJson = Json { ignoreUnknownKeys = true }
  * queries, so a sync-engine write recomposes the affected screens without
  * the UI polling.
  *
+ * @param blobFiles where cached blob bytes are held; the `blob_cache` row
+ *   keeps the metadata and the file's path (issue #420).
  * @param blobBudgetBytes the blob cache's size budget; a write over budget
  *   evicts least-recently-used blobs until it fits (REQ-AND-SYNC-12).
  */
 class SqlDelightLocalStore(
     private val database: HeroldDatabase,
+    private val blobFiles: BlobFileStore,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val blobBudgetBytes: Long = DEFAULT_BLOB_BUDGET_BYTES,
     private val now: () -> Long = { 0L },
@@ -350,8 +353,14 @@ class SqlDelightLocalStore(
 
     override suspend fun cachedBlob(accountId: String, blobId: String): CachedBlob? = withContext(dispatcher) {
         val row = database.blobCacheQueries.get(accountId, blobId).executeAsOneOrNull() ?: return@withContext null
+        val bytes = blobFiles.read(row.path) ?: run {
+            // The cache directory is the system's to reclaim; a row whose
+            // file is gone is dropped here and the blob downloads again.
+            database.blobCacheQueries.delete(accountId, blobId)
+            return@withContext null
+        }
         database.blobCacheQueries.touch(now(), accountId, blobId)
-        CachedBlob(contentType = row.contentType, bytes = row.bytes)
+        CachedBlob(contentType = row.contentType, bytes = bytes)
     }
 
     override suspend fun cacheBlob(
@@ -360,15 +369,20 @@ class SqlDelightLocalStore(
         contentType: String,
         bytes: ByteArray,
     ) = withContext(dispatcher) {
-        database.transaction {
+        val path = blobPath(accountId, blobId)
+        // The bytes land in the file first: a row is only written for a
+        // blob that can be read back.
+        if (!blobFiles.write(path, bytes)) return@withContext
+        val evicted = database.transactionWithResult {
             database.blobCacheQueries.upsert(
                 accountId = accountId,
                 blobId = blobId,
                 contentType = contentType,
-                bytes = bytes,
+                path = path,
                 size = bytes.size.toLong(),
                 lastUsedAt = now(),
             )
+            val dropped = mutableListOf<String>()
             var total = database.blobCacheQueries.totalSize().executeAsOne()
             while (total > blobBudgetBytes) {
                 val victims = database.blobCacheQueries.oldest(EVICTION_BATCH).executeAsList()
@@ -376,11 +390,41 @@ class SqlDelightLocalStore(
                 victims.forEach { victim ->
                     if (victim.accountId == accountId && victim.blobId == blobId) return@forEach
                     database.blobCacheQueries.delete(victim.accountId, victim.blobId)
+                    dropped += victim.path
                     total -= victim.size
                 }
                 if (victims.size == 1 && victims[0].accountId == accountId && victims[0].blobId == blobId) break
             }
+            dropped
         }
+        // The files follow the rows: eviction frees the bytes, not only
+        // the metadata that accounts for them (REQ-AND-SYNC-12).
+        evicted.forEach { blobFiles.delete(it) }
+    }
+
+    /**
+     * Where a blob's bytes are held, relative to the file store's own
+     * directory: one directory per account, one file per blob. The name
+     * keeps the readable part of the id and carries a hash of the whole,
+     * so two ids that differ only in characters a file name cannot hold
+     * still land in two files.
+     */
+    private fun blobPath(accountId: String, blobId: String): String =
+        fileSegment(accountId) + "/" + fileSegment(blobId)
+
+    private fun fileSegment(value: String): String {
+        val readable = value.filter { it.isLetterOrDigit() || it == '-' || it == '_' }.takeLast(48)
+        return if (readable.isEmpty()) hashOf(value) else readable + "-" + hashOf(value)
+    }
+
+    /** FNV-1a over the id's UTF-8 bytes, so a path is the same every run. */
+    private fun hashOf(value: String): String {
+        var hash = 2166136261u
+        value.encodeToByteArray().forEach { byte ->
+            hash = hash xor (byte.toUInt() and 0xffu)
+            hash *= 16777619u
+        }
+        return hash.toString(16)
     }
 
     override fun outbox(): Flow<List<OutboxEntry>> =
@@ -487,6 +531,7 @@ class SqlDelightLocalStore(
             database.pushRegistrationQueries.deleteAll()
             database.accountQueries.deleteAll()
         }
+        blobFiles.deleteAll()
     }
 
     private fun writeMembership(accountId: String, emailId: String, mailboxIds: Set<String>) {

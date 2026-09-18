@@ -444,10 +444,12 @@ class SyncEngine(
      * offline. Returns null when the blob is neither cached nor reachable.
      */
     suspend fun blob(accountId: String, blobId: String, type: String, name: String): ByteArray? {
-        store.cachedBlob(accountId, blobId)?.let { return it.bytes }
+        // A cache that cannot answer costs a download, never the screen
+        // that asked (issue #420).
+        runCatching { store.cachedBlob(accountId, blobId) }.getOrNull()?.let { return it.bytes }
         val downloaded = runCatching { api.downloadBlob(accountId, blobId, type, name) }.getOrNull()
             ?: return null
-        store.cacheBlob(accountId, blobId, downloaded.contentType, downloaded.bytes)
+        runCatching { store.cacheBlob(accountId, blobId, downloaded.contentType, downloaded.bytes) }
         return downloaded.bytes
     }
 

@@ -41,6 +41,7 @@ import com.netzhansa.herold.shared.push.PushRegistrar
 import com.netzhansa.herold.shared.mail.UnsubscribeClient
 import com.netzhansa.herold.shared.search.MailSearch
 import com.netzhansa.herold.shared.store.LocalStore
+import com.netzhansa.herold.shared.store.FileBlobFileStore
 import com.netzhansa.herold.shared.store.SqlDelightLocalStore
 import com.netzhansa.herold.shared.store.createDatabase
 import com.netzhansa.herold.shared.store.DatabaseDriverFactory
@@ -177,6 +178,9 @@ class AppContainer(context: Context) {
 
     val store: LocalStore = SqlDelightLocalStore(
         database = createDatabase(DatabaseDriverFactory(context)),
+        // Cached blob bytes are files under the cache directory; the row
+        // holds the metadata and the file's path (issue #420).
+        blobFiles = FileBlobFileStore(context),
         dispatcher = Dispatchers.IO,
         now = { System.currentTimeMillis() },
     )
@@ -195,6 +199,7 @@ class AppContainer(context: Context) {
      * storage so the captures outlive the process (issue #424).
      */
     val pendingBugReport = PendingReportStore(context)
+
 
     /**
      * True while a "Report a problem" or a shake is waiting for the

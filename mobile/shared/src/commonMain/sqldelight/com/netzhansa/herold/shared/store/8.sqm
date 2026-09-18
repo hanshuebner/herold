@@ -1,0 +1,23 @@
+-- Schema 8 -> 9: cached blob bytes move out of the row into a file under
+-- the app's cache directory (issue #420). Android reads a row through a
+-- 2 MiB cursor window, so a cached blob above that size could not be read
+-- back and the read threw where the thread screen resolved an inline
+-- image. The row now names the file that holds the bytes.
+--
+-- The held rows go with the column: an install re-fetches the blobs it
+-- had cached the first time each is shown again.
+
+DROP INDEX blob_cache_lru;
+DROP TABLE blob_cache;
+
+CREATE TABLE blob_cache (
+    accountId TEXT NOT NULL,
+    blobId TEXT NOT NULL,
+    contentType TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    lastUsedAt INTEGER NOT NULL,
+    PRIMARY KEY (accountId, blobId)
+);
+
+CREATE INDEX blob_cache_lru ON blob_cache(lastUsedAt);
