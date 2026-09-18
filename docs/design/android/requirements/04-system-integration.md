@@ -12,6 +12,7 @@ web-platform integrations in `docs/design/web/requirements/24-mobile-and-touch.m
 | REQ-AND-SYS-01 | The client registers as a share target for text and files (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`): sharing to the app opens compose with the shared text in the body and shared files as attachments, honouring the inline-vs-attach distinction (`../00-scope.md` G8 / Suite `17-attachments`). |
 | REQ-AND-SYS-02 | The client exposes a share action from a message (parallels Suite `REQ-MOB-50/51`): sharing a message invokes the system share sheet with the subject and a deep link to the thread. |
 | REQ-AND-SYS-03 | `mailto:` links open the client's compose with the address prefilled; the client registers as a `mailto:` handler. |
+| REQ-AND-SYS-04 | A link in a message body acts outside the reading pane and never navigates it: the body's WebView refuses every navigation after the message document is up, including the window a `target="_blank"` anchor asks for, and routes the URL by scheme. `http`/`https` opens in a Custom Tab, with the system browser as the fallback; `mailto:` opens the composer on the address and subject (REQ-AND-SYS-03); `tel:`, `sms:` and other schemes go to `ACTION_VIEW` when a handler exists; `javascript:`, `data:`, `file:`, `content:` and `intent:` are ignored. An unhandled link does nothing and the message stays displayed. Long-press keeps the platform's link menu, so the address can still be copied (issue #425; mirrors the Suite, which opens a body link in a new tab). |
 
 ## Deep links
 
