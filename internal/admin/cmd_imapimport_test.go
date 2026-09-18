@@ -5,10 +5,13 @@ package admin
 // REQ-IMAP-IMP-62.
 
 import (
+	"bytes"
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/hanshuebner/herold/internal/clock"
 	"github.com/hanshuebner/herold/internal/protoadmin"
 	"github.com/hanshuebner/herold/internal/store"
 )
@@ -112,6 +115,120 @@ func TestCLIIMAPImportOwnAddresses_SetAndList(t *testing.T) {
 	want := []string{"info@classic-computing.de", "vorstand@classic-computing.de"}
 	if !equalStringSlicesAdmin(row.OwnAddresses, want) {
 		t.Fatalf("stored OwnAddresses = %v, want %v", row.OwnAddresses, want)
+	}
+}
+
+// TestCLIIMAPImportRestoreArchive_RefusalExitsNonZeroForceOverrides is the
+// CLI-level regression test for the restore-archive eligibility guard (re
+// #376, second round follow-up): a message in INBOX matching neither #376
+// shape makes the command exit non-zero and leaves the message untouched;
+// --force overrides the refusal and moves it.
+func TestCLIIMAPImportRestoreArchive_RefusalExitsNonZeroForceOverrides(t *testing.T) {
+	systomlPath, cfg := minimalConfigFixture(t)
+	ctx := context.Background()
+	clk := clock.NewReal()
+
+	st, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	p, err := st.Meta().InsertPrincipal(ctx, store.Principal{
+		Kind:           store.PrincipalKindUser,
+		CanonicalEmail: "restore-cli@example.test",
+	})
+	if err != nil {
+		t.Fatalf("InsertPrincipal: %v", err)
+	}
+	inboxMB, err := st.Meta().InsertMailbox(ctx, store.Mailbox{
+		PrincipalID: p.ID, Name: "INBOX", Attributes: store.MailboxAttrInbox,
+	})
+	if err != nil {
+		t.Fatalf("InsertMailbox: %v", err)
+	}
+	blob, err := st.Blobs().Put(ctx, strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Blobs.Put: %v", err)
+	}
+	if _, _, err := st.Meta().InsertMessage(ctx, store.Message{
+		PrincipalID: p.ID,
+		Size:        blob.Size,
+		Blob:        blob,
+		Envelope:    store.Envelope{Subject: "restore-archive-cli", MessageID: "cli-refused@test"},
+	}, []store.MessageMailbox{{MailboxID: inboxMB.ID}}); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msg, err := st.Meta().GetMessageByMessageIDHeader(ctx, p.ID, "cli-refused@test")
+	if err != nil {
+		t.Fatalf("GetMessageByMessageIDHeader: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	msgIDStr := strconv.FormatUint(uint64(msg.ID), 10)
+
+	runRestoreArchive := func(extraArgs ...string) (stdout, stderr string, err error) {
+		root := NewRootCmd()
+		var out, errBuf bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&errBuf)
+		args := append([]string{
+			"--system-config", systomlPath,
+			"imapimport", "restore-archive", "restore-cli@example.test",
+			"--message", msgIDStr,
+		}, extraArgs...)
+		root.SetArgs(args)
+		root.SetContext(context.Background())
+		err = root.Execute()
+		return out.String(), errBuf.String(), err
+	}
+
+	// Without --force: the command exits non-zero and leaves the message
+	// in INBOX.
+	stdout, _, err := runRestoreArchive()
+	if err == nil {
+		t.Fatal("restore-archive on an ineligible message should exit non-zero without --force")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("error = %q; want it to mention the refusal", err.Error())
+	}
+	if !strings.Contains(stdout, "refused") {
+		t.Errorf("stdout = %q; want the per-message refusal reported", stdout)
+	}
+
+	st2, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("openStore (recheck): %v", err)
+	}
+	afterRefuse, err := st2.Meta().GetMessage(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessage (after refused run): %v", err)
+	}
+	if len(afterRefuse.Mailboxes) != 1 || afterRefuse.Mailboxes[0].MailboxID != inboxMB.ID {
+		t.Fatalf("refused message was modified: mailboxes = %+v", afterRefuse.Mailboxes)
+	}
+	if err := st2.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// With --force: the command succeeds and moves the message.
+	_, _, err = runRestoreArchive("--force")
+	if err != nil {
+		t.Fatalf("restore-archive --force: %v", err)
+	}
+
+	st3, err := openStore(ctx, cfg, discardLogger(), clk)
+	if err != nil {
+		t.Fatalf("openStore (final): %v", err)
+	}
+	defer st3.Close()
+	afterForce, err := st3.Meta().GetMessage(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessage (after forced run): %v", err)
+	}
+	for _, mm := range afterForce.Mailboxes {
+		if mm.MailboxID == inboxMB.ID {
+			t.Fatalf("forced message still has an INBOX membership: %+v", afterForce.Mailboxes)
+		}
 	}
 }
 

@@ -43,22 +43,32 @@ func newIMAPImportCmd() *cobra.Command {
 // discovered by a heuristic scan.
 func newIMAPImportRestoreArchiveCmd() *cobra.Command {
 	var dryRun bool
+	var force bool
 	var messageIDs []string
 	c := &cobra.Command{
 		Use:   "restore-archive <email-or-id> --message <id> [--message <id> ...]",
 		Short: "move named messages from INBOX back to Archive, marking them seen (re #376)",
 		Long: `Reverses the "principal-sent or already-archived message resurfaced in
 Inbox" symptom (issue #376) for the explicitly named message ids: each
-message currently a member of INBOX gets an Archive membership (the
-principal's Archive mailbox is created if it does not yet exist), that
-membership is forced $seen, and the INBOX membership is removed. A message
-with no INBOX membership is left untouched and reported as
-"already-archived" -- safe to re-run.
+message currently a member of INBOX and matching one of the #376 shapes --
+principal-sent (a Sent-role membership, or its From names one of the
+principal's own identities), or an imapimport dedup hit whose thread already
+has an Archive member -- gets an Archive membership (the principal's Archive
+mailbox is created if it does not yet exist), that membership is forced
+$seen, and the INBOX membership is removed. The corresponding
+imapimport_message_state row(s) are updated to the new placement so a
+later down-sync of the still-unseen upstream copy does not resurface INBOX
+or clear $seen.
 
-This does not restore imapimport_message_state / provenance-label history;
-it only repairs the mailbox membership and $seen state, the same scope as
-imapimport repair-orphans. --dry-run reports the intended action per message
-without writing anything.`,
+A message currently in INBOX that matches neither shape is REFUSED (left
+untouched, reported with its reason) and the command exits non-zero, unless
+--force is given. A message with no INBOX membership is left untouched and
+reported as "already-archived" -- safe to re-run.
+
+This does not restore provenance-label history; it only repairs the mailbox
+membership, $seen state, and imapimport_message_state placement, the same
+scope as imapimport repair-orphans. --dry-run reports the intended action
+and eligibility verdict per message without writing anything.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(messageIDs) == 0 {
@@ -90,26 +100,31 @@ without writing anything.`,
 				return err
 			}
 
-			results, err := restoreIMAPImportArchive(ctx, st, p.ID, ids, dryRun)
+			results, err := restoreIMAPImportArchive(ctx, st, p.ID, ids, dryRun, force)
 			if err != nil {
 				return err
 			}
 			if g.jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(struct {
+				if err := enc.Encode(struct {
 					Mode    string                           `json:"mode"`
 					Results []IMAPImportRestoreArchiveResult `json:"results"`
-				}{Mode: modeString(dryRun), Results: results})
-			}
-			if !g.quiet {
+				}{Mode: modeString(dryRun), Results: results}); err != nil {
+					return err
+				}
+			} else if !g.quiet {
 				fmt.Fprintf(cmd.ErrOrStderr(), "restore-archive: done (%s)\n", modeString(dryRun))
 				fmt.Fprint(cmd.OutOrStdout(), formatIMAPImportRestoreArchiveResults(results))
+			}
+			if anyRefused(results) {
+				return fmt.Errorf("restore-archive: one or more messages were refused (neither principal-sent nor an archived-thread dedup hit); re-run with --force to override")
 			}
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the intended action per message without writing anything")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report the intended action and eligibility verdict per message without writing anything")
+	c.Flags().BoolVar(&force, "force", false, "move a message even when it matches neither #376 eligibility shape")
 	c.Flags().StringArrayVar(&messageIDs, "message", nil, "message id to repair (repeatable)")
 	return c
 }

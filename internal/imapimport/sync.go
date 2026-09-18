@@ -1077,6 +1077,47 @@ func (w *accountWorker) threadHasArchiveNoInbox(
 	return archiveMB, true
 }
 
+// ThreadHasArchiveMember reports whether any OTHER message in msg's thread
+// (msg's own memberships are not consulted) carries an Archive-attributed
+// membership, returning that mailbox's ID. Store-only sibling of
+// threadHasArchiveNoInbox, without the "no member currently has Inbox"
+// condition that only applies at placement time before the candidate
+// membership itself exists: used by the `imapimport restore-archive` repair
+// CLI (internal/admin) to decide whether a message currently misplaced in
+// INBOX is one of the imapimport dedup-hit shapes #376 describes -- a
+// message whose thread already has an archived member, even though the
+// message itself still carries the INBOX membership being repaired (re
+// #376, second round).
+//
+// A message not yet threaded (ThreadID == 0) is looked up by its own
+// MessageID as the thread key, mirroring threadHasArchiveNoInbox.
+func ThreadHasArchiveMember(ctx context.Context, st store.Store, principalID store.PrincipalID, msg store.Message) (store.MailboxID, bool) {
+	attrs := MailboxAttrByID(ctx, st, principalID)
+	key := msg.ThreadID
+	if key == 0 {
+		key = uint64(msg.ID)
+	}
+	rows, err := st.Meta().ListThreadsByKeys(ctx, principalID, []uint64{key})
+	if err != nil || len(rows[key]) == 0 {
+		return 0, false
+	}
+	for _, tm := range rows[key] {
+		if tm.MessageID == msg.ID {
+			continue
+		}
+		m, gerr := st.Meta().GetMessage(ctx, tm.MessageID)
+		if gerr != nil {
+			continue
+		}
+		for _, mm := range m.Mailboxes {
+			if attrs[mm.MailboxID]&store.MailboxAttrArchive != 0 {
+				return mm.MailboxID, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // dedupHitIsPrincipalSent reports whether a Message-ID/blob-hash dedup hit
 // (existing, freshly re-fetched msg) is a copy of a message the owning
 // principal sent: either existing already carries a membership in a
@@ -1126,7 +1167,16 @@ func (w *accountWorker) dedupHitIsPrincipalSent(
 // freshly-refetched dedup hit is dedupHitIsPrincipalSent, which takes the
 // re-parsed mailparse.Message instead of the stored Envelope.
 func (w *accountWorker) messageIsPrincipalSent(ctx context.Context, principalID store.PrincipalID, heroldMsg store.Message) bool {
-	attrs := w.mailboxAttrByID(ctx, principalID)
+	return MessageIsPrincipalSent(ctx, w.opts.store, principalID, heroldMsg)
+}
+
+// MessageIsPrincipalSent is the store-only form of
+// (*accountWorker).messageIsPrincipalSent, exported so callers outside a
+// running import worker -- the `imapimport restore-archive` repair CLI
+// (internal/admin), in particular -- can apply the same principal-sent
+// eligibility test without an accountWorker (re #376, second round).
+func MessageIsPrincipalSent(ctx context.Context, st store.Store, principalID store.PrincipalID, heroldMsg store.Message) bool {
+	attrs := MailboxAttrByID(ctx, st, principalID)
 	for _, mm := range heroldMsg.Mailboxes {
 		if attrs[mm.MailboxID]&store.MailboxAttrSent != 0 {
 			return true
@@ -1136,7 +1186,7 @@ func (w *accountWorker) messageIsPrincipalSent(ctx context.Context, principalID 
 	if from == "" {
 		return false
 	}
-	identities := w.principalIdentityEmails(ctx, principalID)
+	identities := PrincipalIdentityEmails(ctx, st, principalID)
 	if len(identities) == 0 {
 		return false
 	}
@@ -1158,13 +1208,20 @@ func (w *accountWorker) messageIsPrincipalSent(ctx context.Context, principalID 
 // Returns an empty (non-nil) map on a store error; callers treat a miss as
 // "no known identities" rather than failing the import.
 func (w *accountWorker) principalIdentityEmails(ctx context.Context, principalID store.PrincipalID) map[string]struct{} {
+	return PrincipalIdentityEmails(ctx, w.opts.store, principalID)
+}
+
+// PrincipalIdentityEmails is the store-only form of
+// (*accountWorker).principalIdentityEmails; see MessageIsPrincipalSent for
+// why it is exported.
+func PrincipalIdentityEmails(ctx context.Context, st store.Store, principalID store.PrincipalID) map[string]struct{} {
 	out := make(map[string]struct{}, 4)
-	if p, err := w.opts.store.Meta().GetPrincipalByID(ctx, principalID); err == nil {
+	if p, err := st.Meta().GetPrincipalByID(ctx, principalID); err == nil {
 		if e := strings.ToLower(strings.TrimSpace(p.CanonicalEmail)); e != "" {
 			out[e] = struct{}{}
 		}
 	}
-	if ids, err := w.opts.store.Meta().ListJMAPIdentities(ctx, principalID); err == nil {
+	if ids, err := st.Meta().ListJMAPIdentities(ctx, principalID); err == nil {
 		for _, id := range ids {
 			if e := strings.ToLower(strings.TrimSpace(id.Email)); e != "" {
 				out[e] = struct{}{}
@@ -1195,7 +1252,13 @@ var errINBOXSuppressedByArchive = errors.New("imapimport: inbox membership suppr
 // round-trip. Returns nil (all lookups miss) on a store error; callers
 // treat a miss as "no special-use bits".
 func (w *accountWorker) mailboxAttrByID(ctx context.Context, pid store.PrincipalID) map[store.MailboxID]store.MailboxAttributes {
-	mbs, err := w.opts.store.Meta().ListMailboxes(ctx, pid)
+	return MailboxAttrByID(ctx, w.opts.store, pid)
+}
+
+// MailboxAttrByID is the store-only form of (*accountWorker).mailboxAttrByID;
+// see MessageIsPrincipalSent for why it is exported.
+func MailboxAttrByID(ctx context.Context, st store.Store, pid store.PrincipalID) map[store.MailboxID]store.MailboxAttributes {
+	mbs, err := st.Meta().ListMailboxes(ctx, pid)
 	if err != nil {
 		return nil
 	}
