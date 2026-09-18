@@ -2,6 +2,8 @@ package com.netzhansa.herold.android.ui.thread
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.os.Message
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -58,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +78,7 @@ import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
 import com.netzhansa.herold.android.push.ActiveThread
 import com.netzhansa.herold.android.push.MailNotifier
+import com.netzhansa.herold.android.links.ExternalBrowser
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
 import com.netzhansa.herold.android.ui.common.UndoOffers
@@ -87,6 +91,8 @@ import com.netzhansa.herold.shared.compose.HtmlText
 import com.netzhansa.herold.shared.domain.Attachment
 import com.netzhansa.herold.shared.domain.Keywords
 import com.netzhansa.herold.shared.links.AppLinks
+import com.netzhansa.herold.shared.links.BodyLinkAction
+import com.netzhansa.herold.shared.links.BodyLinks
 import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
@@ -103,6 +109,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The thread accordion: every message of the conversation, collapsed except
@@ -154,6 +161,25 @@ fun ThreadScreen(
     var blocking by remember { mutableStateOf<String?>(null) }
     var unsubscribing by remember { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
+
+    /**
+     * What a tap on a link in a message body does (issue #425). Every
+     * navigation the body attempts arrives here and is acted on outside
+     * the WebView, so the message stays on screen whatever the link is.
+     */
+    val openBodyLink: (String) -> Unit = { url ->
+        when (val action = BodyLinks.route(url)) {
+            is BodyLinkAction.OpenExternally -> ExternalBrowser.open(context, action.url)
+            is BodyLinkAction.Compose -> onComposeTo(
+                action.prefill.to.joinToString(", "),
+                action.prefill.subject,
+                action.prefill.body,
+            )
+
+            is BodyLinkAction.HandOff -> ExternalBrowser.view(context, action.uri)
+            BodyLinkAction.Ignore -> Unit
+        }
+    }
 
     // What an image is decoded for: the column it is drawn in, never its
     // own resolution (issue #341).
@@ -368,7 +394,7 @@ fun ThreadScreen(
                             )
                         }
 
-                        is ListHeaders.Mechanism.Https -> openInBrowser(context, mechanism.url)
+                        is ListHeaders.Mechanism.Https -> ExternalBrowser.open(context, mechanism.url)
 
                         is ListHeaders.Mechanism.Mailto -> {
                             val fields = ListHeaders.parseMailto(mechanism.url)
@@ -443,6 +469,7 @@ fun ThreadScreen(
                     },
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
+                    onLink = openBodyLink,
                 )
                 HorizontalDivider()
             }
@@ -484,6 +511,7 @@ fun ThreadScreen(
                     },
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
+                    onLink = openBodyLink,
                     tag = "thread-pending-${message.entryId}",
                     status = {
                         PendingMarker(message = message, onOpenOutbox = onOutbox)
@@ -720,16 +748,6 @@ private fun UnsubscribeBar(busy: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Hands an unsubscribe URL to the browser; the phone never renders it. */
-private fun openInBrowser(context: android.content.Context, url: String) {
-    runCatching {
-        context.startActivity(
-            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    }
-}
-
 /**
  * The snoozed banner: when the conversation wakes, with the edit and the
  * cancel next to it (suite REQ-SNZ-12). Cancelling clears `snoozedUntil`,
@@ -813,6 +831,8 @@ private fun MessageCard(
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
     loadBlob: suspend (Attachment) -> ByteArray?,
     onOpenAttachment: (Attachment) -> Unit,
+    /** Where a link in the body goes (issue #425). */
+    onLink: (String) -> Unit,
     /** What the message is tagged with, for the instrumented checks. */
     tag: String = "message-${message.id}",
     /** The state marker a message that is not on the server yet carries. */
@@ -877,6 +897,7 @@ private fun MessageCard(
                     html = HtmlSanitizer.document(body.html, darkTheme),
                     resolveInlineImage = resolveInlineImage,
                     resolveRemoteImage = if (loadRemoteImages) resolveRemoteImage else { _ -> null },
+                    onLink = onLink,
                     modifier = Modifier.fillMaxWidth().testTag("message-body-${message.id}"),
                 )
             }
@@ -905,6 +926,13 @@ private fun MessageCard(
  * intercepting the scheme the sanitiser rewrote `cid:` onto; every other
  * network load is refused, so opening a message makes no request the user
  * did not ask for.
+ *
+ * The WebView shows one document - the message - and never navigates.
+ * Once that document is up, every navigation it attempts is handed to
+ * [onLink] and refused, including the ones a `target="_blank"` anchor
+ * raises as a new window, so a tapped link opens outside the reading pane
+ * and the message stays on screen (issue #425). Long-press keeps the
+ * platform's own link menu.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -912,8 +940,13 @@ private fun MessageBodyWebView(
     html: String,
     resolveInlineImage: (String) -> Pair<String, ByteArray>?,
     resolveRemoteImage: (String) -> Pair<String, ByteArray>?,
+    onLink: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val link by rememberUpdatedState(onLink)
+    // True while the message document itself is loading, which is the one
+    // navigation this WebView performs.
+    val rendering = remember { AtomicBoolean(true) }
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -922,8 +955,25 @@ private fun MessageBodyWebView(
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.loadsImagesAutomatically = true
+                // A `target="_blank"` anchor asks for a window rather than
+                // navigating; with this on it arrives at onCreateWindow,
+                // where it takes the same route as any other link.
+                settings.setSupportMultipleWindows(true)
                 isVerticalScrollBarEnabled = false
                 webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                    ): Boolean {
+                        if (rendering.get()) return false
+                        link(request?.url?.toString().orEmpty())
+                        return true
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        rendering.set(false)
+                    }
+
                     override fun shouldInterceptRequest(
                         view: WebView?,
                         request: WebResourceRequest?,
@@ -950,9 +1000,39 @@ private fun MessageBodyWebView(
                     private fun blocked() =
                         WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
+                webChromeClient = object : WebChromeClient() {
+                    /**
+                     * A window the body asked for. The URL reaches the app
+                     * only through the window it was promised, so a
+                     * throwaway WebView takes the navigation, reports the
+                     * URL and is discarded; nothing of it is ever shown.
+                     */
+                    override fun onCreateWindow(
+                        view: WebView,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: Message,
+                    ): Boolean {
+                        val relay = WebView(view.context)
+                        relay.webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                inner: WebView?,
+                                request: WebResourceRequest?,
+                            ): Boolean {
+                                link(request?.url?.toString().orEmpty())
+                                inner?.post { inner.destroy() }
+                                return true
+                            }
+                        }
+                        (resultMsg.obj as WebView.WebViewTransport).webView = relay
+                        resultMsg.sendToTarget()
+                        return true
+                    }
+                }
             }
         },
         update = { webView ->
+            rendering.set(true)
             webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         },
     )
