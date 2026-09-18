@@ -76,6 +76,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.netzhansa.herold.android.AppContainer
 import com.netzhansa.herold.android.SessionScope
+import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.push.ActiveThread
 import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.links.ExternalBrowser
@@ -192,11 +193,42 @@ fun ThreadScreen(
      * carries it is still queued, from the blob cache once the server
      * holds it, downloading it once (issue #380).
      */
-    suspend fun blobOf(attachment: Attachment): ByteArray? {
+    suspend fun blobOf(attachment: Attachment): ByteArray? = runCatching {
         PendingMessage.spoolHandle(attachment.blobId)?.let { handle ->
-            return container.spool.read(handle)
+            return@runCatching container.spool.read(handle)
         }
-        return session.syncEngine.blob(accountId, attachment.blobId, attachment.type, attachment.name)
+        session.syncEngine.blob(accountId, attachment.blobId, attachment.type, attachment.name)
+    }.onFailure { failure ->
+        // A part the store or the network cannot produce is drawn as
+        // unavailable; it never takes the screen with it (issue #420).
+        DiagLog.e(
+            THREAD_TAG,
+            "the part ${attachment.blobId} could not be loaded: ${failure::class.simpleName}: ${failure.message}",
+        )
+    }.getOrNull()
+
+    /**
+     * What a body's `cid:` reference resolves to: the part's bytes,
+     * decoded at the width the column draws them at (issue #341). A part
+     * that cannot be loaded or decoded resolves to nothing and the body
+     * draws the image as missing, which is what keeps a newsletter with
+     * an oversized inline image readable (issue #420).
+     */
+    fun inlineImageOf(attachments: List<Attachment>, cid: String): Pair<String, ByteArray>? {
+        val attachment = attachments.firstOrNull {
+            it.cid?.trim('<', '>') == cid || it.name == cid
+        } ?: return null
+        return runBlocking(Dispatchers.IO) {
+            val bytes = blobOf(attachment) ?: return@runBlocking null
+            runCatching { attachment.type to ImageScaling.forDisplay(bytes, displayWidthPx) }
+                .onFailure {
+                    DiagLog.e(
+                        THREAD_TAG,
+                        "the inline part ${attachment.blobId} could not be decoded: ${it.message}",
+                    )
+                }
+                .getOrNull()
+        }
     }
 
     // A thread reached from search or a notification can be outside the
@@ -452,21 +484,7 @@ fun ThreadScreen(
                             session.imageProxy.fetch(url)?.let { it.contentType to it.bytes }
                         }
                     },
-                    resolveInlineImage = { cid ->
-                        val attachment = message.attachments.firstOrNull {
-                            it.cid?.trim('<', '>') == cid || it.name == cid
-                        }
-                        attachment?.let {
-                            runBlocking(Dispatchers.IO) {
-                                blobOf(it)?.let { bytes ->
-                                    // Inline images keep their place in the
-                                    // body and are handed to the WebView at
-                                    // the width it will draw them at.
-                                    it.type to ImageScaling.forDisplay(bytes, displayWidthPx)
-                                }
-                            }
-                        }
-                    },
+                    resolveInlineImage = { cid -> inlineImageOf(message.attachments, cid) },
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
                     onLink = openBodyLink,
@@ -498,16 +516,7 @@ fun ThreadScreen(
                         }
                     },
                     resolveInlineImage = { cid ->
-                        val attachment = queued.attachments.firstOrNull {
-                            it.cid?.trim('<', '>') == cid || it.name == cid
-                        }
-                        attachment?.let {
-                            runBlocking(Dispatchers.IO) {
-                                blobOf(it)?.let { bytes ->
-                                    it.type to ImageScaling.forDisplay(bytes, displayWidthPx)
-                                }
-                            }
-                        }
+                        inlineImageOf(queued.attachments, cid)
                     },
                     loadBlob = { attachment -> blobOf(attachment) },
                     onOpenAttachment = { attachment -> viewing = attachment },
@@ -1051,17 +1060,27 @@ private fun AttachmentRow(
     onOpen: () -> Unit,
 ) {
     val isImage = ImageScaling.isImage(attachment.type)
-    val thumbnail by produceState<ImageBitmap?>(null, attachment.blobId) {
-        if (!isImage) return@produceState
+    // Three states, because a part that cannot be produced must say so
+    // rather than leave an empty chip (issue #420): still loading, the
+    // thumbnail, or unavailable.
+    val thumbnail by produceState<AttachmentPreview>(AttachmentPreview.Loading, attachment.blobId) {
+        if (!isImage) {
+            value = AttachmentPreview.None
+            return@produceState
+        }
         value = withContext(Dispatchers.IO) {
-            loadBlob(attachment)?.let { ImageScaling.thumbnail(it, THUMBNAIL_PX) }
+            val bitmap = loadBlob(attachment)?.let {
+                runCatching { ImageScaling.thumbnail(it, THUMBNAIL_PX) }.getOrNull()
+            }
+            if (bitmap == null) AttachmentPreview.Unavailable else AttachmentPreview.Ready(bitmap)
         }
     }
+    val unavailable = thumbnail is AttachmentPreview.Unavailable
     ListItem(
         leadingContent = {
-            thumbnail?.let { bitmap ->
+            (thumbnail as? AttachmentPreview.Ready)?.let { ready ->
                 Image(
-                    bitmap = bitmap,
+                    bitmap = ready.bitmap,
                     contentDescription = attachment.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -1071,9 +1090,19 @@ private fun AttachmentRow(
             }
         },
         headlineContent = { Text(attachment.name) },
-        supportingContent = { Text("${attachment.type} - ${formatBytes(attachment.size)}") },
+        supportingContent = {
+            val detail = "${attachment.type} - ${formatBytes(attachment.size)}"
+            if (unavailable) {
+                Text(
+                    text = "$detail - unavailable",
+                    modifier = Modifier.testTag("attachment-unavailable-${attachment.name}"),
+                )
+            } else {
+                Text(detail)
+            }
+        },
         modifier = Modifier
-            .clickable(enabled = isImage, onClick = onOpen)
+            .clickable(enabled = isImage && !unavailable, onClick = onOpen)
             .testTag("attachment-${attachment.name}"),
     )
 }
@@ -1086,9 +1115,12 @@ private fun AttachmentViewer(
     loadBlob: suspend (Attachment) -> ByteArray?,
     onDismiss: () -> Unit,
 ) {
-    val image by produceState<ImageBitmap?>(null, attachment.blobId) {
+    val image by produceState<AttachmentPreview>(AttachmentPreview.Loading, attachment.blobId) {
         value = withContext(Dispatchers.IO) {
-            loadBlob(attachment)?.let { ImageScaling.thumbnail(it, maxEdgePx) }
+            val bitmap = loadBlob(attachment)?.let {
+                runCatching { ImageScaling.thumbnail(it, maxEdgePx) }.getOrNull()
+            }
+            if (bitmap == null) AttachmentPreview.Unavailable else AttachmentPreview.Ready(bitmap)
         }
     }
     Dialog(onDismissRequest = onDismiss) {
@@ -1099,14 +1131,21 @@ private fun AttachmentViewer(
                 .testTag("attachment-viewer"),
             contentAlignment = Alignment.Center,
         ) {
-            image?.let { bitmap ->
-                Image(
-                    bitmap = bitmap,
+            when (val state = image) {
+                is AttachmentPreview.Ready -> Image(
+                    bitmap = state.bitmap,
                     contentDescription = attachment.name,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth(),
                 )
-            } ?: CircularProgressIndicator()
+
+                AttachmentPreview.Unavailable, AttachmentPreview.None -> Text(
+                    text = "This attachment could not be loaded.",
+                    modifier = Modifier.padding(24.dp).testTag("attachment-viewer-unavailable"),
+                )
+
+                AttachmentPreview.Loading -> CircularProgressIndicator()
+            }
         }
     }
 }
@@ -1117,6 +1156,25 @@ private fun formatBytes(size: Long): String = when {
     else -> "$size B"
 }
 
+/**
+ * Where an attachment's picture stands: still being read, drawn, or not
+ * to be had - a blob the store and the server both failed to produce,
+ * or one that would not decode (issue #420).
+ */
+private sealed interface AttachmentPreview {
+    data object Loading : AttachmentPreview
+
+    /** Nothing to draw, because the part is not an image. */
+    data object None : AttachmentPreview
+
+    data class Ready(val bitmap: ImageBitmap) : AttachmentPreview
+
+    data object Unavailable : AttachmentPreview
+}
+
 /** A chip's thumbnail: 56 dp on screen, decoded to a little more than that. */
 private const val THUMBNAIL_DP = 56
 private const val THUMBNAIL_PX = 256
+
+/** What the reading pane's lines say in the diagnostic ring. */
+private const val THREAD_TAG = "herold.thread"
