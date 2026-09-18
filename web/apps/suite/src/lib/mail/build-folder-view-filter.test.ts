@@ -1,10 +1,12 @@
 /**
  * Issue #310: a label view (any mailbox that is not Junk or Trash) must
  * exclude messages that also sit in Junk or Trash, so a message the spam
- * filter or the user filed away still surfaces in a label view. Junk,
- * Trash, and the "all" view are unaffected -- buildFolderViewFilter only
- * handles the mailbox-scoped case; loadFolder/#refreshFolderInPlace keep
- * their own branches for the virtual "important"/"snoozed"/"all" folders.
+ * filter or the user filed away still surfaces in a label view. Junk and
+ * Trash themselves are unaffected -- buildFolderViewFilter only handles
+ * the mailbox-scoped case; the virtual "all"/"important"/"snoozed" folders
+ * apply the same exclusion via buildAllMailFilter and applyTrashJunkExclusion
+ * directly in loadFolder/#refreshFolderInPlace/#buildCurrentFolderFilter
+ * (re #426; see build-all-mail-filter.test.ts).
  */
 
 import { describe, it, expect } from 'vitest';

@@ -2060,13 +2060,19 @@ class MailStore {
         null;
       if (folder === 'important') {
         // Virtual folder: every email with the $important keyword,
-        // regardless of which mailbox it lives in.
-        filter = { hasKeyword: '$important' };
+        // regardless of which mailbox it lives in, excluding Junk/Trash
+        // members (re #426, REQ-SRC-06/07, REQ-UI-13b).
+        filter = applyTrashJunkExclusion({ hasKeyword: '$important' }, this.mailboxes);
       } else if (folder === 'snoozed') {
         // Virtual folder: every email currently snoozed
-        // ($snoozed keyword, set by the server alongside snoozedUntil).
-        filter = { hasKeyword: '$snoozed' };
-      } else if (folder !== 'all') {
+        // ($snoozed keyword, set by the server alongside snoozedUntil),
+        // excluding Junk/Trash members (re #426).
+        filter = applyTrashJunkExclusion({ hasKeyword: '$snoozed' }, this.mailboxes);
+      } else if (folder === 'all') {
+        // Virtual folder: every message in the account except Junk/Trash
+        // members (re #426, REQ-SRC-06/07, REQ-UI-13b).
+        filter = buildAllMailFilter(this.mailboxes);
+      } else {
         let mailboxId: string | null = null;
         if (ROLED_FOLDERS.has(folder)) {
           const role = FOLDER_ROLE[folder] ?? folder;
@@ -2427,10 +2433,13 @@ class MailStore {
     const unfiltered = this.listUnfiltered;
     try {
       if (folder === 'important') {
-        filter = { hasKeyword: '$important' };
+        // See loadFolder's matching comment (re #426).
+        filter = applyTrashJunkExclusion({ hasKeyword: '$important' }, this.mailboxes);
       } else if (folder === 'snoozed') {
-        filter = { hasKeyword: '$snoozed' };
-      } else if (folder !== 'all') {
+        filter = applyTrashJunkExclusion({ hasKeyword: '$snoozed' }, this.mailboxes);
+      } else if (folder === 'all') {
+        filter = buildAllMailFilter(this.mailboxes);
+      } else {
         let mailboxId: string | null = null;
         if (ROLED_FOLDERS.has(folder)) {
           const role = FOLDER_ROLE[folder] ?? folder;
@@ -3779,9 +3788,13 @@ class MailStore {
    */
   #buildCurrentFolderFilter(): FilterCondition | FilterOperator | undefined {
     const folder = this.listFolder;
-    if (folder === 'important') return { hasKeyword: '$important' };
-    if (folder === 'snoozed') return { hasKeyword: '$snoozed' };
-    if (folder === 'all') return undefined;
+    if (folder === 'important') {
+      return applyTrashJunkExclusion({ hasKeyword: '$important' }, this.mailboxes);
+    }
+    if (folder === 'snoozed') {
+      return applyTrashJunkExclusion({ hasKeyword: '$snoozed' }, this.mailboxes);
+    }
+    if (folder === 'all') return buildAllMailFilter(this.mailboxes);
     const mailboxId = this.listMailboxId;
     if (mailboxId === null) return undefined;
     // The unfiltered linked view (re #384) keeps pagination and
@@ -5346,6 +5359,22 @@ export function applyTrashJunkExclusion(
 }
 
 /**
+ * Build the `Email/query` filter for the `all` virtual folder (re #426):
+ * every message in the account except Junk/Trash members
+ * (REQ-SRC-06/07, REQ-UI-13b). `all` carries no base predicate of its
+ * own, so `applyTrashJunkExclusion` is spliced into an empty condition;
+ * returns `undefined` (no filter at all) only when the principal has
+ * neither a Junk nor a Trash mailbox to exclude, matching the shape
+ * `loadFolder`'s `Email/query` call already treats as "no filter".
+ */
+export function buildAllMailFilter(
+  mailboxes: Map<string, Mailbox>,
+): FilterCondition | FilterOperator | undefined {
+  const filtered = applyTrashJunkExclusion({}, mailboxes);
+  return Object.keys(filtered).length === 0 ? undefined : filtered;
+}
+
+/**
  * Build the `Email/query` filter for a folder view scoped to `mailboxId`
  * (issue #310). The Junk and Trash mailboxes are returned unfiltered --
  * viewing Junk or Trash must still show everything filed there. Every
@@ -5356,7 +5385,11 @@ export function applyTrashJunkExclusion(
  * `#buildCurrentFolderFilter` (which also scopes pagination and the
  * whole-mailbox bulk actions run through `Email/setByQuery`) all route
  * through this one helper, so a "select all" bulk action from a label
- * view can never touch junked or trashed mail either.
+ * view can never touch junked or trashed mail either. The `all`,
+ * `important`, and `snoozed` virtual folders (re #426) apply the same
+ * `applyTrashJunkExclusion` directly, via `buildAllMailFilter` for `all`
+ * and by splicing into their own `hasKeyword` base condition for the
+ * other two -- they have no single `mailboxId` to scope this helper to.
  */
 export function buildFolderViewFilter(
   mailboxId: string,
