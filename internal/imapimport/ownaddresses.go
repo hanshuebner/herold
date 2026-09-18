@@ -62,6 +62,19 @@ import (
 // message this codebase actually stores.
 const ownAddressHeaderScanBytes = 64 * 1024
 
+// maxLearnedAddresses bounds the size of an account's persisted
+// learned-address set (REQ-IMAP-IMP-36). A legitimate organisational
+// mailbox has a handful of aliases (info@, vorstand@, ...); an upstream
+// that stamps a new, effectively unbounded X-Original-To on every
+// message (a mailing-list relay rewriting per-recipient, a broken
+// upstream) must not be allowed to grow this set without limit --
+// unbounded growth would bloat the stored account row and, since every
+// entry feeds spam.ResolveOwnAddresses on every classification, the
+// per-message own-address lookup. Once the set holds
+// maxLearnedAddresses entries, learnOwnAddresses stops admitting new
+// ones; already-learned addresses are never evicted to make room.
+const maxLearnedAddresses = 256
+
 // extractDeliveredAddresses returns the lower-cased addresses found in
 // msg's Delivered-To and X-Original-To headers (re #396, third round):
 // the upstream mailbox's own record of every address it accepted this
@@ -120,6 +133,11 @@ func (w *accountWorker) learnOwnAddresses(ctx context.Context, addrs []string) e
 	changed := false
 	for _, a := range addrs {
 		if _, ok := have[a]; ok {
+			continue
+		}
+		if len(merged) >= maxLearnedAddresses {
+			// Bound reached (REQ-IMAP-IMP-36): keep what is already
+			// learned, admit no more this pass or any later one.
 			continue
 		}
 		have[a] = struct{}{}
