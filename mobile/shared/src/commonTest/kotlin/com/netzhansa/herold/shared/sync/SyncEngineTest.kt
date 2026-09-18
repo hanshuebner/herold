@@ -14,10 +14,12 @@ import com.netzhansa.herold.shared.jmap.WireManagedRule
 import com.netzhansa.herold.shared.jmap.WireRuleAction
 import com.netzhansa.herold.shared.jmap.WireRuleCondition
 import com.netzhansa.herold.shared.jmap.WireThread
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -234,6 +236,20 @@ class SyncEngineTest {
         assertTrue((status as SyncStatus.Failed).unauthorized)
         assertTrue(store.emailList().isEmpty())
         assertNull(store.syncState("acct-a", SyncTypes.EMAIL))
+    }
+
+    @Test
+    fun aCalledOffPassIsNotAFailure() = runTest {
+        val api = FakeJmapApi(session("acct-a")).apply {
+            readFailure = CancellationException("the scope that asked for it is gone")
+        }
+        val reachability = Reachability()
+        val engine = SyncEngine(api, FakeLocalStore(), reachability = reachability)
+
+        assertFailsWith<CancellationException> { engine.syncAll() }
+
+        assertEquals(SyncStatus.Idle, engine.status.value)
+        assertTrue(reachability.reachable.value, "a cancelled pass says nothing about reaching the server")
     }
 
     @Test

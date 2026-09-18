@@ -10,6 +10,7 @@ import com.netzhansa.herold.shared.outbox.DrainOutcome
 import com.netzhansa.herold.shared.outbox.Outbox
 import com.netzhansa.herold.shared.outbox.OutboxDrainer
 import com.netzhansa.herold.shared.store.LocalStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,6 +109,13 @@ class SyncEngine(
             // failed for its own reason.
             reachability.reached()
             _status.value = SyncStatus.Failed(e.message ?: "sync failed", unauthorized = e.isUnauthorized)
+        } catch (c: CancellationException) {
+            // The pass was called off - the scope that asked for it is
+            // gone. Nothing failed and nothing is running, and what the
+            // last request met says nothing about reaching the server;
+            // the cancellation goes on up.
+            _status.value = SyncStatus.Idle
+            throw c
         } catch (t: Throwable) {
             reachability.unreachable()
             _status.value = SyncStatus.Failed(t.message ?: "sync failed")
@@ -134,6 +142,9 @@ class SyncEngine(
             } catch (e: JmapException) {
                 reachability.reached()
                 _status.value = SyncStatus.Failed(e.message ?: "sync failed", unauthorized = e.isUnauthorized)
+            } catch (c: CancellationException) {
+                _status.value = SyncStatus.Idle
+                throw c
             } catch (t: Throwable) {
                 reachability.unreachable()
                 _status.value = SyncStatus.Failed(t.message ?: "sync failed")
