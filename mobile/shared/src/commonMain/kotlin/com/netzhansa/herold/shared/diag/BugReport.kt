@@ -63,15 +63,57 @@ data class PushFacts(
 )
 
 /**
+ * One screen a report was taken on (REQ-AND-SYS-53): the window as a
+ * PNG and where the user stood when they asked. A report carries one
+ * per capture, in the order they were taken, so a problem that needs
+ * more than one picture is one report (issue #424).
+ */
+data class BugShot(
+    val route: String,
+    val routeArguments: Map<String, String> = emptyMap(),
+    val threadId: String? = null,
+    val capturedAtMs: Long = 0,
+    /** PNG bytes, the window as it was; absent when the capture failed. */
+    val screenshot: ByteArray? = null,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is BugShot &&
+            route == other.route &&
+            routeArguments == other.routeArguments &&
+            threadId == other.threadId &&
+            capturedAtMs == other.capturedAtMs &&
+            screenshotEquals(other.screenshot)
+
+    private fun screenshotEquals(other: ByteArray?): Boolean = when {
+        screenshot == null -> other == null
+        other == null -> false
+        else -> screenshot.contentEquals(other)
+    }
+
+    override fun hashCode(): Int {
+        var result = route.hashCode()
+        result = 31 * result + routeArguments.hashCode()
+        result = 31 * result + (threadId?.hashCode() ?: 0)
+        result = 31 * result + capturedAtMs.hashCode()
+        result = 31 * result + (screenshot?.contentHashCode() ?: 0)
+        return result
+    }
+}
+
+/**
  * Everything the reporter captured at the moment of the gesture, before
  * the sheet opened (REQ-AND-SYS-51). None of it is user content: no
  * message bodies, no subjects, no credential.
+ *
+ * The screens are in [shots]; the report's own route is the first
+ * capture's, which is where the maintainer started complaining. The
+ * facts around them - the build, the reconciler, the queue and push -
+ * are the first capture's too, while the log ring is taken at send
+ * time, so it covers the whole stretch between the captures.
  */
 data class BugCapture(
-    val route: String,
-    val routeArguments: Map<String, String> = emptyMap(),
+    val shots: List<BugShot> = emptyList(),
     val accountScope: String? = null,
-    val threadId: String? = null,
     val principal: String? = null,
     val serverUrl: String? = null,
     val accountIds: List<String> = emptyList(),
@@ -80,15 +122,37 @@ data class BugCapture(
     val outbox: OutboxSummary = OutboxSummary(),
     val push: PushFacts,
     val logs: List<LogLine> = emptyList(),
-    /** PNG bytes, in capture order; the window as it was. */
-    val screenshots: List<ByteArray> = emptyList(),
     /**
      * The session facts the maintainer may include to reproduce, held
      * apart from everything ticket-eligible. The bearer credential is
      * never among them: it does not leave Keystore-backed storage.
      */
     val sessionDetails: Map<String, String> = emptyMap(),
-)
+) {
+    /** Where the report was raised: the first capture's route. */
+    val route: String get() = shots.firstOrNull()?.route ?: UNKNOWN_ROUTE
+
+    /** The first capture's route arguments. */
+    val routeArguments: Map<String, String> get() = shots.firstOrNull()?.routeArguments.orEmpty()
+
+    /** The conversation the report was raised on, when it was raised on one. */
+    val threadId: String? get() = shots.firstOrNull()?.threadId
+
+    /** The pictures, in capture order, skipping a capture that has none. */
+    val screenshots: List<ByteArray> get() = shots.mapNotNull { it.screenshot }
+
+    /** The same report with one more screen on it. */
+    fun withShot(shot: BugShot): BugCapture = copy(shots = shots + shot)
+
+    /** The same report with the capture at [index] taken off the strip. */
+    fun withoutShot(index: Int): BugCapture =
+        copy(shots = shots.filterIndexed { at, _ -> at != index })
+
+    companion object {
+        /** What a report says when the shell could not name the screen. */
+        const val UNKNOWN_ROUTE = "unknown"
+    }
+}
 
 /**
  * What the maintainer ticked in the sheet, and the text they typed if
@@ -149,8 +213,15 @@ object BugBundleWriter {
     fun build(submission: BugSubmission, capture: BugCapture, createdAtMs: Long): BugBundle {
         val createdAt = Instant.fromEpochMilliseconds(createdAtMs).toString()
         val logs = if (submission.includeLogs) capture.logs else emptyList()
-        val screenshots = if (submission.includeScreenshot) capture.screenshots else emptyList()
-        val meta = reportJson(submission, capture, createdAt, logs, screenshots.size)
+        // A picture is named by the capture it belongs to, so
+        // `screenshot-2.png` is the screen `captures[1]` describes even
+        // when an earlier capture took none.
+        val pictures = if (submission.includeScreenshot) {
+            capture.shots.mapIndexedNotNull { at, shot -> shot.screenshot?.let { (at + 1) to it } }
+        } else {
+            emptyList()
+        }
+        val meta = reportJson(submission, capture, createdAt, logs, pictures.size)
         val markdown = reportMarkdown(submission, capture, createdAt, logs)
 
         val files = mutableListOf(
@@ -158,8 +229,8 @@ object BugBundleWriter {
             BugBundleFile("report.md", "text/markdown", markdown.encodeToByteArray()),
             BugBundleFile("logs.txt", "text/plain", logsTxt(logs).encodeToByteArray()),
         )
-        screenshots.forEachIndexed { index, bytes ->
-            files += BugBundleFile("screenshot-${index + 1}.png", "image/png", bytes)
+        pictures.forEach { (index, bytes) ->
+            files += BugBundleFile("screenshot-$index.png", "image/png", bytes)
         }
         if (submission.includeSessionDetails && capture.sessionDetails.isNotEmpty()) {
             val private = buildJsonObject {
@@ -236,6 +307,22 @@ object BugBundleWriter {
             put("label", capture.principal.orEmpty())
         }
         put("context", contextJson(capture))
+        // Every screen the report was taken on, in capture order. The
+        // report's own route stays the first one's, which is where the
+        // maintainer started (issue #424).
+        putJsonArray("captures") {
+            capture.shots.forEachIndexed { at, shot ->
+                addJsonObject {
+                    put("index", at + 1)
+                    put("route", shot.route)
+                    putJsonObject("routeArguments") {
+                        shot.routeArguments.forEach { (key, value) -> put(key, value) }
+                    }
+                    put("threadId", JsonPrimitive(shot.threadId))
+                    put("capturedAt", Instant.fromEpochMilliseconds(shot.capturedAtMs).toString())
+                }
+            }
+        }
         putJsonArray("logs") {
             logs.forEach { line ->
                 addJsonObject {
@@ -254,11 +341,16 @@ object BugBundleWriter {
         device.appVersion + if (device.appCommit.isBlank()) "" else " (${device.appCommit})"
 
     /** The route as a URL, so the drop's `page.url` names a place. */
-    fun routeUrl(capture: BugCapture): String {
-        val query = capture.routeArguments.entries
+    fun routeUrl(capture: BugCapture): String = routeUrl(capture.route, capture.routeArguments)
+
+    /** The same, for one capture of a report that carries several. */
+    fun routeUrl(shot: BugShot): String = routeUrl(shot.route, shot.routeArguments)
+
+    private fun routeUrl(route: String, arguments: Map<String, String>): String {
+        val query = arguments.entries
             .filter { it.value.isNotBlank() }
             .joinToString("&") { "${it.key}=${it.value}" }
-        return "herold://" + capture.route.trimStart('/') + if (query.isBlank()) "" else "?$query"
+        return "herold://" + route.trimStart('/') + if (query.isBlank()) "" else "?$query"
     }
 
     private fun contextJson(capture: BugCapture): JsonObject = buildJsonObject {
@@ -335,6 +427,20 @@ object BugBundleWriter {
         append("## Page\n\n")
         append("- URL: ").append(routeUrl(capture)).append("\n")
         append("- Title: ").append(capture.route).append("\n\n")
+
+        if (capture.shots.isNotEmpty()) {
+            append("## Captures\n\n")
+            capture.shots.forEachIndexed { at, shot ->
+                val index = at + 1
+                append(index).append(". ").append(routeUrl(shot))
+                append(" - ").append(Instant.fromEpochMilliseconds(shot.capturedAtMs).toString())
+                if (submission.includeScreenshot && shot.screenshot != null) {
+                    append(" (screenshot-").append(index).append(".png)")
+                }
+                append("\n")
+            }
+            append("\n")
+        }
 
         append("## App\n\n")
         append(APP_NAME).append(" ").append(versionLabel(capture.device)).append("\n")

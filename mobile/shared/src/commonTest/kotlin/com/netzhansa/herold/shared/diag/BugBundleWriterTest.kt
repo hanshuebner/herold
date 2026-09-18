@@ -21,11 +21,23 @@ class BugBundleWriterTest {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val capture = BugCapture(
+    private val firstShot = BugShot(
         route = "thread/{accountId}/{threadId}",
         routeArguments = mapOf("accountId" to "acct-1", "threadId" to "T42"),
-        accountScope = "acct-1",
         threadId = "T42",
+        capturedAtMs = 1_700_000_000_500,
+        screenshot = byteArrayOf(0x89.toByte(), 'P'.code.toByte()),
+    )
+
+    private val secondShot = BugShot(
+        route = "inbox",
+        capturedAtMs = 1_700_000_001_500,
+        screenshot = byteArrayOf(0x89.toByte(), 'N'.code.toByte()),
+    )
+
+    private val capture = BugCapture(
+        shots = listOf(firstShot),
+        accountScope = "acct-1",
         principal = "alice@example.local",
         serverUrl = "http://10.0.2.2:8080",
         accountIds = listOf("acct-1", "acct-2"),
@@ -56,7 +68,6 @@ class BugBundleWriterTest {
             LogLine(1_700_000_000_000, LogLevel.INFO, "herold.shell", "shell state=mail"),
             LogLine(1_700_000_001_000, LogLevel.WARN, "herold.outbox", "the drain gave up"),
         ),
-        screenshots = listOf(byteArrayOf(0x89.toByte(), 'P'.code.toByte())),
         sessionDetails = mapOf("grantId" to "grant-9", "deviceClientId" to "herold-android-1"),
     )
 
@@ -256,5 +267,102 @@ class BugBundleWriterTest {
         assertEquals("widget shows nothing", bundle.meta()["sketch"]?.jsonPrimitive?.content)
         assertTrue(bundle.markdown.contains("## Description\n\nwidget shows nothing"), bundle.markdown)
         assertEquals("widget shows nothing", bundle.title)
+    }
+
+    @Test
+    fun aReportOfSeveralScreensCarriesAPictureAndAnEntryForEach() {
+        val bundle = build(capture = capture.withShot(secondShot))
+        assertEquals(
+            listOf("report.json", "report.md", "logs.txt", "screenshot-1.png", "screenshot-2.png"),
+            bundle.files.map { it.name },
+        )
+        val meta = json.parseToJsonElement(bundle.text("report.json")).jsonObject
+        assertEquals(2, meta["screenshotCount"]?.jsonPrimitive?.content?.toInt())
+        val captures = meta["captures"]!!.jsonArray
+        assertEquals(2, captures.size)
+        assertEquals(1, captures[0].jsonObject["index"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(
+            "thread/{accountId}/{threadId}",
+            captures[0].jsonObject["route"]?.jsonPrimitive?.content,
+        )
+        assertEquals("T42", captures[0].jsonObject["threadId"]?.jsonPrimitive?.content)
+        assertEquals(
+            "acct-1",
+            captures[0].jsonObject["routeArguments"]!!.jsonObject["accountId"]?.jsonPrimitive?.content,
+        )
+        assertEquals("2023-11-14T22:13:20.500Z", captures[0].jsonObject["capturedAt"]?.jsonPrimitive?.content)
+        assertEquals(2, captures[1].jsonObject["index"]?.jsonPrimitive?.content?.toInt())
+        assertEquals("inbox", captures[1].jsonObject["route"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun theReportIsNamedAndRoutedByItsFirstCapture() {
+        val bundle = build(submission = BugSubmission(), capture = capture.withShot(secondShot))
+        assertEquals("thread 2023-11-14T22:13:22Z", bundle.title)
+        val meta = json.parseToJsonElement(bundle.text("report.json")).jsonObject
+        assertEquals(
+            "thread/{accountId}/{threadId}",
+            meta["context"]!!.jsonObject["route"]?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            "herold://thread/{accountId}/{threadId}?accountId=acct-1&threadId=T42",
+            meta["page"]!!.jsonObject["url"]?.jsonPrimitive?.content,
+        )
+    }
+
+    @Test
+    fun theMarkdownListsEveryCaptureWithItsRoute() {
+        val markdown = build(capture = capture.withShot(secondShot)).markdown
+        assertTrue(markdown.contains("## Captures"), markdown)
+        assertTrue(
+            markdown.contains(
+                "1. herold://thread/{accountId}/{threadId}?accountId=acct-1&threadId=T42 - " +
+                    "2023-11-14T22:13:20.500Z (screenshot-1.png)",
+            ),
+            markdown,
+        )
+        assertTrue(markdown.contains("2. herold://inbox - 2023-11-14T22:13:21.500Z (screenshot-2.png)"), markdown)
+    }
+
+    @Test
+    fun aCaptureTakenOffTheStripLeavesTheReport() {
+        val three = capture.withShot(secondShot).withShot(secondShot.copy(route = "search"))
+        val bundle = build(capture = three.withoutShot(1))
+        assertEquals(
+            listOf("report.json", "report.md", "logs.txt", "screenshot-1.png", "screenshot-2.png"),
+            bundle.files.map { it.name },
+        )
+        val captures = json.parseToJsonElement(bundle.text("report.json"))
+            .jsonObject["captures"]!!.jsonArray
+        assertEquals(
+            listOf("thread/{accountId}/{threadId}", "search"),
+            captures.map { it.jsonObject["route"]!!.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun aCaptureThatTookNoPictureStillNamesItsScreen() {
+        val bundle = build(capture = capture.withShot(secondShot.copy(screenshot = null)))
+        assertEquals(
+            listOf("report.json", "report.md", "logs.txt", "screenshot-1.png"),
+            bundle.files.map { it.name },
+        )
+        val captures = json.parseToJsonElement(bundle.text("report.json"))
+            .jsonObject["captures"]!!.jsonArray
+        assertEquals(2, captures.size)
+        assertEquals("inbox", captures[1].jsonObject["route"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun droppingTheScreenshotsKeepsTheCapturesTheyWereTakenOn() {
+        val bundle = build(
+            submission = submission.copy(includeScreenshot = false),
+            capture = capture.withShot(secondShot),
+        )
+        assertEquals(listOf("report.json", "report.md", "logs.txt"), bundle.files.map { it.name })
+        val meta = json.parseToJsonElement(bundle.text("report.json")).jsonObject
+        assertEquals(0, meta["screenshotCount"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, meta["captures"]!!.jsonArray.size)
+        assertFalse(bundle.markdown.contains("(screenshot-1.png)"), bundle.markdown)
     }
 }

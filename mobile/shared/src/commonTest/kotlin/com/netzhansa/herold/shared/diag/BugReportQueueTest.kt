@@ -61,13 +61,19 @@ class BugReportQueueTest {
     }
 
     private val capture = BugCapture(
-        route = "thread/{accountId}/{threadId}",
-        routeArguments = mapOf("accountId" to "acct-a", "threadId" to "T42"),
+        shots = listOf(
+            BugShot(
+                route = "thread/{accountId}/{threadId}",
+                routeArguments = mapOf("accountId" to "acct-a", "threadId" to "T42"),
+                threadId = "T42",
+                capturedAtMs = 1_700_000_001_000,
+                screenshot = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47),
+            ),
+        ),
         accountScope = "acct-a",
         device = DeviceFacts("1.4.2", "abc1234", "16", 36, "Google", "sdk_gphone64_arm64"),
         sync = SyncFacts(state = "idle"),
         push = PushFacts(choice = "AUTOMATIC"),
-        screenshots = listOf(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)),
     )
 
     private suspend fun queue(
