@@ -41,11 +41,45 @@
  * closes both defects structurally -- there is no keyword list to be
  * incomplete, and the parser tokenizes url(...) correctly regardless
  * of what characters its argument contains.
+ *
+ * Issue #422 broadened the lone-half rule: a lone half is now stripped
+ * only when it actually collides (WCAG contrast below sanitize.ts's
+ * `DEGENERATE_CONTRAST_THRESHOLD`, mirrored below as `NOT_DEGENERATE`)
+ * with its effective inherited counterpart, not unconditionally. Fixtures
+ * below that used to get stripped unconditionally and therefore always
+ * rendered as `wrapInIframeDocument`'s exact theme pair now assert one of
+ * two things depending on whether the fixture's own colors actually
+ * collide: exact equality to the theme pair (genuine collisions, e.g. the
+ * originally reported near-black-on-near-black case), or merely
+ * `assertReadable` (preserved as authored, contrast at or above
+ * `NOT_DEGENERATE`) for fixtures that turn out not to collide against the
+ * relevant theme's foreground/background.
+ *
+ * `sanitizeHtml` itself resolves the reading pane's theme via the
+ * *ambient* `getComputedStyle(document.documentElement).colorScheme` at
+ * sanitize time -- the CSS property Herold's own theme setting
+ * (`tokens.css`) sets on `<html>`, which the rendered `<iframe srcdoc>`
+ * inherits its own `prefers-color-scheme` resolution from (verified live:
+ * the OS-level `window.matchMedia` and the app's own theme can disagree,
+ * and the iframe follows the app's theme). `withTheme` below sets that
+ * ambient CSS property for the duration of a test so both the sanitize-
+ * time decision and the `renderSrcdoc` window agree on which theme is
+ * active, exactly as they always do in the running app.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { Window } from 'happy-dom';
 import type { Element as HappyElement } from 'happy-dom';
 import { sanitizeHtml } from './sanitize';
+
+/**
+ * Set the ambient `document.documentElement`'s `color-scheme` so
+ * `sanitizeHtml`'s own theme-fallback resolution (`readingPaneTheme` in
+ * sanitize.ts) agrees with the theme this test renders with. Reset by the
+ * file-level `afterEach`.
+ */
+function withTheme(theme: 'light' | 'dark'): void {
+  document.documentElement.style.colorScheme = theme;
+}
 
 // ─── Fixtures captured from the real extimg pipeline ───────────────────────
 
@@ -81,6 +115,7 @@ const FIXTURE_COLORLESS_BG_DATA_URI = `background:${PLACEHOLDER_URL} no-repeat`;
 // numerically for keyword colors happy-dom's getComputedStyle does not
 // resolve to rgb().
 const NAMED_COLOR_RGB: Record<string, [number, number, number]> = {
+  red: [255, 0, 0],
   midnightblue: [25, 25, 112],
   darkblue: [0, 0, 139],
   darkred: [139, 0, 0],
@@ -155,6 +190,7 @@ let activeWindow: InstanceType<typeof Window> | null = null;
 afterEach(() => {
   activeWindow?.close();
   activeWindow = null;
+  document.documentElement.style.removeProperty('color-scheme');
 });
 
 function renderSrcdoc(srcdoc: string, colorScheme: 'light' | 'dark') {
@@ -194,8 +230,18 @@ function effectiveBackground(win: InstanceType<typeof Window>, el: HappyElement)
   throw new Error('no ancestor declared a resolvable background-color (missing body theme rule?)');
 }
 
-/** Minimum ratio for this suite's assertions: WCAG AA for normal text. */
-const READABLE = 4.5;
+/**
+ * Minimum ratio for this suite's assertions. Mirrors sanitize.ts's own
+ * `DEGENERATE_CONTRAST_THRESHOLD` (1.5): since #422, a lone or complete
+ * color pair is stripped only when it collides below that bar, so
+ * anything the sanitizer chooses to PRESERVE is only ever guaranteed to
+ * clear this bar, not full WCAG AA (4.5) -- a sender's own legitimate,
+ * merely-low-contrast choice (e.g. `darkred` background with inherited
+ * black text, ~1.8:1) is deliberately preserved rather than over-stripped.
+ * Anything the sanitizer STRIPS falls back to Herold's own paired theme
+ * colors, which clear WCAG AA by a wide margin regardless.
+ */
+const NOT_DEGENERATE = 1.5;
 
 function assertReadable(win: InstanceType<typeof Window>, el: HappyElement, label: string) {
   const fg = computedForeground(win, el);
@@ -203,8 +249,8 @@ function assertReadable(win: InstanceType<typeof Window>, el: HappyElement, labe
   const ratio = contrastRatio(fg, bg);
   expect(
     ratio,
-    `${label}: computed color=${win.getComputedStyle(el).color} vs effective background=rgb(${bg[0]},${bg[1]},${bg[2]}) -> contrast ${ratio.toFixed(2)}:1, want >= ${READABLE}:1`,
-  ).toBeGreaterThanOrEqual(READABLE);
+    `${label}: computed color=${win.getComputedStyle(el).color} vs effective background=rgb(${bg[0]},${bg[1]},${bg[2]}) -> contrast ${ratio.toFixed(2)}:1, want >= ${NOT_DEGENERATE}:1`,
+  ).toBeGreaterThanOrEqual(NOT_DEGENERATE);
 }
 
 // ─── Herold's own paired theme colors (wrapInIframeDocument), for exact
@@ -219,6 +265,8 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
 
   for (const theme of themes) {
     describe(`${theme} theme`, () => {
+      beforeEach(() => withTheme(theme));
+
       it('the originally reported case: lone background-color hex, no color', () => {
         const html = '<span style="background-color:#1a1111">text</span>';
         const srcdoc = sanitizeHtml(html, { loadImages: false });
@@ -379,7 +427,8 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
     });
   }
 
-  it('a lone stripped half falls back to Herold\'s own paired theme colors, not a mismatched mix (light)', () => {
+  it('a lone half that collides with the theme falls back to Herold\'s own paired theme colors, not a mismatched mix (light)', () => {
+    withTheme('light');
     const html = '<span style="background-color:#1a1111">text</span>';
     const srcdoc = sanitizeHtml(html, { loadImages: false });
     const { window, document } = renderSrcdoc(srcdoc, 'light');
@@ -388,12 +437,107 @@ describe('issue #231 -- resolved paint colors are always readable', () => {
     expect(effectiveBackground(window, el)).toEqual(THEME.light.background);
   });
 
-  it('a lone stripped half falls back to Herold\'s own paired theme colors, not a mismatched mix (dark)', () => {
-    const html = '<span style="background-color:#1a1111">text</span>';
+  // Issue #422 dark-theme acceptance: a lone half that collides with the
+  // DARK theme's own background is still stripped, exactly as the light-
+  // theme case above -- the broadened rule only stops stripping colors
+  // that are actually legible, it does not stop protecting against a
+  // genuine near-invisible-text collision in either theme.
+  it('a lone half that collides with the dark theme background is still stripped (dark)', () => {
+    withTheme('dark');
+    const html = '<span style="color:#101010">text</span>';
     const srcdoc = sanitizeHtml(html, { loadImages: false });
     const { window, document } = renderSrcdoc(srcdoc, 'dark');
     const el = document.querySelector('span')!;
     expect(parseColor(window.getComputedStyle(el).color)).toEqual(THEME.dark.color);
     expect(effectiveBackground(window, el)).toEqual(THEME.dark.background);
+  });
+
+  // The #1a1111 fixture above collides with the LIGHT theme's near-black
+  // default text color, but not with the DARK theme's near-white default
+  // text color (contrast far above NOT_DEGENERATE) -- issue #422 preserves
+  // it as authored in dark theme instead of discarding it unconditionally.
+  it('a lone background that does NOT collide with the dark theme foreground is preserved, not force-stripped (dark)', () => {
+    withTheme('dark');
+    const html = '<span style="background-color:#1a1111">text</span>';
+    const srcdoc = sanitizeHtml(html, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'dark');
+    const el = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(el).color)).toEqual(THEME.dark.color);
+    expect(effectiveBackground(window, el)).toEqual([26, 17, 17, 1]);
+    assertReadable(window, el, 'preserved #1a1111 background against dark-theme text');
+  });
+});
+
+/**
+ * Acceptance fixtures for issue #422, built from the ticket's own reported
+ * message shape: an inline-styled forum reply-notification mail with no
+ * <style> block. Every link/text color is declared on the element it
+ * paints (a link, a header title span) while the matching background sits
+ * on an ancestor (a table cell, or the <body> itself) -- the pattern
+ * #231's original blanket "strip every lone half" rule discarded.
+ */
+describe('issue #422 -- lone halves that pair with an ancestor background survive', () => {
+  const FORUM_NOTIFICATION_HTML = `<html><body style="background-color:#fafafa;color:#3a3a3d">
+    <table role="presentation"><tr><td style="background-color:#666666">
+      <span style="color:#ffffff">Forum Update</span>
+      <a style="color:#ffffff" href="https://example.test/thread">View thread</a>
+    </td></tr></table>
+    <p>Someone replied: <a style="color:#2671a6" href="https://example.test/reply">click here</a></p>
+    <table role="presentation"><tr><td style="background-color:#2671a6">
+      <a style="color:#fff" href="https://example.test/go">Zum Inhalt springen</a>
+    </td></tr></table>
+  </body></html>`;
+
+  function linkContaining(document: ReturnType<typeof renderSrcdoc>['document'], text: string): HappyElement {
+    const link = [...document.querySelectorAll('a')].find((a) => (a.textContent ?? '').includes(text));
+    if (!link) throw new Error(`no <a> found containing "${text}"`);
+    return link;
+  }
+
+  it('a link with a lone color inside a #fafafa body keeps its authored color', () => {
+    withTheme('light');
+    const srcdoc = sanitizeHtml(FORUM_NOTIFICATION_HTML, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const link = linkContaining(document, 'click here');
+    expect(parseColor(window.getComputedStyle(link).color)).toEqual([0x26, 0x71, 0xa6, 1]);
+  });
+
+  it('a white title span inside a grey header cell keeps white', () => {
+    withTheme('light');
+    const srcdoc = sanitizeHtml(FORUM_NOTIFICATION_HTML, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const title = document.querySelector('span')!;
+    expect(parseColor(window.getComputedStyle(title).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a white link inside the same grey header cell keeps white', () => {
+    withTheme('light');
+    const srcdoc = sanitizeHtml(FORUM_NOTIFICATION_HTML, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const link = linkContaining(document, 'View thread');
+    expect(parseColor(window.getComputedStyle(link).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('a #fff link inside a coloured button cell keeps white', () => {
+    withTheme('light');
+    const srcdoc = sanitizeHtml(FORUM_NOTIFICATION_HTML, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const link = linkContaining(document, 'Zum Inhalt springen');
+    expect(parseColor(window.getComputedStyle(link).color)).toEqual([255, 255, 255, 1]);
+  });
+
+  it('the <body> color pair is carried onto the fragment wrapper', () => {
+    withTheme('light');
+    const srcdoc = sanitizeHtml(FORUM_NOTIFICATION_HTML, { loadImages: false });
+    const { window, document } = renderSrcdoc(srcdoc, 'light');
+    const wrap = document.body.firstElementChild!;
+    expect(parseColor(window.getComputedStyle(wrap).backgroundColor)).toEqual([0xfa, 0xfa, 0xfa, 1]);
+    expect(parseColor(window.getComputedStyle(wrap).color)).toEqual([0x3a, 0x3a, 0x3d, 1]);
+  });
+
+  it('a message with no <body> tag at all is unaffected -- no wrapper div added', () => {
+    const srcdoc = sanitizeHtml('<p style="color:#2671a6">no body tag here</p>', { loadImages: false });
+    const body = /<body>([\s\S]*?)<\/body>/.exec(srcdoc)?.[1] ?? '';
+    expect(body.trim().startsWith('<p')).toBe(true);
   });
 });

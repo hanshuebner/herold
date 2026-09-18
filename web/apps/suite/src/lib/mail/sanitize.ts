@@ -185,6 +185,13 @@ function neutralizeNestedAnchors(raw: string): string {
 }
 
 export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
+  // A sender's <body style="..."> pair never reaches the DOM at all --
+  // DOMPurify's RETURN_DOM_FRAGMENT mode returns only body's children,
+  // discarding the body tag itself (issue #422). Its color/background-color
+  // are captured here, from the raw markup, before DOMPurify ever runs, and
+  // carried onto the wrapper div below so the page-level pair still applies.
+  const bodyColorStyle = resolvedBodyColorStyle(raw);
+
   const fragment = DOMPurify.sanitize(neutralizeNestedAnchors(raw), {
     ALLOWED_TAGS,
     FORBID_TAGS,
@@ -195,16 +202,23 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
     RETURN_DOM_FRAGMENT: true,
   }) as DocumentFragment;
 
+  // Wrap immediately so every subsequent pass -- and, importantly,
+  // sanitizeInlineColorPairs's ancestor walk -- can reach the body's
+  // carried-over pair as the outermost ancestor.
+  const wrap = document.createElement('div');
+  if (bodyColorStyle !== null) wrap.setAttribute('style', bodyColorStyle);
+  wrap.appendChild(fragment);
+
   // Auto-link plain-text URLs and mailto addresses in text nodes
   // (issue #103). Runs before the anchor rewrite below so the new
   // <a> elements pick up target/rel in the same pass.
-  linkifyTextNodes(fragment);
+  linkifyTextNodes(wrap);
 
   // Anchor rewriting: every <a> opens in a new tab with no referrer leak,
   // except bare in-document fragment links (issue #293), which must stay
   // same-document so the browser scrolls the reader instead of trying to
   // pop a new tab at the mail's fragment appended to the host page's URL.
-  for (const a of fragment.querySelectorAll('a')) {
+  for (const a of wrap.querySelectorAll('a')) {
     const trimmedHref = a.getAttribute('href')?.trim();
     if (trimmedHref?.startsWith('#')) {
       a.removeAttribute('target');
@@ -219,25 +233,28 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
   }
 
   // Image rewriting per REQ-SEC-05/07.
-  for (const img of fragment.querySelectorAll('img')) {
+  for (const img of wrap.querySelectorAll('img')) {
     rewriteImage(img, options);
   }
 
-  // Strip a lone half of an inline color/background-color pair (issue #231):
-  // an element that declares only one of the two inherits the other from
-  // the iframe's own theme, which can collide (sender's dark background +
-  // Herold's dark-mode text color, or the mirror case in light mode).
-  sanitizeInlineColorPairs(fragment);
+  // Strip a lone half of an inline color/background-color pair only when it
+  // actually collides with its effective inherited counterpart (issue #422;
+  // originally issue #231's coarser "strip every lone half" rule). An
+  // element that declares only one of the two inherits the other from the
+  // nearest ancestor that declares it -- the carried-over body pair above,
+  // or ultimately the iframe's own theme -- and only a colliding pair
+  // (near-invisible text) is stripped.
+  sanitizeInlineColorPairs(wrap);
 
   // Wrap quoted-history regions (blockquote / gmail_quote / Apple-style
   // attribution divs) in <details>. Only the first quoted region per
   // body is wrapped — nested replies inside a quote stay nested.
-  collapseQuotedRegions(fragment);
+  collapseQuotedRegions(wrap);
 
-  // Serialise back to HTML. (innerHTML round-trip preserves attribute changes.)
-  const wrap = document.createElement('div');
-  wrap.appendChild(fragment);
-  const cleanBody = wrap.innerHTML;
+  // Serialise back to HTML. When the body carried a color pair, keep the
+  // wrapper div itself (outerHTML) so that pair reaches the rendered
+  // output; otherwise emit the bare content as before (innerHTML).
+  const cleanBody = bodyColorStyle !== null ? wrap.outerHTML : wrap.innerHTML;
   return wrapInIframeDocument(cleanBody, options.internalizePending === true);
 }
 
@@ -790,15 +807,147 @@ function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolea
 }
 
 /**
- * Honour a sender's inline foreground/background color declaration only
- * when BOTH halves of the pair are present on the same element. When only
- * one half is declared, the sender did not fully specify a foreground/
- * background pair — leaving the other half to inherit from the reading
- * pane's own theme (`wrapInIframeDocument`'s light/dark body color) can
- * produce a combination the sender never intended and never saw, including
- * unreadable near-invisible text (issue #231). Stripping the lone half
- * makes the element fall back to Herold's own paired foreground and
- * background, which are always mutually legible in both themes.
+ * Reading pane's own paired theme colors, mirroring `wrapInIframeDocument`'s
+ * light/dark body CSS rule exactly. This is the last-resort fallback
+ * background/foreground for an element whose color/background-color pair
+ * is incomplete and has no ancestor supplying the missing half either.
+ */
+const READING_PANE_THEME = {
+  light: { color: '#161616', backgroundColor: '#ffffff' },
+  dark: { color: '#f4f4f4', backgroundColor: '#161616' },
+} as const;
+
+/**
+ * Which of `READING_PANE_THEME`'s two rules the reading pane's `<iframe
+ * srcdoc>` will actually resolve `@media (prefers-color-scheme)` against.
+ *
+ * This is NOT the ambient `window.matchMedia('(prefers-color-scheme:
+ * dark)')` of the top-level page -- that only reflects the OS/browser
+ * preference, but Herold's own dark/light/system theme setting
+ * (`settings.svelte.ts`, applied as `<html data-theme>`) sets the
+ * `color-scheme` CSS property on `:root` (`tokens.css`), and Chromium
+ * resolves an `about:srcdoc` iframe's own `prefers-color-scheme` from its
+ * embedding document's USED `color-scheme` whenever the iframe declares no
+ * `color-scheme` of its own (which `wrapInIframeDocument`'s output does
+ * not). A user on Settings -> Dark with an OS set to light still gets a
+ * dark-rendered iframe -- verified live: with `data-theme="dark"`,
+ * `getComputedStyle(document.documentElement).colorScheme` reads `"dark"`
+ * while the top-level `window.matchMedia('(prefers-color-scheme: dark)')`
+ * still reads `false`, and the iframe's OWN `matchMedia` for the same
+ * query reads `true`. Reading the resolved `color-scheme` here is what
+ * correctly predicts that outcome instead of the OS-level query.
+ */
+function readingPaneTheme(): typeof READING_PANE_THEME.light | typeof READING_PANE_THEME.dark {
+  const scheme =
+    typeof document !== 'undefined' && document.documentElement
+      ? getComputedStyle(document.documentElement).colorScheme
+      : '';
+  return scheme.includes('dark') && !scheme.includes('light')
+    ? READING_PANE_THEME.dark
+    : READING_PANE_THEME.light;
+}
+
+/**
+ * Resolved `color` / `background-color` this element declares on its own
+ * `style` attribute, with `currentColor` treated as not declared (see
+ * `isCurrentColorKeyword`'s doc comment) -- `''` for a half not declared.
+ * Goes through the same detached-probe / CSSOM round-trip as
+ * `sanitizeInlineColorPairs` itself so shorthand, keyword, and `!important`
+ * declarations resolve identically.
+ */
+function declaredColorHalves(el: Element): { color: string; backgroundColor: string } {
+  const style = el.getAttribute('style');
+  if (!style) return { color: '', backgroundColor: '' };
+  const probe = document.createElement('div');
+  probe.setAttribute('style', style);
+  if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
+  if (isCurrentColorKeyword(probe.style.backgroundColor)) {
+    probe.style.removeProperty('background-color');
+    probe.style.removeProperty('background');
+  }
+  return { color: probe.style.color, backgroundColor: probe.style.backgroundColor };
+}
+
+/**
+ * The background `el` actually paints against: the nearest ancestor's own
+ * declared `background-color`, walking up through the wrapper div that
+ * carries the message body's own color pair (see `resolvedBodyColorStyle`),
+ * or `null` when no ancestor declares one at all -- callers fall back to
+ * `readingPaneTheme()` in that case. Ancestors are read AFTER this same
+ * pass has potentially already stripped their own lone half, since
+ * `sanitizeInlineColorPairs` processes elements in document order
+ * (ancestors before descendants).
+ */
+function resolveEffectiveBackground(el: Element): string | null {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const bg = declaredColorHalves(node).backgroundColor;
+    if (isDeclaredColor(bg)) return bg;
+  }
+  return null;
+}
+
+/** Symmetric counterpart of `resolveEffectiveBackground` for `color`. */
+function resolveEffectiveForeground(el: Element): string | null {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const fg = declaredColorHalves(node).color;
+    if (isDeclaredColor(fg)) return fg;
+  }
+  return null;
+}
+
+// Matches a raw <body ...> opening tag to pull its style attribute before
+// DOMPurify ever runs -- RETURN_DOM_FRAGMENT mode discards the body tag
+// itself, so this is the only point at which its style is observable.
+const BODY_TAG_RE = /<body\b([^>]*)>/i;
+const STYLE_ATTR_RE = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+
+/**
+ * The message's `<body style="...">` color/background-color, resolved and
+ * reserialized as a minimal `style` string (e.g. `"color: rgb(58, 58,
+ * 61); background-color: rgb(250, 250, 250)"`), or `null` when the raw
+ * markup has no `<body>` tag, no `style` attribute, or neither color
+ * property resolves to a declared value. Only these two properties are
+ * carried over -- not the body's full style text -- so nothing else
+ * authored on `<body>` (fonts, margins, `background-image`, ...) reaches
+ * the wrapper div this becomes `sanitizeHtml`'s style on (issue #422).
+ * Goes through the same probe/CSSOM round-trip as `declaredColorHalves`,
+ * which is what keeps this safe to assign directly to a live element's
+ * `style` attribute: only values the browser's own CSS parser resolves as
+ * `color` / `background-color` ever survive the round-trip.
+ */
+function resolvedBodyColorStyle(raw: string): string | null {
+  const bodyTag = BODY_TAG_RE.exec(raw);
+  if (!bodyTag) return null;
+  const styleAttr = STYLE_ATTR_RE.exec(bodyTag[1]!);
+  if (!styleAttr) return null;
+  const styleText = styleAttr[1] ?? styleAttr[2] ?? '';
+  if (styleText.trim() === '') return null;
+
+  const probe = document.createElement('div');
+  probe.setAttribute('style', styleText);
+  if (isCurrentColorKeyword(probe.style.color)) probe.style.removeProperty('color');
+  if (isCurrentColorKeyword(probe.style.backgroundColor)) {
+    probe.style.removeProperty('background-color');
+    probe.style.removeProperty('background');
+  }
+  const parts: string[] = [];
+  if (isDeclaredColor(probe.style.color)) parts.push(`color: ${probe.style.color}`);
+  if (isDeclaredColor(probe.style.backgroundColor)) {
+    parts.push(`background-color: ${probe.style.backgroundColor}`);
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
+/**
+ * Honour a sender's inline foreground/background color declaration
+ * whenever it is legible against the background/foreground it actually
+ * paints against. Inline HTML mail overwhelmingly declares the two halves
+ * on DIFFERENT elements -- a link or span carrying `color`, an ancestor
+ * table cell or the `<body>` itself carrying `background-color` -- so a
+ * lone half on one element is the common, correctly-authored case, not a
+ * defect (issue #422; #231's original "strip every lone half" rule treated
+ * it as one, discarding nearly every inline-styled mail's link colors and
+ * header/band coloring).
  *
  * Detection goes through the browser's own CSS parser rather than
  * scanning the style string: the declaration is assigned to a detached
@@ -837,51 +986,37 @@ function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolea
  *
  * An element that declares both halves is left untouched -- its original
  * style attribute text is kept byte-for-byte rather than reserialized
- * through the probe, so formatting/spacing is undisturbed. That is a
- * complete, self-consistent pair the sender chose deliberately, and
- * removing either half would break intentional styling (e.g. a callout
- * box with light text on a dark brand color, or a `background: url(x)
- * #fff` shorthand paired with an explicit `color`).
+ * through the probe, so formatting/spacing is undisturbed -- UNLESS the
+ * two halves resolve to practically the SAME paint color (the degenerate
+ * pair check below), which is exactly as broken as a lone half.
  *
- * Because CSS `color`/`background-color` are inherited/painted per
- * element, not merged across ancestors, checking each styled element in
- * isolation is sufficient to close the reported collision: the failure
- * mode is one element's declared half meeting the iframe body's inherited
- * half, not two different elements' halves meeting each other.
+ * `sanitizeInlineColorPairs` is called on the wrapper div (`wrap` in
+ * `sanitizeHtml`), which may itself carry the message's `<body>` color
+ * pair (see `resolvedBodyColorStyle`) and is processed first -- before
+ * `querySelectorAll` reaches any descendant -- so a descendant's ancestor
+ * walk (`resolveEffectiveBackground` / `resolveEffectiveForeground`)
+ * always sees the wrapper's *final*, already-decided pair. Elements are
+ * otherwise visited in document order (ancestors before descendants) for
+ * the same reason: a nested chain of lone halves (a `<td>` declaring only
+ * `background-color`, a `<span>` inside it declaring only `color`)
+ * resolves correctly in one top-down pass, each descendant consulting its
+ * ancestors' settled style.
  *
- * Known trade-off (safe, not a bug): a NESTED cross-element pair -- a
- * parent declaring only `background-color` and a child declaring only
- * `color` -- has both halves stripped independently, because each
- * element is evaluated on its own declarations. That can never produce
- * illegible text (each element falls back to Herold's own paired
- * theme colors), but it does lose the sender's intended nested styling
- * (e.g. a colored panel with white text authored as two separate
- * elements rather than one). Detecting and preserving that case would
- * require resolving each element's *computed* style against its
- * ancestors rather than its own inline declarations, which this
- * sanitizer pass -- run on a detached DOMPurify fragment with no layout
- * -- cannot do.
- *
- * A "complete pair" is not automatically a real one, though: two further
- * checks run before a pair is accepted as-is.
- *   - `currentColor` is never counted as an independently declared half
- *     (see `isCurrentColorKeyword`) -- `color:red;
- *     background-color:currentColor` looks complete to a naive check
- *     but paints solid red-on-red. Stripped unconditionally before
- *     classification, so it always falls through to the lone-half (or
- *     no-half) branch below.
- *   - When both halves ARE independently, concretely declared, they are
- *     additionally checked for whether they resolve to practically the
- *     SAME paint color (`colorsAreIndistinguishable`, WCAG contrast
- *     ratio below `DEGENERATE_CONTRAST_THRESHOLD`) -- e.g.
- *     `color:#f00; background-color:#ff0000`. A pair that is invisible
- *     by construction is exactly as broken as a lone half and is
- *     dropped in full, falling back to Herold's own paired theme colors
- *     like any other undeclared pair. This check is deliberately
- *     conservative: an unresolvable color syntax (`oklch()`,
- *     `color-mix()`, ...) or any non-opaque alpha never triggers it, so
- *     it can under-detect exotic same-color pairs but can never
- *     over-strip a sender's legitimate, merely-low-contrast styling.
+ * A pair (declared on the same element, or a lone half against its
+ * resolved ancestor/theme counterpart) is stripped only when
+ * `colorsAreIndistinguishable` says the two resolve to practically the
+ * same paint color (WCAG contrast ratio below `DEGENERATE_CONTRAST_
+ * THRESHOLD`) -- the actual near-invisible-text defect issue #231
+ * reported, e.g. `color:red; background-color:currentColor`, or a lone
+ * `color:#161616` against a light-theme background that resolves to the
+ * same near-black. This check is deliberately conservative: an
+ * unresolvable color syntax (`oklch()`, `color-mix()`, ...) or any
+ * non-opaque alpha never triggers it, so it can under-detect exotic
+ * same-color pairs but can never over-strip a sender's legitimate,
+ * merely-low-contrast styling. `currentColor` is never counted as an
+ * independently declared half (see `isCurrentColorKeyword`) and is
+ * stripped unconditionally before classification, so it always falls
+ * through to the lone-half (or no-half) branch below.
  *
  * Requires `document` (see the file header: `sanitizeHtml` already
  * depends on it via DOMPurify's `RETURN_DOM_FRAGMENT` mode and
@@ -890,8 +1025,12 @@ function colorsAreIndistinguishable(colorValue: string, bgValue: string): boolea
  * environment) and a live Chrome instance for every fixture this file's
  * acceptance tests cover.
  */
-function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
-  for (const el of fragment.querySelectorAll<HTMLElement>('[style]')) {
+function sanitizeInlineColorPairs(root: Element): void {
+  const candidates: Element[] = [];
+  if (root.hasAttribute('style')) candidates.push(root);
+  candidates.push(...root.querySelectorAll<HTMLElement>('[style]'));
+
+  for (const el of candidates) {
     const style = el.getAttribute('style');
     if (!style) continue;
     const probe = document.createElement('div');
@@ -903,29 +1042,31 @@ function sanitizeInlineColorPairs(fragment: DocumentFragment): void {
       probe.style.removeProperty('background');
     }
 
-    let hasColor = isDeclaredColor(probe.style.color);
-    let hasBackground = isDeclaredColor(probe.style.backgroundColor);
+    const hasColor = isDeclaredColor(probe.style.color);
+    const hasBackground = isDeclaredColor(probe.style.backgroundColor);
 
     if (
       hasColor &&
       hasBackground &&
       colorsAreIndistinguishable(probe.style.color, probe.style.backgroundColor)
     ) {
-      hasColor = false;
-      hasBackground = false;
       probe.style.removeProperty('color');
       probe.style.removeProperty('background-color');
       probe.style.removeProperty('background');
-    } else if (hasColor !== hasBackground) {
-      if (hasColor) probe.style.removeProperty('color');
-      if (hasBackground) {
+    } else if (hasColor && !hasBackground) {
+      const effectiveBackground = resolveEffectiveBackground(el) ?? readingPaneTheme().backgroundColor;
+      if (colorsAreIndistinguishable(probe.style.color, effectiveBackground)) {
+        probe.style.removeProperty('color');
+      }
+    } else if (hasBackground && !hasColor) {
+      const effectiveForeground = resolveEffectiveForeground(el) ?? readingPaneTheme().color;
+      if (colorsAreIndistinguishable(effectiveForeground, probe.style.backgroundColor)) {
         probe.style.removeProperty('background-color');
         probe.style.removeProperty('background');
       }
     }
-    // both true (a genuine, distinguishable, complete pair) or both
-    // false (nothing declared, or both halves stripped above) -- no
-    // further mutation.
+    // both true and distinguishable (a genuine, legible, complete pair) or
+    // both false (nothing declared) -- no further mutation.
 
     const kept = probe.getAttribute('style');
     if (kept === style) continue; // nothing changed -- keep original text byte-for-byte.
@@ -1089,8 +1230,7 @@ function splitLeadingFreshContent(candidate: Element): void {
   }
 }
 
-function collapseQuotedRegions(fragment: DocumentFragment): void {
-  const root = fragment;
+function collapseQuotedRegions(root: ParentNode): void {
   const candidate = findFirstQuotedRegion(root);
   if (!candidate) return;
 
