@@ -92,9 +92,22 @@ class BugReportController(private val container: AppContainer) {
             ?: container.store.accountList().firstOrNull { it.isPrimary }?.id
             ?: container.store.accountList().firstOrNull()?.id
             ?: return ComposeResult.Failed("No account to send the report from")
-        val bundle = BugBundleWriter.build(submission, atSendTime(capture, session), System.currentTimeMillis())
+        // The crash the previous run ended in, if there was one: it rides
+        // out with the next report and is dropped once queued, so one
+        // trace is reported once (issue #420).
+        val crash = runCatching { container.crashRecords.load() }.getOrNull()
+        val bundle = BugBundleWriter.build(
+            submission,
+            atSendTime(capture, session),
+            System.currentTimeMillis(),
+            crash,
+        )
         val result = container.bugReports.queue(bundle, accountId, holdMs)
         if (result is ComposeResult.Queued) {
+            if (crash != null) {
+                DiagLog.i(TAG, "the report carries the crash of ${crash.exception}")
+                runCatching { container.crashRecords.clear() }
+            }
             DiagLog.i(TAG, "bug report queued as entry ${result.entryId}")
         }
         return result

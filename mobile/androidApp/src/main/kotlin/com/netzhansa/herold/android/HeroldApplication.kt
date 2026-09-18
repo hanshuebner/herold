@@ -1,6 +1,7 @@
 package com.netzhansa.herold.android
 
 import android.app.Application
+import com.netzhansa.herold.android.diag.CrashRecorder
 import com.netzhansa.herold.android.diag.DiagLog
 import com.netzhansa.herold.android.diag.DiagPreferences
 import com.netzhansa.herold.android.home.HomeSurfaces
@@ -25,6 +26,10 @@ class HeroldApplication : Application() {
         // setting, and it applies from the first line of the process
         // (REQ-AND-SYS-52).
         DiagPreferences.apply(this)
+        // An uncaught exception is written down before the process goes,
+        // so the next bug report carries the trace and the ring that led
+        // to it (REQ-AND-SYS-52, issue #420).
+        CrashRecorder.install(container.crashRecords, BuildConfig.VERSION_NAME, BuildConfig.GIT_COMMIT)
         DiagLog.i(
             TAG,
             "herold ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_COMMIT}) starting on " +
