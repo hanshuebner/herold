@@ -175,7 +175,11 @@ class OutboxAcceptanceTest {
         )
         assertTrue("nothing has left yet", queued.all { it.state != OutboxState.FAILED })
 
-        compose.onNodeWithTag("connectivity-chip").performClick()
+        compose.onNodeWithTag("inbox-drawer-open").performClick()
+        compose.waitUntil(TIMEOUT_MS) {
+            compose.onAllNodesWithTag("drawer-outbox").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("drawer-outbox").performClick()
         compose.waitUntil(TIMEOUT_MS) {
             compose.onAllNodesWithTag("outbox-list").fetchSemanticsNodes().isNotEmpty()
         }

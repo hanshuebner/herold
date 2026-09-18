@@ -62,9 +62,10 @@ class ComposeOfflineAcceptanceTest {
             runBlocking { app.container.outbox.list().size > before }
         }
         compose.waitUntil(TIMEOUT_MS) {
-            compose.onAllNodesWithTag("connectivity-chip").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("status-dot-offline", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("connectivity-chip").assertIsDisplayed()
+        compose.onNodeWithTag("status-indicator").assertIsDisplayed()
         compose.captureScreen("33-offline-send-queued")
     }
 
