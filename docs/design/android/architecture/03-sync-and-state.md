@@ -96,6 +96,16 @@ synced threads is retained; bodies within budget. Eviction never touches outbox
 content. A body absent from cache while offline renders a "not downloaded"
 placeholder; online, it fetches on open.
 
+A blob's bytes are held as a file under the app's cache directory,
+`<accountId>/<blobId>`, and the `blob_cache` row keeps the content type, the
+size, the last use and that file's path. Android hands a row to the client
+through a 2 MiB cursor window, so a part above that size is only readable
+outside the row (issue #420). Eviction deletes the files it drops, a sign-out
+clears the directory, and a row whose file the system reclaimed is dropped as
+it is read, so the part downloads again. A part the cache and the network both
+fail to produce is drawn as unavailable and logged to the diagnostic ring; it
+never ends the screen that asked for it.
+
 ## Connectivity and background
 
 Connectivity transitions drive the reconciler and the outbox drain. A platform

@@ -156,6 +156,26 @@ Run the classes in a few invocations rather than one: a single invocation of
 the whole suite loads the emulator enough that a delivery wait or the
 editor's readiness check can exceed its 30 s budget.
 
+### Oversized parts (issue #420)
+
+`BlobCacheInstrumentedTest` needs no instance: it states Android's 2 MiB
+cursor-window limit against the row layout the blob cache used to have,
+then round-trips a 3 MiB blob through the cache as it is now.
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.BlobCacheInstrumentedTest \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
+`LargeInlineImageAcceptanceTest` delivers a message whose inline image
+is larger than that window and opens the thread on it, which is the
+flow that closed the app on the reporting device:
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.LargeInlineImageAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 ### The bug reporter (issues #407, #417)
 
 `BugReportAcceptanceTest` drives the in-app reporter against the dev
