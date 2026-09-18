@@ -387,6 +387,126 @@ describe('sanitizeHtml — cid: image aspect-ratio from server-supplied dimensio
   });
 });
 
+// Issue #306, second round: the maintainer's hand-back (comment 5037) showed
+// the fix from the first round (case/bracket normalisation of a `cid:`
+// reference) still did not resolve the reported smiley, because
+// `rewriteImage` only ever read `src` -- the smiley's `srcset` 2x candidate
+// stayed a raw `cid:` URL that a high-density display picks over the
+// already-resolved `src`, reproducing the same broken-image-icon-plus-alt-
+// text symptom. The fixture below is the exact markup from the maintainer's
+// raw-store reproduction (message 3722, thread t3722).
+describe('sanitizeHtml — srcset image rewrite (issue #306, second round)', () => {
+  const SMILEY_HTML =
+    '<img src="cid:d14f8788688647a5ebf6bee4@herold" alt=":D" title="biggrin" ' +
+    'class="smiley" srcset="cid:f4da7852fb8fdbd5ab247d88@herold 2x" height="23" ' +
+    'width="23" loading="lazy">';
+  const SMILEY_CID_MAP = {
+    'd14f8788688647a5ebf6bee4@herold': '/jmap/download/acct1/b1/inline-1.png',
+    'f4da7852fb8fdbd5ab247d88@herold': '/jmap/download/acct1/b2/inline-2.png',
+  };
+
+  it('resolves both src and the srcset 2x cid: candidate to /jmap/download URLs', () => {
+    const body = bodyOf(
+      sanitizeHtml(SMILEY_HTML, { loadImages: false, cidMap: SMILEY_CID_MAP }),
+    );
+    expect(body).toContain('src="/jmap/download/acct1/b1/inline-1.png"');
+    expect(body).toContain('srcset="/jmap/download/acct1/b2/inline-2.png 2x"');
+    expect(body).not.toContain('cid:');
+  });
+
+  it('also resolves srcset on the avatar <img> from the same message (src-only sanity check)', () => {
+    const avatarHtml =
+      '<img src="cid:6363855166381af3d29079c2@herold" width="48" height="48" ' +
+      'alt="" class="userAvatarImage">';
+    const body = bodyOf(
+      sanitizeHtml(avatarHtml, {
+        loadImages: false,
+        cidMap: { '6363855166381af3d29079c2@herold': '/jmap/download/acct1/b0/avatar.webp' },
+      }),
+    );
+    expect(body).toContain('src="/jmap/download/acct1/b0/avatar.webp"');
+  });
+
+  it('drops an unresolvable srcset candidate and removes the attribute when it was the only one', () => {
+    const html = '<img src="cid:known" srcset="cid:missing 2x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }));
+    expect(body).toContain('src="/jmap/download/known.png"');
+    expect(body).not.toContain('srcset');
+    expect(body).not.toContain('cid:');
+  });
+
+  it('keeps a resolvable srcset candidate and drops only the unresolvable one from a multi-candidate list', () => {
+    const html = '<img src="cid:known" srcset="cid:known 1x, cid:missing 2x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }));
+    expect(body).toContain('srcset="/jmap/download/known.png 1x"');
+    expect(body).not.toContain('cid:missing');
+    expect(body).not.toContain('2x');
+  });
+
+  it('resolves an external srcset candidate through the image proxy when loadImages=true', () => {
+    const html = '<img src="cid:known" srcset="https://x.test/a.png 2x">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: true, cidMap: { known: '/jmap/download/known.png' } }),
+    );
+    expect(body).toContain(`srcset="/proxy/image?url=${encodeURIComponent('https://x.test/a.png')} 2x"`);
+  });
+
+  it('drops an external srcset candidate when loadImages=false', () => {
+    const html = '<img src="cid:known" srcset="https://x.test/a.png 2x">';
+    const body = bodyOf(
+      sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }),
+    );
+    expect(body).not.toContain('srcset');
+    expect(body).not.toContain('x.test');
+  });
+
+  it('resolves srcset on an <img> that carries no src attribute at all', () => {
+    const html = '<img srcset="cid:known 1x">';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }));
+    expect(body).toContain('srcset="/jmap/download/known.png 1x"');
+  });
+
+  it('resolves srcset on a <source> inside a <picture>', () => {
+    const html =
+      '<picture><source srcset="cid:known 2x"><img src="cid:known"></picture>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }));
+    expect(body).toContain('<source srcset="/jmap/download/known.png 2x">');
+    expect(body).toContain('src="/jmap/download/known.png"');
+  });
+
+  it('removes an unresolvable <source srcset> inside a <picture>, leaving the fallback <img> untouched', () => {
+    const html =
+      '<picture><source srcset="cid:missing 2x"><img src="cid:known" alt="fallback"></picture>';
+    const body = bodyOf(sanitizeHtml(html, { loadImages: false, cidMap: { known: '/jmap/download/known.png' } }));
+    expect(body).not.toContain('srcset');
+    expect(body).toContain('src="/jmap/download/known.png"');
+    expect(body).not.toContain('cid:');
+  });
+
+  // Issue #269/#270 re-check: chip visibility for an undecodable or unnamed
+  // inline image is driven entirely by MessageAccordion's per-attachment
+  // metadata (part.type / part.cid), never by which HTML attribute the body
+  // happens to reference the cid through. This asserts the sanitizer side
+  // of that independence: an inline part's cid resolves the same way via
+  // srcset as it would via src, regardless of the part's MIME type or
+  // whether it has a filename -- the srcset resolution added here does not
+  // introduce a new naming or type dependency that chip logic would need
+  // to account for.
+  it('resolves a srcset cid: candidate the same way regardless of the referenced part\'s (undecodable) MIME type', () => {
+    const html = '<img src="cid:ok" srcset="cid:tiff-part 2x">';
+    const body = bodyOf(
+      sanitizeHtml(html, {
+        loadImages: false,
+        // The map has no notion of MIME type -- a TIFF part's cid resolves
+        // exactly like any other, since cid resolution and decodability are
+        // independent signals (issue #269).
+        cidMap: { ok: '/jmap/download/ok.png', 'tiff-part': '/jmap/download/sig.tiff' },
+      }),
+    );
+    expect(body).toContain('srcset="/jmap/download/sig.tiff 2x"');
+  });
+});
+
 describe('sanitizeHtml — external image gating', () => {
   it('removes src when loadImages=false', () => {
     const html = '<img src="https://x.test/a.png" alt="x">';

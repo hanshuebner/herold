@@ -18,6 +18,11 @@
  *      - http(s): when loadImages=false → src removed, alt swapped.
  *      - http(s): when loadImages=true  → rewritten to /proxy/image (REQ-SEC-07).
  *      - Anything else → src removed.
+ *      - srcset (on <img> and <source>) → every candidate resolved by the
+ *        same rules above; an unresolvable candidate is dropped, and the
+ *        whole attribute is removed when nothing survives, so a raw
+ *        cid:/blocked URL a high-density display would otherwise pick
+ *        over the resolved src never reaches the browser (issue #306).
  *   4. Output wrapped in a minimal HTML document with an inline CSP that
  *      restricts the iframe to img-src 'self' data: (the parent origin
  *      hosts the proxy, and inline-base64 images are common in mail).
@@ -94,8 +99,8 @@ const ALLOWED_TAGS = [
   'a', 'abbr', 'address', 'b', 'blockquote', 'br', 'caption',
   'cite', 'code', 'col', 'colgroup', 'details', 'div', 'dl', 'dt', 'dd',
   'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'hr', 'i', 'img', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q',
-  's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
+  'hr', 'i', 'img', 'kbd', 'li', 'mark', 'ol', 'p', 'picture', 'pre', 'q',
+  's', 'samp', 'small', 'source', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
   'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var',
 ];
 
@@ -232,9 +237,14 @@ export function sanitizeHtml(raw: string, options: SanitizeOptions): string {
     a.setAttribute('rel', 'noopener noreferrer');
   }
 
-  // Image rewriting per REQ-SEC-05/07.
+  // Image rewriting per REQ-SEC-05/07. <source srcset> inside <picture>
+  // carries no `src` of its own, so it gets only the srcset pass (issue
+  // #306 second round).
   for (const img of wrap.querySelectorAll('img')) {
     rewriteImage(img, options);
+  }
+  for (const source of wrap.querySelectorAll('source')) {
+    rewriteSrcset(source, options);
   }
 
   // Strip a lone half of an inline color/background-color pair only when it
@@ -511,7 +521,20 @@ function lookupCid<T>(map: Record<string, T> | undefined, cid: string): T | unde
   return undefined;
 }
 
+/**
+ * Rewrites an `<img>`'s `src` and `srcset` attributes. `srcset` gets the
+ * same per-candidate resolution as `src` (issue #306 second round): a
+ * high-density display picks its own `srcset` candidate over `src`, so a
+ * `cid:` (or external) reference left unresolved there reproduces the
+ * exact broken-image symptom the `src` handling below already fixed for
+ * the 1x case.
+ */
 function rewriteImage(img: Element, options: SanitizeOptions): void {
+  rewriteImageSrc(img, options);
+  rewriteSrcset(img, options);
+}
+
+function rewriteImageSrc(img: Element, options: SanitizeOptions): void {
   const src = img.getAttribute('src');
   const alt = img.getAttribute('alt') ?? '';
   if (!src) {
@@ -591,6 +614,88 @@ function rewriteImage(img: Element, options: SanitizeOptions): void {
   img.setAttribute('src', `/proxy/image?url=${encodeURIComponent(src)}`);
   img.setAttribute('referrerpolicy', 'no-referrer');
   img.setAttribute('loading', 'lazy');
+}
+
+/**
+ * Resolves a single image URL candidate -- the `src` value, or one URL
+ * drawn out of a `srcset` list -- against the same policy `rewriteImageSrc`
+ * applies to `src`: `cid:` via `cidMap` (normalised, case-insensitive),
+ * the internalize placeholder and inline raster data URIs pass through
+ * unchanged, http(s) is proxied when `loadImages` is set, and anything
+ * else (including an unresolved `cid:` or a blocked http(s) URL) returns
+ * null so the caller drops the candidate rather than emit unusable or
+ * unsafe text.
+ */
+function resolveUrlCandidate(url: string, options: SanitizeOptions): string | null {
+  if (url.startsWith('cid:')) {
+    return lookupCid(options.cidMap, normalizeCid(url.slice(4))) ?? null;
+  }
+  if (isInternalizePlaceholder(url)) {
+    return url;
+  }
+  if (INLINE_IMAGE_DATA_URI.test(url)) {
+    return url;
+  }
+  if (!/^https?:/i.test(url)) {
+    return null;
+  }
+  if (!options.loadImages) {
+    return null;
+  }
+  return `/proxy/image?url=${encodeURIComponent(url)}`;
+}
+
+/**
+ * Splits an HTML `srcset` attribute value into (url, descriptor) pairs.
+ * Candidates are comma-separated; each is a URL followed by an optional
+ * whitespace-separated width/density descriptor (`480w`, `2x`). This
+ * covers the srcset shapes mail HTML actually uses -- none of the
+ * candidate schemes this module resolves (`cid:`, `http(s):`, `data:`)
+ * legitimately contain a literal comma, so a plain split is sufficient.
+ */
+function parseSrcset(value: string): Array<{ url: string; descriptor: string }> {
+  const candidates: Array<{ url: string; descriptor: string }> = [];
+  for (const part of value.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const spaceIdx = trimmed.search(/\s/);
+    if (spaceIdx === -1) {
+      candidates.push({ url: trimmed, descriptor: '' });
+    } else {
+      candidates.push({
+        url: trimmed.slice(0, spaceIdx),
+        descriptor: trimmed.slice(spaceIdx).trim(),
+      });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * Rewrites an element's `srcset` attribute (present on `<img>` and on
+ * `<source>` inside `<picture>`) using `resolveUrlCandidate` on every
+ * listed candidate. A candidate that cannot be resolved is dropped from
+ * the list entirely -- left as raw text, it is exactly the issue #306
+ * second-round defect: a high-density display picks the raw `cid:` (or
+ * blocked external) URL over an already-resolved `src`. When no
+ * candidate survives, the attribute is removed so `src` (or, for a
+ * `<source>`, the next candidate in the `<picture>`) wins instead.
+ */
+function rewriteSrcset(el: Element, options: SanitizeOptions): void {
+  const srcset = el.getAttribute('srcset');
+  if (!srcset) return;
+  const resolved = parseSrcset(srcset)
+    .map(({ url, descriptor }) => {
+      const resolvedUrl = resolveUrlCandidate(url, options);
+      if (resolvedUrl === null) return null;
+      return descriptor ? `${resolvedUrl} ${descriptor}` : resolvedUrl;
+    })
+    .filter((candidate): candidate is string => candidate !== null);
+  if (resolved.length === 0) {
+    el.removeAttribute('srcset');
+  } else {
+    el.setAttribute('srcset', resolved.join(', '));
+  }
 }
 
 /**
