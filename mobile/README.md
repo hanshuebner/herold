@@ -176,6 +176,17 @@ flow that closed the app on the reporting device:
       -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
       com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
 
+`CrashRestoreAcceptanceTest` stands on a conversation, leaves the crash
+record the uncaught-exception handler writes, and recreates the
+activity: the shell comes back on the inbox, and the trace stays for the
+next report.
+
+    adb shell am instrument -w -r \
+      -e class com.netzhansa.herold.android.CrashRestoreAcceptanceTest \
+      -e heroldBaseUrl http://10.0.2.2:<backend-port> \
+      -e heroldSmtpAddr 10.0.2.2:<smtp-port> \
+      com.netzhansa.herold.android.test/androidx.test.runner.AndroidJUnitRunner
+
 ### The bug reporter (issues #407, #417)
 
 `BugReportAcceptanceTest` drives the in-app reporter against the dev
