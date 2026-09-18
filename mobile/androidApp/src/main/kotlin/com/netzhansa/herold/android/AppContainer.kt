@@ -328,6 +328,17 @@ class AppContainer(context: Context) {
                 }
             }
         }
+        // A refusal the drain met is recorded rather than flashed: the
+        // entry stays in the outbox with its reason, the status
+        // indicator turns, and the line is in the ring the diagnostics
+        // screen shows (REQ-AND-SYNC-23/30, issue #421).
+        appScope.launch {
+            session.collectLatest { current ->
+                current?.drainer?.failures?.collect { failure ->
+                    DiagLog.w(OUTBOX_TAG, "${failure.label} failed: ${failure.message}")
+                }
+            }
+        }
     }
 
     /**

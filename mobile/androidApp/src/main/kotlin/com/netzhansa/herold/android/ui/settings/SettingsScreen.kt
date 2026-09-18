@@ -42,7 +42,8 @@ import kotlinx.coroutines.launch
  * The app's settings: how long a message waits before it goes (issue
  * #354), which transport carries push (REQ-AND-PUSH-05), whether the app
  * locks behind the device's unlock (REQ-AND-AUTH-11), how a problem is
- * reported (REQ-AND-SYS-50..52), and the ways through to the account's
+ * reported (REQ-AND-SYS-50..52), the way through to diagnostics
+ * (REQ-AND-SYS-54), and the ways through to the account's
  * active sessions (REQ-AND-AUTH-22) and its category settings (suite
  * REQ-CAT-04/05/11).
  */
@@ -53,6 +54,7 @@ fun SettingsScreen(
     onSessions: () -> Unit,
     onCategories: () -> Unit,
     onTransparency: () -> Unit,
+    onDiagnostics: () -> Unit,
     onReportProblem: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -216,7 +218,7 @@ fun SettingsScreen(
                 )
             }
 
-            ReportingSection(onReportProblem = onReportProblem)
+            ReportingSection(onReportProblem = onReportProblem, onDiagnostics = onDiagnostics)
         }
     }
 }
@@ -229,7 +231,7 @@ fun SettingsScreen(
  * about what a report includes.
  */
 @Composable
-private fun ReportingSection(onReportProblem: () -> Unit) {
+private fun ReportingSection(onReportProblem: () -> Unit, onDiagnostics: () -> Unit) {
     val context = LocalContext.current
     var shake by remember { mutableStateOf(DiagPreferences.shakeToReport(context)) }
     var keepLog by remember { mutableStateOf(DiagPreferences.keepLog(context)) }
@@ -278,6 +280,21 @@ private fun ReportingSection(onReportProblem: () -> Unit) {
                 DiagPreferences.setKeepLog(context, it)
             },
             modifier = Modifier.testTag("keep-diagnostic-log"),
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onDiagnostics)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .testTag("settings-diagnostics"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = "Diagnostics", modifier = Modifier.weight(1f))
+        Text(
+            text = "Connection, sync, queue and the log",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     Row(

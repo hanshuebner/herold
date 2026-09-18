@@ -82,6 +82,7 @@ import com.netzhansa.herold.android.push.MailNotifier
 import com.netzhansa.herold.android.links.ExternalBrowser
 import com.netzhansa.herold.android.media.ImageScaling
 import com.netzhansa.herold.android.ui.common.SnoozeSheet
+import com.netzhansa.herold.android.ui.common.StatusIndicator
 import com.netzhansa.herold.android.ui.common.UndoOffers
 import com.netzhansa.herold.android.ui.common.collectAsStateSafely
 import com.netzhansa.herold.shared.actions.PendingAction
@@ -98,8 +99,11 @@ import com.netzhansa.herold.shared.domain.Email
 import com.netzhansa.herold.shared.actions.FilterActions
 import com.netzhansa.herold.shared.mail.HtmlSanitizer
 import com.netzhansa.herold.shared.mail.ListHeaders
+import com.netzhansa.herold.shared.outbox.OutboxState
 import com.netzhansa.herold.shared.outbox.PendingMessage
 import com.netzhansa.herold.shared.outbox.pendingMessagesIn
+import com.netzhansa.herold.shared.sync.SyncStatus
+import com.netzhansa.herold.shared.sync.appStatus
 import com.netzhansa.herold.shared.mail.UnsubscribeMessages
 import com.netzhansa.herold.shared.mail.UnsubscribeOffer
 import com.netzhansa.herold.shared.push.MailNotification
@@ -132,6 +136,8 @@ fun ThreadScreen(
     onComposeTo: (to: String, subject: String, body: String) -> Unit,
     /** Opens the outbox, which is where a queued message is acted on (issue #369). */
     onOutbox: () -> Unit,
+    /** Opens the diagnostics screen, which the status indicator leads to (issue #421). */
+    onDiagnostics: () -> Unit,
     onReportProblem: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -149,6 +155,16 @@ fun ThreadScreen(
     }
     val mailboxes by container.store.mailboxes().collectAsStateSafely(emptyList())
     val rules by container.store.managedRules().collectAsStateSafely(emptyList())
+    // What the app bar's dot says here, derived exactly as the list
+    // derives it (REQ-AND-SYNC-30, issue #421).
+    val offline by container.offline.collectAsStateSafely(false)
+    val syncStatus by session.syncEngine.status.collectAsStateSafely(SyncStatus.Idle)
+    val status = appStatus(
+        offline = offline,
+        sync = syncStatus,
+        pendingOutbox = queued.count { it.isPending },
+        failedOutbox = queued.count { it.state == OutboxState.FAILED },
+    )
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -333,6 +349,10 @@ fun ThreadScreen(
                     )
                 },
                 actions = {
+                    // The same fixed slot the list carries, so the
+                    // conversation does not move when the connection
+                    // drops or a sync starts (REQ-AND-SYNC-30).
+                    StatusIndicator(status = status, onOpenDiagnostics = onDiagnostics)
                     val flagged = conversation.any { it.isFlagged }
                     IconButton(
                         onClick = { scope.launch { session.actions.setFlagged(conversation, !flagged) } },
